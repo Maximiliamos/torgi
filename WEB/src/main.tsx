@@ -70,8 +70,6 @@ const initialQuery: LotQuery = {
   statuses: ["active", "scheduled"],
   min_discount: 0,
   max_discount: 100,
-  min_risk: 0,
-  max_risk: 10,
   sort: "recommended"
 };
 

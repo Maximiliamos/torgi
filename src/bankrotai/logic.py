@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, func, desc, asc, update
+from sqlalchemy import String, asc, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
@@ -403,8 +403,8 @@ def build_lots_response(
     max_price: float = 1e10,
     min_discount: float = 0,
     max_discount: float = 100,
-    min_risk: int = 0,
-    max_risk: int = 10,
+    min_risk: int | None = None,
+    max_risk: int | None = None,
     sort_mode: str = "recommended"
 ) -> dict:
     """Формирует структурированный ответ со списком лотов для API."""
@@ -413,8 +413,23 @@ def build_lots_response(
     query = select(ProcessedLot).where(ProcessedLot.region_slug.in_(region_values)) 
 
     # Поиск по названию 
-    if search: 
-        query = query.where(ProcessedLot.title.ilike(f"%{search}%")) 
+    search_term = search.strip()
+    if search_term:
+        columns = (
+            ProcessedLot.title,
+            ProcessedLot.description,
+            ProcessedLot.address,
+            ProcessedLot.cadastral_number,
+            cast(ProcessedLot.cadastral_numbers, String),
+            ProcessedLot.external_id,
+            ProcessedLot.object_name,
+        )
+        if session.get_bind().dialect.name == "sqlite":
+            pattern = f"%{search_term.casefold()}%"
+            query = query.where(or_(*(func.unicode_casefold(column).like(pattern) for column in columns)))
+        else:
+            pattern = f"%{search_term}%"
+            query = query.where(or_(*(column.ilike(pattern) for column in columns)))
 
     # Фильтр по категориям 
     if categories: 
@@ -434,7 +449,10 @@ def build_lots_response(
         query = query.where(ProcessedLot.discount_percent <= max_discount) 
 
     # Риск 
-    query = query.where(ProcessedLot.risk_score.between(min_risk, max_risk)) 
+    if min_risk is not None or max_risk is not None:
+        lower = 0 if min_risk is None else min_risk
+        upper = 10 if max_risk is None else max_risk
+        query = query.where(ProcessedLot.risk_score.between(lower, upper))
 
     # Сортировка 
     sort_mapping = { 

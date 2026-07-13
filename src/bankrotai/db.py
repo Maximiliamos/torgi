@@ -16,10 +16,23 @@ from sqlalchemy import (
     create_engine, event, select, desc, and_, MetaData
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
+from sqlalchemy.engine import Engine
 
 from bankrotai.core import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@event.listens_for(Engine, "connect")
+def _register_sqlite_unicode_functions(connection, _record) -> None:
+    """SQLite's built-in NOCASE/LOWER only handle ASCII."""
+    if hasattr(connection, "create_function"):
+        connection.create_function(
+            "unicode_casefold",
+            1,
+            lambda value: value.casefold() if isinstance(value, str) else value,
+            deterministic=True,
+        )
 
 # --- Models ---
 

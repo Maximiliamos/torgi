@@ -160,15 +160,15 @@ def get_lots(
     max_price: float = Query(1e10, ge=0),
     min_discount: float = Query(0, ge=-100, le=100),
     max_discount: float = Query(100, ge=-100, le=100),
-    min_risk: int = Query(0, ge=0, le=10),
-    max_risk: int = Query(10, ge=0, le=10),
+    min_risk: int | None = Query(None, ge=0, le=10),
+    max_risk: int | None = Query(None, ge=0, le=10),
     sort: str = Query("recommended", pattern="^(recommended|price_asc|price_desc|discount|newest)$")
 ):
     if min_price > max_price:
         raise HTTPException(status_code=422, detail="min_price must be <= max_price")
     if min_discount > max_discount:
         raise HTTPException(status_code=422, detail="min_discount must be <= max_discount")
-    if min_risk > max_risk:
+    if min_risk is not None and max_risk is not None and min_risk > max_risk:
         raise HTTPException(status_code=422, detail="min_risk must be <= max_risk")
     cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
     stat_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
