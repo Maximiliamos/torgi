@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bankrotai-finder"
+version = "0.1.0"
+description = "AI assistant for bankruptcy and privatization lots analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "celery[redis]>=5.4,<6",
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "openpyxl>=3.1,<4",
+  "openai>=1.50.0,<3",
+  "pydantic>=2.8,<2.13",
+  "pydantic-settings>=2.4,<3",
+  "python-dotenv>=1.0,<2",
+  "requests>=2.32,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.13,<2",
+  "anthropic>=0.40,<1",
+  "lxml>=5.2,<7",
+  "psycopg[binary]>=3.2,<4",
+  "tenacity>=8.3,<10",
+  "uvicorn>=0.32,<1",
+  "PySide6>=6.7.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

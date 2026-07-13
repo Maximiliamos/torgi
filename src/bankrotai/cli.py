@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from decimal import Decimal
+
+from bankrotai.core import get_logger, get_settings
+from bankrotai.db import init_db, session_scope, get_processed_lot, find_unappraised_lots
+from bankrotai.domain import NormalizedLot
+from bankrotai.logic import persist_lot
+from bankrotai.scrapers import import_manual_html, GorodTorgiClient, TorgiGovClient, TorgiGovSearchFilters
+from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
+
+logger = get_logger("cli")
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="bankrotai")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("init-db", help="Initialize DB")
+    subparsers.add_parser("run-desktop", help="Run GUI")
+    api_p = subparsers.add_parser("run-api", help="Run API")
+    api_p.add_argument("--host", default="0.0.0.0")
+    api_p.add_argument("--port", type=int, default=8000)
+    ingest_p = subparsers.add_parser("ingest-manual", help="Ingest HTML")
+    ingest_p.add_argument("file")
+    ingest_p.add_argument("--city", default="yaroslavl")
+    eval_p = subparsers.add_parser("eval-lot", help="Eval lot")
+    eval_p.add_argument("id", type=int)
+    sync_p = subparsers.add_parser("sync-region", help="Sync region")
+    sync_p.add_argument("region")
+    sync_p.add_argument("--force", action="store_true")
+    torgi_p = subparsers.add_parser("search-torgi-gov", help="Search online lots on torgi.gov.ru")
+    torgi_p.add_argument("--search", default="")
+    torgi_p.add_argument("--region", default="")
+    torgi_p.add_argument("--category", default="")
+    torgi_p.add_argument("--price-min", type=float, default=None)
+    torgi_p.add_argument("--price-max", type=float, default=None)
+    torgi_p.add_argument("--notice-status", default="")
+    torgi_p.add_argument("--lot-status", default="")
+    torgi_p.add_argument("--page", type=int, default=1)
+    torgi_p.add_argument("--limit", type=int, default=20)
+    torgi_p.add_argument("--all-pages", action="store_true")
+    torgi_p.add_argument("--max-items", type=int, default=5000)
+    torgi_p.add_argument("--show-params", action="store_true", help="Print raw torgi.gov.ru request params in meta")
+    torgi_p.add_argument("--import-db", action="store_true", help="Persist found lots to the local database")
+    subparsers.add_parser("appraise-all-pending", help="Appraise pending")
+    subparsers.add_parser("test-parse", help="Test parse")
+    test_p = subparsers.add_parser("test-html", help="Test parse saved TBankrot HTML")
+    test_p.add_argument("file")
+    return parser
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.command == "init-db": init_db()
+    elif args.command == "run-desktop":
+        from bankrotai.gui import main as run_gui; run_gui()
+    elif args.command == "run-api":
+        from bankrotai.api import run_api; run_api(args.host, args.port)
+    elif args.command == "ingest-manual":
+        with session_scope() as s: import_manual_html(s, args.file, args.city)
+    elif args.command == "sync-region":
+        from bankrotai.tasks import sync_public_region_task
+        sync_public_region_task(args.region, args.force)
+    elif args.command == "search-torgi-gov":
+        category_code = TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(args.category.lower(), args.category) if args.category else None
+        filters = TorgiGovSearchFilters(
+            search_text=args.search,
+            subject_rf=args.region or None,
+            category_code=category_code,
+            price_min=args.price_min,
+            price_max=args.price_max,
+            notice_status=args.notice_status or None,
+            lot_status=args.lot_status or None,
+            page=max(1, args.page),
+            page_size=max(1, min(args.limit, 100)),
+        )
+        try:
+            client = TorgiGovClient(diagnostics=args.show_params)
+            if args.all_pages:
+                filters.page = 1
+                filters.page_size = 100
+                lots, meta = client.search_all_lots(filters, max_items=args.max_items)
+            else:
+                lots, meta = client.search_lots(filters)
+        except Exception as exc:
+            print(f"Ошибка поиска torgi.gov.ru: {exc}", file=sys.stderr)
+            return 2
+        if args.import_db:
+            init_db()
+            with session_scope() as s:
+                for lot in lots:
+                    persist_lot(s, lot)
+        print(json.dumps({
+            "meta": meta,
+            "items": [
+                {
+                    "external_id": lot.external_id,
+                    "title": lot.title,
+                    "category": lot.category,
+                    "region": lot.region_name or lot.region_slug,
+                    "price": lot.start_price or lot.current_price,
+                    "status": lot.auction_status,
+                    "url": lot.lot_url,
+                }
+                for lot in lots
+            ],
+        }, ensure_ascii=False, indent=2, default=str))
+    elif args.command == "appraise-all-pending":
+        init_db()
+        with session_scope() as s:
+            lots = find_unappraised_lots(s)
+            appraiser = OpenAIAppraiser()
+            for l in lots:
+                # Full normalization for CLI using helper factory
+                nl = NormalizedLot.from_processed_lot(l)
+                apply_evaluation_to_lot(l, appraiser.evaluate(nl))
+    elif args.command == "eval-lot":
+        init_db()
+        with session_scope() as s:
+            l = get_processed_lot(s, args.id)
+            if l:
+                nl = NormalizedLot.from_processed_lot(l)
+                apply_evaluation_to_lot(l, OpenAIAppraiser().evaluate(nl))
+    elif args.command == "test-parse":
+        print(f"Found {len(GorodTorgiClient('yaroslavl').fetch_lots())} lots")
+    elif args.command == "test-html":
+        from bankrotai.scrapers import ManualHtmlParser
+
+        parser = ManualHtmlParser()
+        lots = parser.parse_file(args.file)
+
+        print(f"Найдено лотов: {len(lots)}")
+
+        for lot in lots[:20]:
+            print("-" * 80)
+            print("ID:", lot.external_id)
+            print("TITLE:", lot.title)
+            print("PRICE:", lot.current_price, lot.price_text)
+            print("STATUS:", lot.status)
+            print("URL:", lot.url)
+            print("AREA:", lot.area)
+            print("LAND:", lot.land_area)
+            print("CAD:", lot.cadastral_numbers)
+            print("ADDRESS:", lot.address)
+    else: parser.print_help()
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)
