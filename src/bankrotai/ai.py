@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+import time
 
 # Prevent NVIDIA driver probing in Trae sandbox
 os.environ["NVCUVID_DISABLE_DEVICE_PROBE"] = "1"
@@ -14,6 +15,9 @@ os.environ["OTT_DISABLE_NVML"] = "1"
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, HttpUrl, PositiveFloat, field_validator, model_validator
+from typing import Literal
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
@@ -27,6 +31,46 @@ from bankrotai.logic import (
 )
 
 logger = get_logger("ai")
+
+PROMPT_VERSION = "2026-07-14"
+VALUATION_VERSION = "v2"
+
+
+class MarketResultModel(BaseModel):
+    market_price: PositiveFloat
+    min_price: PositiveFloat
+    max_price: PositiveFloat
+    confidence: Literal["low", "medium", "high"]
+    explanation: str = Field(min_length=1, max_length=10_000)
+    links: list[HttpUrl] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_price_range(self):
+        if not self.min_price <= self.market_price <= self.max_price:
+            raise ValueError("Expected min_price <= market_price <= max_price")
+        return self
+
+
+class RiskResultModel(BaseModel):
+    risk_score: int = Field(ge=1, le=10)
+    recommendation: str = Field(min_length=1, max_length=10_000)
+    time_to_sell: str = Field(min_length=1, max_length=500)
+
+
+def validate_ai_evaluation(market: dict, risk: dict) -> LotEvaluation:
+    market_result = MarketResultModel.model_validate(market)
+    risk_result = RiskResultModel.model_validate(risk)
+    return LotEvaluation(
+        market=MarketAssessment(
+            market_price=float(market_result.market_price),
+            min_price=float(market_result.min_price),
+            max_price=float(market_result.max_price),
+            confidence=market_result.confidence,
+            explanation=market_result.explanation,
+            links=[str(link) for link in market_result.links],
+        ),
+        risk=RiskAssessment(**risk_result.model_dump()),
+    )
 
 
 MARKET_SYSTEM_PROMPT = """
@@ -263,20 +307,17 @@ class AIProvider:
                 client_kwargs["default_headers"] = {"x-api-key": api_key}
             return OpenAI(**client_kwargs)
         else:
-            logger.warning(f"Unsupported AI provider: {provider}, falling back to deepseek")
-            self.provider = "deepseek"
-            return self._create_client()
+            raise RuntimeError(f"Unsupported AI provider: {provider}")
 
         if not api_key:
-            # Try to fallback to any available key
-            logger.warning(f"API key for {provider} is missing. Trying to find any available key...")
-            for p in ["gemini", "groq", "grok", "github", "omniroute", "kiro", "deepseek", "openai", "nvidia"]:
-                key = get_app_setting(f"{p}_api_key", getattr(self.settings, f"{p}_api_key", None))
-                if key:
-                    logger.info(f"Falling back to {p} provider")
-                    self.provider = p
-                    return self._create_client()
-            raise RuntimeError(f"No AI API keys found. Please configure at least one provider (Gemini, GroqCloud, Grok/xAI, GitHub Models, Kiro, OpenAI, DeepSeek, or NVIDIA).")
+            if self.settings.ai_allow_provider_fallback:
+                logger.warning("API key for %s is missing; explicit provider fallback is enabled", provider)
+                for candidate in ["gemini", "groq", "grok", "github", "omniroute", "kiro", "deepseek", "openai", "nvidia"]:
+                    key = get_app_setting(f"{candidate}_api_key", getattr(self.settings, f"{candidate}_api_key", None))
+                    if key:
+                        self.provider = candidate
+                        return self._create_client()
+            raise RuntimeError(f"API key for selected AI provider '{provider}' is missing")
 
         return OpenAI(api_key=api_key, base_url=base_url)
 
@@ -419,6 +460,7 @@ class OpenAIAppraiser:
             raise
 
     def evaluate(self, lot: NormalizedLot, session: Any | None = None) -> LotEvaluation:
+        started_at = time.perf_counter()
         cache_key = self._get_cache_key(lot)
 
         if session:
@@ -432,21 +474,22 @@ class OpenAIAppraiser:
             if cached and cached.valuation_snapshot:
                 logger.info("Cache hit for lot %s", lot.external_id)
                 data = cached.valuation_snapshot
-                return LotEvaluation(
-                    market=MarketAssessment(**data.get("market", {})),
-                    risk=RiskAssessment(**data.get("risk", {}))
-                )
+                return validate_ai_evaluation(data.get("market", {}), data.get("risk", {}))
 
         market = self.assess_market(lot)
         risk = self.assess_risk(lot, market)
         evaluation = LotEvaluation(market=market, risk=risk)
 
         if session:
-            self._save_evaluation_to_db(session, lot, evaluation, cache_key)
+            self._save_evaluation_to_db(
+                session, lot, evaluation, cache_key,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
 
         return evaluation
 
-    def _save_evaluation_to_db(self, session: Any, lot: NormalizedLot, evaluation: LotEvaluation, cache_key: str) -> None:
+    def _save_evaluation_to_db(self, session: Any, lot: NormalizedLot, evaluation: LotEvaluation,
+                               cache_key: str, duration_ms: int | None = None) -> None:
         from bankrotai.db import ValuationRun, ProcessedLot
         from sqlalchemy import select
 
@@ -455,7 +498,14 @@ class OpenAIAppraiser:
             run = ValuationRun(
                 lot_id=db_lot.id,
                 content_hash=cache_key,
-                valuation_method="openai",
+                valuation_method=self.provider.provider,
+                provider=self.provider.provider,
+                model=f"{self.provider.get_model('search')}|{self.provider.get_model('risk')}",
+                prompt_version=PROMPT_VERSION,
+                valuation_version=VALUATION_VERSION,
+                duration_ms=duration_ms,
+                attempt_count=1,
+                status="completed",
                 valuation_snapshot={
                     "market": {k: getattr(evaluation.market, k) for k in evaluation.market.__slots__},
                     "risk": {k: getattr(evaluation.risk, k) for k in evaluation.risk.__slots__}
@@ -488,13 +538,14 @@ class OpenAIAppraiser:
         payload = _parse_json_object(content)
         _require_json_fields(payload, ("market_price", "min_price", "max_price"), "market")
 
+        validated = MarketResultModel.model_validate(payload)
         market = MarketAssessment(
-            market_price=float(payload.get("market_price", 0)),
-            min_price=float(payload.get("min_price", 0)),
-            max_price=float(payload.get("max_price", 0)),
-            confidence=payload.get("confidence", "low"),
-            explanation=payload.get("explanation", ""),
-            links=payload.get("links", [])
+            market_price=float(validated.market_price),
+            min_price=float(validated.min_price),
+            max_price=float(validated.max_price),
+            confidence=validated.confidence,
+            explanation=validated.explanation,
+            links=[str(link) for link in validated.links],
         )
         return _apply_market_sanity(lot, market)
 
@@ -514,11 +565,8 @@ class OpenAIAppraiser:
         payload = _parse_json_object(content)
         _require_json_fields(payload, ("risk_score", "recommendation", "time_to_sell"), "risk")
 
-        return RiskAssessment(
-            risk_score=int(payload.get("risk_score", 5)),
-            recommendation=payload.get("recommendation", ""),
-            time_to_sell=payload.get("time_to_sell", "unknown")
-        )
+        validated = RiskResultModel.model_validate(payload)
+        return RiskAssessment(**validated.model_dump())
 
 def apply_evaluation_to_lot(processed_lot: Any, evaluation: LotEvaluation) -> None:
     processed_lot.market_price = Decimal(f"{evaluation.market.market_price:.2f}")

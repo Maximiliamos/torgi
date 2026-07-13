@@ -77,6 +77,7 @@ class AppSettings:
 
     # AI Provider
     ai_provider: str = "omniroute"  # "omniroute", "openai", "deepseek", "grok", "groq", "opencode", "nvidia", "gemini", "github"
+    ai_allow_provider_fallback: bool = False
     deepseek_api_key: str | None = None
     grok_api_key: str | None = None
     groq_api_key: str | None = None
@@ -122,6 +123,8 @@ class AppSettings:
     celery_hard_time_limit: int = 1800
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
+    nspd_ca_bundle: str | None = None
+    nspd_allow_insecure_debug: bool = False
 
 def load_settings() -> AppSettings:
     load_dotenv()
@@ -139,6 +142,7 @@ def load_settings() -> AppSettings:
 
         # AI Provider settings
         ai_provider=os.getenv("AI_PROVIDER", "omniroute"),
+        ai_allow_provider_fallback=os.getenv("AI_ALLOW_PROVIDER_FALLBACK", "false").lower() in {"1", "true", "yes"},
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
         grok_api_key=os.getenv("GROK_API_KEY"),
         groq_api_key=os.getenv("GROQ_API_KEY"),
@@ -169,6 +173,8 @@ def load_settings() -> AppSettings:
         celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
+        nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
+        nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )
     cors_raw = os.getenv("CORS_ORIGINS", "")
     if cors_raw:

@@ -6,17 +6,34 @@ import logging
 import math
 import re
 import time
+import threading
 
 import requests
+from requests.exceptions import SSLError
 from sqlalchemy.orm import Session
 
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
+from bankrotai.core import get_settings
 
 logger = logging.getLogger(__name__)
 
 CADASTRAL_RE = re.compile(r"^\d{2}:\d{2}:\d{6,7}:\d+$")
-REQUEST_TIMEOUT = (3.05, 7)
+REQUEST_TIMEOUT = (get_settings().external_connect_timeout, get_settings().external_read_timeout)
 NSPD_REFERER = "https://nspd.gov.ru/map?thematic=PKK"
+
+
+class NSPDTLSVerificationError(RuntimeError):
+    pass
+
+
+def nspd_tls_verify() -> bool | str:
+    settings = get_settings()
+    if settings.app_env == "production":
+        return settings.nspd_ca_bundle or True
+    if settings.nspd_allow_insecure_debug:
+        logger.warning("NSPD TLS verification is disabled by explicit local debug configuration")
+        return False
+    return settings.nspd_ca_bundle or True
 
 
 @dataclass
@@ -211,16 +228,18 @@ class CadastralGeocoder:
         }
 
         try:
-            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
             resp = requests.get(
                 self.nspd_search_url,
                 params=params,
                 headers=headers,
                 timeout=REQUEST_TIMEOUT,
-                verify=False,
+                verify=nspd_tls_verify(),
             )
             resp.raise_for_status()
             data = resp.json()
+        except SSLError as e:
+            logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
+            raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
         except Exception as e:
             logger.warning("NSPD request failed for %s: %s", cadastral_number, e)
             return None
@@ -288,14 +307,22 @@ class NominatimGeocoder:
     def __init__(self):
         self.base_url = "https://nominatim.openstreetmap.org/search"
         self.last_request_time = 0
+        self._lock = threading.Lock()
+        self._cache: dict[tuple[str, str], dict | None] = {}
 
     def geocode(self, address: str) -> dict | None:
         if not address or len(address.strip()) < 5:
             return None
 
-        elapsed = time.time() - self.last_request_time
-        if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
+        normalized_address = " ".join(address.casefold().split())
+        cache_key = (normalized_address, "nominatim")
+        with self._lock:
+            if cache_key in self._cache:
+                cached = self._cache[cache_key]
+                return dict(cached) if cached else None
+            elapsed = time.time() - self.last_request_time
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
 
         try:
             headers = {
@@ -321,12 +348,17 @@ class NominatimGeocoder:
             lon = float(result["lon"])
             importance = float(result.get("importance", 0))
 
-            return {
+            value = {
                 "centroid_lat": lat,
                 "centroid_lon": lon,
                 "geo_confidence": "high" if importance > 0.5 else "medium",
                 "trace_reason": "OSM Nominatim",
             }
+            with self._lock:
+                self._cache[cache_key] = value
+                if len(self._cache) > 10_000:
+                    self._cache.pop(next(iter(self._cache)))
+            return dict(value)
         except Exception as e:
             logger.warning("Geocoding failed for '%s': %s", address, e)
             return None

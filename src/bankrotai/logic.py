@@ -71,16 +71,16 @@ def _to_decimal(value: float | None) -> Decimal | None:
 # --- Pipelines (Geo & Status) ---
 
 def build_geo_decision(city_slug: str, raw_payload: dict[str, Any], fallback_text: str = "") -> dict:
-    lat, lon = 55.751574, 37.573856
     address = raw_payload.get("address") or raw_payload.get("location") or fallback_text
     
     return {
         "geo_source": "fallback",
-        "geo_method": "default",
-        "geo_confidence": "low",
-        "centroid_lat": lat,
-        "centroid_lon": lon,
-        "trace_reason": "Geocoding simplified",
+        "geo_method": "unresolved",
+        "geo_confidence": "none",
+        "centroid_lat": None,
+        "centroid_lon": None,
+        "needs_geo_check": True,
+        "trace_reason": "Coordinates were not resolved; no synthetic fallback was assigned",
         "geometry_json": None,
         "metadata_json": {"address_used": address}
     }

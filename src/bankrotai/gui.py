@@ -52,6 +52,7 @@ from bankrotai.logic import delete_lots_batch, cleanup_closed_lots, persist_lot
 from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
 from openpyxl import Workbook
 from bankrotai.domain import NormalizedLot
+from bankrotai.geo import nspd_tls_verify
 
 logger = get_logger("gui")
 
@@ -725,8 +726,7 @@ class CadastralWmsProxyHandler(BaseHTTPRequestHandler):
 
         try:
             import requests
-            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-            response = requests.get(upstream, headers=headers, timeout=(3.05, 8), verify=False)
+            response = requests.get(upstream, headers=headers, timeout=(3.05, 8), verify=nspd_tls_verify())
             response.raise_for_status()
         except Exception as e:
             logger.warning("NSPD WMS request failed for %s: %s", layer_key, e)
