@@ -2,10 +2,10 @@ from bankrotai.logic import build_geo_decision, build_status_decision, normalize
 
 
 def test_status_normalization_rules() -> None:
-    assert normalize_status("Опубликовано") == "Опубликовано"
-    assert normalize_status("Приём заявок") == "Приём заявок"
-    assert normalize_status("Завершено") == "Завершено"
-    assert normalize_status("Несостоявшийся") == "Несостоявшийся"
+    assert normalize_status("Опубликовано") == "active"
+    assert normalize_status("Приём заявок") == "scheduled"
+    assert normalize_status("Завершено") == "closed"
+    assert normalize_status("Несостоявшийся") == "closed"
 
 
 def test_status_decision_uses_authoritative_source() -> None:

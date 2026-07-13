@@ -83,6 +83,9 @@ class ProcessedLot(Base):
     start_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     auction_status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    is_archived: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     market_price_min: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     market_price_max: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
@@ -142,6 +145,18 @@ class LotStatusEvent(Base):
     source_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
     snapshot_ref: Mapped[str | None] = mapped_column(String(100))
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
+
+class LotStatusHistory(Base):
+    """Business-level status transitions; raw observations remain in LotStatusEvent."""
+    __tablename__ = "lot_status_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    old_status: Mapped[str | None] = mapped_column(String(100))
+    new_status: Mapped[str] = mapped_column(String(100), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="sync")
 
 class LotGeoSnapshot(Base):
     __tablename__ = "lot_geo_snapshots"
@@ -316,28 +331,18 @@ def init_db() -> None:
     with _SCHEMA_LOCK:
         if _SCHEMA_READY: return
 
-        if getattr(sys, "frozen", False):
-            Base.metadata.create_all(get_engine())
-            _SCHEMA_READY = True
-            return
-        
-        # Safe migration for cadastral_numbers
-        try:
-            with session_scope() as session:
-                from sqlalchemy import text
-                session.execute(text("ALTER TABLE processed_lots ADD COLUMN cadastral_numbers JSON"))
-                logger.info("Column cadastral_numbers added to processed_lots")
-        except Exception as e:
-            if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
-                pass
-            else:
-                logger.debug(f"Migration notice: {e}")
-
         from alembic import command
         from alembic.config import Config
-        alembic_config = Config(str(REPO_ROOT / "alembic.ini"))
-        alembic_config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        config_path = REPO_ROOT / "alembic.ini"
+        script_path = REPO_ROOT / "alembic"
+        if not config_path.exists() or not script_path.exists():
+            raise RuntimeError(
+                "Alembic migration resources are unavailable; the application cannot safely initialize its database"
+            )
+        alembic_config = Config(str(config_path))
+        alembic_config.set_main_option("script_location", str(script_path))
         alembic_config.set_main_option("sqlalchemy.url", get_settings().database_url)
+        logger.info("Applying database migrations from %s", script_path)
         command.upgrade(alembic_config, "head")
         _SCHEMA_READY = True
 

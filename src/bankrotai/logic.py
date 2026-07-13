@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, func, desc, asc
+from sqlalchemy import select, func, desc, asc, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
 from bankrotai.db import (
     LotGeoSnapshot,
+    LotStatusHistory,
     LotStatusEvent,
     ProcessedLot,
 )
@@ -111,7 +112,18 @@ def build_status_decision(raw_payload: dict[str, Any], fallback_status: str = ""
     } 
 
 def normalize_status(status: str) -> str:
-    return status
+    value = (status or "").strip().lower()
+    if not value:
+        return "unknown"
+    if any(token in value for token in ("closed", "completed", "finished", "заверш", "закрыт", "несостоя")):
+        return "closed"
+    if any(token in value for token in ("scheduled", "pending", "приём", "прием", "ожида")):
+        return "scheduled"
+    if any(token in value for token in ("active", "published", "open", "опублик", "идут торги")):
+        return "active"
+    if value in {"active", "scheduled", "closed", "unknown"}:
+        return value
+    return status.strip()
 
 # --- Scoring Logic ---
 
@@ -197,28 +209,20 @@ def needs_human_review(confidence: str) -> bool:
 # --- Core Logic ---
 
 def delete_lot(session: Session, lot_id: int) -> bool:
-    from sqlalchemy import text
     processed = session.get(ProcessedLot, lot_id)
     if not processed: return False
     try:
-        session.execute(text("PRAGMA foreign_keys = OFF"))
-        tables = [
-            "lot_status_events", "lot_geo_snapshots", "lot_price_events", 
-            "valuation_runs", "lot_notes", "watchlist_lots", "workflow_tasks", 
-            "lot_workflow_states", "lot_event_subscriptions", "watchlists"
-        ]
-        for table in tables:
-            try: session.execute(text(f"DELETE FROM {table} WHERE lot_id = :lid"), {"lid": lot_id})
-            except: pass
-        session.execute(text("UPDATE processed_lots SET duplicate_of_id = NULL WHERE duplicate_of_id = :lid"), {"lid": lot_id})
-        session.execute(text("DELETE FROM processed_lots WHERE id = :lid"), {"lid": lot_id})
-        session.execute(text("PRAGMA foreign_keys = ON"))
+        session.execute(
+            update(ProcessedLot)
+            .where(ProcessedLot.duplicate_of_id == lot_id)
+            .values(duplicate_of_id=None)
+        )
+        session.delete(processed)
         session.flush()
-        logger.info(f"Lot {lot_id} purged.")
+        logger.info("Manually deleted lot %s with database-enforced cascades", lot_id)
         return True
-    except Exception as e:
-        session.execute(text("PRAGMA foreign_keys = ON"))
-        logger.error(f"Purge error: {e}")
+    except Exception:
+        logger.exception("Failed to manually delete lot %s", lot_id)
         raise
 
 def delete_lots_batch(session: Session, lot_ids: list[int]) -> int:
@@ -228,13 +232,44 @@ def delete_lots_batch(session: Session, lot_ids: list[int]) -> int:
     return count
 
 def cleanup_closed_lots(session: Session) -> int:
-    closed_ids = session.scalars(select(ProcessedLot.id).where(ProcessedLot.auction_status == "closed")).all()
-    if not closed_ids: return 0
-    count = 0
-    for lot_id in closed_ids:
-        if delete_lot(session, lot_id): count += 1
-    logger.info(f"Cleanup: removed {count} closed lots.")
-    return count
+    """Archive closed lots without deleting their analytical or workflow history."""
+    closed_lots = session.scalars(
+        select(ProcessedLot).where(
+            ProcessedLot.auction_status == "closed",
+            ProcessedLot.is_archived.is_(False),
+        )
+    ).all()
+    now = utc_now()
+    for lot in closed_lots:
+        lot.is_archived = True
+        lot.archived_at = lot.archived_at or now
+        lot.closed_at = lot.closed_at or now
+    session.flush()
+    if closed_lots:
+        logger.info("Archived %s closed lots without deleting related data", len(closed_lots))
+    return len(closed_lots)
+
+
+def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, source: str) -> bool:
+    normalized = normalize_status(new_status)
+    old_status = lot.auction_status
+    if not normalized or normalized == old_status:
+        return False
+    lot.auction_status = normalized
+    if normalized == "closed":
+        lot.closed_at = lot.closed_at or utc_now()
+        lot.is_archived = True
+        lot.archived_at = lot.archived_at or utc_now()
+    elif old_status == "closed":
+        lot.is_archived = False
+        lot.archived_at = None
+    session.add(LotStatusHistory(
+        lot_id=lot.id,
+        old_status=old_status,
+        new_status=normalized,
+        source=source or "sync",
+    ))
+    return True
 
 def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
     processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == normalized.external_id))
@@ -282,6 +317,14 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             parking_spaces=normalized.parking_spaces,
         )
         session.add(processed)
+        session.flush()
+        if processed.auction_status:
+            session.add(LotStatusHistory(
+                lot_id=processed.id,
+                old_status=None,
+                new_status=processed.auction_status,
+                source=normalized.source or "import",
+            ))
     else:
         # Обновляем существующий лот, если он еще не прошел ручную проверку
         if processed.review_status is None:
@@ -319,7 +362,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
         if new_status and not (new_status == "unknown" and processed.auction_status not in {None, "", "unknown"}):
-            processed.auction_status = new_status
+            apply_lot_status(session, processed, new_status, normalized.source or "sync")
         processed.last_update = utc_now()
         
         logger.info(f"Updated lot {normalized.external_id}")
@@ -336,7 +379,7 @@ def upsert_lot_events_from_raw(session: Session, processed: ProcessedLot, raw_pa
         final_status = processed.auction_status
         status["trace_reason"] = f"{status['trace_reason']} | Existing normalized status was preserved."
     else:
-        processed.auction_status = final_status
+        apply_lot_status(session, processed, final_status, processed.source or "sync")
     session.add(LotStatusEvent(
         lot_id=processed.id,
         source=processed.source,
