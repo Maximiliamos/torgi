@@ -245,7 +245,7 @@ function DetailPanel({
   );
 }
 
-function App() {
+export function App() {
   const [query, setQuery] = React.useState<LotQuery>(initialQuery);
   const [lots, setLots] = React.useState<LotListItem[]>([]);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
@@ -470,4 +470,7 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = document.getElementById("root");
+if (root) {
+  createRoot(root).render(<App />);
+}

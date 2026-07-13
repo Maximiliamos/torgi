@@ -249,7 +249,7 @@ class Watchlist(Base):
     __tablename__ = "watchlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    lot_id: Mapped[int] = mapped_column(ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True)
+    lot_id: Mapped[int | None] = mapped_column(ForeignKey("processed_lots.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 class LotNote(Base):
@@ -331,8 +331,20 @@ class AuditLog(Base):
 
 # --- Session Management ---
 
-APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
-REPO_ROOT = APP_ROOT
+def _migration_root() -> Path:
+    """Locate Alembic resources in source, wheel/container, and frozen builds."""
+    candidates = [
+        Path(getattr(sys, "_MEIPASS", "")),
+        Path.cwd(),
+        Path(__file__).resolve().parents[2],
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "alembic.ini").is_file() and (candidate / "alembic").is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[2]
+
+
+REPO_ROOT = _migration_root()
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
@@ -340,7 +352,7 @@ _SCHEMA_READY = False
 @lru_cache(maxsize=1)
 def get_engine():
     settings = get_settings()
-    engine_kwargs = {"future": True}
+    engine_kwargs: dict[str, Any] = {"future": True}
     if settings.database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
     engine = create_engine(settings.database_url, **engine_kwargs)

@@ -87,7 +87,7 @@ export type LotQuery = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
-function makeUrl(path: string, params?: Record<string, string | number | undefined>) {
+export function makeUrl(path: string, params?: Record<string, string | number | undefined>) {
   const url = new URL(`${API_BASE}${path}`, window.location.origin);
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== "") {
@@ -97,7 +97,7 @@ function makeUrl(path: string, params?: Record<string, string | number | undefin
   return url.toString();
 }
 
-async function requestJson<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+export async function requestJson<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
   const response = await fetch(makeUrl(path, params), {
     headers: { Accept: "application/json" }
   });

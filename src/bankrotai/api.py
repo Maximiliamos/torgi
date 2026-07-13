@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from bankrotai.db import (
     session_scope, 
@@ -90,9 +90,25 @@ async def log_requests(request: Request, call_next):
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
 
+@app.get("/health/live")
+def liveness_check():
+    return {"status": "alive", "version": "1.0.0"}
+
+
+@app.get("/health/ready")
 @app.get("/health")
-def health_check():
-    return {"status": "ok", "version": "1.0.0"}
+def readiness_check():
+    checks: dict[str, Any] = {"database": "unavailable", "schema": "unknown", "queue": "optional"}
+    try:
+        with session_scope() as session:
+            session.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+            version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+            checks["schema"] = version or "missing"
+    except Exception as exc:
+        logger.error("Readiness database check failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks, "version": "1.0.0"}
 
 # --- Endpoints ---
 

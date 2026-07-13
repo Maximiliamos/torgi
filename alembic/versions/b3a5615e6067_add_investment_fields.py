@@ -80,7 +80,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('noi_annual', sa.Float(), nullable=True))
         batch_op.add_column(sa.Column('legal_status', sa.Text(), nullable=True))
         batch_op.add_column(sa.Column('encumbrances', sa.Text(), nullable=True))
-        batch_op.add_column(sa.Column('land_risk_flag', sa.Boolean(), nullable=False, server_default='0'))
+        batch_op.add_column(sa.Column('land_risk_flag', sa.Boolean(), nullable=False, server_default=sa.false()))
         batch_op.add_column(sa.Column('technical_condition', sa.Text(), nullable=True))
         batch_op.add_column(sa.Column('power_kw', sa.Float(), nullable=True))
         batch_op.add_column(sa.Column('parking_spaces', sa.Integer(), nullable=True))
@@ -119,7 +119,9 @@ def upgrade() -> None:
         batch_op.create_foreign_key('fk_wl_lot_id', 'processed_lots', ['lot_id'], ['id'], ondelete='CASCADE')
 
     with op.batch_alter_table('watchlists', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('lot_id', sa.Integer(), nullable=False, server_default='0'))
+        # Legacy watchlists may be empty. Keep their lot reference nullable instead of
+        # manufacturing an invalid lot_id=0 that violates PostgreSQL foreign keys.
+        batch_op.add_column(sa.Column('lot_id', sa.Integer(), nullable=True))
         batch_op.create_index(batch_op.f('ix_watchlists_lot_id'), ['lot_id'], unique=False)
         batch_op.create_foreign_key('fk_w_lot_id', 'processed_lots', ['lot_id'], ['id'], ondelete='CASCADE')
         batch_op.drop_column('description')

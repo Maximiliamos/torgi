@@ -297,7 +297,7 @@ class AIProvider:
                     base_url=(base_url or "http://localhost:20128").rstrip("/"),
                 )
                 return None # OpenAI client not needed
-            client_kwargs = {
+            client_kwargs: dict[str, Any] = {
                 "api_key": auth_key,
                 "base_url": _normalize_omniroute_openai_base_url(base_url),
             }

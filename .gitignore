@@ -25,13 +25,14 @@ frontend/*.tsbuildinfo
 WEB/node_modules/
 WEB/dist/
 WEB/*.tsbuildinfo
+WEB/test-results/
+WEB/playwright-report/
 WEB/.env
 output/playwright/
 node_modules/
 omniroute/
 omniroute_data/
 hindsight/
-image/
 logs/
 alembic/__pycache__/
 alembic/versions/__pycache__/

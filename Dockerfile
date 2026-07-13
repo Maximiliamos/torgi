@@ -5,13 +5,20 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+RUN addgroup --system bankrotai && adduser --system --ingroup bankrotai --home /app bankrotai
+
+COPY pyproject.toml README.md requirements.lock ./
 COPY src ./src
 COPY tests ./tests
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-RUN pip install --upgrade pip && pip install .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.lock \
+    && pip install --no-cache-dir --no-deps .
+
+RUN chown -R bankrotai:bankrotai /app
+USER bankrotai
 
 EXPOSE 8000
 

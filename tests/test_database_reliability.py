@@ -6,7 +6,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, event, inspect, select
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import Session
 
 from bankrotai import core, db
@@ -95,11 +95,11 @@ def test_manual_delete_uses_foreign_key_cascade_without_pragma_in_business_logic
         assert session.scalar(select(LotStatusHistory).where(LotStatusHistory.lot_id == lot.id)) is None
 
 
-def _upgrade_database(path: Path) -> None:
+def _upgrade_database(path: Path, target: str = "head") -> None:
     core._settings_cache = core.AppSettings(database_url=f"sqlite:///{path.as_posix()}")
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))
-    command.upgrade(config, "head")
+    command.upgrade(config, target)
 
 
 def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_path: Path) -> None:
@@ -128,3 +128,21 @@ def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Pa
     db.get_engine().dispose()
     db.get_engine.cache_clear()
     core._settings_cache = None
+
+
+def test_existing_database_updates_to_head_without_losing_user_data(tmp_path: Path) -> None:
+    path = tmp_path / "upgrade.db"
+    _upgrade_database(path, "e7b1c2d3a4f5")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(ProcessedLot.__table__.insert().values(
+            external_id="preserved", source="test", source_system="test", title="User lot",
+            description="data", category="land", region_slug="76", auction_status="active",
+            is_archived=False, needs_human_review=False, is_deal_of_the_week=False,
+            needs_geo_check=False, land_risk_flag=False,
+        ))
+    engine.dispose()
+    _upgrade_database(path)
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT title FROM processed_lots WHERE external_id='preserved'")).scalar() == "User lot"

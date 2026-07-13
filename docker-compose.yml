@@ -14,6 +14,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -24,12 +25,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   migrate:
     build: .
-    env_file:
-      - .env
     environment:
+      APP_ENV: production
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -41,9 +42,8 @@ services:
 
   api:
     build: .
-    env_file:
-      - .env
     environment:
+      APP_ENV: production
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -56,12 +56,22 @@ services:
     command: python -m bankrotai.cli run-api --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
 
   worker:
     build: .
-    env_file:
-      - .env
     environment:
+      APP_ENV: production
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -72,12 +82,17 @@ services:
       migrate:
         condition: service_completed_successfully
     command: celery -A bankrotai.tasks:celery_app worker --loglevel=INFO
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
 
   beat:
     build: .
-    env_file:
-      - .env
     environment:
+      APP_ENV: production
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -88,6 +103,23 @@ services:
       migrate:
         condition: service_completed_successfully
     command: celery -A bankrotai.tasks:celery_app beat --loglevel=INFO
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: WEB/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

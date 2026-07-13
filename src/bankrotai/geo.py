@@ -72,7 +72,7 @@ class CadastralGeocoder:
     def __init__(self):
         self.base_url = "https://pkk.rosreestr.ru/api/features"
         self.nspd_search_url = "https://nspd.gov.ru/api/geoportal/v2/search/geoportal"
-        self.last_request_time = 0
+        self.last_request_time = 0.0
 
     def _rate_limit(self):
         elapsed = time.time() - self.last_request_time
@@ -222,7 +222,7 @@ class CadastralGeocoder:
             "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
             "Accept": "application/json,text/plain,*/*",
         }
-        params = {
+        params: dict[str, str | int] = {
             "thematicSearchId": 1,
             "query": cadastral_number,
         }
@@ -306,7 +306,7 @@ class CadastralGeocoder:
 class NominatimGeocoder:
     def __init__(self):
         self.base_url = "https://nominatim.openstreetmap.org/search"
-        self.last_request_time = 0
+        self.last_request_time = 0.0
         self._lock = threading.Lock()
         self._cache: dict[tuple[str, str], dict | None] = {}
 
@@ -329,7 +329,7 @@ class NominatimGeocoder:
                 "User-Agent": "BankrotAI/1.0 (contact: local-user)",
                 "Referer": "https://local.bankrotai/",
             }
-            params = {
+            params: dict[str, str | int] = {
                 "q": address,
                 "format": "json",
                 "limit": 1,
