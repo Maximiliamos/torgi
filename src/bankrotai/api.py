@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -17,11 +18,12 @@ from bankrotai.db import (
     get_top_lots, 
     ProcessedLot, 
     get_region_sync_state,
-    upsert_region_sync_state
+    upsert_region_sync_state,
+    BackgroundTaskState,
 )
 from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response
 from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSearchFilters
-from bankrotai.tasks import schedule_region_sync
+from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
 from bankrotai.core import get_logger, get_settings, utc_now, DEFAULT_REGION
 
@@ -30,6 +32,17 @@ settings = get_settings()
 
 app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
+
+
+class BulkTorgiSyncRequest(BaseModel):
+    search: str = Field("", max_length=200)
+    region: str = Field("", max_length=200)
+    category: str = Field("", max_length=100)
+    price_min: float | None = Field(None, ge=0)
+    price_max: float | None = Field(None, ge=0)
+    notice_status: str | None = Field(None, max_length=100)
+    lot_status: str | None = Field(None, max_length=100)
+    max_items: int = Field(10_000, ge=1, le=50_000)
 
 app.add_middleware(
     CORSMiddleware,
@@ -116,12 +129,17 @@ def get_torgi_gov_lots(
     price_max: float | None = Query(None, ge=0),
     notice_status: str | None = Query(None, max_length=100),
     lot_status: str | None = Query(None, max_length=100),
-    page: int = Query(1, ge=1, le=10_000),
+    page: int = Query(1, ge=1, le=100),
     page_size: int = Query(20, ge=1, le=100),
     all_pages: bool = Query(False),
     limit: int | None = Query(5000, ge=1, le=50_000),
     diagnostics: bool = Query(False),
 ):
+    if all_pages:
+        raise HTTPException(
+            status_code=422,
+            detail="all_pages is not supported by synchronous GET; use POST /api/online/torgi-gov/sync",
+        )
     if price_min is not None and price_max is not None and price_min > price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
     category_code = TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(category.lower(), category) if category else None
@@ -138,15 +156,49 @@ def get_torgi_gov_lots(
     )
     try:
         client = TorgiGovClient(diagnostics=diagnostics)
-        if all_pages:
-            filters.page = 1
-            filters.page_size = 100
-            lots, meta = client.search_all_lots(filters, max_items=limit)
-        else:
-            lots, meta = client.search_lots(filters)
+        lots, meta = client.search_lots(filters)
     except TorgiGovClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"items": [_normalized_lot_to_dict(lot) for lot in lots], "meta": meta}
+
+
+@app.post("/api/online/torgi-gov/sync", status_code=202)
+def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
+    if request.price_min is not None and request.price_max is not None and request.price_min > request.price_max:
+        raise HTTPException(status_code=422, detail="price_min must be <= price_max")
+    category_code = TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(request.category.lower(), request.category) if request.category else None
+    filters = TorgiGovSearchFilters(
+        search_text=request.search.strip(),
+        subject_rf=request.region or None,
+        category_code=category_code,
+        price_min=request.price_min,
+        price_max=request.price_max,
+        notice_status=request.notice_status,
+        lot_status=request.lot_status,
+        page=1,
+        page_size=100,
+    )
+    try:
+        task_id = schedule_bulk_torgi_sync(filters.__dict__, request.max_items)
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.get("/api/tasks/{task_id}")
+def get_background_task_status(task_id: str):
+    with session_scope() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
+        if state is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return {
+            "task_id": state.task_id,
+            "task_type": state.task_type,
+            "status": state.status,
+            "progress": state.progress_json,
+            "result": state.result_json,
+            "error": state.error_message,
+        }
 
 @app.get("/api/lots")
 def get_lots(
@@ -198,7 +250,10 @@ def get_stats(city_slug: str = DEFAULT_REGION):
 
 @app.post("/api/regions/{city_slug}/sync")
 def trigger_region_sync(city_slug: str, force: bool = False):
-    dispatch_mode = schedule_region_sync(city_slug, force=force)
+    try:
+        dispatch_mode = schedule_region_sync(city_slug, force=force)
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "citySlug": city_slug,
         "status": "queued",

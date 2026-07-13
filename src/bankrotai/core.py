@@ -66,6 +66,7 @@ class RegionalConfig:
 
 @dataclass
 class AppSettings:
+    app_env: str = "dev"
     database_url: str = "sqlite:///bankrotai.db"
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str | None = None
@@ -114,12 +115,20 @@ class AppSettings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
     public_api_key: str | None = None
     api_rate_limit_per_minute: int = 120
+    allow_local_task_fallback: bool = False
+    sync_retry_max_attempts: int = 4
+    sync_retry_backoff_seconds: int = 5
+    celery_soft_time_limit: int = 1500
+    celery_hard_time_limit: int = 1800
+    external_connect_timeout: float = 5.0
+    external_read_timeout: float = 30.0
 
 def load_settings() -> AppSettings:
     load_dotenv()
 
     # Basic settings
     settings = AppSettings(
+        app_env=os.getenv("APP_ENV", "dev").lower(),
         database_url=os.getenv("DATABASE_URL", "sqlite:///bankrotai.db"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -153,6 +162,13 @@ def load_settings() -> AppSettings:
         kiro_model=os.getenv("KIRO_MODEL", "kr/claude-sonnet-4"),
         public_api_key=os.getenv("BANKROTAI_API_KEY") or os.getenv("WEB_API_KEY"),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
+        allow_local_task_fallback=os.getenv("ALLOW_LOCAL_TASK_FALLBACK", "false").lower() in {"1", "true", "yes"},
+        sync_retry_max_attempts=int(os.getenv("SYNC_RETRY_MAX_ATTEMPTS", "4")),
+        sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),
+        celery_soft_time_limit=int(os.getenv("CELERY_SOFT_TIME_LIMIT", "1500")),
+        celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
+        external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
+        external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
     )
     cors_raw = os.getenv("CORS_ORIGINS", "")
     if cors_raw:

@@ -226,6 +226,19 @@ class RegionSyncState(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
 
+class BackgroundTaskState(Base):
+    __tablename__ = "background_task_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    progress_json: Mapped[dict | None] = mapped_column(JSON)
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
 class Watchlist(Base):
     __tablename__ = "watchlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

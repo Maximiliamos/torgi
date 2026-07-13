@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.orm import Session
 
@@ -121,7 +122,9 @@ def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(db, "_SCHEMA_READY", False)
     db.init_db()
     with db.get_engine().connect() as connection:
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "e7b1c2d3a4f5"
+        config = Config(str(ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(ROOT / "alembic"))
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == ScriptDirectory.from_config(config).get_current_head()
     db.get_engine().dispose()
     db.get_engine.cache_clear()
     core._settings_cache = None
