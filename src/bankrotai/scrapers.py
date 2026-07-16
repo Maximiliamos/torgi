@@ -8,7 +8,7 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from io import BytesIO
 from urllib.parse import urlencode, urljoin
 from typing import Any
@@ -20,6 +20,13 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from bankrotai.domain import NormalizedLot
+from bankrotai.scraper_contracts import (
+    ParsedLotData,
+    ParserConfig,
+    TBankrotSearchFilters,
+    TorgiGovSearchFilters,
+    parse_money,
+)
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
 
@@ -31,125 +38,6 @@ from bankrotai.extractors import (
     extract_cadastral_numbers, extract_building_area, extract_room_area,
     extract_year_built, extract_commissioning_year, extract_cultural_heritage
 )
-
-# --- Parsers ---
-
-@dataclass
-class ParserConfig:
-    container_selector: str = "div.lot"
-    title_selector: str = "a"
-    base_url: str = "https://tbankrot.ru"
-
-@dataclass
-class ParsedLotData:
-    external_id: str
-    title: str
-    url: str
-
-    # Цена
-    price_text: str = ""
-    current_price: float | None = None
-
-    # Текстовые данные
-    description: str = ""
-    status: str = "unknown"
-    address: str = ""
-
-    # Кадастр
-    cadastral_number: str = ""
-    cadastral_numbers: list[str] = field(default_factory=list)
-
-    # Площади
-    area: float | None = None
-    building_area: float | None = None
-    room_area: float | None = None
-    land_area: float | None = None
-
-    # Тех. параметры
-    floors: int | None = None
-    year_built: int | None = None
-    year_commissioning: int | None = None
-    is_cultural_heritage: bool = False
-    raw_payload: dict[str, Any] = field(default_factory=dict)
-
-
-def parse_money(text: str | None) -> float | None:
-    if not text:
-        return None
-
-    clean = (
-        text.replace("\xa0", " ")
-            .replace("\u202f", " ")
-            .replace("₽", "")
-            .replace("руб.", "")
-            .replace("руб", "")
-            .strip()
-    )
-
-    # Берём первое денежное число из конкретного контейнера цены
-    m = re.search(r'\d[\d\s]*(?:[,.]\d+)?', clean)
-    if not m:
-        return None
-
-    raw = m.group(0).replace(" ", "").replace(",", ".")
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-@dataclass
-class TorgiGovSearchFilters:
-    search_text: str = ""
-    type_transaction: str | None = None
-    price_min: float | None = None
-    price_max: float | None = None
-    subject_rf: str | None = None
-    fias: str | None = None
-    ownership_form: str | None = None
-    category_code: str | None = None
-    lot_status: str | None = None
-    currency_code: str | None = None
-    publish_date_from: str | None = None
-    publish_date_to: str | None = None
-    bidd_end_time_from: str | None = None
-    bidd_end_time_to: str | None = None
-    auction_start_date_from: str | None = None
-    auction_start_date_to: str | None = None
-    notice_number: str | None = None
-    etp_code: str | None = None
-    bidd_type: str | None = None
-    bidd_form: str | None = None
-    notice_status: str | None = None
-    organizer_name: str | None = None
-    organizer_inn: str | None = None
-    right_holder_name: str | None = None
-    right_holder_inn: str | None = None
-    attachment_text: str | None = None
-    match_phrase: bool = False
-    is_msp: bool = False
-    page: int = 1
-    page_size: int = 20
-
-
-@dataclass
-class TBankrotSearchFilters:
-    search_text: str = ""
-    region: str | None = None
-    price_min: float | None = None
-    price_max: float | None = None
-    lot_number: str | None = None
-    trade_type: str | None = None
-    photo_only: bool = False
-    debtor: str | None = None
-    auction_manager: str | None = None
-    organizer: str | None = None
-    stop_words: str | None = None
-    show_closed: bool = False
-    show_paused: bool = False
-    page: int = 1
-    page_size: int = 20
-
 
 class TorgiGovClientError(RuntimeError):
     """User-facing error raised when torgi.gov.ru cannot be queried."""
