@@ -110,7 +110,10 @@ def bulk_torgi_gov_sync_task(self, filters_data: dict, max_items: int = 10_000) 
             with session_scope() as session:
                 for normalized in chunk:
                     from bankrotai.db import ProcessedLot
-                    was_present = session.query(ProcessedLot.id).filter_by(external_id=normalized.external_id).first() is not None
+                    was_present = session.query(ProcessedLot.id).filter_by(
+                        source_system=normalized.source_system,
+                        external_id=normalized.external_id,
+                    ).first() is not None
                     persist_lot(session, normalized)
                     progress["updated_items" if was_present else "saved_items"] += 1
             self.update_state(state="PROGRESS", meta=progress)

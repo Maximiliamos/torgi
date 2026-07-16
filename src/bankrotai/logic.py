@@ -272,7 +272,12 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
     return True
 
 def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
-    processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == normalized.external_id))
+    processed = session.scalar(
+        select(ProcessedLot).where(
+            ProcessedLot.source_system == normalized.source_system,
+            ProcessedLot.external_id == normalized.external_id,
+        )
+    )
     if processed is None:
         processed = ProcessedLot(
             external_id=normalized.external_id,

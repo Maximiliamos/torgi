@@ -1967,7 +1967,10 @@ class MainWindow(QMainWindow):
         if external_ids:
             with session_scope() as session:
                 existing = set(session.scalars(
-                    select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                    select(ProcessedLot.external_id).where(
+                        ProcessedLot.source_system == "torgi_gov",
+                        ProcessedLot.external_id.in_(external_ids),
+                    )
                 ).all())
 
         self.torgi_results_table.setSortingEnabled(False)
@@ -2055,7 +2058,10 @@ class MainWindow(QMainWindow):
         external_ids = [lot.external_id for lot in lots]
         with session_scope() as session:
             existed = set(session.scalars(
-                select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "torgi_gov",
+                    ProcessedLot.external_id.in_(external_ids),
+                )
             ).all())
             for lot in lots:
                 persist_lot(session, lot)
@@ -2398,7 +2404,10 @@ class MainWindow(QMainWindow):
         if external_ids:
             with session_scope() as session:
                 existing = set(session.scalars(
-                    select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                    select(ProcessedLot.external_id).where(
+                        ProcessedLot.source_system == "tbankrot",
+                        ProcessedLot.external_id.in_(external_ids),
+                    )
                 ).all())
 
         self.tbankrot_results_table.setSortingEnabled(False)
@@ -2464,7 +2473,10 @@ class MainWindow(QMainWindow):
         external_ids = [lot.external_id for lot in lots]
         with session_scope() as session:
             existed = set(session.scalars(
-                select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "tbankrot",
+                    ProcessedLot.external_id.in_(external_ids),
+                )
             ).all())
             for lot in lots:
                 persist_lot(session, lot)

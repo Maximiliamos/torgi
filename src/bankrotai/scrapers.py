@@ -1777,6 +1777,7 @@ def import_manual_html(
     if external_ids:
         from sqlalchemy import select
         stmt = select(ProcessedLot.external_id, ProcessedLot.review_status).where(
+            ProcessedLot.source_system == "manual_html",
             ProcessedLot.external_id.in_(external_ids)
         )
         for eid, review_status in session.execute(stmt):

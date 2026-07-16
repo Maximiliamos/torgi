@@ -63,9 +63,10 @@ def test_postgres_migrations_json_archive_history_and_search(engine) -> None:
         assert lot.is_archived is True
 
 
-def test_postgres_unique_external_id_prevents_duplicate_sync_rows(engine) -> None:
+def test_postgres_external_id_is_unique_per_source(engine) -> None:
     with Session(engine) as session:
-        session.add(_lot("stable-external-id"))
+        session.add(_lot("stable-external-id", source="first", source_system="first"))
+        session.add(_lot("stable-external-id", source="second", source_system="second"))
         session.commit()
     with Session(engine) as session:
-        assert session.query(ProcessedLot).filter_by(external_id="stable-external-id").count() == 1
+        assert session.query(ProcessedLot).filter_by(external_id="stable-external-id").count() == 2

@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from bankrotai import core, db
 from bankrotai.db import Base, LotGeoSnapshot, LotStatusHistory, ProcessedLot, ValuationRun
-from bankrotai.logic import apply_lot_status, cleanup_closed_lots, delete_lot
+from bankrotai.domain import NormalizedLot
+from bankrotai.logic import apply_lot_status, cleanup_closed_lots, delete_lot, persist_lot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,34 @@ def test_status_history_records_only_real_transitions() -> None:
         ]
 
 
+def test_same_external_id_from_different_sources_is_not_merged() -> None:
+    with Session(_engine()) as session:
+        common = dict(
+            external_id="shared-id",
+            title="Lot",
+            description="Description",
+            category="land",
+            region_slug="yaroslavl",
+            region_name=None,
+            address=None,
+            cadastral_number=None,
+            vin=None,
+            area=None,
+            start_price=100,
+            current_price=100,
+            auction_status="active",
+            lot_url=None,
+            source_url=None,
+            detail_level="detail",
+            raw_data={},
+        )
+        first = persist_lot(session, NormalizedLot(source="first", source_system="first", **common))
+        second = persist_lot(session, NormalizedLot(source="second", source_system="second", **common))
+        session.flush()
+        assert first.id != second.id
+        assert session.query(ProcessedLot).filter_by(external_id="shared-id").count() == 2
+
+
 def test_manual_delete_uses_foreign_key_cascade_without_pragma_in_business_logic() -> None:
     with Session(_engine()) as session:
         lot = _lot()
@@ -110,6 +139,10 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
     columns = {column["name"] for column in schema.get_columns("processed_lots")}
     assert {"cadastral_numbers", "is_archived", "archived_at", "closed_at"} <= columns
     assert "lot_status_history" in schema.get_table_names()
+    unique_constraints = {
+        item["name"] for item in schema.get_unique_constraints("processed_lots")
+    }
+    assert "uq_processed_lots_source_system_external_id" in unique_constraints
 
 
 def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Path) -> None:

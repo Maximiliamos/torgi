@@ -493,7 +493,12 @@ class OpenAIAppraiser:
         from bankrotai.db import ValuationRun, ProcessedLot
         from sqlalchemy import select
 
-        db_lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == lot.external_id))
+        db_lot = session.scalar(
+            select(ProcessedLot).where(
+                ProcessedLot.source_system == lot.source_system,
+                ProcessedLot.external_id == lot.external_id,
+            )
+        )
         if db_lot:
             run = ValuationRun(
                 lot_id=db_lot.id,

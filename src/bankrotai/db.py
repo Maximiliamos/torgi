@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON, DateTime, Float, ForeignKey, Integer, Numeric, String, Text,
-    create_engine, event, select, desc, and_, MetaData
+    create_engine, event, select, desc, and_, MetaData, UniqueConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 from sqlalchemy.engine import Engine
@@ -65,9 +65,12 @@ def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 class RawLot(Base):
     __tablename__ = "raw_lots"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_raw_lots_source_external_id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False)
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     raw_data: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
@@ -80,8 +83,15 @@ class AppSetting(Base):
 
 class ProcessedLot(Base):
     __tablename__ = "processed_lots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_system",
+            "external_id",
+            name="uq_processed_lots_source_system_external_id",
+        ),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="tbankrot")
     source_system: Mapped[str] = mapped_column(String(50), nullable=False, default="tbankrot", index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
