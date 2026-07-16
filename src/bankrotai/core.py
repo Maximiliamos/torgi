@@ -2,6 +2,7 @@
 
 import logging
 import os
+from urllib.parse import urlparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,6 +127,30 @@ class AppSettings:
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
+    @property
+    def is_production(self) -> bool:
+        return self.app_env in {"production", "prod"}
+
+    def production_configuration_errors(self) -> list[str]:
+        if not self.is_production:
+            return []
+
+        errors: list[str] = []
+        if not self.public_api_key or len(self.public_api_key) < 24:
+            errors.append("BANKROTAI_API_KEY must contain at least 24 characters")
+
+        database = urlparse(self.database_url)
+        if database.scheme.startswith("postgres"):
+            if not database.password:
+                errors.append("DATABASE_URL must contain a PostgreSQL password")
+            if (database.username or "").lower() == "postgres" and database.password == "postgres":
+                errors.append("DATABASE_URL must not use postgres/postgres")
+
+        redis = urlparse(self.redis_url)
+        if redis.scheme.startswith("redis") and not redis.password:
+            errors.append("REDIS_URL must contain a Redis password in production")
+        return errors
+
 def load_settings() -> AppSettings:
     load_dotenv()
 
@@ -200,6 +225,8 @@ def get_settings() -> AppSettings:
     return _settings_cache
 
 def get_app_setting(key: str, default: str | None = None) -> str | None:
+    if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
+        return default
     from bankrotai.db import session_scope, AppSetting, select
     try:
         with session_scope() as s:
@@ -211,6 +238,8 @@ def get_app_setting(key: str, default: str | None = None) -> str | None:
         return default
 
 def set_app_setting(key: str, value: str):
+    if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
+        raise ValueError(f"Secret setting {key!r} must be supplied through the environment or a secret manager")
     from bankrotai.db import session_scope, AppSetting, select
     with session_scope() as s:
         setting = s.scalar(select(AppSetting).where(AppSetting.key == key))

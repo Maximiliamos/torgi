@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-bankrotai-postgres-smoke-password}"
+export REDIS_PASSWORD="${REDIS_PASSWORD:-bankrotai-redis-smoke-password}"
+export BANKROTAI_API_KEY="${BANKROTAI_API_KEY:-bankrotai-api-smoke-key-123456}"
+export WEB_BASIC_AUTH_USER="${WEB_BASIC_AUTH_USER:-bankrotai}"
+export WEB_BASIC_AUTH_PASSWORD="${WEB_BASIC_AUTH_PASSWORD:-bankrotai-smoke-password}"
+
 cleanup() {
   docker compose down -v --remove-orphans
 }
@@ -28,22 +34,23 @@ if [[ "${migrate_status:-}" != "exited" ]]; then
 fi
 
 for _ in {1..60}; do
-  if curl --fail --silent http://127.0.0.1:8000/health/ready >/dev/null \
-    && curl --fail --silent http://127.0.0.1:8080/ >/dev/null; then
+  if curl --fail --silent http://127.0.0.1:8080/health >/dev/null \
+    && curl --fail --silent -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" http://127.0.0.1:8080/ >/dev/null; then
     break
   fi
   sleep 2
 done
 
-curl --fail --silent http://127.0.0.1:8000/health/live
-curl --fail --silent http://127.0.0.1:8000/health/ready
-curl --fail --silent http://127.0.0.1:8000/api/lots
-curl --fail --silent http://127.0.0.1:8080/
+curl --fail --silent http://127.0.0.1:8080/health
+curl --fail --silent -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" http://127.0.0.1:8080/api/lots
+curl --fail --silent -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" http://127.0.0.1:8080/
 docker compose exec -T worker celery -A bankrotai.tasks:celery_app inspect ping --timeout 10
 
 response=$(curl --fail --silent -X POST -H 'Content-Type: application/json' \
+  -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" \
   -d '{"search":"smoke-test-no-results","max_items":1}' \
-  http://127.0.0.1:8000/api/online/torgi-gov/sync)
+  http://127.0.0.1:8080/api/online/torgi-gov/sync)
 task_id=$(python -c 'import json,sys; print(json.load(sys.stdin)["task_id"])' <<<"$response")
-curl --fail --silent "http://127.0.0.1:8000/api/tasks/$task_id"
+curl --fail --silent -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" \
+  "http://127.0.0.1:8080/api/tasks/$task_id"
 npm --prefix WEB run test:e2e

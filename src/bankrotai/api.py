@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hmac
 import time
 from typing import Any
 
@@ -11,6 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
+from redis import Redis
+from redis.exceptions import RedisError
 
 from bankrotai.db import (
     session_scope, 
@@ -32,6 +35,7 @@ settings = get_settings()
 
 app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
+_PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -54,23 +58,29 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    if request.url.path == "/health":
+    if request.url.path in _PUBLIC_HEALTH_PATHS:
         return await call_next(request)
 
-    now = time.time()
-    client_ip = request.client.host if request.client else "unknown"
-    hits = [ts for ts in _rate_limit_hits.get(client_ip, []) if now - ts < 60]
-    if len(hits) >= settings.api_rate_limit_per_minute:
-        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
-    hits.append(now)
-    _rate_limit_hits[client_ip] = hits
+    configuration_errors = settings.production_configuration_errors()
+    if configuration_errors:
+        logger.error("Unsafe production configuration: %s", "; ".join(configuration_errors))
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "API security configuration is incomplete"},
+        )
 
-    if settings.public_api_key and request.method not in {"GET", "HEAD", "OPTIONS"}:
+    if request.method != "OPTIONS" and settings.public_api_key:
         auth_header = request.headers.get("authorization", "")
         bearer_token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
         api_key = request.headers.get("x-api-key") or bearer_token
-        if api_key != settings.public_api_key:
+        if not api_key or not hmac.compare_digest(api_key, settings.public_api_key):
             return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+    elif request.method != "OPTIONS" and settings.is_production:
+        return JSONResponse(status_code=503, content={"detail": "API authentication is not configured"})
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not _consume_rate_limit(client_ip):
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
     start_time = time.time()
     logger.info("Incoming request: %s %s", request.method, request.url)
@@ -86,6 +96,35 @@ async def log_requests(request: Request, call_next):
             content={"detail": "Internal Server Error"}
         )
 
+
+def _consume_rate_limit(client_id: str) -> bool:
+    limit = max(settings.api_rate_limit_per_minute, 1)
+    bucket = int(time.time() // 60)
+    try:
+        redis = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            decode_responses=True,
+        )
+        key = f"bankrotai:api-rate:{bucket}:{client_id}"
+        current = int(redis.incr(key))
+        if current == 1:
+            redis.expire(key, 70)
+        return current <= limit
+    except RedisError as exc:
+        if settings.is_production:
+            logger.error("Distributed rate limiter unavailable: %s", exc)
+            return False
+
+    now = time.time()
+    hits = [ts for ts in _rate_limit_hits.get(client_id, []) if now - ts < 60]
+    if len(hits) >= limit:
+        return False
+    hits.append(now)
+    _rate_limit_hits[client_id] = hits
+    return True
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
@@ -98,7 +137,16 @@ def liveness_check():
 @app.get("/health/ready")
 @app.get("/health")
 def readiness_check():
-    checks: dict[str, Any] = {"database": "unavailable", "schema": "unknown", "queue": "optional"}
+    checks: dict[str, Any] = {
+        "configuration": "ok",
+        "database": "unavailable",
+        "schema": "unknown",
+        "queue": "unavailable",
+    }
+    configuration_errors = settings.production_configuration_errors()
+    if configuration_errors:
+        checks["configuration"] = configuration_errors
+        return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     try:
         with session_scope() as session:
             session.execute(text("SELECT 1"))
@@ -107,6 +155,17 @@ def readiness_check():
             checks["schema"] = version or "missing"
     except Exception as exc:
         logger.error("Readiness database check failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+    try:
+        Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            decode_responses=True,
+        ).ping()
+        checks["queue"] = "ok"
+    except RedisError as exc:
+        logger.error("Readiness Redis check failed: %s", exc)
         return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks, "version": "1.0.0"}
 
