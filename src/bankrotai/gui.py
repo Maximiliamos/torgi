@@ -3024,7 +3024,9 @@ class MainWindow(QMainWindow):
         
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
-        form.addRow("API Ключ:", self.api_key_input)
+        self.api_key_input.setReadOnly(True)
+        self.api_key_input.setPlaceholderText("Задаётся через переменную окружения / secret manager")
+        form.addRow("API ключ:", self.api_key_input)
         
         self.model_search_input = QComboBox()
         form.addRow("Модель поиска:", self.model_search_input)
@@ -3684,10 +3686,9 @@ class MainWindow(QMainWindow):
     def on_ai_provider_changed(self):
         from bankrotai.core import get_app_setting
         provider = self.provider_combo.currentData() or "omniroute"
-        current_key = get_app_setting(f"{provider}_api_key", "")
         current_model = get_app_setting(f"{provider}_model", "")
 
-        self.api_key_input.setText(current_key or "")
+        self.api_key_input.clear()
         self.model_search_input.clear()
         for model_id, label in AI_MODEL_OPTIONS.get(provider, []):
             self.model_search_input.addItem(label, model_id)
@@ -3697,13 +3698,10 @@ class MainWindow(QMainWindow):
 
     def save_ai_settings(self):
         provider = self.provider_combo.currentData() or "omniroute"
-        api_key = self.api_key_input.text().strip()
         model = self.model_search_input.currentData() or ""
 
         from bankrotai.core import set_app_setting
         set_app_setting("ai_provider", provider)
-        if api_key:
-            set_app_setting(f"{provider}_api_key", api_key)
         if model:
             set_app_setting(f"{provider}_model", model)
         if provider == "omniroute":
@@ -3711,7 +3709,12 @@ class MainWindow(QMainWindow):
             
         self._appraiser = None # Сброс кеша для создания нового с новыми настройками
         self.status_bar.showMessage("Настройки AI сохранены", 3000)
-        QMessageBox.information(self, "Успех", "Настройки AI успешно сохранены.")
+        QMessageBox.information(
+            self,
+            "Успех",
+            "Провайдер и модель сохранены. API-ключи задаются только через "
+            "переменные окружения или secret manager.",
+        )
 
     def change_review_status(self, status: str):
         if not self.current_selected_lot_id: return

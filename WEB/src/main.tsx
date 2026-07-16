@@ -185,7 +185,7 @@ function DetailPanel({
               <strong>{formatMoney(detail.current_price)}</strong>
             </div>
             <div>
-              <span>Рынок</span>
+              <span>Предварительная AI-гипотеза</span>
               <strong>{formatMoney(detail.market_price)}</strong>
             </div>
             <div>
@@ -217,8 +217,11 @@ function DetailPanel({
           </section>
 
           <section className="detailSection">
-            <h3>AI-заключение</h3>
-            <p>{detail.ai_recommendation || "AI-оценка еще не проводилась."}</p>
+            <h3>Предварительный AI-анализ</h3>
+            <p>
+              Не является независимой оценкой имущества. Требуется проверка оценщиком, юристом и техническим специалистом.
+            </p>
+            <p>{detail.ai_recommendation || "Предварительный AI-анализ еще не проводился."}</p>
           </section>
 
           {detail.geo && (
@@ -299,7 +302,7 @@ export function App() {
       <header className="topBar">
         <div>
           <span className="eyebrow">BankrotAI Web</span>
-          <h1>Лоты и AI-оценка</h1>
+          <h1>Лоты и предварительный AI-анализ</h1>
         </div>
         <button className="primaryButton" type="button" onClick={loadData}>
           <RefreshCcw size={16} />
@@ -310,7 +313,7 @@ export function App() {
       <section className="kpiGrid">
         <Kpi icon={<Building2 size={20} />} label="Всего лотов" value={formatNumber(stats?.total_lots)} tone="teal" />
         <Kpi icon={<FileSearch size={20} />} label="Активные" value={formatNumber(stats?.active_lots)} tone="indigo" />
-        <Kpi icon={<Sparkles size={20} />} label="С AI-оценкой" value={formatNumber(stats?.appraised_lots)} tone="violet" />
+        <Kpi icon={<Sparkles size={20} />} label="С AI-анализом" value={formatNumber(stats?.appraised_lots)} tone="violet" />
         <Kpi icon={<Banknote size={20} />} label="Средний дисконт" value={formatNumber(stats?.average_discount, "%")} tone="amber" />
       </section>
 

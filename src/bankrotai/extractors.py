@@ -1,33 +1,79 @@
-import re 
- 
-def extract_price(text: str) -> float | None: 
-    """Максимально надёжное извлечение основной цены лота""" 
-    if not text: 
-        return None 
-    
-    clean = re.sub(r'[\xa0\u202f\u2009]', ' ', text) 
-    clean = re.sub(r'\s+', ' ', clean).strip() 
-    
-    # Ищем все числа 
-    matches = re.findall(r'(\d{1,3}(?:[\s.,]\d{3})*(?:[.,]\d+)?)', clean) 
-    if not matches: 
-        return None 
-    
-    candidates = [] 
-    for m in matches: 
-        raw = m.replace(" ", "").replace(",", ".") 
-        try: 
-            val = float(raw) 
-            if 1000 < val < 1_000_000_000:   # разумный диапазон для лотов 
-                candidates.append(val) 
-        except: 
-            continue 
-    
-    if not candidates: 
-        return None 
-    
-    # Берём самое большое число — почти всегда это стартовая/текущая цена 
-    return max(candidates) 
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+
+
+@dataclass(slots=True)
+class ExtractionResult:
+    value: float | int | str | None
+    source_fragment: str | None
+    rule_id: str
+    confidence: str
+    warnings: list[str] = field(default_factory=list)
+
+
+_NUMBER = r"\d{1,3}(?:[\s.,]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+_PRICE_LABELS = (
+    ("current_price", r"(?:текущая|актуальная)\s+цена"),
+    ("start_price", r"(?:начальная|стартовая)\s+цена"),
+    ("sale_price", r"(?:цена\s+продажи|стоимость\s+лота|цена\s+лота)"),
+    ("generic_price", r"(?:цена|стоимость)"),
+)
+_EXCLUDED_PRICE_CONTEXT = ("задат", "шаг аукциона", "долг", "задолж", "площад")
+
+
+def _normalize_text(text: str) -> str:
+    clean = re.sub(r"[\xa0\u202f\u2009]", " ", text)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def extract_price_result(text: str) -> ExtractionResult:
+    if not text:
+        return ExtractionResult(None, None, "price.empty", "none", ["Source text is empty."])
+
+    clean = _normalize_text(text)
+    currency = r"(?:₽|руб(?:\.|лей|ля)?)"
+    for rule_id, label in _PRICE_LABELS:
+        pattern = rf"{label}[^.;\n]{{0,40}}?({_NUMBER})\s*{currency}"
+        match = re.search(pattern, clean, re.IGNORECASE)
+        if match:
+            value = _to_float_num(match.group(1))
+            if value and value > 0:
+                confidence = "high" if rule_id in {"current_price", "start_price"} else "medium"
+                return ExtractionResult(value, match.group(0), f"price.{rule_id}", confidence)
+
+    candidates: list[tuple[float, str]] = []
+    for match in re.finditer(rf"({_NUMBER})\s*{currency}", clean, re.IGNORECASE):
+        context = clean[max(0, match.start() - 45):min(len(clean), match.end() + 20)].lower()
+        if any(marker in context for marker in _EXCLUDED_PRICE_CONTEXT):
+            continue
+        value = _to_float_num(match.group(1))
+        if value and value > 0:
+            candidates.append((value, match.group(0)))
+
+    if len(candidates) == 1:
+        value, fragment = candidates[0]
+        return ExtractionResult(
+            value,
+            fragment,
+            "price.single_currency_amount",
+            "low",
+            ["Price label was absent; verify the extracted amount manually."],
+        )
+    if len(candidates) > 1:
+        return ExtractionResult(
+            None,
+            None,
+            "price.ambiguous_currency_amounts",
+            "none",
+            ["Several unlabeled currency amounts were found; no price was selected."],
+        )
+    return ExtractionResult(None, None, "price.not_found", "none", ["No reliable price was found."])
+
+
+def extract_price(text: str) -> float | None:
+    result = extract_price_result(text)
+    return float(result.value) if result.value is not None else None
  
  
 def _to_float_num(raw: str) -> float | None: 
@@ -94,27 +140,67 @@ def extract_room_area(text: str) -> float | None:
     return None
 
 
-def extract_area(text: str) -> float | None: 
-    if not text: 
-        return None 
- 
-    area = extract_building_area(text) or extract_room_area(text) 
-    if area: 
-        return area 
- 
-    matches = re.findall( 
-        r'(\d{1,7}(?:[\s.,]\d{3})*(?:[,.]\d+)?)\s*(?:кв\.?\s*м|м²|м2|м\^2)', 
-        text, 
-        re.IGNORECASE 
-    ) 
- 
-    values = [] 
-    for raw in matches: 
-        val = _to_float_num(raw) 
-        if val and 1 <= val <= 1_000_000: 
-            values.append(val) 
- 
-    return max(values) if values else None 
+def _area_fragment(text: str, value: float) -> str | None:
+    for match in re.finditer(
+        r"(\d{1,7}(?:[\s.,]\d{3})*(?:[,.]\d+)?)\s*(?:кв\.?\s*м|м²|м2|м\^2)",
+        text,
+        re.IGNORECASE,
+    ):
+        parsed = _to_float_num(match.group(1))
+        if parsed == value:
+            return text[max(0, match.start() - 60):min(len(text), match.end() + 60)].strip()
+    return None
+
+
+def extract_area_result(text: str) -> ExtractionResult:
+    if not text:
+        return ExtractionResult(None, None, "area.empty", "none", ["Source text is empty."])
+
+    building = extract_building_area(text)
+    if building:
+        return ExtractionResult(
+            building,
+            _area_fragment(text, building),
+            "area.building_labeled",
+            "high",
+        )
+    room = extract_room_area(text)
+    if room:
+        return ExtractionResult(room, _area_fragment(text, room), "area.room_labeled", "high")
+
+    values: list[tuple[float, str]] = []
+    for match in re.finditer(
+        r"(\d{1,7}(?:[\s.,]\d{3})*(?:[,.]\d+)?)\s*(?:кв\.?\s*м|м²|м2|м\^2)",
+        text,
+        re.IGNORECASE,
+    ):
+        value = _to_float_num(match.group(1))
+        if value and 1 <= value <= 1_000_000:
+            values.append((value, match.group(0)))
+
+    if len(values) == 1:
+        value, fragment = values[0]
+        return ExtractionResult(
+            value,
+            fragment,
+            "area.single_unlabeled",
+            "low",
+            ["Area type was not identified; verify whether this is building, room, or land area."],
+        )
+    if len(values) > 1:
+        return ExtractionResult(
+            None,
+            None,
+            "area.ambiguous_multiple",
+            "none",
+            ["Several unlabeled areas were found; no area was selected."],
+        )
+    return ExtractionResult(None, None, "area.not_found", "none", ["No area was found."])
+
+
+def extract_area(text: str) -> float | None:
+    result = extract_area_result(text)
+    return float(result.value) if result.value is not None else None
  
  
 def extract_cadastral_numbers(text: str) -> list[str]: 
@@ -232,8 +318,7 @@ def extract_year_built(text: str) -> int | None:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             year = int(m.group(1))
-            # Проверка на разумный диапазон (1800-2030)
-            if 1800 <= year <= 2030:
+            if 1800 <= year <= datetime.now().year + 1:
                 return year
 
     return None
@@ -255,7 +340,7 @@ def extract_commissioning_year(text: str) -> int | None:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             year = int(m.group(1))
-            if 1800 <= year <= 2030:
+            if 1800 <= year <= datetime.now().year + 1:
                 return year
 
     return None
