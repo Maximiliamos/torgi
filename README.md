@@ -30,6 +30,9 @@ python -m pip install -r requirements.lock
 python -m pip install --no-deps -e .
 ```
 
+Для полного набора инструментов разработки и desktop-тестов используйте
+`requirements-dev.lock`.
+
 Основные настройки окружения:
 
 ```env
@@ -58,6 +61,10 @@ SQLite используется по умолчанию. Перед старто
 
 ## Docker
 
+Скопируйте `.env.example` в `.env` и замените все значения `replace-with-*`
+независимыми случайными секретами. Compose откажется стартовать без пароля БД,
+пароля Redis, API-ключа и WEB Basic Auth.
+
 Полный production-подобный стек:
 
 ```bash
@@ -66,12 +73,17 @@ docker compose ps
 docker compose down
 ```
 
-WEB доступен на `http://localhost:8080`, API — на `http://localhost:8000`. Миграции выполняются одноразовым сервисом `migrate` до старта API/worker. Контейнеры приложения работают без root, имеют healthchecks, restart policies и ограничения ресурсов.
+WEB доступен на `http://localhost:8080` с Basic Auth. PostgreSQL, Redis и API
+не публикуются на хост; nginx обращается к API по внутренней сети и передаёт
+служебный API-ключ. По умолчанию WEB привязан к `127.0.0.1`; публичный bind
+следует включать только за TLS reverse proxy. Миграции выполняются одноразовым
+сервисом `migrate` до старта API/worker. Контейнеры приложения работают без root,
+имеют healthchecks, restart policies и ограничения ресурсов.
 
 Проверки состояния:
 
 - `GET /health/live` — процесс API работает;
-- `GET /health/ready` — БД доступна и миграционная схема присутствует;
+- `GET /health/ready` — конфигурация безопасна, БД/схема и Redis доступны;
 - `GET /health` — совместимый alias readiness.
 
 ## Миграции

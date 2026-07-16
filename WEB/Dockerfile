@@ -10,6 +10,9 @@ FROM nginx:1.27-alpine
 
 RUN apk add --no-cache apache2-utils gettext su-exec \
     && sed -i 's#pid .*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
+    && sed -i 's#^user .*;##' /etc/nginx/nginx.conf \
+    && sed -i 's#error_log .*;#error_log /tmp/nginx-error.log notice;#' /etc/nginx/nginx.conf \
+    && sed -i 's#access_log .*;#access_log /tmp/nginx-access.log;#' /etc/nginx/nginx.conf \
     && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx
 
 COPY WEB/nginx.conf /etc/nginx/templates/default.conf.template
