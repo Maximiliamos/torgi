@@ -2,7 +2,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
-from bankrotai.gui import MainWindow, PreviewEnrichmentWorker, extract_preview_image_url
+from bankrotai.gui import (
+    MainWindow,
+    PreviewEnrichmentWorker,
+    extract_preview_image_url,
+    map_assets_directory,
+)
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtTest import QSignalSpy
 
@@ -72,6 +77,13 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
     assert "lotMarkers" in leaflet_html
     assert "window.upsertLot = upsertLot" in yandex_html
     assert "lotPlacemarks" in yandex_html
+    assert "initLeafletFallback" in yandex_html
+    assert "typeof ymaps !== 'undefined'" in yandex_html
+    assert "https://unpkg.com" not in leaflet_html
+    assert 'href="leaflet.css"' in leaflet_html
+    assert 'src="leaflet.js"' in leaflet_html
+    assert (map_assets_directory() / "leaflet.js").is_file()
+    assert (map_assets_directory() / "leaflet.markercluster.js").is_file()
     for html in (leaflet_html, yandex_html):
         assert 'id="lot-preview"' in html
         assert "showLotPreview(lot)" in html

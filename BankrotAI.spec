@@ -12,7 +12,11 @@ tmp_ret = collect_all(
     on_error='ignore',
 )
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-datas += [('alembic', 'alembic'), ('alembic.ini', '.')]
+datas += [
+    ('alembic', 'alembic'),
+    ('alembic.ini', '.'),
+    ('src/bankrotai/assets/map', 'bankrotai/assets/map'),
+]
 
 
 a = Analysis(

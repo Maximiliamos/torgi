@@ -24,6 +24,10 @@ for tagged releases.
 
 ### Reliability
 
+- Fixed blank desktop maps caused by oversized `QWebEngine.setHtml` payloads:
+  map shells now load first and lot data streams in bounded batches.
+- Bundled Leaflet and marker-cluster assets with the desktop application and added
+  a Leaflet fallback when the Yandex Maps API is unavailable through a VPN/proxy.
 - Reworked GIS Torgi and TBankrot desktop searches around verified real-estate
   categories and excluded rentals and non-real-estate assets.
 - Added nationwide real-estate search across GIS Torgi, TBankrot and RAD / LOT-ONLINE.

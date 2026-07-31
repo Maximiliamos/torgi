@@ -43,6 +43,7 @@ from PySide6.QtCore import (
     QStringListModel,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QColor, QBrush, QDesktopServices
 from PySide6.QtWidgets import (
@@ -100,6 +101,14 @@ EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
 LOT_ID_ROLE = Qt.UserRole + 103
 MAP_MARKER_LIMIT = 100_000
+
+
+def map_assets_directory() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "bankrotai" / "assets" / "map"
+    return Path(__file__).resolve().parent / "assets" / "map"
+
+
 MAP_PREVIEW_STYLE = """
 .lot-preview {
     position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
@@ -4061,6 +4070,10 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
 
         self.map_view = QWebEngineView()
+        self.map_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
         self.web_view = self.map_view
         self.map_web_channel = QWebChannel(self.map_view.page())
         self.map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
@@ -4124,6 +4137,10 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
 
         self.yandex_map_view = QWebEngineView()
+        self.yandex_map_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
         self.yandex_map_web_channel = QWebChannel(self.yandex_map_view.page())
         self.yandex_map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
         self.yandex_map_view.page().setWebChannel(self.yandex_map_web_channel)
@@ -5456,14 +5473,66 @@ class MainWindow(QMainWindow):
 
     def update_map(self):
         lots = self._load_map_lots()
-        html = self.build_map_html(lots)
-        self.map_view.setHtml(html, QUrl("https://local.bankrotai/"))
+        html = self.build_map_html([])
+        base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
+        self._set_map_document(self.map_view, html, lots, "_leaflet_load_handler", base_url)
         self.status_bar.showMessage("Карта обновлена", 3000)
 
     def update_yandex_map(self):
         lots = self._load_map_lots()
-        self.yandex_map_view.setHtml(self.build_yandex_map_html(lots), QUrl("https://local.bankrotai/"))
+        html = self.build_yandex_map_html([])
+        base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
+        self._set_map_document(
+            self.yandex_map_view,
+            html,
+            lots,
+            "_yandex_load_handler",
+            base_url,
+        )
         self.status_bar.showMessage("Яндекс-карта обновлена", 3000)
+
+    def _set_map_document(
+        self,
+        view: QWebEngineView,
+        html: str,
+        lots: list[dict],
+        handler_attribute: str,
+        base_url: QUrl,
+    ) -> None:
+        previous = getattr(self, handler_attribute, None)
+        if previous is not None:
+            try:
+                view.loadFinished.disconnect(previous)
+            except (RuntimeError, TypeError):
+                pass
+
+        def loaded(ok: bool) -> None:
+            try:
+                view.loadFinished.disconnect(loaded)
+            except (RuntimeError, TypeError):
+                pass
+            setattr(self, handler_attribute, None)
+            if not ok:
+                logger.error("Map HTML failed to load for %s", handler_attribute)
+                return
+            for offset in range(0, len(lots), 50):
+                payload = json.dumps(lots[offset:offset + 50], ensure_ascii=True)
+                view.page().runJavaScript(
+                    "(function(batch) {"
+                    " window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || [];"
+                    " batch.forEach(function(lot) {"
+                    "   if (window.upsertLot) { window.upsertLot(lot); }"
+                    "   else { window.__bankrotaiPendingLots.push(lot); }"
+                    " });"
+                    f"}})({payload});"
+                )
+            view.page().runJavaScript(
+                "if (window.fitAllLots) { window.fitAllLots(); }"
+            )
+
+        setattr(self, handler_attribute, loaded)
+        view.loadFinished.connect(loaded)
+        view.setHtml(html, base_url)
 
     def build_yandex_map_html(self, lots: list[dict]) -> str:
         lots_json = json.dumps(lots, ensure_ascii=False)
@@ -5473,7 +5542,9 @@ class MainWindow(QMainWindow):
 <head>
 <meta charset="utf-8">
 <title>BankrotAI Yandex Map</title>
+<link rel="stylesheet" href="leaflet.css">
 <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU" type="text/javascript"></script>
+<script src="leaflet.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
 html, body, #map {{
@@ -5680,10 +5751,15 @@ window.applyLotReviewStatus = function(lotId, status) {{
     const placemark = lotPlacemarks.get(String(lotId));
     if (placemark) placemark.options.set(yandexIconOptions(lot || {{ review_status: status }}));
 }};
+window.fitAllLots = function() {{
+    if (lotCollection && lotCollection.getLength() > 0) {{
+        map.setBounds(lotCollection.getBounds(), {{ checkZoomRange: true, zoomMargin: 35 }});
+    }}
+}};
 
 {MAP_PREVIEW_SCRIPT}
 
-ymaps.ready(function () {{
+function initYandexMap() {{
     map = new ymaps.Map('map', {{
         center: [57.6261, 39.8845],
         zoom: 8,
@@ -5697,7 +5773,80 @@ ymaps.ready(function () {{
     const pending = window.__bankrotaiPendingLots || [];
     window.__bankrotaiPendingLots = [];
     pending.forEach(upsertLot);
-}});
+}}
+
+function initLeafletFallback() {{
+    const hint = document.getElementById('hint');
+    hint.textContent = 'Яндекс.Карты недоступны — включена резервная карта';
+    map = L.map('map').setView([57.6261, 39.8845], 8);
+    let fallbackMapSized = false;
+    new ResizeObserver(function() {{
+        map.invalidateSize(false);
+        const element = document.getElementById('map');
+        if (!fallbackMapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
+            fallbackMapSized = true;
+            setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
+        }}
+    }}).observe(document.getElementById('map'));
+    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }}).addTo(map);
+    const fallbackLayer = L.layerGroup().addTo(map);
+    const fallbackMarkers = new Map();
+    const fallbackBounds = L.latLngBounds([]);
+
+    function fallbackIcon(lot) {{
+        return L.divIcon({{
+            className: '',
+            html: markerSvg(lot),
+            iconSize: [38, 48],
+            iconAnchor: [19, 48]
+        }});
+    }}
+    function upsertFallbackLot(lot) {{
+        if (!lot.lat || !lot.lon) return;
+        const key = String(lot.id);
+        const previous = fallbackMarkers.get(key);
+        if (previous) fallbackLayer.removeLayer(previous);
+        const marker = L.marker([lot.lat, lot.lon], {{ icon: fallbackIcon(lot) }});
+        marker.on('click', function() {{ showLotPreview(lot); }});
+        marker.addTo(fallbackLayer);
+        fallbackMarkers.set(key, marker);
+        fallbackBounds.extend([lot.lat, lot.lon]);
+    }}
+    window.upsertLot = upsertFallbackLot;
+    window.applyLotReviewStatus = function(lotId, status) {{
+        const lot = lots.find(item => Number(item.id) === Number(lotId));
+        if (lot) lot.review_status = status;
+        const marker = fallbackMarkers.get(String(lotId));
+        if (marker) marker.setIcon(fallbackIcon(lot || {{ review_status: status }}));
+    }};
+    window.showCadastreObject = function(data) {{
+        if (data.geometry) {{
+            const layer = L.geoJSON(data.geometry, {{ style: {{ color: '#d92323', weight: 4 }} }}).addTo(map);
+            map.fitBounds(layer.getBounds(), {{ padding: [40, 40] }});
+        }} else if (data.lat && data.lon) {{
+            L.marker([data.lat, data.lon], {{ icon: fallbackIcon({{}}) }}).addTo(map);
+            map.setView([data.lat, data.lon], 17);
+        }}
+    }};
+    window.setCadLayerVisible = function() {{}};
+    window.fitAllLots = function() {{
+        if (fallbackBounds.isValid()) map.fitBounds(fallbackBounds, {{ padding: [30, 30] }});
+    }};
+    lots.forEach(upsertFallbackLot);
+    if (fallbackBounds.isValid()) map.fitBounds(fallbackBounds, {{ padding: [30, 30] }});
+    const pending = window.__bankrotaiPendingLots || [];
+    window.__bankrotaiPendingLots = [];
+    pending.forEach(upsertFallbackLot);
+}}
+
+if (typeof ymaps !== 'undefined') {{
+    ymaps.ready(initYandexMap);
+}} else {{
+    initLeafletFallback();
+}}
 </script>
 </body>
 </html>
@@ -5715,9 +5864,9 @@ ymaps.ready(function () {{
 <meta charset="utf-8">
 <title>BankrotAI Map</title>
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<link rel="stylesheet" href="leaflet.css">
+<link rel="stylesheet" href="MarkerCluster.css">
+<link rel="stylesheet" href="MarkerCluster.Default.css">
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 
 <style>
@@ -5740,14 +5889,23 @@ html, body, #map {{
 <div id="map"></div>
 {MAP_PREVIEW_HTML}
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="leaflet.js"></script>
+<script src="leaflet.markercluster.js"></script>
 
 <script>
 const lots = {lots_json};
 const mapKind = 'leaflet';
 
 const map = L.map('map').setView([57.6261, 39.8845], 8);
+let mapSized = false;
+new ResizeObserver(function() {{
+    map.invalidateSize(false);
+    const element = document.getElementById('map');
+    if (!mapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
+        mapSized = true;
+        setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
+    }}
+}}).observe(document.getElementById('map'));
 
 const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     maxZoom: 19,
@@ -5915,6 +6073,11 @@ window.applyLotReviewStatus = function(lotId, status) {{
     if (lot) lot.review_status = status;
     const marker = lotMarkers.get(String(lotId));
     if (marker) marker.setIcon(makeIcon(lot || {{ review_status: status }}));
+}};
+window.fitAllLots = function() {{
+    if (markers.getLayers().length > 0) {{
+        map.fitBounds(markers.getBounds(), {{ padding: [30, 30] }});
+    }}
 }};
 
 {MAP_PREVIEW_SCRIPT}
