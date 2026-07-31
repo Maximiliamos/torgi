@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import hmac
 import time
+from dataclasses import asdict
 from typing import Any
 
 import uvicorn
@@ -23,8 +24,11 @@ from bankrotai.db import (
     get_region_sync_state,
     upsert_region_sync_state,
     BackgroundTaskState,
+    LotParticipationChecklist,
+    SourceLot,
 )
 from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response
+from bankrotai.finance import MaxBidInputs, calculate_max_bid
 from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSearchFilters
 from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
@@ -47,6 +51,33 @@ class BulkTorgiSyncRequest(BaseModel):
     notice_status: str | None = Field(None, max_length=100)
     lot_status: str | None = Field(None, max_length=100)
     max_items: int = Field(10_000, ge=1, le=50_000)
+
+
+class MaxBidRequest(BaseModel):
+    conservative_sale_price: float = Field(gt=0)
+    repair_cost: float = Field(0, ge=0)
+    legal_cost: float = Field(0, ge=0)
+    monthly_holding_cost: float = Field(0, ge=0)
+    holding_months: float = Field(6, gt=0, le=120)
+    taxes: float = Field(0, ge=0)
+    sale_commission_percent: float = Field(0, ge=0, le=100)
+    target_profit: float = Field(0, ge=0)
+    risk_reserve: float = Field(0, ge=0)
+    annual_capital_cost_percent: float = Field(0, ge=0, le=100)
+    intended_bid: float | None = Field(None, ge=0)
+
+
+class ParticipationChecklistRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=100)
+    etp_accredited: bool = False
+    signature_valid: bool = False
+    application_completed: bool = False
+    deposit_sent: bool = False
+    payment_purpose_verified: bool = False
+    deposit_received: bool = False
+    documents_signed: bool = False
+    application_accepted: bool = False
+    notes: str | None = Field(None, max_length=5000)
 
 app.add_middleware(
     CORSMiddleware,
@@ -317,6 +348,81 @@ def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
         if item is None:
             raise HTTPException(status_code=404, detail="Lot not found")
         return item
+
+
+@app.get("/api/lots/{lot_id}/procedure")
+def get_lot_procedure(lot_id: int):
+    with session_scope() as session:
+        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        if source_lot is None:
+            raise HTTPException(status_code=404, detail="Source lot not found")
+        return {
+            "source_lot_id": source_lot.id,
+            "source_system": source_lot.source_system,
+            "platform_name": source_lot.platform_name,
+            "platform_code": source_lot.platform_code,
+            "procedure_number": source_lot.procedure_number,
+            "notice_number": source_lot.notice_number,
+            "efresb_message_number": source_lot.efresb_message_number,
+            "debtor_name": source_lot.debtor_name,
+            "organizer_name": source_lot.organizer_name,
+            "auction_manager_name": source_lot.auction_manager_name,
+            "bankruptcy_case_number": source_lot.bankruptcy_case_number,
+            "deposit_amount": float(source_lot.deposit_amount) if source_lot.deposit_amount is not None else None,
+            "deposit_percent": source_lot.deposit_percent,
+            "deposit_payment_details": source_lot.deposit_payment_details,
+            "deposit_deadline": source_lot.deposit_deadline,
+            "application_deadline": source_lot.application_deadline,
+            "auction_at": source_lot.auction_at,
+            "auction_step_amount": (
+                float(source_lot.auction_step_amount) if source_lot.auction_step_amount is not None else None
+            ),
+            "auction_type": source_lot.auction_type,
+            "public_offer_schedule": source_lot.public_offer_schedule,
+            "next_interval_price": (
+                float(source_lot.next_interval_price) if source_lot.next_interval_price is not None else None
+            ),
+            "next_price_reduction_at": source_lot.next_price_reduction_at,
+            "document_completeness": source_lot.document_completeness,
+            "inspection_procedure": source_lot.inspection_procedure,
+            "organizer_contact": source_lot.organizer_contact,
+        }
+
+
+@app.post("/api/lots/{lot_id}/max-bid")
+def calculate_lot_max_bid(lot_id: int, request: MaxBidRequest):
+    with session_scope() as session:
+        if session.get(ProcessedLot, lot_id) is None:
+            raise HTTPException(status_code=404, detail="Lot not found")
+    scenarios = calculate_max_bid(MaxBidInputs(**request.model_dump()))
+    return {
+        "lot_id": lot_id,
+        "valuation_source": "user_supplied_conservative_sale_price",
+        "warning": "The bid ceiling is a financial scenario, not an independent property appraisal.",
+        "scenarios": {name: asdict(value) for name, value in scenarios.items()},
+    }
+
+
+@app.put("/api/lots/{lot_id}/participation")
+def update_participation_checklist(lot_id: int, request: ParticipationChecklistRequest):
+    with session_scope() as session:
+        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        if source_lot is None:
+            raise HTTPException(status_code=404, detail="Source lot not found")
+        checklist = session.scalar(
+            select(LotParticipationChecklist).where(
+                LotParticipationChecklist.source_lot_id == source_lot.id,
+                LotParticipationChecklist.user_id == request.user_id,
+            )
+        )
+        if checklist is None:
+            checklist = LotParticipationChecklist(source_lot_id=source_lot.id, user_id=request.user_id)
+            session.add(checklist)
+        for field_name, value in request.model_dump(exclude={"user_id"}).items():
+            setattr(checklist, field_name, value)
+        checklist.updated_at = utc_now()
+        session.flush()
+        return {"lot_id": lot_id, "source_lot_id": source_lot.id, **request.model_dump()}
 
 @app.get("/api/stats")
 def get_stats(city_slug: str = DEFAULT_REGION):

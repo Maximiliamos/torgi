@@ -5,6 +5,13 @@ for tagged releases.
 
 ## Unreleased
 
+### Auction operating model
+
+- Added connector SDK and registry adapters for Torgi.gov.ru, TBankrot and the official authenticated EFRSB Publications API.
+- Added canonical/source lot identity, normalized auction procedure fields and participation checklists.
+- Added immutable SHA-256 document version records.
+- Added a transparent three-scenario maximum-bid calculator and API endpoints.
+
 ### Security
 
 - Enforced fail-closed API authentication for production, including GET requests.

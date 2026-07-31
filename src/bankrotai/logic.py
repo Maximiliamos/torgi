@@ -13,7 +13,9 @@ from bankrotai.db import (
     LotGeoSnapshot,
     LotStatusHistory,
     LotStatusEvent,
+    CanonicalLot,
     ProcessedLot,
+    SourceLot,
 )
 from bankrotai.geo import enrich_lot_geo
 from bankrotai.core import get_region_query_values, utc_now # Assuming utc_now exists or I should use datetime.now(timezone.utc)
@@ -67,6 +69,152 @@ def classify_category(title: str, description: str) -> str:
 def _to_decimal(value: float | None) -> Decimal | None:
     if value is None: return None
     return Decimal(f"{value:.2f}")
+
+
+def _raw_value(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = raw.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    cleaned = str(value).replace("\xa0", " ").replace(" ", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _to_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if value in (None, ""):
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    except ValueError:
+        pass
+    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _canonical_key(normalized: NormalizedLot) -> str:
+    cadastral = (normalized.cadastral_number or "").replace(" ", "")
+    if cadastral:
+        return f"cadastral:{cadastral}"
+    if normalized.efresb_message_number:
+        return f"efrsb:{normalized.efresb_message_number.strip()}"
+    if normalized.bankruptcy_case_number and normalized.procedure_number:
+        return f"case:{normalized.bankruptcy_case_number.strip()}:{normalized.procedure_number.strip()}"
+    return f"source:{normalized.source_system}:{normalized.external_id}"
+
+
+def _sync_source_lot(session: Session, processed: ProcessedLot, normalized: NormalizedLot) -> SourceLot:
+    raw = normalized.raw_data or {}
+    preferred_key = _canonical_key(normalized)
+    source_lot = session.scalar(
+        select(SourceLot).where(
+            SourceLot.source_system == normalized.source_system,
+            SourceLot.external_id == normalized.external_id,
+        )
+    )
+    canonical = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == preferred_key))
+    if canonical is None:
+        canonical = CanonicalLot(
+            canonical_key=preferred_key,
+            legacy_processed_lot_id=processed.id if source_lot is None else None,
+            title=normalized.title,
+            category=normalized.category,
+            address=normalized.address,
+            cadastral_number=normalized.cadastral_number,
+            area=normalized.area,
+        )
+        session.add(canonical)
+        session.flush()
+    else:
+        canonical.title = normalized.title or canonical.title
+        canonical.address = normalized.address or canonical.address
+        canonical.cadastral_number = normalized.cadastral_number or canonical.cadastral_number
+        canonical.area = normalized.area if normalized.area is not None else canonical.area
+
+    if source_lot is None:
+        source_lot = SourceLot(
+            canonical_lot_id=canonical.id,
+            processed_lot_id=processed.id,
+            source_system=normalized.source_system,
+            external_id=normalized.external_id,
+        )
+        session.add(source_lot)
+    elif source_lot.canonical_lot_id != canonical.id and preferred_key.startswith(("cadastral:", "efrsb:", "case:")):
+        source_lot.canonical_lot_id = canonical.id
+
+    source_lot.source_url = normalized.source_url or normalized.lot_url
+    source_lot.platform_name = normalized.platform_name or _raw_value(raw, "etp", "platform_name", "trade_place")
+    source_lot.platform_code = normalized.platform_code or _raw_value(raw, "etp_code", "platform_code")
+    source_lot.procedure_number = normalized.procedure_number or _raw_value(raw, "procedure_number", "trade_number")
+    source_lot.notice_number = normalized.notice_number or _raw_value(raw, "notice_number", "noticeNumber")
+    source_lot.efresb_message_number = normalized.efresb_message_number or _raw_value(
+        raw, "efresb_message_number", "fedresurs_message_number"
+    )
+    source_lot.debtor_name = normalized.debtor_name or _raw_value(raw, "debtor", "debtor_name")
+    source_lot.organizer_name = normalized.organizer_name or _raw_value(raw, "organizer", "organizer_name")
+    source_lot.auction_manager_name = normalized.auction_manager_name or _raw_value(
+        raw, "auction_manager", "arbitration_manager"
+    )
+    source_lot.bankruptcy_case_number = normalized.bankruptcy_case_number or _raw_value(
+        raw, "bankruptcy_case_number", "case_number"
+    )
+    source_lot.deposit_amount = _to_decimal(
+        normalized.deposit_amount if normalized.deposit_amount is not None else _to_float(_raw_value(raw, "deposit", "deposit_amount"))
+    )
+    source_lot.deposit_percent = normalized.deposit_percent or _to_float(_raw_value(raw, "deposit_percent"))
+    source_lot.deposit_payment_details = normalized.deposit_payment_details or _raw_value(
+        raw, "deposit_payment_details", "deposit_requisites"
+    )
+    source_lot.deposit_deadline = normalized.deposit_deadline or _to_datetime(_raw_value(raw, "deposit_deadline"))
+    source_lot.application_deadline = normalized.application_deadline or _to_datetime(
+        _raw_value(raw, "bidd_end_time", "application_deadline")
+    )
+    source_lot.auction_at = normalized.auction_at or _to_datetime(
+        _raw_value(raw, "auction_start_date", "auction_at")
+    )
+    source_lot.auction_step_amount = _to_decimal(
+        normalized.auction_step_amount
+        if normalized.auction_step_amount is not None
+        else _to_float(_raw_value(raw, "auction_step", "auction_step_amount"))
+    )
+    source_lot.auction_step_percent = normalized.auction_step_percent or _to_float(
+        _raw_value(raw, "auction_step_percent")
+    )
+    source_lot.auction_type = normalized.auction_type or _raw_value(raw, "trade_type", "auction_type")
+    source_lot.public_offer_schedule = normalized.public_offer_schedule or _raw_value(raw, "public_offer_schedule")
+    source_lot.next_interval_price = _to_decimal(
+        normalized.next_interval_price
+        if normalized.next_interval_price is not None
+        else _to_float(_raw_value(raw, "next_interval_price"))
+    )
+    source_lot.next_price_reduction_at = normalized.next_price_reduction_at or _to_datetime(
+        _raw_value(raw, "next_price_reduction_at")
+    )
+    source_lot.document_completeness = normalized.document_completeness or _raw_value(raw, "document_completeness")
+    source_lot.inspection_procedure = normalized.inspection_procedure or _raw_value(raw, "inspection_procedure")
+    source_lot.organizer_contact = normalized.organizer_contact or _raw_value(raw, "organizer_contact")
+    source_lot.raw_data = raw
+    source_lot.last_seen_at = utc_now()
+    session.flush()
+    return source_lot
 
 # --- Pipelines (Geo & Status) ---
 
@@ -373,6 +521,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         logger.info(f"Updated lot {normalized.external_id}")
                 
     session.flush()
+    _sync_source_lot(session, processed, normalized)
     return processed
 
 def upsert_lot_events_from_raw(session: Session, processed: ProcessedLot, raw_payload: dict) -> None:

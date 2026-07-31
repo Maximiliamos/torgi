@@ -155,6 +155,126 @@ class ProcessedLot(Base):
     power_kw: Mapped[float | None] = mapped_column(Float)              # мощность, кВт
     parking_spaces: Mapped[int | None] = mapped_column(Integer)        # число парковочных мест
 
+class CanonicalLot(Base):
+    """A physical asset grouped across registries, aggregators and ETPs."""
+
+    __tablename__ = "canonical_lots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canonical_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True, index=True)
+    legacy_processed_lot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False, default="other")
+    address: Mapped[str | None] = mapped_column(Text)
+    cadastral_number: Mapped[str | None] = mapped_column(String(50), index=True)
+    area: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SourceLot(Base):
+    """A source-specific auction card linked to one canonical asset."""
+
+    __tablename__ = "source_lots"
+    __table_args__ = (
+        UniqueConstraint("source_system", "external_id", name="uq_source_lots_source_external_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canonical_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("canonical_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    processed_lot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    source_system: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    platform_name: Mapped[str | None] = mapped_column(String(300), index=True)
+    platform_code: Mapped[str | None] = mapped_column(String(100), index=True)
+    procedure_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    notice_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    efresb_message_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    debtor_name: Mapped[str | None] = mapped_column(String(500), index=True)
+    organizer_name: Mapped[str | None] = mapped_column(String(500), index=True)
+    auction_manager_name: Mapped[str | None] = mapped_column(String(500))
+    bankruptcy_case_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    deposit_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    deposit_percent: Mapped[float | None] = mapped_column(Float)
+    deposit_payment_details: Mapped[str | None] = mapped_column(Text)
+    deposit_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    application_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    auction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    auction_step_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    auction_step_percent: Mapped[float | None] = mapped_column(Float)
+    auction_type: Mapped[str | None] = mapped_column(String(100), index=True)
+    public_offer_schedule: Mapped[list[dict] | None] = mapped_column(JSON)
+    next_interval_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    next_price_reduction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    document_completeness: Mapped[str | None] = mapped_column(String(30))
+    inspection_procedure: Mapped[str | None] = mapped_column(Text)
+    organizer_contact: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict | None] = mapped_column(JSON)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class LotDocument(Base):
+    __tablename__ = "lot_documents"
+    __table_args__ = (
+        UniqueConstraint("source_lot_id", "external_document_id", name="uq_lot_documents_source_external"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("source_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_document_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    document_kind: Mapped[str | None] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class LotDocumentVersion(Base):
+    __tablename__ = "lot_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sha256", name="uq_lot_document_versions_hash"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(200))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+
+
+class LotParticipationChecklist(Base):
+    __tablename__ = "lot_participation_checklists"
+    __table_args__ = (
+        UniqueConstraint("source_lot_id", "user_id", name="uq_participation_source_user"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("source_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    etp_accredited: Mapped[bool] = mapped_column(default=False, nullable=False)
+    signature_valid: Mapped[bool] = mapped_column(default=False, nullable=False)
+    application_completed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deposit_sent: Mapped[bool] = mapped_column(default=False, nullable=False)
+    payment_purpose_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deposit_received: Mapped[bool] = mapped_column(default=False, nullable=False)
+    documents_signed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    application_accepted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class LotStatusEvent(Base):
     __tablename__ = "lot_status_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

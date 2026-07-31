@@ -9,10 +9,13 @@ BankrotAI — desktop-приложение и web-сервис для сбора
 - `src/bankrotai/tasks.py` — Celery worker: синхронизация порциями, retries и прогресс.
 - `src/bankrotai/db.py`, `alembic/` — SQLAlchemy и единая цепочка миграций SQLite/PostgreSQL.
 - `src/bankrotai/ai.py`, `src/bankrotai/geo.py` — строгая проверка AI-ответов и геокодирование.
+- `src/bankrotai/connectors/` — SDK и реестр источников; существующие клиенты ГИС «Торги» и TBankrot подключены адаптерами, ЕФРСБ использует официальный Publications API.
 - `WEB/` — React/Vite web-клиент.
 - `docker-compose.yml` — PostgreSQL, Redis, миграции, API, worker, beat и web.
 
 Закрытые лоты не удаляются: они получают `is_archived=true`, дату архивации и остаются доступны для аудита. Каждая смена статуса записывается в `lot_status_history`.
+
+`CanonicalLot` представляет физический объект, а `SourceLot` — карточку/процедуру в конкретном реестре или ЭТП. Сочетание `(source_system, external_id)` уникально только внутри источника. Параметры процедуры (ЭТП, извещение, задаток, сроки, шаг и график публичного предложения) хранятся в отдельных индексируемых полях. Документы имеют неизменяемые версии по SHA-256.
 
 ## Локальная установка
 
@@ -41,6 +44,9 @@ REDIS_URL=redis://localhost:6379/0
 APP_ENV=development
 ALLOW_LOCAL_TASK_FALLBACK=false
 CORS_ORIGINS=http://localhost:8080
+FEDRESURS_BASE_URL=https://bank-publications-prod.fedresurs.ru
+FEDRESURS_LOGIN=
+FEDRESURS_PASSWORD=
 ```
 
 AI-провайдер задаётся через `AI_PROVIDER` и соответствующие ключ, URL и модель. Автоматический переход на другой провайдер выключен; фактически использованные provider/model сохраняются в БД.
@@ -116,6 +122,18 @@ Content-Type: application/json
 ```
 
 Ответ содержит `task_id`. Прогресс и итог доступны по `GET /api/tasks/{task_id}`. Если Redis/Celery недоступны, production возвращает `503`; локальный thread fallback разрешается только явным `ALLOW_LOCAL_TASK_FALLBACK=true` вне production.
+
+## Операционная модель сделки
+
+- `GET /api/lots/{lot_id}/procedure` — нормализованные сроки, задаток, ЭТП и реквизиты процедуры;
+- `POST /api/lots/{lot_id}/max-bid` — пессимистичный, базовый и оптимистичный расчёт максимальной ставки;
+- `PUT /api/lots/{lot_id}/participation` — контроль аккредитации, ЭЦП, заявки, задатка и допуска.
+
+Калькулятор требует заданную пользователем консервативную цену продажи и не подставляет неподтверждённую AI-цену. Формула учитывает ремонт, юридические и текущие расходы, налоги, комиссию, стоимость капитала, целевую прибыль и резерв риска.
+
+Официальный коннектор ЕФРСБ требует выданные оператором логин и пароль. Тестовые учётные данные не встраиваются в приложение; CAPTCHA и юридически значимое подписание ЭЦП не автоматизируются.
+
+План дальнейшего развития и критерии готовности: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Тесты и качество
 

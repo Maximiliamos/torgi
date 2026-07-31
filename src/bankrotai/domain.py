@@ -30,6 +30,32 @@ class NormalizedLot:
     detail_level: str
     raw_data: dict
     published_at: datetime | None = None
+
+    # First-class auction procedure fields used by deadlines and checklists.
+    platform_name: str | None = None
+    platform_code: str | None = None
+    procedure_number: str | None = None
+    notice_number: str | None = None
+    efresb_message_number: str | None = None
+    debtor_name: str | None = None
+    organizer_name: str | None = None
+    auction_manager_name: str | None = None
+    bankruptcy_case_number: str | None = None
+    deposit_amount: float | None = None
+    deposit_percent: float | None = None
+    deposit_payment_details: str | None = None
+    deposit_deadline: datetime | None = None
+    application_deadline: datetime | None = None
+    auction_at: datetime | None = None
+    auction_step_amount: float | None = None
+    auction_step_percent: float | None = None
+    auction_type: str | None = None
+    public_offer_schedule: list[dict] | None = None
+    next_interval_price: float | None = None
+    next_price_reduction_at: datetime | None = None
+    document_completeness: str | None = None
+    inspection_procedure: str | None = None
+    organizer_contact: str | None = None
     
     # Новые поля для инвестиционной оценки
     object_name: str | None = None
