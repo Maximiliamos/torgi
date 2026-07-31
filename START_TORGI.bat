@@ -1,43 +1,49 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
-title TORGI Desktop Launcher
+title TORGI
 
-for %%I in ("%~dp0.") do set "PROJECT_DIR=%%~fI"
-set "APP_EXE=%PROJECT_DIR%\app\BankrotAI.exe"
+set "PROJECT_DIR=%~dp0"
+set "APP_EXE=%~dp0app\BankrotAI.exe"
 
-if /I "%~1"=="--check" (
-    if exist "%APP_EXE%" (
-        echo OK: %APP_EXE%
-        exit /b 0
-    )
-    if exist "%PROJECT_DIR%\src\bankrotai\gui.py" (
-        where python >nul 2>&1
-        if not errorlevel 1 (
-            echo OK: source fallback is available
-            exit /b 0
-        )
-    )
-    echo ERROR: app\BankrotAI.exe and Python source fallback were not found.
-    exit /b 1
-)
+if /I "%~1"=="--check" goto CHECK
+if exist "%APP_EXE%" goto START_EXE
+goto START_SOURCE
 
-if exist "%APP_EXE%" (
-    start "TORGI" /D "%PROJECT_DIR%" "%APP_EXE%"
-    exit /b 0
-)
-
+:CHECK
+if exist "%APP_EXE%" goto CHECK_EXE_OK
 where python >nul 2>&1
-if errorlevel 1 (
-    echo app\BankrotAI.exe не найден, Python недоступен.
-    echo Пересоберите приложение по инструкции из README.md.
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto CHECK_FAILED
+if exist "%PROJECT_DIR%src\bankrotai\gui.py" goto CHECK_SOURCE_OK
 
-set "PYTHONPATH=%PROJECT_DIR%\src"
+:CHECK_FAILED
+echo ERROR: app\BankrotAI.exe and Python source fallback were not found.
+exit /b 1
+
+:CHECK_EXE_OK
+echo OK: %APP_EXE%
+exit /b 0
+
+:CHECK_SOURCE_OK
+echo OK: Python source fallback is available.
+exit /b 0
+
+:START_EXE
+start "TORGI" /D "%PROJECT_DIR%" "%APP_EXE%"
+exit /b 0
+
+:START_SOURCE
+where python >nul 2>&1
+if errorlevel 1 goto START_FAILED
+set "PYTHONPATH=%PROJECT_DIR%src"
 pushd "%PROJECT_DIR%"
 python -m bankrotai.cli run-desktop
 set "RESULT=%errorlevel%"
 popd
 exit /b %RESULT%
+
+:START_FAILED
+echo ERROR: app\BankrotAI.exe was not found and Python is unavailable.
+echo Rebuild the application using the command from README.md.
+pause
+exit /b 1
