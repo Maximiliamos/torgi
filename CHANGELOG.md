@@ -44,11 +44,8 @@ for tagged releases.
 - Added black markers for completed, cancelled and archived auctions, including
   automatic recoloring when a known auction end time passes.
 - Restricted Leaflet and Yandex zoom/panning to one non-repeating world copy.
-- Removed the full-world Yandex `restrictMapArea` option after it caused a black
-  basemap at the projection seam; the non-repeating view now relies on safe
-  viewport-aware minimum zoom.
-- Added rendered-tile health detection so an unavailable or rejected Yandex Maps
-  API automatically falls back to Leaflet instead of leaving a black canvas.
+- Restored the original unrestricted Yandex Maps viewport and removed automatic
+  post-load replacement with Leaflet; one-world restrictions remain Leaflet-only.
 - Added bounded parallel bulk GEO processing with accurate success/failure counts.
 - Added PKK/NSPD connectivity circuit breakers so a VPN-blocked cadastral service
   does not impose the same timeout on every lot in a bulk queue.

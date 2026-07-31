@@ -112,13 +112,12 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
         assert "qrc:///qtwebchannel/qwebchannel.js" in html
         assert "#111111" in html
         assert "isLotEnded" in html
-        assert "singleWorldMinZoom" in html or "enforceSingleWorldZoom" in html
     assert "noWrap: true" in leaflet_html
     assert "maxBounds: worldBounds" in leaflet_html
-    assert "enforceSingleWorldZoom" in yandex_html
+    assert "enforceSingleWorldZoom" not in yandex_html
     assert "restrictMapArea" not in yandex_html
-    assert "tileLoaded" in yandex_html
-    assert "map.destroy()" in yandex_html
+    assert "tileLoaded" not in yandex_html
+    assert "map.destroy()" not in yandex_html
 
 
 def test_map_filters_use_price_and_inferred_region() -> None:

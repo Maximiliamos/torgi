@@ -5782,7 +5782,6 @@ let lotCollection;
 let boundaryCollection;
 let selectedObjectCollection;
 let boundaryVisible = true;
-let yandexActive = false;
 const lotPlacemarks = new Map();
 const lotById = new Map();
 
@@ -5973,7 +5972,6 @@ window.fitAllLots = function() {{
 }};
 
 setInterval(function() {{
-    if (!yandexActive) return;
     lotPlacemarks.forEach(function(placemark, key) {{
         const lot = lotById.get(key);
         if (lot) placemark.options.set(yandexIconOptions(lot));
@@ -5987,59 +5985,25 @@ function initYandexMap() {{
         center: [57.6261, 39.8845],
         zoom: 8,
         controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
-    }}, {{
-        minZoom: 2
     }});
-    yandexActive = true;
     lotCollection = new ymaps.GeoObjectCollection();
     boundaryCollection = new ymaps.GeoObjectCollection();
     selectedObjectCollection = new ymaps.GeoObjectCollection();
-    function enforceSingleWorldZoom() {{
-        const size = map.container.getSize();
-        const minZoom = Math.max(2, Math.ceil(Math.log2(Math.max(size[0], 256) / 256)));
-        map.options.set('minZoom', minZoom);
-        if (map.getZoom() < minZoom) map.setZoom(minZoom, {{ checkZoomRange: true }});
-    }}
-    enforceSingleWorldZoom();
-    map.events.add('sizechange', enforceSingleWorldZoom);
     document.getElementById('hint').style.display = 'none';
     addLots();
     const pending = window.__bankrotaiPendingLots || [];
     window.__bankrotaiPendingLots = [];
     pending.forEach(upsertLot);
-    setTimeout(function() {{
-        if (!yandexActive) return;
-        const tileLoaded = Array.from(document.querySelectorAll('#map img')).some(function(image) {{
-            return image.complete && image.naturalWidth >= 128 && image.naturalHeight >= 128
-                && image.src && !image.src.startsWith('data:');
-        }});
-        if (!tileLoaded) {{
-            yandexActive = false;
-            try {{ map.destroy(); }} catch (error) {{ console.warn(error); }}
-            document.getElementById('map').innerHTML = '';
-            initLeafletFallback();
-        }}
-    }}, 8_000);
 }}
 
 function initLeafletFallback() {{
     const hint = document.getElementById('hint');
     hint.textContent = 'Яндекс.Карты недоступны — включена резервная карта';
-    hint.style.display = 'block';
-    const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
-    map = L.map('map', {{
-        minZoom: 2,
-        maxBounds: worldBounds,
-        maxBoundsViscosity: 1.0,
-        worldCopyJump: false
-    }}).setView([57.6261, 39.8845], 8);
+    map = L.map('map').setView([57.6261, 39.8845], 8);
     let fallbackMapSized = false;
     new ResizeObserver(function() {{
         map.invalidateSize(false);
         const element = document.getElementById('map');
-        const singleWorldMinZoom = Math.max(2, Math.ceil(Math.log2(Math.max(element.clientWidth, 256) / 256)));
-        map.setMinZoom(singleWorldMinZoom);
-        if (map.getZoom() < singleWorldMinZoom) map.setZoom(singleWorldMinZoom);
         if (!fallbackMapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
             fallbackMapSized = true;
             setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
@@ -6047,9 +6011,6 @@ function initLeafletFallback() {{
     }}).observe(document.getElementById('map'));
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
         maxZoom: 19,
-        minZoom: 2,
-        noWrap: true,
-        bounds: worldBounds,
         attribution: '&copy; OpenStreetMap contributors'
     }}).addTo(map);
     const fallbackLayer = L.layerGroup().addTo(map);
