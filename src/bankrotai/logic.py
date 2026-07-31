@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -121,7 +123,117 @@ def _canonical_key(normalized: NormalizedLot) -> str:
     return f"source:{normalized.source_system}:{normalized.external_id}"
 
 
-def _sync_source_lot(session: Session, processed: ProcessedLot, normalized: NormalizedLot) -> SourceLot:
+def _clean_cadastral(value: Any) -> str | None:
+    text = re.sub(r"\s+", "", str(value or ""))
+    return text if re.fullmatch(r"\d{1,2}:\d{1,2}:\d{4,10}:\d+", text) else None
+
+
+def _normalized_lot_cadastral_numbers(normalized: NormalizedLot) -> set[str]:
+    raw = normalized.raw_data if isinstance(normalized.raw_data, dict) else {}
+    values: list[Any] = [normalized.cadastral_number]
+    extra = raw.get("cadastral_numbers")
+    if isinstance(extra, (list, tuple, set)):
+        values.extend(extra)
+    elif extra:
+        values.extend(re.findall(r"\d{1,2}\s*:\s*\d{1,2}\s*:\s*\d{4,10}\s*:\s*\d+", str(extra)))
+    return {cleaned for value in values if (cleaned := _clean_cadastral(value))}
+
+
+def _processed_lot_cadastral_numbers(lot: ProcessedLot) -> set[str]:
+    values: list[Any] = [lot.cadastral_number]
+    if isinstance(lot.cadastral_numbers, list):
+        values.extend(lot.cadastral_numbers)
+    elif lot.cadastral_numbers:
+        values.extend(re.findall(r"\d{1,2}\s*:\s*\d{1,2}\s*:\s*\d{4,10}\s*:\s*\d+", str(lot.cadastral_numbers)))
+    return {cleaned for value in values if (cleaned := _clean_cadastral(value))}
+
+
+def _identity_words(value: str | None) -> set[str]:
+    words = re.findall(r"[0-9a-zа-яё]+", (value or "").casefold())
+    ignored = {"российская", "федерация", "область", "район", "имущества", "имущество", "расположенное", "адресу"}
+    return {word for word in words if len(word) > 1 and word not in ignored}
+
+
+def _text_containment(left: str | None, right: str | None) -> float:
+    left_words = _identity_words(left)
+    right_words = _identity_words(right)
+    if not left_words or not right_words:
+        return 0.0
+    return len(left_words & right_words) / min(len(left_words), len(right_words))
+
+
+def _prices_match(left: Any, right: Any) -> bool:
+    if left in (None, "") or right in (None, ""):
+        return False
+    left_value, right_value = float(left), float(right)
+    tolerance = max(1.0, min(abs(left_value), abs(right_value)) * 0.001)
+    return abs(left_value - right_value) <= tolerance
+
+
+def _titles_identify_same_lot(left: str | None, right: str | None) -> bool:
+    left_words = _identity_words(left)
+    right_words = _identity_words(right)
+    if min(len(left_words), len(right_words)) < 3:
+        return False
+    score = SequenceMatcher(None, (left or "").casefold(), (right or "").casefold()).ratio()
+    return score >= 0.92
+
+
+def _same_cross_source_lot(existing: ProcessedLot, normalized: NormalizedLot) -> bool:
+    if (existing.source_system or "").casefold() == (normalized.source_system or "").casefold():
+        return False
+    shared_cadastral = _processed_lot_cadastral_numbers(existing) & _normalized_lot_cadastral_numbers(normalized)
+    if shared_cadastral:
+        if existing.current_price is not None and normalized.current_price is not None:
+            left, right = float(existing.current_price), float(normalized.current_price)
+            if max(abs(left), abs(right), 1.0) and abs(left - right) / max(abs(left), abs(right), 1.0) > 0.05:
+                return False
+        return True
+    if not _prices_match(existing.current_price or existing.start_price, normalized.current_price or normalized.start_price):
+        return False
+    if _text_containment(existing.address, normalized.address) >= 0.72:
+        return True
+    return _titles_identify_same_lot(existing.title, normalized.title) and bool(
+        existing.region_slug and existing.region_slug == normalized.region_slug
+    )
+
+
+def _find_cross_source_processed_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot | None:
+    candidates: list[ProcessedLot] = []
+    cadastral_numbers = _normalized_lot_cadastral_numbers(normalized)
+    if cadastral_numbers:
+        candidates.extend(session.scalars(select(ProcessedLot).where(
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.source_system != normalized.source_system,
+            ProcessedLot.cadastral_number.in_(cadastral_numbers),
+        )).all())
+    price = normalized.current_price or normalized.start_price
+    if price is not None:
+        tolerance = max(1.0, abs(float(price)) * 0.001)
+        candidates.extend(session.scalars(select(ProcessedLot).where(
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.source_system != normalized.source_system,
+            or_(
+                ProcessedLot.current_price.between(float(price) - tolerance, float(price) + tolerance),
+                ProcessedLot.start_price.between(float(price) - tolerance, float(price) + tolerance),
+            ),
+        )).all())
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        if _same_cross_source_lot(candidate, normalized):
+            return candidate
+    return None
+
+
+def _sync_source_lot(
+    session: Session,
+    processed: ProcessedLot,
+    normalized: NormalizedLot,
+    canonical_hint: CanonicalLot | None = None,
+) -> SourceLot:
     raw = normalized.raw_data or {}
     preferred_key = _canonical_key(normalized)
     source_lot = session.scalar(
@@ -130,7 +242,15 @@ def _sync_source_lot(session: Session, processed: ProcessedLot, normalized: Norm
             SourceLot.external_id == normalized.external_id,
         )
     )
-    canonical = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == preferred_key))
+    canonical = canonical_hint or session.scalar(
+        select(CanonicalLot).where(CanonicalLot.canonical_key == preferred_key)
+    )
+    if canonical is None:
+        existing_link = session.scalar(
+            select(SourceLot).where(SourceLot.processed_lot_id == processed.id).order_by(SourceLot.id)
+        )
+        if existing_link is not None:
+            canonical = session.get(CanonicalLot, existing_link.canonical_lot_id)
     if canonical is None:
         canonical = CanonicalLot(
             canonical_key=preferred_key,
@@ -215,6 +335,47 @@ def _sync_source_lot(session: Session, processed: ProcessedLot, normalized: Norm
     source_lot.last_seen_at = utc_now()
     session.flush()
     return source_lot
+
+
+def _ensure_processed_source_lot(session: Session, processed: ProcessedLot) -> SourceLot:
+    existing = session.scalar(select(SourceLot).where(
+        SourceLot.source_system == processed.source_system,
+        SourceLot.external_id == processed.external_id,
+    ))
+    if existing is not None:
+        if existing.processed_lot_id != processed.id:
+            existing.processed_lot_id = processed.id
+        return existing
+
+    canonical_key = (
+        f"cadastral:{_clean_cadastral(processed.cadastral_number)}"
+        if _clean_cadastral(processed.cadastral_number)
+        else f"legacy:{processed.id}"
+    )
+    canonical = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == canonical_key))
+    if canonical is None:
+        canonical = CanonicalLot(
+            canonical_key=canonical_key,
+            legacy_processed_lot_id=processed.id,
+            title=processed.title,
+            category=processed.category,
+            address=processed.address,
+            cadastral_number=processed.cadastral_number,
+            area=processed.area,
+        )
+        session.add(canonical)
+        session.flush()
+    existing = SourceLot(
+        canonical_lot_id=canonical.id,
+        processed_lot_id=processed.id,
+        source_system=processed.source_system,
+        external_id=processed.external_id,
+        source_url=processed.source_url or processed.lot_url,
+        last_seen_at=utc_now(),
+    )
+    session.add(existing)
+    session.flush()
+    return existing
 
 # --- Pipelines (Geo & Status) ---
 
@@ -420,12 +581,19 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
     return True
 
 def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
-    processed = session.scalar(
-        select(ProcessedLot).where(
-            ProcessedLot.source_system == normalized.source_system,
-            ProcessedLot.external_id == normalized.external_id,
+    source_link = session.scalar(select(SourceLot).where(
+        SourceLot.source_system == normalized.source_system,
+        SourceLot.external_id == normalized.external_id,
+    ))
+    processed = session.get(ProcessedLot, source_link.processed_lot_id) if source_link else None
+    if processed is None:
+        processed = session.scalar(
+            select(ProcessedLot).where(
+                ProcessedLot.source_system == normalized.source_system,
+                ProcessedLot.external_id == normalized.external_id,
+            )
         )
-    )
+    duplicate_primary = _find_cross_source_processed_lot(session, normalized) if processed is None else None
     if processed is None:
         processed = ProcessedLot(
             external_id=normalized.external_id,
@@ -468,6 +636,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             technical_condition=normalized.technical_condition,
             power_kw=normalized.power_kw,
             parking_spaces=normalized.parking_spaces,
+            duplicate_of_id=duplicate_primary.id if duplicate_primary is not None else None,
         )
         session.add(processed)
         session.flush()
@@ -511,7 +680,6 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             processed.property_type = normalized.property_type or processed.property_type
             processed.vin = normalized.vin or processed.vin
         
-        # Всегда обновляем цену и статус
         processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
         if new_status and not (new_status == "unknown" and processed.auction_status not in {None, "", "unknown"}):
@@ -521,8 +689,82 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         logger.info(f"Updated lot {normalized.external_id}")
                 
     session.flush()
-    _sync_source_lot(session, processed, normalized)
-    return processed
+    canonical_hint = None
+    if duplicate_primary is not None:
+        primary_link = _ensure_processed_source_lot(session, duplicate_primary)
+        canonical_hint = session.get(CanonicalLot, primary_link.canonical_lot_id)
+    _sync_source_lot(session, processed, normalized, canonical_hint=canonical_hint)
+    return duplicate_primary or processed
+
+
+def _same_processed_cross_source_lot(left: ProcessedLot, right: ProcessedLot) -> bool:
+    if (left.source_system or "").casefold() == (right.source_system or "").casefold():
+        return False
+    shared_cadastral = _processed_lot_cadastral_numbers(left) & _processed_lot_cadastral_numbers(right)
+    if shared_cadastral:
+        if left.current_price is not None and right.current_price is not None:
+            left_price, right_price = float(left.current_price), float(right.current_price)
+            if abs(left_price - right_price) / max(abs(left_price), abs(right_price), 1.0) > 0.05:
+                return False
+        return True
+    if not _prices_match(left.current_price or left.start_price, right.current_price or right.start_price):
+        return False
+    if _text_containment(left.address, right.address) >= 0.72:
+        return True
+    return _titles_identify_same_lot(left.title, right.title) and bool(
+        left.region_slug and left.region_slug == right.region_slug
+    )
+
+
+def reconcile_cross_source_duplicates(session: Session) -> int:
+    """Mark existing cross-source copies and link them to one canonical card."""
+    lots = session.scalars(
+        select(ProcessedLot)
+        .where(ProcessedLot.duplicate_of_id.is_(None))
+        .order_by(ProcessedLot.id)
+    ).all()
+    by_cadastral: dict[str, list[ProcessedLot]] = {}
+    by_price: dict[int, list[ProcessedLot]] = {}
+    reconciled = 0
+
+    for lot in lots:
+        candidates: list[ProcessedLot] = []
+        for cadastral in _processed_lot_cadastral_numbers(lot):
+            candidates.extend(by_cadastral.get(cadastral, []))
+        price = lot.current_price or lot.start_price
+        if price is not None:
+            candidates.extend(by_price.get(int(round(float(price))), []))
+
+        primary = next(
+            (
+                candidate
+                for candidate in dict.fromkeys(candidates)
+                if _same_processed_cross_source_lot(candidate, lot)
+            ),
+            None,
+        )
+        if primary is not None:
+            lot.duplicate_of_id = primary.id
+            primary.address = primary.address or lot.address
+            primary.cadastral_number = primary.cadastral_number or lot.cadastral_number
+            primary.cadastral_numbers = primary.cadastral_numbers or lot.cadastral_numbers
+            primary.region_slug = primary.region_slug or lot.region_slug
+            primary.region_name = primary.region_name or lot.region_name
+            primary.area = primary.area if primary.area is not None else lot.area
+            primary.review_status = primary.review_status or lot.review_status
+            primary_link = _ensure_processed_source_lot(session, primary)
+            duplicate_link = _ensure_processed_source_lot(session, lot)
+            duplicate_link.canonical_lot_id = primary_link.canonical_lot_id
+            reconciled += 1
+            continue
+
+        for cadastral in _processed_lot_cadastral_numbers(lot):
+            by_cadastral.setdefault(cadastral, []).append(lot)
+        if price is not None:
+            by_price.setdefault(int(round(float(price))), []).append(lot)
+
+    session.flush()
+    return reconciled
 
 def upsert_lot_events_from_raw(session: Session, processed: ProcessedLot, raw_payload: dict) -> None:
     if not session.query(LotGeoSnapshot).filter_by(lot_id=processed.id).first():

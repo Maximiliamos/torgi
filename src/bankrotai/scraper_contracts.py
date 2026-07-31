@@ -98,6 +98,7 @@ class TBankrotSearchFilters:
     price_max: float | None = None
     lot_number: str | None = None
     trade_type: str | None = None
+    category_codes: str = "3,4,5"
     photo_only: bool = False
     debtor: str | None = None
     auction_manager: str | None = None

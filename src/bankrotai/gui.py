@@ -67,7 +67,12 @@ from bankrotai.scrapers import (
     sync_public_real_estate,
     ingest_recent_tbankrot,
 )
-from bankrotai.logic import delete_lots_batch, cleanup_closed_lots, persist_lot
+from bankrotai.logic import (
+    cleanup_closed_lots,
+    delete_lots_batch,
+    persist_lot,
+    reconcile_cross_source_duplicates,
+)
 from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
 from openpyxl import Workbook
 from bankrotai.domain import NormalizedLot
@@ -94,7 +99,7 @@ SORT_ROLE = Qt.UserRole + 100
 EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
 LOT_ID_ROLE = Qt.UserRole + 103
-MAP_MARKER_LIMIT = 5000
+MAP_MARKER_LIMIT = 100_000
 MAP_PREVIEW_STYLE = """
 .lot-preview {
     position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
@@ -885,6 +890,128 @@ class LotOnlineSearchWorker(QThread):
             self.error.emit(str(exc))
 
 
+class AllRussiaRealEstateWorker(QThread):
+    progress = Signal(str)
+    source_finished = Signal(str, int, int)
+    result_ready = Signal(object, object)
+    error = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_requested = False
+        self._processed_ids: set[int] = set()
+        self._source_counts: dict[str, int] = {}
+        self._source_errors: dict[str, str] = {}
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        self.requestInterruption()
+
+    def _persist_page(self, source_name: str, lots: list[NormalizedLot]) -> None:
+        if not lots:
+            return
+        with session_scope() as session:
+            for lot in lots:
+                primary = persist_lot(session, lot)
+                self._processed_ids.add(primary.id)
+        self._source_counts[source_name] = self._source_counts.get(source_name, 0) + len(lots)
+        self.progress.emit(
+            f"{source_name}: загружено {self._source_counts[source_name]}, "
+            f"уникальных карточек {len(self._processed_ids)}"
+        )
+
+    def run(self) -> None:
+        sources = (
+            (
+                "ГИС Торги",
+                TorgiGovClient(diagnostics=True),
+                TorgiGovSearchFilters(
+                    type_transaction="SALE",
+                    category_code=TorgiGovClient.REAL_ESTATE_CATEGORY_CODES,
+                    lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
+                    page=1,
+                    page_size=100,
+                ),
+            ),
+            (
+                "TBankrot",
+                TBankrotClient(diagnostics=True),
+                TBankrotSearchFilters(
+                    category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
+                    page=1,
+                    page_size=100,
+                ),
+            ),
+            (
+                "РАД / ЛОТ-ОНЛАЙН",
+                LotOnlineClient(diagnostics=True),
+                LotOnlineSearchFilters(
+                    category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
+                    region_feature=None,
+                    archive_mode="false",
+                    page=1,
+                    page_size=96,
+                ),
+            ),
+        )
+        for source_name, client, filters in sources:
+            if self._stop_requested:
+                break
+            self.progress.emit(f"{source_name}: поиск всей недвижимости РФ...")
+            try:
+                page_callback = lambda lots, _meta, name=source_name: self._persist_page(name, lots)
+                if isinstance(client, TorgiGovClient):
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        max_pages=500,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                elif isinstance(client, TBankrotClient):
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                else:
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        max_pages=500,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                self._source_counts[source_name] = len(lots)
+                self.source_finished.emit(source_name, len(lots), len(self._processed_ids))
+            except Exception as exc:
+                logger.exception("Nationwide search failed for %s", source_name)
+                self._source_errors[source_name] = str(exc)
+                self.progress.emit(f"{source_name}: ошибка, продолжаю со следующим источником")
+
+        if not self._stop_requested:
+            with session_scope() as session:
+                reconcile_cross_source_duplicates(session)
+                rows = session.execute(
+                    select(ProcessedLot.id, ProcessedLot.duplicate_of_id).where(
+                        ProcessedLot.id.in_(self._processed_ids)
+                    )
+                ).all()
+                self._processed_ids = {
+                    int(duplicate_of_id or processed_id)
+                    for processed_id, duplicate_of_id in rows
+                }
+        if self._source_errors and not self._source_counts:
+            self.error.emit("; ".join(f"{name}: {message}" for name, message in self._source_errors.items()))
+            return
+        self.result_ready.emit(sorted(self._processed_ids), {
+            "sources": self._source_counts,
+            "errors": self._source_errors,
+            "stopped": self._stop_requested,
+        })
+
+
 class ImportWorker(QThread):
     finished = Signal(int, int, int) # new, updated, skipped
     progress = Signal(str)
@@ -1353,6 +1480,10 @@ class MainWindow(QMainWindow):
         self.lot_online_meta: dict = {}
         self.lot_online_current_page = 1
         init_db()
+        with session_scope() as session:
+            reconciled = reconcile_cross_source_duplicates(session)
+            if reconciled:
+                logger.info("Reconciled %s existing cross-source duplicate lots", reconciled)
         self.map_bridge = MapBridge(self)
         self.map_bridge.review_changed.connect(self.on_map_review_changed)
         self.map_bridge.preview_opened.connect(self.on_map_preview_opened)
@@ -1468,7 +1599,126 @@ class MainWindow(QMainWindow):
         self.init_tools_tab()
         self.tabs.addTab(self.tools_tab, "🛠️ Инструменты")
 
+    @staticmethod
+    def _configure_results_table(table: QTableWidget, headers: list[str], stretch_columns: tuple[int, ...]) -> None:
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        header = table.horizontalHeader()
+        for column in stretch_columns:
+            header.setSectionResizeMode(column, QHeaderView.Stretch)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+
+    def _init_compact_torgi_tab(self) -> None:
+        layout = QVBoxLayout(self.dash_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        title = QLabel("Поиск ГИС Торги (torgi.gov.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+        self.stats_label = QLabel()
+        self.stats_label.hide()
+        group = QGroupBox("Параметры поиска недвижимости (только продажа)")
+        form = QFormLayout(group)
+        self.torgi_search_input = QLineEdit()
+        self.torgi_search_input.setPlaceholderText("Название, адрес, кадастровый номер...")
+        form.addRow("Поиск", self.torgi_search_input)
+        self.torgi_category_combo = WheelSafeComboBox()
+        for label, code in (
+            ("Вся недвижимость", TorgiGovClient.REAL_ESTATE_CATEGORY_CODES),
+            ("Земельный участок со зданием", "903"),
+            ("Недвижимость", "7"),
+            ("Земельные участки", "2"),
+        ):
+            self.torgi_category_combo.addItem(label, code)
+        form.addRow("Категория", self.torgi_category_combo)
+        self.torgi_subject_combo = WheelSafeComboBox()
+        self.torgi_subject_combo.addItem("Все регионы", None)
+        for name, code in sorted(TorgiGovClient.SUBJECT_RF_CODES.items()):
+            self.torgi_subject_combo.addItem(name, code)
+        form.addRow("Регион", self.torgi_subject_combo)
+        self.torgi_lot_status_combo = WheelSafeComboBox()
+        self.torgi_lot_status_combo.addItem("Активные", TorgiGovClient.DEFAULT_LOT_STATUS)
+        self.torgi_lot_status_combo.addItem("Все состояния", None)
+        self.torgi_status_combo = self.torgi_lot_status_combo
+        form.addRow("Состояние", self.torgi_lot_status_combo)
+        self.torgi_price_min_input, self.torgi_price_max_input = QLineEdit(), QLineEdit()
+        self.torgi_price_min_input.setPlaceholderText("Цена от")
+        self.torgi_price_max_input.setPlaceholderText("Цена до")
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.torgi_price_min_input)
+        price_row.addWidget(self.torgi_price_max_input)
+        form.addRow("Цена", price_row)
+        self.torgi_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.torgi_load_all_checkbox.setChecked(True)
+        self.torgi_max_items_input = QLineEdit("5000")
+        self.torgi_max_items_input.setMaximumWidth(110)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.torgi_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.torgi_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+        buttons = QHBoxLayout()
+        self.torgi_search_btn = QPushButton("🔎 Найти онлайн")
+        self.torgi_search_btn.clicked.connect(self.run_torgi_search)
+        self.torgi_excel_search_btn = QPushButton("Поиск через Excel")
+        self.torgi_excel_search_btn.clicked.connect(self.run_torgi_excel_search)
+        self.torgi_stop_btn = QPushButton("Остановить")
+        self.torgi_stop_btn.setEnabled(False)
+        self.torgi_stop_btn.clicked.connect(self.stop_torgi_search)
+        self.torgi_clear_btn = QPushButton("Очистить")
+        self.torgi_clear_btn.clicked.connect(self.clear_torgi_filters)
+        self.torgi_open_site_btn = QPushButton("Открыть каталог")
+        self.torgi_open_site_btn.clicked.connect(self.open_torgi_site)
+        for button in (self.torgi_search_btn, self.torgi_excel_search_btn, self.torgi_stop_btn, self.torgi_clear_btn, self.torgi_open_site_btn):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(group)
+        self.torgi_status_label = QLabel("Найдено 0, источник torgi.gov.ru")
+        layout.addWidget(self.torgi_status_label)
+        self.active_filters_widget = QWidget()
+        self.active_filters_layout = QHBoxLayout(self.active_filters_widget)
+        self.active_filters_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.active_filters_widget)
+        self.torgi_results_table = QTableWidget()
+        self.torgi_table = self.torgi_results_table
+        self._configure_results_table(self.torgi_results_table, [
+            "В базе", "ID / Извещение", "Название", "Категория", "Регион / адрес",
+            "Начальная цена", "Статус", "Дата публикации", "Окончание заявок", "Ссылка",
+        ], (2, 4))
+        self.torgi_results_table.horizontalHeader().sectionClicked.connect(self.on_torgi_header_clicked)
+        self.torgi_results_table.cellClicked.connect(self.open_torgi_link_cell)
+        self.torgi_results_table.cellDoubleClicked.connect(self.open_torgi_result_url)
+        layout.addWidget(self.torgi_results_table, 1)
+        actions = QHBoxLayout()
+        self.torgi_import_selected_btn = QPushButton("Импортировать выбранные в базу")
+        self.torgi_import_selected_btn.clicked.connect(self.import_selected_torgi_lots)
+        self.torgi_import_all_btn = QPushButton("Импортировать все найденные")
+        self.torgi_import_all_btn.clicked.connect(self.import_all_torgi_lots)
+        self.torgi_prev_btn = QPushButton("Предыдущая страница")
+        self.torgi_prev_btn.clicked.connect(self.search_torgi_prev_page)
+        self.torgi_next_btn = QPushButton("Следующая страница")
+        self.torgi_next_btn.clicked.connect(self.search_torgi_next_page)
+        actions.addWidget(self.torgi_import_selected_btn)
+        actions.addWidget(self.torgi_import_all_btn)
+        actions.addStretch()
+        actions.addWidget(self.torgi_prev_btn)
+        actions.addWidget(self.torgi_next_btn)
+        layout.addLayout(actions)
+        self.torgi_unsupported_inputs = {}
+        self.restore_torgi_filter_state()
+        self.update_active_filter_chips()
+        self.render_torgi_results()
+
     def init_dash_tab(self):
+        self._init_compact_torgi_tab()
+        return
         layout = QVBoxLayout(self.dash_tab)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -1917,7 +2167,106 @@ class MainWindow(QMainWindow):
         self.restore_torgi_filter_state()
         self.update_active_filter_chips()
 
+    def _init_compact_tbankrot_tab(self) -> None:
+        layout = QVBoxLayout(self.tbankrot_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        title = QLabel("Поиск TBankrot (tbankrot.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+        group = QGroupBox("Параметры поиска недвижимости (без аренды)")
+        form = QFormLayout(group)
+        self.tbankrot_search_input = QLineEdit()
+        self.tbankrot_search_input.setPlaceholderText("Название, адрес, номер лота...")
+        form.addRow("Поиск", self.tbankrot_search_input)
+        self.tbankrot_category_combo = WheelSafeComboBox()
+        self.tbankrot_category_combo.addItem("Вся недвижимость", TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
+        for code, label in TBankrotClient.REAL_ESTATE_CATEGORY_LABELS.items():
+            self.tbankrot_category_combo.addItem(label, code)
+        form.addRow("Категория", self.tbankrot_category_combo)
+        self.tbankrot_region_combo = WheelSafeComboBox()
+        self.tbankrot_region_combo.addItem("Все регионы", None)
+        for code, label in sorted(TBankrotClient.REGION_LABELS.items(), key=lambda item: item[1]):
+            self.tbankrot_region_combo.addItem(label, code)
+        form.addRow("Регион", self.tbankrot_region_combo)
+        self.tbankrot_price_min_input, self.tbankrot_price_max_input = QLineEdit(), QLineEdit()
+        self.tbankrot_price_min_input.setPlaceholderText("Цена от")
+        self.tbankrot_price_max_input.setPlaceholderText("Цена до")
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.tbankrot_price_min_input)
+        price_row.addWidget(self.tbankrot_price_max_input)
+        form.addRow("Цена", price_row)
+        self.tbankrot_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.tbankrot_load_all_checkbox.setChecked(True)
+        self.tbankrot_max_items_input = QLineEdit("5000")
+        self.tbankrot_max_items_input.setMaximumWidth(110)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.tbankrot_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.tbankrot_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+        buttons = QHBoxLayout()
+        self.tbankrot_search_btn = QPushButton("Найти на TBankrot")
+        self.tbankrot_search_btn.clicked.connect(self.run_tbankrot_search)
+        self.tbankrot_stop_btn = QPushButton("Остановить")
+        self.tbankrot_stop_btn.setEnabled(False)
+        self.tbankrot_stop_btn.clicked.connect(self.stop_tbankrot_search)
+        self.tbankrot_clear_btn = QPushButton("Очистить")
+        self.tbankrot_clear_btn.clicked.connect(self.clear_tbankrot_filters)
+        self.tbankrot_open_site_btn = QPushButton("Открыть каталог")
+        self.tbankrot_open_site_btn.clicked.connect(self.open_tbankrot_site)
+        for button in (self.tbankrot_search_btn, self.tbankrot_stop_btn, self.tbankrot_clear_btn, self.tbankrot_open_site_btn):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(group)
+        for name in (
+            "tbankrot_lot_number_input", "tbankrot_debtor_input", "tbankrot_auction_manager_input",
+            "tbankrot_organizer_input", "tbankrot_stop_words_input",
+        ):
+            setattr(self, name, QLineEdit())
+        self.tbankrot_trade_type_combo = WheelSafeComboBox()
+        self.tbankrot_trade_type_combo.addItem("Все типы торгов", None)
+        self.tbankrot_photo_only_checkbox = QCheckBox()
+        self.tbankrot_show_closed_checkbox = QCheckBox()
+        self.tbankrot_show_paused_checkbox = QCheckBox()
+        self.tbankrot_status_label = QLabel("Найдено 0, источник tbankrot.ru")
+        layout.addWidget(self.tbankrot_status_label)
+        self.tbankrot_active_filters_widget = QWidget()
+        self.tbankrot_active_filters_layout = QHBoxLayout(self.tbankrot_active_filters_widget)
+        self.tbankrot_active_filters_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.tbankrot_active_filters_widget)
+        self.tbankrot_results_table = QTableWidget()
+        self._configure_results_table(self.tbankrot_results_table, [
+            "В базе", "ID", "Название", "Категория", "Регион / адрес", "Цена",
+            "Статус", "Дата публикации", "Окончание заявок", "Ссылка",
+        ], (2, 4))
+        self.tbankrot_results_table.horizontalHeader().sectionClicked.connect(self.on_tbankrot_header_clicked)
+        self.tbankrot_results_table.cellClicked.connect(self.open_tbankrot_link_cell)
+        self.tbankrot_results_table.cellDoubleClicked.connect(self.open_tbankrot_result_url)
+        layout.addWidget(self.tbankrot_results_table, 1)
+        actions = QHBoxLayout()
+        self.tbankrot_import_selected_btn = QPushButton("Импортировать выбранные в базу")
+        self.tbankrot_import_selected_btn.clicked.connect(self.import_selected_tbankrot_lots)
+        self.tbankrot_import_all_btn = QPushButton("Импортировать все найденные")
+        self.tbankrot_import_all_btn.clicked.connect(self.import_all_tbankrot_lots)
+        self.tbankrot_prev_btn = QPushButton("Предыдущая страница")
+        self.tbankrot_prev_btn.clicked.connect(self.search_tbankrot_prev_page)
+        self.tbankrot_next_btn = QPushButton("Следующая страница")
+        self.tbankrot_next_btn.clicked.connect(self.search_tbankrot_next_page)
+        actions.addWidget(self.tbankrot_import_selected_btn)
+        actions.addWidget(self.tbankrot_import_all_btn)
+        actions.addStretch()
+        actions.addWidget(self.tbankrot_prev_btn)
+        actions.addWidget(self.tbankrot_next_btn)
+        layout.addLayout(actions)
+        self.restore_tbankrot_filter_state()
+        self.update_tbankrot_filter_chips()
+        self.render_tbankrot_results()
+
     def init_tbankrot_tab(self):
+        self._init_compact_tbankrot_tab()
+        return
         layout = QVBoxLayout(self.tbankrot_tab)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -2157,12 +2506,7 @@ class MainWindow(QMainWindow):
 
     def _combo_value(self, widget: QComboBox) -> str | None:
         data = widget.currentData()
-        if data not in (None, ""):
-            return str(data)
-        text = widget.currentText().strip()
-        if not text or text == "Не выбрано":
-            return None
-        return text
+        return str(data) if data not in (None, "") else None
 
     def _line_text(self, widget: QLineEdit) -> str | None:
         value = widget.text().strip()
@@ -2211,41 +2555,20 @@ class MainWindow(QMainWindow):
         return warnings
 
     def collect_torgi_filters(self, page: int | None = None) -> TorgiGovSearchFilters:
-        self.torgi_unsupported_warnings = self._collect_unsupported_torgi_warnings()
+        self.torgi_unsupported_warnings = []
         return TorgiGovSearchFilters(
             search_text=self.torgi_search_input.text().strip(),
-            type_transaction=self._combo_value(self.torgi_type_transaction_combo),
+            type_transaction="SALE",
             price_min=self._line_float(self.torgi_price_min_input),
             price_max=self._line_float(self.torgi_price_max_input),
             subject_rf=self._combo_value(self.torgi_subject_combo),
-            fias=self._line_text(self.torgi_fias_input),
-            ownership_form=self._combo_value(self.torgi_ownership_combo),
             category_code=(
                 self._combo_value(self.torgi_category_combo)
                 or TorgiGovClient.REAL_ESTATE_CATEGORY_CODES
             ),
             lot_status=self._combo_value(self.torgi_lot_status_combo),
-            currency_code=self._combo_value(self.torgi_currency_combo),
-            publish_date_from=self._line_text(self.torgi_publish_from_input),
-            publish_date_to=self._line_text(self.torgi_publish_to_input),
-            bidd_end_time_from=self._line_text(self.torgi_bidd_end_from_input),
-            bidd_end_time_to=self._line_text(self.torgi_bidd_end_to_input),
-            auction_start_date_from=self._line_text(self.torgi_auction_from_input),
-            auction_start_date_to=self._line_text(self.torgi_auction_to_input),
-            notice_number=self._line_text(self.torgi_notice_number_input),
-            etp_code=self._line_text(self.torgi_etp_input),
-            bidd_type=self._combo_value(self.torgi_bidd_type_combo),
-            bidd_form=self._combo_value(self.torgi_bidd_form_combo),
-            notice_status=self._combo_value(self.torgi_notice_status_combo),
-            organizer_name=self._line_text(self.torgi_organizer_name_input),
-            organizer_inn=self._line_text(self.torgi_organizer_inn_input),
-            right_holder_name=self._line_text(self.torgi_right_holder_name_input),
-            right_holder_inn=self._line_text(self.torgi_right_holder_inn_input),
-            attachment_text=self._line_text(self.torgi_attachment_input),
-            match_phrase=self.torgi_match_phrase_checkbox.isChecked(),
-            is_msp=self.torgi_is_msp_checkbox.isChecked(),
             page=page or self.torgi_current_page,
-            page_size=20,
+            page_size=100,
         )
 
     def save_torgi_filter_state(self) -> None:
@@ -2328,11 +2651,6 @@ class MainWindow(QMainWindow):
         if category_value:
             chips.append((category_label, lambda: self.clear_filter_combo(self.torgi_category_combo)))
 
-        notice_label = self.torgi_notice_status_combo.currentText()
-        notice_value = self.torgi_notice_status_combo.currentData()
-        if notice_value:
-            chips.append((notice_label, lambda: self.clear_filter_combo(self.torgi_notice_status_combo)))
-
         lot_label = self.torgi_lot_status_combo.currentText()
         lot_value = self.torgi_lot_status_combo.currentData()
         if lot_value:
@@ -2359,33 +2677,11 @@ class MainWindow(QMainWindow):
         self.save_torgi_filter_state()
 
     def clear_torgi_filters(self):
-        line_widgets = [
-            self.torgi_search_input, self.torgi_price_min_input, self.torgi_price_max_input,
-            self.torgi_fias_input, self.torgi_price_fin_from_input, self.torgi_price_fin_to_input,
-            self.torgi_notice_number_input, self.torgi_etp_input, self.torgi_publish_from_input,
-            self.torgi_publish_to_input, self.torgi_bidd_end_from_input, self.torgi_bidd_end_to_input,
-            self.torgi_auction_from_input, self.torgi_auction_to_input, self.torgi_npa_input,
-            self.torgi_organizer_name_input, self.torgi_organizer_inn_input,
-            self.torgi_organizer_kpp_input, self.torgi_organizer_ogrn_input,
-            self.torgi_right_holder_name_input, self.torgi_right_holder_inn_input,
-            self.torgi_right_holder_kpp_input, self.torgi_right_holder_ogrn_input,
-            self.torgi_amo_org_input, self.torgi_attachment_input,
-        ]
-        for widget in line_widgets:
+        for widget in (self.torgi_search_input, self.torgi_price_min_input, self.torgi_price_max_input):
             widget.clear()
-        for widget in [
-            self.torgi_type_transaction_combo, self.torgi_subject_combo, self.torgi_ownership_combo,
-            self.torgi_category_combo, self.torgi_currency_combo,
-            self.torgi_bidd_type_combo, self.torgi_bidd_form_combo, self.torgi_notice_status_combo,
-        ]:
-            self._set_combo_data(widget, None)
+        self._set_combo_data(self.torgi_subject_combo, None)
+        self._set_combo_data(self.torgi_category_combo, TorgiGovClient.REAL_ESTATE_CATEGORY_CODES)
         self._set_combo_data(self.torgi_status_combo, TorgiGovClient.DEFAULT_LOT_STATUS)
-        for widget in [
-            self.torgi_is_msp_checkbox, self.torgi_is_stopped_checkbox, self.torgi_rh_gov_prt_checkbox,
-            self.torgi_has_appeals_checkbox, self.torgi_has_solutions_checkbox,
-            self.torgi_has_prescriptions_checkbox, self.torgi_match_phrase_checkbox,
-        ]:
-            widget.setChecked(False)
         self.torgi_load_all_checkbox.setChecked(True)
         self.torgi_max_items_input.setText("5000")
         self.torgi_results = []
@@ -2766,6 +3062,10 @@ class MainWindow(QMainWindow):
             price_max=self._line_float(self.tbankrot_price_max_input),
             lot_number=self._line_text(self.tbankrot_lot_number_input),
             trade_type=self._combo_value(self.tbankrot_trade_type_combo),
+            category_codes=(
+                self._combo_value(self.tbankrot_category_combo)
+                or TBankrotClient.REAL_ESTATE_CATEGORY_CODES
+            ),
             photo_only=self.tbankrot_photo_only_checkbox.isChecked(),
             debtor=self._line_text(self.tbankrot_debtor_input),
             auction_manager=self._line_text(self.tbankrot_auction_manager_input),
@@ -2785,6 +3085,7 @@ class MainWindow(QMainWindow):
             "price_min": self.tbankrot_price_min_input.text().strip(),
             "price_max": self.tbankrot_price_max_input.text().strip(),
             "trade_type": self._combo_value(self.tbankrot_trade_type_combo),
+            "category_codes": self._combo_value(self.tbankrot_category_combo),
         }
         set_app_setting("tbankrot_last_filters", json.dumps(state, ensure_ascii=False))
 
@@ -2802,6 +3103,10 @@ class MainWindow(QMainWindow):
         self.tbankrot_price_min_input.setText(state.get("price_min", ""))
         self.tbankrot_price_max_input.setText(state.get("price_max", ""))
         self._set_combo_data(self.tbankrot_trade_type_combo, state.get("trade_type"))
+        self._set_combo_data(
+            self.tbankrot_category_combo,
+            state.get("category_codes") or TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
+        )
 
     def update_tbankrot_filter_chips(self):
         if not hasattr(self, "tbankrot_active_filters_layout"):
@@ -2848,6 +3153,10 @@ class MainWindow(QMainWindow):
         if region_value:
             chips.append((self.tbankrot_region_combo.currentText(), lambda: self.clear_tbankrot_filter_combo(self.tbankrot_region_combo)))
 
+        category_value = self.tbankrot_category_combo.currentData()
+        if category_value:
+            chips.append((self.tbankrot_category_combo.currentText(), lambda: self._set_tbankrot_all_categories()))
+
         trade_value = self.tbankrot_trade_type_combo.currentData()
         if trade_value:
             chips.append((self.tbankrot_trade_type_combo.currentText(), lambda: self.clear_tbankrot_filter_combo(self.tbankrot_trade_type_combo)))
@@ -2876,6 +3185,11 @@ class MainWindow(QMainWindow):
         self.update_tbankrot_filter_chips()
         self.save_tbankrot_filter_state()
 
+    def _set_tbankrot_all_categories(self):
+        self._set_combo_data(self.tbankrot_category_combo, TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
+        self.update_tbankrot_filter_chips()
+        self.save_tbankrot_filter_state()
+
     def clear_tbankrot_filters(self):
         for widget in [
             self.tbankrot_search_input, self.tbankrot_price_min_input, self.tbankrot_price_max_input,
@@ -2886,6 +3200,7 @@ class MainWindow(QMainWindow):
             widget.clear()
         self._set_combo_data(self.tbankrot_region_combo, None)
         self._set_combo_data(self.tbankrot_trade_type_combo, None)
+        self._set_combo_data(self.tbankrot_category_combo, TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
         for widget in [
             self.tbankrot_photo_only_checkbox, self.tbankrot_show_closed_checkbox,
             self.tbankrot_show_paused_checkbox,
@@ -3177,7 +3492,6 @@ class MainWindow(QMainWindow):
 
         self.lot_online_category_combo = WheelSafeComboBox()
         self.lot_online_category_combo.addItem("Недвижимое имущество", "1")
-        self.lot_online_category_combo.addItem("Все категории", "9876")
         form.addRow("Каталог", self.lot_online_category_combo)
 
         self.lot_online_region_combo = WheelSafeComboBox()
@@ -3730,6 +4044,15 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self.refresh_all_map_markers)
         sidebar_layout.addWidget(refresh_btn)
 
+        self.search_all_russia_btn = QPushButton("Поиск всех лотов РФ")
+        self.search_all_russia_btn.setMinimumHeight(42)
+        self.search_all_russia_btn.setStyleSheet(
+            "QPushButton { background: #1f9d55; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bd3b4; }"
+        )
+        self.search_all_russia_btn.clicked.connect(self.run_all_russia_search)
+        sidebar_layout.addWidget(self.search_all_russia_btn)
+
         self.cad_info_text = QTextEdit()
         self.cad_info_text.setReadOnly(True)
         self.cad_info_text.setPlaceholderText("Введите кадастровый номер или адрес")
@@ -3783,6 +4106,15 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Обновить метки лотов")
         refresh_btn.clicked.connect(self.refresh_all_map_markers)
         sidebar_layout.addWidget(refresh_btn)
+
+        self.yandex_search_all_russia_btn = QPushButton("Поиск всех лотов РФ")
+        self.yandex_search_all_russia_btn.setMinimumHeight(42)
+        self.yandex_search_all_russia_btn.setStyleSheet(
+            "QPushButton { background: #1f9d55; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bd3b4; }"
+        )
+        self.yandex_search_all_russia_btn.clicked.connect(self.run_all_russia_search)
+        sidebar_layout.addWidget(self.yandex_search_all_russia_btn)
 
         self.yandex_cad_info_text = QTextEdit()
         self.yandex_cad_info_text.setReadOnly(True)
@@ -3977,7 +4309,7 @@ class MainWindow(QMainWindow):
         self.lots_table.setSortingEnabled(False)
 
         with session_scope() as session:
-            query = select(ProcessedLot)
+            query = select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
             
             if search_text:
                 query = query.where(ProcessedLot.title.ilike(f"%{search_text}%"))
@@ -4503,6 +4835,57 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Обновление геометок лотов из базы...")
         self.start_geo_worker(limit=None, refresh_existing=False)
 
+    def _set_all_russia_buttons_enabled(self, enabled: bool) -> None:
+        for name in ("search_all_russia_btn", "yandex_search_all_russia_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(enabled)
+
+    def run_all_russia_search(self) -> None:
+        worker = getattr(self, "all_russia_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.request_stop()
+            self.status_bar.showMessage("Останавливаю поиск после текущей страницы...", 5000)
+            return
+        self._set_all_russia_buttons_enabled(False)
+        self.start_task_progress("all_russia", "РФ")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.all_russia_worker = AllRussiaRealEstateWorker()
+        self.all_russia_worker.progress.connect(self.status_bar.showMessage)
+        self.all_russia_worker.source_finished.connect(
+            lambda source, count, unique: self.status_bar.showMessage(
+                f"{source}: {count}; уникальных карточек РФ: {unique}", 5000
+            )
+        )
+        self.all_russia_worker.result_ready.connect(self.on_all_russia_search_finished)
+        self.all_russia_worker.error.connect(self.on_all_russia_search_error)
+        self.all_russia_worker.start()
+
+    def on_all_russia_search_finished(self, lot_ids: object, summary: object) -> None:
+        self.finish_task_progress("all_russia")
+        self._set_all_russia_buttons_enabled(True)
+        self.progress_bar.setVisible(False)
+        ids = [int(value) for value in lot_ids] if isinstance(lot_ids, list) else []
+        details = summary if isinstance(summary, dict) else {}
+        self.load_lots()
+        self.update_map()
+        self.update_yandex_map()
+        self.status_bar.showMessage(
+            f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
+            8000,
+        )
+        if details.get("errors"):
+            logger.warning("Nationwide search completed with source errors: %s", details["errors"])
+        if ids:
+            self.start_geo_worker(lot_ids=ids, refresh_existing=False, limit=None)
+
+    def on_all_russia_search_error(self, message: str) -> None:
+        self.finish_task_progress("all_russia")
+        self._set_all_russia_buttons_enabled(True)
+        self.progress_bar.setVisible(False)
+        QMessageBox.warning(self, "Поиск всех лотов РФ", message)
+
     def on_geo_lot_processed(self, lot_id: int, success: bool, completed: int, total: int):
         if not success:
             return
@@ -4714,6 +5097,13 @@ class MainWindow(QMainWindow):
         worker.deleteLater()
 
     def closeEvent(self, event):
+        nationwide_worker = getattr(self, "all_russia_worker", None)
+        if nationwide_worker is not None and nationwide_worker.isRunning():
+            nationwide_worker.request_stop()
+            if not nationwide_worker.wait(70_000):
+                logger.error("Nationwide search worker did not stop before application shutdown")
+                event.ignore()
+                return
         workers = list(self.preview_enrichment_workers.values())
         for worker in workers:
             worker.requestInterruption()
@@ -4936,17 +5326,46 @@ class MainWindow(QMainWindow):
         self.web_view.page().runJavaScript(js)
 
     @staticmethod
-    def _map_payload(lot: ProcessedLot, geo: LotGeoSnapshot, source_lot: SourceLot | None = None) -> dict:
+    def _map_payload(
+        lot: ProcessedLot,
+        geo: LotGeoSnapshot,
+        source_lots: list[SourceLot] | None = None,
+    ) -> dict:
         def display_datetime(value: datetime | None) -> str | None:
             return value.strftime("%d.%m.%Y %H:%M") if value else None
 
-        raw_data = source_lot.raw_data if source_lot and isinstance(source_lot.raw_data, dict) else {}
+        source_lots = source_lots or []
+        primary_source = next(
+            (
+                source
+                for source in source_lots
+                if source.source_system == lot.source_system and source.external_id == lot.external_id
+            ),
+            source_lots[0] if source_lots else None,
+        )
         source_url = (
-            source_lot.source_url if source_lot and source_lot.source_url
+            primary_source.source_url if primary_source and primary_source.source_url
             else lot.source_url or lot.lot_url
         )
         source_system = (lot.source_system or lot.source or "").lower()
-        image_urls = extract_preview_image_urls(raw_data)
+        image_urls: list[str] = []
+        gis_torgi_url = None
+        etp_url = None
+        torgi_russia_url = None
+        for source in source_lots:
+            raw_data = source.raw_data if isinstance(source.raw_data, dict) else {}
+            for image_url in extract_preview_image_urls(raw_data):
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
+            system = (source.source_system or "").casefold()
+            candidate_url = source.source_url
+            gis_torgi_url = gis_torgi_url or raw_data.get("gis_torgi_url") or (
+                candidate_url if "torgi.gov" in system else None
+            )
+            etp_url = etp_url or raw_data.get("etp_url") or (
+                candidate_url if "lot-online" in system else None
+            )
+            torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
         return {
             "id": lot.id,
             "title": lot.title,
@@ -4970,18 +5389,20 @@ class MainWindow(QMainWindow):
             "url": lot.lot_url,
             "source": lot.source_system or lot.source,
             "source_name": (
-                source_lot.platform_name if source_lot and source_lot.platform_name
-                else lot.source_system or lot.source
+                " / ".join(dict.fromkeys(
+                    source.platform_name or source.source_system for source in source_lots
+                ))
+                if source_lots else lot.source_system or lot.source
             ),
             "source_url": source_url,
-            "gis_torgi_url": raw_data.get("gis_torgi_url") or (source_url if "torgi.gov" in source_system else None),
-            "etp_url": raw_data.get("etp_url") or (source_url if "lot-online" in source_system else None),
-            "torgi_russia_url": raw_data.get("torgi_russia_url"),
+            "gis_torgi_url": gis_torgi_url or (source_url if "torgi.gov" in source_system else None),
+            "etp_url": etp_url or (source_url if "lot-online" in source_system else None),
+            "torgi_russia_url": torgi_russia_url,
             "image_url": image_urls[0] if image_urls else None,
             "image_urls": image_urls,
-            "procedure_number": source_lot.procedure_number if source_lot else None,
-            "application_deadline": display_datetime(source_lot.application_deadline) if source_lot else None,
-            "auction_at": display_datetime(source_lot.auction_at) if source_lot else None,
+            "procedure_number": next((source.procedure_number for source in source_lots if source.procedure_number), None),
+            "application_deadline": display_datetime(next((source.application_deadline for source in source_lots if source.application_deadline), None)),
+            "auction_at": display_datetime(next((source.auction_at for source in source_lots if source.auction_at), None)),
         }
 
     def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
@@ -4999,19 +5420,10 @@ class MainWindow(QMainWindow):
                 .subquery()
             )
             stmt = (
-                select(ProcessedLot, LotGeoSnapshot, SourceLot)
+                select(ProcessedLot, LotGeoSnapshot)
                 .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
                 .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .outerjoin(
-                    SourceLot,
-                    or_(
-                        SourceLot.processed_lot_id == ProcessedLot.id,
-                        and_(
-                            SourceLot.source_system == ProcessedLot.source_system,
-                            SourceLot.external_id == ProcessedLot.external_id,
-                        ),
-                    ),
-                )
+                .where(ProcessedLot.duplicate_of_id.is_(None))
                 .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
             if lot_id is not None:
@@ -5019,9 +5431,23 @@ class MainWindow(QMainWindow):
             else:
                 stmt = stmt.limit(limit)
 
+            rows = list(session.execute(stmt))
+            primary_ids = [lot.id for lot, _geo in rows]
+            source_map: dict[int, list[SourceLot]] = {lot_id: [] for lot_id in primary_ids}
+            if primary_ids:
+                source_rows = session.execute(
+                    select(ProcessedLot.id, ProcessedLot.duplicate_of_id, SourceLot)
+                    .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+                    .where(or_(
+                        ProcessedLot.id.in_(primary_ids),
+                        ProcessedLot.duplicate_of_id.in_(primary_ids),
+                    ))
+                )
+                for processed_id, duplicate_of_id, source_lot in source_rows:
+                    source_map.setdefault(duplicate_of_id or processed_id, []).append(source_lot)
             return [
-                self._map_payload(lot, geo, source_lot)
-                for lot, geo, source_lot in session.execute(stmt)
+                self._map_payload(lot, geo, source_map.get(lot.id, []))
+                for lot, geo in rows
             ]
 
     def _load_map_lot(self, lot_id: int) -> dict | None:

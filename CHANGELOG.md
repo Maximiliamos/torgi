@@ -24,8 +24,15 @@ for tagged releases.
 
 ### Reliability
 
+- Reworked GIS Torgi and TBankrot desktop searches around verified real-estate
+  categories and excluded rentals and non-real-estate assets.
+- Added nationwide real-estate search across GIS Torgi, TBankrot and RAD / LOT-ONLINE.
+- Added cross-source duplicate recognition with one registry/map card and aggregated
+  source links and photographs.
 - Added RAD-aware Russian address normalization and district-safe Nominatim matching.
 - Added bounded parallel bulk GEO processing with accurate success/failure counts.
+- Added PKK/NSPD connectivity circuit breakers so a VPN-blocked cadastral service
+  does not impose the same timeout on every lot in a bulk queue.
 - Added incremental Leaflet/Yandex marker updates as each GEO result is committed.
 - Added map lot previews with source photos, auction details, external source links,
   and persisted interested/unsure/rejected review actions.

@@ -27,6 +27,8 @@ def test_tbankrot_search_params_match_site_form_fields():
     assert ("start_p1", "100000") in params
     assert ("start_p2", "2500000") in params
     assert ("num", "7523707") in params
+    assert ("parent_cat", "2") in params
+    assert ("sub_cat", "3,4,5") in params
     assert ("type_1", "on") in params
     assert ("type_2", "on") not in params
     assert ("photo", "1") in params
@@ -46,6 +48,15 @@ def test_tbankrot_first_page_does_not_force_sort_or_page():
     assert not any(name == "sort" for name, _value in params)
     assert not any(name == "sort_order" for name, _value in params)
     assert not any(name == "page" for name, _value in params)
+
+
+def test_tbankrot_can_select_one_real_estate_category():
+    params = TBankrotClient()._build_query_params(
+        TBankrotSearchFilters(category_codes="5")
+    )
+
+    assert ("parent_cat", "2") in params
+    assert ("sub_cat", "5") in params
 
 
 def test_tbankrot_regional_page_uses_slug_url_and_page_size_cookie():

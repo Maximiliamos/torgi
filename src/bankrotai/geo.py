@@ -22,6 +22,7 @@ REQUEST_TIMEOUT = (get_settings().external_connect_timeout, get_settings().exter
 NSPD_REFERER = "https://nspd.gov.ru/map?thematic=PKK"
 NOMINATIM_MIN_REQUEST_INTERVAL = 1.05
 CADASTRAL_MIN_REQUEST_INTERVAL = 0.35
+CADASTRAL_CIRCUIT_BREAK_SECONDS = 300.0
 
 
 class NSPDTLSVerificationError(RuntimeError):
@@ -76,6 +77,20 @@ class CadastralGeocoder:
         self.nspd_search_url = "https://nspd.gov.ru/api/geoportal/v2/search/geoportal"
         self.last_request_time = 0.0
         self._rate_lock = threading.Lock()
+        self._pkk_request_lock = threading.Lock()
+        self._nspd_request_lock = threading.Lock()
+        self._pkk_disabled_until = 0.0
+        self._nspd_disabled_until = 0.0
+
+    def _circuit_available(self, service: str) -> bool:
+        return time.monotonic() >= getattr(self, f"_{service}_disabled_until")
+
+    def _open_circuit(self, service: str) -> None:
+        setattr(
+            self,
+            f"_{service}_disabled_until",
+            time.monotonic() + CADASTRAL_CIRCUIT_BREAK_SECONDS,
+        )
 
     def _rate_limit(self):
         with self._rate_lock:
@@ -166,18 +181,26 @@ class CadastralGeocoder:
         feature_type: int,
         kind: str,
     ) -> CadastralObjectResult | None:
-        self._rate_limit()
-
         url = f"{self.base_url}/{feature_type}"
         params = {"cadastralNumber": cadastral_number}
 
-        try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.warning("PKK request failed for %s: %s", cadastral_number, e)
+        if not self._circuit_available("pkk"):
             return None
+        with self._pkk_request_lock:
+            if not self._circuit_available("pkk"):
+                return None
+            self._rate_limit()
+            try:
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as e:
+                self._open_circuit("pkk")
+                logger.warning("PKK request failed for %s; pausing PKK requests: %s", cadastral_number, e)
+                return None
+            except Exception as e:
+                logger.warning("PKK response failed for %s: %s", cadastral_number, e)
+                return None
 
         return self._parse_pkk_feature(data, cadastral_number, kind)
 
@@ -247,22 +270,32 @@ class CadastralGeocoder:
             "query": cadastral_number,
         }
 
-        try:
-            resp = requests.get(
-                self.nspd_search_url,
-                params=params,
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-                verify=nspd_tls_verify(),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except SSLError as e:
-            logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
-            raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
-        except Exception as e:
-            logger.warning("NSPD request failed for %s: %s", cadastral_number, e)
+        if not self._circuit_available("nspd"):
             return None
+        with self._nspd_request_lock:
+            if not self._circuit_available("nspd"):
+                return None
+            try:
+                resp = requests.get(
+                    self.nspd_search_url,
+                    params=params,
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT,
+                    verify=nspd_tls_verify(),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except SSLError as e:
+                self._open_circuit("nspd")
+                logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
+                raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
+            except requests.RequestException as e:
+                self._open_circuit("nspd")
+                logger.warning("NSPD request failed for %s; pausing NSPD requests: %s", cadastral_number, e)
+                return None
+            except Exception as e:
+                logger.warning("NSPD response failed for %s: %s", cadastral_number, e)
+                return None
 
         features = ((data.get("data") or {}).get("features") or data.get("features") or [])
         if not features:

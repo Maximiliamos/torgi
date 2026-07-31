@@ -47,6 +47,10 @@ REAL_ESTATE_TERMS = tuple(term.lower() for term in (
 MOVABLE_TERMS = tuple(term.lower() for term in (
     "\u0430\u0432\u0442\u043e\u043c\u043e\u0431\u0438\u043b", "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0435 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u043e", "\u0434\u0432\u0438\u0436\u0438\u043c\u043e\u0435 \u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u043e",
 ))
+RENTAL_TERMS = tuple(term.lower() for term in (
+    "аренда", "аренды", "аренду", "арендный", "арендатор", "субаренда",
+    "право заключения договора аренды", "договор найма", "право пользования",
+))
 
 
 def is_real_estate_lot(lot: NormalizedLot) -> bool:
@@ -65,6 +69,27 @@ def is_real_estate_lot(lot: NormalizedLot) -> bool:
     if any(term in text for term in MOVABLE_TERMS) and not any(term in text for term in REAL_ESTATE_TERMS):
         return False
     return any(term in text for term in REAL_ESTATE_TERMS)
+
+
+def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
+    """Keep real-estate sales and reject rentals even if a source mislabels them."""
+    if not is_real_estate_lot(lot):
+        return False
+    raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+    text = " ".join(
+        str(value)
+        for value in (
+            lot.title,
+            lot.description,
+            lot.address,
+            lot.auction_type,
+            raw.get("trade_type"),
+            raw.get("typeTransaction"),
+            raw.get("bidding_form"),
+        )
+        if value
+    ).casefold()
+    return not any(term in text for term in RENTAL_TERMS)
 
 from bankrotai.extractors import (
     extract_price, extract_area, extract_cadastral, extract_address,
@@ -375,7 +400,7 @@ class TorgiGovClient:
             if self._should_apply_local_text_filter(filters.search_text, params) and not self._lot_matches_location_text(lot, filters.search_text):
                 text_filtered += 1
                 continue
-            if not is_real_estate_lot(lot):
+            if not is_sale_real_estate_lot(lot):
                 continue
             if lot.external_id in seen:
                 duplicates += 1
@@ -784,6 +809,7 @@ class TorgiGovClient:
             params[query_name] = str(value).strip()
 
         params.setdefault("catCode", self.REAL_ESTATE_CATEGORY_CODES)
+        params.setdefault("typeTransaction", "SALE")
 
         if filters.price_min is not None:
             params["priceMin"] = self._format_number(filters.price_min)
@@ -822,7 +848,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_excel_export(response.content)
-        lots = [lot for lot in lots if is_real_estate_lot(lot)]
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         if filters.subject_rf:
             before = len(lots)
             lots = [lot for lot in lots if self._lot_matches_subject(lot, filters.subject_rf)]
@@ -988,7 +1014,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_fallback_html(response.text)
-        lots = [lot for lot in lots if is_real_estate_lot(lot)]
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         if not lots:
             warnings.append("HTML fallback не нашел карточек лотов; возможно, сайт отдает только SPA без данных.")
         if filters.fias and not self._looks_like_fias_identifier(filters.fias):
@@ -2060,6 +2086,12 @@ class GorodTorgiClient:
 class TBankrotClient:
     BASE_URL = "https://tbankrot.ru"
     SEARCH_ENDPOINT = f"{BASE_URL}/"
+    REAL_ESTATE_CATEGORY_CODES = "3,4,5"
+    REAL_ESTATE_CATEGORY_LABELS = {
+        "3": "Недвижимость жилая",
+        "4": "Недвижимость коммерческая",
+        "5": "Земельные участки",
+    }
 
     REGION_LABELS = {
         "4": "Амурская область", "10": "Бурятия", "16": "Еврейская АО", "24": "Камчатский край",
@@ -2349,7 +2381,7 @@ class TBankrotClient:
 
         lots = self._parse_listing_html(resp.text, filters=filters, raw_endpoint=resp.url or endpoint)
         raw_count = len(lots)
-        lots = [lot for lot in lots if is_real_estate_lot(lot)]
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         pagination = self._extract_pagination_meta(resp.text)
         meta = {
             "source": "tbankrot.ru",
@@ -2471,6 +2503,8 @@ class TBankrotClient:
         add("start_p1", self._format_query_number(filters.price_min))
         add("start_p2", self._format_query_number(filters.price_max))
         add("num", filters.lot_number)
+        add("parent_cat", "2")
+        add("sub_cat", filters.category_codes or self.REAL_ESTATE_CATEGORY_CODES)
         if filters.trade_type == "auction":
             add("type_2", "on")
         elif filters.trade_type == "public":
@@ -2779,6 +2813,7 @@ class LotOnlineClient:
             ) from exc
 
         lots, page_meta = self._parse_listing_html(response.content, filters=filters)
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         page = max(1, int(filters.page or 1))
         page_size = max(12, min(int(filters.page_size or 96), 96))
         meta = {

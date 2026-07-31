@@ -74,6 +74,7 @@ def test_torgi_gov_filters_are_converted_to_query_params() -> None:
     assert params["text"] == LAND_SEARCH
     assert params["dynSubjRF"] == "55"
     assert params["catCode"] == "2"
+    assert params["typeTransaction"] == "SALE"
     assert params["priceMin"] == "1000"
     assert params["priceMax"] == "5000"
     assert params["noticeNumber"] == "2200001"

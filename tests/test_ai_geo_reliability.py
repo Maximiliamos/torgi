@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 from pydantic import ValidationError
-from requests.exceptions import SSLError
+from requests.exceptions import ConnectTimeout, SSLError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -189,6 +189,21 @@ def test_nspd_tls_error_is_classified(monkeypatch) -> None:
     monkeypatch.setattr("bankrotai.geo.requests.get", lambda *args, **kwargs: (_ for _ in ()).throw(SSLError("bad cert")))
     with pytest.raises(NSPDTLSVerificationError):
         CadastralGeocoder()._search_nspd_geoportal("76:23:010101:10")
+
+
+def test_unavailable_pkk_opens_circuit_and_skips_repeated_timeouts(monkeypatch) -> None:
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise ConnectTimeout("offline")
+
+    monkeypatch.setattr("bankrotai.geo.requests.get", unavailable)
+    geocoder = CadastralGeocoder()
+
+    assert geocoder._search_pkk_feature("76:23:010101:10", 1, "land_plot") is None
+    assert geocoder._search_pkk_feature("76:23:010101:11", 1, "land_plot") is None
+    assert len(calls) == 1
 
 
 def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> None:

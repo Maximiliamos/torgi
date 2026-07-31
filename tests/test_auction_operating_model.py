@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.fedresurs import FedresursConnector
-from bankrotai.db import Base, CanonicalLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
 from bankrotai.documents import record_document_version
 from bankrotai.domain import NormalizedLot
 from bankrotai.finance import MaxBidInputs, calculate_max_bid
@@ -54,10 +54,39 @@ def test_source_lots_from_two_systems_share_canonical_asset() -> None:
         session.flush()
 
         source_lots = session.scalars(select(SourceLot).order_by(SourceLot.id)).all()
-        assert first.id != second.id
+        processed_lots = session.scalars(select(ProcessedLot).order_by(ProcessedLot.id)).all()
+        assert first.id == second.id
+        assert len(processed_lots) == 2
+        assert processed_lots[1].duplicate_of_id == processed_lots[0].id
         assert len(source_lots) == 2
         assert source_lots[0].canonical_lot_id == source_lots[1].canonical_lot_id
         assert session.query(CanonicalLot).count() == 1
+
+
+def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_price() -> None:
+    with Session(_engine()) as session:
+        first = persist_lot(session, _lot(
+            "tbankrot.ru",
+            "tbankrot:7884064",
+            address="Ярославская область, Ивановское, улица Ленина, дом 21",
+            current_price=24_356.42,
+        ))
+        second = persist_lot(session, _lot(
+            "lot-online.ru",
+            "lot-online:1760257",
+            title="Имущество муниципального округа по адресу Ивановское, Ленина, 21",
+            address="Ивановское, ул. Ленина, д. 21",
+            cadastral_number=None,
+            current_price=24_356.42,
+        ))
+        session.flush()
+
+        copy = session.scalar(select(ProcessedLot).where(
+            ProcessedLot.external_id == "lot-online:1760257"
+        ))
+        assert second.id == first.id
+        assert copy is not None
+        assert copy.duplicate_of_id == first.id
 
 
 def test_procedure_fields_are_queryable_and_not_only_raw_json() -> None:
