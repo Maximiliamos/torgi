@@ -1,56 +1,56 @@
 @echo off
+setlocal EnableExtensions
 chcp 65001 >nul
-title BankrotAI Pro - One Console Launcher
+title BankrotAI Desktop Launcher
 
-set "PROJECT_DIR=D:\8\Coding\TORGI_NEW"
-set "OMNI_DIR=D:\8\Coding\omniroute"
-set "SRC_DIR=D:\8\Coding\TORGI_NEW\src"
-set "GUI_DIR=D:\8\Coding\TORGI_NEW\src\bankrotai"
-set "HINDSIGHT_DIR=D:\8\Coding\hindsight"
-set "LOG_DIR=D:\8\Coding\TORGI_NEW\logs"
+for %%I in ("%~dp0..\..") do set "PROJECT_DIR=%%~fI"
+set "APP_EXE="
+set "APP_WORKDIR=%PROJECT_DIR%"
 
-if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+if defined BANKROTAI_EXE if exist "%BANKROTAI_EXE%" set "APP_EXE=%BANKROTAI_EXE%"
+if defined BANKROTAI_WORKDIR if exist "%BANKROTAI_WORKDIR%" set "APP_WORKDIR=%BANKROTAI_WORKDIR%"
 
-if exist "%PROJECT_DIR%\.venv\Scripts\python.exe" (
-    set "PYTHON=%PROJECT_DIR%\.venv\Scripts\python.exe"
-) else (
-    set "PYTHON=python"
+for %%F in (
+    "%PROJECT_DIR%\dist_operating_model\BankrotAI.exe"
+    "%PROJECT_DIR%\dist_audit_fixed\BankrotAI.exe"
+    "%PROJECT_DIR%\dist_audit\BankrotAI.exe"
+    "%PROJECT_DIR%\dist_mapfix\BankrotAI.exe"
+    "%PROJECT_DIR%\dist_latest\BankrotAI.exe"
+    "%PROJECT_DIR%\dist\BankrotAI.exe"
+) do if not defined APP_EXE if exist "%%~fF" set "APP_EXE=%%~fF"
+
+if /I "%~1"=="--check" (
+    if defined APP_EXE (
+        echo OK: %APP_EXE%
+        exit /b 0
+    )
+    if exist "%PROJECT_DIR%\src\bankrotai\gui.py" (
+        where python >nul 2>&1
+        if not errorlevel 1 (
+            echo OK: source fallback is available
+            exit /b 0
+        )
+    )
+    echo ERROR: BankrotAI.exe and Python source fallback were not found.
+    exit /b 1
 )
 
-echo ========================================
-echo        Запуск BankrotAI Pro
-echo        режим: одна консоль
-echo ========================================
-echo.
-
-echo [1/4] Запуск OmniRoute в фоне...
-start /B "" cmd /c "cd /d "%OMNI_DIR%" && npm run dev > "%LOG_DIR%\omniroute.log" 2>&1"
-
-echo [2/4] Запуск Backend API в фоне...
-start /B "" cmd /c "cd /d "%PROJECT_DIR%" && set PYTHONPATH=%SRC_DIR% && "%PYTHON%" -m uvicorn bankrotai.api:app --port 8000 > "%LOG_DIR%\backend.log" 2>&1"
-
-echo.
-set /p START_HINDSIGHT="Запустить Hindsight через Docker? (y/n): "
-
-if /i "%START_HINDSIGHT%"=="y" (
-    echo [3/4] Запуск Hindsight в фоне...
-    start /B "" cmd /c "cd /d "%HINDSIGHT_DIR%" && docker compose up > "%LOG_DIR%\hindsight.log" 2>&1"
-) else (
-    echo [3/4] Hindsight пропущен.
+if defined APP_EXE (
+    start "BankrotAI" /D "%APP_WORKDIR%" "%APP_EXE%"
+    exit /b 0
 )
 
-echo.
-echo [4/4] Запуск основной программы GUI...
-timeout /t 3 /nobreak >nul
+where python >nul 2>&1
+if errorlevel 1 (
+    echo BankrotAI.exe не найден, Python недоступен.
+    echo Соберите приложение командой: python -m PyInstaller BankrotAI.spec --noconfirm
+    pause
+    exit /b 1
+)
 
-cd /d "%PROJECT_DIR%"
-set PYTHONPATH=%SRC_DIR%
-"%PYTHON%" "%GUI_DIR%\gui.py"
-
-echo.
-echo GUI закрыт.
-echo.
-echo Логи сохранены здесь:
-echo %LOG_DIR%
-echo.
-pause
+set "PYTHONPATH=%PROJECT_DIR%\src"
+pushd "%PROJECT_DIR%"
+python -m bankrotai.cli run-desktop
+set "RESULT=%errorlevel%"
+popd
+exit /b %RESULT%

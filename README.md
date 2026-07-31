@@ -58,6 +58,20 @@ AI-провайдер задаётся через `AI_PROVIDER` и соотве�
 
 ## Desktop и API
 
+Windows EXE:
+
+```powershell
+.\start_bankrotai.bat
+.\start_bankrotai.bat --check
+```
+
+Launcher не содержит абсолютных путей: он вычисляет корень проекта, выбирает
+самую новую сборку `BankrotAI.exe` и запускает её с рабочей директорией проекта,
+чтобы использовать существующую `bankrotai.db`. Если EXE отсутствует, доступен
+source fallback через установленный Python.
+Для внешней сборки допустимы `BANKROTAI_EXE` и `BANKROTAI_WORKDIR`; launcher
+проверяет существование обоих путей.
+
 ```bash
 python -m bankrotai.cli run-desktop
 python -m bankrotai.cli run-api --host 0.0.0.0 --port 8000
@@ -178,6 +192,7 @@ bash scripts/docker-smoke.sh
 - В `valuation_runs` сохраняются provider, model, статус и диагностическая ошибка.
 - Геокодер не создаёт фиктивные координаты. Неуспех остаётся явным отсутствием координат.
 - TLS-проверка НСПД включена. Ошибки сертификата имеют отдельную диагностическую причину.
+- Windows EXE использует системное хранилище доверенных сертификатов; недоступность НСПД не прерывает весь GEO worker.
 - Успешные результаты Nominatim кэшируются, запросы ограничиваются timeout/retry/backoff.
 
 ## CI
@@ -188,4 +203,5 @@ GitHub Actions запускается для push и pull request в `main`: Ruf
 
 - Внешние TBankrot, torgi.gov.ru, НСПД, Nominatim и AI API могут быть недоступны или менять ответы; ошибки показываются явно и не подменяются вымышленными данными.
 - Desktop использует отдельную optional-группу зависимостей и не входит в API Docker image.
+- Production ЕФРСБ требует договор и credentials оператора; наличие коннектора не означает предоставленный доступ.
 - `GET` не предназначен для массовой синхронизации; используйте Celery endpoint и проверку статуса.
