@@ -80,6 +80,20 @@ python -m PyInstaller --noconfirm --clean --distpath app --workpath build_curren
 Каталоги `build_current` и другие временные артефакты PyInstaller после успешной
 сборки удаляются.
 
+### Состав рабочей директории
+
+Актуальная установка содержит:
+
+- `src/`, `alembic/`, `WEB/`, `tests/`, `scripts/` — исходники, миграции и проверки;
+- `docs/`, `README.md`, `SECURITY.md`, `CHANGELOG.md` — актуальную документацию;
+- `app/BankrotAI.exe` — единственную локальную Windows-сборку (не хранится в Git);
+- `bankrotai.db` и `.env` — локальные рабочие данные и секреты (не хранятся в Git);
+- `START_TORGI.bat` — единственную точку запуска desktop-приложения.
+
+Старые `dist*`, `build*`, тестовые базы, выгрузки, `node_modules`, кэши и
+одноразовые скрипты в рабочей директории не хранятся. API-ключи разрешено задавать
+только через `.env` или менеджер секретов; файлы с захардкоженными ключами запрещены.
+
 ```bash
 python -m bankrotai.cli run-desktop
 python -m bankrotai.cli run-api --host 0.0.0.0 --port 8000

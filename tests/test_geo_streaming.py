@@ -64,10 +64,6 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
     class FakeWindow:
         cadastral_wms_proxy_port = 0
 
-        @staticmethod
-        def get_map_icon_urls():
-            return {"land": "", "rent": "", "realEstate": "", "auto": "", "other": ""}
-
     fake = FakeWindow()
     leaflet_html = MainWindow.build_map_html(fake, [])
     yandex_html = MainWindow.build_yandex_map_html(fake, [])

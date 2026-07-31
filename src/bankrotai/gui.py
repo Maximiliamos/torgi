@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -41,11 +40,11 @@ from datetime import datetime
 
 from PySide6.QtCore import (
     Qt, QTimer, QUrl, QThread, Signal, Slot, QObject, QStandardPaths,
-    QStringListModel, QBuffer, QIODevice,
+    QStringListModel,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QColor, QBrush, QDesktopServices, QImage
+from PySide6.QtGui import QColor, QBrush, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
@@ -96,15 +95,6 @@ EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
 LOT_ID_ROLE = Qt.UserRole + 103
 MAP_MARKER_LIMIT = 5000
-MAP_ICON_FILENAMES = {
-    "land": "участки.png",
-    "rent": "аренда.png",
-    "realEstate": "недвижимость + участки со строением.png",
-    "auto": "авто.png",
-    "other": "Прочее.png",
-}
-_MAP_ICON_DATA_URL_CACHE: dict[str, str] | None = None
-
 MAP_PREVIEW_STYLE = """
 .lot-preview {
     position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
@@ -5049,47 +5039,8 @@ class MainWindow(QMainWindow):
         self.yandex_map_view.setHtml(self.build_yandex_map_html(lots), QUrl("https://local.bankrotai/"))
         self.status_bar.showMessage("Яндекс-карта обновлена", 3000)
 
-    def get_map_icon_urls(self) -> dict[str, str]:
-        global _MAP_ICON_DATA_URL_CACHE
-        if _MAP_ICON_DATA_URL_CACHE is not None:
-            return dict(_MAP_ICON_DATA_URL_CACHE)
-
-        candidates = [
-            Path.cwd() / "image",
-            Path(__file__).resolve().parents[2] / "image",
-        ]
-        if getattr(sys, "frozen", False):
-            exe_path = Path(sys.executable).resolve()
-            candidates.extend([
-                exe_path.parent / "image",
-                exe_path.parent.parent / "image",
-                Path(getattr(sys, "_MEIPASS", exe_path.parent)) / "image",
-            ])
-        image_dir = next((path for path in candidates if path.exists()), candidates[0])
-        urls: dict[str, str] = {}
-        for key, filename in MAP_ICON_FILENAMES.items():
-            path = image_dir / filename
-            if not path.exists():
-                urls[key] = ""
-                logger.warning("Map icon is missing: %s", path)
-                continue
-            image = QImage(str(path))
-            if image.isNull():
-                urls[key] = ""
-                logger.warning("Map icon cannot be read: %s", path)
-                continue
-            scaled = image.scaled(68, 88, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            buffer = QBuffer()
-            buffer.open(QIODevice.WriteOnly)
-            scaled.save(buffer, "PNG")
-            encoded = base64.b64encode(bytes(buffer.data())).decode("ascii")
-            urls[key] = f"data:image/png;base64,{encoded}"
-        _MAP_ICON_DATA_URL_CACHE = dict(urls)
-        return urls
-
     def build_yandex_map_html(self, lots: list[dict]) -> str:
         lots_json = json.dumps(lots, ensure_ascii=False)
-        icon_urls_json = json.dumps(self.get_map_icon_urls(), ensure_ascii=False)
         return f"""
 <!DOCTYPE html>
 <html>
@@ -5126,7 +5077,6 @@ html, body, #map {{
 {MAP_PREVIEW_HTML}
 <script>
 const lots = {lots_json};
-const iconUrls = {icon_urls_json};
 const mapKind = 'yandex';
 let map;
 let lotCollection;
@@ -5330,7 +5280,6 @@ ymaps.ready(function () {{
 
     def build_map_html(self, lots: list[dict]) -> str:
         lots_json = json.dumps(lots, ensure_ascii=False)
-        icon_urls_json = json.dumps(self.get_map_icon_urls(), ensure_ascii=False)
         wms_base_url = f"http://127.0.0.1:{self.cadastral_wms_proxy_port or 0}/nspd"
 
         return f"""
@@ -5370,7 +5319,6 @@ html, body, #map {{
 
 <script>
 const lots = {lots_json};
-const iconUrls = {icon_urls_json};
 const mapKind = 'leaflet';
 
 const map = L.map('map').setView([57.6261, 39.8845], 8);
