@@ -40,6 +40,10 @@ for tagged releases.
   search, registry geocoding and map markers.
 - Made nationwide source failures visible as an explicit incomplete-search warning
   instead of presenting a partial database as a complete Russia-wide result.
+- Added synchronized map filters for minimum/maximum price and region.
+- Added black markers for completed, cancelled and archived auctions, including
+  automatic recoloring when a known auction end time passes.
+- Restricted Leaflet and Yandex zoom/panning to one non-repeating world copy.
 - Added bounded parallel bulk GEO processing with accurate success/failure counts.
 - Added PKK/NSPD connectivity circuit breakers so a VPN-blocked cadastral service
   does not impose the same timeout on every lot in a bulk queue.

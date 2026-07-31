@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
 from bankrotai.gui import (
@@ -109,6 +110,34 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
         assert "#7d8795" in html
         assert "window.applyLotReviewStatus" in html
         assert "qrc:///qtwebchannel/qwebchannel.js" in html
+        assert "#111111" in html
+        assert "isLotEnded" in html
+        assert "singleWorldMinZoom" in html or "enforceSingleWorldZoom" in html
+    assert "noWrap: true" in leaflet_html
+    assert "maxBounds: worldBounds" in leaflet_html
+    assert "restrictMapArea: [[-85, -180], [85, 180]]" in yandex_html
+
+
+def test_map_filters_use_price_and_inferred_region() -> None:
+    lot = SimpleNamespace(
+        current_price=2_500_000,
+        start_price=3_000_000,
+        region_name=None,
+        cadastral_number="62:27:0010101:15",
+        address=None,
+        title="Нежилое помещение",
+        description="",
+    )
+
+    assert MainWindow._lot_region_label(lot) == "Рязанская область"
+    assert MainWindow._map_lot_matches_filters(
+        lot,
+        min_price=2_000_000,
+        max_price=3_000_000,
+        region="Рязанская область",
+    )
+    assert not MainWindow._map_lot_matches_filters(lot, min_price=3_000_001)
+    assert not MainWindow._map_lot_matches_filters(lot, region="Ярославская область")
 
 
 def test_preview_image_extraction_handles_source_payload_shapes() -> None:

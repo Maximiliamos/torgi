@@ -4085,6 +4085,8 @@ class MainWindow(QMainWindow):
         self.search_all_russia_btn.clicked.connect(self.run_all_russia_search)
         sidebar_layout.addWidget(self.search_all_russia_btn)
 
+        self._add_map_filter_controls(sidebar_layout, "map")
+
         self.cad_info_text = QTextEdit()
         self.cad_info_text.setReadOnly(True)
         self.cad_info_text.setPlaceholderText("Введите кадастровый номер или адрес")
@@ -4151,6 +4153,8 @@ class MainWindow(QMainWindow):
         )
         self.yandex_search_all_russia_btn.clicked.connect(self.run_all_russia_search)
         sidebar_layout.addWidget(self.yandex_search_all_russia_btn)
+
+        self._add_map_filter_controls(sidebar_layout, "yandex_map")
 
         self.yandex_cad_info_text = QTextEdit()
         self.yandex_cad_info_text.setReadOnly(True)
@@ -4914,6 +4918,136 @@ class MainWindow(QMainWindow):
         self.load_lots()
         self.update_map()
         self.update_yandex_map()
+
+    @staticmethod
+    def _lot_region_label(lot: ProcessedLot) -> str:
+        if lot.region_name:
+            return str(lot.region_name).strip()
+
+        cadastral = str(lot.cadastral_number or "")
+        match = re.match(r"^(\d{1,2}):", cadastral)
+        if match:
+            cadastral_code = match.group(1).zfill(2)
+            for name, code in TBankrotClient.CADASTRAL_REGION_NAME_TO_CODE.items():
+                if code == cadastral_code and (
+                    "Республика" in name or "область" in name or "край" in name
+                    or name in {"Москва", "Санкт-Петербург", "Севастополь"}
+                ):
+                    return name
+
+        text = " ".join(
+            value for value in (lot.address, lot.title, lot.description) if value
+        ).casefold()
+        known_regions = sorted(TorgiGovClient.SUBJECT_RF_CODES, key=len, reverse=True)
+        for region_name in known_regions:
+            if region_name.casefold() in text:
+                return region_name
+        return "Регион не определён"
+
+    def _available_map_regions(self) -> list[str]:
+        with session_scope() as session:
+            lots = session.scalars(
+                select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
+            ).all()
+            return sorted({
+                self._lot_region_label(lot)
+                for lot in lots
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
+            })
+
+    @classmethod
+    def _map_lot_matches_filters(
+        cls,
+        lot: ProcessedLot,
+        *,
+        min_price: float = 0,
+        max_price: float = 0,
+        region: str = "Все регионы",
+    ) -> bool:
+        price = float(lot.current_price or lot.start_price or 0)
+        if min_price and (not price or price < min_price):
+            return False
+        if max_price and (not price or price > max_price):
+            return False
+        return region == "Все регионы" or cls._lot_region_label(lot) == region
+
+    def _add_map_filter_controls(self, layout: QVBoxLayout, prefix: str) -> None:
+        if not hasattr(self, "map_filter_min_price"):
+            self.map_filter_min_price = 0.0
+            self.map_filter_max_price = 0.0
+            self.map_filter_region = "Все регионы"
+
+        group = QGroupBox("Фильтры лотов")
+        form = QFormLayout(group)
+        price_from = QDoubleSpinBox()
+        price_to = QDoubleSpinBox()
+        for field in (price_from, price_to):
+            field.setDecimals(0)
+            field.setRange(0, 999_999_999_999_999)
+            field.setSingleStep(100_000)
+            field.setGroupSeparatorShown(True)
+            field.setSpecialValueText("Не задано")
+            field.setSuffix(" ₽")
+        price_from.setValue(self.map_filter_min_price)
+        price_to.setValue(self.map_filter_max_price)
+
+        region = WheelSafeComboBox()
+        region.addItem("Все регионы")
+        region.addItems(self._available_map_regions())
+        selected_index = region.findText(self.map_filter_region)
+        region.setCurrentIndex(max(0, selected_index))
+
+        form.addRow("Цена от", price_from)
+        form.addRow("Цена до", price_to)
+        form.addRow("Регион", region)
+
+        buttons = QHBoxLayout()
+        apply_button = QPushButton("Применить")
+        reset_button = QPushButton("Сбросить")
+        apply_button.clicked.connect(lambda: self.apply_map_filters(prefix))
+        reset_button.clicked.connect(lambda: self.reset_map_filters(prefix))
+        buttons.addWidget(apply_button)
+        buttons.addWidget(reset_button)
+        form.addRow(buttons)
+        layout.addWidget(group)
+
+        setattr(self, f"{prefix}_price_from", price_from)
+        setattr(self, f"{prefix}_price_to", price_to)
+        setattr(self, f"{prefix}_region_filter", region)
+
+    def _sync_map_filter_controls(self) -> None:
+        for prefix in ("map", "yandex_map"):
+            price_from = getattr(self, f"{prefix}_price_from", None)
+            price_to = getattr(self, f"{prefix}_price_to", None)
+            region = getattr(self, f"{prefix}_region_filter", None)
+            if price_from is not None:
+                price_from.setValue(self.map_filter_min_price)
+            if price_to is not None:
+                price_to.setValue(self.map_filter_max_price)
+            if region is not None:
+                index = region.findText(self.map_filter_region)
+                region.setCurrentIndex(max(0, index))
+
+    def apply_map_filters(self, prefix: str) -> None:
+        price_from = float(getattr(self, f"{prefix}_price_from").value())
+        price_to = float(getattr(self, f"{prefix}_price_to").value())
+        if price_from and price_to and price_from > price_to:
+            QMessageBox.warning(self, "Фильтры карты", "Цена «от» не может быть больше цены «до».")
+            return
+        self.map_filter_min_price = price_from
+        self.map_filter_max_price = price_to
+        self.map_filter_region = getattr(self, f"{prefix}_region_filter").currentText()
+        self._sync_map_filter_controls()
+        self.update_map()
+        self.update_yandex_map()
+
+    def reset_map_filters(self, _prefix: str) -> None:
+        self.map_filter_min_price = 0.0
+        self.map_filter_max_price = 0.0
+        self.map_filter_region = "Все регионы"
+        self._sync_map_filter_controls()
+        self.update_map()
+        self.update_yandex_map()
         source_errors = details.get("errors") or {}
         if source_errors:
             logger.warning("Nationwide search completed with source errors: %s", source_errors)
@@ -5424,6 +5558,16 @@ class MainWindow(QMainWindow):
                 candidate_url if "lot-online" in system else None
             )
             torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
+        auction_times = [source.auction_at for source in source_lots if source.auction_at]
+        auction_at = max(auction_times) if auction_times else None
+        auction_now = datetime.now(auction_at.tzinfo) if auction_at and auction_at.tzinfo else datetime.now()
+        ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
+        is_ended = bool(
+            lot.is_archived
+            or lot.closed_at
+            or (lot.auction_status or "").casefold() in ended_statuses
+            or (auction_at is not None and auction_at <= auction_now)
+        )
         return {
             "id": lot.id,
             "title": lot.title,
@@ -5436,7 +5580,9 @@ class MainWindow(QMainWindow):
             "address": lot.address,
             "cadastral_number": lot.cadastral_number,
             "category": lot.category,
+            "region": MainWindow._lot_region_label(lot),
             "status": lot.auction_status,
+            "is_ended": is_ended,
             "review_status": lot.review_status,
             "lat": geo.centroid_lat,
             "lon": geo.centroid_lon,
@@ -5460,7 +5606,8 @@ class MainWindow(QMainWindow):
             "image_urls": image_urls,
             "procedure_number": next((source.procedure_number for source in source_lots if source.procedure_number), None),
             "application_deadline": display_datetime(next((source.application_deadline for source in source_lots if source.application_deadline), None)),
-            "auction_at": display_datetime(next((source.auction_at for source in source_lots if source.auction_at), None)),
+            "auction_at": display_datetime(auction_at),
+            "auction_at_iso": auction_at.isoformat() if auction_at else None,
         }
 
     def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
@@ -5486,14 +5633,24 @@ class MainWindow(QMainWindow):
             )
             if lot_id is not None:
                 stmt = stmt.where(ProcessedLot.id == lot_id)
-            else:
-                stmt = stmt.limit(limit)
 
-            rows = [
-                (lot, geo)
-                for lot, geo in session.execute(stmt)
-                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
-            ]
+            rows = []
+            min_price = float(getattr(self, "map_filter_min_price", 0) or 0)
+            max_price = float(getattr(self, "map_filter_max_price", 0) or 0)
+            region_filter = str(getattr(self, "map_filter_region", "Все регионы") or "Все регионы")
+            for lot, geo in session.execute(stmt):
+                if not is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot)):
+                    continue
+                if not self._map_lot_matches_filters(
+                    lot,
+                    min_price=min_price,
+                    max_price=max_price,
+                    region=region_filter,
+                ):
+                    continue
+                rows.append((lot, geo))
+                if lot_id is None and len(rows) >= limit:
+                    break
             primary_ids = [lot.id for lot, _geo in rows]
             source_map: dict[int, list[SourceLot]] = {lot_id: [] for lot_id in primary_ids}
             if primary_ids:
@@ -5521,7 +5678,7 @@ class MainWindow(QMainWindow):
         html = self.build_map_html([])
         base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
         self._set_map_document(self.map_view, html, lots, "_leaflet_load_handler", base_url)
-        self.status_bar.showMessage("Карта обновлена", 3000)
+        self.status_bar.showMessage(f"Карта обновлена: {len(lots)} лотов", 3000)
 
     def update_yandex_map(self):
         lots = self._load_map_lots()
@@ -5534,7 +5691,7 @@ class MainWindow(QMainWindow):
             "_yandex_load_handler",
             base_url,
         )
-        self.status_bar.showMessage("Яндекс-карта обновлена", 3000)
+        self.status_bar.showMessage(f"Яндекс-карта обновлена: {len(lots)} лотов", 3000)
 
     def _set_map_document(
         self,
@@ -5626,6 +5783,7 @@ let boundaryCollection;
 let selectedObjectCollection;
 let boundaryVisible = true;
 const lotPlacemarks = new Map();
+const lotById = new Map();
 
 function escapeHtml(text) {{
     if (text === null || text === undefined) return '';
@@ -5642,12 +5800,22 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function markerColor(status) {{
+function isLotEnded(lot) {{
+    if (!lot) return false;
+    if (lot.is_ended) return true;
+    const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
+    if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
+    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+}}
+
+function markerColor(lot) {{
+    if (isLotEnded(lot)) return '#111111';
+    const status = lot ? lot.review_status : null;
     return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
 }}
 
 function markerSvg(lot) {{
-    const color = markerColor(lot.review_status);
+    const color = markerColor(lot);
     return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
@@ -5697,6 +5865,7 @@ function upsertLot(lot) {{
     }}
     if (!lot.lat || !lot.lon) return;
     const key = String(lot.id);
+    lotById.set(key, lot);
     const previous = lotPlacemarks.get(key);
     if (previous) lotCollection.remove(previous);
     const placemark = new ymaps.Placemark(
@@ -5791,7 +5960,7 @@ window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
 window.applyLotReviewStatus = function(lotId, status) {{
-    const lot = lots.find(item => Number(item.id) === Number(lotId));
+    const lot = lotById.get(String(lotId));
     if (lot) lot.review_status = status;
     const placemark = lotPlacemarks.get(String(lotId));
     if (placemark) placemark.options.set(yandexIconOptions(lot || {{ review_status: status }}));
@@ -5802,6 +5971,13 @@ window.fitAllLots = function() {{
     }}
 }};
 
+setInterval(function() {{
+    lotPlacemarks.forEach(function(placemark, key) {{
+        const lot = lotById.get(key);
+        if (lot) placemark.options.set(yandexIconOptions(lot));
+    }});
+}}, 60_000);
+
 {MAP_PREVIEW_SCRIPT}
 
 function initYandexMap() {{
@@ -5809,10 +5985,22 @@ function initYandexMap() {{
         center: [57.6261, 39.8845],
         zoom: 8,
         controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
+    }}, {{
+        minZoom: 2,
+        restrictMapArea: [[-85, -180], [85, 180]],
+        yandexMapAutoSwitch: false
     }});
     lotCollection = new ymaps.GeoObjectCollection();
     boundaryCollection = new ymaps.GeoObjectCollection();
     selectedObjectCollection = new ymaps.GeoObjectCollection();
+    function enforceSingleWorldZoom() {{
+        const size = map.container.getSize();
+        const minZoom = Math.max(2, Math.ceil(Math.log2(Math.max(size[0], 256) / 256)));
+        map.options.set('minZoom', minZoom);
+        if (map.getZoom() < minZoom) map.setZoom(minZoom, {{ checkZoomRange: true }});
+    }}
+    enforceSingleWorldZoom();
+    map.events.add('sizechange', enforceSingleWorldZoom);
     document.getElementById('hint').style.display = 'none';
     addLots();
     const pending = window.__bankrotaiPendingLots || [];
@@ -5823,11 +6011,20 @@ function initYandexMap() {{
 function initLeafletFallback() {{
     const hint = document.getElementById('hint');
     hint.textContent = 'Яндекс.Карты недоступны — включена резервная карта';
-    map = L.map('map').setView([57.6261, 39.8845], 8);
+    const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
+    map = L.map('map', {{
+        minZoom: 2,
+        maxBounds: worldBounds,
+        maxBoundsViscosity: 1.0,
+        worldCopyJump: false
+    }}).setView([57.6261, 39.8845], 8);
     let fallbackMapSized = false;
     new ResizeObserver(function() {{
         map.invalidateSize(false);
         const element = document.getElementById('map');
+        const singleWorldMinZoom = Math.max(2, Math.ceil(Math.log2(Math.max(element.clientWidth, 256) / 256)));
+        map.setMinZoom(singleWorldMinZoom);
+        if (map.getZoom() < singleWorldMinZoom) map.setZoom(singleWorldMinZoom);
         if (!fallbackMapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
             fallbackMapSized = true;
             setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
@@ -5835,6 +6032,9 @@ function initLeafletFallback() {{
     }}).observe(document.getElementById('map'));
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
         maxZoom: 19,
+        minZoom: 2,
+        noWrap: true,
+        bounds: worldBounds,
         attribution: '&copy; OpenStreetMap contributors'
     }}).addTo(map);
     const fallbackLayer = L.layerGroup().addTo(map);
@@ -5852,6 +6052,7 @@ function initLeafletFallback() {{
     function upsertFallbackLot(lot) {{
         if (!lot.lat || !lot.lon) return;
         const key = String(lot.id);
+        lotById.set(key, lot);
         const previous = fallbackMarkers.get(key);
         if (previous) fallbackLayer.removeLayer(previous);
         const marker = L.marker([lot.lat, lot.lon], {{ icon: fallbackIcon(lot) }});
@@ -5862,7 +6063,7 @@ function initLeafletFallback() {{
     }}
     window.upsertLot = upsertFallbackLot;
     window.applyLotReviewStatus = function(lotId, status) {{
-        const lot = lots.find(item => Number(item.id) === Number(lotId));
+        const lot = lotById.get(String(lotId));
         if (lot) lot.review_status = status;
         const marker = fallbackMarkers.get(String(lotId));
         if (marker) marker.setIcon(fallbackIcon(lot || {{ review_status: status }}));
@@ -5885,6 +6086,12 @@ function initLeafletFallback() {{
     const pending = window.__bankrotaiPendingLots || [];
     window.__bankrotaiPendingLots = [];
     pending.forEach(upsertFallbackLot);
+    setInterval(function() {{
+        fallbackMarkers.forEach(function(marker, key) {{
+            const lot = lotById.get(key);
+            if (lot) marker.setIcon(fallbackIcon(lot));
+        }});
+    }}, 60_000);
 }}
 
 if (typeof ymaps !== 'undefined') {{
@@ -5941,11 +6148,20 @@ html, body, #map {{
 const lots = {lots_json};
 const mapKind = 'leaflet';
 
-const map = L.map('map').setView([57.6261, 39.8845], 8);
+const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
+const map = L.map('map', {{
+    minZoom: 2,
+    maxBounds: worldBounds,
+    maxBoundsViscosity: 1.0,
+    worldCopyJump: false
+}}).setView([57.6261, 39.8845], 8);
 let mapSized = false;
 new ResizeObserver(function() {{
     map.invalidateSize(false);
     const element = document.getElementById('map');
+    const singleWorldMinZoom = Math.max(2, Math.ceil(Math.log2(Math.max(element.clientWidth, 256) / 256)));
+    map.setMinZoom(singleWorldMinZoom);
+    if (map.getZoom() < singleWorldMinZoom) map.setZoom(singleWorldMinZoom);
     if (!mapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
         mapSized = true;
         setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
@@ -5954,6 +6170,9 @@ new ResizeObserver(function() {{
 
 const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     maxZoom: 19,
+    minZoom: 2,
+    noWrap: true,
+    bounds: worldBounds,
     attribution: '&copy; OpenStreetMap contributors'
 }}).addTo(map);
 
@@ -5984,6 +6203,7 @@ const cadastralBuildingsLayer = L.tileLayer.wms(
 const markers = L.markerClusterGroup();
 const boundaries = L.layerGroup().addTo(map);
 const lotMarkers = new Map();
+const lotById = new Map();
 
 let selectedObjectLayer = null;
 let selectedObjectMarker = null;
@@ -6003,12 +6223,22 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function markerColor(status) {{
+function isLotEnded(lot) {{
+    if (!lot) return false;
+    if (lot.is_ended) return true;
+    const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
+    if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
+    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+}}
+
+function markerColor(lot) {{
+    if (isLotEnded(lot)) return '#111111';
+    const status = lot ? lot.review_status : null;
     return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
 }}
 
 function markerSvg(lot) {{
-    const color = markerColor(lot.review_status);
+    const color = markerColor(lot);
     return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
@@ -6021,6 +6251,7 @@ function makeIcon(lot) {{
 function upsertLot(lot) {{
     if (!lot.lat || !lot.lon) return;
     const key = String(lot.id);
+    lotById.set(key, lot);
     const previous = lotMarkers.get(key);
     if (previous) markers.removeLayer(previous);
     const marker = L.marker([lot.lat, lot.lon], {{
@@ -6114,7 +6345,7 @@ window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
 window.applyLotReviewStatus = function(lotId, status) {{
-    const lot = lots.find(item => Number(item.id) === Number(lotId));
+    const lot = lotById.get(String(lotId));
     if (lot) lot.review_status = status;
     const marker = lotMarkers.get(String(lotId));
     if (marker) marker.setIcon(makeIcon(lot || {{ review_status: status }}));
@@ -6124,6 +6355,13 @@ window.fitAllLots = function() {{
         map.fitBounds(markers.getBounds(), {{ padding: [30, 30] }});
     }}
 }};
+
+setInterval(function() {{
+    lotMarkers.forEach(function(marker, key) {{
+        const lot = lotById.get(key);
+        if (lot) marker.setIcon(makeIcon(lot));
+    }});
+}}, 60_000);
 
 {MAP_PREVIEW_SCRIPT}
 
