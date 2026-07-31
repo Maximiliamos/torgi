@@ -53,6 +53,8 @@ from sqlalchemy import desc, select, func
 from bankrotai.core import get_logger, get_settings
 from bankrotai.db import ProcessedLot, LotGeoSnapshot, session_scope, init_db, RegionSyncState
 from bankrotai.scrapers import (
+    LotOnlineClient,
+    LotOnlineSearchFilters,
     TBankrotClient,
     TBankrotSearchFilters,
     TorgiGovClient,
@@ -566,6 +568,70 @@ class TBankrotSearchWorker(QThread):
             self.error.emit(str(e))
 
 
+class LotOnlineSearchWorker(QThread):
+    progress = Signal(str)
+    progress_percent = Signal(int)
+    page_loaded = Signal(list, dict)
+    finished = Signal(list, dict)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        filters: LotOnlineSearchFilters,
+        *,
+        load_all: bool = False,
+        max_items: int | None = 5000,
+    ) -> None:
+        super().__init__()
+        self.filters = filters
+        self.load_all = load_all
+        self.max_items = max_items
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    @staticmethod
+    def _persist_lots(lots: list[NormalizedLot]) -> None:
+        if not lots:
+            return
+        with session_scope() as session:
+            for lot in lots:
+                persist_lot(session, lot)
+
+    def run(self) -> None:
+        try:
+            self.progress.emit("Подключение к РАД / ЛОТ-ОНЛАЙН...")
+            self.progress_percent.emit(3)
+            client = LotOnlineClient(diagnostics=True)
+            if self.load_all:
+                def report(page: int, total: int | None, loaded: int) -> None:
+                    percent = int(page / max(total or page + 1, 1) * 100)
+                    self.progress_percent.emit(min(99, max(5, percent)))
+                    self.progress.emit(f"ЛОТ-ОНЛАЙН: загружено {loaded}, страница {page}...")
+
+                def page_loaded(lots_on_page: list[NormalizedLot], page_meta: dict) -> None:
+                    self._persist_lots(lots_on_page)
+                    self.page_loaded.emit(lots_on_page, page_meta)
+
+                lots, meta = client.search_all_lots(
+                    self.filters,
+                    max_items=self.max_items,
+                    progress_cb=report,
+                    page_cb=page_loaded,
+                    stop_cb=lambda: self._stop_requested,
+                )
+            else:
+                self.progress_percent.emit(35)
+                lots, meta = client.search_lots(self.filters)
+                self.page_loaded.emit(lots, meta)
+            self.progress_percent.emit(100)
+            self.finished.emit(lots, meta)
+        except Exception as exc:
+            logger.exception("LotOnlineSearchWorker error")
+            self.error.emit(str(exc))
+
+
 class ImportWorker(QThread):
     finished = Signal(int, int, int) # new, updated, skipped
     progress = Signal(str)
@@ -863,6 +929,9 @@ class MainWindow(QMainWindow):
         self.tbankrot_current_page = 1
         self._last_tbankrot_sort_column = None
         self._last_tbankrot_sort_order = Qt.AscendingOrder
+        self.lot_online_results: list[NormalizedLot] = []
+        self.lot_online_meta: dict = {}
+        self.lot_online_current_page = 1
         init_db()
         self.start_cadastral_wms_proxy()
         self.init_statusbar()
@@ -949,7 +1018,12 @@ class MainWindow(QMainWindow):
         self.init_tbankrot_tab()
         self.tabs.addTab(self.tbankrot_tab, "Поиск Т Банкрот")
 
-        # 3. Registry Tab
+        # 3. RAD / LOT-ONLINE Search Tab
+        self.lot_online_tab = QWidget()
+        self.init_lot_online_tab()
+        self.tabs.addTab(self.lot_online_tab, "Поиск РАД / ЛОТ-ОНЛАЙН")
+
+        # 4. Registry Tab
         self.registry_tab = QWidget()
         self.init_registry_tab()
         self.tabs.addTab(self.registry_tab, "📋 Реестр лотов")
@@ -2655,6 +2729,287 @@ class MainWindow(QMainWindow):
             url = TBankrotClient.BASE_URL
         import webbrowser
         webbrowser.open(url)
+
+    def init_lot_online_tab(self):
+        layout = QVBoxLayout(self.lot_online_tab)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Поиск РАД / ЛОТ-ОНЛАЙН (catalog.lot-online.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+
+        filters = QGroupBox("Параметры поиска")
+        form = QFormLayout(filters)
+        self.lot_online_search_input = QLineEdit()
+        self.lot_online_search_input.setPlaceholderText("Название, адрес, номер лота...")
+        form.addRow("Поиск", self.lot_online_search_input)
+
+        self.lot_online_category_combo = WheelSafeComboBox()
+        self.lot_online_category_combo.addItem("Недвижимое имущество", "1")
+        self.lot_online_category_combo.addItem("Все категории", "9876")
+        form.addRow("Каталог", self.lot_online_category_combo)
+
+        self.lot_online_region_combo = WheelSafeComboBox()
+        self.lot_online_region_combo.addItem("Все регионы", None)
+        for code, label in sorted(LotOnlineClient.REGION_FEATURES.items(), key=lambda item: item[1]):
+            self.lot_online_region_combo.addItem(label, code)
+        self._set_combo_data(self.lot_online_region_combo, "24392")
+        form.addRow("Регион", self.lot_online_region_combo)
+
+        self.lot_online_archive_combo = WheelSafeComboBox()
+        self.lot_online_archive_combo.addItem("Активные", "false")
+        self.lot_online_archive_combo.addItem("Все", "all")
+        self.lot_online_archive_combo.addItem("Архивные", "true")
+        form.addRow("Состояние", self.lot_online_archive_combo)
+
+        mode_row = QHBoxLayout()
+        self.lot_online_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.lot_online_load_all_checkbox.setChecked(True)
+        self.lot_online_max_items_input = QLineEdit("5000")
+        self.lot_online_max_items_input.setMaximumWidth(110)
+        self.lot_online_max_items_input.setPlaceholderText("Лимит")
+        mode_row.addWidget(self.lot_online_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.lot_online_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+
+        buttons = QHBoxLayout()
+        self.lot_online_search_btn = QPushButton("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_search_btn.setMinimumHeight(38)
+        self.lot_online_search_btn.setStyleSheet(
+            "QPushButton { background: #115dee; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bb6ea; }"
+        )
+        self.lot_online_search_btn.clicked.connect(lambda: self.run_lot_online_search())
+        self.lot_online_stop_btn = QPushButton("Остановить")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.lot_online_stop_btn.clicked.connect(self.stop_lot_online_search)
+        self.lot_online_open_site_btn = QPushButton("Открыть каталог")
+        self.lot_online_open_site_btn.clicked.connect(self.open_lot_online_site)
+        buttons.addWidget(self.lot_online_search_btn)
+        buttons.addWidget(self.lot_online_stop_btn)
+        buttons.addWidget(self.lot_online_open_site_btn)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(filters)
+
+        self.lot_online_status_label = QLabel("Найдено 0, источник lot-online.ru")
+        self.lot_online_status_label.setStyleSheet("font-size: 13px; color: #60769f;")
+        layout.addWidget(self.lot_online_status_label)
+
+        self.lot_online_results_table = QTableWidget()
+        self.lot_online_results_table.setColumnCount(9)
+        self.lot_online_results_table.setHorizontalHeaderLabels([
+            "В базе", "ID", "Номер РАД", "Название", "Категория",
+            "Регион / адрес", "Цена", "Статус", "Ссылка",
+        ])
+        header = self.lot_online_results_table.horizontalHeader()
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        self.lot_online_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.lot_online_results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.lot_online_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.lot_online_results_table.setAlternatingRowColors(True)
+        self.lot_online_results_table.setSortingEnabled(True)
+        self.lot_online_results_table.cellClicked.connect(self.open_lot_online_link_cell)
+        self.lot_online_results_table.cellDoubleClicked.connect(self.open_lot_online_result_url)
+        layout.addWidget(self.lot_online_results_table, 1)
+
+        actions = QHBoxLayout()
+        import_selected = QPushButton("Импортировать выбранные в базу")
+        import_selected.clicked.connect(self.import_selected_lot_online_lots)
+        import_all = QPushButton("Импортировать все найденные")
+        import_all.clicked.connect(self.import_all_lot_online_lots)
+        self.lot_online_prev_btn = QPushButton("Предыдущая страница")
+        self.lot_online_prev_btn.clicked.connect(self.search_lot_online_prev_page)
+        self.lot_online_next_btn = QPushButton("Следующая страница")
+        self.lot_online_next_btn.clicked.connect(self.search_lot_online_next_page)
+        actions.addWidget(import_selected)
+        actions.addWidget(import_all)
+        actions.addStretch()
+        actions.addWidget(self.lot_online_prev_btn)
+        actions.addWidget(self.lot_online_next_btn)
+        layout.addLayout(actions)
+        self.render_lot_online_results()
+
+    def collect_lot_online_filters(self, page: int | None = None) -> LotOnlineSearchFilters:
+        return LotOnlineSearchFilters(
+            search_text=self.lot_online_search_input.text().strip(),
+            category_id=str(self.lot_online_category_combo.currentData() or "1"),
+            region_feature=self.lot_online_region_combo.currentData(),
+            archive_mode=str(self.lot_online_archive_combo.currentData() or "false"),
+            page=max(1, page or self.lot_online_current_page),
+            page_size=96,
+        )
+
+    def run_lot_online_search(self, page: int = 1):
+        self.lot_online_current_page = max(1, page)
+        search_all = self.lot_online_load_all_checkbox.isChecked()
+        filters = self.collect_lot_online_filters(1 if search_all else self.lot_online_current_page)
+        try:
+            max_items = self._line_int_or_none(self.lot_online_max_items_input)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Проверьте фильтры", str(exc))
+            return
+        self.lot_online_results = []
+        self.lot_online_meta = {"mode": "all_pages" if search_all else "page", "loaded": 0}
+        self.render_lot_online_results()
+        self.lot_online_search_btn.setEnabled(False)
+        self.lot_online_search_btn.setText("Идет поиск...")
+        self.lot_online_stop_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        self.lot_online_worker = LotOnlineSearchWorker(filters, load_all=search_all, max_items=max_items)
+        self.lot_online_worker.progress.connect(self.status_bar.showMessage)
+        self.lot_online_worker.progress_percent.connect(self.progress_bar.setValue)
+        self.lot_online_worker.page_loaded.connect(self.on_lot_online_page_loaded)
+        self.lot_online_worker.finished.connect(self.on_lot_online_search_finished)
+        self.lot_online_worker.error.connect(self.on_lot_online_search_error)
+        self.lot_online_worker.start()
+
+    def stop_lot_online_search(self):
+        worker = getattr(self, "lot_online_worker", None)
+        if worker and worker.isRunning():
+            worker.request_stop()
+            self.lot_online_stop_btn.setEnabled(False)
+            self.status_bar.showMessage("Останавливаю поиск ЛОТ-ОНЛАЙН после текущего запроса...", 5000)
+
+    def on_lot_online_page_loaded(self, lots: list, page_meta: dict):
+        seen = {lot.external_id for lot in self.lot_online_results}
+        for lot in lots or []:
+            if lot.external_id not in seen:
+                self.lot_online_results.append(lot)
+                seen.add(lot.external_id)
+        self.lot_online_meta.update(page_meta or {})
+        self.lot_online_meta["loaded"] = len(self.lot_online_results)
+        self.render_lot_online_results()
+
+    def on_lot_online_search_finished(self, lots: list, meta: dict):
+        self.lot_online_search_btn.setEnabled(True)
+        self.lot_online_search_btn.setText("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.lot_online_results = list(lots or [])
+        self.lot_online_meta = dict(meta or {})
+        self.render_lot_online_results()
+        self.status_bar.showMessage(
+            f"Поиск ЛОТ-ОНЛАЙН завершен: {len(self.lot_online_results)} лотов", 5000
+        )
+
+    def on_lot_online_search_error(self, error_msg: str):
+        self.lot_online_search_btn.setEnabled(True)
+        self.lot_online_search_btn.setText("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage("Ошибка поиска ЛОТ-ОНЛАЙН", 10000)
+        QMessageBox.warning(self, "Ошибка ЛОТ-ОНЛАЙН", error_msg)
+
+    def render_lot_online_results(self):
+        meta = self.lot_online_meta or {}
+        mode = meta.get("mode")
+        mode_text = "все страницы" if mode == "all_pages" else f"страница {self.lot_online_current_page}"
+        self.lot_online_status_label.setText(
+            f"Найдено {len(self.lot_online_results)}, режим: {mode_text}, источник lot-online.ru"
+        )
+        self.lot_online_prev_btn.setEnabled(self.lot_online_current_page > 1 and mode != "all_pages")
+        self.lot_online_next_btn.setEnabled(bool(meta.get("has_more")) and mode != "all_pages")
+        external_ids = [lot.external_id for lot in self.lot_online_results]
+        existing: set[str] = set()
+        if external_ids:
+            with session_scope() as session:
+                existing = set(session.scalars(select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "lot-online.ru",
+                    ProcessedLot.external_id.in_(external_ids),
+                )).all())
+
+        self.lot_online_results_table.setSortingEnabled(False)
+        self.lot_online_results_table.setRowCount(len(self.lot_online_results))
+        for row, lot in enumerate(self.lot_online_results):
+            raw = lot.raw_data or {}
+            link_url = lot.source_url or lot.lot_url
+            items = [
+                make_text_item("Да" if lot.external_id in existing else ""),
+                make_text_item(lot.external_id.replace("lot-online:", "")),
+                make_text_item(lot.procedure_number or raw.get("procedure_number") or ""),
+                make_text_item(lot.title),
+                make_text_item(translate_category(lot.category)),
+                make_text_item(lot.region_name or lot.address or lot.region_slug or ""),
+                make_number_item(lot.current_price or lot.start_price),
+                make_text_item(translate_status(lot.auction_status)),
+                make_text_item("Открыть" if link_url else ""),
+            ]
+            for item in items:
+                item.setData(EXTERNAL_ID_ROLE, lot.external_id)
+                item.setData(URL_ROLE, link_url)
+            for column, item in enumerate(items):
+                self.lot_online_results_table.setItem(row, column, item)
+        self.lot_online_results_table.setSortingEnabled(True)
+
+    def _lot_online_lot_by_external_id(self, external_id: str | None) -> NormalizedLot | None:
+        return next((lot for lot in self.lot_online_results if lot.external_id == external_id), None)
+
+    def selected_lot_online_lots(self) -> list[NormalizedLot]:
+        rows = sorted({item.row() for item in self.lot_online_results_table.selectedItems()})
+        selected = []
+        for row in rows:
+            item = self.lot_online_results_table.item(row, 1)
+            lot = self._lot_online_lot_by_external_id(item.data(EXTERNAL_ID_ROLE) if item else None)
+            if lot:
+                selected.append(lot)
+        return selected
+
+    def import_selected_lot_online_lots(self):
+        self.import_lot_online_lots(self.selected_lot_online_lots())
+
+    def import_all_lot_online_lots(self):
+        self.import_lot_online_lots(list(self.lot_online_results))
+
+    def import_lot_online_lots(self, lots: list[NormalizedLot]):
+        if not lots:
+            QMessageBox.information(self, "Импорт", "Нет лотов ЛОТ-ОНЛАЙН для импорта.")
+            return
+        external_ids = [lot.external_id for lot in lots]
+        with session_scope() as session:
+            existed = set(session.scalars(select(ProcessedLot.external_id).where(
+                ProcessedLot.source_system == "lot-online.ru",
+                ProcessedLot.external_id.in_(external_ids),
+            )).all())
+            for lot in lots:
+                persist_lot(session, lot)
+        added = sum(lot.external_id not in existed for lot in lots)
+        self.status_bar.showMessage(f"Импорт ЛОТ-ОНЛАЙН: +{added}, обновлено {len(lots) - added}", 5000)
+        self.load_lots()
+        self.update_dashboard()
+        self.render_lot_online_results()
+
+    def search_lot_online_next_page(self):
+        self.run_lot_online_search(self.lot_online_current_page + 1)
+
+    def search_lot_online_prev_page(self):
+        self.run_lot_online_search(max(1, self.lot_online_current_page - 1))
+
+    def open_lot_online_result_url(self, row: int, _column: int):
+        item = self.lot_online_results_table.item(row, 1)
+        lot = self._lot_online_lot_by_external_id(item.data(EXTERNAL_ID_ROLE) if item else None)
+        url = lot.source_url or lot.lot_url if lot else None
+        if url:
+            QDesktopServices.openUrl(QUrl.fromUserInput(str(url)))
+
+    def open_lot_online_link_cell(self, row: int, column: int):
+        if column == 8:
+            self.open_lot_online_result_url(row, column)
+
+    def open_lot_online_site(self):
+        try:
+            params = LotOnlineClient()._build_query_params(self.collect_lot_online_filters())
+            url = LotOnlineClient()._prepare_url(params)
+        except Exception:
+            url = LotOnlineClient.SEARCH_ENDPOINT
+        QDesktopServices.openUrl(QUrl.fromUserInput(url))
 
     def init_registry_tab(self):
         layout = QVBoxLayout(self.registry_tab)

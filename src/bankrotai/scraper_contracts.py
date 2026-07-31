@@ -107,3 +107,13 @@ class TBankrotSearchFilters:
     show_paused: bool = False
     page: int = 1
     page_size: int = 20
+
+
+@dataclass
+class LotOnlineSearchFilters:
+    search_text: str = ""
+    category_id: str = "1"
+    region_feature: str | None = None
+    archive_mode: str = "false"
+    page: int = 1
+    page_size: int = 96

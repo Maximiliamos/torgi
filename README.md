@@ -9,7 +9,7 @@ BankrotAI — desktop-приложение и web-сервис для сбора
 - `src/bankrotai/tasks.py` — Celery worker: синхронизация порциями, retries и прогресс.
 - `src/bankrotai/db.py`, `alembic/` — SQLAlchemy и единая цепочка миграций SQLite/PostgreSQL.
 - `src/bankrotai/ai.py`, `src/bankrotai/geo.py` — строгая проверка AI-ответов и геокодирование.
-- `src/bankrotai/connectors/` — SDK и реестр источников; существующие клиенты ГИС «Торги» и TBankrot подключены адаптерами, ЕФРСБ использует официальный Publications API.
+- `src/bankrotai/connectors/` — SDK и реестр источников; клиенты ГИС «Торги», TBankrot и РАД / ЛОТ-ОНЛАЙН подключены адаптерами, ЕФРСБ использует официальный Publications API.
 - `WEB/` — React/Vite web-клиент.
 - `docker-compose.yml` — PostgreSQL, Redis, миграции, API, worker, beat и web.
 
@@ -201,7 +201,7 @@ GitHub Actions запускается для push и pull request в `main`: Ruf
 
 ## Ограничения
 
-- Внешние TBankrot, torgi.gov.ru, НСПД, Nominatim и AI API могут быть недоступны или менять ответы; ошибки показываются явно и не подменяются вымышленными данными.
+- Внешние TBankrot, torgi.gov.ru, catalog.lot-online.ru, НСПД, Nominatim и AI API могут быть недоступны или менять ответы; ошибки показываются явно и не подменяются вымышленными данными.
 - Desktop использует отдельную optional-группу зависимостей и не входит в API Docker image.
 - Production ЕФРСБ требует договор и credentials оператора; наличие коннектора не означает предоставленный доступ.
 - `GET` не предназначен для массовой синхронизации; используйте Celery endpoint и проверку статуса.

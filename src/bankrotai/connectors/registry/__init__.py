@@ -33,12 +33,14 @@ connector_registry = ConnectorRegistry()
 
 def _register_builtins() -> None:
     from bankrotai.connectors.registry.fedresurs import FedresursConnector
+    from bankrotai.connectors.registry.lot_online import LotOnlineConnector
     from bankrotai.connectors.registry.tbankrot import TBankrotConnector
     from bankrotai.connectors.registry.torgi_gov import TorgiGovConnector
 
     connector_registry.register(TorgiGovConnector.source_id, TorgiGovConnector)
     connector_registry.register(TBankrotConnector.source_id, TBankrotConnector)
     connector_registry.register(FedresursConnector.source_id, FedresursConnector)
+    connector_registry.register(LotOnlineConnector.source_id, LotOnlineConnector)
 
 
 _register_builtins()

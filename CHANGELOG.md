@@ -7,6 +7,8 @@ for tagged releases.
 
 ### Auction operating model
 
+- Added public RAD / LOT-ONLINE catalogue search with category, Yaroslavl region,
+  active/archive mode, pagination, desktop import, and connector-registry support.
 - Added connector SDK and registry adapters for Torgi.gov.ru, TBankrot and the official authenticated EFRSB Publications API.
 - Added canonical/source lot identity, normalized auction procedure fields and participation checklists.
 - Added immutable SHA-256 document version records.

@@ -10,7 +10,7 @@ BANKROTAI — АКТУАЛЬНАЯ СВОДКА (2026-07-31)
   dist_operating_model\BankrotAI.exe
 
 Ключевые возможности:
-  - ГИС «Торги», TBankrot, HTML/Excel импорт и connector SDK;
+  - ГИС «Торги», TBankrot, РАД / ЛОТ-ОНЛАЙН, HTML/Excel импорт и connector SDK;
   - официальный ЕФРСБ Publications API connector (нужны credentials оператора);
   - CanonicalLot и SourceLot для нескольких площадок;
   - параметры процедуры, задатки, сроки и участие;
