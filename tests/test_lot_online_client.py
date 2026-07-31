@@ -1,5 +1,6 @@
 from bankrotai.scraper_contracts import LotOnlineSearchFilters
-from bankrotai.scrapers import LotOnlineClient
+from bankrotai.domain import NormalizedLot
+from bankrotai.scrapers import LotOnlineClient, is_sale_real_estate_lot
 
 
 LISTING_HTML = """
@@ -74,3 +75,61 @@ def test_archive_mode_is_validated() -> None:
         assert "archive_mode" in str(exc)
     else:
         raise AssertionError("invalid archive mode must be rejected")
+
+
+def test_sale_filter_rejects_shares_and_cultural_heritage() -> None:
+    def lot(title: str) -> NormalizedLot:
+        return NormalizedLot(
+            external_id=title,
+            source="test",
+            source_system="test",
+            title=title,
+            description=title,
+            category="real_estate",
+            region_slug=None,
+            region_name=None,
+            address=None,
+            cadastral_number=None,
+            vin=None,
+            area=None,
+            start_price=None,
+            current_price=None,
+            auction_status="active",
+            lot_url=None,
+            source_url=None,
+            detail_level="search",
+            raw_data={},
+        )
+
+    assert not is_sale_real_estate_lot(lot("16/131 доля в праве на нежилое помещение"))
+    assert not is_sale_real_estate_lot(lot("Объект культурного наследия — ансамбль усадьбы"))
+    assert is_sale_real_estate_lot(lot("Нежилое помещение, г. Сасово, ул. Ленина, д. 7"))
+
+
+def test_fetch_detail_fields_reads_structured_address_and_cadastre() -> None:
+    class Response:
+        content = """
+        <html><head><title>Нежилое помещение</title></head><body>
+          <dl><div><dt>Адрес</dt><dd>Рязанская область, г. Сасово, ул. Ленина, д. 7</dd></div></dl>
+          <div class="ty-product__full-description">
+            Нежилое помещение, кадастровый номер 62:27:0010101:15
+          </div>
+        </body></html>
+        """.encode("utf-8")
+        url = "https://catalog.lot-online.ru/lot/1"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
+
+    assert fields["address"] == "Рязанская область, г. Сасово, ул. Ленина, д. 7"
+    assert fields["cadastral_numbers"] == ["62:27:0010101:15"]

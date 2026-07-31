@@ -34,6 +34,12 @@ for tagged releases.
 - Added cross-source duplicate recognition with one registry/map card and aggregated
   source links and photographs.
 - Added RAD-aware Russian address normalization and district-safe Nominatim matching.
+- Added LOT-ONLINE detail-card enrichment for listing cards without a usable address
+  or cadastral number, including `Address (location)` label support.
+- Excluded partial ownership shares, cultural-heritage objects and ensembles from
+  search, registry geocoding and map markers.
+- Made nationwide source failures visible as an explicit incomplete-search warning
+  instead of presenting a partial database as a complete Russia-wide result.
 - Added bounded parallel bulk GEO processing with accurate success/failure counts.
 - Added PKK/NSPD connectivity circuit breakers so a VPN-blocked cadastral service
   does not impose the same timeout on every lot in a bulk queue.

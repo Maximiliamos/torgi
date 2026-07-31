@@ -28,6 +28,17 @@ def test_rad_address_candidates_use_current_municipal_name() -> None:
     assert all("\u0437\u0435\u043c\u0435\u043b\u044c\u043d\u044b\u043c \u0443\u0447\u0430\u0441\u0442\u043a\u043e\u043c" not in item for item in candidates)
 
 
+def test_existing_lot_online_title_can_supply_address_for_geocoding() -> None:
+    candidates = build_geocoding_address_candidates(
+        None,
+        title="Квартира, Адрес (местоположение): Рязанская обл., г. Сасово, ул. Ленина, д. 7",
+    )
+
+    assert candidates
+    assert "Сасово" in candidates[0]
+    assert "улица Ленина" in candidates[0]
+
+
 def test_nominatim_selects_matching_district_not_first_namesake(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):

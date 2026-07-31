@@ -222,28 +222,40 @@ def extract_address(text: str) -> str | None:
  
     clean = re.sub(r'\s+', ' ', text).strip() 
  
-    stop = ( 
-        r'(?=Кадастровый номер|Количество этажей|Общая площадь|' 
-        r'Категория объекта|Форма собственности|Вид торгов|' 
-        r'Вид ограничений|Общие сведения|Назначение|$)' 
-    ) 
+    stop = (
+        r'(?=\s*(?:Кадастров(?:ый|ые) номер(?:а)?|Количество этажей|Общая площадь|'
+        r'Категория объекта|Форма собственности|Вид торгов|Вид ограничений|'
+        r'Общие сведения|Назначение|Начальная цена|$))'
+    )
  
-    patterns = [ 
-        rf'по адресу:\s*(.+?){stop}', 
-        rf'расположен[а-я\s]*по адресу:\s*(.+?){stop}', 
-        rf'местоположение:\s*(.+?){stop}', 
-        rf'адрес местонахождения:\s*(.+?){stop}', 
-        rf'Местонахождение имущества:\s*(.+?){stop}', 
-        rf'имущества:\s*((?:обл|область|г\.|город|р-н|район|ул|улица|д\.|дом).+?){stop}', 
-    ] 
+    patterns = [
+        # LOT-ONLINE uses both "адрес:" and "Адрес (местоположение):".
+        rf'(?:по\s+)?адрес(?:\s*\((?:местоположение|местонахождение)\))?\s*:\s*(.+?){stop}',
+        rf'расположен[а-я\s]*по\s+адресу\s*:\s*(.+?){stop}',
+        rf'местоположение\s*:\s*(.+?){stop}',
+        rf'адрес\s+местонахождения\s*:\s*(.+?){stop}',
+        rf'местонахождение\s+имущества\s*:\s*(.+?){stop}',
+        rf'имущества\s*:\s*((?:обл|область|г\.|город|р-н|район|ул|улица|д\.|дом).+?){stop}',
+    ]
  
     for pat in patterns: 
         m = re.search(pat, clean, re.IGNORECASE) 
         if not m: 
             continue 
  
-        addr = m.group(1).strip(" ,.;:-") 
-        addr = re.sub(r'\s+', ' ', addr) 
+        addr = m.group(1).strip(" ,.;:-")
+        # Listing titles often append another asset, area or restrictions after
+        # the actual address.  Sending that tail to Nominatim turns a valid
+        # address into a guaranteed miss.
+        addr = re.split(
+            r'\s*[,;]\s*(?=(?:имущество\s*\(|оборудование\b|'
+            r'площад(?:ь|ью)\b|этаж(?:и|ом)?\b|назначение\b|'
+            r'ограничени[ея]\b|ЗОУИТ\b))',
+            addr,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        addr = re.sub(r'\s+', ' ', addr)
  
         if len(addr) >= 15: 
             return addr[:350] 

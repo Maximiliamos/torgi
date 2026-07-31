@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from bankrotai.extractors import extract_area, extract_area_result, extract_price, extract_price_result
+from bankrotai.extractors import (
+    extract_address,
+    extract_area,
+    extract_area_result,
+    extract_price,
+    extract_price_result,
+)
 
 
 def test_price_prefers_labeled_price_over_deposit_and_area() -> None:
@@ -38,3 +44,17 @@ def test_labeled_building_area_has_provenance() -> None:
     assert result.rule_id == "area.building_labeled"
     assert result.confidence == "high"
     assert result.source_fragment
+
+
+def test_extract_address_supports_lot_online_labels_and_trims_asset_tail() -> None:
+    title = (
+        "Нежилые помещения, адрес: Москва, Долгоруковская ул., д. 4А, "
+        "этажи -2, -1, имущество (82 поз.)"
+    )
+    assert extract_address(title) == "Москва, Долгоруковская ул., д. 4А"
+
+    parenthesized = (
+        "Адрес (местоположение): Рязанская область, г. Сасово, ул. Ленина, д. 7; "
+        "Кадастровый номер 62:27:0010101:15"
+    )
+    assert extract_address(parenthesized) == "Рязанская область, г. Сасово, ул. Ленина, д. 7"

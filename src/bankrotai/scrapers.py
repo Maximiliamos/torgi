@@ -52,6 +52,20 @@ RENTAL_TERMS = tuple(term.lower() for term in (
     "право заключения договора аренды", "договор найма", "право пользования",
 ))
 
+_DISALLOWED_SHARE_RE = re.compile(r"\bдол(?:я|и|ю|ей|е)\b", re.IGNORECASE)
+_DISALLOWED_HERITAGE_RE = re.compile(
+    r"\b(?:объект(?:ом|а|ы)?\s+культурного\s+наследия|культурного\s+наследия|"
+    r"выявленн(?:ый|ого|ому)\s+объект|ансамбл(?:ь|я|ем|и)|"
+    r"памятник(?:ом|а|и)?\s+(?:архитектуры|истории)|ОКН)\b",
+    re.IGNORECASE,
+)
+
+
+def has_disallowed_real_estate_terms(*values: object) -> bool:
+    """Reject partial ownership and heritage assets from search and maps."""
+    text = " ".join(str(value) for value in values if value).casefold()
+    return bool(_DISALLOWED_SHARE_RE.search(text) or _DISALLOWED_HERITAGE_RE.search(text))
+
 
 def is_real_estate_lot(lot: NormalizedLot) -> bool:
     category = (lot.category or "").lower()
@@ -89,7 +103,7 @@ def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
         )
         if value
     ).casefold()
-    return not any(term in text for term in RENTAL_TERMS)
+    return not any(term in text for term in RENTAL_TERMS) and not has_disallowed_real_estate_terms(text)
 
 from bankrotai.extractors import (
     extract_price, extract_area, extract_cadastral, extract_address,
@@ -2800,6 +2814,58 @@ class LotOnlineClient:
 
     def _prepare_url(self, params: dict[str, str]) -> str:
         return f"{self.SEARCH_ENDPOINT}?{urlencode(params)}"
+
+    @staticmethod
+    def _detail_text(node: Any) -> str:
+        value = node.get_text(" ", strip=True) if node is not None else ""
+        value = re.sub(r"\s+", " ", value).strip()
+        # Some catalogue responses have historically contained UTF-8 text
+        # decoded once as latin-1. Repair only when the mojibake signature is
+        # present; normal Russian text is left untouched.
+        if ("Ð" in value or "Ñ" in value) and not re.search(r"[А-Яа-я]", value):
+            try:
+                value = value.encode("latin-1").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        return value
+
+    def fetch_detail_fields(self, url: str) -> dict[str, Any]:
+        """Fetch structured address/cadastre fields absent from listing cards."""
+        try:
+            response = self.session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LotOnlineClientError(f"Не удалось загрузить карточку ЛОТ-ОНЛАЙН: {exc}") from exc
+
+        soup = BeautifulSoup(response.content, "lxml")
+        labelled: dict[str, str] = {}
+        for container in soup.select("dl > div"):
+            label_node = container.find("dt")
+            value_node = container.find("dd")
+            label = self._detail_text(label_node).casefold()
+            value = self._detail_text(value_node)
+            if label and value:
+                labelled[label] = value
+
+        descriptions = [
+            self._detail_text(node)
+            for node in soup.select(".ty-product__full-description")
+        ]
+        description = max((value for value in descriptions if value), key=len, default="")
+        page_text = " ".join((description, self._detail_text(soup.title)))
+        address = labelled.get("адрес") or extract_address(page_text)
+        cadastral_numbers = extract_cadastral_numbers(page_text)
+        if not cadastral_numbers:
+            for group in soup.select(".ty-control-group"):
+                label = self._detail_text(group.select_one(".ty-control-group__label")).casefold()
+                if "кадастров" in label:
+                    cadastral_numbers.extend(extract_cadastral_numbers(self._detail_text(group)))
+        return {
+            "address": address,
+            "cadastral_numbers": list(dict.fromkeys(cadastral_numbers)),
+            "description": description or None,
+            "url": response.url or url,
+        }
 
     def search_lots(self, filters: LotOnlineSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
         params = self._build_query_params(filters)

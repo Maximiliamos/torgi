@@ -67,6 +67,7 @@ from bankrotai.scrapers import (
     import_manual_html,
     sync_public_real_estate,
     ingest_recent_tbankrot,
+    is_sale_real_estate_lot,
 )
 from bankrotai.logic import (
     cleanup_closed_lots,
@@ -1197,14 +1198,8 @@ class GeoWorker(QThread):
                 return
 
             with session_scope() as session:
-                rows = session.execute(
-                    select(
-                        ProcessedLot.id,
-                        ProcessedLot.cadastral_number,
-                        ProcessedLot.address,
-                        ProcessedLot.title,
-                        ProcessedLot.region_name,
-                    ).where(ProcessedLot.id.in_(lot_ids))
+                rows = session.scalars(
+                    select(ProcessedLot).where(ProcessedLot.id.in_(lot_ids))
                 ).all()
             payloads = [
                 {
@@ -1213,20 +1208,38 @@ class GeoWorker(QThread):
                     "address": row.address,
                     "title": row.title,
                     "region_name": row.region_name,
+                    "source_system": row.source_system,
+                    "source_url": row.source_url or row.lot_url,
                 }
                 for row in rows
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(row))
             ]
             total = len(payloads)
             max_workers = min(get_settings().geo_max_workers, max(total, 1))
             self.progress.emit(f"Параллельное геокодирование: {total} лотов, потоков: {max_workers}")
 
             def resolve(payload: dict):
+                cadastral_number = payload["cadastral_number"]
+                address = payload["address"]
+                enriched: dict = {}
+                if (
+                    payload["source_system"] == "lot-online.ru"
+                    and payload["source_url"]
+                    and not address
+                ):
+                    try:
+                        enriched = LotOnlineClient(timeout=(8, 25)).fetch_detail_fields(payload["source_url"])
+                        address = enriched.get("address") or address
+                        cadastral_numbers = enriched.get("cadastral_numbers") or []
+                        cadastral_number = cadastral_number or (cadastral_numbers[0] if cadastral_numbers else None)
+                    except Exception:
+                        logger.warning("LOT-ONLINE detail enrichment failed for lot %s", payload["lot_id"], exc_info=True)
                 return payload["lot_id"], resolve_lot_geo(
-                    payload["cadastral_number"],
-                    payload["address"],
+                    cadastral_number,
+                    address,
                     title=payload["title"],
                     region_name=payload["region_name"],
-                )
+                ), enriched
 
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bankrotai-geo") as executor:
                 futures = {executor.submit(resolve, payload): payload for payload in payloads}
@@ -1234,16 +1247,26 @@ class GeoWorker(QThread):
                     payload = futures[future]
                     lot_id = int(payload["lot_id"])
                     try:
-                        _resolved_lot_id, geo_result = future.result()
+                        _resolved_lot_id, geo_result, enriched = future.result()
                     except Exception:
                         logger.exception("GEO resolution failed for lot %s", lot_id)
                         geo_result = None
+                        enriched = {}
 
                     success = False
                     with DB_WRITE_LOCK:
                         with session_scope() as session:
                             lot = session.get(ProcessedLot, lot_id)
                             if lot:
+                                if enriched.get("address") and not lot.address:
+                                    lot.address = enriched["address"]
+                                cadastral_numbers = enriched.get("cadastral_numbers") or []
+                                if cadastral_numbers and not lot.cadastral_number:
+                                    lot.cadastral_number = cadastral_numbers[0]
+                                if enriched.get("description") and (
+                                    not lot.description or lot.description == lot.title
+                                ):
+                                    lot.description = enriched["description"][:10000]
                                 if self.refresh_existing and geo_result:
                                     session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
                                     session.flush()
@@ -4359,7 +4382,10 @@ class MainWindow(QMainWindow):
             else:
                 query = query.order_by(col_attr)
 
-            lots = session.scalars(query).all()
+            lots = [
+                lot for lot in session.scalars(query).all()
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
+            ]
             self.lots_table.setRowCount(len(lots))
             for i, lot in enumerate(lots):
                 # Helper for numeric items
@@ -4888,12 +4914,27 @@ class MainWindow(QMainWindow):
         self.load_lots()
         self.update_map()
         self.update_yandex_map()
-        self.status_bar.showMessage(
-            f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
-            8000,
-        )
-        if details.get("errors"):
-            logger.warning("Nationwide search completed with source errors: %s", details["errors"])
+        source_errors = details.get("errors") or {}
+        if source_errors:
+            logger.warning("Nationwide search completed with source errors: %s", source_errors)
+            failed_sources = ", ".join(str(name) for name in source_errors)
+            self.status_bar.showMessage(
+                f"Поиск РФ НЕПОЛНЫЙ: недоступны {failed_sources}. Загружено {len(ids)} карточек.",
+                15000,
+            )
+            QMessageBox.warning(
+                self,
+                "Неполный поиск всех лотов РФ",
+                "Не все источники были загружены. Карта не является полной.\n\n"
+                + "\n".join(f"• {name}: {message}" for name, message in source_errors.items())
+                + "\n\nОтключите VPN или восстановите доступ к источнику и нажмите поиск РФ ещё раз. "
+                  "Повторный запуск безопасен: уже загруженные лоты не дублируются.",
+            )
+        else:
+            self.status_bar.showMessage(
+                f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
+                8000,
+            )
         if ids:
             self.start_geo_worker(lot_ids=ids, refresh_existing=False, limit=None)
 
@@ -5448,7 +5489,11 @@ class MainWindow(QMainWindow):
             else:
                 stmt = stmt.limit(limit)
 
-            rows = list(session.execute(stmt))
+            rows = [
+                (lot, geo)
+                for lot, geo in session.execute(stmt)
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
+            ]
             primary_ids = [lot.id for lot, _geo in rows]
             source_map: dict[int, list[SourceLot]] = {lot_id: [] for lot_id in primary_ids}
             if primary_ids:

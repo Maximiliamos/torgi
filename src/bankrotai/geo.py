@@ -365,8 +365,12 @@ def build_geocoding_address_candidates(
     """Build conservative Nominatim queries from Russian auction-card addresses."""
     value = (address or "").strip()
     if not value and title:
-        match = re.search(r"(?:по\s+адресу|адрес)\s*:\s*(.+)", title, re.IGNORECASE)
-        value = match.group(1).strip() if match else ""
+        # Keep this fallback aligned with extractors.extract_address so that
+        # already imported shallow LOT-ONLINE cards can be geocoded without a
+        # full re-import.
+        from bankrotai.extractors import extract_address
+
+        value = extract_address(title) or ""
     if not value:
         return []
 
