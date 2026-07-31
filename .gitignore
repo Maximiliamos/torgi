@@ -30,6 +30,7 @@ WEB/playwright-report/
 WEB/.env
 output/playwright/
 .playwright-cli/
+/app/
 node_modules/
 omniroute/
 omniroute_data/

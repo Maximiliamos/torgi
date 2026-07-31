@@ -1158,8 +1158,8 @@ class CadastreSearchWorker(QThread):
 
 
 class PreviewEnrichmentWorker(QThread):
-    finished = Signal(int, object)
-    error = Signal(int, str)
+    result_ready = Signal(int, object)
+    failed = Signal(int, str)
 
     def __init__(self, lot_id: int):
         super().__init__()
@@ -1173,7 +1173,7 @@ class PreviewEnrichmentWorker(QThread):
             with session_scope() as session:
                 lot = session.get(ProcessedLot, self.lot_id)
                 if lot is None:
-                    self.finished.emit(self.lot_id, {})
+                    self.result_ready.emit(self.lot_id, {})
                     return
                 source_lot = session.scalars(
                     select(SourceLot).where(or_(
@@ -1206,14 +1206,16 @@ class PreviewEnrichmentWorker(QThread):
                 }
                 cached.update(related)
                 if raw.get("torgi_russia_checked_at"):
-                    self.finished.emit(self.lot_id, cached)
+                    self.result_ready.emit(self.lot_id, cached)
                     return
                 cadastres = list(lot.cadastral_numbers or [])
                 if lot.cadastral_number:
                     cadastres.insert(0, lot.cadastral_number)
                 source_lot_id = source_lot.id if source_lot else None
 
-            details = TorgiRussiaClient().find_by_cadastral_numbers(cadastres) if cadastres else None
+            if self.isInterruptionRequested():
+                return
+            details = TorgiRussiaClient(timeout=8).find_by_cadastral_numbers(cadastres) if cadastres else None
             extras = details.as_dict() if details else {}
             extras.update(related)
             if details and details.procedure_number:
@@ -1235,10 +1237,12 @@ class PreviewEnrichmentWorker(QThread):
                             updated.update(extras)
                             updated["torgi_russia_checked_at"] = datetime.now().isoformat(timespec="seconds")
                             source_lot.raw_data = updated
-            self.finished.emit(self.lot_id, extras)
+            if not self.isInterruptionRequested():
+                self.result_ready.emit(self.lot_id, extras)
         except Exception as exc:
             logger.warning("Torgi Rossii preview enrichment failed for lot %s: %s", self.lot_id, exc)
-            self.error.emit(self.lot_id, str(exc))
+            if not self.isInterruptionRequested():
+                self.failed.emit(self.lot_id, str(exc))
 
 
 NSPD_REFERER = "https://nspd.gov.ru/map?theme_id=1&is_copy_url=true&active_layers=&baseLayerId="
@@ -4689,8 +4693,9 @@ class MainWindow(QMainWindow):
             return
         worker = PreviewEnrichmentWorker(lot_id)
         self.preview_enrichment_workers[lot_id] = worker
-        worker.finished.connect(self.on_preview_enrichment_finished)
-        worker.error.connect(self.on_preview_enrichment_error)
+        worker.result_ready.connect(self.on_preview_enrichment_finished)
+        worker.failed.connect(self.on_preview_enrichment_error)
+        worker.finished.connect(lambda lot_id=lot_id, worker=worker: self.cleanup_preview_enrichment_worker(lot_id, worker))
         worker.start()
 
     def on_map_preview_closed(self, map_kind: str):
@@ -4703,7 +4708,6 @@ class MainWindow(QMainWindow):
             sidebar.show()
 
     def on_preview_enrichment_finished(self, lot_id: int, extras: object):
-        self.preview_enrichment_workers.pop(int(lot_id), None)
         encoded = json.dumps(extras if isinstance(extras, dict) else {}, ensure_ascii=False)
         script = f"window.updateLotPreviewExtras && window.updateLotPreviewExtras({int(lot_id)}, {encoded});"
         for view_name in ("map_view", "yandex_map_view"):
@@ -4712,8 +4716,23 @@ class MainWindow(QMainWindow):
                 view.page().runJavaScript(script)
 
     def on_preview_enrichment_error(self, lot_id: int, message: str):
-        self.preview_enrichment_workers.pop(int(lot_id), None)
         logger.debug("Preview enrichment unavailable for lot %s: %s", lot_id, message)
+
+    def cleanup_preview_enrichment_worker(self, lot_id: int, worker: PreviewEnrichmentWorker):
+        if self.preview_enrichment_workers.get(int(lot_id)) is worker:
+            self.preview_enrichment_workers.pop(int(lot_id), None)
+        worker.deleteLater()
+
+    def closeEvent(self, event):
+        workers = list(self.preview_enrichment_workers.values())
+        for worker in workers:
+            worker.requestInterruption()
+        for worker in workers:
+            if worker.isRunning() and not worker.wait(30_000):
+                logger.error("Preview enrichment worker did not stop before application shutdown")
+                event.ignore()
+                return
+        super().closeEvent(event)
 
     def refresh_geo(self):
         if not self.current_selected_lot_id: return

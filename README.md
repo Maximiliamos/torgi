@@ -61,16 +61,24 @@ AI-провайдер задаётся через `AI_PROVIDER` и соотве�
 Windows EXE:
 
 ```powershell
-.\start_bankrotai.bat
-.\start_bankrotai.bat --check
+.\START_TORGI.bat
+.\START_TORGI.bat --check
 ```
 
-Launcher не содержит абсолютных путей: он вычисляет корень проекта, выбирает
-самую новую сборку `BankrotAI.exe` и запускает её с рабочей директорией проекта,
-чтобы использовать существующую `bankrotai.db`. Если EXE отсутствует, доступен
-source fallback через установленный Python.
-Для внешней сборки допустимы `BANKROTAI_EXE` и `BANKROTAI_WORKDIR`; launcher
-проверяет существование обоих путей.
+Единственный launcher находится в корне проекта. Он запускает
+`app\BankrotAI.exe` с рабочей директорией проекта, чтобы использовать актуальную
+`bankrotai.db`. Если EXE отсутствует, доступен source fallback через установленный
+Python. Ключ `--check` проверяет запуск без открытия окна.
+
+Сборка актуального EXE:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --distpath app --workpath build_current BankrotAI.spec
+```
+
+В рабочей директории следует хранить только одну сборку — `app\BankrotAI.exe`.
+Каталоги `build_current` и другие временные артефакты PyInstaller после успешной
+сборки удаляются.
 
 ```bash
 python -m bankrotai.cli run-desktop

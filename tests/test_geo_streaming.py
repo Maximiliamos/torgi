@@ -1,7 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
-from bankrotai.gui import MainWindow, extract_preview_image_url
+from bankrotai.gui import MainWindow, PreviewEnrichmentWorker, extract_preview_image_url
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtTest import QSignalSpy
 
 
 RAD_ADDRESS = (
@@ -118,3 +121,28 @@ def test_parallel_duplicate_addresses_share_one_request(monkeypatch) -> None:
 
     assert all(result == results[0] for result in results)
     assert len(calls) == 1
+
+
+def test_preview_worker_is_retained_until_native_qthread_finishes(monkeypatch) -> None:
+    class EmptySession:
+        @staticmethod
+        def get(_model, _lot_id):
+            return None
+
+    @contextmanager
+    def empty_session_scope():
+        yield EmptySession()
+
+    monkeypatch.setattr("bankrotai.gui.session_scope", empty_session_scope)
+    app = QCoreApplication.instance() or QCoreApplication([])
+    worker = PreviewEnrichmentWorker(-1)
+    native_finished = QSignalSpy(worker.finished)
+    result_ready = QSignalSpy(worker.result_ready)
+
+    worker.start()
+
+    assert worker.wait(5000)
+    app.processEvents()
+    assert not worker.isRunning()
+    assert native_finished.count() == 1
+    assert result_ready.count() == 1
