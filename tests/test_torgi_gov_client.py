@@ -249,16 +249,16 @@ def test_torgi_gov_search_all_lots_loads_pages_and_deduplicates(monkeypatch) -> 
     payloads = {
         0: {
             "content": [
-                {"id": "lot_1", "lotName": "Lot 1", "categoryCode": "13", "lotStatus": "PUBLISHED"},
-                {"id": "lot_2", "lotName": "Lot 2", "categoryCode": "13", "lotStatus": "PUBLISHED"},
+                {"id": "lot_1", "lotName": "Lot 1", "categoryCode": "10", "lotStatus": "PUBLISHED"},
+                {"id": "lot_2", "lotName": "Lot 2", "categoryCode": "10", "lotStatus": "PUBLISHED"},
             ],
             "totalElements": 3,
             "last": False,
         },
         1: {
             "content": [
-                {"id": "lot_2", "lotName": "Lot 2 duplicate", "categoryCode": "13", "lotStatus": "PUBLISHED"},
-                {"id": "lot_3", "lotName": "Lot 3", "categoryCode": "13", "lotStatus": "PUBLISHED"},
+                {"id": "lot_2", "lotName": "Lot 2 duplicate", "categoryCode": "10", "lotStatus": "PUBLISHED"},
+                {"id": "lot_3", "lotName": "Lot 3", "categoryCode": "10", "lotStatus": "PUBLISHED"},
             ],
             "totalElements": 3,
             "last": True,
@@ -283,19 +283,19 @@ def test_torgi_gov_search_all_lots_does_not_stop_on_duplicate_only_page(monkeypa
     requested_pages: list[int] = []
     payloads = {
         0: {
-            "content": [{"id": "lot_1", "lotName": "Lot 1", "categoryCode": "13", "lotStatus": "PUBLISHED"}],
+            "content": [{"id": "lot_1", "lotName": "Lot 1", "categoryCode": "10", "lotStatus": "PUBLISHED"}],
             "totalElements": 2,
             "totalPages": 3,
             "last": False,
         },
         1: {
-            "content": [{"id": "lot_1", "lotName": "Lot 1 duplicate", "categoryCode": "13", "lotStatus": "PUBLISHED"}],
+            "content": [{"id": "lot_1", "lotName": "Lot 1 duplicate", "categoryCode": "10", "lotStatus": "PUBLISHED"}],
             "totalElements": 2,
             "totalPages": 3,
             "last": False,
         },
         2: {
-            "content": [{"id": "lot_2", "lotName": "Lot 2", "categoryCode": "13", "lotStatus": "PUBLISHED"}],
+            "content": [{"id": "lot_2", "lotName": "Lot 2", "categoryCode": "10", "lotStatus": "PUBLISHED"}],
             "totalElements": 2,
             "totalPages": 3,
             "last": True,
@@ -324,8 +324,8 @@ def test_torgi_gov_search_all_lots_reports_skipped_without_id(monkeypatch) -> No
     client = TorgiGovClient()
     payload = {
         "content": [
-            {"lotName": "No stable id", "categoryCode": "13", "lotStatus": "PUBLISHED"},
-            {"id": "lot_1", "lotName": "Lot 1", "categoryCode": "13", "lotStatus": "PUBLISHED"},
+            {"lotName": "No stable id", "categoryCode": "10", "lotStatus": "PUBLISHED"},
+            {"id": "lot_1", "lotName": "Lot 1", "categoryCode": "10", "lotStatus": "PUBLISHED"},
         ],
         "totalElements": 2,
         "totalPages": 1,
@@ -347,7 +347,7 @@ def test_torgi_gov_search_all_lots_reports_page_error(monkeypatch) -> None:
         if int(params["page"]) == 1:
             raise RuntimeError("temporary failure")
         return {
-            "content": [{"id": "lot_1", "lotName": "Lot 1", "categoryCode": "13", "lotStatus": "PUBLISHED"}],
+            "content": [{"id": "lot_1", "lotName": "Lot 1", "categoryCode": "10", "lotStatus": "PUBLISHED"}],
             "totalElements": 2,
             "totalPages": 2,
             "last": False,

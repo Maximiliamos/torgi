@@ -33,6 +33,39 @@ from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_fr
 
 logger = logging.getLogger(__name__)
 
+REAL_ESTATE_CATEGORIES = {
+    "land", "real_estate", "apartment", "house", "commercial",
+    "commercial_room", "commercial_building", "commercial_building_with_land",
+    "parking", "unfinished", "complex", "office", "retail", "living",
+}
+REAL_ESTATE_TERMS = tuple(term.lower() for term in (
+    "\u043d\u0435\u0434\u0432\u0438\u0436", "\u0437\u0435\u043c\u0435\u043b", "\u0443\u0447\u0430\u0441\u0442", "\u0437\u0434\u0430\u043d",
+    "\u043f\u043e\u043c\u0435\u0449\u0435\u043d", "\u043a\u0432\u0430\u0440\u0442\u0438\u0440", "\u0436\u0438\u043b\u043e\u0439 \u0434\u043e\u043c", "\u0434\u043e\u043c\u043e\u0432\u043b\u0430\u0434",
+    "\u0433\u0430\u0440\u0430\u0436", "\u043c\u0430\u0448\u0438\u043d\u043e-\u043c\u0435\u0441\u0442", "\u043c\u0430\u0448\u0438\u043d\u043e\u043c\u0435\u0441\u0442", "\u0441\u043e\u043e\u0440\u0443\u0436\u0435\u043d",
+    "\u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u0439 \u043a\u043e\u043c\u043f\u043b\u0435\u043a\u0441", "\u043a\u0430\u0434\u0430\u0441\u0442\u0440\u043e\u0432",
+))
+MOVABLE_TERMS = tuple(term.lower() for term in (
+    "\u0430\u0432\u0442\u043e\u043c\u043e\u0431\u0438\u043b", "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0435 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u043e", "\u0434\u0432\u0438\u0436\u0438\u043c\u043e\u0435 \u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u043e",
+))
+
+
+def is_real_estate_lot(lot: NormalizedLot) -> bool:
+    category = (lot.category or "").lower()
+    if category in REAL_ESTATE_CATEGORIES:
+        return True
+    if category in {"car", "vehicle", "transport", "movable"}:
+        return False
+    raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+    category_values = raw.get("category_titles") or raw.get("categories") or raw.get("category_display") or ""
+    if isinstance(category_values, (list, tuple)):
+        category_text = " ".join(str(item) for item in category_values)
+    else:
+        category_text = str(category_values)
+    text = " ".join((lot.title or "", lot.description or "", lot.address or "", category_text)).lower()
+    if any(term in text for term in MOVABLE_TERMS) and not any(term in text for term in REAL_ESTATE_TERMS):
+        return False
+    return any(term in text for term in REAL_ESTATE_TERMS)
+
 from bankrotai.extractors import (
     extract_price, extract_area, extract_cadastral, extract_address,
     extract_land_area, extract_floors, extract_legal_status,
@@ -50,6 +83,7 @@ class TorgiGovClient:
     EXCEL_EXPORT_ENDPOINT = f"{BASE_URL}/new/api/public/lotcards/export/excel"
     FALLBACK_LIST_URL = f"{BASE_URL}/new/public/lots/reg"
     DEFAULT_LOT_STATUS = "PUBLISHED,APPLICATIONS_SUBMISSION"
+    REAL_ESTATE_CATEGORY_CODES = "2,8,9,10,11,12,903"
 
     CATEGORY_CODE_LABELS = {
         "903": "Земельный участок со зданием",
@@ -340,6 +374,8 @@ class TorgiGovClient:
                 continue
             if self._should_apply_local_text_filter(filters.search_text, params) and not self._lot_matches_location_text(lot, filters.search_text):
                 text_filtered += 1
+                continue
+            if not is_real_estate_lot(lot):
                 continue
             if lot.external_id in seen:
                 duplicates += 1
@@ -747,6 +783,8 @@ class TorgiGovClient:
                 value = self.CATEGORY_GROUP_CODE_MAP.get(str(value).strip(), value)
             params[query_name] = str(value).strip()
 
+        params.setdefault("catCode", self.REAL_ESTATE_CATEGORY_CODES)
+
         if filters.price_min is not None:
             params["priceMin"] = self._format_number(filters.price_min)
         if filters.price_max is not None:
@@ -784,6 +822,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_excel_export(response.content)
+        lots = [lot for lot in lots if is_real_estate_lot(lot)]
         if filters.subject_rf:
             before = len(lots)
             lots = [lot for lot in lots if self._lot_matches_subject(lot, filters.subject_rf)]
@@ -949,6 +988,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_fallback_html(response.text)
+        lots = [lot for lot in lots if is_real_estate_lot(lot)]
         if not lots:
             warnings.append("HTML fallback не нашел карточек лотов; возможно, сайт отдает только SPA без данных.")
         if filters.fias and not self._looks_like_fias_identifier(filters.fias):
@@ -2308,6 +2348,8 @@ class TBankrotClient:
             raise RuntimeError(f"TBankrot: не удалось загрузить страницу поиска: {exc}") from exc
 
         lots = self._parse_listing_html(resp.text, filters=filters, raw_endpoint=resp.url or endpoint)
+        raw_count = len(lots)
+        lots = [lot for lot in lots if is_real_estate_lot(lot)]
         pagination = self._extract_pagination_meta(resp.text)
         meta = {
             "source": "tbankrot.ru",
@@ -2316,10 +2358,10 @@ class TBankrotClient:
             "loaded": len(lots),
             "raw_endpoint": resp.url or endpoint,
             "raw_params": params,
-            "has_more": bool(pagination.get("total_pages") and filters.page < pagination["total_pages"]) or len(lots) >= filters.page_size,
+            "has_more": bool(pagination.get("total_pages") and filters.page < pagination["total_pages"]) or raw_count >= filters.page_size,
             "total_pages": pagination.get("total_pages"),
             "page_size": filters.page_size,
-            "warnings": [],
+            "warnings": ([f"{raw_count - len(lots)} non-real-estate lots hidden."] if raw_count != len(lots) else []),
         }
         return lots, meta
 

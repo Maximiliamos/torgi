@@ -189,3 +189,37 @@ def test_tbankrot_regional_card_without_title_link_is_parsed():
     assert lots[0].external_id == "tbankrot:7755288"
     assert lots[0].title.startswith("Легковой автомобиль")
     assert lots[0].current_price == 810000.0
+
+
+def test_tbankrot_online_search_keeps_only_real_estate(monkeypatch):
+    html = """
+    <div class="lot_container">
+      <div class="lot" data-id="100">
+      </div>
+      <p class="lot_title"><a href="/item?id=100">Легковой автомобиль</a></p>
+      <div class="lot_description"><div class="text">Автомобиль LADA Vesta</div></div>
+    </div>
+    <div class="lot_container">
+      <div class="lot" data-id="200">
+      </div>
+      <p class="lot_title"><a href="/item?id=200">Нежилое здание</a></p>
+      <div class="lot_description"><div class="text">Здание, кадастровый номер 76:01:000001:1</div></div>
+    </div>
+    """
+
+    class Response:
+        url = "https://tbankrot.ru/?p=search"
+        text = html
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    client = TBankrotClient()
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: Response())
+
+    lots, meta = client.search_filtered_lots(TBankrotSearchFilters())
+
+    assert [lot.external_id for lot in lots] == ["tbankrot:200"]
+    assert meta["loaded"] == 1
+    assert meta["warnings"]

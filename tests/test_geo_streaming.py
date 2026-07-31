@@ -80,6 +80,12 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
         assert 'data-status="approved"' in html
         assert 'data-status="maybe"' in html
         assert 'data-status="rejected"' in html
+        assert 'id="lot-preview-prev"' in html
+        assert 'data-url-key="gis_torgi_url"' in html
+        assert 'data-url-key="etp_url"' in html
+        assert 'data-url-key="torgi_russia_url"' in html
+        assert "#7d8795" in html
+        assert "window.applyLotReviewStatus" in html
         assert "qrc:///qtwebchannel/qwebchannel.js" in html
 
 

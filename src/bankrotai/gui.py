@@ -118,10 +118,23 @@ MAP_PREVIEW_STYLE = """
     border: 0; border-radius: 50%; background: rgba(255,255,255,.94); color: #536174;
     font-size: 23px; cursor: pointer; box-shadow: 0 1px 5px rgba(0,0,0,.18);
 }
+.lot-preview__media { position: relative; height: 245px; background: #edf1f6; }
 .lot-preview__photo, .lot-preview__placeholder {
     display: block; width: 100%; height: 245px; object-fit: cover; background: #edf1f6;
 }
 .lot-preview__placeholder { display: flex; align-items: center; justify-content: center; color: #8995a7; font-size: 15px; }
+.lot-preview__arrow {
+    position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 38px; height: 48px;
+    border: 0; border-radius: 7px; background: rgba(20,30,45,.62); color: white; font-size: 28px;
+    cursor: pointer; display: none;
+}
+.lot-preview__arrow:hover { background: rgba(20,30,45,.82); }
+.lot-preview__arrow--prev { left: 10px; }
+.lot-preview__arrow--next { right: 10px; }
+.lot-preview__counter {
+    position: absolute; right: 10px; bottom: 9px; padding: 4px 8px; border-radius: 12px;
+    background: rgba(20,30,45,.68); color: white; font-size: 12px; display: none;
+}
 .lot-preview__body { padding: 18px; }
 .lot-preview__source { color: #16866d; font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .lot-preview__title { margin: 10px 0; font-size: 17px; line-height: 1.45; }
@@ -129,10 +142,14 @@ MAP_PREVIEW_STYLE = """
 .lot-preview__price { margin: 14px 0; font-size: 22px; font-weight: 700; }
 .lot-preview__details { margin: 12px 0 16px; line-height: 1.55; color: #536174; }
 .lot-preview__details b { color: #273142; }
+.lot-preview__links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .lot-preview__source-button {
-    width: 100%; padding: 13px; border: 0; border-radius: 7px; background: #2868e8;
+    width: 100%; padding: 11px 6px; border: 0; border-radius: 7px; background: #2868e8;
     color: #fff; font-weight: 700; font-size: 15px; cursor: pointer;
 }
+.lot-preview__source-button[data-kind="gis"] { background: #177d65; }
+.lot-preview__source-button[data-kind="etp"] { background: #7654b5; }
+.lot-preview__source-button[data-kind="russia"] { background: #596579; }
 .lot-preview__source-button:disabled { background: #aab3c1; cursor: default; }
 .lot-preview__review-title { margin: 18px 0 9px; font-weight: 700; }
 .lot-preview__reviews { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -148,21 +165,31 @@ MAP_PREVIEW_STYLE = """
 
 MAP_PREVIEW_HTML = """
 <aside id="lot-preview" class="lot-preview" aria-hidden="true">
-  <button id="lot-preview-close" class="lot-preview__close" title="Закрыть">×</button>
-  <img id="lot-preview-photo" class="lot-preview__photo" alt="Фото лота">
-  <div id="lot-preview-placeholder" class="lot-preview__placeholder">Фото отсутствует</div>
+  <button id="lot-preview-close" class="lot-preview__close" title="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;">&times;</button>
+  <div class="lot-preview__media">
+    <img id="lot-preview-photo" class="lot-preview__photo" alt="&#1060;&#1086;&#1090;&#1086; &#1083;&#1086;&#1090;&#1072;">
+    <div id="lot-preview-placeholder" class="lot-preview__placeholder">&#1060;&#1086;&#1090;&#1086; &#1086;&#1090;&#1089;&#1091;&#1090;&#1089;&#1090;&#1074;&#1091;&#1077;&#1090;</div>
+    <button id="lot-preview-prev" class="lot-preview__arrow lot-preview__arrow--prev" aria-label="Previous">&#8249;</button>
+    <button id="lot-preview-next" class="lot-preview__arrow lot-preview__arrow--next" aria-label="Next">&#8250;</button>
+    <div id="lot-preview-counter" class="lot-preview__counter"></div>
+  </div>
   <div class="lot-preview__body">
     <div id="lot-preview-source" class="lot-preview__source"></div>
     <h2 id="lot-preview-title" class="lot-preview__title"></h2>
     <div id="lot-preview-description" class="lot-preview__description"></div>
     <div id="lot-preview-price" class="lot-preview__price"></div>
     <div id="lot-preview-details" class="lot-preview__details"></div>
-    <button id="lot-preview-source-button" class="lot-preview__source-button">Открыть источник</button>
-    <div class="lot-preview__review-title">Оценка лота</div>
+    <div class="lot-preview__links">
+      <button class="lot-preview__source-button related-link" data-url-key="source_url">&#1048;&#1089;&#1090;&#1086;&#1095;&#1085;&#1080;&#1082;</button>
+      <button class="lot-preview__source-button related-link" data-kind="gis" data-url-key="gis_torgi_url">&#1043;&#1048;&#1057; &#1058;&#1086;&#1088;&#1075;&#1080;</button>
+      <button class="lot-preview__source-button related-link" data-kind="etp" data-url-key="etp_url">&#1069;&#1058;&#1055;</button>
+      <button class="lot-preview__source-button related-link" data-kind="russia" data-url-key="torgi_russia_url">&#1058;&#1086;&#1088;&#1075;&#1080; &#1056;&#1086;&#1089;&#1089;&#1080;&#1080;</button>
+    </div>
+    <div class="lot-preview__review-title">&#1054;&#1094;&#1077;&#1085;&#1082;&#1072; &#1083;&#1086;&#1090;&#1072;</div>
     <div class="lot-preview__reviews">
-      <button class="review-button" data-status="approved"><span>✓</span>Интересен</button>
-      <button class="review-button" data-status="maybe"><span>?</span>Сомневаюсь</button>
-      <button class="review-button" data-status="rejected"><span>✕</span>Плохой</button>
+      <button class="review-button" data-status="approved"><span>&#10003;</span>&#1048;&#1085;&#1090;&#1077;&#1088;&#1077;&#1089;&#1077;&#1085;</button>
+      <button class="review-button" data-status="maybe"><span>?</span>&#1057;&#1086;&#1084;&#1085;&#1077;&#1074;&#1072;&#1102;&#1089;&#1100;</button>
+      <button class="review-button" data-status="rejected"><span>&#10005;</span>&#1055;&#1083;&#1086;&#1093;&#1086;&#1081;</button>
     </div>
   </div>
 </aside>
@@ -171,6 +198,8 @@ MAP_PREVIEW_HTML = """
 MAP_PREVIEW_SCRIPT = """
 let bankrotaiBridge = null;
 let selectedPreviewLot = null;
+let previewImages = [];
+let previewImageIndex = 0;
 
 if (window.qt && window.qt.webChannelTransport) {
     new QWebChannel(qt.webChannelTransport, function(channel) {
@@ -188,11 +217,40 @@ function setPreviewReviewStatus(status) {
     });
 }
 
+function renderPreviewLinks() {
+    document.querySelectorAll('.related-link').forEach(function(button) {
+        const url = selectedPreviewLot && selectedPreviewLot[button.dataset.urlKey];
+        button.disabled = !url;
+    });
+}
+
+function renderPreviewImage() {
+    const photo = document.getElementById('lot-preview-photo');
+    const placeholder = document.getElementById('lot-preview-placeholder');
+    const hasImage = previewImages.length > 0;
+    photo.style.display = hasImage ? 'block' : 'none';
+    placeholder.style.display = hasImage ? 'none' : 'flex';
+    if (hasImage) photo.src = previewImages[previewImageIndex]; else photo.removeAttribute('src');
+    const multiple = previewImages.length > 1;
+    document.getElementById('lot-preview-prev').style.display = multiple ? 'block' : 'none';
+    document.getElementById('lot-preview-next').style.display = multiple ? 'block' : 'none';
+    const counter = document.getElementById('lot-preview-counter');
+    counter.style.display = multiple ? 'block' : 'none';
+    counter.textContent = hasImage ? (previewImageIndex + 1) + ' / ' + previewImages.length : '';
+}
+
+function movePreviewImage(delta) {
+    if (previewImages.length < 2) return;
+    previewImageIndex = (previewImageIndex + delta + previewImages.length) % previewImages.length;
+    renderPreviewImage();
+}
+
 function showLotPreview(lot) {
     selectedPreviewLot = lot;
     const panel = document.getElementById('lot-preview');
     panel.classList.add('open');
     panel.setAttribute('aria-hidden', 'false');
+    if (bankrotaiBridge) bankrotaiBridge.previewOpened(mapKind, Number(lot.id));
     previewText('lot-preview-source', lot.source_name || lot.source || 'Источник не указан');
     previewText('lot-preview-title', lot.title || 'Лот без названия');
     previewText('lot-preview-description', lot.description || lot.address || 'Описание отсутствует');
@@ -206,15 +264,10 @@ function showLotPreview(lot) {
     if (lot.auction_at) details.push('<b>Торги:</b> ' + escapeHtml(lot.auction_at));
     document.getElementById('lot-preview-details').innerHTML = details.join('<br>');
 
-    const photo = document.getElementById('lot-preview-photo');
-    const placeholder = document.getElementById('lot-preview-placeholder');
-    if (lot.image_url) {
-        photo.style.display = 'block'; placeholder.style.display = 'none'; photo.src = lot.image_url;
-    } else {
-        photo.removeAttribute('src'); photo.style.display = 'none'; placeholder.style.display = 'flex';
-    }
-    const sourceButton = document.getElementById('lot-preview-source-button');
-    sourceButton.disabled = !lot.source_url;
+    previewImages = Array.from(new Set((lot.image_urls || []).concat(lot.image_url || []).filter(Boolean)));
+    previewImageIndex = 0;
+    renderPreviewImage();
+    renderPreviewLinks();
     setPreviewReviewStatus(lot.review_status || 'new');
 }
 
@@ -224,11 +277,16 @@ document.getElementById('lot-preview-photo').addEventListener('error', function(
 document.getElementById('lot-preview-close').addEventListener('click', function() {
     document.getElementById('lot-preview').classList.remove('open');
     document.getElementById('lot-preview').setAttribute('aria-hidden', 'true');
+    if (bankrotaiBridge) bankrotaiBridge.previewClosed(mapKind);
 });
-document.getElementById('lot-preview-source-button').addEventListener('click', function() {
-    if (!selectedPreviewLot || !selectedPreviewLot.source_url) return;
-    if (bankrotaiBridge) bankrotaiBridge.openSource(selectedPreviewLot.source_url);
-    else window.open(selectedPreviewLot.source_url, '_blank');
+document.getElementById('lot-preview-prev').addEventListener('click', function() { movePreviewImage(-1); });
+document.getElementById('lot-preview-next').addEventListener('click', function() { movePreviewImage(1); });
+document.querySelectorAll('.related-link').forEach(function(button) {
+    button.addEventListener('click', function() {
+        const url = selectedPreviewLot && selectedPreviewLot[button.dataset.urlKey];
+        if (!url) return;
+        if (bankrotaiBridge) bankrotaiBridge.openSource(url); else window.open(url, '_blank');
+    });
 });
 document.querySelectorAll('.review-button').forEach(function(button) {
     button.addEventListener('click', function() {
@@ -238,56 +296,71 @@ document.querySelectorAll('.review-button').forEach(function(button) {
             if (ok) {
                 selectedPreviewLot.review_status = status;
                 setPreviewReviewStatus(status);
+                if (window.applyLotReviewStatus) window.applyLotReviewStatus(Number(selectedPreviewLot.id), status);
             }
         });
     });
 });
 
 window.showLotPreview = showLotPreview;
+window.updateLotPreviewExtras = function(lotId, extras) {
+    if (!selectedPreviewLot || Number(selectedPreviewLot.id) !== Number(lotId)) return;
+    Object.assign(selectedPreviewLot, extras || {});
+    const extraImages = (extras && (extras.torgi_russia_image_urls || extras.image_urls)) || [];
+    previewImages = Array.from(new Set(previewImages.concat(extraImages).filter(Boolean)));
+    renderPreviewImage();
+    renderPreviewLinks();
+};
 window.setLotReviewStatus = function(lotId, status) {
     if (selectedPreviewLot && Number(selectedPreviewLot.id) === Number(lotId)) {
         selectedPreviewLot.review_status = status;
         setPreviewReviewStatus(status);
     }
+    if (window.applyLotReviewStatus) window.applyLotReviewStatus(Number(lotId), status);
 };
 """
 
 
-def extract_preview_image_url(raw_data: object) -> str | None:
-    """Return the first safe web image found in heterogeneous source payloads."""
+def extract_preview_image_urls(raw_data: object) -> list[str]:
+    """Return unique safe web images found in heterogeneous source payloads."""
     preferred_keys = (
         "image_url", "photo_url", "thumbnail_url", "main_image", "image",
         "photo", "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
     )
 
-    def find(value: object, *, depth: int = 0) -> str | None:
+    found: list[str] = []
+
+    def collect(value: object, *, depth: int = 0) -> None:
         if depth > 4:
-            return None
+            return
         if isinstance(value, str):
             candidate = value.strip()
             if candidate.startswith("//"):
                 candidate = "https:" + candidate
             parsed = urlparse(candidate)
             if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
-                return candidate
-            return None
+                found.append(candidate)
+            return
         if isinstance(value, (list, tuple)):
             for item in value:
-                if result := find(item, depth=depth + 1):
-                    return result
-            return None
+                collect(item, depth=depth + 1)
+            return
         if isinstance(value, dict):
             lowered = {str(key).lower(): item for key, item in value.items()}
             for key in preferred_keys:
-                if key in lowered and (result := find(lowered[key], depth=depth + 1)):
-                    return result
+                if key in lowered:
+                    collect(lowered[key], depth=depth + 1)
             for key, item in lowered.items():
                 if any(token in key for token in ("image", "photo", "thumb")):
-                    if result := find(item, depth=depth + 1):
-                        return result
-        return None
+                    collect(item, depth=depth + 1)
 
-    return find(raw_data)
+    collect(raw_data)
+    return list(dict.fromkeys(found))
+
+
+def extract_preview_image_url(raw_data: object) -> str | None:
+    images = extract_preview_image_urls(raw_data)
+    return images[0] if images else None
 
 
 class MaxBidDialog(QDialog):
@@ -946,7 +1019,7 @@ class AIWorker(QThread):
 
 
 class GeoWorker(QThread):
-    finished = Signal(int, int)
+    finished = Signal(int, int, int)
     progress = Signal(str)
     progress_percent = Signal(int)
     lot_processed = Signal(int, bool, int, int)
@@ -971,10 +1044,19 @@ class GeoWorker(QThread):
 
             success_count = 0
             failed_count = 0
+            skipped_existing = 0
 
             with session_scope() as session:
                 if self.lot_ids:
-                    lot_ids = list(self.lot_ids)
+                    requested_ids = list(dict.fromkeys(int(item) for item in self.lot_ids))
+                    if self.refresh_existing:
+                        lot_ids = requested_ids
+                    else:
+                        existing_ids = set(session.scalars(
+                            select(LotGeoSnapshot.lot_id).where(LotGeoSnapshot.lot_id.in_(requested_ids))
+                        ).all())
+                        lot_ids = [item for item in requested_ids if item not in existing_ids]
+                        skipped_existing = len(requested_ids) - len(lot_ids)
                 else:
                     stmt = select(ProcessedLot.id).where(
                         ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -985,7 +1067,7 @@ class GeoWorker(QThread):
 
             if not lot_ids:
                 self.progress_percent.emit(100)
-                self.finished.emit(0)
+                self.finished.emit(0, 0, skipped_existing)
                 return
 
             with session_scope() as session:
@@ -1052,7 +1134,7 @@ class GeoWorker(QThread):
                         f"GEO [{completed}/{total}] ✓ {success_count}, без координат {failed_count}: {label}"
                     )
 
-            self.finished.emit(success_count, failed_count)
+            self.finished.emit(success_count, failed_count, skipped_existing)
         except Exception as e:
             logger.error(f"GeoWorker error: {e}")
             self.error.emit(str(e))
@@ -1073,6 +1155,90 @@ class CadastreSearchWorker(QThread):
         except Exception as e:
             logger.exception("Cadastre search worker failed")
             self.error.emit(str(e))
+
+
+class PreviewEnrichmentWorker(QThread):
+    finished = Signal(int, object)
+    error = Signal(int, str)
+
+    def __init__(self, lot_id: int):
+        super().__init__()
+        self.lot_id = int(lot_id)
+
+    def run(self):
+        try:
+            from bankrotai.db import DB_WRITE_LOCK
+            from bankrotai.torgi_russia import TorgiRussiaClient
+
+            with session_scope() as session:
+                lot = session.get(ProcessedLot, self.lot_id)
+                if lot is None:
+                    self.finished.emit(self.lot_id, {})
+                    return
+                source_lot = session.scalars(
+                    select(SourceLot).where(or_(
+                        SourceLot.processed_lot_id == lot.id,
+                        and_(
+                            SourceLot.source_system == lot.source_system,
+                            SourceLot.external_id == lot.external_id,
+                        ),
+                    ))
+                ).first()
+                raw = dict(source_lot.raw_data or {}) if source_lot else {}
+                related: dict[str, str] = {}
+                if source_lot:
+                    sibling_sources = session.scalars(
+                        select(SourceLot).where(SourceLot.canonical_lot_id == source_lot.canonical_lot_id)
+                    ).all()
+                    for sibling in sibling_sources:
+                        system = (sibling.source_system or "").lower()
+                        if sibling.source_url and "torgi.gov" in system:
+                            related["gis_torgi_url"] = sibling.source_url
+                        if sibling.source_url and "lot-online" in system:
+                            related["etp_url"] = sibling.source_url
+                cached = {
+                    key: raw.get(key)
+                    for key in (
+                        "torgi_russia_url", "gis_torgi_url", "etp_url",
+                        "torgi_russia_image_urls",
+                    )
+                    if raw.get(key)
+                }
+                cached.update(related)
+                if raw.get("torgi_russia_checked_at"):
+                    self.finished.emit(self.lot_id, cached)
+                    return
+                cadastres = list(lot.cadastral_numbers or [])
+                if lot.cadastral_number:
+                    cadastres.insert(0, lot.cadastral_number)
+                source_lot_id = source_lot.id if source_lot else None
+
+            details = TorgiRussiaClient().find_by_cadastral_numbers(cadastres) if cadastres else None
+            extras = details.as_dict() if details else {}
+            extras.update(related)
+            if details and details.procedure_number:
+                with session_scope() as session:
+                    etp_source = session.scalars(
+                        select(SourceLot).where(
+                            SourceLot.procedure_number == details.procedure_number,
+                            SourceLot.source_system.ilike("%lot-online%"),
+                        )
+                    ).first()
+                    if etp_source and etp_source.source_url:
+                        extras["etp_url"] = etp_source.source_url
+            if source_lot_id:
+                with DB_WRITE_LOCK:
+                    with session_scope() as session:
+                        source_lot = session.get(SourceLot, source_lot_id)
+                        if source_lot:
+                            updated = dict(source_lot.raw_data or {})
+                            updated.update(extras)
+                            updated["torgi_russia_checked_at"] = datetime.now().isoformat(timespec="seconds")
+                            source_lot.raw_data = updated
+            self.finished.emit(self.lot_id, extras)
+        except Exception as exc:
+            logger.warning("Torgi Rossii preview enrichment failed for lot %s: %s", self.lot_id, exc)
+            self.error.emit(self.lot_id, str(exc))
 
 
 NSPD_REFERER = "https://nspd.gov.ru/map?theme_id=1&is_copy_url=true&active_layers=&baseLayerId="
@@ -1139,6 +1305,8 @@ def _free_local_port() -> int:
 
 class MapBridge(QObject):
     review_changed = Signal(int, str)
+    preview_opened = Signal(str, int)
+    preview_closed = Signal(str)
 
     @Slot(int, str, result=bool)
     def setReviewStatus(self, lot_id: int, status: str) -> bool:
@@ -1158,6 +1326,14 @@ class MapBridge(QObject):
         if url.scheme().lower() not in {"http", "https"}:
             return False
         return bool(QDesktopServices.openUrl(url))
+
+    @Slot(str, int)
+    def previewOpened(self, map_kind: str, lot_id: int):
+        self.preview_opened.emit(map_kind, int(lot_id))
+
+    @Slot(str)
+    def previewClosed(self, map_kind: str):
+        self.preview_closed.emit(map_kind)
 
 
 class MainWindow(QMainWindow):
@@ -1185,6 +1361,9 @@ class MainWindow(QMainWindow):
         init_db()
         self.map_bridge = MapBridge(self)
         self.map_bridge.review_changed.connect(self.on_map_review_changed)
+        self.map_bridge.preview_opened.connect(self.on_map_preview_opened)
+        self.map_bridge.preview_closed.connect(self.on_map_preview_closed)
+        self.preview_enrichment_workers: dict[int, PreviewEnrichmentWorker] = {}
         self.start_cadastral_wms_proxy()
         self.init_statusbar()
         self.init_ui()
@@ -1477,8 +1656,10 @@ class MainWindow(QMainWindow):
         add_labeled_field(location_section.content_layout, "Форма собственности", self.torgi_ownership_combo)
 
         category_section = section("Категория имущества")
+        real_estate_codes = ("2", "8", "9", "10", "11", "12", "903")
         self.torgi_category_combo = combo(
-            [("Не выбрано", None)] + [(label, code) for code, label in TorgiGovClient.CATEGORY_CODE_LABELS.items()]
+            [("Вся недвижимость", TorgiGovClient.REAL_ESTATE_CATEGORY_CODES)]
+            + [(TorgiGovClient.CATEGORY_CODE_LABELS[code], code) for code in real_estate_codes]
         )
         add_labeled_field(category_section.content_layout, "Категория имущества", self.torgi_category_combo)
 
@@ -2045,7 +2226,10 @@ class MainWindow(QMainWindow):
             subject_rf=self._combo_value(self.torgi_subject_combo),
             fias=self._line_text(self.torgi_fias_input),
             ownership_form=self._combo_value(self.torgi_ownership_combo),
-            category_code=self._combo_value(self.torgi_category_combo),
+            category_code=(
+                self._combo_value(self.torgi_category_combo)
+                or TorgiGovClient.REAL_ESTATE_CATEGORY_CODES
+            ),
             lot_status=self._combo_value(self.torgi_lot_status_combo),
             currency_code=self._combo_value(self.torgi_currency_combo),
             publish_date_from=self._line_text(self.torgi_publish_from_input),
@@ -3521,6 +3705,7 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         sidebar = QWidget()
+        self.map_cadastre_sidebar = sidebar
         sidebar.setFixedWidth(360)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 12, 12, 12)
@@ -3573,6 +3758,7 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         sidebar = QWidget()
+        self.yandex_cadastre_sidebar = sidebar
         sidebar.setFixedWidth(360)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 12, 12, 12)
@@ -4342,17 +4528,21 @@ class MainWindow(QMainWindow):
             f"GEO: точка добавлена на карту сразу ({completed}/{total})", 1500
         )
 
-    def on_geo_finished(self, count: int, failed_count: int):
+    def on_geo_finished(self, count: int, failed_count: int, skipped_existing: int):
         self.finish_task_progress("geo")
         if hasattr(self, "geo_batch_btn"):
             self.geo_batch_btn.setEnabled(True)
         self.geo_fix_btn.setEnabled(bool(self.lots_table.selectedItems()))
         self.progress_bar.setVisible(False)
         if count == 0 and failed_count == 0:
-            self.status_bar.showMessage("Все лоты уже имеют гео-координаты", 5000)
-            QMessageBox.information(self, "Инфо", "Все лоты уже имеют гео-координаты.")
+            message = f"Все выбранные лоты уже геокодированы. Пропущено: {skipped_existing}"
+            self.status_bar.showMessage(message, 5000)
+            QMessageBox.information(self, "Инфо", message)
         else:
-            message = f"Геокодирование завершено. Координаты: {count}, не найдено: {failed_count}"
+            message = (
+                f"Геокодирование завершено. Координаты: {count}, "
+                f"не найдено: {failed_count}, уже были готовы: {skipped_existing}"
+            )
             self.status_bar.showMessage(message, 5000)
             QMessageBox.information(self, "Готово", message)
         self.update_map()
@@ -4487,6 +4677,44 @@ class MainWindow(QMainWindow):
             if view is not None:
                 view.page().runJavaScript(script)
 
+    def on_map_preview_opened(self, map_kind: str, lot_id: int):
+        sidebar = getattr(
+            self,
+            "yandex_cadastre_sidebar" if map_kind == "yandex" else "map_cadastre_sidebar",
+            None,
+        )
+        if sidebar is not None:
+            sidebar.hide()
+        if lot_id in self.preview_enrichment_workers:
+            return
+        worker = PreviewEnrichmentWorker(lot_id)
+        self.preview_enrichment_workers[lot_id] = worker
+        worker.finished.connect(self.on_preview_enrichment_finished)
+        worker.error.connect(self.on_preview_enrichment_error)
+        worker.start()
+
+    def on_map_preview_closed(self, map_kind: str):
+        sidebar = getattr(
+            self,
+            "yandex_cadastre_sidebar" if map_kind == "yandex" else "map_cadastre_sidebar",
+            None,
+        )
+        if sidebar is not None:
+            sidebar.show()
+
+    def on_preview_enrichment_finished(self, lot_id: int, extras: object):
+        self.preview_enrichment_workers.pop(int(lot_id), None)
+        encoded = json.dumps(extras if isinstance(extras, dict) else {}, ensure_ascii=False)
+        script = f"window.updateLotPreviewExtras && window.updateLotPreviewExtras({int(lot_id)}, {encoded});"
+        for view_name in ("map_view", "yandex_map_view"):
+            view = getattr(self, view_name, None)
+            if view is not None:
+                view.page().runJavaScript(script)
+
+    def on_preview_enrichment_error(self, lot_id: int, message: str):
+        self.preview_enrichment_workers.pop(int(lot_id), None)
+        logger.debug("Preview enrichment unavailable for lot %s: %s", lot_id, message)
+
     def refresh_geo(self):
         if not self.current_selected_lot_id: return
         self.status_bar.showMessage("Обновление координат...")
@@ -4506,8 +4734,8 @@ class MainWindow(QMainWindow):
         lot_ids = self.get_selected_lot_ids()
         if not lot_ids:
             return
-        self.status_bar.showMessage(f"Обновление геометок выбранных лотов: {len(lot_ids)}")
-        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=True, limit=None)
+        self.status_bar.showMessage(f"Проверка геометок выбранных лотов: {len(lot_ids)}")
+        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=False, limit=None)
 
     def run_cleanup(self):
         if QMessageBox.question(self, "Очистка", "Удалить все завершенные торги?") == QMessageBox.Yes:
@@ -4703,6 +4931,13 @@ class MainWindow(QMainWindow):
         def display_datetime(value: datetime | None) -> str | None:
             return value.strftime("%d.%m.%Y %H:%M") if value else None
 
+        raw_data = source_lot.raw_data if source_lot and isinstance(source_lot.raw_data, dict) else {}
+        source_url = (
+            source_lot.source_url if source_lot and source_lot.source_url
+            else lot.source_url or lot.lot_url
+        )
+        source_system = (lot.source_system or lot.source or "").lower()
+        image_urls = extract_preview_image_urls(raw_data)
         return {
             "id": lot.id,
             "title": lot.title,
@@ -4729,11 +4964,12 @@ class MainWindow(QMainWindow):
                 source_lot.platform_name if source_lot and source_lot.platform_name
                 else lot.source_system or lot.source
             ),
-            "source_url": (
-                source_lot.source_url if source_lot and source_lot.source_url
-                else lot.source_url or lot.lot_url
-            ),
-            "image_url": extract_preview_image_url(source_lot.raw_data if source_lot else None),
+            "source_url": source_url,
+            "gis_torgi_url": raw_data.get("gis_torgi_url") or (source_url if "torgi.gov" in source_system else None),
+            "etp_url": raw_data.get("etp_url") or (source_url if "lot-online" in source_system else None),
+            "torgi_russia_url": raw_data.get("torgi_russia_url"),
+            "image_url": image_urls[0] if image_urls else None,
+            "image_urls": image_urls,
             "procedure_number": source_lot.procedure_number if source_lot else None,
             "application_deadline": display_datetime(source_lot.application_deadline) if source_lot else None,
             "auction_at": display_datetime(source_lot.auction_at) if source_lot else None,
@@ -4872,6 +5108,7 @@ html, body, #map {{
 <script>
 const lots = {lots_json};
 const iconUrls = {icon_urls_json};
+const mapKind = 'yandex';
 let map;
 let lotCollection;
 let boundaryCollection;
@@ -4894,28 +5131,21 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function iconKey(lot) {{
-    const category = String(lot.category || '').toLowerCase();
-    const title = String(lot.title || '').toLowerCase();
-    if (title.includes('аренд') || category.includes('lease') || category.includes('rent')) return 'rent';
-    if (['car', 'vehicle', 'transport'].includes(category)) return 'auto';
-    if (category === 'land') return 'land';
-    if ([
-        'apartment', 'house', 'commercial', 'commercial_room', 'commercial_building',
-        'commercial_building_with_land', 'real_estate', 'parking', 'unfinished', 'complex',
-        'office', 'retail'
-    ].includes(category)) return 'realEstate';
-    return 'other';
+function markerColor(status) {{
+    return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
+}}
+
+function markerSvg(lot) {{
+    const color = markerColor(lot.review_status);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
 function yandexIconOptions(lot) {{
-    const url = iconUrls[iconKey(lot)] || iconUrls.other;
-    if (!url) return {{ preset: 'islands#blueCircleDotIcon' }};
     return {{
         iconLayout: 'default#image',
-        iconImageHref: url,
-        iconImageSize: [34, 44],
-        iconImageOffset: [-17, -44]
+        iconImageHref: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(markerSvg(lot)),
+        iconImageSize: [38, 48],
+        iconImageOffset: [-19, -48]
     }};
 }}
 
@@ -5049,6 +5279,12 @@ function setCadLayerVisible(visible) {{
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
+window.applyLotReviewStatus = function(lotId, status) {{
+    const lot = lots.find(item => Number(item.id) === Number(lotId));
+    if (lot) lot.review_status = status;
+    const placemark = lotPlacemarks.get(String(lotId));
+    if (placemark) placemark.options.set(yandexIconOptions(lot || {{ review_status: status }}));
+}};
 
 {MAP_PREVIEW_SCRIPT}
 
@@ -5116,6 +5352,7 @@ html, body, #map {{
 <script>
 const lots = {lots_json};
 const iconUrls = {icon_urls_json};
+const mapKind = 'leaflet';
 
 const map = L.map('map').setView([57.6261, 39.8845], 8);
 
@@ -5170,31 +5407,19 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function iconKey(lot) {{
-    const category = String(lot.category || '').toLowerCase();
-    const title = String(lot.title || '').toLowerCase();
-    if (title.includes('аренд') || category.includes('lease') || category.includes('rent')) return 'rent';
-    if (['car', 'vehicle', 'transport'].includes(category)) return 'auto';
-    if (category === 'land') return 'land';
-    if ([
-        'apartment', 'house', 'commercial', 'commercial_room', 'commercial_building',
-        'commercial_building_with_land', 'real_estate', 'parking', 'unfinished', 'complex',
-        'office', 'retail'
-    ].includes(category)) return 'realEstate';
-    return 'other';
+function markerColor(status) {{
+    return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
+}}
+
+function markerSvg(lot) {{
+    const color = markerColor(lot.review_status);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
 function makeIcon(lot) {{
-    const url = iconUrls[iconKey(lot)] || iconUrls.other;
-    if (url) {{
-        return L.icon({{
-            iconUrl: url,
-            iconSize: [34, 44],
-            iconAnchor: [17, 44],
-            popupAnchor: [0, -42]
-        }});
-    }}
-    return L.divIcon({{ className: '', html: '<div style="width:14px;height:14px;border-radius:50%;background:#2468d8;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,.45);"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }});
+    return L.divIcon({{
+        className: '', html: markerSvg(lot), iconSize: [38, 48], iconAnchor: [19, 48], popupAnchor: [0, -46]
+    }});
 }}
 
 function upsertLot(lot) {{
@@ -5292,6 +5517,12 @@ function setCadLayerVisible(visible) {{
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
+window.applyLotReviewStatus = function(lotId, status) {{
+    const lot = lots.find(item => Number(item.id) === Number(lotId));
+    if (lot) lot.review_status = status;
+    const marker = lotMarkers.get(String(lotId));
+    if (marker) marker.setIcon(makeIcon(lot || {{ review_status: status }}));
+}};
 
 {MAP_PREVIEW_SCRIPT}
 
