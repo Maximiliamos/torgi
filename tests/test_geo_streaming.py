@@ -115,7 +115,10 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
         assert "singleWorldMinZoom" in html or "enforceSingleWorldZoom" in html
     assert "noWrap: true" in leaflet_html
     assert "maxBounds: worldBounds" in leaflet_html
-    assert "restrictMapArea: [[-85, -180], [85, 180]]" in yandex_html
+    assert "enforceSingleWorldZoom" in yandex_html
+    assert "restrictMapArea" not in yandex_html
+    assert "tileLoaded" in yandex_html
+    assert "map.destroy()" in yandex_html
 
 
 def test_map_filters_use_price_and_inferred_region() -> None:

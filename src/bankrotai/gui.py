@@ -5782,6 +5782,7 @@ let lotCollection;
 let boundaryCollection;
 let selectedObjectCollection;
 let boundaryVisible = true;
+let yandexActive = false;
 const lotPlacemarks = new Map();
 const lotById = new Map();
 
@@ -5972,6 +5973,7 @@ window.fitAllLots = function() {{
 }};
 
 setInterval(function() {{
+    if (!yandexActive) return;
     lotPlacemarks.forEach(function(placemark, key) {{
         const lot = lotById.get(key);
         if (lot) placemark.options.set(yandexIconOptions(lot));
@@ -5986,10 +5988,9 @@ function initYandexMap() {{
         zoom: 8,
         controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
     }}, {{
-        minZoom: 2,
-        restrictMapArea: [[-85, -180], [85, 180]],
-        yandexMapAutoSwitch: false
+        minZoom: 2
     }});
+    yandexActive = true;
     lotCollection = new ymaps.GeoObjectCollection();
     boundaryCollection = new ymaps.GeoObjectCollection();
     selectedObjectCollection = new ymaps.GeoObjectCollection();
@@ -6006,11 +6007,25 @@ function initYandexMap() {{
     const pending = window.__bankrotaiPendingLots || [];
     window.__bankrotaiPendingLots = [];
     pending.forEach(upsertLot);
+    setTimeout(function() {{
+        if (!yandexActive) return;
+        const tileLoaded = Array.from(document.querySelectorAll('#map img')).some(function(image) {{
+            return image.complete && image.naturalWidth >= 128 && image.naturalHeight >= 128
+                && image.src && !image.src.startsWith('data:');
+        }});
+        if (!tileLoaded) {{
+            yandexActive = false;
+            try {{ map.destroy(); }} catch (error) {{ console.warn(error); }}
+            document.getElementById('map').innerHTML = '';
+            initLeafletFallback();
+        }}
+    }}, 8_000);
 }}
 
 function initLeafletFallback() {{
     const hint = document.getElementById('hint');
     hint.textContent = 'Яндекс.Карты недоступны — включена резервная карта';
+    hint.style.display = 'block';
     const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
     map = L.map('map', {{
         minZoom: 2,
