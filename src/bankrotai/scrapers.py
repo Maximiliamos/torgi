@@ -2790,6 +2790,14 @@ class LotOnlineClient:
             code_node = card.select_one(".ty-grid-list__product-code")
             procedure_number = code_node.get_text(" ", strip=True) if code_node else None
             cadastral_numbers = extract_cadastral_numbers(title)
+            image_urls: list[str] = []
+            for image_node in card.select("img.ty-pict, img.cm-image"):
+                image_ref = str(image_node.get("src") or image_node.get("data-src") or "").strip()
+                if not image_ref or image_ref.startswith("data:"):
+                    continue
+                image_url = urljoin(self.BASE_URL, image_ref)
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
 
             raw_data = {
                 "source": "lot_online_search",
@@ -2802,6 +2810,8 @@ class LotOnlineClient:
                 "region_name": region_name,
                 "archive_mode": filters.archive_mode,
                 "cadastral_numbers": cadastral_numbers,
+                "image_url": image_urls[0] if image_urls else None,
+                "image_urls": image_urls,
             }
             lots.append(NormalizedLot(
                 external_id=f"lot-online:{product_id}",

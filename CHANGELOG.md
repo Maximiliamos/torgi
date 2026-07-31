@@ -27,6 +27,9 @@ for tagged releases.
 - Added RAD-aware Russian address normalization and district-safe Nominatim matching.
 - Added bounded parallel bulk GEO processing with accurate success/failure counts.
 - Added incremental Leaflet/Yandex marker updates as each GEO result is committed.
+- Added map lot previews with source photos, auction details, external source links,
+  and persisted interested/unsure/rejected review actions.
+- Added RAD / LOT-ONLINE listing image extraction for map previews.
 - Prioritized recent GEO snapshots and increased the interactive map limit to 5,000 lots.
 - Scoped external lot identifiers by source with an Alembic migration.
 - Removed destructive closed-lot cleanup and retained status history.

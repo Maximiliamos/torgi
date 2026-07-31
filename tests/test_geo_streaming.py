@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
-from bankrotai.gui import MainWindow
+from bankrotai.gui import MainWindow, extract_preview_image_url
 
 
 RAD_ADDRESS = (
@@ -73,6 +73,20 @@ def test_generated_maps_support_incremental_lot_updates() -> None:
     assert "lotMarkers" in leaflet_html
     assert "window.upsertLot = upsertLot" in yandex_html
     assert "lotPlacemarks" in yandex_html
+    for html in (leaflet_html, yandex_html):
+        assert 'id="lot-preview"' in html
+        assert "showLotPreview(lot)" in html
+        assert "bankrotaiBridge.setReviewStatus" in html
+        assert 'data-status="approved"' in html
+        assert 'data-status="maybe"' in html
+        assert 'data-status="rejected"' in html
+        assert "qrc:///qtwebchannel/qwebchannel.js" in html
+
+
+def test_preview_image_extraction_handles_source_payload_shapes() -> None:
+    assert extract_preview_image_url({"image_url": "https://example.test/main.jpg"}) == "https://example.test/main.jpg"
+    assert extract_preview_image_url({"photos": [{"thumbnail": "//example.test/thumb.jpg"}]}) == "https://example.test/thumb.jpg"
+    assert extract_preview_image_url({"image_url": "file:///private/photo.jpg"}) is None
 
 
 def test_parallel_duplicate_addresses_share_one_request(monkeypatch) -> None:

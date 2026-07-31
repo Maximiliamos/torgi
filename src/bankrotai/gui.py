@@ -39,8 +39,12 @@ os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QThread, Signal, QStandardPaths, QStringListModel, QBuffer, QIODevice
+from PySide6.QtCore import (
+    Qt, QTimer, QUrl, QThread, Signal, Slot, QObject, QStandardPaths,
+    QStringListModel, QBuffer, QIODevice,
+)
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QColor, QBrush, QDesktopServices, QImage
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel,
@@ -49,10 +53,10 @@ from PySide6.QtWidgets import (
     QProgressBar, QStatusBar, QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
     QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame, QDialog, QDoubleSpinBox,
 )
-from sqlalchemy import desc, select, func
+from sqlalchemy import and_, desc, or_, select, func
 
 from bankrotai.core import get_logger, get_settings
-from bankrotai.db import ProcessedLot, LotGeoSnapshot, session_scope, init_db, RegionSyncState
+from bankrotai.db import ProcessedLot, SourceLot, LotGeoSnapshot, session_scope, init_db, RegionSyncState
 from bankrotai.scrapers import (
     LotOnlineClient,
     LotOnlineSearchFilters,
@@ -100,6 +104,190 @@ MAP_ICON_FILENAMES = {
     "other": "Прочее.png",
 }
 _MAP_ICON_DATA_URL_CACHE: dict[str, str] | None = None
+
+MAP_PREVIEW_STYLE = """
+.lot-preview {
+    position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
+    box-sizing: border-box; overflow-y: auto; background: #fff; color: #273142;
+    box-shadow: 4px 0 18px rgba(34, 46, 66, .22); font: 14px Arial, sans-serif;
+    transform: translateX(-105%); transition: transform .22s ease;
+}
+.lot-preview.open { transform: translateX(0); }
+.lot-preview__close {
+    position: absolute; z-index: 2; top: 10px; right: 10px; width: 34px; height: 34px;
+    border: 0; border-radius: 50%; background: rgba(255,255,255,.94); color: #536174;
+    font-size: 23px; cursor: pointer; box-shadow: 0 1px 5px rgba(0,0,0,.18);
+}
+.lot-preview__photo, .lot-preview__placeholder {
+    display: block; width: 100%; height: 245px; object-fit: cover; background: #edf1f6;
+}
+.lot-preview__placeholder { display: flex; align-items: center; justify-content: center; color: #8995a7; font-size: 15px; }
+.lot-preview__body { padding: 18px; }
+.lot-preview__source { color: #16866d; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.lot-preview__title { margin: 10px 0; font-size: 17px; line-height: 1.45; }
+.lot-preview__description { color: #536174; line-height: 1.45; max-height: 105px; overflow: auto; white-space: pre-wrap; }
+.lot-preview__price { margin: 14px 0; font-size: 22px; font-weight: 700; }
+.lot-preview__details { margin: 12px 0 16px; line-height: 1.55; color: #536174; }
+.lot-preview__details b { color: #273142; }
+.lot-preview__source-button {
+    width: 100%; padding: 13px; border: 0; border-radius: 7px; background: #2868e8;
+    color: #fff; font-weight: 700; font-size: 15px; cursor: pointer;
+}
+.lot-preview__source-button:disabled { background: #aab3c1; cursor: default; }
+.lot-preview__review-title { margin: 18px 0 9px; font-weight: 700; }
+.lot-preview__reviews { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.review-button { padding: 10px 4px; border: 2px solid #e1e6ed; border-radius: 8px; background: #fff; cursor: pointer; font-size: 12px; }
+.review-button span { display: block; font-size: 23px; margin-bottom: 3px; }
+.review-button[data-status="approved"] { color: #188b5b; }
+.review-button[data-status="maybe"] { color: #b88700; }
+.review-button[data-status="rejected"] { color: #d43f3f; }
+.review-button.active[data-status="approved"] { border-color: #22a76f; background: #e8f8f0; }
+.review-button.active[data-status="maybe"] { border-color: #e4b72c; background: #fff8d9; }
+.review-button.active[data-status="rejected"] { border-color: #df5252; background: #fff0f0; }
+"""
+
+MAP_PREVIEW_HTML = """
+<aside id="lot-preview" class="lot-preview" aria-hidden="true">
+  <button id="lot-preview-close" class="lot-preview__close" title="Закрыть">×</button>
+  <img id="lot-preview-photo" class="lot-preview__photo" alt="Фото лота">
+  <div id="lot-preview-placeholder" class="lot-preview__placeholder">Фото отсутствует</div>
+  <div class="lot-preview__body">
+    <div id="lot-preview-source" class="lot-preview__source"></div>
+    <h2 id="lot-preview-title" class="lot-preview__title"></h2>
+    <div id="lot-preview-description" class="lot-preview__description"></div>
+    <div id="lot-preview-price" class="lot-preview__price"></div>
+    <div id="lot-preview-details" class="lot-preview__details"></div>
+    <button id="lot-preview-source-button" class="lot-preview__source-button">Открыть источник</button>
+    <div class="lot-preview__review-title">Оценка лота</div>
+    <div class="lot-preview__reviews">
+      <button class="review-button" data-status="approved"><span>✓</span>Интересен</button>
+      <button class="review-button" data-status="maybe"><span>?</span>Сомневаюсь</button>
+      <button class="review-button" data-status="rejected"><span>✕</span>Плохой</button>
+    </div>
+  </div>
+</aside>
+"""
+
+MAP_PREVIEW_SCRIPT = """
+let bankrotaiBridge = null;
+let selectedPreviewLot = null;
+
+if (window.qt && window.qt.webChannelTransport) {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+        bankrotaiBridge = channel.objects.bankrotaiBridge;
+    });
+}
+
+function previewText(id, value) {
+    document.getElementById(id).textContent = value || '';
+}
+
+function setPreviewReviewStatus(status) {
+    document.querySelectorAll('.review-button').forEach(function(button) {
+        button.classList.toggle('active', button.dataset.status === status);
+    });
+}
+
+function showLotPreview(lot) {
+    selectedPreviewLot = lot;
+    const panel = document.getElementById('lot-preview');
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+    previewText('lot-preview-source', lot.source_name || lot.source || 'Источник не указан');
+    previewText('lot-preview-title', lot.title || 'Лот без названия');
+    previewText('lot-preview-description', lot.description || lot.address || 'Описание отсутствует');
+    previewText('lot-preview-price', formatPrice(lot.price));
+
+    const details = [];
+    if (lot.address) details.push('<b>Адрес:</b> ' + escapeHtml(lot.address));
+    if (lot.cadastral_number) details.push('<b>Кадастр:</b> ' + escapeHtml(lot.cadastral_number));
+    if (lot.procedure_number) details.push('<b>Процедура:</b> ' + escapeHtml(lot.procedure_number));
+    if (lot.application_deadline) details.push('<b>Приём заявок до:</b> ' + escapeHtml(lot.application_deadline));
+    if (lot.auction_at) details.push('<b>Торги:</b> ' + escapeHtml(lot.auction_at));
+    document.getElementById('lot-preview-details').innerHTML = details.join('<br>');
+
+    const photo = document.getElementById('lot-preview-photo');
+    const placeholder = document.getElementById('lot-preview-placeholder');
+    if (lot.image_url) {
+        photo.style.display = 'block'; placeholder.style.display = 'none'; photo.src = lot.image_url;
+    } else {
+        photo.removeAttribute('src'); photo.style.display = 'none'; placeholder.style.display = 'flex';
+    }
+    const sourceButton = document.getElementById('lot-preview-source-button');
+    sourceButton.disabled = !lot.source_url;
+    setPreviewReviewStatus(lot.review_status || 'new');
+}
+
+document.getElementById('lot-preview-photo').addEventListener('error', function() {
+    this.style.display = 'none'; document.getElementById('lot-preview-placeholder').style.display = 'flex';
+});
+document.getElementById('lot-preview-close').addEventListener('click', function() {
+    document.getElementById('lot-preview').classList.remove('open');
+    document.getElementById('lot-preview').setAttribute('aria-hidden', 'true');
+});
+document.getElementById('lot-preview-source-button').addEventListener('click', function() {
+    if (!selectedPreviewLot || !selectedPreviewLot.source_url) return;
+    if (bankrotaiBridge) bankrotaiBridge.openSource(selectedPreviewLot.source_url);
+    else window.open(selectedPreviewLot.source_url, '_blank');
+});
+document.querySelectorAll('.review-button').forEach(function(button) {
+    button.addEventListener('click', function() {
+        if (!selectedPreviewLot || !bankrotaiBridge) return;
+        const status = button.dataset.status;
+        bankrotaiBridge.setReviewStatus(Number(selectedPreviewLot.id), status, function(ok) {
+            if (ok) {
+                selectedPreviewLot.review_status = status;
+                setPreviewReviewStatus(status);
+            }
+        });
+    });
+});
+
+window.showLotPreview = showLotPreview;
+window.setLotReviewStatus = function(lotId, status) {
+    if (selectedPreviewLot && Number(selectedPreviewLot.id) === Number(lotId)) {
+        selectedPreviewLot.review_status = status;
+        setPreviewReviewStatus(status);
+    }
+};
+"""
+
+
+def extract_preview_image_url(raw_data: object) -> str | None:
+    """Return the first safe web image found in heterogeneous source payloads."""
+    preferred_keys = (
+        "image_url", "photo_url", "thumbnail_url", "main_image", "image",
+        "photo", "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
+    )
+
+    def find(value: object, *, depth: int = 0) -> str | None:
+        if depth > 4:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith("//"):
+                candidate = "https:" + candidate
+            parsed = urlparse(candidate)
+            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+                return candidate
+            return None
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if result := find(item, depth=depth + 1):
+                    return result
+            return None
+        if isinstance(value, dict):
+            lowered = {str(key).lower(): item for key, item in value.items()}
+            for key in preferred_keys:
+                if key in lowered and (result := find(lowered[key], depth=depth + 1)):
+                    return result
+            for key, item in lowered.items():
+                if any(token in key for token in ("image", "photo", "thumb")):
+                    if result := find(item, depth=depth + 1):
+                        return result
+        return None
+
+    return find(raw_data)
 
 
 class MaxBidDialog(QDialog):
@@ -949,6 +1137,29 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+class MapBridge(QObject):
+    review_changed = Signal(int, str)
+
+    @Slot(int, str, result=bool)
+    def setReviewStatus(self, lot_id: int, status: str) -> bool:
+        if status not in {"approved", "maybe", "rejected"}:
+            return False
+        with session_scope() as session:
+            lot = session.get(ProcessedLot, int(lot_id))
+            if lot is None:
+                return False
+            lot.review_status = status
+        self.review_changed.emit(int(lot_id), status)
+        return True
+
+    @Slot(str, result=bool)
+    def openSource(self, source_url: str) -> bool:
+        url = QUrl.fromUserInput(source_url)
+        if url.scheme().lower() not in {"http", "https"}:
+            return False
+        return bool(QDesktopServices.openUrl(url))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -972,6 +1183,8 @@ class MainWindow(QMainWindow):
         self.lot_online_meta: dict = {}
         self.lot_online_current_page = 1
         init_db()
+        self.map_bridge = MapBridge(self)
+        self.map_bridge.review_changed.connect(self.on_map_review_changed)
         self.start_cadastral_wms_proxy()
         self.init_statusbar()
         self.init_ui()
@@ -3347,6 +3560,9 @@ class MainWindow(QMainWindow):
 
         self.map_view = QWebEngineView()
         self.web_view = self.map_view
+        self.map_web_channel = QWebChannel(self.map_view.page())
+        self.map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
+        self.map_view.page().setWebChannel(self.map_web_channel)
         main_layout.addWidget(self.map_view, stretch=1)
 
         self.update_map()
@@ -3396,6 +3612,9 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
 
         self.yandex_map_view = QWebEngineView()
+        self.yandex_map_web_channel = QWebChannel(self.yandex_map_view.page())
+        self.yandex_map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
+        self.yandex_map_view.page().setWebChannel(self.yandex_map_web_channel)
         main_layout.addWidget(self.yandex_map_view, stretch=1)
 
         self.update_yandex_map()
@@ -4254,6 +4473,20 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Статус изменен: {status}", 3000)
         self.load_lots()
 
+    def on_map_review_changed(self, lot_id: int, status: str):
+        labels = {
+            "approved": "интересен",
+            "maybe": "сомневаюсь",
+            "rejected": "не интересен",
+        }
+        self.status_bar.showMessage(f"Лот №{lot_id}: {labels.get(status, status)}", 3000)
+        self.load_lots()
+        script = f"window.setLotReviewStatus && window.setLotReviewStatus({int(lot_id)}, {json.dumps(status)});"
+        for view_name in ("map_view", "yandex_map_view"):
+            view = getattr(self, view_name, None)
+            if view is not None:
+                view.page().runJavaScript(script)
+
     def refresh_geo(self):
         if not self.current_selected_lot_id: return
         self.status_bar.showMessage("Обновление координат...")
@@ -4466,10 +4699,14 @@ class MainWindow(QMainWindow):
         self.web_view.page().runJavaScript(js)
 
     @staticmethod
-    def _map_payload(lot: ProcessedLot, geo: LotGeoSnapshot) -> dict:
+    def _map_payload(lot: ProcessedLot, geo: LotGeoSnapshot, source_lot: SourceLot | None = None) -> dict:
+        def display_datetime(value: datetime | None) -> str | None:
+            return value.strftime("%d.%m.%Y %H:%M") if value else None
+
         return {
             "id": lot.id,
             "title": lot.title,
+            "description": lot.description,
             "price": float(lot.current_price) if lot.current_price else None,
             "market_price": float(lot.market_price) if lot.market_price else None,
             "discount": lot.discount_percent,
@@ -4479,6 +4716,7 @@ class MainWindow(QMainWindow):
             "cadastral_number": lot.cadastral_number,
             "category": lot.category,
             "status": lot.auction_status,
+            "review_status": lot.review_status,
             "lat": geo.centroid_lat,
             "lon": geo.centroid_lon,
             "geo_source": geo.geo_source,
@@ -4486,6 +4724,19 @@ class MainWindow(QMainWindow):
             "geometry": geo.geometry_json,
             "metadata": geo.metadata_json,
             "url": lot.lot_url,
+            "source": lot.source_system or lot.source,
+            "source_name": (
+                source_lot.platform_name if source_lot and source_lot.platform_name
+                else lot.source_system or lot.source
+            ),
+            "source_url": (
+                source_lot.source_url if source_lot and source_lot.source_url
+                else lot.source_url or lot.lot_url
+            ),
+            "image_url": extract_preview_image_url(source_lot.raw_data if source_lot else None),
+            "procedure_number": source_lot.procedure_number if source_lot else None,
+            "application_deadline": display_datetime(source_lot.application_deadline) if source_lot else None,
+            "auction_at": display_datetime(source_lot.auction_at) if source_lot else None,
         }
 
     def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
@@ -4503,9 +4754,19 @@ class MainWindow(QMainWindow):
                 .subquery()
             )
             stmt = (
-                select(ProcessedLot, LotGeoSnapshot)
+                select(ProcessedLot, LotGeoSnapshot, SourceLot)
                 .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
                 .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
+                .outerjoin(
+                    SourceLot,
+                    or_(
+                        SourceLot.processed_lot_id == ProcessedLot.id,
+                        and_(
+                            SourceLot.source_system == ProcessedLot.source_system,
+                            SourceLot.external_id == ProcessedLot.external_id,
+                        ),
+                    ),
+                )
                 .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
             if lot_id is not None:
@@ -4513,7 +4774,10 @@ class MainWindow(QMainWindow):
             else:
                 stmt = stmt.limit(limit)
 
-            return [self._map_payload(lot, geo) for lot, geo in session.execute(stmt)]
+            return [
+                self._map_payload(lot, geo, source_lot)
+                for lot, geo, source_lot in session.execute(stmt)
+            ]
 
     def _load_map_lot(self, lot_id: int) -> dict | None:
         lots = self._load_map_lots(lot_id=lot_id)
@@ -4578,6 +4842,7 @@ class MainWindow(QMainWindow):
 <meta charset="utf-8">
 <title>BankrotAI Yandex Map</title>
 <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU" type="text/javascript"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
 html, body, #map {{
     width: 100%;
@@ -4597,11 +4862,13 @@ html, body, #map {{
     font: 13px Arial, sans-serif;
     color: #2e3c54;
 }}
+{MAP_PREVIEW_STYLE}
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="hint" class="hint">Загрузка Яндекс.Карт...</div>
+{MAP_PREVIEW_HTML}
 <script>
 const lots = {lots_json};
 const iconUrls = {icon_urls_json};
@@ -4694,18 +4961,14 @@ function upsertLot(lot) {{
     const placemark = new ymaps.Placemark(
             [lot.lat, lot.lon],
             {{
-                balloonContentHeader: escapeHtml(lot.title),
-                balloonContentBody:
-                    '<b>Цена:</b> ' + formatPrice(lot.price) + '<br>' +
-                    '<b>Рынок:</b> ' + formatPrice(lot.market_price) + '<br>' +
-                    '<b>Дисконт:</b> ' + (lot.discount ?? '—') + '%<br>' +
-                    '<b>Риск:</b> ' + (lot.risk ?? '—') + '<br>' +
-                    '<b>Рейтинг:</b> ' + (lot.rating ?? '—') + '<br>' +
-                    '<b>Кадастр:</b> ' + escapeHtml(lot.cadastral_number || '—') + '<br>' +
-                    '<b>Адрес:</b> ' + escapeHtml(lot.address || '—')
+                hintContent: escapeHtml(lot.title)
             }},
             yandexIconOptions(lot)
     );
+    placemark.events.add('click', function(event) {{
+        event.preventDefault();
+        showLotPreview(lot);
+    }});
     lotCollection.add(placemark);
     lotPlacemarks.set(key, placemark);
     if (lot.geometry) {{
@@ -4787,6 +5050,8 @@ window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
 
+{MAP_PREVIEW_SCRIPT}
+
 ymaps.ready(function () {{
     map = new ymaps.Map('map', {{
         center: [57.6261, 39.8845],
@@ -4823,6 +5088,7 @@ ymaps.ready(function () {{
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 
 <style>
 html, body, #map {{
@@ -4836,11 +5102,13 @@ html, body, #map {{
     font-weight: bold;
     margin-bottom: 6px;
 }}
+{MAP_PREVIEW_STYLE}
 </style>
 </head>
 
 <body>
 <div id="map"></div>
+{MAP_PREVIEW_HTML}
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
@@ -4938,18 +5206,7 @@ function upsertLot(lot) {{
             icon: makeIcon(lot)
     }});
 
-    const popup = `
-            <div class="popup-title">${{escapeHtml(lot.title)}}</div>
-            <div><b>Цена:</b> ${{formatPrice(lot.price)}}</div>
-            <div><b>Рынок:</b> ${{formatPrice(lot.market_price)}}</div>
-            <div><b>Дисконт:</b> ${{lot.discount ?? '—'}}%</div>
-            <div><b>Риск:</b> ${{lot.risk ?? '—'}}</div>
-            <div><b>Рейтинг:</b> ${{lot.rating ?? '—'}}</div>
-            <div><b>Кадастр:</b> ${{escapeHtml(lot.cadastral_number || '—')}}</div>
-            <div><b>Адрес:</b> ${{escapeHtml(lot.address || '—')}}</div>
-    `;
-
-    marker.bindPopup(popup);
+    marker.on('click', function() {{ showLotPreview(lot); }});
     markers.addLayer(marker);
     lotMarkers.set(key, marker);
 
@@ -5035,6 +5292,8 @@ function setCadLayerVisible(visible) {{
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
 window.upsertLot = upsertLot;
+
+{MAP_PREVIEW_SCRIPT}
 
 addLots();
 const pending = window.__bankrotaiPendingLots || [];

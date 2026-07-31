@@ -6,6 +6,7 @@ LISTING_HTML = """
 <html><body>
   <div class="ty-grid-list__item">
     <input name="product_data[1759164][product_id]" value="1759164">
+    <img class="ty-pict cm-image" data-src="https://catalog.lot-online.ru/cdn/bkr/353x254/lot-1759164.jpg">
     <a class="product-title"
        href="/index.php?dispatch=products.view&amp;product_id=1759164"
        title="Земельный участок, Ярославская область, кадастровый номер 76:23:010101:42">
@@ -58,6 +59,8 @@ def test_parses_listing_card_into_normalized_lot() -> None:
     assert lot.auction_status == "active"
     assert lot.procedure_number == "РАД-453717"
     assert lot.cadastral_number == "76:23:010101:42"
+    assert lot.raw_data["image_url"] == "https://catalog.lot-online.ru/cdn/bkr/353x254/lot-1759164.jpg"
+    assert lot.raw_data["image_urls"] == ["https://catalog.lot-online.ru/cdn/bkr/353x254/lot-1759164.jpg"]
     assert lot.platform_name == "РАД / ЛОТ-ОНЛАЙН"
     assert meta == {"has_more": True, "total_pages": 2}
 
