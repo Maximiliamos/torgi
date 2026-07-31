@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFileDialog,
     QProgressBar, QStatusBar, QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
-    QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame,
+    QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame, QDialog, QDoubleSpinBox,
 )
 from sqlalchemy import desc, select, func
 
@@ -66,6 +66,7 @@ from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
 from openpyxl import Workbook
 from bankrotai.domain import NormalizedLot
 from bankrotai.geo import nspd_tls_verify
+from bankrotai.finance import MaxBidInputs, calculate_max_bid
 
 logger = get_logger("gui")
 
@@ -86,6 +87,7 @@ class WheelSafeComboBox(QComboBox):
 SORT_ROLE = Qt.UserRole + 100
 EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
+LOT_ID_ROLE = Qt.UserRole + 103
 MAP_ICON_FILENAMES = {
     "land": "участки.png",
     "rent": "аренда.png",
@@ -94,6 +96,86 @@ MAP_ICON_FILENAMES = {
     "other": "Прочее.png",
 }
 _MAP_ICON_DATA_URL_CACHE: dict[str, str] | None = None
+
+
+class MaxBidDialog(QDialog):
+    def __init__(self, *, intended_bid: float = 0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Калькулятор максимальной ставки")
+        self.resize(620, 680)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Введите проверенную консервативную цену продажи и расходы. "
+            "AI-оценка автоматически не подставляется."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        self.fields: dict[str, QDoubleSpinBox] = {}
+        definitions = (
+            ("conservative_sale_price", "Консервативная цена продажи, ₽", 0, 1_000_000_000_000, 0),
+            ("intended_bid", "Планируемая ставка, ₽", intended_bid, 1_000_000_000_000, 0),
+            ("repair_cost", "Ремонт, ₽", 0, 1_000_000_000_000, 0),
+            ("legal_cost", "Юридические расходы, ₽", 0, 1_000_000_000_000, 0),
+            ("monthly_holding_cost", "Содержание в месяц, ₽", 0, 1_000_000_000_000, 0),
+            ("holding_months", "Срок продажи, месяцев", 6, 120, 1),
+            ("taxes", "Налоги и сборы, ₽", 0, 1_000_000_000_000, 0),
+            ("sale_commission_percent", "Комиссия продажи, %", 0, 100, 2),
+            ("target_profit", "Целевая прибыль, ₽", 0, 1_000_000_000_000, 0),
+            ("risk_reserve", "Резерв риска, ₽", 0, 1_000_000_000_000, 0),
+            ("annual_capital_cost_percent", "Стоимость капитала годовых, %", 0, 100, 2),
+        )
+        for key, label, value, maximum, decimals in definitions:
+            widget = QDoubleSpinBox()
+            widget.setRange(0, maximum)
+            widget.setDecimals(decimals)
+            widget.setValue(float(value or 0))
+            widget.setGroupSeparatorShown(True)
+            self.fields[key] = widget
+            form.addRow(label, widget)
+        layout.addLayout(form)
+
+        calculate_button = QPushButton("Рассчитать безопасную ставку")
+        calculate_button.clicked.connect(self.calculate)
+        layout.addWidget(calculate_button)
+        self.result = QTextEdit()
+        self.result.setReadOnly(True)
+        layout.addWidget(self.result)
+
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+    def calculate(self):
+        values = {key: widget.value() for key, widget in self.fields.items()}
+        if values["conservative_sale_price"] <= 0:
+            QMessageBox.warning(self, "Исходные данные", "Укажите консервативную цену продажи.")
+            return
+        if values["holding_months"] <= 0:
+            QMessageBox.warning(self, "Исходные данные", "Срок продажи должен быть больше нуля.")
+            return
+        if values["intended_bid"] <= 0:
+            values["intended_bid"] = None
+        scenarios = calculate_max_bid(MaxBidInputs(**values))
+        labels = {"pessimistic": "Пессимистичный", "base": "Базовый", "optimistic": "Оптимистичный"}
+        blocks = []
+        for key in ("pessimistic", "base", "optimistic"):
+            item = scenarios[key]
+            lines = [
+                f"{labels[key]} сценарий",
+                f"Максимальная ставка: {item.maximum_bid:,.0f} ₽".replace(",", " "),
+                f"Цена продажи: {item.sale_price:,.0f} ₽".replace(",", " "),
+            ]
+            if item.expected_profit is not None:
+                lines.extend((
+                    f"Ожидаемая прибыль: {item.expected_profit:,.0f} ₽".replace(",", " "),
+                    f"ROI: {item.roi_percent:.2f}%",
+                    f"Годовая доходность: {item.annualized_return_percent:.2f}%",
+                    f"Точка безубыточности: {item.breakeven_sale_price:,.0f} ₽".replace(",", " "),
+                ))
+            blocks.append("\n".join(lines))
+        self.result.setPlainText("\n\n".join(blocks))
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -2709,6 +2791,15 @@ class MainWindow(QMainWindow):
             review_layout.addWidget(btn)
         
         detail_layout.addLayout(review_layout)
+
+        self.max_bid_btn = QPushButton("🧮 Калькулятор максимальной ставки")
+        self.max_bid_btn.setFixedHeight(40)
+        self.max_bid_btn.setStyleSheet(
+            "background-color: #eaf2f8; color: #2471a3; font-weight: bold; border-radius: 5px;"
+        )
+        self.max_bid_btn.clicked.connect(self.open_max_bid_calculator)
+        self.max_bid_btn.setEnabled(False)
+        detail_layout.addWidget(self.max_bid_btn)
         
         self.delete_lot_btn = QPushButton("🗑️ Удалить выбранные")
         self.delete_lot_btn.setFixedHeight(40)
@@ -3163,6 +3254,7 @@ class MainWindow(QMainWindow):
                     QTableWidgetItem(str(lot.risk_score) if lot.risk_score is not None else ""),
                     QTableWidgetItem(lot.last_update.strftime("%d.%m.%Y %H:%M"))
                 ]
+                items[0].setData(LOT_ID_ROLE, lot.id)
                 
                 # Review Status Color
                 color = QColor("white")
@@ -3181,6 +3273,7 @@ class MainWindow(QMainWindow):
         selected_items = self.lots_table.selectedItems()
         if not selected_items:
             self.delete_lot_btn.setEnabled(False)
+            self.max_bid_btn.setEnabled(False)
             self.ai_single_btn.setEnabled(False)
             self.geo_fix_btn.setEnabled(False)
             self.geo_fix_btn.setText("🗺️ Гео")
@@ -3191,6 +3284,7 @@ class MainWindow(QMainWindow):
         count = len(rows)
         self.delete_lot_btn.setEnabled(True)
         self.delete_lot_btn.setText(f"🗑️ Удалить выбранные ({count})")
+        self.max_bid_btn.setEnabled(count == 1)
         
         # AI evaluation enabled for 1 or more lots
         self.ai_single_btn.setEnabled(True)
@@ -3202,9 +3296,9 @@ class MainWindow(QMainWindow):
             for btn in [self.review_approved_btn, self.review_maybe_btn, self.review_rejected_btn]:
                 btn.setEnabled(True)
             
-            ext_id = self.lots_table.item(rows[0], 0).text()
+            lot_id = self._lot_id_for_row(rows[0])
             with session_scope() as session:
-                lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == ext_id))
+                lot = session.get(ProcessedLot, lot_id) if lot_id is not None else None
                 if lot:
                     self.current_selected_lot_id = lot.id
                     
@@ -3254,11 +3348,11 @@ class MainWindow(QMainWindow):
             self.detail_ai.clear()
 
     def open_lot_url(self, row: int, column: int) -> None:
-        ext_id = self.lots_table.item(row, 0).text() if self.lots_table.item(row, 0) else None
-        if not ext_id:
+        lot_id = self._lot_id_for_row(row)
+        if lot_id is None:
             return
         with session_scope() as session:
-            lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == ext_id))
+            lot = session.get(ProcessedLot, lot_id)
             url = (lot.source_url or lot.lot_url) if lot else None
             if url:
                 QDesktopServices.openUrl(QUrl.fromUserInput(str(url)))
@@ -3413,13 +3507,32 @@ class MainWindow(QMainWindow):
         selected_items = self.lots_table.selectedItems()
         if not selected_items: return
         rows = sorted(list(set(item.row() for item in selected_items)))
-        ext_ids = [self.lots_table.item(r, 0).text() for r in rows]
-        if QMessageBox.question(self, "Удаление", f"Удалить {len(ext_ids)} лотов?") == QMessageBox.Yes:
+        lot_ids = [lot_id for row in rows if (lot_id := self._lot_id_for_row(row)) is not None]
+        if QMessageBox.question(self, "Удаление", f"Удалить {len(lot_ids)} лотов?") == QMessageBox.Yes:
             with session_scope() as session:
-                lots = session.scalars(select(ProcessedLot.id).where(ProcessedLot.external_id.in_(ext_ids))).all()
-                delete_lots_batch(session, list(lots))
+                delete_lots_batch(session, lot_ids)
             self.load_lots()
             self.update_dashboard()
+
+    def _lot_id_for_row(self, row: int) -> int | None:
+        item = self.lots_table.item(row, 0)
+        if item is None:
+            return None
+        value = item.data(LOT_ID_ROLE)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def open_max_bid_calculator(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            QMessageBox.information(self, "Калькулятор", "Выберите один лот.")
+            return
+        with session_scope() as session:
+            lot = session.get(ProcessedLot, lot_ids[0])
+            intended_bid = float(lot.current_price or 0) if lot else 0
+        MaxBidDialog(intended_bid=intended_bid, parent=self).exec()
 
     def get_selected_lot_ids(self) -> list[int]:
         selected_items = self.lots_table.selectedItems()
@@ -3427,20 +3540,7 @@ class MainWindow(QMainWindow):
             return []
 
         rows = sorted({item.row() for item in selected_items})
-        ext_ids = [
-            self.lots_table.item(row, 0).text()
-            for row in rows
-            if self.lots_table.item(row, 0)
-        ]
-        if not ext_ids:
-            return []
-
-        with session_scope() as session:
-            return list(
-                session.scalars(
-                    select(ProcessedLot.id).where(ProcessedLot.external_id.in_(ext_ids))
-                ).all()
-            )
+        return [lot_id for row in rows if (lot_id := self._lot_id_for_row(row)) is not None]
 
     def start_geo_worker(
         self,
