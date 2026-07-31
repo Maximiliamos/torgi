@@ -191,6 +191,23 @@ def test_nspd_tls_error_is_classified(monkeypatch) -> None:
         CadastralGeocoder()._search_nspd_geoportal("76:23:010101:10")
 
 
+def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> None:
+    geocoder = CadastralGeocoder()
+    monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_geoportal",
+        lambda *args, **kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("bad cert")),
+    )
+
+    result = geocoder.search_by_cadastral_number("76:23:010101:10")
+
+    assert result.source == "nspd"
+    assert result.confidence == "none"
+    assert result.error is not None
+    assert "ручной проверки" in result.error
+
+
 def test_same_normalized_address_uses_geocoder_cache(monkeypatch) -> None:
     calls = []
 

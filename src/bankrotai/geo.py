@@ -101,7 +101,23 @@ class CadastralGeocoder:
             if result and result.lat and result.lon:
                 return result
 
-        nspd_result = self._search_nspd_geoportal(cadastral_number)
+        try:
+            nspd_result = self._search_nspd_geoportal(cadastral_number)
+        except NSPDTLSVerificationError:
+            logger.warning(
+                "NSPD TLS verification failed for %s; leaving the lot for manual GEO review",
+                cadastral_number,
+            )
+            return CadastralObjectResult(
+                query=cadastral_number,
+                cadastral_number=cadastral_number,
+                source="nspd",
+                confidence="none",
+                error=(
+                    "Не удалось установить защищённое соединение с НСПД. "
+                    "Проверка сертификата не отключалась; объект оставлен для ручной проверки."
+                ),
+            )
         if nspd_result and nspd_result.lat and nspd_result.lon:
             return nspd_result
 

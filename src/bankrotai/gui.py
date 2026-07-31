@@ -17,6 +17,19 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Desktop HTTPS requests should honor the Windows certificate store. This keeps
+# TLS verification enabled while supporting managed root CAs that are absent
+# from certifi's public CA bundle.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:
+    logging.getLogger(__name__).warning(
+        "Windows system TLS trust store could not be enabled; falling back to the bundled CA certificates",
+        exc_info=True,
+    )
+
 # Disable hardware acceleration for Qt to avoid Trae Sandbox errors
 os.environ["QT_QUICK_BACKEND"] = "software"
 os.environ["QT_XCB_GL_INTEGRATION"] = "none"
