@@ -9,6 +9,7 @@ import socket
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
@@ -90,6 +91,7 @@ SORT_ROLE = Qt.UserRole + 100
 EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
 LOT_ID_ROLE = Qt.UserRole + 103
+MAP_MARKER_LIMIT = 5000
 MAP_ICON_FILENAMES = {
     "land": "участки.png",
     "rent": "аренда.png",
@@ -697,7 +699,7 @@ class AIWorker(QThread):
 
             if not lot_ids:
                 self.progress_percent.emit(100)
-                self.finished.emit(0)
+                self.finished.emit(0, 0)
                 return
 
             total = len(lot_ids)
@@ -756,9 +758,10 @@ class AIWorker(QThread):
 
 
 class GeoWorker(QThread):
-    finished = Signal(int)
+    finished = Signal(int, int)
     progress = Signal(str)
     progress_percent = Signal(int)
+    lot_processed = Signal(int, bool, int, int)
     error = Signal(str)
 
     def __init__(
@@ -778,7 +781,8 @@ class GeoWorker(QThread):
             from bankrotai.geo import apply_lot_geo_result, resolve_lot_geo
             from sqlalchemy import exists
 
-            processed_count = 0
+            success_count = 0
+            failed_count = 0
 
             with session_scope() as session:
                 if self.lot_ids:
@@ -796,36 +800,71 @@ class GeoWorker(QThread):
                 self.finished.emit(0)
                 return
 
-            total = len(lot_ids)
-            for i, lot_id in enumerate(lot_ids):
-                self.progress_percent.emit(int((i / total) * 100))
+            with session_scope() as session:
+                rows = session.execute(
+                    select(
+                        ProcessedLot.id,
+                        ProcessedLot.cadastral_number,
+                        ProcessedLot.address,
+                        ProcessedLot.title,
+                        ProcessedLot.region_name,
+                    ).where(ProcessedLot.id.in_(lot_ids))
+                ).all()
+            payloads = [
+                {
+                    "lot_id": row.id,
+                    "cadastral_number": row.cadastral_number,
+                    "address": row.address,
+                    "title": row.title,
+                    "region_name": row.region_name,
+                }
+                for row in rows
+            ]
+            total = len(payloads)
+            max_workers = min(get_settings().geo_max_workers, max(total, 1))
+            self.progress.emit(f"Параллельное геокодирование: {total} лотов, потоков: {max_workers}")
 
-                with session_scope() as session:
-                    lot = session.get(ProcessedLot, lot_id)
-                    if not lot:
-                        continue
-                    cadastral_number = lot.cadastral_number
-                    address = lot.address
-                    title = lot.title
-                    label = (address or cadastral_number or title or "")[:40]
+            def resolve(payload: dict):
+                return payload["lot_id"], resolve_lot_geo(
+                    payload["cadastral_number"],
+                    payload["address"],
+                    title=payload["title"],
+                    region_name=payload["region_name"],
+                )
 
-                self.progress.emit(f"Геокодирование [{i+1}/{total}]: {label}...")
-                geo_result = resolve_lot_geo(cadastral_number, address)
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bankrotai-geo") as executor:
+                futures = {executor.submit(resolve, payload): payload for payload in payloads}
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    payload = futures[future]
+                    lot_id = int(payload["lot_id"])
+                    try:
+                        _resolved_lot_id, geo_result = future.result()
+                    except Exception:
+                        logger.exception("GEO resolution failed for lot %s", lot_id)
+                        geo_result = None
 
-                with DB_WRITE_LOCK:
-                    with session_scope() as session:
-                        lot = session.get(ProcessedLot, lot_id)
-                        if not lot:
-                            continue
-                        if self.refresh_existing:
-                            session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
-                            session.flush()
-                        apply_lot_geo_result(session, lot, geo_result)
-                        processed_count += 1
+                    success = False
+                    with DB_WRITE_LOCK:
+                        with session_scope() as session:
+                            lot = session.get(ProcessedLot, lot_id)
+                            if lot:
+                                if self.refresh_existing and geo_result:
+                                    session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
+                                    session.flush()
+                                success = apply_lot_geo_result(session, lot, geo_result)
 
-                self.progress_percent.emit(int(((i + 1) / total) * 100))
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                    self.lot_processed.emit(lot_id, success, completed, total)
+                    self.progress_percent.emit(int((completed / total) * 100))
+                    label = (payload["address"] or payload["cadastral_number"] or payload["title"] or "")[:45]
+                    self.progress.emit(
+                        f"GEO [{completed}/{total}] ✓ {success_count}, без координат {failed_count}: {label}"
+                    )
 
-            self.finished.emit(processed_count)
+            self.finished.emit(success_count, failed_count)
         except Exception as e:
             logger.error(f"GeoWorker error: {e}")
             self.error.emit(str(e))
@@ -3923,6 +3962,7 @@ class MainWindow(QMainWindow):
         self.geo_worker.progress.connect(self.status_bar.showMessage)
         self.geo_worker.progress_percent.connect(self.progress_bar.setValue)
         self.geo_worker.progress_percent.connect(lambda value: self.update_task_progress("geo", value))
+        self.geo_worker.lot_processed.connect(self.on_geo_lot_processed)
         self.geo_worker.finished.connect(self.on_geo_finished)
         self.geo_worker.error.connect(self.on_worker_error)
         self.geo_worker.start()
@@ -4064,18 +4104,38 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Обновление геометок лотов из базы...")
         self.start_geo_worker(limit=None, refresh_existing=False)
 
-    def on_geo_finished(self, count: int):
+    def on_geo_lot_processed(self, lot_id: int, success: bool, completed: int, total: int):
+        if not success:
+            return
+        payload = self._load_map_lot(lot_id)
+        if not payload:
+            return
+        encoded = json.dumps(payload, ensure_ascii=False)
+        js = (
+            f"window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || []; "
+            f"if (window.upsertLot) {{ window.upsertLot({encoded}); }} "
+            f"else {{ window.__bankrotaiPendingLots.push({encoded}); }}"
+        )
+        self.map_view.page().runJavaScript(js)
+        if hasattr(self, "yandex_map_view"):
+            self.yandex_map_view.page().runJavaScript(js)
+        self.status_bar.showMessage(
+            f"GEO: точка добавлена на карту сразу ({completed}/{total})", 1500
+        )
+
+    def on_geo_finished(self, count: int, failed_count: int):
         self.finish_task_progress("geo")
         if hasattr(self, "geo_batch_btn"):
             self.geo_batch_btn.setEnabled(True)
         self.geo_fix_btn.setEnabled(bool(self.lots_table.selectedItems()))
         self.progress_bar.setVisible(False)
-        if count == 0:
+        if count == 0 and failed_count == 0:
             self.status_bar.showMessage("Все лоты уже имеют гео-координаты", 5000)
             QMessageBox.information(self, "Инфо", "Все лоты уже имеют гео-координаты.")
         else:
-            self.status_bar.showMessage(f"Геокодирование завершено. Обработано: {count}", 5000)
-            QMessageBox.information(self, "Готово", f"Массовое геокодирование завершено. Обработано лотов: {count}")
+            message = f"Геокодирование завершено. Координаты: {count}, не найдено: {failed_count}"
+            self.status_bar.showMessage(message, 5000)
+            QMessageBox.information(self, "Готово", message)
         self.update_map()
         if hasattr(self, "yandex_map_view"):
             self.update_yandex_map()
@@ -4405,7 +4465,30 @@ class MainWindow(QMainWindow):
         js = f"window.showCadastreObject({json.dumps(result, ensure_ascii=False)});"
         self.web_view.page().runJavaScript(js)
 
-    def update_map(self):
+    @staticmethod
+    def _map_payload(lot: ProcessedLot, geo: LotGeoSnapshot) -> dict:
+        return {
+            "id": lot.id,
+            "title": lot.title,
+            "price": float(lot.current_price) if lot.current_price else None,
+            "market_price": float(lot.market_price) if lot.market_price else None,
+            "discount": lot.discount_percent,
+            "risk": lot.risk_score,
+            "rating": lot.rating,
+            "address": lot.address,
+            "cadastral_number": lot.cadastral_number,
+            "category": lot.category,
+            "status": lot.auction_status,
+            "lat": geo.centroid_lat,
+            "lon": geo.centroid_lon,
+            "geo_source": geo.geo_source,
+            "geo_confidence": geo.geo_confidence,
+            "geometry": geo.geometry_json,
+            "metadata": geo.metadata_json,
+            "url": lot.lot_url,
+        }
+
+    def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
         with session_scope() as session:
             latest_geo = (
                 select(
@@ -4423,84 +4506,27 @@ class MainWindow(QMainWindow):
                 select(ProcessedLot, LotGeoSnapshot)
                 .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
                 .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .limit(2000)
+                .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
+            if lot_id is not None:
+                stmt = stmt.where(ProcessedLot.id == lot_id)
+            else:
+                stmt = stmt.limit(limit)
 
-            lots = []
-            for lot, geo in session.execute(stmt):
-                lots.append(
-                    {
-                        "id": lot.id,
-                        "title": lot.title,
-                        "price": float(lot.current_price) if lot.current_price else None,
-                        "market_price": float(lot.market_price) if lot.market_price else None,
-                        "discount": lot.discount_percent,
-                        "risk": lot.risk_score,
-                        "rating": lot.rating,
-                        "address": lot.address,
-                        "cadastral_number": lot.cadastral_number,
-                        "category": lot.category,
-                        "status": lot.auction_status,
-                        "lat": geo.centroid_lat,
-                        "lon": geo.centroid_lon,
-                        "geo_source": geo.geo_source,
-                        "geo_confidence": geo.geo_confidence,
-                        "geometry": geo.geometry_json,
-                        "metadata": geo.metadata_json,
-                        "url": lot.lot_url,
-                    }
-                )
+            return [self._map_payload(lot, geo) for lot, geo in session.execute(stmt)]
 
+    def _load_map_lot(self, lot_id: int) -> dict | None:
+        lots = self._load_map_lots(lot_id=lot_id)
+        return lots[0] if lots else None
+
+    def update_map(self):
+        lots = self._load_map_lots()
         html = self.build_map_html(lots)
         self.map_view.setHtml(html, QUrl("https://local.bankrotai/"))
         self.status_bar.showMessage("Карта обновлена", 3000)
 
     def update_yandex_map(self):
-        with session_scope() as session:
-            latest_geo = (
-                select(
-                    LotGeoSnapshot.lot_id,
-                    func.max(LotGeoSnapshot.id).label("geo_id"),
-                )
-                .where(
-                    LotGeoSnapshot.centroid_lat.isnot(None),
-                    LotGeoSnapshot.centroid_lon.isnot(None),
-                )
-                .group_by(LotGeoSnapshot.lot_id)
-                .subquery()
-            )
-            stmt = (
-                select(ProcessedLot, LotGeoSnapshot)
-                .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-                .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .limit(2000)
-            )
-
-            lots = []
-            for lot, geo in session.execute(stmt):
-                lots.append(
-                    {
-                        "id": lot.id,
-                        "title": lot.title,
-                        "price": float(lot.current_price) if lot.current_price else None,
-                        "market_price": float(lot.market_price) if lot.market_price else None,
-                        "discount": lot.discount_percent,
-                        "risk": lot.risk_score,
-                        "rating": lot.rating,
-                        "address": lot.address,
-                        "cadastral_number": lot.cadastral_number,
-                        "category": lot.category,
-                        "status": lot.auction_status,
-                        "lat": geo.centroid_lat,
-                        "lon": geo.centroid_lon,
-                        "geo_source": geo.geo_source,
-                        "geo_confidence": geo.geo_confidence,
-                        "geometry": geo.geometry_json,
-                        "metadata": geo.metadata_json,
-                        "url": lot.lot_url,
-                    }
-                )
-
+        lots = self._load_map_lots()
         self.yandex_map_view.setHtml(self.build_yandex_map_html(lots), QUrl("https://local.bankrotai/"))
         self.status_bar.showMessage("Яндекс-карта обновлена", 3000)
 
@@ -4584,6 +4610,7 @@ let lotCollection;
 let boundaryCollection;
 let selectedObjectCollection;
 let boundaryVisible = true;
+const lotPlacemarks = new Map();
 
 function escapeHtml(text) {{
     if (text === null || text === undefined) return '';
@@ -4654,13 +4681,17 @@ function addGeometry(geometry, options) {{
     }}
 }}
 
-function addLots() {{
-    lotCollection.removeAll();
-    boundaryCollection.removeAll();
-
-    lots.forEach(lot => {{
-        if (!lot.lat || !lot.lon) return;
-        const placemark = new ymaps.Placemark(
+function upsertLot(lot) {{
+    if (!lotCollection) {{
+        window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || [];
+        window.__bankrotaiPendingLots.push(lot);
+        return;
+    }}
+    if (!lot.lat || !lot.lon) return;
+    const key = String(lot.id);
+    const previous = lotPlacemarks.get(key);
+    if (previous) lotCollection.remove(previous);
+    const placemark = new ymaps.Placemark(
             [lot.lat, lot.lon],
             {{
                 balloonContentHeader: escapeHtml(lot.title),
@@ -4674,16 +4705,24 @@ function addLots() {{
                     '<b>Адрес:</b> ' + escapeHtml(lot.address || '—')
             }},
             yandexIconOptions(lot)
-        );
-        lotCollection.add(placemark);
-        if (lot.geometry) {{
-            addGeometry(lot.geometry, {{
-                strokeColor: '#2468d8',
-                strokeWidth: 2,
-                fillColor: 'rgba(36,104,216,0.08)'
-            }});
-        }}
-    }});
+    );
+    lotCollection.add(placemark);
+    lotPlacemarks.set(key, placemark);
+    if (lot.geometry) {{
+        addGeometry(lot.geometry, {{
+            strokeColor: '#2468d8',
+            strokeWidth: 2,
+            fillColor: 'rgba(36,104,216,0.08)'
+        }});
+    }}
+}}
+
+function addLots() {{
+    lotCollection.removeAll();
+    boundaryCollection.removeAll();
+    lotPlacemarks.clear();
+
+    lots.forEach(upsertLot);
 
     map.geoObjects.add(lotCollection);
     map.geoObjects.add(boundaryCollection);
@@ -4746,6 +4785,7 @@ function setCadLayerVisible(visible) {{
 
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
+window.upsertLot = upsertLot;
 
 ymaps.ready(function () {{
     map = new ymaps.Map('map', {{
@@ -4758,6 +4798,9 @@ ymaps.ready(function () {{
     selectedObjectCollection = new ymaps.GeoObjectCollection();
     document.getElementById('hint').style.display = 'none';
     addLots();
+    const pending = window.__bankrotaiPendingLots || [];
+    window.__bankrotaiPendingLots = [];
+    pending.forEach(upsertLot);
 }});
 </script>
 </body>
@@ -4839,6 +4882,7 @@ const cadastralBuildingsLayer = L.tileLayer.wms(
 
 const markers = L.markerClusterGroup();
 const boundaries = L.layerGroup().addTo(map);
+const lotMarkers = new Map();
 
 let selectedObjectLayer = null;
 let selectedObjectMarker = null;
@@ -4885,18 +4929,16 @@ function makeIcon(lot) {{
     return L.divIcon({{ className: '', html: '<div style="width:14px;height:14px;border-radius:50%;background:#2468d8;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,.45);"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }});
 }}
 
-function addLots() {{
-    markers.clearLayers();
-    boundaries.clearLayers();
-
-    lots.forEach(lot => {{
-        if (!lot.lat || !lot.lon) return;
-
-        const marker = L.marker([lot.lat, lot.lon], {{
+function upsertLot(lot) {{
+    if (!lot.lat || !lot.lon) return;
+    const key = String(lot.id);
+    const previous = lotMarkers.get(key);
+    if (previous) markers.removeLayer(previous);
+    const marker = L.marker([lot.lat, lot.lon], {{
             icon: makeIcon(lot)
-        }});
+    }});
 
-        const popup = `
+    const popup = `
             <div class="popup-title">${{escapeHtml(lot.title)}}</div>
             <div><b>Цена:</b> ${{formatPrice(lot.price)}}</div>
             <div><b>Рынок:</b> ${{formatPrice(lot.market_price)}}</div>
@@ -4905,21 +4947,30 @@ function addLots() {{
             <div><b>Рейтинг:</b> ${{lot.rating ?? '—'}}</div>
             <div><b>Кадастр:</b> ${{escapeHtml(lot.cadastral_number || '—')}}</div>
             <div><b>Адрес:</b> ${{escapeHtml(lot.address || '—')}}</div>
-        `;
+    `;
 
-        marker.bindPopup(popup);
-        markers.addLayer(marker);
+    marker.bindPopup(popup);
+    markers.addLayer(marker);
+    lotMarkers.set(key, marker);
 
-        if (lot.geometry) {{
-            L.geoJSON(lot.geometry, {{
-                style: {{
-                    weight: 1,
-                    opacity: 0.5,
-                    fillOpacity: 0.05
-                }}
-            }}).addTo(boundaries);
-        }}
-    }});
+    if (lot.geometry) {{
+        L.geoJSON(lot.geometry, {{
+            style: {{
+                weight: 1,
+                opacity: 0.5,
+                fillOpacity: 0.05
+            }}
+        }}).addTo(boundaries);
+    }}
+    if (!map.hasLayer(markers)) map.addLayer(markers);
+}}
+
+function addLots() {{
+    markers.clearLayers();
+    boundaries.clearLayers();
+    lotMarkers.clear();
+
+    lots.forEach(upsertLot);
 
     map.addLayer(markers);
 
@@ -4983,8 +5034,12 @@ function setCadLayerVisible(visible) {{
 
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
+window.upsertLot = upsertLot;
 
 addLots();
+const pending = window.__bankrotaiPendingLots || [];
+window.__bankrotaiPendingLots = [];
+pending.forEach(upsertLot);
 </script>
 </body>
 </html>

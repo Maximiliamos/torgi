@@ -124,6 +124,7 @@ class AppSettings:
     celery_hard_time_limit: int = 1800
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
+    geo_max_workers: int = 6
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -198,6 +199,7 @@ def load_settings() -> AppSettings:
         celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
+        geo_max_workers=max(1, min(16, int(os.getenv("GEO_MAX_WORKERS", "6")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )
