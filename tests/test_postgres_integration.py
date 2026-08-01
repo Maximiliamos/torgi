@@ -55,10 +55,11 @@ def test_postgres_migrations_json_archive_history_and_search(engine) -> None:
         lot = _lot("pg-lot")
         session.add(lot)
         session.flush()
+        assert build_lots_response(session, "yaroslavl", search="010101:1")["total"] == 1
         assert apply_lot_status(session, lot, "closed", "sync")
         assert cleanup_closed_lots(session) == 0  # status transition already archived it
         session.commit()
-        assert build_lots_response(session, "yaroslavl", search="010101:1")["total"] == 1
+        assert build_lots_response(session, "yaroslavl", search="010101:1")["total"] == 0
         assert session.scalar(select(LotStatusHistory).where(LotStatusHistory.lot_id == lot.id)) is not None
         assert lot.is_archived is True
 
