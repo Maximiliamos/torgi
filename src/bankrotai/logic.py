@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import String, asc, cast, desc, func, or_, select, update
+from sqlalchemy import String, asc, cast, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
@@ -518,21 +518,21 @@ def needs_human_review(confidence: str) -> bool:
 # --- Core Logic ---
 
 def delete_lot(session: Session, lot_id: int) -> bool:
+    """Archive a user-selected lot without destroying related evidence."""
     processed = session.get(ProcessedLot, lot_id)
-    if not processed: return False
-    try:
-        session.execute(
-            update(ProcessedLot)
-            .where(ProcessedLot.duplicate_of_id == lot_id)
-            .values(duplicate_of_id=None)
-        )
-        session.delete(processed)
-        session.flush()
-        logger.info("Manually deleted lot %s with database-enforced cascades", lot_id)
-        return True
-    except Exception:
-        logger.exception("Failed to manually delete lot %s", lot_id)
-        raise
+    if not processed or processed.is_archived:
+        return False
+    processed.is_archived = True
+    processed.archived_at = processed.archived_at or utc_now()
+    session.add(LotStatusHistory(
+        lot_id=processed.id,
+        old_status=processed.auction_status,
+        new_status=processed.auction_status,
+        source="manual_archive",
+    ))
+    session.flush()
+    logger.info("Manually archived lot %s without deleting related evidence", lot_id)
+    return True
 
 def delete_lots_batch(session: Session, lot_ids: list[int]) -> int:
     count = 0
@@ -806,7 +806,10 @@ def build_lots_response(
     """Формирует структурированный ответ со списком лотов для API."""
     # Базовый запрос с фильтрацией по региону 
     region_values = get_region_query_values(city_slug)
-    query = select(ProcessedLot).where(ProcessedLot.region_slug.in_(region_values)) 
+    query = select(ProcessedLot).where(
+        ProcessedLot.region_slug.in_(region_values),
+        ProcessedLot.is_archived.is_(False),
+    )
 
     # Поиск по названию 
     search_term = search.strip()
@@ -967,13 +970,17 @@ def get_lot_response(session: Session, city_slug: str, lot_id: int) -> dict | No
 def build_stats_response(session: Session, city_slug: str) -> dict:
     """Формирует статистику по региону для API."""
     region_values = get_region_query_values(city_slug)
-    base = select(ProcessedLot).where(ProcessedLot.region_slug.in_(region_values)) 
+    base = select(ProcessedLot).where(
+        ProcessedLot.region_slug.in_(region_values),
+        ProcessedLot.is_archived.is_(False),
+    )
     total = session.scalar(select(func.count()).select_from(base.subquery())) 
     active = session.scalar(select(func.count()).select_from(base.where(ProcessedLot.auction_status == "active").subquery())) 
     with_rating = session.scalar(select(func.count()).select_from(base.where(ProcessedLot.rating.isnot(None)).subquery())) 
 
     avg_discount = session.scalar(select(func.avg(ProcessedLot.discount_percent)) 
                                   .where(ProcessedLot.region_slug.in_(region_values)) 
+                                  .where(ProcessedLot.is_archived.is_(False))
                                   .where(ProcessedLot.discount_percent.isnot(None))) 
 
     return { 

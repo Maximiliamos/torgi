@@ -7,10 +7,10 @@ from dataclasses import asdict
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import Cookie, FastAPI, Depends, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from redis import Redis
@@ -26,6 +26,7 @@ from bankrotai.db import (
     BackgroundTaskState,
     LotParticipationChecklist,
     SourceLot,
+    DiagnosticEvent,
 )
 from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response
 from bankrotai.finance import MaxBidInputs, calculate_max_bid
@@ -33,6 +34,13 @@ from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSear
 from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
 from bankrotai.core import get_logger, get_settings, utc_now, DEFAULT_REGION
+from bankrotai.auth import (
+    AuthenticatedUser,
+    authenticate_user,
+    create_session_token,
+    verify_session_token,
+)
+from bankrotai import __version__
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -40,6 +48,10 @@ settings = get_settings()
 app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
+_SESSION_COOKIE = "bankrotai_session"
+_LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
+_READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+_EXPECTED_SCHEMA_REVISION = "e0f1a2b3c4d5"
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -68,7 +80,8 @@ class MaxBidRequest(BaseModel):
 
 
 class ParticipationChecklistRequest(BaseModel):
-    user_id: str = Field(min_length=1, max_length=100)
+    model_config = ConfigDict(extra="forbid")
+
     etp_accredited: bool = False
     signature_valid: bool = False
     application_completed: bool = False
@@ -79,10 +92,17 @@ class ParticipationChecklistRequest(BaseModel):
     application_accepted: bool = False
     notes: str | None = Field(None, max_length=5000)
 
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=500)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -109,7 +129,26 @@ async def log_requests(request: Request, call_next):
     elif request.method != "OPTIONS" and settings.is_production:
         return JSONResponse(status_code=503, content={"detail": "API authentication is not configured"})
 
-    client_ip = request.client.host if request.client else "unknown"
+    if settings.api_read_only and request.method != "OPTIONS" and not _is_read_only_mvp_path(request):
+        return JSONResponse(status_code=404, content={"detail": "Endpoint is not part of the read-only MVP API"})
+
+    session_auth_enabled = settings.is_production or bool(settings.auth_session_secret)
+    if (
+        session_auth_enabled
+        and request.method != "OPTIONS"
+        and request.url.path.startswith("/api/")
+        and request.url.path not in _LOGIN_PATHS
+    ):
+        token = request.cookies.get(_SESSION_COOKIE, "")
+        if not token or not settings.auth_session_secret:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        with session_scope() as session:
+            actor = verify_session_token(session, token, settings.auth_session_secret)
+        if actor is None:
+            return JSONResponse(status_code=401, content={"detail": "Session is invalid or expired"})
+        request.state.authenticated_user = actor
+
+    client_ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
     if not _consume_rate_limit(client_ip):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
@@ -122,6 +161,16 @@ async def log_requests(request: Request, call_next):
         return response
     except Exception as e:
         logger.exception("Error processing request: %s", e)
+        try:
+            with session_scope() as session:
+                session.add(DiagnosticEvent(
+                    severity="error",
+                    component="api",
+                    message="Unhandled API request error",
+                    context_json={"method": request.method, "path": request.url.path, "error": str(e)[:2000]},
+                ))
+        except Exception:
+            logger.exception("Failed to persist API diagnostic event")
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal Server Error"}
@@ -144,7 +193,7 @@ def _consume_rate_limit(client_id: str) -> bool:
             redis.expire(key, 70)
         return current <= limit
     except RedisError as exc:
-        if settings.is_production:
+        if settings.is_production and not settings.api_read_only:
             logger.error("Distributed rate limiter unavailable: %s", exc)
             return False
 
@@ -156,13 +205,34 @@ def _consume_rate_limit(client_id: str) -> bool:
     _rate_limit_hits[client_id] = hits
     return True
 
+
+def _is_read_only_mvp_path(request: Request) -> bool:
+    path = request.url.path.rstrip("/") or "/"
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and path not in _LOGIN_PATHS:
+        return False
+    if path in _READ_ONLY_EXACT_PATHS:
+        return True
+    if path.startswith("/api/lots/"):
+        parts = path.split("/")
+        return len(parts) == 4 and parts[3].isdigit() or (
+            len(parts) == 5 and parts[3].isdigit() and parts[4] == "procedure"
+        )
+    return False
+
+
+def require_user(request: Request) -> AuthenticatedUser:
+    actor = getattr(request.state, "authenticated_user", None)
+    if actor is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return actor
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
 
 @app.get("/health/live")
 def liveness_check():
-    return {"status": "alive", "version": "1.0.0"}
+    return {"status": "alive", "version": __version__}
 
 
 @app.get("/health/ready")
@@ -172,7 +242,7 @@ def readiness_check():
         "configuration": "ok",
         "database": "unavailable",
         "schema": "unknown",
-        "queue": "unavailable",
+        "queue": "disabled_read_only" if settings.api_read_only else "unavailable",
     }
     configuration_errors = settings.production_configuration_errors()
     if configuration_errors:
@@ -184,23 +254,59 @@ def readiness_check():
             checks["database"] = "ok"
             version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
             checks["schema"] = version or "missing"
+            if version != _EXPECTED_SCHEMA_REVISION:
+                return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     except Exception as exc:
         logger.error("Readiness database check failed: %s", exc)
         return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
-    try:
-        Redis.from_url(
-            settings.redis_url,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            decode_responses=True,
-        ).ping()
-        checks["queue"] = "ok"
-    except RedisError as exc:
-        logger.error("Readiness Redis check failed: %s", exc)
-        return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
-    return {"status": "ready", "checks": checks, "version": "1.0.0"}
+    if not settings.api_read_only:
+        try:
+            Redis.from_url(
+                settings.redis_url,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                decode_responses=True,
+            ).ping()
+            checks["queue"] = "ok"
+        except RedisError as exc:
+            logger.error("Readiness Redis check failed: %s", exc)
+            return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks, "version": __version__}
 
 # --- Endpoints ---
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest, response: Response):
+    with session_scope() as session:
+        user = authenticate_user(session, request.username, request.password)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        if not settings.auth_session_secret:
+            raise HTTPException(status_code=503, detail="Session authentication is not configured")
+        token = create_session_token(user, settings.auth_session_secret, ttl_seconds=settings.auth_session_ttl_seconds)
+        result = {"id": user.id, "username": user.username, "role": user.role}
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        max_age=settings.auth_session_ttl_seconds,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
+        path="/",
+    )
+    return result
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(_SESSION_COOKIE, path="/", httponly=True, secure=settings.is_production, samesite="strict")
+    return {"status": "signed_out"}
+
+
+@app.get("/api/auth/me")
+def current_user(actor: AuthenticatedUser = Depends(require_user)):
+    return {"id": actor.id, "username": actor.username, "role": actor.role}
 
 def _normalized_lot_to_dict(lot) -> dict:
     return {
@@ -364,13 +470,10 @@ def get_lot_procedure(lot_id: int):
             "procedure_number": source_lot.procedure_number,
             "notice_number": source_lot.notice_number,
             "efresb_message_number": source_lot.efresb_message_number,
-            "debtor_name": source_lot.debtor_name,
             "organizer_name": source_lot.organizer_name,
-            "auction_manager_name": source_lot.auction_manager_name,
             "bankruptcy_case_number": source_lot.bankruptcy_case_number,
             "deposit_amount": float(source_lot.deposit_amount) if source_lot.deposit_amount is not None else None,
             "deposit_percent": source_lot.deposit_percent,
-            "deposit_payment_details": source_lot.deposit_payment_details,
             "deposit_deadline": source_lot.deposit_deadline,
             "application_deadline": source_lot.application_deadline,
             "auction_at": source_lot.auction_at,
@@ -385,7 +488,6 @@ def get_lot_procedure(lot_id: int):
             "next_price_reduction_at": source_lot.next_price_reduction_at,
             "document_completeness": source_lot.document_completeness,
             "inspection_procedure": source_lot.inspection_procedure,
-            "organizer_contact": source_lot.organizer_contact,
         }
 
 
@@ -404,7 +506,11 @@ def calculate_lot_max_bid(lot_id: int, request: MaxBidRequest):
 
 
 @app.put("/api/lots/{lot_id}/participation")
-def update_participation_checklist(lot_id: int, request: ParticipationChecklistRequest):
+def update_participation_checklist(
+    lot_id: int,
+    request: ParticipationChecklistRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
     with session_scope() as session:
         source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
         if source_lot is None:
@@ -412,13 +518,13 @@ def update_participation_checklist(lot_id: int, request: ParticipationChecklistR
         checklist = session.scalar(
             select(LotParticipationChecklist).where(
                 LotParticipationChecklist.source_lot_id == source_lot.id,
-                LotParticipationChecklist.user_id == request.user_id,
+                LotParticipationChecklist.user_id == str(actor.id),
             )
         )
         if checklist is None:
-            checklist = LotParticipationChecklist(source_lot_id=source_lot.id, user_id=request.user_id)
+            checklist = LotParticipationChecklist(source_lot_id=source_lot.id, user_id=str(actor.id))
             session.add(checklist)
-        for field_name, value in request.model_dump(exclude={"user_id"}).items():
+        for field_name, value in request.model_dump().items():
             setattr(checklist, field_name, value)
         checklist.updated_at = utc_now()
         session.flush()

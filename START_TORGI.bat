@@ -21,11 +21,19 @@ echo ERROR: app\BankrotAI.exe and Python source fallback were not found.
 exit /b 1
 
 :CHECK_EXE_OK
-echo OK: %APP_EXE%
+"%APP_EXE%" --smoke-test
+if errorlevel 1 goto CHECK_FAILED
+echo OK: packaged desktop initialized successfully: %APP_EXE%
 exit /b 0
 
 :CHECK_SOURCE_OK
-echo OK: Python source fallback is available.
+set "PYTHONPATH=%PROJECT_DIR%src"
+pushd "%PROJECT_DIR%"
+python -m bankrotai.cli run-desktop --smoke-test
+set "RESULT=%errorlevel%"
+popd
+if not "%RESULT%"=="0" goto CHECK_FAILED
+echo OK: source desktop initialized successfully.
 exit /b 0
 
 :START_EXE

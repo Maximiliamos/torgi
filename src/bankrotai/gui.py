@@ -45,18 +45,29 @@ from PySide6.QtCore import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QColor, QBrush, QDesktopServices
+from PySide6.QtGui import QColor, QBrush, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFileDialog,
     QProgressBar, QStatusBar, QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
     QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame, QDialog, QDoubleSpinBox,
+    QInputDialog,
 )
 from sqlalchemy import and_, desc, or_, select, func
 
 from bankrotai.core import get_logger, get_settings
-from bankrotai.db import ProcessedLot, SourceLot, LotGeoSnapshot, session_scope, init_db, RegionSyncState
+from bankrotai.db import (
+    LotDocument,
+    LotDocumentVersion,
+    LotParticipationChecklist,
+    ProcessedLot,
+    SourceLot,
+    LotGeoSnapshot,
+    session_scope,
+    init_db,
+    RegionSyncState,
+)
 from bankrotai.scrapers import (
     LotOnlineClient,
     LotOnlineSearchFilters,
@@ -80,6 +91,26 @@ from openpyxl import Workbook
 from bankrotai.domain import NormalizedLot
 from bankrotai.geo import nspd_tls_verify
 from bankrotai.finance import MaxBidInputs, calculate_max_bid
+from bankrotai.backups import ensure_daily_sqlite_backup
+from bankrotai.documents import compare_document_versions
+from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
+from bankrotai.services.operations import (
+    add_lot_note,
+    diagnostic_export,
+    save_max_bid_scenario,
+    save_participation_checklist,
+    save_search,
+    toggle_watchlist,
+)
+from bankrotai.services.quality import (
+    apply_raw_payload_retention,
+    data_quality_snapshot,
+    geo_retry_lot_ids,
+    list_source_health,
+    record_geo_failure,
+    resolve_geo_failure,
+    update_source_health,
+)
 
 logger = get_logger("gui")
 
@@ -108,6 +139,12 @@ def map_assets_directory() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS")) / "bankrotai" / "assets" / "map"
     return Path(__file__).resolve().parent / "assets" / "map"
+
+
+def app_icon_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "bankrotai" / "assets" / "app.ico"
+    return Path(__file__).resolve().parent / "assets" / "app.ico"
 
 
 MAP_PREVIEW_STYLE = """
@@ -369,8 +406,10 @@ def extract_preview_image_url(raw_data: object) -> str | None:
 
 
 class MaxBidDialog(QDialog):
-    def __init__(self, *, intended_bid: float = 0, parent=None):
+    def __init__(self, *, lot_id: int, intended_bid: float = 0, parent=None):
         super().__init__(parent)
+        self.lot_id = lot_id
+        self.last_inputs: MaxBidInputs | None = None
         self.setWindowTitle("Калькулятор максимальной ставки")
         self.resize(620, 680)
         layout = QVBoxLayout(self)
@@ -406,9 +445,15 @@ class MaxBidDialog(QDialog):
             form.addRow(label, widget)
         layout.addLayout(form)
 
+        self.scenario_name = QLineEdit("Базовый сценарий")
+        form.addRow("Название сценария", self.scenario_name)
+
         calculate_button = QPushButton("Рассчитать безопасную ставку")
         calculate_button.clicked.connect(self.calculate)
         layout.addWidget(calculate_button)
+        save_button = QPushButton("Сохранить сценарий")
+        save_button.clicked.connect(self.save_scenario)
+        layout.addWidget(save_button)
         self.result = QTextEdit()
         self.result.setReadOnly(True)
         layout.addWidget(self.result)
@@ -418,6 +463,7 @@ class MaxBidDialog(QDialog):
         layout.addWidget(close_button)
 
     def calculate(self):
+        self.last_inputs = None
         values = {key: widget.value() for key, widget in self.fields.items()}
         if values["conservative_sale_price"] <= 0:
             QMessageBox.warning(self, "Исходные данные", "Укажите консервативную цену продажи.")
@@ -427,7 +473,8 @@ class MaxBidDialog(QDialog):
             return
         if values["intended_bid"] <= 0:
             values["intended_bid"] = None
-        scenarios = calculate_max_bid(MaxBidInputs(**values))
+        self.last_inputs = MaxBidInputs(**values)
+        scenarios = calculate_max_bid(self.last_inputs)
         labels = {"pessimistic": "Пессимистичный", "base": "Базовый", "optimistic": "Оптимистичный"}
         blocks = []
         for key in ("pessimistic", "base", "optimistic"):
@@ -446,6 +493,19 @@ class MaxBidDialog(QDialog):
                 ))
             blocks.append("\n".join(lines))
         self.result.setPlainText("\n\n".join(blocks))
+
+    def save_scenario(self):
+        self.calculate()
+        if self.last_inputs is None:
+            return
+        with session_scope() as session:
+            save_max_bid_scenario(
+                session,
+                self.lot_id,
+                self.last_inputs,
+                name=self.scenario_name.text(),
+            )
+        QMessageBox.information(self, "Калькулятор", "Сценарий ставки сохранён.")
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -968,6 +1028,8 @@ class AllRussiaRealEstateWorker(QThread):
             if self._stop_requested:
                 break
             self.progress.emit(f"{source_name}: поиск всей недвижимости РФ...")
+            with session_scope() as session:
+                update_source_health(session, source_name, status="running")
             try:
                 page_callback = lambda lots, _meta, name=source_name: self._persist_page(name, lots)
                 if isinstance(client, TorgiGovClient):
@@ -994,10 +1056,14 @@ class AllRussiaRealEstateWorker(QThread):
                         stop_cb=lambda: self._stop_requested,
                     )
                 self._source_counts[source_name] = len(lots)
+                with session_scope() as session:
+                    update_source_health(session, source_name, status="healthy", items_seen=len(lots))
                 self.source_finished.emit(source_name, len(lots), len(self._processed_ids))
             except Exception as exc:
                 logger.exception("Nationwide search failed for %s", source_name)
                 self._source_errors[source_name] = str(exc)
+                with session_scope() as session:
+                    update_source_health(session, source_name, status="failed", error=str(exc))
                 self.progress.emit(f"{source_name}: ошибка, продолжаю со следующим источником")
 
         if not self._stop_requested:
@@ -1246,10 +1312,12 @@ class GeoWorker(QThread):
                 for completed, future in enumerate(as_completed(futures), start=1):
                     payload = futures[future]
                     lot_id = int(payload["lot_id"])
+                    geo_error = "Coordinates were not found"
                     try:
                         _resolved_lot_id, geo_result, enriched = future.result()
-                    except Exception:
+                    except Exception as exc:
                         logger.exception("GEO resolution failed for lot %s", lot_id)
+                        geo_error = str(exc)
                         geo_result = None
                         enriched = {}
 
@@ -1271,6 +1339,10 @@ class GeoWorker(QThread):
                                     session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
                                     session.flush()
                                 success = apply_lot_geo_result(session, lot, geo_result)
+                                if success:
+                                    resolve_geo_failure(session, lot_id)
+                                else:
+                                    record_geo_failure(session, lot_id, geo_error)
 
                     if success:
                         success_count += 1
@@ -1493,6 +1565,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BankrotAI - Аналитика торгов")
+        self.setWindowIcon(QIcon(str(app_icon_path())))
         self.resize(1300, 900)
         self.current_selected_lot_id = None
         self._appraiser = None
@@ -1524,7 +1597,39 @@ class MainWindow(QMainWindow):
         self.start_cadastral_wms_proxy()
         self.init_statusbar()
         self.init_ui()
+        if "--smoke-test" not in sys.argv:
+            self.backup_timer = QTimer(self)
+            self.backup_timer.setInterval(6 * 60 * 60 * 1000)
+            self.backup_timer.timeout.connect(self._start_automatic_backup)
+            self.backup_timer.start()
+            QTimer.singleShot(0, self._start_automatic_backup)
         self.update_dashboard()
+
+    def _start_automatic_backup(self) -> None:
+        active = getattr(self, "_backup_thread", None)
+        if active is not None and active.is_alive():
+            return
+
+        def run_backup() -> None:
+            try:
+                result = ensure_daily_sqlite_backup()
+                if result is not None:
+                    logger.info(
+                        "Automatic SQLite backup verified: %s (%s bytes)",
+                        result.path,
+                        result.size_bytes,
+                    )
+            except ValueError:
+                logger.info("Automatic desktop backup skipped for non-SQLite database")
+            except Exception:
+                logger.exception("Automatic SQLite backup failed")
+
+        self._backup_thread = threading.Thread(
+            target=run_backup,
+            daemon=True,
+            name="bankrotai-backup",
+        )
+        self._backup_thread.start()
 
     def start_cadastral_wms_proxy(self):
         if self.cadastral_wms_proxy_port:
@@ -1596,40 +1701,45 @@ class MainWindow(QMainWindow):
         """)
         main_layout.addWidget(self.tabs)
 
-        # 1. Torgi.gov.ru Search Tab
+        search_tabs = QTabWidget()
+        maps_tabs = QTabWidget()
+
+        # 1. Search workflow
         self.dash_tab = QWidget()
         self.init_dash_tab()
-        self.tabs.addTab(self.dash_tab, "Поиск ГИС Торги")
+        search_tabs.addTab(self.dash_tab, "ГИС Торги")
 
         # 2. TBankrot Search Tab
         self.tbankrot_tab = QWidget()
         self.init_tbankrot_tab()
-        self.tabs.addTab(self.tbankrot_tab, "Поиск Т Банкрот")
+        search_tabs.addTab(self.tbankrot_tab, "Т Банкрот")
 
         # 3. RAD / LOT-ONLINE Search Tab
         self.lot_online_tab = QWidget()
         self.init_lot_online_tab()
-        self.tabs.addTab(self.lot_online_tab, "Поиск РАД / ЛОТ-ОНЛАЙН")
+        search_tabs.addTab(self.lot_online_tab, "РАД / ЛОТ-ОНЛАЙН")
+        self.tabs.addTab(search_tabs, "🔎 Поиск")
 
         # 4. Registry Tab
         self.registry_tab = QWidget()
         self.init_registry_tab()
         self.tabs.addTab(self.registry_tab, "📋 Реестр лотов")
 
-        # 4. Map Tab
+        # 3. Map workflow
         self.map_tab = QWidget()
         self.init_map_tab()
-        self.tabs.addTab(self.map_tab, "🗺️ Карта и Кадастр")
+        maps_tabs.addTab(self.map_tab, "OpenStreetMap")
 
         # 5. Yandex Map Tab
         self.yandex_map_tab = QWidget()
         self.init_yandex_map_tab()
-        self.tabs.addTab(self.yandex_map_tab, "Карта и кадастр Яндекс")
+        maps_tabs.addTab(self.yandex_map_tab, "Яндекс")
+        self.tabs.addTab(maps_tabs, "🗺️ Карта")
 
-        # 6. Tools Tab
+        # 4. Deal workflow
         self.tools_tab = QWidget()
         self.init_tools_tab()
-        self.tabs.addTab(self.tools_tab, "🛠️ Инструменты")
+        self.tabs.addTab(self.tools_tab, "🤝 Сделка")
 
     @staticmethod
     def _configure_results_table(table: QTableWidget, headers: list[str], stretch_columns: tuple[int, ...]) -> None:
@@ -3805,10 +3915,13 @@ class MainWindow(QMainWindow):
         refresh_reg_btn = QPushButton("🔄")
         refresh_reg_btn.setFixedWidth(40)
         refresh_reg_btn.clicked.connect(lambda: self.load_lots())
+        save_filter_btn = QPushButton("💾 Фильтр")
+        save_filter_btn.clicked.connect(self.save_current_registry_filter)
         
         toolbar.addWidget(self.search_input)
         toolbar.addWidget(self.category_combo)
         toolbar.addWidget(refresh_reg_btn)
+        toolbar.addWidget(save_filter_btn)
         layout.addLayout(toolbar)
 
         # Sorting Toolbar
@@ -3931,8 +4044,33 @@ class MainWindow(QMainWindow):
         self.max_bid_btn.clicked.connect(self.open_max_bid_calculator)
         self.max_bid_btn.setEnabled(False)
         detail_layout.addWidget(self.max_bid_btn)
+
+        deal_actions = QHBoxLayout()
+        self.watchlist_btn = QPushButton("⭐ Watchlist")
+        self.watchlist_btn.clicked.connect(self.toggle_selected_watchlist)
+        self.note_btn = QPushButton("📝 Заметка")
+        self.note_btn.clicked.connect(self.add_selected_lot_note)
+        self.participation_btn = QPushButton("✅ Участие")
+        self.participation_btn.clicked.connect(self.edit_participation_checklist)
+        self.documents_btn = QPushButton("📄 Документы")
+        self.documents_btn.clicked.connect(self.show_document_versions)
+        self.merge_btn = QPushButton("🔗 Merge")
+        self.merge_btn.clicked.connect(self.merge_selected_lots)
+        self.split_btn = QPushButton("↔ Split")
+        self.split_btn.clicked.connect(self.split_selected_lot)
+        for button in (
+            self.watchlist_btn,
+            self.note_btn,
+            self.participation_btn,
+            self.documents_btn,
+            self.merge_btn,
+            self.split_btn,
+        ):
+            button.setEnabled(False)
+            deal_actions.addWidget(button)
+        detail_layout.addLayout(deal_actions)
         
-        self.delete_lot_btn = QPushButton("🗑️ Удалить выбранные")
+        self.delete_lot_btn = QPushButton("📦 Архивировать выбранные")
         self.delete_lot_btn.setFixedHeight(40)
         self.delete_lot_btn.setStyleSheet("background-color: #fadbd8; color: #c0392b; font-weight: bold; border-radius: 5px;")
         self.delete_lot_btn.clicked.connect(self.delete_selected_lots)
@@ -4311,11 +4449,82 @@ class MainWindow(QMainWindow):
         ai_set_layout.addWidget(save_settings_btn)
         layout.addWidget(ai_set_box)
 
+        reliability_box, reliability_layout = add_section(
+            "🩺 Состояние источников и данных", "#f4f6ff", "#aeb8da"
+        )
+        self.reliability_summary = QTextEdit()
+        self.reliability_summary.setReadOnly(True)
+        self.reliability_summary.setMaximumHeight(240)
+        reliability_layout.addWidget(self.reliability_summary)
+        reliability_actions = QHBoxLayout()
+        refresh_quality_btn = QPushButton("Обновить")
+        refresh_quality_btn.clicked.connect(self.refresh_reliability_status)
+        retry_geo_btn = QPushButton("Повторить ошибки GEO")
+        retry_geo_btn.clicked.connect(self.retry_failed_geo)
+        retention_btn = QPushButton("Очистить raw старше 30 дней")
+        retention_btn.clicked.connect(self.run_raw_retention)
+        diagnostics_btn = QPushButton("Экспорт диагностики")
+        diagnostics_btn.clicked.connect(self.export_diagnostics)
+        for button in (refresh_quality_btn, retry_geo_btn, retention_btn, diagnostics_btn):
+            reliability_actions.addWidget(button)
+        reliability_layout.addLayout(reliability_actions)
+        layout.addWidget(reliability_box)
+        QTimer.singleShot(0, self.refresh_reliability_status)
+
         layout.addStretch()
         
         # Set tools_tab content
         main_tools_layout = QVBoxLayout(self.tools_tab)
         main_tools_layout.addWidget(scroll_widget)
+
+    def refresh_reliability_status(self):
+        with session_scope() as session:
+            quality = data_quality_snapshot(session)
+            sources = list_source_health(session)
+        lines = [
+            f"Лотов: {quality.total_lots}; активных: {quality.active_lots}; архив: {quality.archived_lots}",
+            f"Дубли: {quality.duplicate_lots}; без адреса: {quality.missing_address}; без кадастра: {quality.missing_cadastre}",
+            f"GEO готово: {quality.geocoded_lots}; требуют внимания: {quality.geo_attention_lots}; в очереди: {quality.queued_geo_failures}",
+            f"AI-анализ: {quality.ai_analyzed_lots}; версий документов: {quality.document_versions}",
+            "",
+            "Источники:",
+        ]
+        lines.extend(
+            f"• {source.source_system}: {source.status}, объектов {source.items_seen}"
+            + (f", ошибка: {source.last_error}" if source.last_error else "")
+            for source in sources
+        )
+        if not sources:
+            lines.append("• Источники ещё не проверялись")
+        self.reliability_summary.setPlainText("\n".join(lines))
+
+    def retry_failed_geo(self):
+        with session_scope() as session:
+            lot_ids = geo_retry_lot_ids(session)
+        if not lot_ids:
+            QMessageBox.information(self, "GEO", "Готовых к повтору ошибок нет.")
+            return
+        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=True)
+
+    def run_raw_retention(self):
+        with session_scope() as session:
+            result = apply_raw_payload_retention(session, retention_days=30)
+        self.refresh_reliability_status()
+        QMessageBox.information(
+            self,
+            "Хранение raw",
+            f"Удалено raw-записей: {result['raw_deleted']}\nОчищено payload источников: {result['source_cleared']}",
+        )
+
+    def export_diagnostics(self):
+        default_path = str(Path(QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)) / "bankrotai-diagnostics.json")
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт диагностики", default_path, "JSON (*.json)")
+        if not path:
+            return
+        with session_scope() as session:
+            payload = diagnostic_export(session)
+        Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        QMessageBox.information(self, "Диагностика", f"Файл сохранён:\n{path}")
 
     def update_dashboard(self):
         try:
@@ -4353,7 +4562,10 @@ class MainWindow(QMainWindow):
         self.lots_table.setSortingEnabled(False)
 
         with session_scope() as session:
-            query = select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
+            query = select(ProcessedLot).where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+            )
             
             if search_text:
                 query = query.where(ProcessedLot.title.ilike(f"%{search_text}%"))
@@ -4449,14 +4661,29 @@ class MainWindow(QMainWindow):
             self.ai_single_btn.setEnabled(False)
             self.geo_fix_btn.setEnabled(False)
             self.geo_fix_btn.setText("🗺️ Гео")
+            for button in (
+                self.watchlist_btn,
+                self.note_btn,
+                self.participation_btn,
+                self.documents_btn,
+                self.merge_btn,
+                self.split_btn,
+            ):
+                button.setEnabled(False)
             for btn in [self.review_approved_btn, self.review_maybe_btn, self.review_rejected_btn]:
                 btn.setEnabled(False)
             return
         rows = sorted(list(set(item.row() for item in selected_items)))
         count = len(rows)
         self.delete_lot_btn.setEnabled(True)
-        self.delete_lot_btn.setText(f"🗑️ Удалить выбранные ({count})")
+        self.delete_lot_btn.setText(f"📦 Архивировать выбранные ({count})")
         self.max_bid_btn.setEnabled(count == 1)
+        self.watchlist_btn.setEnabled(count == 1)
+        self.note_btn.setEnabled(count == 1)
+        self.participation_btn.setEnabled(count == 1)
+        self.documents_btn.setEnabled(count == 1)
+        self.merge_btn.setEnabled(count == 2)
+        self.split_btn.setEnabled(count == 1)
         
         # AI evaluation enabled for 1 or more lots
         self.ai_single_btn.setEnabled(True)
@@ -4680,7 +4907,11 @@ class MainWindow(QMainWindow):
         if not selected_items: return
         rows = sorted(list(set(item.row() for item in selected_items)))
         lot_ids = [lot_id for row in rows if (lot_id := self._lot_id_for_row(row)) is not None]
-        if QMessageBox.question(self, "Удаление", f"Удалить {len(lot_ids)} лотов?") == QMessageBox.Yes:
+        if QMessageBox.question(
+            self,
+            "Архивирование",
+            f"Переместить в архив {len(lot_ids)} лотов? История и аналитика будут сохранены.",
+        ) == QMessageBox.Yes:
             with session_scope() as session:
                 delete_lots_batch(session, lot_ids)
             self.load_lots()
@@ -4704,7 +4935,144 @@ class MainWindow(QMainWindow):
         with session_scope() as session:
             lot = session.get(ProcessedLot, lot_ids[0])
             intended_bid = float(lot.current_price or 0) if lot else 0
-        MaxBidDialog(intended_bid=intended_bid, parent=self).exec()
+        MaxBidDialog(lot_id=lot_ids[0], intended_bid=intended_bid, parent=self).exec()
+
+    def save_current_registry_filter(self):
+        name, accepted = QInputDialog.getText(self, "Сохранённый фильтр", "Название:")
+        if not accepted:
+            return
+        with session_scope() as session:
+            save_search(session, name, {
+                "text": self.search_input.text().strip(),
+                "category": self.category_combo.currentText(),
+                "sort": list(self.current_sort),
+            })
+        self.status_bar.showMessage("Фильтр сохранён", 3000)
+
+    def toggle_selected_watchlist(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        with session_scope() as session:
+            enabled = toggle_watchlist(session, lot_ids[0])
+        self.status_bar.showMessage("Лот добавлен в watchlist" if enabled else "Лот удалён из watchlist", 3000)
+
+    def add_selected_lot_note(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        note, accepted = QInputDialog.getMultiLineText(self, "Заметка к лоту", "Текст:")
+        if not accepted or not note.strip():
+            return
+        with session_scope() as session:
+            add_lot_note(session, lot_ids[0], note)
+        self.status_bar.showMessage("Заметка сохранена", 3000)
+
+    def edit_participation_checklist(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        fields = (
+            ("etp_accredited", "Аккредитация на ЭТП"),
+            ("signature_valid", "Электронная подпись действует"),
+            ("application_completed", "Заявка заполнена"),
+            ("deposit_sent", "Задаток отправлен"),
+            ("payment_purpose_verified", "Назначение платежа проверено"),
+            ("deposit_received", "Задаток получен площадкой"),
+            ("documents_signed", "Документы подписаны"),
+            ("application_accepted", "Заявка принята"),
+        )
+        with session_scope() as session:
+            source = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_ids[0]))
+            checklist = session.scalar(select(LotParticipationChecklist).where(
+                LotParticipationChecklist.source_lot_id == source.id,
+                LotParticipationChecklist.user_id == "desktop",
+            )) if source else None
+            current = {key: bool(getattr(checklist, key, False)) for key, _ in fields}
+            current_notes = checklist.notes if checklist and checklist.notes else ""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Контроль участия")
+        dialog_layout = QVBoxLayout(dialog)
+        controls: dict[str, QCheckBox] = {}
+        for key, label in fields:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(current[key])
+            controls[key] = checkbox
+            dialog_layout.addWidget(checkbox)
+        notes = QTextEdit(current_notes)
+        notes.setPlaceholderText("Комментарии, сроки, реквизиты проверки")
+        dialog_layout.addWidget(notes)
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(dialog.accept)
+        dialog_layout.addWidget(save_button)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = {key: checkbox.isChecked() for key, checkbox in controls.items()}
+        values["notes"] = notes.toPlainText().strip()
+        try:
+            with session_scope() as session:
+                save_participation_checklist(session, lot_ids[0], values)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Контроль участия", str(exc))
+            return
+        self.status_bar.showMessage("Контроль участия сохранён", 3000)
+
+    def show_document_versions(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        with session_scope() as session:
+            source = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_ids[0]))
+            documents = session.scalars(
+                select(LotDocument).where(LotDocument.source_lot_id == source.id)
+            ).all() if source else []
+            lines: list[str] = []
+            for document in documents:
+                versions = session.scalars(
+                    select(LotDocumentVersion)
+                    .where(LotDocumentVersion.document_id == document.id)
+                    .order_by(LotDocumentVersion.fetched_at)
+                ).all()
+                lines.append(f"{document.filename}: {len(versions)} версий")
+                for version in versions:
+                    lines.append(f"  • {version.fetched_at:%d.%m.%Y %H:%M} — {version.sha256[:12]}, {version.size_bytes or 0} байт")
+                if len(versions) >= 2:
+                    change = compare_document_versions(session, versions[-2].id, versions[-1].id)
+                    lines.append(f"  Изменения последней версии: {json.dumps(change.summary_json, ensure_ascii=False)}")
+        QMessageBox.information(
+            self,
+            "Документы и версии",
+            "\n".join(lines) if lines else "Для этого лота документы ещё не загружены.",
+        )
+
+    def merge_selected_lots(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 2:
+            QMessageBox.information(self, "Дубли", "Выберите ровно два лота; первый станет основным.")
+            return
+        reason, accepted = QInputDialog.getText(self, "Объединение дублей", "Причина:")
+        if not accepted:
+            return
+        with session_scope() as session:
+            manual_merge_lots(session, lot_ids[0], lot_ids[1], reason=reason)
+        self.load_lots()
+        self.status_bar.showMessage("Дубли объединены; действие записано в журнал", 4000)
+
+    def split_selected_lot(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        reason, accepted = QInputDialog.getText(self, "Разделение дубля", "Причина:")
+        if not accepted:
+            return
+        try:
+            with session_scope() as session:
+                manual_split_lot(session, lot_ids[0], reason=reason)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Дубли", str(exc))
+            return
+        self.load_lots()
+        self.status_bar.showMessage("Лот отделён; действие записано в журнал", 4000)
 
     def get_selected_lot_ids(self) -> list[int]:
         selected_items = self.lots_table.selectedItems()
@@ -4918,6 +5286,29 @@ class MainWindow(QMainWindow):
         self.load_lots()
         self.update_map()
         self.update_yandex_map()
+        source_errors = details.get("errors") or {}
+        if source_errors:
+            logger.warning("Nationwide search completed with source errors: %s", source_errors)
+            failed_sources = ", ".join(str(name) for name in source_errors)
+            self.status_bar.showMessage(
+                f"Поиск РФ НЕПОЛНЫЙ: недоступны {failed_sources}. Загружено {len(ids)} карточек.",
+                15000,
+            )
+            QMessageBox.warning(
+                self,
+                "Неполный поиск всех лотов РФ",
+                "Не все источники были загружены. Карта не является полной.\n\n"
+                + "\n".join(f"• {name}: {message}" for name, message in source_errors.items())
+                + "\n\nОтключите VPN или восстановите доступ к источнику и нажмите поиск РФ ещё раз. "
+                "Повторный запуск безопасен: уже загруженные лоты не дублируются.",
+            )
+        else:
+            self.status_bar.showMessage(
+                f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
+                8000,
+            )
+        if ids:
+            self.start_geo_worker(lot_ids=ids, refresh_existing=False, limit=None)
 
     @staticmethod
     def _lot_region_label(lot: ProcessedLot) -> str:
@@ -5048,29 +5439,6 @@ class MainWindow(QMainWindow):
         self._sync_map_filter_controls()
         self.update_map()
         self.update_yandex_map()
-        source_errors = details.get("errors") or {}
-        if source_errors:
-            logger.warning("Nationwide search completed with source errors: %s", source_errors)
-            failed_sources = ", ".join(str(name) for name in source_errors)
-            self.status_bar.showMessage(
-                f"Поиск РФ НЕПОЛНЫЙ: недоступны {failed_sources}. Загружено {len(ids)} карточек.",
-                15000,
-            )
-            QMessageBox.warning(
-                self,
-                "Неполный поиск всех лотов РФ",
-                "Не все источники были загружены. Карта не является полной.\n\n"
-                + "\n".join(f"• {name}: {message}" for name, message in source_errors.items())
-                + "\n\nОтключите VPN или восстановите доступ к источнику и нажмите поиск РФ ещё раз. "
-                  "Повторный запуск безопасен: уже загруженные лоты не дублируются.",
-            )
-        else:
-            self.status_bar.showMessage(
-                f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
-                8000,
-            )
-        if ids:
-            self.start_geo_worker(lot_ids=ids, refresh_existing=False, limit=None)
 
     def on_all_russia_search_error(self, message: str) -> None:
         self.finish_task_progress("all_russia")
@@ -6571,11 +6939,21 @@ pending.forEach(upsertLot);
         js = f"window.setCadLayerVisible({str(visible).lower()});"
         self.yandex_map_view.page().runJavaScript(js)
 
-def main():
+def main() -> int:
+    smoke_test = "--smoke-test" in sys.argv
+    if smoke_test:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication(sys.argv)
     window = MainWindow()
+    if smoke_test:
+        app.processEvents()
+        if window.windowTitle() != "BankrotAI - Аналитика торгов" or window.tabs.count() != 4:
+            return 2
+        window.close()
+        app.processEvents()
+        return 0
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

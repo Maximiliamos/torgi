@@ -21,6 +21,10 @@ import {
   fetchLotDetail,
   fetchLots,
   fetchStats,
+  fetchCurrentUser,
+  login,
+  logout,
+  AuthUser,
   LotDetail,
   LotListItem,
   LotQuery,
@@ -475,5 +479,43 @@ export function App() {
 
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(<App />);
+  createRoot(root).render(<AuthenticatedApp />);
+}
+
+export function AuthenticatedApp() {
+  const [user, setUser] = React.useState<AuthUser | null>(null);
+  const [checking, setChecking] = React.useState(true);
+  const [username, setUsername] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [authError, setAuthError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    fetchCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setChecking(false));
+  }, []);
+
+  if (checking) return <main className="authScreen"><Loader2 className="spin" size={28} /></main>;
+  if (!user) {
+    return (
+      <main className="authScreen">
+        <form className="authCard" onSubmit={async (event) => {
+          event.preventDefault();
+          setAuthError(null);
+          try {
+            setUser(await login(username, password));
+            setPassword("");
+          } catch (error) {
+            setAuthError(error instanceof Error ? error.message : "Ошибка авторизации");
+          }
+        }}>
+          <span className="eyebrow">BankrotAI Web</span>
+          <h1>Вход</h1>
+          <label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required /></label>
+          <label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+          {authError && <div className="errorBox"><AlertCircle size={18} /><span>{authError}</span></div>}
+          <button className="primaryButton" type="submit">Войти</button>
+        </form>
+      </main>
+    );
+  }
+  return <><button className="logoutButton" type="button" onClick={async () => { await logout(); setUser(null); }}>Выйти: {user.username}</button><App /></>;
 }

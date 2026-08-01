@@ -73,6 +73,25 @@ AI-провайдер задаётся через `AI_PROVIDER` и соотве�
 
 ## Desktop и API
 
+Desktop 0.2.0 организован вокруг четырёх процессов: «Поиск», «Реестр», «Карта» и «Сделка».
+Проверка запуска собранного приложения выполняется без открытия рабочего окна:
+
+```powershell
+.\START_TORGI.bat --check
+.\scripts\desktop-package-smoke.ps1 -ExePath app\BankrotAI.exe
+```
+
+Резервное копирование SQLite выполняется консистентно через SQLite backup API:
+
+```powershell
+python -m bankrotai.cli backup-db --destination backups
+python -m bankrotai.cli verify-backup backups\bankrotai-daily-YYYYMMDDTHHMMSSZ.db
+python -m bankrotai.cli restore-db backups\bankrotai-daily-YYYYMMDDTHHMMSSZ.db --confirm
+```
+
+Desktop автоматически создаёт не более одной ежедневной копии и хранит последние 14. Перед
+восстановлением создаётся отдельная safety-копия текущей базы.
+
 Windows EXE:
 
 ```powershell

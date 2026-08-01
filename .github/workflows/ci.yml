@@ -75,6 +75,27 @@ jobs:
       - run: npm run test
       - run: npm run build
 
+  desktop-package-smoke:
+    name: Windows packaged desktop smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - run: python -m PyInstaller --noconfirm --clean --distpath build_current/app --workpath build_current/work BankrotAI.spec
+      - shell: pwsh
+        run: ./scripts/desktop-package-smoke.ps1 -ExePath build_current/app/BankrotAI.exe
+      - run: choco install innosetup --yes --no-progress
+      - shell: pwsh
+        run: iscc.exe installer/BankrotAI.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BankrotAI-Windows-0.2.0
+          path: |
+            build_current/app/BankrotAI.exe
+            build_current/installer/BankrotAI-Setup-0.2.0.exe
+
   docker-smoke:
     name: Docker full-stack smoke test
     runs-on: ubuntu-latest

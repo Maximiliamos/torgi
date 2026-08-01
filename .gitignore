@@ -28,9 +28,14 @@ WEB/*.tsbuildinfo
 WEB/test-results/
 WEB/playwright-report/
 WEB/.env
+WEB/.dev.vars*
+WEB/.env.*.local
+*.dump
+*.dump.enc
 output/playwright/
 .playwright-cli/
 /app/
+/backups/
 node_modules/
 omniroute/
 omniroute_data/

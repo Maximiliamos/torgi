@@ -2,7 +2,7 @@
 
 import logging
 import os
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +69,7 @@ class RegionalConfig:
 class AppSettings:
     app_env: str = "dev"
     database_url: str = "sqlite:///bankrotai.db"
+    database_migration_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str | None = None
     openai_base_url: str | None = None
@@ -117,6 +118,12 @@ class AppSettings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
     public_api_key: str | None = None
     api_rate_limit_per_minute: int = 120
+    api_read_only: bool = False
+    auth_session_secret: str | None = None
+    auth_session_ttl_seconds: int = 28_800
+    database_pool_size: int = 3
+    database_max_overflow: int = 2
+    database_pool_timeout: int = 10
     allow_local_task_fallback: bool = False
     sync_retry_max_attempts: int = 4
     sync_retry_backoff_seconds: int = 5
@@ -139,6 +146,8 @@ class AppSettings:
         errors: list[str] = []
         if not self.public_api_key or len(self.public_api_key) < 24:
             errors.append("BANKROTAI_API_KEY must contain at least 24 characters")
+        if not self.auth_session_secret or len(self.auth_session_secret) < 32:
+            errors.append("AUTH_SESSION_SECRET must contain at least 32 characters")
 
         database = urlparse(self.database_url)
         if database.scheme.startswith("postgres"):
@@ -146,9 +155,16 @@ class AppSettings:
                 errors.append("DATABASE_URL must contain a PostgreSQL password")
             if (database.username or "").lower() == "postgres" and database.password == "postgres":
                 errors.append("DATABASE_URL must not use postgres/postgres")
+            query = parse_qs(database.query)
+            if query.get("sslmode") != ["require"]:
+                errors.append("DATABASE_URL must set sslmode=require")
+            if query.get("channel_binding") != ["require"]:
+                errors.append("DATABASE_URL must set channel_binding=require")
+            if "neon.tech" in (database.hostname or "") and "-pooler." not in (database.hostname or ""):
+                errors.append("DATABASE_URL must use the pooled Neon hostname")
 
         redis = urlparse(self.redis_url)
-        if redis.scheme.startswith("redis") and not redis.password:
+        if not self.api_read_only and redis.scheme.startswith("redis") and not redis.password:
             errors.append("REDIS_URL must contain a Redis password in production")
         return errors
 
@@ -159,6 +175,7 @@ def load_settings() -> AppSettings:
     settings = AppSettings(
         app_env=os.getenv("APP_ENV", "dev").lower(),
         database_url=os.getenv("DATABASE_URL", "sqlite:///bankrotai.db"),
+        database_migration_url=os.getenv("DATABASE_MIGRATION_URL") or None,
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_base_url=os.getenv("OPENAI_BASE_URL"),
@@ -192,6 +209,12 @@ def load_settings() -> AppSettings:
         kiro_model=os.getenv("KIRO_MODEL", "kr/claude-sonnet-4"),
         public_api_key=os.getenv("BANKROTAI_API_KEY") or os.getenv("WEB_API_KEY"),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
+        api_read_only=os.getenv("API_READ_ONLY", "false").lower() in {"1", "true", "yes"},
+        auth_session_secret=os.getenv("AUTH_SESSION_SECRET") or None,
+        auth_session_ttl_seconds=max(300, int(os.getenv("AUTH_SESSION_TTL_SECONDS", "28800"))),
+        database_pool_size=max(1, min(10, int(os.getenv("DATABASE_POOL_SIZE", "3")))),
+        database_max_overflow=max(0, min(10, int(os.getenv("DATABASE_MAX_OVERFLOW", "2")))),
+        database_pool_timeout=max(1, min(60, int(os.getenv("DATABASE_POOL_TIMEOUT", "10")))),
         allow_local_task_fallback=os.getenv("ALLOW_LOCAL_TASK_FALLBACK", "false").lower() in {"1", "true", "yes"},
         sync_retry_max_attempts=int(os.getenv("SYNC_RETRY_MAX_ATTEMPTS", "4")),
         sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),

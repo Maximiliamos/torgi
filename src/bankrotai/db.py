@@ -81,6 +81,18 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
+
+class AppUser(Base):
+    __tablename__ = "app_users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(30), nullable=False, default="reader", index=True)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+
 class ProcessedLot(Base):
     __tablename__ = "processed_lots"
     __table_args__ = (
@@ -375,6 +387,91 @@ class BackgroundTaskState(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+
+class SourceHealthState(Base):
+    __tablename__ = "source_health_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_system: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown", index=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    items_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class GeoFailure(Base):
+    __tablename__ = "geo_failures"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    last_failed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class DuplicateReview(Base):
+    __tablename__ = "duplicate_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    primary_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    secondary_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, default="desktop")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class SavedMaxBidScenario(Base):
+    __tablename__ = "saved_max_bid_scenarios"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, default="desktop", index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    results_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+
+
+class LotDocumentChange(Base):
+    __tablename__ = "lot_document_changes"
+    __table_args__ = (
+        UniqueConstraint("from_version_id", "to_version_id", name="uq_document_change_versions"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_version_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_version_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class DiagnosticEvent(Base):
+    __tablename__ = "diagnostic_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info", index=True)
+    component: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    context_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+
 class Watchlist(Base):
     __tablename__ = "watchlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -485,6 +582,14 @@ def get_engine():
     engine_kwargs: dict[str, Any] = {"future": True}
     if settings.database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    else:
+        engine_kwargs.update({
+            "pool_pre_ping": True,
+            "pool_recycle": 300,
+            "pool_size": settings.database_pool_size,
+            "max_overflow": settings.database_max_overflow,
+            "pool_timeout": settings.database_pool_timeout,
+        })
     engine = create_engine(settings.database_url, **engine_kwargs)
     if engine.dialect.name == "sqlite":
         @event.listens_for(engine, "connect")
@@ -515,7 +620,9 @@ def init_db() -> None:
             )
         alembic_config = Config(str(config_path))
         alembic_config.set_main_option("script_location", str(script_path))
-        alembic_config.set_main_option("sqlalchemy.url", get_settings().database_url)
+        settings = get_settings()
+        migration_url = settings.database_migration_url or settings.database_url
+        alembic_config.set_main_option("sqlalchemy.url", migration_url)
         logger.info("Applying database migrations from %s", script_path)
         command.upgrade(alembic_config, "head")
         _SCHEMA_READY = True

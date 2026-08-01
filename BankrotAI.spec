@@ -16,6 +16,7 @@ datas += [
     ('alembic', 'alembic'),
     ('alembic.ini', '.'),
     ('src/bankrotai/assets/map', 'bankrotai/assets/map'),
+    ('src/bankrotai/assets/app.ico', 'bankrotai/assets'),
 ]
 
 
@@ -41,6 +42,8 @@ exe = EXE(
     a.datas,
     [],
     name='BankrotAI',
+    icon='src/bankrotai/assets/app.ico',
+    version='installer/version_info.txt',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bankrotai-finder"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI assistant for bankruptcy and privatization lots analysis"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ dependencies = [
 desktop = ["PySide6>=6.7.0,<7"]
 dev = [
   "pytest>=8.3,<9",
+  "pyinstaller==6.20.0",
   "ruff==0.12.2",
   "mypy==1.16.1",
 ]

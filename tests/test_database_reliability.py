@@ -112,7 +112,7 @@ def test_same_external_id_from_different_sources_is_not_merged() -> None:
         assert session.query(ProcessedLot).filter_by(external_id="shared-id").count() == 2
 
 
-def test_manual_delete_uses_foreign_key_cascade_without_pragma_in_business_logic() -> None:
+def test_manual_delete_archives_and_preserves_related_history() -> None:
     with Session(_engine()) as session:
         lot = _lot()
         session.add(lot)
@@ -120,8 +120,15 @@ def test_manual_delete_uses_foreign_key_cascade_without_pragma_in_business_logic
         session.add(LotStatusHistory(lot_id=lot.id, old_status=None, new_status="active", source="import"))
         session.flush()
         assert delete_lot(session, lot.id) is True
-        assert session.get(ProcessedLot, lot.id) is None
-        assert session.scalar(select(LotStatusHistory).where(LotStatusHistory.lot_id == lot.id)) is None
+        assert session.get(ProcessedLot, lot.id) is lot
+        assert lot.is_archived is True
+        assert lot.archived_at is not None
+        history = session.scalars(select(LotStatusHistory).where(LotStatusHistory.lot_id == lot.id)).all()
+        assert [(row.source, row.new_status) for row in history] == [
+            ("import", "active"),
+            ("manual_archive", "active"),
+        ]
+        assert delete_lot(session, lot.id) is False
 
 
 def _upgrade_database(path: Path, target: str = "head") -> None:
