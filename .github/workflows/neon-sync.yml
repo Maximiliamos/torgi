@@ -30,6 +30,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11", cache: pip }
+      - name: Install PostgreSQL 17 client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl ca-certificates
+
+          sudo install -d /usr/share/postgresql-common/pgdg
+
+          sudo curl --fail --silent --show-error \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+          . /etc/os-release
+
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+
+          /usr/lib/postgresql/17/bin/pg_dump --version
       - run: pip install -r requirements.lock && pip install --no-deps -e .
       - name: Apply migrations using direct Neon URL
         run: alembic upgrade head
@@ -45,7 +68,7 @@ jobs:
           set -euo pipefail
           test -n "$BACKUP_ENCRYPTION_PASSWORD"
           PG_DUMP_URL="${DATABASE_MIGRATION_URL/postgresql+psycopg/postgresql}"
-          pg_dump "$PG_DUMP_URL" --format=custom --no-owner --no-acl \
+          /usr/lib/postgresql/17/bin/pg_dump "$PG_DUMP_URL" --format=custom --no-owner --no-acl \
             | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_ENCRYPTION_PASSWORD \
             -out "bankrotai-${GITHUB_RUN_ID}.dump.enc"
       - uses: actions/upload-artifact@v4
