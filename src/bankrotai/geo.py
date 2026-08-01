@@ -6,17 +6,37 @@ import logging
 import math
 import re
 import time
+import threading
 
 import requests
+from requests.exceptions import SSLError
 from sqlalchemy.orm import Session
 
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
+from bankrotai.core import get_settings
 
 logger = logging.getLogger(__name__)
 
 CADASTRAL_RE = re.compile(r"^\d{2}:\d{2}:\d{6,7}:\d+$")
-REQUEST_TIMEOUT = (3.05, 7)
+REQUEST_TIMEOUT = (get_settings().external_connect_timeout, get_settings().external_read_timeout)
 NSPD_REFERER = "https://nspd.gov.ru/map?thematic=PKK"
+NOMINATIM_MIN_REQUEST_INTERVAL = 1.05
+CADASTRAL_MIN_REQUEST_INTERVAL = 0.35
+CADASTRAL_CIRCUIT_BREAK_SECONDS = 300.0
+
+
+class NSPDTLSVerificationError(RuntimeError):
+    pass
+
+
+def nspd_tls_verify() -> bool | str:
+    settings = get_settings()
+    if settings.app_env == "production":
+        return settings.nspd_ca_bundle or True
+    if settings.nspd_allow_insecure_debug:
+        logger.warning("NSPD TLS verification is disabled by explicit local debug configuration")
+        return False
+    return settings.nspd_ca_bundle or True
 
 
 @dataclass
@@ -55,13 +75,29 @@ class CadastralGeocoder:
     def __init__(self):
         self.base_url = "https://pkk.rosreestr.ru/api/features"
         self.nspd_search_url = "https://nspd.gov.ru/api/geoportal/v2/search/geoportal"
-        self.last_request_time = 0
+        self.last_request_time = 0.0
+        self._rate_lock = threading.Lock()
+        self._pkk_request_lock = threading.Lock()
+        self._nspd_request_lock = threading.Lock()
+        self._pkk_disabled_until = 0.0
+        self._nspd_disabled_until = 0.0
+
+    def _circuit_available(self, service: str) -> bool:
+        return time.monotonic() >= getattr(self, f"_{service}_disabled_until")
+
+    def _open_circuit(self, service: str) -> None:
+        setattr(
+            self,
+            f"_{service}_disabled_until",
+            time.monotonic() + CADASTRAL_CIRCUIT_BREAK_SECONDS,
+        )
 
     def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < 2.0:
-            time.sleep(2.0 - elapsed)
-        self.last_request_time = time.time()
+        with self._rate_lock:
+            elapsed = time.monotonic() - self.last_request_time
+            if elapsed < CADASTRAL_MIN_REQUEST_INTERVAL:
+                time.sleep(CADASTRAL_MIN_REQUEST_INTERVAL - elapsed)
+            self.last_request_time = time.monotonic()
 
     def search(self, query: str) -> CadastralObjectResult:
         q = (query or "").strip()
@@ -84,7 +120,23 @@ class CadastralGeocoder:
             if result and result.lat and result.lon:
                 return result
 
-        nspd_result = self._search_nspd_geoportal(cadastral_number)
+        try:
+            nspd_result = self._search_nspd_geoportal(cadastral_number)
+        except NSPDTLSVerificationError:
+            logger.warning(
+                "NSPD TLS verification failed for %s; leaving the lot for manual GEO review",
+                cadastral_number,
+            )
+            return CadastralObjectResult(
+                query=cadastral_number,
+                cadastral_number=cadastral_number,
+                source="nspd",
+                confidence="none",
+                error=(
+                    "Не удалось установить защищённое соединение с НСПД. "
+                    "Проверка сертификата не отключалась; объект оставлен для ручной проверки."
+                ),
+            )
         if nspd_result and nspd_result.lat and nspd_result.lon:
             return nspd_result
 
@@ -129,18 +181,26 @@ class CadastralGeocoder:
         feature_type: int,
         kind: str,
     ) -> CadastralObjectResult | None:
-        self._rate_limit()
-
         url = f"{self.base_url}/{feature_type}"
         params = {"cadastralNumber": cadastral_number}
 
-        try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.warning("PKK request failed for %s: %s", cadastral_number, e)
+        if not self._circuit_available("pkk"):
             return None
+        with self._pkk_request_lock:
+            if not self._circuit_available("pkk"):
+                return None
+            self._rate_limit()
+            try:
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as e:
+                self._open_circuit("pkk")
+                logger.warning("PKK request failed for %s; pausing PKK requests: %s", cadastral_number, e)
+                return None
+            except Exception as e:
+                logger.warning("PKK response failed for %s: %s", cadastral_number, e)
+                return None
 
         return self._parse_pkk_feature(data, cadastral_number, kind)
 
@@ -205,25 +265,37 @@ class CadastralGeocoder:
             "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
             "Accept": "application/json,text/plain,*/*",
         }
-        params = {
+        params: dict[str, str | int] = {
             "thematicSearchId": 1,
             "query": cadastral_number,
         }
 
-        try:
-            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-            resp = requests.get(
-                self.nspd_search_url,
-                params=params,
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-                verify=False,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.warning("NSPD request failed for %s: %s", cadastral_number, e)
+        if not self._circuit_available("nspd"):
             return None
+        with self._nspd_request_lock:
+            if not self._circuit_available("nspd"):
+                return None
+            try:
+                resp = requests.get(
+                    self.nspd_search_url,
+                    params=params,
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT,
+                    verify=nspd_tls_verify(),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except SSLError as e:
+                self._open_circuit("nspd")
+                logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
+                raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
+            except requests.RequestException as e:
+                self._open_circuit("nspd")
+                logger.warning("NSPD request failed for %s; pausing NSPD requests: %s", cadastral_number, e)
+                return None
+            except Exception as e:
+                logger.warning("NSPD response failed for %s: %s", cadastral_number, e)
+                return None
 
         features = ((data.get("data") or {}).get("features") or data.get("features") or [])
         if not features:
@@ -284,52 +356,206 @@ class CadastralGeocoder:
         }
 
 
+def build_geocoding_address_candidates(
+    address: str | None,
+    *,
+    title: str | None = None,
+    region_name: str | None = None,
+) -> list[str]:
+    """Build conservative Nominatim queries from Russian auction-card addresses."""
+    value = (address or "").strip()
+    if not value and title:
+        # Keep this fallback aligned with extractors.extract_address so that
+        # already imported shallow LOT-ONLINE cards can be geocoded without a
+        # full re-import.
+        from bankrotai.extractors import extract_address
+
+        value = extract_address(title) or ""
+    if not value:
+        return []
+
+    value = re.sub(r"\.{3,}$", "", value)
+    value = re.sub(
+        r",?\s*(?:с|вместе\s+с)\s+земельн(?:ым|ого)\s+участк(?:ом|а).*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r",\s*с\.\s*п\.\s*[^,]+", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"(?:м\.\s*)?р-н\s+([^,]+)",
+        lambda match: f"{match.group(1).strip()} муниципальный округ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"([^,]+?)\s+(?:р-н|район)(?=,|$)",
+        lambda match: f"{match.group(1).strip()} муниципальный округ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"\bПереславский муниципальный округ\b",
+        "Переславль-Залесский муниципальный округ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    replacements = (
+        (r"\bобл\.(?=\s|,|$)", "область"),
+        (r"\bг\.(?=\s)", "город "),
+        (r"\bп\.(?=\s)", "поселок "),
+        (r"\bс\.(?=\s)", "село "),
+        (r"\bд\.(?=\s)", "дом "),
+        (r"\bул\.(?=\s)", "улица "),
+    )
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value).strip(" ,.;")
+    if region_name and region_name.casefold() not in value.casefold():
+        value = f"{value}, {region_name}"
+
+    parts = [part.strip(" ,.;") for part in value.split(",") if part.strip(" ,.;")]
+    region = next((part for part in parts if "област" in part.casefold()), region_name or "")
+    district = next(
+        (part for part in parts if "муниципальн" in part.casefold() or "район" in part.casefold()),
+        "",
+    )
+    locality = next(
+        (
+            part for part in parts
+            if re.search(r"\b(?:город|село|поселок|деревня|рабочий поселок)\b", part, re.IGNORECASE)
+        ),
+        "",
+    )
+    locality_query = re.sub(
+        r"^(?:город|село|поселок|деревня|рабочий поселок)\s+",
+        "",
+        locality,
+        flags=re.IGNORECASE,
+    )
+    street = next((part for part in parts if re.search(r"\b(?:улица|проспект|шоссе|переулок)\b", part, re.I)), "")
+    house = next((part for part in parts if re.search(r"\bдом\s*\d", part, re.IGNORECASE)), "")
+    house_number = re.sub(r"^дом\s*", "", house, flags=re.IGNORECASE) if house else ""
+
+    candidates = [value]
+    if street and locality_query:
+        candidates.append(", ".join(part for part in (house_number, street, locality_query, district, region) if part))
+    if locality_query and district:
+        candidates.append(", ".join(part for part in (locality_query, district, region) if part))
+    if locality_query and region:
+        candidates.append(f"{locality_query}, {region}")
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = " ".join(candidate.split()).strip(" ,")
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            seen.add(key)
+            unique.append(normalized)
+    return unique
+
+
 class NominatimGeocoder:
     def __init__(self):
         self.base_url = "https://nominatim.openstreetmap.org/search"
-        self.last_request_time = 0
+        self.last_request_time = 0.0
+        self._lock = threading.Lock()
+        self._request_lock = threading.Lock()
+        self._cache: dict[tuple[str, str], dict | None] = {}
+        self._inflight: dict[tuple[str, str], threading.Event] = {}
 
     def geocode(self, address: str) -> dict | None:
         if not address or len(address.strip()) < 5:
             return None
 
-        elapsed = time.time() - self.last_request_time
-        if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
+        normalized_address = " ".join(address.casefold().split())
+        cache_key = (normalized_address, "nominatim")
+        with self._lock:
+            if cache_key in self._cache:
+                cached = self._cache[cache_key]
+                return dict(cached) if cached else None
+            wait_event = self._inflight.get(cache_key)
+            if wait_event is None:
+                wait_event = threading.Event()
+                self._inflight[cache_key] = wait_event
+                owns_request = True
+            else:
+                owns_request = False
 
-        try:
-            headers = {
-                "User-Agent": "BankrotAI/1.0 (contact: local-user)",
-                "Referer": "https://local.bankrotai/",
-            }
-            params = {
-                "q": address,
-                "format": "json",
-                "limit": 1,
-                "addressdetails": 1,
-            }
-            resp = requests.get(self.base_url, params=params, headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            self.last_request_time = time.time()
+        if not owns_request:
+            wait_event.wait(timeout=120)
+            with self._lock:
+                cached = self._cache.get(cache_key)
+            return dict(cached) if cached else None
 
-            if not data:
-                return None
+        ignored_tokens = {
+            "россия", "область", "области", "муниципальный", "округ", "район",
+            "город", "село", "поселок", "деревня", "улица", "проспект", "дом",
+        }
 
-            result = data[0]
-            lat = float(result["lat"])
-            lon = float(result["lon"])
-            importance = float(result.get("importance", 0))
-
+        def match_tokens(text: str) -> set[str]:
             return {
-                "centroid_lat": lat,
-                "centroid_lon": lon,
-                "geo_confidence": "high" if importance > 0.5 else "medium",
-                "trace_reason": "OSM Nominatim",
+                token[:7]
+                for token in re.findall(r"[а-яёa-z-]{5,}", text.casefold())
+                if token not in ignored_tokens and not token.startswith("ярославск")
             }
-        except Exception as e:
-            logger.warning("Geocoding failed for '%s': %s", address, e)
-            return None
+
+        expected_tokens = match_tokens(address)
+        value = None
+        for index, candidate in enumerate(build_geocoding_address_candidates(address)):
+            try:
+                with self._request_lock:
+                    elapsed = time.monotonic() - self.last_request_time
+                    if elapsed < NOMINATIM_MIN_REQUEST_INTERVAL:
+                        time.sleep(NOMINATIM_MIN_REQUEST_INTERVAL - elapsed)
+                    self.last_request_time = time.monotonic()
+                headers = {
+                    "User-Agent": "BankrotAI/1.0 (contact: local-user)",
+                    "Referer": "https://local.bankrotai/",
+                }
+                params: dict[str, str | int] = {
+                    "q": candidate,
+                    "format": "jsonv2",
+                    "limit": 20,
+                    "addressdetails": 1,
+                    "countrycodes": "ru",
+                }
+                resp = requests.get(self.base_url, params=params, headers=headers, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                if not data:
+                    continue
+                scored = [
+                    (len(expected_tokens & match_tokens(str(item.get("display_name") or ""))), item)
+                    for item in data
+                ]
+                scored.sort(key=lambda item: (item[0], float(item[1].get("importance", 0))), reverse=True)
+                best_score, result = scored[0]
+                if result.get("display_name") and expected_tokens and best_score < min(2, len(expected_tokens)):
+                    continue
+                lat = float(result["lat"])
+                lon = float(result["lon"])
+                importance = float(result.get("importance", 0))
+                confidence = "high" if index == 0 and importance > 0.5 else "medium"
+                value = {
+                    "centroid_lat": lat,
+                    "centroid_lon": lon,
+                    "geo_confidence": confidence,
+                    "trace_reason": f"OSM Nominatim: {candidate}",
+                }
+                break
+            except Exception as e:
+                logger.warning("Geocoding failed for '%s': %s", candidate, e)
+
+        with self._lock:
+            self._cache[cache_key] = value
+            if len(self._cache) > 10_000:
+                self._cache.pop(next(iter(self._cache)))
+            completed_event = self._inflight.pop(cache_key, None)
+            if completed_event:
+                completed_event.set()
+        return dict(value) if value else None
 
 
 NOMINATIM_GEOCODER = NominatimGeocoder()
@@ -472,6 +698,9 @@ def normalize_pkk_attrs(attrs: dict, cadastral_number: str, kind: str) -> dict[s
 def resolve_lot_geo(
     cadastral_number: str | None = None,
     address: str | None = None,
+    *,
+    title: str | None = None,
+    region_name: str | None = None,
 ) -> CadastralObjectResult | None:
     final_result = None
 
@@ -480,8 +709,9 @@ def resolve_lot_geo(
         if cad_result and cad_result.lat and cad_result.lon:
             final_result = cad_result
 
-    if final_result is None and address:
-        addr_result = CADASTRAL_GEOCODER.search_by_address(address)
+    address_candidates = build_geocoding_address_candidates(address, title=title, region_name=region_name)
+    if final_result is None and address_candidates:
+        addr_result = CADASTRAL_GEOCODER.search_by_address(address_candidates[0])
         if addr_result and addr_result.lat and addr_result.lon:
             final_result = addr_result
 

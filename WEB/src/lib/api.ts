@@ -69,6 +69,8 @@ export type StatsResponse = {
   region: string;
 };
 
+export type AuthUser = { id: number; username: string; role: string };
+
 export type LotQuery = {
   city_slug: string;
   page: number;
@@ -87,7 +89,7 @@ export type LotQuery = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
-function makeUrl(path: string, params?: Record<string, string | number | undefined>) {
+export function makeUrl(path: string, params?: Record<string, string | number | undefined>) {
   const url = new URL(`${API_BASE}${path}`, window.location.origin);
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== "") {
@@ -97,15 +99,35 @@ function makeUrl(path: string, params?: Record<string, string | number | undefin
   return url.toString();
 }
 
-async function requestJson<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+export async function requestJson<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
   const response = await fetch(makeUrl(path, params), {
-    headers: { Accept: "application/json" }
+    headers: { Accept: "application/json" },
+    credentials: "same-origin"
   });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function login(username: string, password: string) {
+  const response = await fetch(makeUrl("/api/auth/login"), {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ username, password })
+  });
+  if (!response.ok) throw new Error(response.status === 401 ? "Неверный логин или пароль" : await response.text());
+  return response.json() as Promise<AuthUser>;
+}
+
+export function fetchCurrentUser() {
+  return requestJson<AuthUser>("/api/auth/me");
+}
+
+export async function logout() {
+  await fetch(makeUrl("/api/auth/logout"), { method: "POST", credentials: "same-origin" });
 }
 
 export function fetchLots(query: LotQuery) {

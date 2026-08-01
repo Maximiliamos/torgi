@@ -13,13 +13,26 @@ from typing import Any
 
 from sqlalchemy import (
     JSON, DateTime, Float, ForeignKey, Integer, Numeric, String, Text,
-    create_engine, event, select, desc, and_, MetaData
+    create_engine, event, select, desc, and_, MetaData, UniqueConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
+from sqlalchemy.engine import Engine
 
 from bankrotai.core import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@event.listens_for(Engine, "connect")
+def _register_sqlite_unicode_functions(connection, _record) -> None:
+    """SQLite's built-in NOCASE/LOWER only handle ASCII."""
+    if hasattr(connection, "create_function"):
+        connection.create_function(
+            "unicode_casefold",
+            1,
+            lambda value: value.casefold() if isinstance(value, str) else value,
+            deterministic=True,
+        )
 
 # --- Models ---
 
@@ -52,9 +65,12 @@ def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 class RawLot(Base):
     __tablename__ = "raw_lots"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_raw_lots_source_external_id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False)
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     raw_data: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
@@ -65,10 +81,29 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
+
+class AppUser(Base):
+    __tablename__ = "app_users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(30), nullable=False, default="reader", index=True)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+
 class ProcessedLot(Base):
     __tablename__ = "processed_lots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_system",
+            "external_id",
+            name="uq_processed_lots_source_system_external_id",
+        ),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="tbankrot")
     source_system: Mapped[str] = mapped_column(String(50), nullable=False, default="tbankrot", index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -83,6 +118,9 @@ class ProcessedLot(Base):
     start_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     auction_status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    is_archived: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     market_price_min: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     market_price_max: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
@@ -129,6 +167,126 @@ class ProcessedLot(Base):
     power_kw: Mapped[float | None] = mapped_column(Float)              # мощность, кВт
     parking_spaces: Mapped[int | None] = mapped_column(Integer)        # число парковочных мест
 
+class CanonicalLot(Base):
+    """A physical asset grouped across registries, aggregators and ETPs."""
+
+    __tablename__ = "canonical_lots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canonical_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True, index=True)
+    legacy_processed_lot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False, default="other")
+    address: Mapped[str | None] = mapped_column(Text)
+    cadastral_number: Mapped[str | None] = mapped_column(String(50), index=True)
+    area: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SourceLot(Base):
+    """A source-specific auction card linked to one canonical asset."""
+
+    __tablename__ = "source_lots"
+    __table_args__ = (
+        UniqueConstraint("source_system", "external_id", name="uq_source_lots_source_external_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canonical_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("canonical_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    processed_lot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    source_system: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    platform_name: Mapped[str | None] = mapped_column(String(300), index=True)
+    platform_code: Mapped[str | None] = mapped_column(String(100), index=True)
+    procedure_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    notice_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    efresb_message_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    debtor_name: Mapped[str | None] = mapped_column(String(500), index=True)
+    organizer_name: Mapped[str | None] = mapped_column(String(500), index=True)
+    auction_manager_name: Mapped[str | None] = mapped_column(String(500))
+    bankruptcy_case_number: Mapped[str | None] = mapped_column(String(150), index=True)
+    deposit_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    deposit_percent: Mapped[float | None] = mapped_column(Float)
+    deposit_payment_details: Mapped[str | None] = mapped_column(Text)
+    deposit_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    application_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    auction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    auction_step_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    auction_step_percent: Mapped[float | None] = mapped_column(Float)
+    auction_type: Mapped[str | None] = mapped_column(String(100), index=True)
+    public_offer_schedule: Mapped[list[dict] | None] = mapped_column(JSON)
+    next_interval_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    next_price_reduction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    document_completeness: Mapped[str | None] = mapped_column(String(30))
+    inspection_procedure: Mapped[str | None] = mapped_column(Text)
+    organizer_contact: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict | None] = mapped_column(JSON)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class LotDocument(Base):
+    __tablename__ = "lot_documents"
+    __table_args__ = (
+        UniqueConstraint("source_lot_id", "external_document_id", name="uq_lot_documents_source_external"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("source_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_document_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    document_kind: Mapped[str | None] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class LotDocumentVersion(Base):
+    __tablename__ = "lot_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sha256", name="uq_lot_document_versions_hash"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(200))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+
+
+class LotParticipationChecklist(Base):
+    __tablename__ = "lot_participation_checklists"
+    __table_args__ = (
+        UniqueConstraint("source_lot_id", "user_id", name="uq_participation_source_user"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("source_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    etp_accredited: Mapped[bool] = mapped_column(default=False, nullable=False)
+    signature_valid: Mapped[bool] = mapped_column(default=False, nullable=False)
+    application_completed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deposit_sent: Mapped[bool] = mapped_column(default=False, nullable=False)
+    payment_purpose_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deposit_received: Mapped[bool] = mapped_column(default=False, nullable=False)
+    documents_signed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    application_accepted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class LotStatusEvent(Base):
     __tablename__ = "lot_status_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -142,6 +300,18 @@ class LotStatusEvent(Base):
     source_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
     snapshot_ref: Mapped[str | None] = mapped_column(String(100))
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
+
+class LotStatusHistory(Base):
+    """Business-level status transitions; raw observations remain in LotStatusEvent."""
+    __tablename__ = "lot_status_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    old_status: Mapped[str | None] = mapped_column(String(100))
+    new_status: Mapped[str] = mapped_column(String(100), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="sync")
 
 class LotGeoSnapshot(Base):
     __tablename__ = "lot_geo_snapshots"
@@ -177,6 +347,12 @@ class ValuationRun(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     run_kind: Mapped[str] = mapped_column(String(50), nullable=False, default="primary")
     valuation_method: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="legacy", index=True)
+    model: Mapped[str | None] = mapped_column(String(200))
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False, default="v1")
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed", index=True)
     valuation_confidence: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
     valuation_version: Mapped[str] = mapped_column(String(50), nullable=False, default="v1")
     valuation_sources: Mapped[list[str] | None] = mapped_column(JSON)
@@ -198,11 +374,109 @@ class RegionSyncState(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
 
+class BackgroundTaskState(Base):
+    __tablename__ = "background_task_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    progress_json: Mapped[dict | None] = mapped_column(JSON)
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class SourceHealthState(Base):
+    __tablename__ = "source_health_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_system: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown", index=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    items_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class GeoFailure(Base):
+    __tablename__ = "geo_failures"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    last_failed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class DuplicateReview(Base):
+    __tablename__ = "duplicate_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    primary_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    secondary_lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, default="desktop")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class SavedMaxBidScenario(Base):
+    __tablename__ = "saved_max_bid_scenarios"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, default="desktop", index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    results_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+
+
+class LotDocumentChange(Base):
+    __tablename__ = "lot_document_changes"
+    __table_args__ = (
+        UniqueConstraint("from_version_id", "to_version_id", name="uq_document_change_versions"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_version_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_version_id: Mapped[int] = mapped_column(
+        ForeignKey("lot_document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class DiagnosticEvent(Base):
+    __tablename__ = "diagnostic_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info", index=True)
+    component: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    context_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+
 class Watchlist(Base):
     __tablename__ = "watchlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    lot_id: Mapped[int] = mapped_column(ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True)
+    lot_id: Mapped[int | None] = mapped_column(ForeignKey("processed_lots.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 class LotNote(Base):
@@ -284,8 +558,20 @@ class AuditLog(Base):
 
 # --- Session Management ---
 
-APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
-REPO_ROOT = APP_ROOT
+def _migration_root() -> Path:
+    """Locate Alembic resources in source, wheel/container, and frozen builds."""
+    candidates = [
+        Path(getattr(sys, "_MEIPASS", "")),
+        Path.cwd(),
+        Path(__file__).resolve().parents[2],
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "alembic.ini").is_file() and (candidate / "alembic").is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[2]
+
+
+REPO_ROOT = _migration_root()
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
@@ -293,9 +579,17 @@ _SCHEMA_READY = False
 @lru_cache(maxsize=1)
 def get_engine():
     settings = get_settings()
-    engine_kwargs = {"future": True}
+    engine_kwargs: dict[str, Any] = {"future": True}
     if settings.database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    else:
+        engine_kwargs.update({
+            "pool_pre_ping": True,
+            "pool_recycle": 300,
+            "pool_size": settings.database_pool_size,
+            "max_overflow": settings.database_max_overflow,
+            "pool_timeout": settings.database_pool_timeout,
+        })
     engine = create_engine(settings.database_url, **engine_kwargs)
     if engine.dialect.name == "sqlite":
         @event.listens_for(engine, "connect")
@@ -316,28 +610,20 @@ def init_db() -> None:
     with _SCHEMA_LOCK:
         if _SCHEMA_READY: return
 
-        if getattr(sys, "frozen", False):
-            Base.metadata.create_all(get_engine())
-            _SCHEMA_READY = True
-            return
-        
-        # Safe migration for cadastral_numbers
-        try:
-            with session_scope() as session:
-                from sqlalchemy import text
-                session.execute(text("ALTER TABLE processed_lots ADD COLUMN cadastral_numbers JSON"))
-                logger.info("Column cadastral_numbers added to processed_lots")
-        except Exception as e:
-            if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
-                pass
-            else:
-                logger.debug(f"Migration notice: {e}")
-
         from alembic import command
         from alembic.config import Config
-        alembic_config = Config(str(REPO_ROOT / "alembic.ini"))
-        alembic_config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
-        alembic_config.set_main_option("sqlalchemy.url", get_settings().database_url)
+        config_path = REPO_ROOT / "alembic.ini"
+        script_path = REPO_ROOT / "alembic"
+        if not config_path.exists() or not script_path.exists():
+            raise RuntimeError(
+                "Alembic migration resources are unavailable; the application cannot safely initialize its database"
+            )
+        alembic_config = Config(str(config_path))
+        alembic_config.set_main_option("script_location", str(script_path))
+        settings = get_settings()
+        migration_url = settings.database_migration_url or settings.database_url
+        alembic_config.set_main_option("sqlalchemy.url", migration_url)
+        logger.info("Applying database migrations from %s", script_path)
         command.upgrade(alembic_config, "head")
         _SCHEMA_READY = True
 

@@ -3,9 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from bankrotai.gui import (
-    MAP_ICON_FILENAMES,
     SORT_ROLE,
-    MainWindow,
     make_date_item,
     make_number_item,
     make_text_item,
@@ -37,10 +35,3 @@ def test_text_items_sort_case_insensitively():
     assert first.data(SORT_ROLE) == "abc"
     assert second.data(SORT_ROLE) == "zed"
     assert first < second
-
-
-def test_map_icons_are_embedded_as_data_urls():
-    urls = MainWindow.get_map_icon_urls(object())
-
-    assert set(urls) == set(MAP_ICON_FILENAMES)
-    assert all(value.startswith("data:image/png;base64,") for value in urls.values())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import os
 from decimal import Decimal
 
 from bankrotai.core import get_logger, get_settings
@@ -18,7 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bankrotai")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("init-db", help="Initialize DB")
-    subparsers.add_parser("run-desktop", help="Run GUI")
+    desktop_p = subparsers.add_parser("run-desktop", help="Run GUI")
+    desktop_p.add_argument("--smoke-test", action="store_true")
     api_p = subparsers.add_parser("run-api", help="Run API")
     api_p.add_argument("--host", default="0.0.0.0")
     api_p.add_argument("--port", type=int, default=8000)
@@ -48,6 +50,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("test-parse", help="Test parse")
     test_p = subparsers.add_parser("test-html", help="Test parse saved TBankrot HTML")
     test_p.add_argument("file")
+    backup_p = subparsers.add_parser("backup-db", help="Create and verify a consistent SQLite backup")
+    backup_p.add_argument("--destination", default="backups")
+    backup_p.add_argument("--retain", type=int, default=14)
+    verify_p = subparsers.add_parser("verify-backup", help="Verify a SQLite backup without restoring it")
+    verify_p.add_argument("file")
+    restore_p = subparsers.add_parser("restore-db", help="Restore a verified SQLite backup")
+    restore_p.add_argument("file")
+    restore_p.add_argument("--confirm", action="store_true", help="Required safety confirmation")
+    user_p = subparsers.add_parser("create-user", help="Create or rotate a web application user")
+    user_p.add_argument("username")
+    user_p.add_argument("--role", choices=("reader", "admin"), default="reader")
+    user_p.add_argument("--password-env", default="AUTH_BOOTSTRAP_PASSWORD")
+    read_sync_p = subparsers.add_parser("sync-read-model", help="Synchronize the public read-only data model")
+    read_sync_p.add_argument("--max-items-per-source", type=int, default=5000)
     return parser
 
 def main():
@@ -55,7 +71,10 @@ def main():
     args = parser.parse_args()
     if args.command == "init-db": init_db()
     elif args.command == "run-desktop":
-        from bankrotai.gui import main as run_gui; run_gui()
+        if args.smoke_test and "--smoke-test" not in sys.argv:
+            sys.argv.append("--smoke-test")
+        from bankrotai.gui import main as run_gui
+        return run_gui()
     elif args.command == "run-api":
         from bankrotai.api import run_api; run_api(args.host, args.port)
     elif args.command == "ingest-manual":
@@ -144,6 +163,43 @@ def main():
             print("LAND:", lot.land_area)
             print("CAD:", lot.cadastral_numbers)
             print("ADDRESS:", lot.address)
+    elif args.command in {"backup-db", "verify-backup", "restore-db"}:
+        from bankrotai.backups import create_sqlite_backup, restore_sqlite_backup, verify_sqlite_backup
+
+        if args.command == "backup-db":
+            result = create_sqlite_backup(args.destination, retain=max(1, args.retain), label="manual")
+        elif args.command == "verify-backup":
+            result = verify_sqlite_backup(args.file)
+        else:
+            if not args.confirm:
+                parser.error("restore-db requires --confirm; a safety backup is created automatically")
+            result = restore_sqlite_backup(args.file)
+        print(json.dumps({
+            "path": str(result.path),
+            "integrity": result.integrity,
+            "alembic_version": result.alembic_version,
+            "processed_lots": result.processed_lots,
+            "size_bytes": result.size_bytes,
+        }, ensure_ascii=False, indent=2))
+    elif args.command == "create-user":
+        from bankrotai.auth import upsert_user
+
+        password = os.getenv(args.password_env, "")
+        if not password:
+            parser.error(f"{args.password_env} is not configured")
+        init_db()
+        with session_scope() as session:
+            user = upsert_user(session, args.username, password, role=args.role)
+            print(json.dumps({"id": user.id, "username": user.username, "role": user.role}))
+    elif args.command == "sync-read-model":
+        from bankrotai.services.read_model_sync import sync_read_model
+
+        init_db()
+        counts = sync_read_model(
+            session_scope,
+            max_items_per_source=max(1, min(args.max_items_per_source, 20_000)),
+        )
+        print(json.dumps(counts, ensure_ascii=False, indent=2))
     else: parser.print_help()
 
 if __name__ == "__main__":

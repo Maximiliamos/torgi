@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -9,6 +8,7 @@ import socket
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
@@ -16,6 +16,19 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Desktop HTTPS requests should honor the Windows certificate store. This keeps
+# TLS verification enabled while supporting managed root CAs that are absent
+# from certifi's public CA bundle.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:
+    logging.getLogger(__name__).warning(
+        "Windows system TLS trust store could not be enabled; falling back to the bundled CA certificates",
+        exc_info=True,
+    )
 
 # Disable hardware acceleration for Qt to avoid Trae Sandbox errors
 os.environ["QT_QUICK_BACKEND"] = "software"
@@ -25,21 +38,39 @@ os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QThread, Signal, QStandardPaths, QStringListModel, QBuffer, QIODevice
+from PySide6.QtCore import (
+    Qt, QTimer, QUrl, QThread, Signal, Slot, QObject, QStandardPaths,
+    QStringListModel,
+)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtGui import QColor, QBrush, QDesktopServices, QImage
+from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtGui import QColor, QBrush, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFileDialog,
     QProgressBar, QStatusBar, QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
-    QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame,
+    QCompleter, QScrollArea, QSizePolicy, QToolButton, QFrame, QDialog, QDoubleSpinBox,
+    QInputDialog,
 )
-from sqlalchemy import desc, select, func
+from sqlalchemy import and_, desc, or_, select, func
 
 from bankrotai.core import get_logger, get_settings
-from bankrotai.db import ProcessedLot, LotGeoSnapshot, session_scope, init_db, RegionSyncState
+from bankrotai.db import (
+    LotDocument,
+    LotDocumentVersion,
+    LotParticipationChecklist,
+    ProcessedLot,
+    SourceLot,
+    LotGeoSnapshot,
+    session_scope,
+    init_db,
+    RegionSyncState,
+)
 from bankrotai.scrapers import (
+    LotOnlineClient,
+    LotOnlineSearchFilters,
     TBankrotClient,
     TBankrotSearchFilters,
     TorgiGovClient,
@@ -47,11 +78,39 @@ from bankrotai.scrapers import (
     import_manual_html,
     sync_public_real_estate,
     ingest_recent_tbankrot,
+    is_sale_real_estate_lot,
 )
-from bankrotai.logic import delete_lots_batch, cleanup_closed_lots, persist_lot
+from bankrotai.logic import (
+    cleanup_closed_lots,
+    delete_lots_batch,
+    persist_lot,
+    reconcile_cross_source_duplicates,
+)
 from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
 from openpyxl import Workbook
 from bankrotai.domain import NormalizedLot
+from bankrotai.geo import nspd_tls_verify
+from bankrotai.finance import MaxBidInputs, calculate_max_bid
+from bankrotai.backups import ensure_daily_sqlite_backup
+from bankrotai.documents import compare_document_versions
+from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
+from bankrotai.services.operations import (
+    add_lot_note,
+    diagnostic_export,
+    save_max_bid_scenario,
+    save_participation_checklist,
+    save_search,
+    toggle_watchlist,
+)
+from bankrotai.services.quality import (
+    apply_raw_payload_retention,
+    data_quality_snapshot,
+    geo_retry_lot_ids,
+    list_source_health,
+    record_geo_failure,
+    resolve_geo_failure,
+    update_source_health,
+)
 
 logger = get_logger("gui")
 
@@ -72,14 +131,381 @@ class WheelSafeComboBox(QComboBox):
 SORT_ROLE = Qt.UserRole + 100
 EXTERNAL_ID_ROLE = Qt.UserRole + 101
 URL_ROLE = Qt.UserRole + 102
-MAP_ICON_FILENAMES = {
-    "land": "участки.png",
-    "rent": "аренда.png",
-    "realEstate": "недвижимость + участки со строением.png",
-    "auto": "авто.png",
-    "other": "Прочее.png",
+LOT_ID_ROLE = Qt.UserRole + 103
+MAP_MARKER_LIMIT = 100_000
+
+
+def map_assets_directory() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "bankrotai" / "assets" / "map"
+    return Path(__file__).resolve().parent / "assets" / "map"
+
+
+def app_icon_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "bankrotai" / "assets" / "app.ico"
+    return Path(__file__).resolve().parent / "assets" / "app.ico"
+
+
+MAP_PREVIEW_STYLE = """
+.lot-preview {
+    position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
+    box-sizing: border-box; overflow-y: auto; background: #fff; color: #273142;
+    box-shadow: 4px 0 18px rgba(34, 46, 66, .22); font: 14px Arial, sans-serif;
+    transform: translateX(-105%); transition: transform .22s ease;
 }
-_MAP_ICON_DATA_URL_CACHE: dict[str, str] | None = None
+.lot-preview.open { transform: translateX(0); }
+.lot-preview__close {
+    position: absolute; z-index: 2; top: 10px; right: 10px; width: 34px; height: 34px;
+    border: 0; border-radius: 50%; background: rgba(255,255,255,.94); color: #536174;
+    font-size: 23px; cursor: pointer; box-shadow: 0 1px 5px rgba(0,0,0,.18);
+}
+.lot-preview__media { position: relative; height: 245px; background: #edf1f6; }
+.lot-preview__photo, .lot-preview__placeholder {
+    display: block; width: 100%; height: 245px; object-fit: cover; background: #edf1f6;
+}
+.lot-preview__placeholder { display: flex; align-items: center; justify-content: center; color: #8995a7; font-size: 15px; }
+.lot-preview__arrow {
+    position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 38px; height: 48px;
+    border: 0; border-radius: 7px; background: rgba(20,30,45,.62); color: white; font-size: 28px;
+    cursor: pointer; display: none;
+}
+.lot-preview__arrow:hover { background: rgba(20,30,45,.82); }
+.lot-preview__arrow--prev { left: 10px; }
+.lot-preview__arrow--next { right: 10px; }
+.lot-preview__counter {
+    position: absolute; right: 10px; bottom: 9px; padding: 4px 8px; border-radius: 12px;
+    background: rgba(20,30,45,.68); color: white; font-size: 12px; display: none;
+}
+.lot-preview__body { padding: 18px; }
+.lot-preview__source { color: #16866d; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.lot-preview__title { margin: 10px 0; font-size: 17px; line-height: 1.45; }
+.lot-preview__description { color: #536174; line-height: 1.45; max-height: 105px; overflow: auto; white-space: pre-wrap; }
+.lot-preview__price { margin: 14px 0; font-size: 22px; font-weight: 700; }
+.lot-preview__details { margin: 12px 0 16px; line-height: 1.55; color: #536174; }
+.lot-preview__details b { color: #273142; }
+.lot-preview__links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.lot-preview__source-button {
+    width: 100%; padding: 11px 6px; border: 0; border-radius: 7px; background: #2868e8;
+    color: #fff; font-weight: 700; font-size: 15px; cursor: pointer;
+}
+.lot-preview__source-button[data-kind="gis"] { background: #177d65; }
+.lot-preview__source-button[data-kind="etp"] { background: #7654b5; }
+.lot-preview__source-button[data-kind="russia"] { background: #596579; }
+.lot-preview__source-button:disabled { background: #aab3c1; cursor: default; }
+.lot-preview__review-title { margin: 18px 0 9px; font-weight: 700; }
+.lot-preview__reviews { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.review-button { padding: 10px 4px; border: 2px solid #e1e6ed; border-radius: 8px; background: #fff; cursor: pointer; font-size: 12px; }
+.review-button span { display: block; font-size: 23px; margin-bottom: 3px; }
+.review-button[data-status="approved"] { color: #188b5b; }
+.review-button[data-status="maybe"] { color: #b88700; }
+.review-button[data-status="rejected"] { color: #d43f3f; }
+.review-button.active[data-status="approved"] { border-color: #22a76f; background: #e8f8f0; }
+.review-button.active[data-status="maybe"] { border-color: #e4b72c; background: #fff8d9; }
+.review-button.active[data-status="rejected"] { border-color: #df5252; background: #fff0f0; }
+"""
+
+MAP_PREVIEW_HTML = """
+<aside id="lot-preview" class="lot-preview" aria-hidden="true">
+  <button id="lot-preview-close" class="lot-preview__close" title="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;">&times;</button>
+  <div class="lot-preview__media">
+    <img id="lot-preview-photo" class="lot-preview__photo" alt="&#1060;&#1086;&#1090;&#1086; &#1083;&#1086;&#1090;&#1072;">
+    <div id="lot-preview-placeholder" class="lot-preview__placeholder">&#1060;&#1086;&#1090;&#1086; &#1086;&#1090;&#1089;&#1091;&#1090;&#1089;&#1090;&#1074;&#1091;&#1077;&#1090;</div>
+    <button id="lot-preview-prev" class="lot-preview__arrow lot-preview__arrow--prev" aria-label="Previous">&#8249;</button>
+    <button id="lot-preview-next" class="lot-preview__arrow lot-preview__arrow--next" aria-label="Next">&#8250;</button>
+    <div id="lot-preview-counter" class="lot-preview__counter"></div>
+  </div>
+  <div class="lot-preview__body">
+    <div id="lot-preview-source" class="lot-preview__source"></div>
+    <h2 id="lot-preview-title" class="lot-preview__title"></h2>
+    <div id="lot-preview-description" class="lot-preview__description"></div>
+    <div id="lot-preview-price" class="lot-preview__price"></div>
+    <div id="lot-preview-details" class="lot-preview__details"></div>
+    <div class="lot-preview__links">
+      <button class="lot-preview__source-button related-link" data-url-key="source_url">&#1048;&#1089;&#1090;&#1086;&#1095;&#1085;&#1080;&#1082;</button>
+      <button class="lot-preview__source-button related-link" data-kind="gis" data-url-key="gis_torgi_url">&#1043;&#1048;&#1057; &#1058;&#1086;&#1088;&#1075;&#1080;</button>
+      <button class="lot-preview__source-button related-link" data-kind="etp" data-url-key="etp_url">&#1069;&#1058;&#1055;</button>
+      <button class="lot-preview__source-button related-link" data-kind="russia" data-url-key="torgi_russia_url">&#1058;&#1086;&#1088;&#1075;&#1080; &#1056;&#1086;&#1089;&#1089;&#1080;&#1080;</button>
+    </div>
+    <div class="lot-preview__review-title">&#1054;&#1094;&#1077;&#1085;&#1082;&#1072; &#1083;&#1086;&#1090;&#1072;</div>
+    <div class="lot-preview__reviews">
+      <button class="review-button" data-status="approved"><span>&#10003;</span>&#1048;&#1085;&#1090;&#1077;&#1088;&#1077;&#1089;&#1077;&#1085;</button>
+      <button class="review-button" data-status="maybe"><span>?</span>&#1057;&#1086;&#1084;&#1085;&#1077;&#1074;&#1072;&#1102;&#1089;&#1100;</button>
+      <button class="review-button" data-status="rejected"><span>&#10005;</span>&#1055;&#1083;&#1086;&#1093;&#1086;&#1081;</button>
+    </div>
+  </div>
+</aside>
+"""
+
+MAP_PREVIEW_SCRIPT = """
+let bankrotaiBridge = null;
+let selectedPreviewLot = null;
+let previewImages = [];
+let previewImageIndex = 0;
+
+if (window.qt && window.qt.webChannelTransport) {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+        bankrotaiBridge = channel.objects.bankrotaiBridge;
+    });
+}
+
+function previewText(id, value) {
+    document.getElementById(id).textContent = value || '';
+}
+
+function setPreviewReviewStatus(status) {
+    document.querySelectorAll('.review-button').forEach(function(button) {
+        button.classList.toggle('active', button.dataset.status === status);
+    });
+}
+
+function renderPreviewLinks() {
+    document.querySelectorAll('.related-link').forEach(function(button) {
+        const url = selectedPreviewLot && selectedPreviewLot[button.dataset.urlKey];
+        button.disabled = !url;
+    });
+}
+
+function renderPreviewImage() {
+    const photo = document.getElementById('lot-preview-photo');
+    const placeholder = document.getElementById('lot-preview-placeholder');
+    const hasImage = previewImages.length > 0;
+    photo.style.display = hasImage ? 'block' : 'none';
+    placeholder.style.display = hasImage ? 'none' : 'flex';
+    if (hasImage) photo.src = previewImages[previewImageIndex]; else photo.removeAttribute('src');
+    const multiple = previewImages.length > 1;
+    document.getElementById('lot-preview-prev').style.display = multiple ? 'block' : 'none';
+    document.getElementById('lot-preview-next').style.display = multiple ? 'block' : 'none';
+    const counter = document.getElementById('lot-preview-counter');
+    counter.style.display = multiple ? 'block' : 'none';
+    counter.textContent = hasImage ? (previewImageIndex + 1) + ' / ' + previewImages.length : '';
+}
+
+function movePreviewImage(delta) {
+    if (previewImages.length < 2) return;
+    previewImageIndex = (previewImageIndex + delta + previewImages.length) % previewImages.length;
+    renderPreviewImage();
+}
+
+function showLotPreview(lot) {
+    selectedPreviewLot = lot;
+    const panel = document.getElementById('lot-preview');
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+    if (bankrotaiBridge) bankrotaiBridge.previewOpened(mapKind, Number(lot.id));
+    previewText('lot-preview-source', lot.source_name || lot.source || 'Источник не указан');
+    previewText('lot-preview-title', lot.title || 'Лот без названия');
+    previewText('lot-preview-description', lot.description || lot.address || 'Описание отсутствует');
+    previewText('lot-preview-price', formatPrice(lot.price));
+
+    const details = [];
+    if (lot.address) details.push('<b>Адрес:</b> ' + escapeHtml(lot.address));
+    if (lot.cadastral_number) details.push('<b>Кадастр:</b> ' + escapeHtml(lot.cadastral_number));
+    if (lot.procedure_number) details.push('<b>Процедура:</b> ' + escapeHtml(lot.procedure_number));
+    if (lot.application_deadline) details.push('<b>Приём заявок до:</b> ' + escapeHtml(lot.application_deadline));
+    if (lot.auction_at) details.push('<b>Торги:</b> ' + escapeHtml(lot.auction_at));
+    document.getElementById('lot-preview-details').innerHTML = details.join('<br>');
+
+    previewImages = Array.from(new Set((lot.image_urls || []).concat(lot.image_url || []).filter(Boolean)));
+    previewImageIndex = 0;
+    renderPreviewImage();
+    renderPreviewLinks();
+    setPreviewReviewStatus(lot.review_status || 'new');
+}
+
+document.getElementById('lot-preview-photo').addEventListener('error', function() {
+    this.style.display = 'none'; document.getElementById('lot-preview-placeholder').style.display = 'flex';
+});
+document.getElementById('lot-preview-close').addEventListener('click', function() {
+    document.getElementById('lot-preview').classList.remove('open');
+    document.getElementById('lot-preview').setAttribute('aria-hidden', 'true');
+    if (bankrotaiBridge) bankrotaiBridge.previewClosed(mapKind);
+});
+document.getElementById('lot-preview-prev').addEventListener('click', function() { movePreviewImage(-1); });
+document.getElementById('lot-preview-next').addEventListener('click', function() { movePreviewImage(1); });
+document.querySelectorAll('.related-link').forEach(function(button) {
+    button.addEventListener('click', function() {
+        const url = selectedPreviewLot && selectedPreviewLot[button.dataset.urlKey];
+        if (!url) return;
+        if (bankrotaiBridge) bankrotaiBridge.openSource(url); else window.open(url, '_blank');
+    });
+});
+document.querySelectorAll('.review-button').forEach(function(button) {
+    button.addEventListener('click', function() {
+        if (!selectedPreviewLot || !bankrotaiBridge) return;
+        const status = button.dataset.status;
+        bankrotaiBridge.setReviewStatus(Number(selectedPreviewLot.id), status, function(ok) {
+            if (ok) {
+                selectedPreviewLot.review_status = status;
+                setPreviewReviewStatus(status);
+                if (window.applyLotReviewStatus) window.applyLotReviewStatus(Number(selectedPreviewLot.id), status);
+            }
+        });
+    });
+});
+
+window.showLotPreview = showLotPreview;
+window.updateLotPreviewExtras = function(lotId, extras) {
+    if (!selectedPreviewLot || Number(selectedPreviewLot.id) !== Number(lotId)) return;
+    Object.assign(selectedPreviewLot, extras || {});
+    const extraImages = (extras && (extras.torgi_russia_image_urls || extras.image_urls)) || [];
+    previewImages = Array.from(new Set(previewImages.concat(extraImages).filter(Boolean)));
+    renderPreviewImage();
+    renderPreviewLinks();
+};
+window.setLotReviewStatus = function(lotId, status) {
+    if (selectedPreviewLot && Number(selectedPreviewLot.id) === Number(lotId)) {
+        selectedPreviewLot.review_status = status;
+        setPreviewReviewStatus(status);
+    }
+    if (window.applyLotReviewStatus) window.applyLotReviewStatus(Number(lotId), status);
+};
+"""
+
+
+def extract_preview_image_urls(raw_data: object) -> list[str]:
+    """Return unique safe web images found in heterogeneous source payloads."""
+    preferred_keys = (
+        "image_url", "photo_url", "thumbnail_url", "main_image", "image",
+        "photo", "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
+    )
+
+    found: list[str] = []
+
+    def collect(value: object, *, depth: int = 0) -> None:
+        if depth > 4:
+            return
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith("//"):
+                candidate = "https:" + candidate
+            parsed = urlparse(candidate)
+            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+                found.append(candidate)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item, depth=depth + 1)
+            return
+        if isinstance(value, dict):
+            lowered = {str(key).lower(): item for key, item in value.items()}
+            for key in preferred_keys:
+                if key in lowered:
+                    collect(lowered[key], depth=depth + 1)
+            for key, item in lowered.items():
+                if any(token in key for token in ("image", "photo", "thumb")):
+                    collect(item, depth=depth + 1)
+
+    collect(raw_data)
+    return list(dict.fromkeys(found))
+
+
+def extract_preview_image_url(raw_data: object) -> str | None:
+    images = extract_preview_image_urls(raw_data)
+    return images[0] if images else None
+
+
+class MaxBidDialog(QDialog):
+    def __init__(self, *, lot_id: int, intended_bid: float = 0, parent=None):
+        super().__init__(parent)
+        self.lot_id = lot_id
+        self.last_inputs: MaxBidInputs | None = None
+        self.setWindowTitle("Калькулятор максимальной ставки")
+        self.resize(620, 680)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Введите проверенную консервативную цену продажи и расходы. "
+            "AI-оценка автоматически не подставляется."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        self.fields: dict[str, QDoubleSpinBox] = {}
+        definitions = (
+            ("conservative_sale_price", "Консервативная цена продажи, ₽", 0, 1_000_000_000_000, 0),
+            ("intended_bid", "Планируемая ставка, ₽", intended_bid, 1_000_000_000_000, 0),
+            ("repair_cost", "Ремонт, ₽", 0, 1_000_000_000_000, 0),
+            ("legal_cost", "Юридические расходы, ₽", 0, 1_000_000_000_000, 0),
+            ("monthly_holding_cost", "Содержание в месяц, ₽", 0, 1_000_000_000_000, 0),
+            ("holding_months", "Срок продажи, месяцев", 6, 120, 1),
+            ("taxes", "Налоги и сборы, ₽", 0, 1_000_000_000_000, 0),
+            ("sale_commission_percent", "Комиссия продажи, %", 0, 100, 2),
+            ("target_profit", "Целевая прибыль, ₽", 0, 1_000_000_000_000, 0),
+            ("risk_reserve", "Резерв риска, ₽", 0, 1_000_000_000_000, 0),
+            ("annual_capital_cost_percent", "Стоимость капитала годовых, %", 0, 100, 2),
+        )
+        for key, label, value, maximum, decimals in definitions:
+            widget = QDoubleSpinBox()
+            widget.setRange(0, maximum)
+            widget.setDecimals(decimals)
+            widget.setValue(float(value or 0))
+            widget.setGroupSeparatorShown(True)
+            self.fields[key] = widget
+            form.addRow(label, widget)
+        layout.addLayout(form)
+
+        self.scenario_name = QLineEdit("Базовый сценарий")
+        form.addRow("Название сценария", self.scenario_name)
+
+        calculate_button = QPushButton("Рассчитать безопасную ставку")
+        calculate_button.clicked.connect(self.calculate)
+        layout.addWidget(calculate_button)
+        save_button = QPushButton("Сохранить сценарий")
+        save_button.clicked.connect(self.save_scenario)
+        layout.addWidget(save_button)
+        self.result = QTextEdit()
+        self.result.setReadOnly(True)
+        layout.addWidget(self.result)
+
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+    def calculate(self):
+        self.last_inputs = None
+        values = {key: widget.value() for key, widget in self.fields.items()}
+        if values["conservative_sale_price"] <= 0:
+            QMessageBox.warning(self, "Исходные данные", "Укажите консервативную цену продажи.")
+            return
+        if values["holding_months"] <= 0:
+            QMessageBox.warning(self, "Исходные данные", "Срок продажи должен быть больше нуля.")
+            return
+        if values["intended_bid"] <= 0:
+            values["intended_bid"] = None
+        self.last_inputs = MaxBidInputs(**values)
+        scenarios = calculate_max_bid(self.last_inputs)
+        labels = {"pessimistic": "Пессимистичный", "base": "Базовый", "optimistic": "Оптимистичный"}
+        blocks = []
+        for key in ("pessimistic", "base", "optimistic"):
+            item = scenarios[key]
+            lines = [
+                f"{labels[key]} сценарий",
+                f"Максимальная ставка: {item.maximum_bid:,.0f} ₽".replace(",", " "),
+                f"Цена продажи: {item.sale_price:,.0f} ₽".replace(",", " "),
+            ]
+            if item.expected_profit is not None:
+                lines.extend((
+                    f"Ожидаемая прибыль: {item.expected_profit:,.0f} ₽".replace(",", " "),
+                    f"ROI: {item.roi_percent:.2f}%",
+                    f"Годовая доходность: {item.annualized_return_percent:.2f}%",
+                    f"Точка безубыточности: {item.breakeven_sale_price:,.0f} ₽".replace(",", " "),
+                ))
+            blocks.append("\n".join(lines))
+        self.result.setPlainText("\n\n".join(blocks))
+
+    def save_scenario(self):
+        self.calculate()
+        if self.last_inputs is None:
+            return
+        with session_scope() as session:
+            save_max_bid_scenario(
+                session,
+                self.lot_id,
+                self.last_inputs,
+                name=self.scenario_name.text(),
+            )
+        QMessageBox.information(self, "Калькулятор", "Сценарий ставки сохранён.")
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -470,6 +896,198 @@ class TBankrotSearchWorker(QThread):
             self.error.emit(str(e))
 
 
+class LotOnlineSearchWorker(QThread):
+    progress = Signal(str)
+    progress_percent = Signal(int)
+    page_loaded = Signal(list, dict)
+    finished = Signal(list, dict)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        filters: LotOnlineSearchFilters,
+        *,
+        load_all: bool = False,
+        max_items: int | None = 5000,
+    ) -> None:
+        super().__init__()
+        self.filters = filters
+        self.load_all = load_all
+        self.max_items = max_items
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    @staticmethod
+    def _persist_lots(lots: list[NormalizedLot]) -> None:
+        if not lots:
+            return
+        with session_scope() as session:
+            for lot in lots:
+                persist_lot(session, lot)
+
+    def run(self) -> None:
+        try:
+            self.progress.emit("Подключение к РАД / ЛОТ-ОНЛАЙН...")
+            self.progress_percent.emit(3)
+            client = LotOnlineClient(diagnostics=True)
+            if self.load_all:
+                def report(page: int, total: int | None, loaded: int) -> None:
+                    percent = int(page / max(total or page + 1, 1) * 100)
+                    self.progress_percent.emit(min(99, max(5, percent)))
+                    self.progress.emit(f"ЛОТ-ОНЛАЙН: загружено {loaded}, страница {page}...")
+
+                def page_loaded(lots_on_page: list[NormalizedLot], page_meta: dict) -> None:
+                    self._persist_lots(lots_on_page)
+                    self.page_loaded.emit(lots_on_page, page_meta)
+
+                lots, meta = client.search_all_lots(
+                    self.filters,
+                    max_items=self.max_items,
+                    progress_cb=report,
+                    page_cb=page_loaded,
+                    stop_cb=lambda: self._stop_requested,
+                )
+            else:
+                self.progress_percent.emit(35)
+                lots, meta = client.search_lots(self.filters)
+                self.page_loaded.emit(lots, meta)
+            self.progress_percent.emit(100)
+            self.finished.emit(lots, meta)
+        except Exception as exc:
+            logger.exception("LotOnlineSearchWorker error")
+            self.error.emit(str(exc))
+
+
+class AllRussiaRealEstateWorker(QThread):
+    progress = Signal(str)
+    source_finished = Signal(str, int, int)
+    result_ready = Signal(object, object)
+    error = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_requested = False
+        self._processed_ids: set[int] = set()
+        self._source_counts: dict[str, int] = {}
+        self._source_errors: dict[str, str] = {}
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        self.requestInterruption()
+
+    def _persist_page(self, source_name: str, lots: list[NormalizedLot]) -> None:
+        if not lots:
+            return
+        with session_scope() as session:
+            for lot in lots:
+                primary = persist_lot(session, lot)
+                self._processed_ids.add(primary.id)
+        self._source_counts[source_name] = self._source_counts.get(source_name, 0) + len(lots)
+        self.progress.emit(
+            f"{source_name}: загружено {self._source_counts[source_name]}, "
+            f"уникальных карточек {len(self._processed_ids)}"
+        )
+
+    def run(self) -> None:
+        sources = (
+            (
+                "ГИС Торги",
+                TorgiGovClient(diagnostics=True),
+                TorgiGovSearchFilters(
+                    type_transaction="SALE",
+                    category_code=TorgiGovClient.REAL_ESTATE_CATEGORY_CODES,
+                    lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
+                    page=1,
+                    page_size=100,
+                ),
+            ),
+            (
+                "TBankrot",
+                TBankrotClient(diagnostics=True),
+                TBankrotSearchFilters(
+                    category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
+                    page=1,
+                    page_size=100,
+                ),
+            ),
+            (
+                "РАД / ЛОТ-ОНЛАЙН",
+                LotOnlineClient(diagnostics=True),
+                LotOnlineSearchFilters(
+                    category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
+                    region_feature=None,
+                    archive_mode="false",
+                    page=1,
+                    page_size=96,
+                ),
+            ),
+        )
+        for source_name, client, filters in sources:
+            if self._stop_requested:
+                break
+            self.progress.emit(f"{source_name}: поиск всей недвижимости РФ...")
+            with session_scope() as session:
+                update_source_health(session, source_name, status="running")
+            try:
+                page_callback = lambda lots, _meta, name=source_name: self._persist_page(name, lots)
+                if isinstance(client, TorgiGovClient):
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        max_pages=500,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                elif isinstance(client, TBankrotClient):
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                else:
+                    lots, _meta = client.search_all_lots(
+                        filters,
+                        max_items=None,
+                        max_pages=500,
+                        page_cb=page_callback,
+                        stop_cb=lambda: self._stop_requested,
+                    )
+                self._source_counts[source_name] = len(lots)
+                with session_scope() as session:
+                    update_source_health(session, source_name, status="healthy", items_seen=len(lots))
+                self.source_finished.emit(source_name, len(lots), len(self._processed_ids))
+            except Exception as exc:
+                logger.exception("Nationwide search failed for %s", source_name)
+                self._source_errors[source_name] = str(exc)
+                with session_scope() as session:
+                    update_source_health(session, source_name, status="failed", error=str(exc))
+                self.progress.emit(f"{source_name}: ошибка, продолжаю со следующим источником")
+
+        if not self._stop_requested:
+            with session_scope() as session:
+                reconcile_cross_source_duplicates(session)
+                rows = session.execute(
+                    select(ProcessedLot.id, ProcessedLot.duplicate_of_id).where(
+                        ProcessedLot.id.in_(self._processed_ids)
+                    )
+                ).all()
+                self._processed_ids = {
+                    int(duplicate_of_id or processed_id)
+                    for processed_id, duplicate_of_id in rows
+                }
+        if self._source_errors and not self._source_counts:
+            self.error.emit("; ".join(f"{name}: {message}" for name, message in self._source_errors.items()))
+            return
+        self.result_ready.emit(sorted(self._processed_ids), {
+            "sources": self._source_counts,
+            "errors": self._source_errors,
+            "stopped": self._stop_requested,
+        })
+
+
 class ImportWorker(QThread):
     finished = Signal(int, int, int) # new, updated, skipped
     progress = Signal(str)
@@ -535,7 +1153,7 @@ class AIWorker(QThread):
 
             if not lot_ids:
                 self.progress_percent.emit(100)
-                self.finished.emit(0)
+                self.finished.emit(0, 0)
                 return
 
             total = len(lot_ids)
@@ -594,9 +1212,10 @@ class AIWorker(QThread):
 
 
 class GeoWorker(QThread):
-    finished = Signal(int)
+    finished = Signal(int, int, int)
     progress = Signal(str)
     progress_percent = Signal(int)
+    lot_processed = Signal(int, bool, int, int)
     error = Signal(str)
 
     def __init__(
@@ -616,11 +1235,21 @@ class GeoWorker(QThread):
             from bankrotai.geo import apply_lot_geo_result, resolve_lot_geo
             from sqlalchemy import exists
 
-            processed_count = 0
+            success_count = 0
+            failed_count = 0
+            skipped_existing = 0
 
             with session_scope() as session:
                 if self.lot_ids:
-                    lot_ids = list(self.lot_ids)
+                    requested_ids = list(dict.fromkeys(int(item) for item in self.lot_ids))
+                    if self.refresh_existing:
+                        lot_ids = requested_ids
+                    else:
+                        existing_ids = set(session.scalars(
+                            select(LotGeoSnapshot.lot_id).where(LotGeoSnapshot.lot_id.in_(requested_ids))
+                        ).all())
+                        lot_ids = [item for item in requested_ids if item not in existing_ids]
+                        skipped_existing = len(requested_ids) - len(lot_ids)
                 else:
                     stmt = select(ProcessedLot.id).where(
                         ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -631,39 +1260,102 @@ class GeoWorker(QThread):
 
             if not lot_ids:
                 self.progress_percent.emit(100)
-                self.finished.emit(0)
+                self.finished.emit(0, 0, skipped_existing)
                 return
 
-            total = len(lot_ids)
-            for i, lot_id in enumerate(lot_ids):
-                self.progress_percent.emit(int((i / total) * 100))
+            with session_scope() as session:
+                rows = session.scalars(
+                    select(ProcessedLot).where(ProcessedLot.id.in_(lot_ids))
+                ).all()
+            payloads = [
+                {
+                    "lot_id": row.id,
+                    "cadastral_number": row.cadastral_number,
+                    "address": row.address,
+                    "title": row.title,
+                    "region_name": row.region_name,
+                    "source_system": row.source_system,
+                    "source_url": row.source_url or row.lot_url,
+                }
+                for row in rows
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(row))
+            ]
+            total = len(payloads)
+            max_workers = min(get_settings().geo_max_workers, max(total, 1))
+            self.progress.emit(f"Параллельное геокодирование: {total} лотов, потоков: {max_workers}")
 
-                with session_scope() as session:
-                    lot = session.get(ProcessedLot, lot_id)
-                    if not lot:
-                        continue
-                    cadastral_number = lot.cadastral_number
-                    address = lot.address
-                    title = lot.title
-                    label = (address or cadastral_number or title or "")[:40]
+            def resolve(payload: dict):
+                cadastral_number = payload["cadastral_number"]
+                address = payload["address"]
+                enriched: dict = {}
+                if (
+                    payload["source_system"] == "lot-online.ru"
+                    and payload["source_url"]
+                    and not address
+                ):
+                    try:
+                        enriched = LotOnlineClient(timeout=(8, 25)).fetch_detail_fields(payload["source_url"])
+                        address = enriched.get("address") or address
+                        cadastral_numbers = enriched.get("cadastral_numbers") or []
+                        cadastral_number = cadastral_number or (cadastral_numbers[0] if cadastral_numbers else None)
+                    except Exception:
+                        logger.warning("LOT-ONLINE detail enrichment failed for lot %s", payload["lot_id"], exc_info=True)
+                return payload["lot_id"], resolve_lot_geo(
+                    cadastral_number,
+                    address,
+                    title=payload["title"],
+                    region_name=payload["region_name"],
+                ), enriched
 
-                self.progress.emit(f"Геокодирование [{i+1}/{total}]: {label}...")
-                geo_result = resolve_lot_geo(cadastral_number, address)
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bankrotai-geo") as executor:
+                futures = {executor.submit(resolve, payload): payload for payload in payloads}
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    payload = futures[future]
+                    lot_id = int(payload["lot_id"])
+                    geo_error = "Coordinates were not found"
+                    try:
+                        _resolved_lot_id, geo_result, enriched = future.result()
+                    except Exception as exc:
+                        logger.exception("GEO resolution failed for lot %s", lot_id)
+                        geo_error = str(exc)
+                        geo_result = None
+                        enriched = {}
 
-                with DB_WRITE_LOCK:
-                    with session_scope() as session:
-                        lot = session.get(ProcessedLot, lot_id)
-                        if not lot:
-                            continue
-                        if self.refresh_existing:
-                            session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
-                            session.flush()
-                        apply_lot_geo_result(session, lot, geo_result)
-                        processed_count += 1
+                    success = False
+                    with DB_WRITE_LOCK:
+                        with session_scope() as session:
+                            lot = session.get(ProcessedLot, lot_id)
+                            if lot:
+                                if enriched.get("address") and not lot.address:
+                                    lot.address = enriched["address"]
+                                cadastral_numbers = enriched.get("cadastral_numbers") or []
+                                if cadastral_numbers and not lot.cadastral_number:
+                                    lot.cadastral_number = cadastral_numbers[0]
+                                if enriched.get("description") and (
+                                    not lot.description or lot.description == lot.title
+                                ):
+                                    lot.description = enriched["description"][:10000]
+                                if self.refresh_existing and geo_result:
+                                    session.query(LotGeoSnapshot).filter_by(lot_id=lot.id).delete()
+                                    session.flush()
+                                success = apply_lot_geo_result(session, lot, geo_result)
+                                if success:
+                                    resolve_geo_failure(session, lot_id)
+                                else:
+                                    record_geo_failure(session, lot_id, geo_error)
 
-                self.progress_percent.emit(int(((i + 1) / total) * 100))
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                    self.lot_processed.emit(lot_id, success, completed, total)
+                    self.progress_percent.emit(int((completed / total) * 100))
+                    label = (payload["address"] or payload["cadastral_number"] or payload["title"] or "")[:45]
+                    self.progress.emit(
+                        f"GEO [{completed}/{total}] ✓ {success_count}, без координат {failed_count}: {label}"
+                    )
 
-            self.finished.emit(processed_count)
+            self.finished.emit(success_count, failed_count, skipped_existing)
         except Exception as e:
             logger.error(f"GeoWorker error: {e}")
             self.error.emit(str(e))
@@ -684,6 +1376,94 @@ class CadastreSearchWorker(QThread):
         except Exception as e:
             logger.exception("Cadastre search worker failed")
             self.error.emit(str(e))
+
+
+class PreviewEnrichmentWorker(QThread):
+    result_ready = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, lot_id: int):
+        super().__init__()
+        self.lot_id = int(lot_id)
+
+    def run(self):
+        try:
+            from bankrotai.db import DB_WRITE_LOCK
+            from bankrotai.torgi_russia import TorgiRussiaClient
+
+            with session_scope() as session:
+                lot = session.get(ProcessedLot, self.lot_id)
+                if lot is None:
+                    self.result_ready.emit(self.lot_id, {})
+                    return
+                source_lot = session.scalars(
+                    select(SourceLot).where(or_(
+                        SourceLot.processed_lot_id == lot.id,
+                        and_(
+                            SourceLot.source_system == lot.source_system,
+                            SourceLot.external_id == lot.external_id,
+                        ),
+                    ))
+                ).first()
+                raw = dict(source_lot.raw_data or {}) if source_lot else {}
+                related: dict[str, str] = {}
+                if source_lot:
+                    sibling_sources = session.scalars(
+                        select(SourceLot).where(SourceLot.canonical_lot_id == source_lot.canonical_lot_id)
+                    ).all()
+                    for sibling in sibling_sources:
+                        system = (sibling.source_system or "").lower()
+                        if sibling.source_url and "torgi.gov" in system:
+                            related["gis_torgi_url"] = sibling.source_url
+                        if sibling.source_url and "lot-online" in system:
+                            related["etp_url"] = sibling.source_url
+                cached = {
+                    key: raw.get(key)
+                    for key in (
+                        "torgi_russia_url", "gis_torgi_url", "etp_url",
+                        "torgi_russia_image_urls",
+                    )
+                    if raw.get(key)
+                }
+                cached.update(related)
+                if raw.get("torgi_russia_checked_at"):
+                    self.result_ready.emit(self.lot_id, cached)
+                    return
+                cadastres = list(lot.cadastral_numbers or [])
+                if lot.cadastral_number:
+                    cadastres.insert(0, lot.cadastral_number)
+                source_lot_id = source_lot.id if source_lot else None
+
+            if self.isInterruptionRequested():
+                return
+            details = TorgiRussiaClient(timeout=8).find_by_cadastral_numbers(cadastres) if cadastres else None
+            extras = details.as_dict() if details else {}
+            extras.update(related)
+            if details and details.procedure_number:
+                with session_scope() as session:
+                    etp_source = session.scalars(
+                        select(SourceLot).where(
+                            SourceLot.procedure_number == details.procedure_number,
+                            SourceLot.source_system.ilike("%lot-online%"),
+                        )
+                    ).first()
+                    if etp_source and etp_source.source_url:
+                        extras["etp_url"] = etp_source.source_url
+            if source_lot_id:
+                with DB_WRITE_LOCK:
+                    with session_scope() as session:
+                        source_lot = session.get(SourceLot, source_lot_id)
+                        if source_lot:
+                            updated = dict(source_lot.raw_data or {})
+                            updated.update(extras)
+                            updated["torgi_russia_checked_at"] = datetime.now().isoformat(timespec="seconds")
+                            source_lot.raw_data = updated
+            if not self.isInterruptionRequested():
+                self.result_ready.emit(self.lot_id, extras)
+        except Exception as exc:
+            logger.warning("Torgi Rossii preview enrichment failed for lot %s: %s", self.lot_id, exc)
+            if not self.isInterruptionRequested():
+                self.failed.emit(self.lot_id, str(exc))
 
 
 NSPD_REFERER = "https://nspd.gov.ru/map?theme_id=1&is_copy_url=true&active_layers=&baseLayerId="
@@ -725,8 +1505,7 @@ class CadastralWmsProxyHandler(BaseHTTPRequestHandler):
 
         try:
             import requests
-            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-            response = requests.get(upstream, headers=headers, timeout=(3.05, 8), verify=False)
+            response = requests.get(upstream, headers=headers, timeout=(3.05, 8), verify=nspd_tls_verify())
             response.raise_for_status()
         except Exception as e:
             logger.warning("NSPD WMS request failed for %s: %s", layer_key, e)
@@ -749,10 +1528,44 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+class MapBridge(QObject):
+    review_changed = Signal(int, str)
+    preview_opened = Signal(str, int)
+    preview_closed = Signal(str)
+
+    @Slot(int, str, result=bool)
+    def setReviewStatus(self, lot_id: int, status: str) -> bool:
+        if status not in {"approved", "maybe", "rejected"}:
+            return False
+        with session_scope() as session:
+            lot = session.get(ProcessedLot, int(lot_id))
+            if lot is None:
+                return False
+            lot.review_status = status
+        self.review_changed.emit(int(lot_id), status)
+        return True
+
+    @Slot(str, result=bool)
+    def openSource(self, source_url: str) -> bool:
+        url = QUrl.fromUserInput(source_url)
+        if url.scheme().lower() not in {"http", "https"}:
+            return False
+        return bool(QDesktopServices.openUrl(url))
+
+    @Slot(str, int)
+    def previewOpened(self, map_kind: str, lot_id: int):
+        self.preview_opened.emit(map_kind, int(lot_id))
+
+    @Slot(str)
+    def previewClosed(self, map_kind: str):
+        self.preview_closed.emit(map_kind)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BankrotAI - Аналитика торгов")
+        self.setWindowIcon(QIcon(str(app_icon_path())))
         self.resize(1300, 900)
         self.current_selected_lot_id = None
         self._appraiser = None
@@ -768,11 +1581,55 @@ class MainWindow(QMainWindow):
         self.tbankrot_current_page = 1
         self._last_tbankrot_sort_column = None
         self._last_tbankrot_sort_order = Qt.AscendingOrder
+        self.lot_online_results: list[NormalizedLot] = []
+        self.lot_online_meta: dict = {}
+        self.lot_online_current_page = 1
         init_db()
+        with session_scope() as session:
+            reconciled = reconcile_cross_source_duplicates(session)
+            if reconciled:
+                logger.info("Reconciled %s existing cross-source duplicate lots", reconciled)
+        self.map_bridge = MapBridge(self)
+        self.map_bridge.review_changed.connect(self.on_map_review_changed)
+        self.map_bridge.preview_opened.connect(self.on_map_preview_opened)
+        self.map_bridge.preview_closed.connect(self.on_map_preview_closed)
+        self.preview_enrichment_workers: dict[int, PreviewEnrichmentWorker] = {}
         self.start_cadastral_wms_proxy()
         self.init_statusbar()
         self.init_ui()
+        if "--smoke-test" not in sys.argv:
+            self.backup_timer = QTimer(self)
+            self.backup_timer.setInterval(6 * 60 * 60 * 1000)
+            self.backup_timer.timeout.connect(self._start_automatic_backup)
+            self.backup_timer.start()
+            QTimer.singleShot(0, self._start_automatic_backup)
         self.update_dashboard()
+
+    def _start_automatic_backup(self) -> None:
+        active = getattr(self, "_backup_thread", None)
+        if active is not None and active.is_alive():
+            return
+
+        def run_backup() -> None:
+            try:
+                result = ensure_daily_sqlite_backup()
+                if result is not None:
+                    logger.info(
+                        "Automatic SQLite backup verified: %s (%s bytes)",
+                        result.path,
+                        result.size_bytes,
+                    )
+            except ValueError:
+                logger.info("Automatic desktop backup skipped for non-SQLite database")
+            except Exception:
+                logger.exception("Automatic SQLite backup failed")
+
+        self._backup_thread = threading.Thread(
+            target=run_backup,
+            daemon=True,
+            name="bankrotai-backup",
+        )
+        self._backup_thread.start()
 
     def start_cadastral_wms_proxy(self):
         if self.cadastral_wms_proxy_port:
@@ -844,37 +1701,166 @@ class MainWindow(QMainWindow):
         """)
         main_layout.addWidget(self.tabs)
 
-        # 1. Torgi.gov.ru Search Tab
+        search_tabs = QTabWidget()
+        maps_tabs = QTabWidget()
+
+        # 1. Search workflow
         self.dash_tab = QWidget()
         self.init_dash_tab()
-        self.tabs.addTab(self.dash_tab, "Поиск ГИС Торги")
+        search_tabs.addTab(self.dash_tab, "ГИС Торги")
 
         # 2. TBankrot Search Tab
         self.tbankrot_tab = QWidget()
         self.init_tbankrot_tab()
-        self.tabs.addTab(self.tbankrot_tab, "Поиск Т Банкрот")
+        search_tabs.addTab(self.tbankrot_tab, "Т Банкрот")
 
-        # 3. Registry Tab
+        # 3. RAD / LOT-ONLINE Search Tab
+        self.lot_online_tab = QWidget()
+        self.init_lot_online_tab()
+        search_tabs.addTab(self.lot_online_tab, "РАД / ЛОТ-ОНЛАЙН")
+        self.tabs.addTab(search_tabs, "🔎 Поиск")
+
+        # 4. Registry Tab
         self.registry_tab = QWidget()
         self.init_registry_tab()
         self.tabs.addTab(self.registry_tab, "📋 Реестр лотов")
 
-        # 4. Map Tab
+        # 3. Map workflow
         self.map_tab = QWidget()
         self.init_map_tab()
-        self.tabs.addTab(self.map_tab, "🗺️ Карта и Кадастр")
+        maps_tabs.addTab(self.map_tab, "OpenStreetMap")
 
         # 5. Yandex Map Tab
         self.yandex_map_tab = QWidget()
         self.init_yandex_map_tab()
-        self.tabs.addTab(self.yandex_map_tab, "Карта и кадастр Яндекс")
+        maps_tabs.addTab(self.yandex_map_tab, "Яндекс")
+        self.tabs.addTab(maps_tabs, "🗺️ Карта")
 
-        # 6. Tools Tab
+        # 4. Deal workflow
         self.tools_tab = QWidget()
         self.init_tools_tab()
-        self.tabs.addTab(self.tools_tab, "🛠️ Инструменты")
+        self.tabs.addTab(self.tools_tab, "🤝 Сделка")
+
+    @staticmethod
+    def _configure_results_table(table: QTableWidget, headers: list[str], stretch_columns: tuple[int, ...]) -> None:
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        header = table.horizontalHeader()
+        for column in stretch_columns:
+            header.setSectionResizeMode(column, QHeaderView.Stretch)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+
+    def _init_compact_torgi_tab(self) -> None:
+        layout = QVBoxLayout(self.dash_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        title = QLabel("Поиск ГИС Торги (torgi.gov.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+        self.stats_label = QLabel()
+        self.stats_label.hide()
+        group = QGroupBox("Параметры поиска недвижимости (только продажа)")
+        form = QFormLayout(group)
+        self.torgi_search_input = QLineEdit()
+        self.torgi_search_input.setPlaceholderText("Название, адрес, кадастровый номер...")
+        form.addRow("Поиск", self.torgi_search_input)
+        self.torgi_category_combo = WheelSafeComboBox()
+        for label, code in (
+            ("Вся недвижимость", TorgiGovClient.REAL_ESTATE_CATEGORY_CODES),
+            ("Земельный участок со зданием", "903"),
+            ("Недвижимость", "7"),
+            ("Земельные участки", "2"),
+        ):
+            self.torgi_category_combo.addItem(label, code)
+        form.addRow("Категория", self.torgi_category_combo)
+        self.torgi_subject_combo = WheelSafeComboBox()
+        self.torgi_subject_combo.addItem("Все регионы", None)
+        for name, code in sorted(TorgiGovClient.SUBJECT_RF_CODES.items()):
+            self.torgi_subject_combo.addItem(name, code)
+        form.addRow("Регион", self.torgi_subject_combo)
+        self.torgi_lot_status_combo = WheelSafeComboBox()
+        self.torgi_lot_status_combo.addItem("Активные", TorgiGovClient.DEFAULT_LOT_STATUS)
+        self.torgi_lot_status_combo.addItem("Все состояния", None)
+        self.torgi_status_combo = self.torgi_lot_status_combo
+        form.addRow("Состояние", self.torgi_lot_status_combo)
+        self.torgi_price_min_input, self.torgi_price_max_input = QLineEdit(), QLineEdit()
+        self.torgi_price_min_input.setPlaceholderText("Цена от")
+        self.torgi_price_max_input.setPlaceholderText("Цена до")
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.torgi_price_min_input)
+        price_row.addWidget(self.torgi_price_max_input)
+        form.addRow("Цена", price_row)
+        self.torgi_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.torgi_load_all_checkbox.setChecked(True)
+        self.torgi_max_items_input = QLineEdit("5000")
+        self.torgi_max_items_input.setMaximumWidth(110)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.torgi_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.torgi_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+        buttons = QHBoxLayout()
+        self.torgi_search_btn = QPushButton("🔎 Найти онлайн")
+        self.torgi_search_btn.clicked.connect(self.run_torgi_search)
+        self.torgi_excel_search_btn = QPushButton("Поиск через Excel")
+        self.torgi_excel_search_btn.clicked.connect(self.run_torgi_excel_search)
+        self.torgi_stop_btn = QPushButton("Остановить")
+        self.torgi_stop_btn.setEnabled(False)
+        self.torgi_stop_btn.clicked.connect(self.stop_torgi_search)
+        self.torgi_clear_btn = QPushButton("Очистить")
+        self.torgi_clear_btn.clicked.connect(self.clear_torgi_filters)
+        self.torgi_open_site_btn = QPushButton("Открыть каталог")
+        self.torgi_open_site_btn.clicked.connect(self.open_torgi_site)
+        for button in (self.torgi_search_btn, self.torgi_excel_search_btn, self.torgi_stop_btn, self.torgi_clear_btn, self.torgi_open_site_btn):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(group)
+        self.torgi_status_label = QLabel("Найдено 0, источник torgi.gov.ru")
+        layout.addWidget(self.torgi_status_label)
+        self.active_filters_widget = QWidget()
+        self.active_filters_layout = QHBoxLayout(self.active_filters_widget)
+        self.active_filters_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.active_filters_widget)
+        self.torgi_results_table = QTableWidget()
+        self.torgi_table = self.torgi_results_table
+        self._configure_results_table(self.torgi_results_table, [
+            "В базе", "ID / Извещение", "Название", "Категория", "Регион / адрес",
+            "Начальная цена", "Статус", "Дата публикации", "Окончание заявок", "Ссылка",
+        ], (2, 4))
+        self.torgi_results_table.horizontalHeader().sectionClicked.connect(self.on_torgi_header_clicked)
+        self.torgi_results_table.cellClicked.connect(self.open_torgi_link_cell)
+        self.torgi_results_table.cellDoubleClicked.connect(self.open_torgi_result_url)
+        layout.addWidget(self.torgi_results_table, 1)
+        actions = QHBoxLayout()
+        self.torgi_import_selected_btn = QPushButton("Импортировать выбранные в базу")
+        self.torgi_import_selected_btn.clicked.connect(self.import_selected_torgi_lots)
+        self.torgi_import_all_btn = QPushButton("Импортировать все найденные")
+        self.torgi_import_all_btn.clicked.connect(self.import_all_torgi_lots)
+        self.torgi_prev_btn = QPushButton("Предыдущая страница")
+        self.torgi_prev_btn.clicked.connect(self.search_torgi_prev_page)
+        self.torgi_next_btn = QPushButton("Следующая страница")
+        self.torgi_next_btn.clicked.connect(self.search_torgi_next_page)
+        actions.addWidget(self.torgi_import_selected_btn)
+        actions.addWidget(self.torgi_import_all_btn)
+        actions.addStretch()
+        actions.addWidget(self.torgi_prev_btn)
+        actions.addWidget(self.torgi_next_btn)
+        layout.addLayout(actions)
+        self.torgi_unsupported_inputs = {}
+        self.restore_torgi_filter_state()
+        self.update_active_filter_chips()
+        self.render_torgi_results()
 
     def init_dash_tab(self):
+        self._init_compact_torgi_tab()
+        return
         layout = QVBoxLayout(self.dash_tab)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -1056,8 +2042,10 @@ class MainWindow(QMainWindow):
         add_labeled_field(location_section.content_layout, "Форма собственности", self.torgi_ownership_combo)
 
         category_section = section("Категория имущества")
+        real_estate_codes = ("2", "8", "9", "10", "11", "12", "903")
         self.torgi_category_combo = combo(
-            [("Не выбрано", None)] + [(label, code) for code, label in TorgiGovClient.CATEGORY_CODE_LABELS.items()]
+            [("Вся недвижимость", TorgiGovClient.REAL_ESTATE_CATEGORY_CODES)]
+            + [(TorgiGovClient.CATEGORY_CODE_LABELS[code], code) for code in real_estate_codes]
         )
         add_labeled_field(category_section.content_layout, "Категория имущества", self.torgi_category_combo)
 
@@ -1321,7 +2309,106 @@ class MainWindow(QMainWindow):
         self.restore_torgi_filter_state()
         self.update_active_filter_chips()
 
+    def _init_compact_tbankrot_tab(self) -> None:
+        layout = QVBoxLayout(self.tbankrot_tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        title = QLabel("Поиск TBankrot (tbankrot.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+        group = QGroupBox("Параметры поиска недвижимости (без аренды)")
+        form = QFormLayout(group)
+        self.tbankrot_search_input = QLineEdit()
+        self.tbankrot_search_input.setPlaceholderText("Название, адрес, номер лота...")
+        form.addRow("Поиск", self.tbankrot_search_input)
+        self.tbankrot_category_combo = WheelSafeComboBox()
+        self.tbankrot_category_combo.addItem("Вся недвижимость", TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
+        for code, label in TBankrotClient.REAL_ESTATE_CATEGORY_LABELS.items():
+            self.tbankrot_category_combo.addItem(label, code)
+        form.addRow("Категория", self.tbankrot_category_combo)
+        self.tbankrot_region_combo = WheelSafeComboBox()
+        self.tbankrot_region_combo.addItem("Все регионы", None)
+        for code, label in sorted(TBankrotClient.REGION_LABELS.items(), key=lambda item: item[1]):
+            self.tbankrot_region_combo.addItem(label, code)
+        form.addRow("Регион", self.tbankrot_region_combo)
+        self.tbankrot_price_min_input, self.tbankrot_price_max_input = QLineEdit(), QLineEdit()
+        self.tbankrot_price_min_input.setPlaceholderText("Цена от")
+        self.tbankrot_price_max_input.setPlaceholderText("Цена до")
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.tbankrot_price_min_input)
+        price_row.addWidget(self.tbankrot_price_max_input)
+        form.addRow("Цена", price_row)
+        self.tbankrot_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.tbankrot_load_all_checkbox.setChecked(True)
+        self.tbankrot_max_items_input = QLineEdit("5000")
+        self.tbankrot_max_items_input.setMaximumWidth(110)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.tbankrot_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.tbankrot_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+        buttons = QHBoxLayout()
+        self.tbankrot_search_btn = QPushButton("Найти на TBankrot")
+        self.tbankrot_search_btn.clicked.connect(self.run_tbankrot_search)
+        self.tbankrot_stop_btn = QPushButton("Остановить")
+        self.tbankrot_stop_btn.setEnabled(False)
+        self.tbankrot_stop_btn.clicked.connect(self.stop_tbankrot_search)
+        self.tbankrot_clear_btn = QPushButton("Очистить")
+        self.tbankrot_clear_btn.clicked.connect(self.clear_tbankrot_filters)
+        self.tbankrot_open_site_btn = QPushButton("Открыть каталог")
+        self.tbankrot_open_site_btn.clicked.connect(self.open_tbankrot_site)
+        for button in (self.tbankrot_search_btn, self.tbankrot_stop_btn, self.tbankrot_clear_btn, self.tbankrot_open_site_btn):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(group)
+        for name in (
+            "tbankrot_lot_number_input", "tbankrot_debtor_input", "tbankrot_auction_manager_input",
+            "tbankrot_organizer_input", "tbankrot_stop_words_input",
+        ):
+            setattr(self, name, QLineEdit())
+        self.tbankrot_trade_type_combo = WheelSafeComboBox()
+        self.tbankrot_trade_type_combo.addItem("Все типы торгов", None)
+        self.tbankrot_photo_only_checkbox = QCheckBox()
+        self.tbankrot_show_closed_checkbox = QCheckBox()
+        self.tbankrot_show_paused_checkbox = QCheckBox()
+        self.tbankrot_status_label = QLabel("Найдено 0, источник tbankrot.ru")
+        layout.addWidget(self.tbankrot_status_label)
+        self.tbankrot_active_filters_widget = QWidget()
+        self.tbankrot_active_filters_layout = QHBoxLayout(self.tbankrot_active_filters_widget)
+        self.tbankrot_active_filters_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.tbankrot_active_filters_widget)
+        self.tbankrot_results_table = QTableWidget()
+        self._configure_results_table(self.tbankrot_results_table, [
+            "В базе", "ID", "Название", "Категория", "Регион / адрес", "Цена",
+            "Статус", "Дата публикации", "Окончание заявок", "Ссылка",
+        ], (2, 4))
+        self.tbankrot_results_table.horizontalHeader().sectionClicked.connect(self.on_tbankrot_header_clicked)
+        self.tbankrot_results_table.cellClicked.connect(self.open_tbankrot_link_cell)
+        self.tbankrot_results_table.cellDoubleClicked.connect(self.open_tbankrot_result_url)
+        layout.addWidget(self.tbankrot_results_table, 1)
+        actions = QHBoxLayout()
+        self.tbankrot_import_selected_btn = QPushButton("Импортировать выбранные в базу")
+        self.tbankrot_import_selected_btn.clicked.connect(self.import_selected_tbankrot_lots)
+        self.tbankrot_import_all_btn = QPushButton("Импортировать все найденные")
+        self.tbankrot_import_all_btn.clicked.connect(self.import_all_tbankrot_lots)
+        self.tbankrot_prev_btn = QPushButton("Предыдущая страница")
+        self.tbankrot_prev_btn.clicked.connect(self.search_tbankrot_prev_page)
+        self.tbankrot_next_btn = QPushButton("Следующая страница")
+        self.tbankrot_next_btn.clicked.connect(self.search_tbankrot_next_page)
+        actions.addWidget(self.tbankrot_import_selected_btn)
+        actions.addWidget(self.tbankrot_import_all_btn)
+        actions.addStretch()
+        actions.addWidget(self.tbankrot_prev_btn)
+        actions.addWidget(self.tbankrot_next_btn)
+        layout.addLayout(actions)
+        self.restore_tbankrot_filter_state()
+        self.update_tbankrot_filter_chips()
+        self.render_tbankrot_results()
+
     def init_tbankrot_tab(self):
+        self._init_compact_tbankrot_tab()
+        return
         layout = QVBoxLayout(self.tbankrot_tab)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -1561,12 +2648,7 @@ class MainWindow(QMainWindow):
 
     def _combo_value(self, widget: QComboBox) -> str | None:
         data = widget.currentData()
-        if data not in (None, ""):
-            return str(data)
-        text = widget.currentText().strip()
-        if not text or text == "Не выбрано":
-            return None
-        return text
+        return str(data) if data not in (None, "") else None
 
     def _line_text(self, widget: QLineEdit) -> str | None:
         value = widget.text().strip()
@@ -1615,38 +2697,20 @@ class MainWindow(QMainWindow):
         return warnings
 
     def collect_torgi_filters(self, page: int | None = None) -> TorgiGovSearchFilters:
-        self.torgi_unsupported_warnings = self._collect_unsupported_torgi_warnings()
+        self.torgi_unsupported_warnings = []
         return TorgiGovSearchFilters(
             search_text=self.torgi_search_input.text().strip(),
-            type_transaction=self._combo_value(self.torgi_type_transaction_combo),
+            type_transaction="SALE",
             price_min=self._line_float(self.torgi_price_min_input),
             price_max=self._line_float(self.torgi_price_max_input),
             subject_rf=self._combo_value(self.torgi_subject_combo),
-            fias=self._line_text(self.torgi_fias_input),
-            ownership_form=self._combo_value(self.torgi_ownership_combo),
-            category_code=self._combo_value(self.torgi_category_combo),
+            category_code=(
+                self._combo_value(self.torgi_category_combo)
+                or TorgiGovClient.REAL_ESTATE_CATEGORY_CODES
+            ),
             lot_status=self._combo_value(self.torgi_lot_status_combo),
-            currency_code=self._combo_value(self.torgi_currency_combo),
-            publish_date_from=self._line_text(self.torgi_publish_from_input),
-            publish_date_to=self._line_text(self.torgi_publish_to_input),
-            bidd_end_time_from=self._line_text(self.torgi_bidd_end_from_input),
-            bidd_end_time_to=self._line_text(self.torgi_bidd_end_to_input),
-            auction_start_date_from=self._line_text(self.torgi_auction_from_input),
-            auction_start_date_to=self._line_text(self.torgi_auction_to_input),
-            notice_number=self._line_text(self.torgi_notice_number_input),
-            etp_code=self._line_text(self.torgi_etp_input),
-            bidd_type=self._combo_value(self.torgi_bidd_type_combo),
-            bidd_form=self._combo_value(self.torgi_bidd_form_combo),
-            notice_status=self._combo_value(self.torgi_notice_status_combo),
-            organizer_name=self._line_text(self.torgi_organizer_name_input),
-            organizer_inn=self._line_text(self.torgi_organizer_inn_input),
-            right_holder_name=self._line_text(self.torgi_right_holder_name_input),
-            right_holder_inn=self._line_text(self.torgi_right_holder_inn_input),
-            attachment_text=self._line_text(self.torgi_attachment_input),
-            match_phrase=self.torgi_match_phrase_checkbox.isChecked(),
-            is_msp=self.torgi_is_msp_checkbox.isChecked(),
             page=page or self.torgi_current_page,
-            page_size=20,
+            page_size=100,
         )
 
     def save_torgi_filter_state(self) -> None:
@@ -1729,11 +2793,6 @@ class MainWindow(QMainWindow):
         if category_value:
             chips.append((category_label, lambda: self.clear_filter_combo(self.torgi_category_combo)))
 
-        notice_label = self.torgi_notice_status_combo.currentText()
-        notice_value = self.torgi_notice_status_combo.currentData()
-        if notice_value:
-            chips.append((notice_label, lambda: self.clear_filter_combo(self.torgi_notice_status_combo)))
-
         lot_label = self.torgi_lot_status_combo.currentText()
         lot_value = self.torgi_lot_status_combo.currentData()
         if lot_value:
@@ -1760,33 +2819,11 @@ class MainWindow(QMainWindow):
         self.save_torgi_filter_state()
 
     def clear_torgi_filters(self):
-        line_widgets = [
-            self.torgi_search_input, self.torgi_price_min_input, self.torgi_price_max_input,
-            self.torgi_fias_input, self.torgi_price_fin_from_input, self.torgi_price_fin_to_input,
-            self.torgi_notice_number_input, self.torgi_etp_input, self.torgi_publish_from_input,
-            self.torgi_publish_to_input, self.torgi_bidd_end_from_input, self.torgi_bidd_end_to_input,
-            self.torgi_auction_from_input, self.torgi_auction_to_input, self.torgi_npa_input,
-            self.torgi_organizer_name_input, self.torgi_organizer_inn_input,
-            self.torgi_organizer_kpp_input, self.torgi_organizer_ogrn_input,
-            self.torgi_right_holder_name_input, self.torgi_right_holder_inn_input,
-            self.torgi_right_holder_kpp_input, self.torgi_right_holder_ogrn_input,
-            self.torgi_amo_org_input, self.torgi_attachment_input,
-        ]
-        for widget in line_widgets:
+        for widget in (self.torgi_search_input, self.torgi_price_min_input, self.torgi_price_max_input):
             widget.clear()
-        for widget in [
-            self.torgi_type_transaction_combo, self.torgi_subject_combo, self.torgi_ownership_combo,
-            self.torgi_category_combo, self.torgi_currency_combo,
-            self.torgi_bidd_type_combo, self.torgi_bidd_form_combo, self.torgi_notice_status_combo,
-        ]:
-            self._set_combo_data(widget, None)
+        self._set_combo_data(self.torgi_subject_combo, None)
+        self._set_combo_data(self.torgi_category_combo, TorgiGovClient.REAL_ESTATE_CATEGORY_CODES)
         self._set_combo_data(self.torgi_status_combo, TorgiGovClient.DEFAULT_LOT_STATUS)
-        for widget in [
-            self.torgi_is_msp_checkbox, self.torgi_is_stopped_checkbox, self.torgi_rh_gov_prt_checkbox,
-            self.torgi_has_appeals_checkbox, self.torgi_has_solutions_checkbox,
-            self.torgi_has_prescriptions_checkbox, self.torgi_match_phrase_checkbox,
-        ]:
-            widget.setChecked(False)
         self.torgi_load_all_checkbox.setChecked(True)
         self.torgi_max_items_input.setText("5000")
         self.torgi_results = []
@@ -1967,7 +3004,10 @@ class MainWindow(QMainWindow):
         if external_ids:
             with session_scope() as session:
                 existing = set(session.scalars(
-                    select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                    select(ProcessedLot.external_id).where(
+                        ProcessedLot.source_system == "torgi_gov",
+                        ProcessedLot.external_id.in_(external_ids),
+                    )
                 ).all())
 
         self.torgi_results_table.setSortingEnabled(False)
@@ -2055,7 +3095,10 @@ class MainWindow(QMainWindow):
         external_ids = [lot.external_id for lot in lots]
         with session_scope() as session:
             existed = set(session.scalars(
-                select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "torgi_gov",
+                    ProcessedLot.external_id.in_(external_ids),
+                )
             ).all())
             for lot in lots:
                 persist_lot(session, lot)
@@ -2161,6 +3204,10 @@ class MainWindow(QMainWindow):
             price_max=self._line_float(self.tbankrot_price_max_input),
             lot_number=self._line_text(self.tbankrot_lot_number_input),
             trade_type=self._combo_value(self.tbankrot_trade_type_combo),
+            category_codes=(
+                self._combo_value(self.tbankrot_category_combo)
+                or TBankrotClient.REAL_ESTATE_CATEGORY_CODES
+            ),
             photo_only=self.tbankrot_photo_only_checkbox.isChecked(),
             debtor=self._line_text(self.tbankrot_debtor_input),
             auction_manager=self._line_text(self.tbankrot_auction_manager_input),
@@ -2180,6 +3227,7 @@ class MainWindow(QMainWindow):
             "price_min": self.tbankrot_price_min_input.text().strip(),
             "price_max": self.tbankrot_price_max_input.text().strip(),
             "trade_type": self._combo_value(self.tbankrot_trade_type_combo),
+            "category_codes": self._combo_value(self.tbankrot_category_combo),
         }
         set_app_setting("tbankrot_last_filters", json.dumps(state, ensure_ascii=False))
 
@@ -2197,6 +3245,10 @@ class MainWindow(QMainWindow):
         self.tbankrot_price_min_input.setText(state.get("price_min", ""))
         self.tbankrot_price_max_input.setText(state.get("price_max", ""))
         self._set_combo_data(self.tbankrot_trade_type_combo, state.get("trade_type"))
+        self._set_combo_data(
+            self.tbankrot_category_combo,
+            state.get("category_codes") or TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
+        )
 
     def update_tbankrot_filter_chips(self):
         if not hasattr(self, "tbankrot_active_filters_layout"):
@@ -2243,6 +3295,10 @@ class MainWindow(QMainWindow):
         if region_value:
             chips.append((self.tbankrot_region_combo.currentText(), lambda: self.clear_tbankrot_filter_combo(self.tbankrot_region_combo)))
 
+        category_value = self.tbankrot_category_combo.currentData()
+        if category_value:
+            chips.append((self.tbankrot_category_combo.currentText(), lambda: self._set_tbankrot_all_categories()))
+
         trade_value = self.tbankrot_trade_type_combo.currentData()
         if trade_value:
             chips.append((self.tbankrot_trade_type_combo.currentText(), lambda: self.clear_tbankrot_filter_combo(self.tbankrot_trade_type_combo)))
@@ -2271,6 +3327,11 @@ class MainWindow(QMainWindow):
         self.update_tbankrot_filter_chips()
         self.save_tbankrot_filter_state()
 
+    def _set_tbankrot_all_categories(self):
+        self._set_combo_data(self.tbankrot_category_combo, TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
+        self.update_tbankrot_filter_chips()
+        self.save_tbankrot_filter_state()
+
     def clear_tbankrot_filters(self):
         for widget in [
             self.tbankrot_search_input, self.tbankrot_price_min_input, self.tbankrot_price_max_input,
@@ -2281,6 +3342,7 @@ class MainWindow(QMainWindow):
             widget.clear()
         self._set_combo_data(self.tbankrot_region_combo, None)
         self._set_combo_data(self.tbankrot_trade_type_combo, None)
+        self._set_combo_data(self.tbankrot_category_combo, TBankrotClient.REAL_ESTATE_CATEGORY_CODES)
         for widget in [
             self.tbankrot_photo_only_checkbox, self.tbankrot_show_closed_checkbox,
             self.tbankrot_show_paused_checkbox,
@@ -2398,7 +3460,10 @@ class MainWindow(QMainWindow):
         if external_ids:
             with session_scope() as session:
                 existing = set(session.scalars(
-                    select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                    select(ProcessedLot.external_id).where(
+                        ProcessedLot.source_system == "tbankrot",
+                        ProcessedLot.external_id.in_(external_ids),
+                    )
                 ).all())
 
         self.tbankrot_results_table.setSortingEnabled(False)
@@ -2464,7 +3529,10 @@ class MainWindow(QMainWindow):
         external_ids = [lot.external_id for lot in lots]
         with session_scope() as session:
             existed = set(session.scalars(
-                select(ProcessedLot.external_id).where(ProcessedLot.external_id.in_(external_ids))
+                select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "tbankrot",
+                    ProcessedLot.external_id.in_(external_ids),
+                )
             ).all())
             for lot in lots:
                 persist_lot(session, lot)
@@ -2549,6 +3617,286 @@ class MainWindow(QMainWindow):
         import webbrowser
         webbrowser.open(url)
 
+    def init_lot_online_tab(self):
+        layout = QVBoxLayout(self.lot_online_tab)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Поиск РАД / ЛОТ-ОНЛАЙН (catalog.lot-online.ru)")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #143370;")
+        layout.addWidget(title)
+
+        filters = QGroupBox("Параметры поиска")
+        form = QFormLayout(filters)
+        self.lot_online_search_input = QLineEdit()
+        self.lot_online_search_input.setPlaceholderText("Название, адрес, номер лота...")
+        form.addRow("Поиск", self.lot_online_search_input)
+
+        self.lot_online_category_combo = WheelSafeComboBox()
+        self.lot_online_category_combo.addItem("Недвижимое имущество", "1")
+        form.addRow("Каталог", self.lot_online_category_combo)
+
+        self.lot_online_region_combo = WheelSafeComboBox()
+        self.lot_online_region_combo.addItem("Все регионы", None)
+        for code, label in sorted(LotOnlineClient.REGION_FEATURES.items(), key=lambda item: item[1]):
+            self.lot_online_region_combo.addItem(label, code)
+        self._set_combo_data(self.lot_online_region_combo, "24392")
+        form.addRow("Регион", self.lot_online_region_combo)
+
+        self.lot_online_archive_combo = WheelSafeComboBox()
+        self.lot_online_archive_combo.addItem("Активные", "false")
+        self.lot_online_archive_combo.addItem("Все", "all")
+        self.lot_online_archive_combo.addItem("Архивные", "true")
+        form.addRow("Состояние", self.lot_online_archive_combo)
+
+        mode_row = QHBoxLayout()
+        self.lot_online_load_all_checkbox = QCheckBox("Загрузить все страницы")
+        self.lot_online_load_all_checkbox.setChecked(True)
+        self.lot_online_max_items_input = QLineEdit("5000")
+        self.lot_online_max_items_input.setMaximumWidth(110)
+        self.lot_online_max_items_input.setPlaceholderText("Лимит")
+        mode_row.addWidget(self.lot_online_load_all_checkbox)
+        mode_row.addWidget(QLabel("Лимит:"))
+        mode_row.addWidget(self.lot_online_max_items_input)
+        mode_row.addStretch()
+        form.addRow("Режим", mode_row)
+
+        buttons = QHBoxLayout()
+        self.lot_online_search_btn = QPushButton("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_search_btn.setMinimumHeight(38)
+        self.lot_online_search_btn.setStyleSheet(
+            "QPushButton { background: #115dee; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bb6ea; }"
+        )
+        self.lot_online_search_btn.clicked.connect(lambda: self.run_lot_online_search())
+        self.lot_online_stop_btn = QPushButton("Остановить")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.lot_online_stop_btn.clicked.connect(self.stop_lot_online_search)
+        self.lot_online_open_site_btn = QPushButton("Открыть каталог")
+        self.lot_online_open_site_btn.clicked.connect(self.open_lot_online_site)
+        buttons.addWidget(self.lot_online_search_btn)
+        buttons.addWidget(self.lot_online_stop_btn)
+        buttons.addWidget(self.lot_online_open_site_btn)
+        buttons.addStretch()
+        form.addRow("", buttons)
+        layout.addWidget(filters)
+
+        self.lot_online_status_label = QLabel("Найдено 0, источник lot-online.ru")
+        self.lot_online_status_label.setStyleSheet("font-size: 13px; color: #60769f;")
+        layout.addWidget(self.lot_online_status_label)
+
+        self.lot_online_results_table = QTableWidget()
+        self.lot_online_results_table.setColumnCount(9)
+        self.lot_online_results_table.setHorizontalHeaderLabels([
+            "В базе", "ID", "Номер РАД", "Название", "Категория",
+            "Регион / адрес", "Цена", "Статус", "Ссылка",
+        ])
+        header = self.lot_online_results_table.horizontalHeader()
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        self.lot_online_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.lot_online_results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.lot_online_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.lot_online_results_table.setAlternatingRowColors(True)
+        self.lot_online_results_table.setSortingEnabled(True)
+        self.lot_online_results_table.cellClicked.connect(self.open_lot_online_link_cell)
+        self.lot_online_results_table.cellDoubleClicked.connect(self.open_lot_online_result_url)
+        layout.addWidget(self.lot_online_results_table, 1)
+
+        actions = QHBoxLayout()
+        import_selected = QPushButton("Импортировать выбранные в базу")
+        import_selected.clicked.connect(self.import_selected_lot_online_lots)
+        import_all = QPushButton("Импортировать все найденные")
+        import_all.clicked.connect(self.import_all_lot_online_lots)
+        self.lot_online_prev_btn = QPushButton("Предыдущая страница")
+        self.lot_online_prev_btn.clicked.connect(self.search_lot_online_prev_page)
+        self.lot_online_next_btn = QPushButton("Следующая страница")
+        self.lot_online_next_btn.clicked.connect(self.search_lot_online_next_page)
+        actions.addWidget(import_selected)
+        actions.addWidget(import_all)
+        actions.addStretch()
+        actions.addWidget(self.lot_online_prev_btn)
+        actions.addWidget(self.lot_online_next_btn)
+        layout.addLayout(actions)
+        self.render_lot_online_results()
+
+    def collect_lot_online_filters(self, page: int | None = None) -> LotOnlineSearchFilters:
+        return LotOnlineSearchFilters(
+            search_text=self.lot_online_search_input.text().strip(),
+            category_id=str(self.lot_online_category_combo.currentData() or "1"),
+            region_feature=self.lot_online_region_combo.currentData(),
+            archive_mode=str(self.lot_online_archive_combo.currentData() or "false"),
+            page=max(1, page or self.lot_online_current_page),
+            page_size=96,
+        )
+
+    def run_lot_online_search(self, page: int = 1):
+        self.lot_online_current_page = max(1, page)
+        search_all = self.lot_online_load_all_checkbox.isChecked()
+        filters = self.collect_lot_online_filters(1 if search_all else self.lot_online_current_page)
+        try:
+            max_items = self._line_int_or_none(self.lot_online_max_items_input)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Проверьте фильтры", str(exc))
+            return
+        self.lot_online_results = []
+        self.lot_online_meta = {"mode": "all_pages" if search_all else "page", "loaded": 0}
+        self.render_lot_online_results()
+        self.lot_online_search_btn.setEnabled(False)
+        self.lot_online_search_btn.setText("Идет поиск...")
+        self.lot_online_stop_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        self.lot_online_worker = LotOnlineSearchWorker(filters, load_all=search_all, max_items=max_items)
+        self.lot_online_worker.progress.connect(self.status_bar.showMessage)
+        self.lot_online_worker.progress_percent.connect(self.progress_bar.setValue)
+        self.lot_online_worker.page_loaded.connect(self.on_lot_online_page_loaded)
+        self.lot_online_worker.finished.connect(self.on_lot_online_search_finished)
+        self.lot_online_worker.error.connect(self.on_lot_online_search_error)
+        self.lot_online_worker.start()
+
+    def stop_lot_online_search(self):
+        worker = getattr(self, "lot_online_worker", None)
+        if worker and worker.isRunning():
+            worker.request_stop()
+            self.lot_online_stop_btn.setEnabled(False)
+            self.status_bar.showMessage("Останавливаю поиск ЛОТ-ОНЛАЙН после текущего запроса...", 5000)
+
+    def on_lot_online_page_loaded(self, lots: list, page_meta: dict):
+        seen = {lot.external_id for lot in self.lot_online_results}
+        for lot in lots or []:
+            if lot.external_id not in seen:
+                self.lot_online_results.append(lot)
+                seen.add(lot.external_id)
+        self.lot_online_meta.update(page_meta or {})
+        self.lot_online_meta["loaded"] = len(self.lot_online_results)
+        self.render_lot_online_results()
+
+    def on_lot_online_search_finished(self, lots: list, meta: dict):
+        self.lot_online_search_btn.setEnabled(True)
+        self.lot_online_search_btn.setText("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.lot_online_results = list(lots or [])
+        self.lot_online_meta = dict(meta or {})
+        self.render_lot_online_results()
+        self.status_bar.showMessage(
+            f"Поиск ЛОТ-ОНЛАЙН завершен: {len(self.lot_online_results)} лотов", 5000
+        )
+
+    def on_lot_online_search_error(self, error_msg: str):
+        self.lot_online_search_btn.setEnabled(True)
+        self.lot_online_search_btn.setText("Найти на ЛОТ-ОНЛАЙН")
+        self.lot_online_stop_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage("Ошибка поиска ЛОТ-ОНЛАЙН", 10000)
+        QMessageBox.warning(self, "Ошибка ЛОТ-ОНЛАЙН", error_msg)
+
+    def render_lot_online_results(self):
+        meta = self.lot_online_meta or {}
+        mode = meta.get("mode")
+        mode_text = "все страницы" if mode == "all_pages" else f"страница {self.lot_online_current_page}"
+        self.lot_online_status_label.setText(
+            f"Найдено {len(self.lot_online_results)}, режим: {mode_text}, источник lot-online.ru"
+        )
+        self.lot_online_prev_btn.setEnabled(self.lot_online_current_page > 1 and mode != "all_pages")
+        self.lot_online_next_btn.setEnabled(bool(meta.get("has_more")) and mode != "all_pages")
+        external_ids = [lot.external_id for lot in self.lot_online_results]
+        existing: set[str] = set()
+        if external_ids:
+            with session_scope() as session:
+                existing = set(session.scalars(select(ProcessedLot.external_id).where(
+                    ProcessedLot.source_system == "lot-online.ru",
+                    ProcessedLot.external_id.in_(external_ids),
+                )).all())
+
+        self.lot_online_results_table.setSortingEnabled(False)
+        self.lot_online_results_table.setRowCount(len(self.lot_online_results))
+        for row, lot in enumerate(self.lot_online_results):
+            raw = lot.raw_data or {}
+            link_url = lot.source_url or lot.lot_url
+            items = [
+                make_text_item("Да" if lot.external_id in existing else ""),
+                make_text_item(lot.external_id.replace("lot-online:", "")),
+                make_text_item(lot.procedure_number or raw.get("procedure_number") or ""),
+                make_text_item(lot.title),
+                make_text_item(translate_category(lot.category)),
+                make_text_item(lot.region_name or lot.address or lot.region_slug or ""),
+                make_number_item(lot.current_price or lot.start_price),
+                make_text_item(translate_status(lot.auction_status)),
+                make_text_item("Открыть" if link_url else ""),
+            ]
+            for item in items:
+                item.setData(EXTERNAL_ID_ROLE, lot.external_id)
+                item.setData(URL_ROLE, link_url)
+            for column, item in enumerate(items):
+                self.lot_online_results_table.setItem(row, column, item)
+        self.lot_online_results_table.setSortingEnabled(True)
+
+    def _lot_online_lot_by_external_id(self, external_id: str | None) -> NormalizedLot | None:
+        return next((lot for lot in self.lot_online_results if lot.external_id == external_id), None)
+
+    def selected_lot_online_lots(self) -> list[NormalizedLot]:
+        rows = sorted({item.row() for item in self.lot_online_results_table.selectedItems()})
+        selected = []
+        for row in rows:
+            item = self.lot_online_results_table.item(row, 1)
+            lot = self._lot_online_lot_by_external_id(item.data(EXTERNAL_ID_ROLE) if item else None)
+            if lot:
+                selected.append(lot)
+        return selected
+
+    def import_selected_lot_online_lots(self):
+        self.import_lot_online_lots(self.selected_lot_online_lots())
+
+    def import_all_lot_online_lots(self):
+        self.import_lot_online_lots(list(self.lot_online_results))
+
+    def import_lot_online_lots(self, lots: list[NormalizedLot]):
+        if not lots:
+            QMessageBox.information(self, "Импорт", "Нет лотов ЛОТ-ОНЛАЙН для импорта.")
+            return
+        external_ids = [lot.external_id for lot in lots]
+        with session_scope() as session:
+            existed = set(session.scalars(select(ProcessedLot.external_id).where(
+                ProcessedLot.source_system == "lot-online.ru",
+                ProcessedLot.external_id.in_(external_ids),
+            )).all())
+            for lot in lots:
+                persist_lot(session, lot)
+        added = sum(lot.external_id not in existed for lot in lots)
+        self.status_bar.showMessage(f"Импорт ЛОТ-ОНЛАЙН: +{added}, обновлено {len(lots) - added}", 5000)
+        self.load_lots()
+        self.update_dashboard()
+        self.render_lot_online_results()
+
+    def search_lot_online_next_page(self):
+        self.run_lot_online_search(self.lot_online_current_page + 1)
+
+    def search_lot_online_prev_page(self):
+        self.run_lot_online_search(max(1, self.lot_online_current_page - 1))
+
+    def open_lot_online_result_url(self, row: int, _column: int):
+        item = self.lot_online_results_table.item(row, 1)
+        lot = self._lot_online_lot_by_external_id(item.data(EXTERNAL_ID_ROLE) if item else None)
+        url = lot.source_url or lot.lot_url if lot else None
+        if url:
+            QDesktopServices.openUrl(QUrl.fromUserInput(str(url)))
+
+    def open_lot_online_link_cell(self, row: int, column: int):
+        if column == 8:
+            self.open_lot_online_result_url(row, column)
+
+    def open_lot_online_site(self):
+        try:
+            params = LotOnlineClient()._build_query_params(self.collect_lot_online_filters())
+            url = LotOnlineClient()._prepare_url(params)
+        except Exception:
+            url = LotOnlineClient.SEARCH_ENDPOINT
+        QDesktopServices.openUrl(QUrl.fromUserInput(url))
+
     def init_registry_tab(self):
         layout = QVBoxLayout(self.registry_tab)
         
@@ -2567,10 +3915,13 @@ class MainWindow(QMainWindow):
         refresh_reg_btn = QPushButton("🔄")
         refresh_reg_btn.setFixedWidth(40)
         refresh_reg_btn.clicked.connect(lambda: self.load_lots())
+        save_filter_btn = QPushButton("💾 Фильтр")
+        save_filter_btn.clicked.connect(self.save_current_registry_filter)
         
         toolbar.addWidget(self.search_input)
         toolbar.addWidget(self.category_combo)
         toolbar.addWidget(refresh_reg_btn)
+        toolbar.addWidget(save_filter_btn)
         layout.addLayout(toolbar)
 
         # Sorting Toolbar
@@ -2684,8 +4035,42 @@ class MainWindow(QMainWindow):
             review_layout.addWidget(btn)
         
         detail_layout.addLayout(review_layout)
+
+        self.max_bid_btn = QPushButton("🧮 Калькулятор максимальной ставки")
+        self.max_bid_btn.setFixedHeight(40)
+        self.max_bid_btn.setStyleSheet(
+            "background-color: #eaf2f8; color: #2471a3; font-weight: bold; border-radius: 5px;"
+        )
+        self.max_bid_btn.clicked.connect(self.open_max_bid_calculator)
+        self.max_bid_btn.setEnabled(False)
+        detail_layout.addWidget(self.max_bid_btn)
+
+        deal_actions = QHBoxLayout()
+        self.watchlist_btn = QPushButton("⭐ Watchlist")
+        self.watchlist_btn.clicked.connect(self.toggle_selected_watchlist)
+        self.note_btn = QPushButton("📝 Заметка")
+        self.note_btn.clicked.connect(self.add_selected_lot_note)
+        self.participation_btn = QPushButton("✅ Участие")
+        self.participation_btn.clicked.connect(self.edit_participation_checklist)
+        self.documents_btn = QPushButton("📄 Документы")
+        self.documents_btn.clicked.connect(self.show_document_versions)
+        self.merge_btn = QPushButton("🔗 Merge")
+        self.merge_btn.clicked.connect(self.merge_selected_lots)
+        self.split_btn = QPushButton("↔ Split")
+        self.split_btn.clicked.connect(self.split_selected_lot)
+        for button in (
+            self.watchlist_btn,
+            self.note_btn,
+            self.participation_btn,
+            self.documents_btn,
+            self.merge_btn,
+            self.split_btn,
+        ):
+            button.setEnabled(False)
+            deal_actions.addWidget(button)
+        detail_layout.addLayout(deal_actions)
         
-        self.delete_lot_btn = QPushButton("🗑️ Удалить выбранные")
+        self.delete_lot_btn = QPushButton("📦 Архивировать выбранные")
         self.delete_lot_btn.setFixedHeight(40)
         self.delete_lot_btn.setStyleSheet("background-color: #fadbd8; color: #c0392b; font-weight: bold; border-radius: 5px;")
         self.delete_lot_btn.clicked.connect(self.delete_selected_lots)
@@ -2798,6 +4183,7 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         sidebar = QWidget()
+        self.map_cadastre_sidebar = sidebar
         sidebar.setFixedWidth(360)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 12, 12, 12)
@@ -2828,6 +4214,17 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self.refresh_all_map_markers)
         sidebar_layout.addWidget(refresh_btn)
 
+        self.search_all_russia_btn = QPushButton("Поиск всех лотов РФ")
+        self.search_all_russia_btn.setMinimumHeight(42)
+        self.search_all_russia_btn.setStyleSheet(
+            "QPushButton { background: #1f9d55; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bd3b4; }"
+        )
+        self.search_all_russia_btn.clicked.connect(self.run_all_russia_search)
+        sidebar_layout.addWidget(self.search_all_russia_btn)
+
+        self._add_map_filter_controls(sidebar_layout, "map")
+
         self.cad_info_text = QTextEdit()
         self.cad_info_text.setReadOnly(True)
         self.cad_info_text.setPlaceholderText("Введите кадастровый номер или адрес")
@@ -2836,7 +4233,14 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
 
         self.map_view = QWebEngineView()
+        self.map_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
         self.web_view = self.map_view
+        self.map_web_channel = QWebChannel(self.map_view.page())
+        self.map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
+        self.map_view.page().setWebChannel(self.map_web_channel)
         main_layout.addWidget(self.map_view, stretch=1)
 
         self.update_map()
@@ -2847,6 +4251,7 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         sidebar = QWidget()
+        self.yandex_cadastre_sidebar = sidebar
         sidebar.setFixedWidth(360)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 12, 12, 12)
@@ -2878,6 +4283,17 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self.refresh_all_map_markers)
         sidebar_layout.addWidget(refresh_btn)
 
+        self.yandex_search_all_russia_btn = QPushButton("Поиск всех лотов РФ")
+        self.yandex_search_all_russia_btn.setMinimumHeight(42)
+        self.yandex_search_all_russia_btn.setStyleSheet(
+            "QPushButton { background: #1f9d55; color: white; border: none; border-radius: 6px; "
+            "font-weight: 700; padding: 8px; } QPushButton:disabled { background: #9bd3b4; }"
+        )
+        self.yandex_search_all_russia_btn.clicked.connect(self.run_all_russia_search)
+        sidebar_layout.addWidget(self.yandex_search_all_russia_btn)
+
+        self._add_map_filter_controls(sidebar_layout, "yandex_map")
+
         self.yandex_cad_info_text = QTextEdit()
         self.yandex_cad_info_text.setReadOnly(True)
         self.yandex_cad_info_text.setPlaceholderText("Введите кадастровый номер или адрес")
@@ -2886,6 +4302,13 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
 
         self.yandex_map_view = QWebEngineView()
+        self.yandex_map_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
+        self.yandex_map_web_channel = QWebChannel(self.yandex_map_view.page())
+        self.yandex_map_web_channel.registerObject("bankrotaiBridge", self.map_bridge)
+        self.yandex_map_view.page().setWebChannel(self.yandex_map_web_channel)
         main_layout.addWidget(self.yandex_map_view, stretch=1)
 
         self.update_yandex_map()
@@ -3012,7 +4435,9 @@ class MainWindow(QMainWindow):
         
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
-        form.addRow("API Ключ:", self.api_key_input)
+        self.api_key_input.setReadOnly(True)
+        self.api_key_input.setPlaceholderText("Задаётся через переменную окружения / secret manager")
+        form.addRow("API ключ:", self.api_key_input)
         
         self.model_search_input = QComboBox()
         form.addRow("Модель поиска:", self.model_search_input)
@@ -3024,11 +4449,82 @@ class MainWindow(QMainWindow):
         ai_set_layout.addWidget(save_settings_btn)
         layout.addWidget(ai_set_box)
 
+        reliability_box, reliability_layout = add_section(
+            "🩺 Состояние источников и данных", "#f4f6ff", "#aeb8da"
+        )
+        self.reliability_summary = QTextEdit()
+        self.reliability_summary.setReadOnly(True)
+        self.reliability_summary.setMaximumHeight(240)
+        reliability_layout.addWidget(self.reliability_summary)
+        reliability_actions = QHBoxLayout()
+        refresh_quality_btn = QPushButton("Обновить")
+        refresh_quality_btn.clicked.connect(self.refresh_reliability_status)
+        retry_geo_btn = QPushButton("Повторить ошибки GEO")
+        retry_geo_btn.clicked.connect(self.retry_failed_geo)
+        retention_btn = QPushButton("Очистить raw старше 30 дней")
+        retention_btn.clicked.connect(self.run_raw_retention)
+        diagnostics_btn = QPushButton("Экспорт диагностики")
+        diagnostics_btn.clicked.connect(self.export_diagnostics)
+        for button in (refresh_quality_btn, retry_geo_btn, retention_btn, diagnostics_btn):
+            reliability_actions.addWidget(button)
+        reliability_layout.addLayout(reliability_actions)
+        layout.addWidget(reliability_box)
+        QTimer.singleShot(0, self.refresh_reliability_status)
+
         layout.addStretch()
         
         # Set tools_tab content
         main_tools_layout = QVBoxLayout(self.tools_tab)
         main_tools_layout.addWidget(scroll_widget)
+
+    def refresh_reliability_status(self):
+        with session_scope() as session:
+            quality = data_quality_snapshot(session)
+            sources = list_source_health(session)
+        lines = [
+            f"Лотов: {quality.total_lots}; активных: {quality.active_lots}; архив: {quality.archived_lots}",
+            f"Дубли: {quality.duplicate_lots}; без адреса: {quality.missing_address}; без кадастра: {quality.missing_cadastre}",
+            f"GEO готово: {quality.geocoded_lots}; требуют внимания: {quality.geo_attention_lots}; в очереди: {quality.queued_geo_failures}",
+            f"AI-анализ: {quality.ai_analyzed_lots}; версий документов: {quality.document_versions}",
+            "",
+            "Источники:",
+        ]
+        lines.extend(
+            f"• {source.source_system}: {source.status}, объектов {source.items_seen}"
+            + (f", ошибка: {source.last_error}" if source.last_error else "")
+            for source in sources
+        )
+        if not sources:
+            lines.append("• Источники ещё не проверялись")
+        self.reliability_summary.setPlainText("\n".join(lines))
+
+    def retry_failed_geo(self):
+        with session_scope() as session:
+            lot_ids = geo_retry_lot_ids(session)
+        if not lot_ids:
+            QMessageBox.information(self, "GEO", "Готовых к повтору ошибок нет.")
+            return
+        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=True)
+
+    def run_raw_retention(self):
+        with session_scope() as session:
+            result = apply_raw_payload_retention(session, retention_days=30)
+        self.refresh_reliability_status()
+        QMessageBox.information(
+            self,
+            "Хранение raw",
+            f"Удалено raw-записей: {result['raw_deleted']}\nОчищено payload источников: {result['source_cleared']}",
+        )
+
+    def export_diagnostics(self):
+        default_path = str(Path(QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)) / "bankrotai-diagnostics.json")
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт диагностики", default_path, "JSON (*.json)")
+        if not path:
+            return
+        with session_scope() as session:
+            payload = diagnostic_export(session)
+        Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        QMessageBox.information(self, "Диагностика", f"Файл сохранён:\n{path}")
 
     def update_dashboard(self):
         try:
@@ -3066,7 +4562,10 @@ class MainWindow(QMainWindow):
         self.lots_table.setSortingEnabled(False)
 
         with session_scope() as session:
-            query = select(ProcessedLot)
+            query = select(ProcessedLot).where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+            )
             
             if search_text:
                 query = query.where(ProcessedLot.title.ilike(f"%{search_text}%"))
@@ -3099,7 +4598,10 @@ class MainWindow(QMainWindow):
             else:
                 query = query.order_by(col_attr)
 
-            lots = session.scalars(query).all()
+            lots = [
+                lot for lot in session.scalars(query).all()
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
+            ]
             self.lots_table.setRowCount(len(lots))
             for i, lot in enumerate(lots):
                 # Helper for numeric items
@@ -3136,6 +4638,7 @@ class MainWindow(QMainWindow):
                     QTableWidgetItem(str(lot.risk_score) if lot.risk_score is not None else ""),
                     QTableWidgetItem(lot.last_update.strftime("%d.%m.%Y %H:%M"))
                 ]
+                items[0].setData(LOT_ID_ROLE, lot.id)
                 
                 # Review Status Color
                 color = QColor("white")
@@ -3154,16 +4657,33 @@ class MainWindow(QMainWindow):
         selected_items = self.lots_table.selectedItems()
         if not selected_items:
             self.delete_lot_btn.setEnabled(False)
+            self.max_bid_btn.setEnabled(False)
             self.ai_single_btn.setEnabled(False)
             self.geo_fix_btn.setEnabled(False)
             self.geo_fix_btn.setText("🗺️ Гео")
+            for button in (
+                self.watchlist_btn,
+                self.note_btn,
+                self.participation_btn,
+                self.documents_btn,
+                self.merge_btn,
+                self.split_btn,
+            ):
+                button.setEnabled(False)
             for btn in [self.review_approved_btn, self.review_maybe_btn, self.review_rejected_btn]:
                 btn.setEnabled(False)
             return
         rows = sorted(list(set(item.row() for item in selected_items)))
         count = len(rows)
         self.delete_lot_btn.setEnabled(True)
-        self.delete_lot_btn.setText(f"🗑️ Удалить выбранные ({count})")
+        self.delete_lot_btn.setText(f"📦 Архивировать выбранные ({count})")
+        self.max_bid_btn.setEnabled(count == 1)
+        self.watchlist_btn.setEnabled(count == 1)
+        self.note_btn.setEnabled(count == 1)
+        self.participation_btn.setEnabled(count == 1)
+        self.documents_btn.setEnabled(count == 1)
+        self.merge_btn.setEnabled(count == 2)
+        self.split_btn.setEnabled(count == 1)
         
         # AI evaluation enabled for 1 or more lots
         self.ai_single_btn.setEnabled(True)
@@ -3175,9 +4695,9 @@ class MainWindow(QMainWindow):
             for btn in [self.review_approved_btn, self.review_maybe_btn, self.review_rejected_btn]:
                 btn.setEnabled(True)
             
-            ext_id = self.lots_table.item(rows[0], 0).text()
+            lot_id = self._lot_id_for_row(rows[0])
             with session_scope() as session:
-                lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == ext_id))
+                lot = session.get(ProcessedLot, lot_id) if lot_id is not None else None
                 if lot:
                     self.current_selected_lot_id = lot.id
                     
@@ -3227,11 +4747,11 @@ class MainWindow(QMainWindow):
             self.detail_ai.clear()
 
     def open_lot_url(self, row: int, column: int) -> None:
-        ext_id = self.lots_table.item(row, 0).text() if self.lots_table.item(row, 0) else None
-        if not ext_id:
+        lot_id = self._lot_id_for_row(row)
+        if lot_id is None:
             return
         with session_scope() as session:
-            lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == ext_id))
+            lot = session.get(ProcessedLot, lot_id)
             url = (lot.source_url or lot.lot_url) if lot else None
             if url:
                 QDesktopServices.openUrl(QUrl.fromUserInput(str(url)))
@@ -3386,13 +4906,173 @@ class MainWindow(QMainWindow):
         selected_items = self.lots_table.selectedItems()
         if not selected_items: return
         rows = sorted(list(set(item.row() for item in selected_items)))
-        ext_ids = [self.lots_table.item(r, 0).text() for r in rows]
-        if QMessageBox.question(self, "Удаление", f"Удалить {len(ext_ids)} лотов?") == QMessageBox.Yes:
+        lot_ids = [lot_id for row in rows if (lot_id := self._lot_id_for_row(row)) is not None]
+        if QMessageBox.question(
+            self,
+            "Архивирование",
+            f"Переместить в архив {len(lot_ids)} лотов? История и аналитика будут сохранены.",
+        ) == QMessageBox.Yes:
             with session_scope() as session:
-                lots = session.scalars(select(ProcessedLot.id).where(ProcessedLot.external_id.in_(ext_ids))).all()
-                delete_lots_batch(session, list(lots))
+                delete_lots_batch(session, lot_ids)
             self.load_lots()
             self.update_dashboard()
+
+    def _lot_id_for_row(self, row: int) -> int | None:
+        item = self.lots_table.item(row, 0)
+        if item is None:
+            return None
+        value = item.data(LOT_ID_ROLE)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def open_max_bid_calculator(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            QMessageBox.information(self, "Калькулятор", "Выберите один лот.")
+            return
+        with session_scope() as session:
+            lot = session.get(ProcessedLot, lot_ids[0])
+            intended_bid = float(lot.current_price or 0) if lot else 0
+        MaxBidDialog(lot_id=lot_ids[0], intended_bid=intended_bid, parent=self).exec()
+
+    def save_current_registry_filter(self):
+        name, accepted = QInputDialog.getText(self, "Сохранённый фильтр", "Название:")
+        if not accepted:
+            return
+        with session_scope() as session:
+            save_search(session, name, {
+                "text": self.search_input.text().strip(),
+                "category": self.category_combo.currentText(),
+                "sort": list(self.current_sort),
+            })
+        self.status_bar.showMessage("Фильтр сохранён", 3000)
+
+    def toggle_selected_watchlist(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        with session_scope() as session:
+            enabled = toggle_watchlist(session, lot_ids[0])
+        self.status_bar.showMessage("Лот добавлен в watchlist" if enabled else "Лот удалён из watchlist", 3000)
+
+    def add_selected_lot_note(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        note, accepted = QInputDialog.getMultiLineText(self, "Заметка к лоту", "Текст:")
+        if not accepted or not note.strip():
+            return
+        with session_scope() as session:
+            add_lot_note(session, lot_ids[0], note)
+        self.status_bar.showMessage("Заметка сохранена", 3000)
+
+    def edit_participation_checklist(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        fields = (
+            ("etp_accredited", "Аккредитация на ЭТП"),
+            ("signature_valid", "Электронная подпись действует"),
+            ("application_completed", "Заявка заполнена"),
+            ("deposit_sent", "Задаток отправлен"),
+            ("payment_purpose_verified", "Назначение платежа проверено"),
+            ("deposit_received", "Задаток получен площадкой"),
+            ("documents_signed", "Документы подписаны"),
+            ("application_accepted", "Заявка принята"),
+        )
+        with session_scope() as session:
+            source = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_ids[0]))
+            checklist = session.scalar(select(LotParticipationChecklist).where(
+                LotParticipationChecklist.source_lot_id == source.id,
+                LotParticipationChecklist.user_id == "desktop",
+            )) if source else None
+            current = {key: bool(getattr(checklist, key, False)) for key, _ in fields}
+            current_notes = checklist.notes if checklist and checklist.notes else ""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Контроль участия")
+        dialog_layout = QVBoxLayout(dialog)
+        controls: dict[str, QCheckBox] = {}
+        for key, label in fields:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(current[key])
+            controls[key] = checkbox
+            dialog_layout.addWidget(checkbox)
+        notes = QTextEdit(current_notes)
+        notes.setPlaceholderText("Комментарии, сроки, реквизиты проверки")
+        dialog_layout.addWidget(notes)
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(dialog.accept)
+        dialog_layout.addWidget(save_button)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = {key: checkbox.isChecked() for key, checkbox in controls.items()}
+        values["notes"] = notes.toPlainText().strip()
+        try:
+            with session_scope() as session:
+                save_participation_checklist(session, lot_ids[0], values)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Контроль участия", str(exc))
+            return
+        self.status_bar.showMessage("Контроль участия сохранён", 3000)
+
+    def show_document_versions(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        with session_scope() as session:
+            source = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_ids[0]))
+            documents = session.scalars(
+                select(LotDocument).where(LotDocument.source_lot_id == source.id)
+            ).all() if source else []
+            lines: list[str] = []
+            for document in documents:
+                versions = session.scalars(
+                    select(LotDocumentVersion)
+                    .where(LotDocumentVersion.document_id == document.id)
+                    .order_by(LotDocumentVersion.fetched_at)
+                ).all()
+                lines.append(f"{document.filename}: {len(versions)} версий")
+                for version in versions:
+                    lines.append(f"  • {version.fetched_at:%d.%m.%Y %H:%M} — {version.sha256[:12]}, {version.size_bytes or 0} байт")
+                if len(versions) >= 2:
+                    change = compare_document_versions(session, versions[-2].id, versions[-1].id)
+                    lines.append(f"  Изменения последней версии: {json.dumps(change.summary_json, ensure_ascii=False)}")
+        QMessageBox.information(
+            self,
+            "Документы и версии",
+            "\n".join(lines) if lines else "Для этого лота документы ещё не загружены.",
+        )
+
+    def merge_selected_lots(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 2:
+            QMessageBox.information(self, "Дубли", "Выберите ровно два лота; первый станет основным.")
+            return
+        reason, accepted = QInputDialog.getText(self, "Объединение дублей", "Причина:")
+        if not accepted:
+            return
+        with session_scope() as session:
+            manual_merge_lots(session, lot_ids[0], lot_ids[1], reason=reason)
+        self.load_lots()
+        self.status_bar.showMessage("Дубли объединены; действие записано в журнал", 4000)
+
+    def split_selected_lot(self):
+        lot_ids = self.get_selected_lot_ids()
+        if len(lot_ids) != 1:
+            return
+        reason, accepted = QInputDialog.getText(self, "Разделение дубля", "Причина:")
+        if not accepted:
+            return
+        try:
+            with session_scope() as session:
+                manual_split_lot(session, lot_ids[0], reason=reason)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Дубли", str(exc))
+            return
+        self.load_lots()
+        self.status_bar.showMessage("Лот отделён; действие записано в журнал", 4000)
 
     def get_selected_lot_ids(self) -> list[int]:
         selected_items = self.lots_table.selectedItems()
@@ -3400,20 +5080,7 @@ class MainWindow(QMainWindow):
             return []
 
         rows = sorted({item.row() for item in selected_items})
-        ext_ids = [
-            self.lots_table.item(row, 0).text()
-            for row in rows
-            if self.lots_table.item(row, 0)
-        ]
-        if not ext_ids:
-            return []
-
-        with session_scope() as session:
-            return list(
-                session.scalars(
-                    select(ProcessedLot.id).where(ProcessedLot.external_id.in_(ext_ids))
-                ).all()
-            )
+        return [lot_id for row in rows if (lot_id := self._lot_id_for_row(row)) is not None]
 
     def start_geo_worker(
         self,
@@ -3441,6 +5108,7 @@ class MainWindow(QMainWindow):
         self.geo_worker.progress.connect(self.status_bar.showMessage)
         self.geo_worker.progress_percent.connect(self.progress_bar.setValue)
         self.geo_worker.progress_percent.connect(lambda value: self.update_task_progress("geo", value))
+        self.geo_worker.lot_processed.connect(self.on_geo_lot_processed)
         self.geo_worker.finished.connect(self.on_geo_finished)
         self.geo_worker.error.connect(self.on_worker_error)
         self.geo_worker.start()
@@ -3582,18 +5250,238 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Обновление геометок лотов из базы...")
         self.start_geo_worker(limit=None, refresh_existing=False)
 
-    def on_geo_finished(self, count: int):
+    def _set_all_russia_buttons_enabled(self, enabled: bool) -> None:
+        for name in ("search_all_russia_btn", "yandex_search_all_russia_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(enabled)
+
+    def run_all_russia_search(self) -> None:
+        worker = getattr(self, "all_russia_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.request_stop()
+            self.status_bar.showMessage("Останавливаю поиск после текущей страницы...", 5000)
+            return
+        self._set_all_russia_buttons_enabled(False)
+        self.start_task_progress("all_russia", "РФ")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.all_russia_worker = AllRussiaRealEstateWorker()
+        self.all_russia_worker.progress.connect(self.status_bar.showMessage)
+        self.all_russia_worker.source_finished.connect(
+            lambda source, count, unique: self.status_bar.showMessage(
+                f"{source}: {count}; уникальных карточек РФ: {unique}", 5000
+            )
+        )
+        self.all_russia_worker.result_ready.connect(self.on_all_russia_search_finished)
+        self.all_russia_worker.error.connect(self.on_all_russia_search_error)
+        self.all_russia_worker.start()
+
+    def on_all_russia_search_finished(self, lot_ids: object, summary: object) -> None:
+        self.finish_task_progress("all_russia")
+        self._set_all_russia_buttons_enabled(True)
+        self.progress_bar.setVisible(False)
+        ids = [int(value) for value in lot_ids] if isinstance(lot_ids, list) else []
+        details = summary if isinstance(summary, dict) else {}
+        self.load_lots()
+        self.update_map()
+        self.update_yandex_map()
+        source_errors = details.get("errors") or {}
+        if source_errors:
+            logger.warning("Nationwide search completed with source errors: %s", source_errors)
+            failed_sources = ", ".join(str(name) for name in source_errors)
+            self.status_bar.showMessage(
+                f"Поиск РФ НЕПОЛНЫЙ: недоступны {failed_sources}. Загружено {len(ids)} карточек.",
+                15000,
+            )
+            QMessageBox.warning(
+                self,
+                "Неполный поиск всех лотов РФ",
+                "Не все источники были загружены. Карта не является полной.\n\n"
+                + "\n".join(f"• {name}: {message}" for name, message in source_errors.items())
+                + "\n\nОтключите VPN или восстановите доступ к источнику и нажмите поиск РФ ещё раз. "
+                "Повторный запуск безопасен: уже загруженные лоты не дублируются.",
+            )
+        else:
+            self.status_bar.showMessage(
+                f"Поиск РФ завершён: уникальных карточек {len(ids)}. Запускаю геокодирование...",
+                8000,
+            )
+        if ids:
+            self.start_geo_worker(lot_ids=ids, refresh_existing=False, limit=None)
+
+    @staticmethod
+    def _lot_region_label(lot: ProcessedLot) -> str:
+        if lot.region_name:
+            return str(lot.region_name).strip()
+
+        cadastral = str(lot.cadastral_number or "")
+        match = re.match(r"^(\d{1,2}):", cadastral)
+        if match:
+            cadastral_code = match.group(1).zfill(2)
+            for name, code in TBankrotClient.CADASTRAL_REGION_NAME_TO_CODE.items():
+                if code == cadastral_code and (
+                    "Республика" in name or "область" in name or "край" in name
+                    or name in {"Москва", "Санкт-Петербург", "Севастополь"}
+                ):
+                    return name
+
+        text = " ".join(
+            value for value in (lot.address, lot.title, lot.description) if value
+        ).casefold()
+        known_regions = sorted(TorgiGovClient.SUBJECT_RF_CODES, key=len, reverse=True)
+        for region_name in known_regions:
+            if region_name.casefold() in text:
+                return region_name
+        return "Регион не определён"
+
+    def _available_map_regions(self) -> list[str]:
+        with session_scope() as session:
+            lots = session.scalars(
+                select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
+            ).all()
+            return sorted({
+                self._lot_region_label(lot)
+                for lot in lots
+                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot))
+            })
+
+    @classmethod
+    def _map_lot_matches_filters(
+        cls,
+        lot: ProcessedLot,
+        *,
+        min_price: float = 0,
+        max_price: float = 0,
+        region: str = "Все регионы",
+    ) -> bool:
+        price = float(lot.current_price or lot.start_price or 0)
+        if min_price and (not price or price < min_price):
+            return False
+        if max_price and (not price or price > max_price):
+            return False
+        return region == "Все регионы" or cls._lot_region_label(lot) == region
+
+    def _add_map_filter_controls(self, layout: QVBoxLayout, prefix: str) -> None:
+        if not hasattr(self, "map_filter_min_price"):
+            self.map_filter_min_price = 0.0
+            self.map_filter_max_price = 0.0
+            self.map_filter_region = "Все регионы"
+
+        group = QGroupBox("Фильтры лотов")
+        form = QFormLayout(group)
+        price_from = QDoubleSpinBox()
+        price_to = QDoubleSpinBox()
+        for field in (price_from, price_to):
+            field.setDecimals(0)
+            field.setRange(0, 999_999_999_999_999)
+            field.setSingleStep(100_000)
+            field.setGroupSeparatorShown(True)
+            field.setSpecialValueText("Не задано")
+            field.setSuffix(" ₽")
+        price_from.setValue(self.map_filter_min_price)
+        price_to.setValue(self.map_filter_max_price)
+
+        region = WheelSafeComboBox()
+        region.addItem("Все регионы")
+        region.addItems(self._available_map_regions())
+        selected_index = region.findText(self.map_filter_region)
+        region.setCurrentIndex(max(0, selected_index))
+
+        form.addRow("Цена от", price_from)
+        form.addRow("Цена до", price_to)
+        form.addRow("Регион", region)
+
+        buttons = QHBoxLayout()
+        apply_button = QPushButton("Применить")
+        reset_button = QPushButton("Сбросить")
+        apply_button.clicked.connect(lambda: self.apply_map_filters(prefix))
+        reset_button.clicked.connect(lambda: self.reset_map_filters(prefix))
+        buttons.addWidget(apply_button)
+        buttons.addWidget(reset_button)
+        form.addRow(buttons)
+        layout.addWidget(group)
+
+        setattr(self, f"{prefix}_price_from", price_from)
+        setattr(self, f"{prefix}_price_to", price_to)
+        setattr(self, f"{prefix}_region_filter", region)
+
+    def _sync_map_filter_controls(self) -> None:
+        for prefix in ("map", "yandex_map"):
+            price_from = getattr(self, f"{prefix}_price_from", None)
+            price_to = getattr(self, f"{prefix}_price_to", None)
+            region = getattr(self, f"{prefix}_region_filter", None)
+            if price_from is not None:
+                price_from.setValue(self.map_filter_min_price)
+            if price_to is not None:
+                price_to.setValue(self.map_filter_max_price)
+            if region is not None:
+                index = region.findText(self.map_filter_region)
+                region.setCurrentIndex(max(0, index))
+
+    def apply_map_filters(self, prefix: str) -> None:
+        price_from = float(getattr(self, f"{prefix}_price_from").value())
+        price_to = float(getattr(self, f"{prefix}_price_to").value())
+        if price_from and price_to and price_from > price_to:
+            QMessageBox.warning(self, "Фильтры карты", "Цена «от» не может быть больше цены «до».")
+            return
+        self.map_filter_min_price = price_from
+        self.map_filter_max_price = price_to
+        self.map_filter_region = getattr(self, f"{prefix}_region_filter").currentText()
+        self._sync_map_filter_controls()
+        self.update_map()
+        self.update_yandex_map()
+
+    def reset_map_filters(self, _prefix: str) -> None:
+        self.map_filter_min_price = 0.0
+        self.map_filter_max_price = 0.0
+        self.map_filter_region = "Все регионы"
+        self._sync_map_filter_controls()
+        self.update_map()
+        self.update_yandex_map()
+
+    def on_all_russia_search_error(self, message: str) -> None:
+        self.finish_task_progress("all_russia")
+        self._set_all_russia_buttons_enabled(True)
+        self.progress_bar.setVisible(False)
+        QMessageBox.warning(self, "Поиск всех лотов РФ", message)
+
+    def on_geo_lot_processed(self, lot_id: int, success: bool, completed: int, total: int):
+        if not success:
+            return
+        payload = self._load_map_lot(lot_id)
+        if not payload:
+            return
+        encoded = json.dumps(payload, ensure_ascii=False)
+        js = (
+            f"window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || []; "
+            f"if (window.upsertLot) {{ window.upsertLot({encoded}); }} "
+            f"else {{ window.__bankrotaiPendingLots.push({encoded}); }}"
+        )
+        self.map_view.page().runJavaScript(js)
+        if hasattr(self, "yandex_map_view"):
+            self.yandex_map_view.page().runJavaScript(js)
+        self.status_bar.showMessage(
+            f"GEO: точка добавлена на карту сразу ({completed}/{total})", 1500
+        )
+
+    def on_geo_finished(self, count: int, failed_count: int, skipped_existing: int):
         self.finish_task_progress("geo")
         if hasattr(self, "geo_batch_btn"):
             self.geo_batch_btn.setEnabled(True)
         self.geo_fix_btn.setEnabled(bool(self.lots_table.selectedItems()))
         self.progress_bar.setVisible(False)
-        if count == 0:
-            self.status_bar.showMessage("Все лоты уже имеют гео-координаты", 5000)
-            QMessageBox.information(self, "Инфо", "Все лоты уже имеют гео-координаты.")
+        if count == 0 and failed_count == 0:
+            message = f"Все выбранные лоты уже геокодированы. Пропущено: {skipped_existing}"
+            self.status_bar.showMessage(message, 5000)
+            QMessageBox.information(self, "Инфо", message)
         else:
-            self.status_bar.showMessage(f"Геокодирование завершено. Обработано: {count}", 5000)
-            QMessageBox.information(self, "Готово", f"Массовое геокодирование завершено. Обработано лотов: {count}")
+            message = (
+                f"Геокодирование завершено. Координаты: {count}, "
+                f"не найдено: {failed_count}, уже были готовы: {skipped_existing}"
+            )
+            self.status_bar.showMessage(message, 5000)
+            QMessageBox.information(self, "Готово", message)
         self.update_map()
         if hasattr(self, "yandex_map_view"):
             self.update_yandex_map()
@@ -3672,10 +5560,9 @@ class MainWindow(QMainWindow):
     def on_ai_provider_changed(self):
         from bankrotai.core import get_app_setting
         provider = self.provider_combo.currentData() or "omniroute"
-        current_key = get_app_setting(f"{provider}_api_key", "")
         current_model = get_app_setting(f"{provider}_model", "")
 
-        self.api_key_input.setText(current_key or "")
+        self.api_key_input.clear()
         self.model_search_input.clear()
         for model_id, label in AI_MODEL_OPTIONS.get(provider, []):
             self.model_search_input.addItem(label, model_id)
@@ -3685,13 +5572,10 @@ class MainWindow(QMainWindow):
 
     def save_ai_settings(self):
         provider = self.provider_combo.currentData() or "omniroute"
-        api_key = self.api_key_input.text().strip()
         model = self.model_search_input.currentData() or ""
 
         from bankrotai.core import set_app_setting
         set_app_setting("ai_provider", provider)
-        if api_key:
-            set_app_setting(f"{provider}_api_key", api_key)
         if model:
             set_app_setting(f"{provider}_model", model)
         if provider == "omniroute":
@@ -3699,7 +5583,12 @@ class MainWindow(QMainWindow):
             
         self._appraiser = None # Сброс кеша для создания нового с новыми настройками
         self.status_bar.showMessage("Настройки AI сохранены", 3000)
-        QMessageBox.information(self, "Успех", "Настройки AI успешно сохранены.")
+        QMessageBox.information(
+            self,
+            "Успех",
+            "Провайдер и модель сохранены. API-ключи задаются только через "
+            "переменные окружения или secret manager.",
+        )
 
     def change_review_status(self, status: str):
         if not self.current_selected_lot_id: return
@@ -3710,6 +5599,80 @@ class MainWindow(QMainWindow):
                 session.commit()
         self.status_bar.showMessage(f"Статус изменен: {status}", 3000)
         self.load_lots()
+
+    def on_map_review_changed(self, lot_id: int, status: str):
+        labels = {
+            "approved": "интересен",
+            "maybe": "сомневаюсь",
+            "rejected": "не интересен",
+        }
+        self.status_bar.showMessage(f"Лот №{lot_id}: {labels.get(status, status)}", 3000)
+        self.load_lots()
+        script = f"window.setLotReviewStatus && window.setLotReviewStatus({int(lot_id)}, {json.dumps(status)});"
+        for view_name in ("map_view", "yandex_map_view"):
+            view = getattr(self, view_name, None)
+            if view is not None:
+                view.page().runJavaScript(script)
+
+    def on_map_preview_opened(self, map_kind: str, lot_id: int):
+        sidebar = getattr(
+            self,
+            "yandex_cadastre_sidebar" if map_kind == "yandex" else "map_cadastre_sidebar",
+            None,
+        )
+        if sidebar is not None:
+            sidebar.hide()
+        if lot_id in self.preview_enrichment_workers:
+            return
+        worker = PreviewEnrichmentWorker(lot_id)
+        self.preview_enrichment_workers[lot_id] = worker
+        worker.result_ready.connect(self.on_preview_enrichment_finished)
+        worker.failed.connect(self.on_preview_enrichment_error)
+        worker.finished.connect(lambda lot_id=lot_id, worker=worker: self.cleanup_preview_enrichment_worker(lot_id, worker))
+        worker.start()
+
+    def on_map_preview_closed(self, map_kind: str):
+        sidebar = getattr(
+            self,
+            "yandex_cadastre_sidebar" if map_kind == "yandex" else "map_cadastre_sidebar",
+            None,
+        )
+        if sidebar is not None:
+            sidebar.show()
+
+    def on_preview_enrichment_finished(self, lot_id: int, extras: object):
+        encoded = json.dumps(extras if isinstance(extras, dict) else {}, ensure_ascii=False)
+        script = f"window.updateLotPreviewExtras && window.updateLotPreviewExtras({int(lot_id)}, {encoded});"
+        for view_name in ("map_view", "yandex_map_view"):
+            view = getattr(self, view_name, None)
+            if view is not None:
+                view.page().runJavaScript(script)
+
+    def on_preview_enrichment_error(self, lot_id: int, message: str):
+        logger.debug("Preview enrichment unavailable for lot %s: %s", lot_id, message)
+
+    def cleanup_preview_enrichment_worker(self, lot_id: int, worker: PreviewEnrichmentWorker):
+        if self.preview_enrichment_workers.get(int(lot_id)) is worker:
+            self.preview_enrichment_workers.pop(int(lot_id), None)
+        worker.deleteLater()
+
+    def closeEvent(self, event):
+        nationwide_worker = getattr(self, "all_russia_worker", None)
+        if nationwide_worker is not None and nationwide_worker.isRunning():
+            nationwide_worker.request_stop()
+            if not nationwide_worker.wait(70_000):
+                logger.error("Nationwide search worker did not stop before application shutdown")
+                event.ignore()
+                return
+        workers = list(self.preview_enrichment_workers.values())
+        for worker in workers:
+            worker.requestInterruption()
+        for worker in workers:
+            if worker.isRunning() and not worker.wait(30_000):
+                logger.error("Preview enrichment worker did not stop before application shutdown")
+                event.ignore()
+                return
+        super().closeEvent(event)
 
     def refresh_geo(self):
         if not self.current_selected_lot_id: return
@@ -3730,8 +5693,8 @@ class MainWindow(QMainWindow):
         lot_ids = self.get_selected_lot_ids()
         if not lot_ids:
             return
-        self.status_bar.showMessage(f"Обновление геометок выбранных лотов: {len(lot_ids)}")
-        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=True, limit=None)
+        self.status_bar.showMessage(f"Проверка геометок выбранных лотов: {len(lot_ids)}")
+        self.start_geo_worker(lot_ids=lot_ids, refresh_existing=False, limit=None)
 
     def run_cleanup(self):
         if QMessageBox.question(self, "Очистка", "Удалить все завершенные торги?") == QMessageBox.Yes:
@@ -3922,7 +5885,100 @@ class MainWindow(QMainWindow):
         js = f"window.showCadastreObject({json.dumps(result, ensure_ascii=False)});"
         self.web_view.page().runJavaScript(js)
 
-    def update_map(self):
+    @staticmethod
+    def _map_payload(
+        lot: ProcessedLot,
+        geo: LotGeoSnapshot,
+        source_lots: list[SourceLot] | None = None,
+    ) -> dict:
+        def display_datetime(value: datetime | None) -> str | None:
+            return value.strftime("%d.%m.%Y %H:%M") if value else None
+
+        source_lots = source_lots or []
+        primary_source = next(
+            (
+                source
+                for source in source_lots
+                if source.source_system == lot.source_system and source.external_id == lot.external_id
+            ),
+            source_lots[0] if source_lots else None,
+        )
+        source_url = (
+            primary_source.source_url if primary_source and primary_source.source_url
+            else lot.source_url or lot.lot_url
+        )
+        source_system = (lot.source_system or lot.source or "").lower()
+        image_urls: list[str] = []
+        gis_torgi_url = None
+        etp_url = None
+        torgi_russia_url = None
+        for source in source_lots:
+            raw_data = source.raw_data if isinstance(source.raw_data, dict) else {}
+            for image_url in extract_preview_image_urls(raw_data):
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
+            system = (source.source_system or "").casefold()
+            candidate_url = source.source_url
+            gis_torgi_url = gis_torgi_url or raw_data.get("gis_torgi_url") or (
+                candidate_url if "torgi.gov" in system else None
+            )
+            etp_url = etp_url or raw_data.get("etp_url") or (
+                candidate_url if "lot-online" in system else None
+            )
+            torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
+        auction_times = [source.auction_at for source in source_lots if source.auction_at]
+        auction_at = max(auction_times) if auction_times else None
+        auction_now = datetime.now(auction_at.tzinfo) if auction_at and auction_at.tzinfo else datetime.now()
+        ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
+        is_ended = bool(
+            lot.is_archived
+            or lot.closed_at
+            or (lot.auction_status or "").casefold() in ended_statuses
+            or (auction_at is not None and auction_at <= auction_now)
+        )
+        return {
+            "id": lot.id,
+            "title": lot.title,
+            "description": lot.description,
+            "price": float(lot.current_price) if lot.current_price else None,
+            "market_price": float(lot.market_price) if lot.market_price else None,
+            "discount": lot.discount_percent,
+            "risk": lot.risk_score,
+            "rating": lot.rating,
+            "address": lot.address,
+            "cadastral_number": lot.cadastral_number,
+            "category": lot.category,
+            "region": MainWindow._lot_region_label(lot),
+            "status": lot.auction_status,
+            "is_ended": is_ended,
+            "review_status": lot.review_status,
+            "lat": geo.centroid_lat,
+            "lon": geo.centroid_lon,
+            "geo_source": geo.geo_source,
+            "geo_confidence": geo.geo_confidence,
+            "geometry": geo.geometry_json,
+            "metadata": geo.metadata_json,
+            "url": lot.lot_url,
+            "source": lot.source_system or lot.source,
+            "source_name": (
+                " / ".join(dict.fromkeys(
+                    source.platform_name or source.source_system for source in source_lots
+                ))
+                if source_lots else lot.source_system or lot.source
+            ),
+            "source_url": source_url,
+            "gis_torgi_url": gis_torgi_url or (source_url if "torgi.gov" in source_system else None),
+            "etp_url": etp_url or (source_url if "lot-online" in source_system else None),
+            "torgi_russia_url": torgi_russia_url,
+            "image_url": image_urls[0] if image_urls else None,
+            "image_urls": image_urls,
+            "procedure_number": next((source.procedure_number for source in source_lots if source.procedure_number), None),
+            "application_deadline": display_datetime(next((source.application_deadline for source in source_lots if source.application_deadline), None)),
+            "auction_at": display_datetime(auction_at),
+            "auction_at_iso": auction_at.isoformat() if auction_at else None,
+        }
+
+    def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
         with session_scope() as session:
             latest_geo = (
                 select(
@@ -3940,135 +5996,126 @@ class MainWindow(QMainWindow):
                 select(ProcessedLot, LotGeoSnapshot)
                 .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
                 .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .limit(2000)
+                .where(ProcessedLot.duplicate_of_id.is_(None))
+                .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
+            if lot_id is not None:
+                stmt = stmt.where(ProcessedLot.id == lot_id)
 
-            lots = []
+            rows = []
+            min_price = float(getattr(self, "map_filter_min_price", 0) or 0)
+            max_price = float(getattr(self, "map_filter_max_price", 0) or 0)
+            region_filter = str(getattr(self, "map_filter_region", "Все регионы") or "Все регионы")
             for lot, geo in session.execute(stmt):
-                lots.append(
-                    {
-                        "id": lot.id,
-                        "title": lot.title,
-                        "price": float(lot.current_price) if lot.current_price else None,
-                        "market_price": float(lot.market_price) if lot.market_price else None,
-                        "discount": lot.discount_percent,
-                        "risk": lot.risk_score,
-                        "rating": lot.rating,
-                        "address": lot.address,
-                        "cadastral_number": lot.cadastral_number,
-                        "category": lot.category,
-                        "status": lot.auction_status,
-                        "lat": geo.centroid_lat,
-                        "lon": geo.centroid_lon,
-                        "geo_source": geo.geo_source,
-                        "geo_confidence": geo.geo_confidence,
-                        "geometry": geo.geometry_json,
-                        "metadata": geo.metadata_json,
-                        "url": lot.lot_url,
-                    }
+                if not is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot)):
+                    continue
+                if not self._map_lot_matches_filters(
+                    lot,
+                    min_price=min_price,
+                    max_price=max_price,
+                    region=region_filter,
+                ):
+                    continue
+                rows.append((lot, geo))
+                if lot_id is None and len(rows) >= limit:
+                    break
+            primary_ids = [lot.id for lot, _geo in rows]
+            source_map: dict[int, list[SourceLot]] = {lot_id: [] for lot_id in primary_ids}
+            if primary_ids:
+                source_rows = session.execute(
+                    select(ProcessedLot.id, ProcessedLot.duplicate_of_id, SourceLot)
+                    .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+                    .where(or_(
+                        ProcessedLot.id.in_(primary_ids),
+                        ProcessedLot.duplicate_of_id.in_(primary_ids),
+                    ))
                 )
+                for processed_id, duplicate_of_id, source_lot in source_rows:
+                    source_map.setdefault(duplicate_of_id or processed_id, []).append(source_lot)
+            return [
+                self._map_payload(lot, geo, source_map.get(lot.id, []))
+                for lot, geo in rows
+            ]
 
-        html = self.build_map_html(lots)
-        self.map_view.setHtml(html, QUrl("https://local.bankrotai/"))
-        self.status_bar.showMessage("Карта обновлена", 3000)
+    def _load_map_lot(self, lot_id: int) -> dict | None:
+        lots = self._load_map_lots(lot_id=lot_id)
+        return lots[0] if lots else None
+
+    def update_map(self):
+        lots = self._load_map_lots()
+        html = self.build_map_html([])
+        base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
+        self._set_map_document(self.map_view, html, lots, "_leaflet_load_handler", base_url)
+        self.status_bar.showMessage(f"Карта обновлена: {len(lots)} лотов", 3000)
 
     def update_yandex_map(self):
-        with session_scope() as session:
-            latest_geo = (
-                select(
-                    LotGeoSnapshot.lot_id,
-                    func.max(LotGeoSnapshot.id).label("geo_id"),
+        lots = self._load_map_lots()
+        html = self.build_yandex_map_html([])
+        base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
+        self._set_map_document(
+            self.yandex_map_view,
+            html,
+            lots,
+            "_yandex_load_handler",
+            base_url,
+        )
+        self.status_bar.showMessage(f"Яндекс-карта обновлена: {len(lots)} лотов", 3000)
+
+    def _set_map_document(
+        self,
+        view: QWebEngineView,
+        html: str,
+        lots: list[dict],
+        handler_attribute: str,
+        base_url: QUrl,
+    ) -> None:
+        previous = getattr(self, handler_attribute, None)
+        if previous is not None:
+            try:
+                view.loadFinished.disconnect(previous)
+            except (RuntimeError, TypeError):
+                pass
+
+        def loaded(ok: bool) -> None:
+            try:
+                view.loadFinished.disconnect(loaded)
+            except (RuntimeError, TypeError):
+                pass
+            setattr(self, handler_attribute, None)
+            if not ok:
+                logger.error("Map HTML failed to load for %s", handler_attribute)
+                return
+            for offset in range(0, len(lots), 50):
+                payload = json.dumps(lots[offset:offset + 50], ensure_ascii=True)
+                view.page().runJavaScript(
+                    "(function(batch) {"
+                    " window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || [];"
+                    " batch.forEach(function(lot) {"
+                    "   if (window.upsertLot) { window.upsertLot(lot); }"
+                    "   else { window.__bankrotaiPendingLots.push(lot); }"
+                    " });"
+                    f"}})({payload});"
                 )
-                .where(
-                    LotGeoSnapshot.centroid_lat.isnot(None),
-                    LotGeoSnapshot.centroid_lon.isnot(None),
-                )
-                .group_by(LotGeoSnapshot.lot_id)
-                .subquery()
+            view.page().runJavaScript(
+                "if (window.fitAllLots) { window.fitAllLots(); }"
             )
-            stmt = (
-                select(ProcessedLot, LotGeoSnapshot)
-                .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-                .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .limit(2000)
-            )
 
-            lots = []
-            for lot, geo in session.execute(stmt):
-                lots.append(
-                    {
-                        "id": lot.id,
-                        "title": lot.title,
-                        "price": float(lot.current_price) if lot.current_price else None,
-                        "market_price": float(lot.market_price) if lot.market_price else None,
-                        "discount": lot.discount_percent,
-                        "risk": lot.risk_score,
-                        "rating": lot.rating,
-                        "address": lot.address,
-                        "cadastral_number": lot.cadastral_number,
-                        "category": lot.category,
-                        "status": lot.auction_status,
-                        "lat": geo.centroid_lat,
-                        "lon": geo.centroid_lon,
-                        "geo_source": geo.geo_source,
-                        "geo_confidence": geo.geo_confidence,
-                        "geometry": geo.geometry_json,
-                        "metadata": geo.metadata_json,
-                        "url": lot.lot_url,
-                    }
-                )
-
-        self.yandex_map_view.setHtml(self.build_yandex_map_html(lots), QUrl("https://local.bankrotai/"))
-        self.status_bar.showMessage("Яндекс-карта обновлена", 3000)
-
-    def get_map_icon_urls(self) -> dict[str, str]:
-        global _MAP_ICON_DATA_URL_CACHE
-        if _MAP_ICON_DATA_URL_CACHE is not None:
-            return dict(_MAP_ICON_DATA_URL_CACHE)
-
-        candidates = [
-            Path.cwd() / "image",
-            Path(__file__).resolve().parents[2] / "image",
-        ]
-        if getattr(sys, "frozen", False):
-            exe_path = Path(sys.executable).resolve()
-            candidates.extend([
-                exe_path.parent / "image",
-                exe_path.parent.parent / "image",
-                Path(getattr(sys, "_MEIPASS", exe_path.parent)) / "image",
-            ])
-        image_dir = next((path for path in candidates if path.exists()), candidates[0])
-        urls: dict[str, str] = {}
-        for key, filename in MAP_ICON_FILENAMES.items():
-            path = image_dir / filename
-            if not path.exists():
-                urls[key] = ""
-                logger.warning("Map icon is missing: %s", path)
-                continue
-            image = QImage(str(path))
-            if image.isNull():
-                urls[key] = ""
-                logger.warning("Map icon cannot be read: %s", path)
-                continue
-            scaled = image.scaled(68, 88, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            buffer = QBuffer()
-            buffer.open(QIODevice.WriteOnly)
-            scaled.save(buffer, "PNG")
-            encoded = base64.b64encode(bytes(buffer.data())).decode("ascii")
-            urls[key] = f"data:image/png;base64,{encoded}"
-        _MAP_ICON_DATA_URL_CACHE = dict(urls)
-        return urls
+        setattr(self, handler_attribute, loaded)
+        view.loadFinished.connect(loaded)
+        view.setHtml(html, base_url)
 
     def build_yandex_map_html(self, lots: list[dict]) -> str:
         lots_json = json.dumps(lots, ensure_ascii=False)
-        icon_urls_json = json.dumps(self.get_map_icon_urls(), ensure_ascii=False)
         return f"""
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>BankrotAI Yandex Map</title>
+<link rel="stylesheet" href="leaflet.css">
 <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU" type="text/javascript"></script>
+<script src="leaflet.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
 html, body, #map {{
     width: 100%;
@@ -4088,19 +6135,23 @@ html, body, #map {{
     font: 13px Arial, sans-serif;
     color: #2e3c54;
 }}
+{MAP_PREVIEW_STYLE}
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="hint" class="hint">Загрузка Яндекс.Карт...</div>
+{MAP_PREVIEW_HTML}
 <script>
 const lots = {lots_json};
-const iconUrls = {icon_urls_json};
+const mapKind = 'yandex';
 let map;
 let lotCollection;
 let boundaryCollection;
 let selectedObjectCollection;
 let boundaryVisible = true;
+const lotPlacemarks = new Map();
+const lotById = new Map();
 
 function escapeHtml(text) {{
     if (text === null || text === undefined) return '';
@@ -4117,28 +6168,31 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function iconKey(lot) {{
-    const category = String(lot.category || '').toLowerCase();
-    const title = String(lot.title || '').toLowerCase();
-    if (title.includes('аренд') || category.includes('lease') || category.includes('rent')) return 'rent';
-    if (['car', 'vehicle', 'transport'].includes(category)) return 'auto';
-    if (category === 'land') return 'land';
-    if ([
-        'apartment', 'house', 'commercial', 'commercial_room', 'commercial_building',
-        'commercial_building_with_land', 'real_estate', 'parking', 'unfinished', 'complex',
-        'office', 'retail'
-    ].includes(category)) return 'realEstate';
-    return 'other';
+function isLotEnded(lot) {{
+    if (!lot) return false;
+    if (lot.is_ended) return true;
+    const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
+    if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
+    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+}}
+
+function markerColor(lot) {{
+    if (isLotEnded(lot)) return '#111111';
+    const status = lot ? lot.review_status : null;
+    return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
+}}
+
+function markerSvg(lot) {{
+    const color = markerColor(lot);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
 function yandexIconOptions(lot) {{
-    const url = iconUrls[iconKey(lot)] || iconUrls.other;
-    if (!url) return {{ preset: 'islands#blueCircleDotIcon' }};
     return {{
         iconLayout: 'default#image',
-        iconImageHref: url,
-        iconImageSize: [34, 44],
-        iconImageOffset: [-17, -44]
+        iconImageHref: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(markerSvg(lot)),
+        iconImageSize: [38, 48],
+        iconImageOffset: [-19, -48]
     }};
 }}
 
@@ -4171,36 +6225,45 @@ function addGeometry(geometry, options) {{
     }}
 }}
 
+function upsertLot(lot) {{
+    if (!lotCollection) {{
+        window.__bankrotaiPendingLots = window.__bankrotaiPendingLots || [];
+        window.__bankrotaiPendingLots.push(lot);
+        return;
+    }}
+    if (!lot.lat || !lot.lon) return;
+    const key = String(lot.id);
+    lotById.set(key, lot);
+    const previous = lotPlacemarks.get(key);
+    if (previous) lotCollection.remove(previous);
+    const placemark = new ymaps.Placemark(
+            [lot.lat, lot.lon],
+            {{
+                hintContent: escapeHtml(lot.title)
+            }},
+            yandexIconOptions(lot)
+    );
+    placemark.events.add('click', function(event) {{
+        event.preventDefault();
+        showLotPreview(lot);
+    }});
+    lotCollection.add(placemark);
+    lotPlacemarks.set(key, placemark);
+    if (lot.geometry) {{
+        addGeometry(lot.geometry, {{
+            strokeColor: '#2468d8',
+            strokeWidth: 2,
+            fillColor: 'rgba(36,104,216,0.08)'
+        }});
+    }}
+}}
+
 function addLots() {{
     lotCollection.removeAll();
     boundaryCollection.removeAll();
+    lotPlacemarks.clear();
 
-    lots.forEach(lot => {{
-        if (!lot.lat || !lot.lon) return;
-        const placemark = new ymaps.Placemark(
-            [lot.lat, lot.lon],
-            {{
-                balloonContentHeader: escapeHtml(lot.title),
-                balloonContentBody:
-                    '<b>Цена:</b> ' + formatPrice(lot.price) + '<br>' +
-                    '<b>Рынок:</b> ' + formatPrice(lot.market_price) + '<br>' +
-                    '<b>Дисконт:</b> ' + (lot.discount ?? '—') + '%<br>' +
-                    '<b>Риск:</b> ' + (lot.risk ?? '—') + '<br>' +
-                    '<b>Рейтинг:</b> ' + (lot.rating ?? '—') + '<br>' +
-                    '<b>Кадастр:</b> ' + escapeHtml(lot.cadastral_number || '—') + '<br>' +
-                    '<b>Адрес:</b> ' + escapeHtml(lot.address || '—')
-            }},
-            yandexIconOptions(lot)
-        );
-        lotCollection.add(placemark);
-        if (lot.geometry) {{
-            addGeometry(lot.geometry, {{
-                strokeColor: '#2468d8',
-                strokeWidth: 2,
-                fillColor: 'rgba(36,104,216,0.08)'
-            }});
-        }}
-    }});
+    lots.forEach(upsertLot);
 
     map.geoObjects.add(lotCollection);
     map.geoObjects.add(boundaryCollection);
@@ -4263,8 +6326,29 @@ function setCadLayerVisible(visible) {{
 
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
+window.upsertLot = upsertLot;
+window.applyLotReviewStatus = function(lotId, status) {{
+    const lot = lotById.get(String(lotId));
+    if (lot) lot.review_status = status;
+    const placemark = lotPlacemarks.get(String(lotId));
+    if (placemark) placemark.options.set(yandexIconOptions(lot || {{ review_status: status }}));
+}};
+window.fitAllLots = function() {{
+    if (lotCollection && lotCollection.getLength() > 0) {{
+        map.setBounds(lotCollection.getBounds(), {{ checkZoomRange: true, zoomMargin: 35 }});
+    }}
+}};
 
-ymaps.ready(function () {{
+setInterval(function() {{
+    lotPlacemarks.forEach(function(placemark, key) {{
+        const lot = lotById.get(key);
+        if (lot) placemark.options.set(yandexIconOptions(lot));
+    }});
+}}, 60_000);
+
+{MAP_PREVIEW_SCRIPT}
+
+function initYandexMap() {{
     map = new ymaps.Map('map', {{
         center: [57.6261, 39.8845],
         zoom: 8,
@@ -4275,7 +6359,90 @@ ymaps.ready(function () {{
     selectedObjectCollection = new ymaps.GeoObjectCollection();
     document.getElementById('hint').style.display = 'none';
     addLots();
-}});
+    const pending = window.__bankrotaiPendingLots || [];
+    window.__bankrotaiPendingLots = [];
+    pending.forEach(upsertLot);
+}}
+
+function initLeafletFallback() {{
+    const hint = document.getElementById('hint');
+    hint.textContent = 'Яндекс.Карты недоступны — включена резервная карта';
+    map = L.map('map').setView([57.6261, 39.8845], 8);
+    let fallbackMapSized = false;
+    new ResizeObserver(function() {{
+        map.invalidateSize(false);
+        const element = document.getElementById('map');
+        if (!fallbackMapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
+            fallbackMapSized = true;
+            setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
+        }}
+    }}).observe(document.getElementById('map'));
+    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }}).addTo(map);
+    const fallbackLayer = L.layerGroup().addTo(map);
+    const fallbackMarkers = new Map();
+    const fallbackBounds = L.latLngBounds([]);
+
+    function fallbackIcon(lot) {{
+        return L.divIcon({{
+            className: '',
+            html: markerSvg(lot),
+            iconSize: [38, 48],
+            iconAnchor: [19, 48]
+        }});
+    }}
+    function upsertFallbackLot(lot) {{
+        if (!lot.lat || !lot.lon) return;
+        const key = String(lot.id);
+        lotById.set(key, lot);
+        const previous = fallbackMarkers.get(key);
+        if (previous) fallbackLayer.removeLayer(previous);
+        const marker = L.marker([lot.lat, lot.lon], {{ icon: fallbackIcon(lot) }});
+        marker.on('click', function() {{ showLotPreview(lot); }});
+        marker.addTo(fallbackLayer);
+        fallbackMarkers.set(key, marker);
+        fallbackBounds.extend([lot.lat, lot.lon]);
+    }}
+    window.upsertLot = upsertFallbackLot;
+    window.applyLotReviewStatus = function(lotId, status) {{
+        const lot = lotById.get(String(lotId));
+        if (lot) lot.review_status = status;
+        const marker = fallbackMarkers.get(String(lotId));
+        if (marker) marker.setIcon(fallbackIcon(lot || {{ review_status: status }}));
+    }};
+    window.showCadastreObject = function(data) {{
+        if (data.geometry) {{
+            const layer = L.geoJSON(data.geometry, {{ style: {{ color: '#d92323', weight: 4 }} }}).addTo(map);
+            map.fitBounds(layer.getBounds(), {{ padding: [40, 40] }});
+        }} else if (data.lat && data.lon) {{
+            L.marker([data.lat, data.lon], {{ icon: fallbackIcon({{}}) }}).addTo(map);
+            map.setView([data.lat, data.lon], 17);
+        }}
+    }};
+    window.setCadLayerVisible = function() {{}};
+    window.fitAllLots = function() {{
+        if (fallbackBounds.isValid()) map.fitBounds(fallbackBounds, {{ padding: [30, 30] }});
+    }};
+    lots.forEach(upsertFallbackLot);
+    if (fallbackBounds.isValid()) map.fitBounds(fallbackBounds, {{ padding: [30, 30] }});
+    const pending = window.__bankrotaiPendingLots || [];
+    window.__bankrotaiPendingLots = [];
+    pending.forEach(upsertFallbackLot);
+    setInterval(function() {{
+        fallbackMarkers.forEach(function(marker, key) {{
+            const lot = lotById.get(key);
+            if (lot) marker.setIcon(fallbackIcon(lot));
+        }});
+    }}, 60_000);
+}}
+
+if (typeof ymaps !== 'undefined') {{
+    ymaps.ready(initYandexMap);
+}} else {{
+    initLeafletFallback();
+}}
 </script>
 </body>
 </html>
@@ -4284,7 +6451,6 @@ ymaps.ready(function () {{
 
     def build_map_html(self, lots: list[dict]) -> str:
         lots_json = json.dumps(lots, ensure_ascii=False)
-        icon_urls_json = json.dumps(self.get_map_icon_urls(), ensure_ascii=False)
         wms_base_url = f"http://127.0.0.1:{self.cadastral_wms_proxy_port or 0}/nspd"
 
         return f"""
@@ -4294,9 +6460,10 @@ ymaps.ready(function () {{
 <meta charset="utf-8">
 <title>BankrotAI Map</title>
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<link rel="stylesheet" href="leaflet.css">
+<link rel="stylesheet" href="MarkerCluster.css">
+<link rel="stylesheet" href="MarkerCluster.Default.css">
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 
 <style>
 html, body, #map {{
@@ -4310,23 +6477,46 @@ html, body, #map {{
     font-weight: bold;
     margin-bottom: 6px;
 }}
+{MAP_PREVIEW_STYLE}
 </style>
 </head>
 
 <body>
 <div id="map"></div>
+{MAP_PREVIEW_HTML}
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="leaflet.js"></script>
+<script src="leaflet.markercluster.js"></script>
 
 <script>
 const lots = {lots_json};
-const iconUrls = {icon_urls_json};
+const mapKind = 'leaflet';
 
-const map = L.map('map').setView([57.6261, 39.8845], 8);
+const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
+const map = L.map('map', {{
+    minZoom: 2,
+    maxBounds: worldBounds,
+    maxBoundsViscosity: 1.0,
+    worldCopyJump: false
+}}).setView([57.6261, 39.8845], 8);
+let mapSized = false;
+new ResizeObserver(function() {{
+    map.invalidateSize(false);
+    const element = document.getElementById('map');
+    const singleWorldMinZoom = Math.max(2, Math.ceil(Math.log2(Math.max(element.clientWidth, 256) / 256)));
+    map.setMinZoom(singleWorldMinZoom);
+    if (map.getZoom() < singleWorldMinZoom) map.setZoom(singleWorldMinZoom);
+    if (!mapSized && element.clientWidth > 0 && element.clientHeight > 0) {{
+        mapSized = true;
+        setTimeout(function() {{ if (window.fitAllLots) window.fitAllLots(); }}, 50);
+    }}
+}}).observe(document.getElementById('map'));
 
 const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     maxZoom: 19,
+    minZoom: 2,
+    noWrap: true,
+    bounds: worldBounds,
     attribution: '&copy; OpenStreetMap contributors'
 }}).addTo(map);
 
@@ -4356,6 +6546,8 @@ const cadastralBuildingsLayer = L.tileLayer.wms(
 
 const markers = L.markerClusterGroup();
 const boundaries = L.layerGroup().addTo(map);
+const lotMarkers = new Map();
+const lotById = new Map();
 
 let selectedObjectLayer = null;
 let selectedObjectMarker = null;
@@ -4375,68 +6567,63 @@ function formatPrice(value) {{
     return new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 }}
 
-function iconKey(lot) {{
-    const category = String(lot.category || '').toLowerCase();
-    const title = String(lot.title || '').toLowerCase();
-    if (title.includes('аренд') || category.includes('lease') || category.includes('rent')) return 'rent';
-    if (['car', 'vehicle', 'transport'].includes(category)) return 'auto';
-    if (category === 'land') return 'land';
-    if ([
-        'apartment', 'house', 'commercial', 'commercial_room', 'commercial_building',
-        'commercial_building_with_land', 'real_estate', 'parking', 'unfinished', 'complex',
-        'office', 'retail'
-    ].includes(category)) return 'realEstate';
-    return 'other';
+function isLotEnded(lot) {{
+    if (!lot) return false;
+    if (lot.is_ended) return true;
+    const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
+    if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
+    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+}}
+
+function markerColor(lot) {{
+    if (isLotEnded(lot)) return '#111111';
+    const status = lot ? lot.review_status : null;
+    return status === 'approved' ? '#24a269' : status === 'maybe' ? '#e0aa16' : status === 'rejected' ? '#d94b4b' : '#7d8795';
+}}
+
+function markerSvg(lot) {{
+    const color = markerColor(lot);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="${{color}}" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }}
 
 function makeIcon(lot) {{
-    const url = iconUrls[iconKey(lot)] || iconUrls.other;
-    if (url) {{
-        return L.icon({{
-            iconUrl: url,
-            iconSize: [34, 44],
-            iconAnchor: [17, 44],
-            popupAnchor: [0, -42]
-        }});
+    return L.divIcon({{
+        className: '', html: markerSvg(lot), iconSize: [38, 48], iconAnchor: [19, 48], popupAnchor: [0, -46]
+    }});
+}}
+
+function upsertLot(lot) {{
+    if (!lot.lat || !lot.lon) return;
+    const key = String(lot.id);
+    lotById.set(key, lot);
+    const previous = lotMarkers.get(key);
+    if (previous) markers.removeLayer(previous);
+    const marker = L.marker([lot.lat, lot.lon], {{
+            icon: makeIcon(lot)
+    }});
+
+    marker.on('click', function() {{ showLotPreview(lot); }});
+    markers.addLayer(marker);
+    lotMarkers.set(key, marker);
+
+    if (lot.geometry) {{
+        L.geoJSON(lot.geometry, {{
+            style: {{
+                weight: 1,
+                opacity: 0.5,
+                fillOpacity: 0.05
+            }}
+        }}).addTo(boundaries);
     }}
-    return L.divIcon({{ className: '', html: '<div style="width:14px;height:14px;border-radius:50%;background:#2468d8;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,.45);"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }});
+    if (!map.hasLayer(markers)) map.addLayer(markers);
 }}
 
 function addLots() {{
     markers.clearLayers();
     boundaries.clearLayers();
+    lotMarkers.clear();
 
-    lots.forEach(lot => {{
-        if (!lot.lat || !lot.lon) return;
-
-        const marker = L.marker([lot.lat, lot.lon], {{
-            icon: makeIcon(lot)
-        }});
-
-        const popup = `
-            <div class="popup-title">${{escapeHtml(lot.title)}}</div>
-            <div><b>Цена:</b> ${{formatPrice(lot.price)}}</div>
-            <div><b>Рынок:</b> ${{formatPrice(lot.market_price)}}</div>
-            <div><b>Дисконт:</b> ${{lot.discount ?? '—'}}%</div>
-            <div><b>Риск:</b> ${{lot.risk ?? '—'}}</div>
-            <div><b>Рейтинг:</b> ${{lot.rating ?? '—'}}</div>
-            <div><b>Кадастр:</b> ${{escapeHtml(lot.cadastral_number || '—')}}</div>
-            <div><b>Адрес:</b> ${{escapeHtml(lot.address || '—')}}</div>
-        `;
-
-        marker.bindPopup(popup);
-        markers.addLayer(marker);
-
-        if (lot.geometry) {{
-            L.geoJSON(lot.geometry, {{
-                style: {{
-                    weight: 1,
-                    opacity: 0.5,
-                    fillOpacity: 0.05
-                }}
-            }}).addTo(boundaries);
-        }}
-    }});
+    lots.forEach(upsertLot);
 
     map.addLayer(markers);
 
@@ -4500,8 +6687,32 @@ function setCadLayerVisible(visible) {{
 
 window.showCadastreObject = showCadastreObject;
 window.setCadLayerVisible = setCadLayerVisible;
+window.upsertLot = upsertLot;
+window.applyLotReviewStatus = function(lotId, status) {{
+    const lot = lotById.get(String(lotId));
+    if (lot) lot.review_status = status;
+    const marker = lotMarkers.get(String(lotId));
+    if (marker) marker.setIcon(makeIcon(lot || {{ review_status: status }}));
+}};
+window.fitAllLots = function() {{
+    if (markers.getLayers().length > 0) {{
+        map.fitBounds(markers.getBounds(), {{ padding: [30, 30] }});
+    }}
+}};
+
+setInterval(function() {{
+    lotMarkers.forEach(function(marker, key) {{
+        const lot = lotById.get(key);
+        if (lot) marker.setIcon(makeIcon(lot));
+    }});
+}}, 60_000);
+
+{MAP_PREVIEW_SCRIPT}
 
 addLots();
+const pending = window.__bankrotaiPendingLots || [];
+window.__bankrotaiPendingLots = [];
+pending.forEach(upsertLot);
 </script>
 </body>
 </html>
@@ -4728,11 +6939,21 @@ addLots();
         js = f"window.setCadLayerVisible({str(visible).lower()});"
         self.yandex_map_view.page().runJavaScript(js)
 
-def main():
+def main() -> int:
+    smoke_test = "--smoke-test" in sys.argv
+    if smoke_test:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication(sys.argv)
     window = MainWindow()
+    if smoke_test:
+        app.processEvents()
+        if window.windowTitle() != "BankrotAI - Аналитика торгов" or window.tabs.count() != 4:
+            return 2
+        window.close()
+        app.processEvents()
+        return 0
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

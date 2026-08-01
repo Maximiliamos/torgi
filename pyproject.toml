@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bankrotai-finder"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI assistant for bankruptcy and privatization lots analysis"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,12 +25,18 @@ dependencies = [
   "lxml>=5.2,<7",
   "psycopg[binary]>=3.2,<4",
   "tenacity>=8.3,<10",
+  "truststore>=0.10.4,<1",
   "uvicorn>=0.32,<1",
-  "PySide6>=6.7.0,<7",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<9"]
+desktop = ["PySide6>=6.7.0,<7"]
+dev = [
+  "pytest>=8.3,<9",
+  "pyinstaller==6.20.0",
+  "ruff==0.12.2",
+  "mypy==1.16.1",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -40,3 +46,19 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["postgres: requires a real PostgreSQL database"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "skip"
+check_untyped_defs = true
+warn_unused_ignores = true
+exclude = ["src/bankrotai/gui.py", "src/bankrotai/scrapers.py", "src/bankrotai/cli.py"]

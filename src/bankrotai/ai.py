@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+import time
 
 # Prevent NVIDIA driver probing in Trae sandbox
 os.environ["NVCUVID_DISABLE_DEVICE_PROBE"] = "1"
@@ -19,42 +20,25 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from bankrotai.core import get_logger, get_settings
+from bankrotai.ai_contracts import (
+    MARKET_SYSTEM_PROMPT,
+    RISK_SYSTEM_PROMPT,
+    MarketResultModel,
+    RiskResultModel,
+    apply_market_confidence_policy as _apply_market_confidence_policy,
+    validate_ai_evaluation,
+)
 from bankrotai.domain import LotEvaluation, MarketAssessment, NormalizedLot, RiskAssessment
 from bankrotai.logic import (
     calculate_discount_percent,
     calculate_rating,
-    needs_human_review
 )
 
 logger = get_logger("ai")
 
+PROMPT_VERSION = "2026-07-14"
+VALUATION_VERSION = "v2"
 
-MARKET_SYSTEM_PROMPT = """
-Ты профессиональный оценщик имущества на торгах в РФ.
-Оцени ориентировочную справедливую цену объекта по данным, которые передал пользователь.
-Если у тебя нет доступа к актуальным аналогам или данных недостаточно, всё равно верни осторожную оценку
-по стартовой/текущей цене и явно поставь confidence="low".
-Не отказывайся от ответа из-за нехватки рыночных данных; вместо этого опиши ограничения в explanation.
-Обязательно верни JSON объект с полями:
-- "market_price": число, без научной нотации
-- "min_price": число, без научной нотации
-- "max_price": число, без научной нотации
-- "confidence": "high", "medium" или "low"
-- "explanation": текст с обоснованием
-- "links": список ссылок на аналоги, если они явно есть в исходных данных
-
-Верни только чистый JSON, без markdown.
-"""
-
-RISK_SYSTEM_PROMPT = """
-Ты аналитик торгов и ликвидности имущества. Оцени риски покупки по данным пользователя.
-Верни JSON объект с полями:
-- "risk_score": число от 1 до 10, где 10 - максимальный риск
-- "recommendation": текст рекомендации
-- "time_to_sell": примерный срок продажи текстом
-
-Верни только чистый JSON, без markdown.
-"""
 
 def _strip_json_markdown_fence(raw: str) -> str:
     text = raw.strip()
@@ -113,55 +97,6 @@ def _require_json_fields(payload: dict, fields: tuple[str, ...], response_type: 
         raise RuntimeError(
             f"AI returned invalid {response_type} JSON; missing fields: {', '.join(missing)}"
         )
-
-def _valuation_sanity_floor(lot: NormalizedLot) -> float | None:
-    """Conservative guardrail for rural buildings where LLMs copy auction min-price."""
-    area = lot.total_area_gba or lot.area
-    current_price = float(lot.current_price or lot.start_price or 0)
-    text = f"{lot.title} {lot.description} {lot.address or ''}".lower()
-    category = (lot.category or "").lower()
-    has_building = category in {"house", "commercial"} or "здание" in text or "помещение" in text
-    if not has_building:
-        return None
-
-    if area and area >= 1000:
-        return current_price * 0.85 if current_price else None
-
-    if not area:
-        if current_price and current_price < 50_000 and ("здание" in text or category == "commercial"):
-            return 600_000
-        return None
-
-    if category == "commercial" or "помещение" in text:
-        if area < 80:
-            return 65_000
-        return max(120_000, min(area * 1_200, 350_000))
-
-    if "культурного наследия" in text or "культурн" in text:
-        return 120_000
-    if area < 80:
-        return 120_000
-    if area < 125:
-        return 250_000 if "земельн" in text and area >= 114 else 200_000
-    if area < 250:
-        return 250_000
-    return 250_000
-
-def _apply_market_sanity(lot: NormalizedLot, market: MarketAssessment) -> MarketAssessment:
-    floor = _valuation_sanity_floor(lot)
-    if not floor or market.market_price >= floor:
-        return market
-
-    market.market_price = float(floor)
-    market.min_price = float(max(market.min_price or 0, floor * 0.7))
-    market.max_price = float(max(market.max_price or 0, floor * 1.3))
-    market.confidence = "low"
-    note = (
-        "Применена защитная минимальная оценка для здания/помещения: "
-        "AI-ответ был ниже консервативного порога по площади и типу объекта."
-    )
-    market.explanation = f"{note} {market.explanation}".strip()
-    return market
 
 def is_retryable(exception: Exception) -> bool:
     if isinstance(exception, APIStatusError):
@@ -253,7 +188,7 @@ class AIProvider:
                     base_url=(base_url or "http://localhost:20128").rstrip("/"),
                 )
                 return None # OpenAI client not needed
-            client_kwargs = {
+            client_kwargs: dict[str, Any] = {
                 "api_key": auth_key,
                 "base_url": _normalize_omniroute_openai_base_url(base_url),
             }
@@ -263,20 +198,17 @@ class AIProvider:
                 client_kwargs["default_headers"] = {"x-api-key": api_key}
             return OpenAI(**client_kwargs)
         else:
-            logger.warning(f"Unsupported AI provider: {provider}, falling back to deepseek")
-            self.provider = "deepseek"
-            return self._create_client()
+            raise RuntimeError(f"Unsupported AI provider: {provider}")
 
         if not api_key:
-            # Try to fallback to any available key
-            logger.warning(f"API key for {provider} is missing. Trying to find any available key...")
-            for p in ["gemini", "groq", "grok", "github", "omniroute", "kiro", "deepseek", "openai", "nvidia"]:
-                key = get_app_setting(f"{p}_api_key", getattr(self.settings, f"{p}_api_key", None))
-                if key:
-                    logger.info(f"Falling back to {p} provider")
-                    self.provider = p
-                    return self._create_client()
-            raise RuntimeError(f"No AI API keys found. Please configure at least one provider (Gemini, GroqCloud, Grok/xAI, GitHub Models, Kiro, OpenAI, DeepSeek, or NVIDIA).")
+            if self.settings.ai_allow_provider_fallback:
+                logger.warning("API key for %s is missing; explicit provider fallback is enabled", provider)
+                for candidate in ["gemini", "groq", "grok", "github", "omniroute", "kiro", "deepseek", "openai", "nvidia"]:
+                    key = get_app_setting(f"{candidate}_api_key", getattr(self.settings, f"{candidate}_api_key", None))
+                    if key:
+                        self.provider = candidate
+                        return self._create_client()
+            raise RuntimeError(f"API key for selected AI provider '{provider}' is missing")
 
         return OpenAI(api_key=api_key, base_url=base_url)
 
@@ -419,6 +351,7 @@ class OpenAIAppraiser:
             raise
 
     def evaluate(self, lot: NormalizedLot, session: Any | None = None) -> LotEvaluation:
+        started_at = time.perf_counter()
         cache_key = self._get_cache_key(lot)
 
         if session:
@@ -432,52 +365,70 @@ class OpenAIAppraiser:
             if cached and cached.valuation_snapshot:
                 logger.info("Cache hit for lot %s", lot.external_id)
                 data = cached.valuation_snapshot
-                return LotEvaluation(
-                    market=MarketAssessment(**data.get("market", {})),
-                    risk=RiskAssessment(**data.get("risk", {}))
-                )
+                return validate_ai_evaluation(data.get("market", {}), data.get("risk", {}))
 
         market = self.assess_market(lot)
         risk = self.assess_risk(lot, market)
         evaluation = LotEvaluation(market=market, risk=risk)
 
         if session:
-            self._save_evaluation_to_db(session, lot, evaluation, cache_key)
+            self._save_evaluation_to_db(
+                session, lot, evaluation, cache_key,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
 
         return evaluation
 
-    def _save_evaluation_to_db(self, session: Any, lot: NormalizedLot, evaluation: LotEvaluation, cache_key: str) -> None:
+    def _save_evaluation_to_db(self, session: Any, lot: NormalizedLot, evaluation: LotEvaluation,
+                               cache_key: str, duration_ms: int | None = None) -> None:
         from bankrotai.db import ValuationRun, ProcessedLot
         from sqlalchemy import select
 
-        db_lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == lot.external_id))
+        db_lot = session.scalar(
+            select(ProcessedLot).where(
+                ProcessedLot.source_system == lot.source_system,
+                ProcessedLot.external_id == lot.external_id,
+            )
+        )
         if db_lot:
             run = ValuationRun(
                 lot_id=db_lot.id,
                 content_hash=cache_key,
-                valuation_method="openai",
+                valuation_method=self.provider.provider,
+                provider=self.provider.provider,
+                model=f"{self.provider.get_model('search')}|{self.provider.get_model('risk')}",
+                prompt_version=PROMPT_VERSION,
+                valuation_version=VALUATION_VERSION,
+                duration_ms=duration_ms,
+                attempt_count=1,
+                status="completed",
                 valuation_snapshot={
                     "market": {k: getattr(evaluation.market, k) for k in evaluation.market.__slots__},
                     "risk": {k: getattr(evaluation.risk, k) for k in evaluation.risk.__slots__}
-                }
+                },
+                needs_human_review=True,
             )
             session.add(run)
             session.flush()
             logger.info("Saved AI evaluation to DB for lot %s", lot.external_id)
 
     def _build_user_prompt(self, lot: NormalizedLot) -> str:
-        parts = [
-            f"Лот: {lot.title}",
-            f"Описание: {lot.description[:500]}",
-            f"Адрес: {lot.address or 'не указан'}",
-            f"Кадастровый номер: {lot.cadastral_number or '-'}",
-            f"Общая площадь: {lot.total_area_gba or lot.area or '-'} м2",
-            f"Площадь участка: {lot.land_area or '-'}",
-            f"Этажность: {lot.floors or '-'}",
-            f"Юридический статус: {lot.legal_status or '-'}",
-            f"Текущая цена торгов: {lot.current_price or lot.start_price}",
-        ]
-        return "\n".join(parts)
+        data = {
+            "title": lot.title[:500],
+            "description": lot.description[:5000],
+            "address": lot.address,
+            "cadastral_number": lot.cadastral_number,
+            "category": lot.category,
+            "building_area_m2": lot.total_area_gba or lot.area,
+            "land_area_m2": lot.land_area,
+            "floors": lot.floors,
+            "year_built": lot.year_built,
+            "legal_status": lot.legal_status,
+            "encumbrances": lot.encumbrances,
+            "auction_price": lot.current_price or lot.start_price,
+        }
+        payload = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+        return f"<untrusted_lot_data>\n{payload}\n</untrusted_lot_data>"
 
     def assess_market(self, lot: NormalizedLot) -> MarketAssessment:
         messages = [
@@ -488,15 +439,16 @@ class OpenAIAppraiser:
         payload = _parse_json_object(content)
         _require_json_fields(payload, ("market_price", "min_price", "max_price"), "market")
 
+        validated = MarketResultModel.model_validate(payload)
         market = MarketAssessment(
-            market_price=float(payload.get("market_price", 0)),
-            min_price=float(payload.get("min_price", 0)),
-            max_price=float(payload.get("max_price", 0)),
-            confidence=payload.get("confidence", "low"),
-            explanation=payload.get("explanation", ""),
-            links=payload.get("links", [])
+            market_price=float(validated.market_price),
+            min_price=float(validated.min_price),
+            max_price=float(validated.max_price),
+            confidence=validated.confidence,
+            explanation=validated.explanation,
+            links=[str(link) for link in validated.links],
         )
-        return _apply_market_sanity(lot, market)
+        return _apply_market_confidence_policy(lot, market)
 
     def assess_risk(self, lot: NormalizedLot, market: MarketAssessment) -> RiskAssessment:
         details = self._build_user_prompt(lot)
@@ -514,10 +466,15 @@ class OpenAIAppraiser:
         payload = _parse_json_object(content)
         _require_json_fields(payload, ("risk_score", "recommendation", "time_to_sell"), "risk")
 
+        validated = RiskResultModel.model_validate(payload)
+        recommendation = (
+            f"{validated.recommendation}\n\n"
+            "Обязательна независимая проверка оценщиком, юристом и техническим специалистом."
+        )
         return RiskAssessment(
-            risk_score=int(payload.get("risk_score", 5)),
-            recommendation=payload.get("recommendation", ""),
-            time_to_sell=payload.get("time_to_sell", "unknown")
+            risk_score=validated.risk_score,
+            recommendation=recommendation,
+            time_to_sell=validated.time_to_sell,
         )
 
 def apply_evaluation_to_lot(processed_lot: Any, evaluation: LotEvaluation) -> None:
@@ -526,7 +483,11 @@ def apply_evaluation_to_lot(processed_lot: Any, evaluation: LotEvaluation) -> No
     processed_lot.market_price_max = Decimal(f"{evaluation.market.max_price:.2f}")
     processed_lot.discount_percent = calculate_discount_percent(evaluation.market.market_price, float(processed_lot.current_price or processed_lot.start_price or 0))
     processed_lot.risk_score = evaluation.risk.risk_score
-    processed_lot.ai_recommendation = f"{evaluation.risk.recommendation}\n\nОжидаемый срок продажи: {evaluation.risk.time_to_sell}"
+    processed_lot.ai_recommendation = (
+        "Предварительная машинная гипотеза; не является независимой оценкой имущества.\n\n"
+        f"{evaluation.risk.recommendation}\n\n"
+        f"Ожидаемый срок продажи: {evaluation.risk.time_to_sell}"
+    )
     processed_lot.rating = calculate_rating(
         discount_percent=processed_lot.discount_percent,
         risk_score=processed_lot.risk_score,
@@ -538,4 +499,4 @@ def apply_evaluation_to_lot(processed_lot: Any, evaluation: LotEvaluation) -> No
         area=processed_lot.area,
     )
     processed_lot.links_to_analogs = evaluation.market.links
-    processed_lot.needs_human_review = needs_human_review(evaluation.market.confidence)
+    processed_lot.needs_human_review = True

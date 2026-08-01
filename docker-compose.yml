@@ -2,50 +2,56 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: bankrotai
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-bankrotai}
+      POSTGRES_USER: ${POSTGRES_USER:-bankrotai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d bankrotai"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bankrotai} -d ${POSTGRES_DB:-bankrotai}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   migrate:
     build: .
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
-      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
+      AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: python -m bankrotai.cli init-db
+    command: >-
+      sh -c "python -m bankrotai.cli init-db &&
+      if [ -n \"$$AUTH_BOOTSTRAP_PASSWORD\" ]; then
+      python -m bankrotai.cli create-user reader; fi"
 
   api:
     build: .
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
-      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,16 +60,27 @@ services:
       migrate:
         condition: service_completed_successfully
     command: python -m bankrotai.cli run-api --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
 
   worker:
     build: .
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
-      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,14 +89,20 @@ services:
       migrate:
         condition: service_completed_successfully
     command: celery -A bankrotai.tasks:celery_app worker --loglevel=INFO
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
 
   beat:
     build: .
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/bankrotai
-      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,6 +111,27 @@ services:
       migrate:
         condition: service_completed_successfully
     command: celery -A bankrotai.tasks:celery_app beat --loglevel=INFO
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: WEB/Dockerfile
+    environment:
+      BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
+      WEB_BASIC_AUTH_USER: ${WEB_BASIC_AUTH_USER:?Set WEB_BASIC_AUTH_USER in .env}
+      WEB_BASIC_AUTH_PASSWORD: ${WEB_BASIC_AUTH_PASSWORD:?Set WEB_BASIC_AUTH_PASSWORD in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

@@ -21,6 +21,10 @@ import {
   fetchLotDetail,
   fetchLots,
   fetchStats,
+  fetchCurrentUser,
+  login,
+  logout,
+  AuthUser,
   LotDetail,
   LotListItem,
   LotQuery,
@@ -70,8 +74,6 @@ const initialQuery: LotQuery = {
   statuses: ["active", "scheduled"],
   min_discount: 0,
   max_discount: 100,
-  min_risk: 0,
-  max_risk: 10,
   sort: "recommended"
 };
 
@@ -187,7 +189,7 @@ function DetailPanel({
               <strong>{formatMoney(detail.current_price)}</strong>
             </div>
             <div>
-              <span>Рынок</span>
+              <span>Предварительная AI-гипотеза</span>
               <strong>{formatMoney(detail.market_price)}</strong>
             </div>
             <div>
@@ -219,8 +221,11 @@ function DetailPanel({
           </section>
 
           <section className="detailSection">
-            <h3>AI-заключение</h3>
-            <p>{detail.ai_recommendation || "AI-оценка еще не проводилась."}</p>
+            <h3>Предварительный AI-анализ</h3>
+            <p>
+              Не является независимой оценкой имущества. Требуется проверка оценщиком, юристом и техническим специалистом.
+            </p>
+            <p>{detail.ai_recommendation || "Предварительный AI-анализ еще не проводился."}</p>
           </section>
 
           {detail.geo && (
@@ -247,7 +252,7 @@ function DetailPanel({
   );
 }
 
-function App() {
+export function App() {
   const [query, setQuery] = React.useState<LotQuery>(initialQuery);
   const [lots, setLots] = React.useState<LotListItem[]>([]);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
@@ -301,7 +306,7 @@ function App() {
       <header className="topBar">
         <div>
           <span className="eyebrow">BankrotAI Web</span>
-          <h1>Лоты и AI-оценка</h1>
+          <h1>Лоты и предварительный AI-анализ</h1>
         </div>
         <button className="primaryButton" type="button" onClick={loadData}>
           <RefreshCcw size={16} />
@@ -312,7 +317,7 @@ function App() {
       <section className="kpiGrid">
         <Kpi icon={<Building2 size={20} />} label="Всего лотов" value={formatNumber(stats?.total_lots)} tone="teal" />
         <Kpi icon={<FileSearch size={20} />} label="Активные" value={formatNumber(stats?.active_lots)} tone="indigo" />
-        <Kpi icon={<Sparkles size={20} />} label="С AI-оценкой" value={formatNumber(stats?.appraised_lots)} tone="violet" />
+        <Kpi icon={<Sparkles size={20} />} label="С AI-анализом" value={formatNumber(stats?.appraised_lots)} tone="violet" />
         <Kpi icon={<Banknote size={20} />} label="Средний дисконт" value={formatNumber(stats?.average_discount, "%")} tone="amber" />
       </section>
 
@@ -472,4 +477,45 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = document.getElementById("root");
+if (root) {
+  createRoot(root).render(<AuthenticatedApp />);
+}
+
+export function AuthenticatedApp() {
+  const [user, setUser] = React.useState<AuthUser | null>(null);
+  const [checking, setChecking] = React.useState(true);
+  const [username, setUsername] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [authError, setAuthError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    fetchCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setChecking(false));
+  }, []);
+
+  if (checking) return <main className="authScreen"><Loader2 className="spin" size={28} /></main>;
+  if (!user) {
+    return (
+      <main className="authScreen">
+        <form className="authCard" onSubmit={async (event) => {
+          event.preventDefault();
+          setAuthError(null);
+          try {
+            setUser(await login(username, password));
+            setPassword("");
+          } catch (error) {
+            setAuthError(error instanceof Error ? error.message : "Ошибка авторизации");
+          }
+        }}>
+          <span className="eyebrow">BankrotAI Web</span>
+          <h1>Вход</h1>
+          <label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required /></label>
+          <label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+          {authError && <div className="errorBox"><AlertCircle size={18} /><span>{authError}</span></div>}
+          <button className="primaryButton" type="submit">Войти</button>
+        </form>
+      </main>
+    );
+  }
+  return <><button className="logoutButton" type="button" onClick={async () => { await logout(); setUser(null); }}>Выйти: {user.username}</button><App /></>;
+}

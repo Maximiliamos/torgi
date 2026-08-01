@@ -1,49 +1,45 @@
 # BankrotAI Web
 
-Онлайн-версия BankrotAI: React frontend, FastAPI backend, PostgreSQL, Redis, Celery worker и nginx.
+Дополнительный web-клиент BankrotAI: React/Vite, FastAPI, PostgreSQL, Redis,
+Celery и nginx. Основной локальный интерфейс проекта — Windows desktop EXE.
 
-## Локальный запуск frontend
+## Frontend для разработки
 
-```bash
+```powershell
 cd WEB
-npm install
+npm ci
 npm run dev
 ```
 
-Vite проксирует `/api` на `http://127.0.0.1:8000`.
+Vite проксирует `/api` на `http://127.0.0.1:8000`. Для production используйте
+только корневой `docker-compose.yml`: он требует пароли PostgreSQL/Redis,
+`BANKROTAI_API_KEY` и WEB Basic Auth, не публикует БД/Redis/API на хост и
+привязывает web к `127.0.0.1` по умолчанию.
 
-## Полный запуск через Docker
-
-```bash
-cd WEB
-cp .env.example .env
-docker compose up --build -d
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose ps
 ```
 
-После запуска приложение будет доступно на порту из `WEB_PORT`, по умолчанию `80`.
+По умолчанию интерфейс доступен на `http://127.0.0.1:8080` и запрашивает
+`WEB_BASIC_AUTH_USER` / `WEB_BASIC_AUTH_PASSWORD`. Для публичного домена нужен
+отдельный TLS reverse proxy; менять `WEB_BIND_ADDRESS` на публичный адрес без TLS
+и сетевого контроля нельзя.
 
-## Настройки для домена
+API проверяет ключ на всех маршрутах, кроме healthchecks, использует общий Redis
+rate limit и возвращает `503`, если production-конфигурация небезопасна.
 
-1. В `WEB/.env` заменить:
-   - `POSTGRES_PASSWORD`;
-   - `CORS_ORIGINS=https://your-domain.ru`;
-   - `BANKROTAI_API_KEY`;
-   - AI-провайдера и ключи.
-2. В DNS домена указать `A`-запись на IP VPS.
-3. Перед контейнером можно поставить Caddy/Nginx/Traefik для HTTPS.
+## Проверки
 
-Пример Caddyfile на VPS:
-
-```caddy
-your-domain.ru {
-    reverse_proxy 127.0.0.1:80
-}
+```powershell
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm audit
 ```
 
-Если порт `80` занят reverse proxy, задайте в `WEB/.env`:
-
-```env
-WEB_PORT=8080
-```
-
-и проксируйте домен на `127.0.0.1:8080`.
+Актуальная архитектура, API и roadmap описаны в корневых `README.md` и
+`docs/ROADMAP.md`.

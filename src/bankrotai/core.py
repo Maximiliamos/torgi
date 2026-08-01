@@ -2,6 +2,7 @@
 
 import logging
 import os
+from urllib.parse import parse_qs, urlparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,7 +67,9 @@ class RegionalConfig:
 
 @dataclass
 class AppSettings:
+    app_env: str = "dev"
     database_url: str = "sqlite:///bankrotai.db"
+    database_migration_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str | None = None
     openai_base_url: str | None = None
@@ -76,6 +79,7 @@ class AppSettings:
 
     # AI Provider
     ai_provider: str = "omniroute"  # "omniroute", "openai", "deepseek", "grok", "groq", "opencode", "nvidia", "gemini", "github"
+    ai_allow_provider_fallback: bool = False
     deepseek_api_key: str | None = None
     grok_api_key: str | None = None
     groq_api_key: str | None = None
@@ -114,13 +118,64 @@ class AppSettings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
     public_api_key: str | None = None
     api_rate_limit_per_minute: int = 120
+    api_read_only: bool = False
+    auth_session_secret: str | None = None
+    auth_session_ttl_seconds: int = 28_800
+    database_pool_size: int = 3
+    database_max_overflow: int = 2
+    database_pool_timeout: int = 10
+    allow_local_task_fallback: bool = False
+    sync_retry_max_attempts: int = 4
+    sync_retry_backoff_seconds: int = 5
+    celery_soft_time_limit: int = 1500
+    celery_hard_time_limit: int = 1800
+    external_connect_timeout: float = 5.0
+    external_read_timeout: float = 30.0
+    geo_max_workers: int = 6
+    nspd_ca_bundle: str | None = None
+    nspd_allow_insecure_debug: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env in {"production", "prod"}
+
+    def production_configuration_errors(self) -> list[str]:
+        if not self.is_production:
+            return []
+
+        errors: list[str] = []
+        if not self.public_api_key or len(self.public_api_key) < 24:
+            errors.append("BANKROTAI_API_KEY must contain at least 24 characters")
+        if not self.auth_session_secret or len(self.auth_session_secret) < 32:
+            errors.append("AUTH_SESSION_SECRET must contain at least 32 characters")
+
+        database = urlparse(self.database_url)
+        if database.scheme.startswith("postgres"):
+            if not database.password:
+                errors.append("DATABASE_URL must contain a PostgreSQL password")
+            if (database.username or "").lower() == "postgres" and database.password == "postgres":
+                errors.append("DATABASE_URL must not use postgres/postgres")
+            query = parse_qs(database.query)
+            if query.get("sslmode") != ["require"]:
+                errors.append("DATABASE_URL must set sslmode=require")
+            if query.get("channel_binding") != ["require"]:
+                errors.append("DATABASE_URL must set channel_binding=require")
+            if "neon.tech" in (database.hostname or "") and "-pooler." not in (database.hostname or ""):
+                errors.append("DATABASE_URL must use the pooled Neon hostname")
+
+        redis = urlparse(self.redis_url)
+        if not self.api_read_only and redis.scheme.startswith("redis") and not redis.password:
+            errors.append("REDIS_URL must contain a Redis password in production")
+        return errors
 
 def load_settings() -> AppSettings:
     load_dotenv()
 
     # Basic settings
     settings = AppSettings(
+        app_env=os.getenv("APP_ENV", "dev").lower(),
         database_url=os.getenv("DATABASE_URL", "sqlite:///bankrotai.db"),
+        database_migration_url=os.getenv("DATABASE_MIGRATION_URL") or None,
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_base_url=os.getenv("OPENAI_BASE_URL"),
@@ -130,6 +185,7 @@ def load_settings() -> AppSettings:
 
         # AI Provider settings
         ai_provider=os.getenv("AI_PROVIDER", "omniroute"),
+        ai_allow_provider_fallback=os.getenv("AI_ALLOW_PROVIDER_FALLBACK", "false").lower() in {"1", "true", "yes"},
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
         grok_api_key=os.getenv("GROK_API_KEY"),
         groq_api_key=os.getenv("GROQ_API_KEY"),
@@ -153,6 +209,22 @@ def load_settings() -> AppSettings:
         kiro_model=os.getenv("KIRO_MODEL", "kr/claude-sonnet-4"),
         public_api_key=os.getenv("BANKROTAI_API_KEY") or os.getenv("WEB_API_KEY"),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
+        api_read_only=os.getenv("API_READ_ONLY", "false").lower() in {"1", "true", "yes"},
+        auth_session_secret=os.getenv("AUTH_SESSION_SECRET") or None,
+        auth_session_ttl_seconds=max(300, int(os.getenv("AUTH_SESSION_TTL_SECONDS", "28800"))),
+        database_pool_size=max(1, min(10, int(os.getenv("DATABASE_POOL_SIZE", "3")))),
+        database_max_overflow=max(0, min(10, int(os.getenv("DATABASE_MAX_OVERFLOW", "2")))),
+        database_pool_timeout=max(1, min(60, int(os.getenv("DATABASE_POOL_TIMEOUT", "10")))),
+        allow_local_task_fallback=os.getenv("ALLOW_LOCAL_TASK_FALLBACK", "false").lower() in {"1", "true", "yes"},
+        sync_retry_max_attempts=int(os.getenv("SYNC_RETRY_MAX_ATTEMPTS", "4")),
+        sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),
+        celery_soft_time_limit=int(os.getenv("CELERY_SOFT_TIME_LIMIT", "1500")),
+        celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
+        external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
+        external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
+        geo_max_workers=max(1, min(16, int(os.getenv("GEO_MAX_WORKERS", "6")))),
+        nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
+        nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )
     cors_raw = os.getenv("CORS_ORIGINS", "")
     if cors_raw:
@@ -178,6 +250,8 @@ def get_settings() -> AppSettings:
     return _settings_cache
 
 def get_app_setting(key: str, default: str | None = None) -> str | None:
+    if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
+        return default
     from bankrotai.db import session_scope, AppSetting, select
     try:
         with session_scope() as s:
@@ -189,6 +263,8 @@ def get_app_setting(key: str, default: str | None = None) -> str | None:
         return default
 
 def set_app_setting(key: str, value: str):
+    if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
+        raise ValueError(f"Secret setting {key!r} must be supplied through the environment or a secret manager")
     from bankrotai.db import session_scope, AppSetting, select
     with session_scope() as s:
         setting = s.scalar(select(AppSetting).where(AppSetting.key == key))

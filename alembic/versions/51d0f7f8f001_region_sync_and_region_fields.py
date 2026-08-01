@@ -29,8 +29,13 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f("ix_processed_lots_source_system"), ["source_system"], unique=False)
         batch_op.create_index(batch_op.f("ix_processed_lots_region_slug"), ["region_slug"], unique=False)
 
+    region_expression = (
+        "split_part(source, ':', 2)"
+        if op.get_bind().dialect.name == "postgresql"
+        else "substr(source, instr(source, ':') + 1)"
+    )
     op.execute(
-        """
+        f"""
         UPDATE processed_lots
         SET source_system = CASE
             WHEN source LIKE 'gorod-torgi:%' THEN 'gorod_torgi'
@@ -38,7 +43,7 @@ def upgrade() -> None:
             ELSE source
         END,
         region_slug = CASE
-            WHEN source LIKE 'gorod-torgi:%' THEN substr(source, instr(source, ':') + 1)
+            WHEN source LIKE 'gorod-torgi:%' THEN {region_expression}
             ELSE region_slug
         END,
         source_url = COALESCE(source_url, lot_url),

@@ -38,7 +38,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     settings = get_settings()
     from sqlalchemy import create_engine
-    connectable = create_engine(settings.database_url, poolclass=pool.NullPool)
+    connectable = create_engine(settings.database_migration_url or settings.database_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(

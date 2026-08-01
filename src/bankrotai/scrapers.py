@@ -8,7 +8,7 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from io import BytesIO
 from urllib.parse import urlencode, urljoin
 from typing import Any
@@ -20,10 +20,90 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from bankrotai.domain import NormalizedLot
+from bankrotai.scraper_contracts import (
+    ParsedLotData,
+    ParserConfig,
+    LotOnlineSearchFilters,
+    TBankrotSearchFilters,
+    TorgiGovSearchFilters,
+    parse_money,
+)
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
 
 logger = logging.getLogger(__name__)
+
+REAL_ESTATE_CATEGORIES = {
+    "land", "real_estate", "apartment", "house", "commercial",
+    "commercial_room", "commercial_building", "commercial_building_with_land",
+    "parking", "unfinished", "complex", "office", "retail", "living",
+}
+REAL_ESTATE_TERMS = tuple(term.lower() for term in (
+    "\u043d\u0435\u0434\u0432\u0438\u0436", "\u0437\u0435\u043c\u0435\u043b", "\u0443\u0447\u0430\u0441\u0442", "\u0437\u0434\u0430\u043d",
+    "\u043f\u043e\u043c\u0435\u0449\u0435\u043d", "\u043a\u0432\u0430\u0440\u0442\u0438\u0440", "\u0436\u0438\u043b\u043e\u0439 \u0434\u043e\u043c", "\u0434\u043e\u043c\u043e\u0432\u043b\u0430\u0434",
+    "\u0433\u0430\u0440\u0430\u0436", "\u043c\u0430\u0448\u0438\u043d\u043e-\u043c\u0435\u0441\u0442", "\u043c\u0430\u0448\u0438\u043d\u043e\u043c\u0435\u0441\u0442", "\u0441\u043e\u043e\u0440\u0443\u0436\u0435\u043d",
+    "\u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u0439 \u043a\u043e\u043c\u043f\u043b\u0435\u043a\u0441", "\u043a\u0430\u0434\u0430\u0441\u0442\u0440\u043e\u0432",
+))
+MOVABLE_TERMS = tuple(term.lower() for term in (
+    "\u0430\u0432\u0442\u043e\u043c\u043e\u0431\u0438\u043b", "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0435 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u043e", "\u0434\u0432\u0438\u0436\u0438\u043c\u043e\u0435 \u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u043e",
+))
+RENTAL_TERMS = tuple(term.lower() for term in (
+    "аренда", "аренды", "аренду", "арендный", "арендатор", "субаренда",
+    "право заключения договора аренды", "договор найма", "право пользования",
+))
+
+_DISALLOWED_SHARE_RE = re.compile(r"\bдол(?:я|и|ю|ей|е)\b", re.IGNORECASE)
+_DISALLOWED_HERITAGE_RE = re.compile(
+    r"\b(?:объект(?:ом|а|ы)?\s+культурного\s+наследия|культурного\s+наследия|"
+    r"выявленн(?:ый|ого|ому)\s+объект|ансамбл(?:ь|я|ем|и)|"
+    r"памятник(?:ом|а|и)?\s+(?:архитектуры|истории)|ОКН)\b",
+    re.IGNORECASE,
+)
+
+
+def has_disallowed_real_estate_terms(*values: object) -> bool:
+    """Reject partial ownership and heritage assets from search and maps."""
+    text = " ".join(str(value) for value in values if value).casefold()
+    return bool(_DISALLOWED_SHARE_RE.search(text) or _DISALLOWED_HERITAGE_RE.search(text))
+
+
+def is_real_estate_lot(lot: NormalizedLot) -> bool:
+    category = (lot.category or "").lower()
+    if category in REAL_ESTATE_CATEGORIES:
+        return True
+    if category in {"car", "vehicle", "transport", "movable"}:
+        return False
+    raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+    category_values = raw.get("category_titles") or raw.get("categories") or raw.get("category_display") or ""
+    if isinstance(category_values, (list, tuple)):
+        category_text = " ".join(str(item) for item in category_values)
+    else:
+        category_text = str(category_values)
+    text = " ".join((lot.title or "", lot.description or "", lot.address or "", category_text)).lower()
+    if any(term in text for term in MOVABLE_TERMS) and not any(term in text for term in REAL_ESTATE_TERMS):
+        return False
+    return any(term in text for term in REAL_ESTATE_TERMS)
+
+
+def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
+    """Keep real-estate sales and reject rentals even if a source mislabels them."""
+    if not is_real_estate_lot(lot):
+        return False
+    raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+    text = " ".join(
+        str(value)
+        for value in (
+            lot.title,
+            lot.description,
+            lot.address,
+            lot.auction_type,
+            raw.get("trade_type"),
+            raw.get("typeTransaction"),
+            raw.get("bidding_form"),
+        )
+        if value
+    ).casefold()
+    return not any(term in text for term in RENTAL_TERMS) and not has_disallowed_real_estate_terms(text)
 
 from bankrotai.extractors import (
     extract_price, extract_area, extract_cadastral, extract_address,
@@ -31,125 +111,6 @@ from bankrotai.extractors import (
     extract_cadastral_numbers, extract_building_area, extract_room_area,
     extract_year_built, extract_commissioning_year, extract_cultural_heritage
 )
-
-# --- Parsers ---
-
-@dataclass
-class ParserConfig:
-    container_selector: str = "div.lot"
-    title_selector: str = "a"
-    base_url: str = "https://tbankrot.ru"
-
-@dataclass
-class ParsedLotData:
-    external_id: str
-    title: str
-    url: str
-
-    # Цена
-    price_text: str = ""
-    current_price: float | None = None
-
-    # Текстовые данные
-    description: str = ""
-    status: str = "unknown"
-    address: str = ""
-
-    # Кадастр
-    cadastral_number: str = ""
-    cadastral_numbers: list[str] = field(default_factory=list)
-
-    # Площади
-    area: float | None = None
-    building_area: float | None = None
-    room_area: float | None = None
-    land_area: float | None = None
-
-    # Тех. параметры
-    floors: int | None = None
-    year_built: int | None = None
-    year_commissioning: int | None = None
-    is_cultural_heritage: bool = False
-    raw_payload: dict[str, Any] = field(default_factory=dict)
-
-
-def parse_money(text: str | None) -> float | None:
-    if not text:
-        return None
-
-    clean = (
-        text.replace("\xa0", " ")
-            .replace("\u202f", " ")
-            .replace("₽", "")
-            .replace("руб.", "")
-            .replace("руб", "")
-            .strip()
-    )
-
-    # Берём первое денежное число из конкретного контейнера цены
-    m = re.search(r'\d[\d\s]*(?:[,.]\d+)?', clean)
-    if not m:
-        return None
-
-    raw = m.group(0).replace(" ", "").replace(",", ".")
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-@dataclass
-class TorgiGovSearchFilters:
-    search_text: str = ""
-    type_transaction: str | None = None
-    price_min: float | None = None
-    price_max: float | None = None
-    subject_rf: str | None = None
-    fias: str | None = None
-    ownership_form: str | None = None
-    category_code: str | None = None
-    lot_status: str | None = None
-    currency_code: str | None = None
-    publish_date_from: str | None = None
-    publish_date_to: str | None = None
-    bidd_end_time_from: str | None = None
-    bidd_end_time_to: str | None = None
-    auction_start_date_from: str | None = None
-    auction_start_date_to: str | None = None
-    notice_number: str | None = None
-    etp_code: str | None = None
-    bidd_type: str | None = None
-    bidd_form: str | None = None
-    notice_status: str | None = None
-    organizer_name: str | None = None
-    organizer_inn: str | None = None
-    right_holder_name: str | None = None
-    right_holder_inn: str | None = None
-    attachment_text: str | None = None
-    match_phrase: bool = False
-    is_msp: bool = False
-    page: int = 1
-    page_size: int = 20
-
-
-@dataclass
-class TBankrotSearchFilters:
-    search_text: str = ""
-    region: str | None = None
-    price_min: float | None = None
-    price_max: float | None = None
-    lot_number: str | None = None
-    trade_type: str | None = None
-    photo_only: bool = False
-    debtor: str | None = None
-    auction_manager: str | None = None
-    organizer: str | None = None
-    stop_words: str | None = None
-    show_closed: bool = False
-    show_paused: bool = False
-    page: int = 1
-    page_size: int = 20
-
 
 class TorgiGovClientError(RuntimeError):
     """User-facing error raised when torgi.gov.ru cannot be queried."""
@@ -161,6 +122,7 @@ class TorgiGovClient:
     EXCEL_EXPORT_ENDPOINT = f"{BASE_URL}/new/api/public/lotcards/export/excel"
     FALLBACK_LIST_URL = f"{BASE_URL}/new/public/lots/reg"
     DEFAULT_LOT_STATUS = "PUBLISHED,APPLICATIONS_SUBMISSION"
+    REAL_ESTATE_CATEGORY_CODES = "2,8,9,10,11,12,903"
 
     CATEGORY_CODE_LABELS = {
         "903": "Земельный участок со зданием",
@@ -451,6 +413,8 @@ class TorgiGovClient:
                 continue
             if self._should_apply_local_text_filter(filters.search_text, params) and not self._lot_matches_location_text(lot, filters.search_text):
                 text_filtered += 1
+                continue
+            if not is_sale_real_estate_lot(lot):
                 continue
             if lot.external_id in seen:
                 duplicates += 1
@@ -858,6 +822,9 @@ class TorgiGovClient:
                 value = self.CATEGORY_GROUP_CODE_MAP.get(str(value).strip(), value)
             params[query_name] = str(value).strip()
 
+        params.setdefault("catCode", self.REAL_ESTATE_CATEGORY_CODES)
+        params.setdefault("typeTransaction", "SALE")
+
         if filters.price_min is not None:
             params["priceMin"] = self._format_number(filters.price_min)
         if filters.price_max is not None:
@@ -895,6 +862,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_excel_export(response.content)
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         if filters.subject_rf:
             before = len(lots)
             lots = [lot for lot in lots if self._lot_matches_subject(lot, filters.subject_rf)]
@@ -1060,6 +1028,7 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_fallback_html(response.text)
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         if not lots:
             warnings.append("HTML fallback не нашел карточек лотов; возможно, сайт отдает только SPA без данных.")
         if filters.fias and not self._looks_like_fias_identifier(filters.fias):
@@ -1777,6 +1746,7 @@ def import_manual_html(
     if external_ids:
         from sqlalchemy import select
         stmt = select(ProcessedLot.external_id, ProcessedLot.review_status).where(
+            ProcessedLot.source_system == "manual_html",
             ProcessedLot.external_id.in_(external_ids)
         )
         for eid, review_status in session.execute(stmt):
@@ -2130,6 +2100,12 @@ class GorodTorgiClient:
 class TBankrotClient:
     BASE_URL = "https://tbankrot.ru"
     SEARCH_ENDPOINT = f"{BASE_URL}/"
+    REAL_ESTATE_CATEGORY_CODES = "3,4,5"
+    REAL_ESTATE_CATEGORY_LABELS = {
+        "3": "Недвижимость жилая",
+        "4": "Недвижимость коммерческая",
+        "5": "Земельные участки",
+    }
 
     REGION_LABELS = {
         "4": "Амурская область", "10": "Бурятия", "16": "Еврейская АО", "24": "Камчатский край",
@@ -2418,6 +2394,8 @@ class TBankrotClient:
             raise RuntimeError(f"TBankrot: не удалось загрузить страницу поиска: {exc}") from exc
 
         lots = self._parse_listing_html(resp.text, filters=filters, raw_endpoint=resp.url or endpoint)
+        raw_count = len(lots)
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         pagination = self._extract_pagination_meta(resp.text)
         meta = {
             "source": "tbankrot.ru",
@@ -2426,10 +2404,10 @@ class TBankrotClient:
             "loaded": len(lots),
             "raw_endpoint": resp.url or endpoint,
             "raw_params": params,
-            "has_more": bool(pagination.get("total_pages") and filters.page < pagination["total_pages"]) or len(lots) >= filters.page_size,
+            "has_more": bool(pagination.get("total_pages") and filters.page < pagination["total_pages"]) or raw_count >= filters.page_size,
             "total_pages": pagination.get("total_pages"),
             "page_size": filters.page_size,
-            "warnings": [],
+            "warnings": ([f"{raw_count - len(lots)} non-real-estate lots hidden."] if raw_count != len(lots) else []),
         }
         return lots, meta
 
@@ -2539,6 +2517,8 @@ class TBankrotClient:
         add("start_p1", self._format_query_number(filters.price_min))
         add("start_p2", self._format_query_number(filters.price_max))
         add("num", filters.lot_number)
+        add("parent_cat", "2")
+        add("sub_cat", filters.category_codes or self.REAL_ESTATE_CATEGORY_CODES)
         if filters.trade_type == "auction":
             add("type_2", "on")
         elif filters.trade_type == "public":
@@ -2761,6 +2741,324 @@ class TBankrotClient:
                 break
 
         return all_lots
+
+
+class LotOnlineClientError(RuntimeError):
+    """User-facing error raised when the public RAD catalogue cannot be queried."""
+
+
+class LotOnlineClient:
+    BASE_URL = "https://catalog.lot-online.ru"
+    SEARCH_ENDPOINT = f"{BASE_URL}/index.php"
+    DEFAULT_CATEGORY_ID = "1"
+    CATEGORY_LABELS = {
+        "1": "Недвижимое имущество",
+        "9876": "Все категории",
+    }
+    # Values are public CS-Cart feature identifiers exposed by the catalogue.
+    REGION_FEATURES = {
+        "24392": "Ярославская область",
+    }
+    REGION_NAME_TO_FEATURE = {label.lower(): code for code, label in REGION_FEATURES.items()}
+
+    def __init__(
+        self,
+        *,
+        timeout: tuple[float, float] | float = (10, 60),
+        session: requests.Session | None = None,
+        diagnostics: bool = False,
+    ) -> None:
+        self.timeout = timeout
+        self.diagnostics = diagnostics
+        self.session = session or requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/134.0 Safari/537.36 BankrotAI/1.0"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+        })
+
+    @classmethod
+    def _region_feature_hash(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized = str(value).strip()
+        if normalized.startswith("171-"):
+            return normalized
+        feature = cls.REGION_NAME_TO_FEATURE.get(normalized.lower(), normalized)
+        if not feature.isdigit():
+            raise ValueError(f"Неизвестный регион ЛОТ-ОНЛАЙН: {value}")
+        return f"171-{feature}"
+
+    def _build_query_params(self, filters: LotOnlineSearchFilters) -> dict[str, str]:
+        archive_mode = str(filters.archive_mode or "false").lower()
+        if archive_mode not in {"false", "true", "all"}:
+            raise ValueError("archive_mode должен быть false, true или all")
+        page_size = max(12, min(int(filters.page_size or 96), 96))
+        params = {
+            "dispatch": "categories.view",
+            "category_id": str(filters.category_id or self.DEFAULT_CATEGORY_ID),
+            "filter_fields[is_aggregator]": "all",
+            "filter_fields[is_archive]": archive_mode,
+            "items_per_page": str(page_size),
+            "page": str(max(1, int(filters.page or 1))),
+        }
+        if filters.search_text.strip():
+            params["q"] = filters.search_text.strip()
+        region_hash = self._region_feature_hash(filters.region_feature)
+        if region_hash:
+            params["features_hash"] = region_hash
+        return params
+
+    def _prepare_url(self, params: dict[str, str]) -> str:
+        return f"{self.SEARCH_ENDPOINT}?{urlencode(params)}"
+
+    @staticmethod
+    def _detail_text(node: Any) -> str:
+        value = node.get_text(" ", strip=True) if node is not None else ""
+        value = re.sub(r"\s+", " ", value).strip()
+        # Some catalogue responses have historically contained UTF-8 text
+        # decoded once as latin-1. Repair only when the mojibake signature is
+        # present; normal Russian text is left untouched.
+        if ("Ð" in value or "Ñ" in value) and not re.search(r"[А-Яа-я]", value):
+            try:
+                value = value.encode("latin-1").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        return value
+
+    def fetch_detail_fields(self, url: str) -> dict[str, Any]:
+        """Fetch structured address/cadastre fields absent from listing cards."""
+        try:
+            response = self.session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LotOnlineClientError(f"Не удалось загрузить карточку ЛОТ-ОНЛАЙН: {exc}") from exc
+
+        soup = BeautifulSoup(response.content, "lxml")
+        labelled: dict[str, str] = {}
+        for container in soup.select("dl > div"):
+            label_node = container.find("dt")
+            value_node = container.find("dd")
+            label = self._detail_text(label_node).casefold()
+            value = self._detail_text(value_node)
+            if label and value:
+                labelled[label] = value
+
+        descriptions = [
+            self._detail_text(node)
+            for node in soup.select(".ty-product__full-description")
+        ]
+        description = max((value for value in descriptions if value), key=len, default="")
+        page_text = " ".join((description, self._detail_text(soup.title)))
+        address = labelled.get("адрес") or extract_address(page_text)
+        cadastral_numbers = extract_cadastral_numbers(page_text)
+        if not cadastral_numbers:
+            for group in soup.select(".ty-control-group"):
+                label = self._detail_text(group.select_one(".ty-control-group__label")).casefold()
+                if "кадастров" in label:
+                    cadastral_numbers.extend(extract_cadastral_numbers(self._detail_text(group)))
+        return {
+            "address": address,
+            "cadastral_numbers": list(dict.fromkeys(cadastral_numbers)),
+            "description": description or None,
+            "url": response.url or url,
+        }
+
+    def search_lots(self, filters: LotOnlineSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
+        params = self._build_query_params(filters)
+        try:
+            response = self.session.get(self.SEARCH_ENDPOINT, params=params, timeout=self.timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LotOnlineClientError(
+                "Не удалось подключиться к catalog.lot-online.ru. "
+                f"Проверьте сеть или попробуйте позже. Детали: {exc}"
+            ) from exc
+
+        lots, page_meta = self._parse_listing_html(response.content, filters=filters)
+        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
+        page = max(1, int(filters.page or 1))
+        page_size = max(12, min(int(filters.page_size or 96), 96))
+        meta = {
+            "source": "lot-online.ru",
+            "mode": "page",
+            "page": page,
+            "page_size": page_size,
+            "items_on_page": len(lots),
+            "loaded": len(lots),
+            "has_more": page_meta["has_more"],
+            "total_pages": page_meta["total_pages"],
+            "raw_endpoint": response.url or self._prepare_url(params),
+            "raw_params": params,
+            "warnings": [],
+        }
+        return lots, meta
+
+    def _parse_listing_html(
+        self,
+        html: str | bytes,
+        *,
+        filters: LotOnlineSearchFilters,
+    ) -> tuple[list[NormalizedLot], dict[str, Any]]:
+        soup = BeautifulSoup(html, "lxml")
+        lots: list[NormalizedLot] = []
+        seen: set[str] = set()
+        region_feature = str(filters.region_feature or "").removeprefix("171-")
+        region_name = self.REGION_FEATURES.get(region_feature)
+        status = "closed" if filters.archive_mode == "true" else ("active" if filters.archive_mode == "false" else "unknown")
+
+        for card in soup.select(".ty-grid-list__item"):
+            title_link = card.select_one("a.product-title[href*='products.view']")
+            if title_link is None:
+                continue
+            href = urljoin(self.BASE_URL, str(title_link.get("href") or ""))
+            product_id_match = re.search(r"(?:[?&]product_id=)(\d+)", href)
+            if not product_id_match:
+                product_input = card.select_one("input[name*='[product_id]']")
+                product_id = str(product_input.get("value") or "") if product_input else ""
+            else:
+                product_id = product_id_match.group(1)
+            if not product_id or product_id in seen:
+                continue
+            seen.add(product_id)
+
+            title = title_link.get("title") or title_link.get_text(" ", strip=True)
+            title = re.sub(r"\s+", " ", str(title)).strip()
+            price_node = card.select_one(".ty-price-num")
+            price_text = price_node.get_text(" ", strip=True) if price_node else ""
+            price = parse_money(price_text)
+            code_node = card.select_one(".ty-grid-list__product-code")
+            procedure_number = code_node.get_text(" ", strip=True) if code_node else None
+            cadastral_numbers = extract_cadastral_numbers(title)
+            image_urls: list[str] = []
+            for image_node in card.select("img.ty-pict, img.cm-image"):
+                image_ref = str(image_node.get("src") or image_node.get("data-src") or "").strip()
+                if not image_ref or image_ref.startswith("data:"):
+                    continue
+                image_url = urljoin(self.BASE_URL, image_ref)
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
+
+            raw_data = {
+                "source": "lot_online_search",
+                "product_id": product_id,
+                "procedure_number": procedure_number,
+                "price_text": price_text,
+                "category_id": str(filters.category_id),
+                "category_name": self.CATEGORY_LABELS.get(str(filters.category_id)),
+                "region_feature": region_feature or None,
+                "region_name": region_name,
+                "archive_mode": filters.archive_mode,
+                "cadastral_numbers": cadastral_numbers,
+                "image_url": image_urls[0] if image_urls else None,
+                "image_urls": image_urls,
+            }
+            lots.append(NormalizedLot(
+                external_id=f"lot-online:{product_id}",
+                source="lot-online",
+                source_system="lot-online.ru",
+                title=title[:500],
+                description=title[:5000],
+                category=classify_category(title, title),
+                region_slug="76" if region_feature == "24392" else region_feature or None,
+                region_name=region_name,
+                address=extract_address(title),
+                cadastral_number=cadastral_numbers[0] if cadastral_numbers else None,
+                vin=None,
+                area=extract_area(title),
+                start_price=price,
+                current_price=price,
+                auction_status=status,
+                lot_url=href,
+                source_url=href,
+                detail_level="search",
+                raw_data=raw_data,
+                platform_name="РАД / ЛОТ-ОНЛАЙН",
+                platform_code="rad",
+                procedure_number=procedure_number,
+            ))
+
+        page = max(1, int(filters.page or 1))
+        page_numbers = []
+        has_next = False
+        for link in soup.select(".ty-pagination a[href]"):
+            href = str(link.get("href") or "")
+            page_match = re.search(r"(?:[?&]page=)(\d+)", href)
+            if page_match:
+                target_page = int(page_match.group(1))
+                page_numbers.append(target_page)
+                if target_page > page:
+                    has_next = True
+        total_pages = max([page, *page_numbers])
+        return lots, {"has_more": has_next, "total_pages": total_pages}
+
+    def search_all_lots(
+        self,
+        filters: LotOnlineSearchFilters,
+        *,
+        max_items: int | None = 5000,
+        max_pages: int = 500,
+        progress_cb: Callable[[int, int | None, int], None] | None = None,
+        page_cb: Callable[[list[NormalizedLot], dict[str, Any]], None] | None = None,
+        stop_cb: Callable[[], bool] | None = None,
+    ) -> tuple[list[NormalizedLot], dict[str, Any]]:
+        all_lots: list[NormalizedLot] = []
+        seen: set[str] = set()
+        page_diagnostics: list[dict[str, Any]] = []
+        last_meta: dict[str, Any] = {}
+        stop_reason = "last_page"
+
+        for page in range(max(1, filters.page), max_pages + 1):
+            if stop_cb and stop_cb():
+                stop_reason = "user_stopped"
+                break
+            page_filters = replace(filters, page=page)
+            lots_on_page, page_meta = self.search_lots(page_filters)
+            new_lots = [lot for lot in lots_on_page if lot.external_id not in seen]
+            accepted_lots: list[NormalizedLot] = []
+            for lot in new_lots:
+                seen.add(lot.external_id)
+                all_lots.append(lot)
+                accepted_lots.append(lot)
+                if max_items and len(all_lots) >= max_items:
+                    stop_reason = "max_items"
+                    break
+            last_meta = dict(page_meta)
+            last_meta.update({"mode": "all_pages", "pages_loaded": len(page_diagnostics) + 1, "loaded": len(all_lots)})
+            page_diagnostics.append({
+                "page": page,
+                "items_on_page": len(lots_on_page),
+                "new_unique": len(accepted_lots),
+            })
+            if page_cb and accepted_lots:
+                page_cb(accepted_lots, last_meta)
+            if progress_cb:
+                progress_cb(page, page_meta.get("total_pages"), len(all_lots))
+            if stop_reason == "max_items":
+                break
+            if not page_meta.get("has_more"):
+                stop_reason = "last_page"
+                break
+            if lots_on_page and not new_lots:
+                stop_reason = "duplicates_only"
+                break
+            time.sleep(0.2)
+        else:
+            stop_reason = "max_pages"
+
+        meta = dict(last_meta)
+        meta.update({
+            "source": "lot-online.ru",
+            "mode": "all_pages",
+            "loaded": len(all_lots),
+            "pages_loaded": len(page_diagnostics),
+            "stop_reason": stop_reason,
+            "page_diagnostics": page_diagnostics,
+        })
+        return all_lots, meta
 
 def sync_public_real_estate(session: Session, city_slug: str, search: str | None = None) -> list:
     logger.info(f"Запуск синхронизации TBankrot: {city_slug} (search={search})")
