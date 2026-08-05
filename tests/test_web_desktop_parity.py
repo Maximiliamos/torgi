@@ -101,7 +101,12 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
 
     map_response = client.get("/api/map/lots")
     assert map_response.status_code == 200
-    map_item = map_response.json()["items"][0]
+    map_payload = map_response.json()
+    assert map_payload["total"] == 1
+    assert map_payload["mapped_total"] == 1
+    assert map_payload["without_coordinates"] == 0
+    assert map_payload["updated_at"]
+    map_item = map_payload["items"][0]
     assert map_item["id"] == lot_id
     assert map_item["source_name"] == "Тестовая ЭТП"
     assert map_item["procedure_number"] == "PROC-76-1"

@@ -254,7 +254,14 @@ export const importOnlineLot = (lot: OnlineLot) => requestJson<{ id: number }>("
   })
 });
 
-export const fetchMapLots = (citySlug?: string, includeArchived = false) => requestJson<{ items: MapLot[]; total: number }>("/api/map/lots", { city_slug: citySlug, include_archived: includeArchived });
+export type MapLotsResponse = {
+  items: MapLot[];
+  total: number;
+  mapped_total: number;
+  without_coordinates: number;
+  updated_at: string | null;
+};
+export const fetchMapLots = (citySlug?: string, includeArchived = false) => requestJson<MapLotsResponse>("/api/map/lots", { city_slug: citySlug, include_archived: includeArchived });
 export const searchCadastre = (query: string) => requestJson<Record<string, unknown>>("/api/cadastre/search", { query });
 export const setReviewStatus = (lotId: number, status: string | null) =>
   requestJson(`/api/lots/${lotId}/review-status`, undefined, { method: "PUT", body: JSON.stringify({ status }) });

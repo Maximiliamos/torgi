@@ -7,6 +7,7 @@ import {
   MapPin,
   RefreshCcw,
   Search,
+  Star,
   X,
 } from "lucide-react";
 
@@ -129,8 +130,8 @@ function YandexDesktopMap({
 
   const html = React.useMemo(
     () => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU"></script><style>
-html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}.map-count{position:absolute;z-index:5;left:12px;bottom:12px;background:#fff;border:1px solid #d6dbe2;border-radius:4px;padding:7px 10px;color:#4b5565;box-shadow:0 2px 8px #0002}.cluster-list{background:#fff;border:1px solid #cbd2dc;border-radius:7px;box-shadow:0 7px 24px #0003;box-sizing:border-box;display:none;left:50%;max-height:360px;overflow:auto;padding:12px;position:absolute;top:58px;transform:translateX(-50%);width:min(390px,calc(100% - 28px));z-index:8}.cluster-list.open{display:block}.cluster-list__head{align-items:center;display:flex;justify-content:space-between;margin-bottom:8px}.cluster-list__head strong{font-size:14px}.cluster-list__head button{background:#fff;border:0;font-size:20px}.cluster-item{border-top:1px solid #e4e8ed;display:grid;gap:4px;padding:9px 0}.cluster-item strong{font-size:13px}.cluster-item span{color:#647084;font-size:12px}.cluster-item button{background:#177d65;border:0;border-radius:5px;color:#fff;justify-self:start;padding:6px 12px}
-</style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><div id="map-count" class="map-count">Метки: 0</div><aside id="cluster-list" class="cluster-list"><div class="cluster-list__head"><strong id="cluster-title">Лоты в точке</strong><button id="cluster-close" aria-label="Закрыть">×</button></div><div id="cluster-items"></div></aside><script>
+html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}.cluster-list{background:#fff;border:1px solid #cbd2dc;border-radius:7px;box-shadow:0 7px 24px #0003;box-sizing:border-box;display:none;left:50%;max-height:360px;overflow:auto;padding:12px;position:absolute;top:58px;transform:translateX(-50%);width:min(390px,calc(100% - 28px));z-index:8}.cluster-list.open{display:block}.cluster-list__head{align-items:center;display:flex;justify-content:space-between;margin-bottom:8px}.cluster-list__head strong{font-size:14px}.cluster-list__head button{background:#fff;border:0;font-size:20px}.cluster-item{border-top:1px solid #e4e8ed;display:grid;gap:4px;padding:9px 0}.cluster-item strong{font-size:13px}.cluster-item span{color:#647084;font-size:12px}.cluster-item button{background:#177d65;border:0;border-radius:5px;color:#fff;justify-self:start;padding:6px 12px}
+</style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><aside id="cluster-list" class="cluster-list"><div class="cluster-list__head"><strong id="cluster-title">Лоты в точке</strong><button id="cluster-close" aria-label="Закрыть">×</button></div><div id="cluster-items"></div></aside><script>
 const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let cluster=null;let lots=[];let cad=null;let showCad=true;let selectedId=null;let hasFitted=false;let lotById=new Map();let markById=new Map();let pending=[];let cadObjects=[];
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function ended(l){return l.is_archived||['closed','completed','cancelled','canceled','failed','annulled','archive','archived'].includes(String(l.status||'').toLowerCase());}
@@ -146,7 +147,7 @@ document.getElementById('cluster-close').addEventListener('click',()=>document.g
 function clearCad(){cadObjects.forEach(item=>map.geoObjects.remove(item));cadObjects=[];}
 function renderCad(focus=false){if(!map)return;clearCad();if(!cad||!Number.isFinite(cad.lat)||!Number.isFinite(cad.lon))return;const point=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(point);cadObjects.push(point);if(showCad&&cad.geometry&&cad.geometry.type==='Polygon'){const polygon=new ymaps.Polygon(convert(cad.geometry.coordinates),{},{strokeColor:'#7c3aed',strokeWidth:3,fillColor:'#7c3aed22'});map.geoObjects.add(polygon);cadObjects.push(polygon);}if(focus)map.setCenter([cad.lat,cad.lon],Math.max(map.getZoom(),16));}
 function updateSelection(nextId){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{const mark=markById.get(Number(id)),lot=lotById.get(Number(id));if(mark&&lot)mark.options.set(opts(lot));});}
-function renderLots(){if(!map)return;const center=map.getCenter(),zoom=map.getZoom();map.geoObjects.removeAll();markById=new Map();lotById=new Map(lots.map(l=>[Number(l.id),l]));cluster=new ymaps.Clusterer({preset:'islands#invertedDarkBlueClusterIcons',groupByCoordinates:false,clusterDisableClickZoom:false});const groups=new Map();lots.forEach(l=>{if(!Number.isFinite(l.lat)||!Number.isFinite(l.lon))return;const key=Number(l.lat).toFixed(6)+','+Number(l.lon).toFixed(6);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(l);if(showCad&&l.geometry&&l.geometry.type==='Polygon')map.geoObjects.add(new ymaps.Polygon(convert(l.geometry.coordinates),{},{strokeColor:'#2468d8',strokeWidth:2,fillColor:'#2468d822'}));});const singles=[];groups.forEach(group=>{if(group.length>1){const first=group[0],marker=new ymaps.Placemark([first.lat,first.lon],{hintContent:group.length+' лота в одной точке'},groupOpts(group.length));marker.events.add('click',event=>{event.preventDefault();showGroup(group);});map.geoObjects.add(marker);}else{const l=group[0],mark=new ymaps.Placemark([l.lat,l.lon],{hintContent:esc(l.title),lotId:Number(l.id)},opts(l));mark.events.add('click',()=>send('bankrotai-select',Number(l.id)));markById.set(Number(l.id),mark);singles.push(mark);}});cluster.add(singles);cluster.events.add('click',event=>{const target=event.get('target'),objects=target&&target.getGeoObjects?target.getGeoObjects():[];if(map.getZoom()>=18&&objects.length>1){event.preventDefault();const group=objects.map(item=>lotById.get(Number(item.properties.get('lotId')))).filter(Boolean);showGroup(group);}});map.geoObjects.add(cluster);renderCad(false);document.getElementById('map-count').textContent='Метки: '+lots.length;window.bankrotaiLotIds=lots.map(l=>Number(l.id));if(!hasFitted&&lots.length){hasFitted=true;map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:42});}else{map.setCenter(center,zoom);}}
+function renderLots(){if(!map)return;const center=map.getCenter(),zoom=map.getZoom();map.geoObjects.removeAll();markById=new Map();lotById=new Map(lots.map(l=>[Number(l.id),l]));cluster=new ymaps.Clusterer({preset:'islands#invertedDarkBlueClusterIcons',groupByCoordinates:false,clusterDisableClickZoom:false});const groups=new Map();lots.forEach(l=>{if(!Number.isFinite(l.lat)||!Number.isFinite(l.lon))return;const key=Number(l.lat).toFixed(6)+','+Number(l.lon).toFixed(6);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(l);if(showCad&&l.geometry&&l.geometry.type==='Polygon')map.geoObjects.add(new ymaps.Polygon(convert(l.geometry.coordinates),{},{strokeColor:'#2468d8',strokeWidth:2,fillColor:'#2468d822'}));});const singles=[];groups.forEach(group=>{if(group.length>1){const first=group[0],marker=new ymaps.Placemark([first.lat,first.lon],{hintContent:group.length+' лота в одной точке'},groupOpts(group.length));marker.events.add('click',event=>{event.preventDefault();showGroup(group);});map.geoObjects.add(marker);}else{const l=group[0],mark=new ymaps.Placemark([l.lat,l.lon],{hintContent:esc(l.title),lotId:Number(l.id)},opts(l));mark.events.add('click',()=>send('bankrotai-select',Number(l.id)));markById.set(Number(l.id),mark);singles.push(mark);}});cluster.add(singles);cluster.events.add('click',event=>{const target=event.get('target'),objects=target&&target.getGeoObjects?target.getGeoObjects():[];if(map.getZoom()>=18&&objects.length>1){event.preventDefault();const group=objects.map(item=>lotById.get(Number(item.properties.get('lotId')))).filter(Boolean);showGroup(group);}});map.geoObjects.add(cluster);renderCad(false);window.bankrotaiLotIds=lots.map(l=>Number(l.id));if(!hasFitted&&lots.length){hasFitted=true;map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:42});}else{map.setCenter(center,zoom);}}
 function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];renderLots();}else if(data.type==='select-lot'){updateSelection(data.lotId);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderLots();}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderCad(Boolean(cad));}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
 function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lotById.get(Number(id))?.review_status||null,openCoincidentGroup:()=>{const groups=new Map();lots.forEach(l=>{const key=Number(l.lat).toFixed(6)+','+Number(l.lon).toFixed(6);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(l);});const group=Array.from(groups.values()).find(items=>items.length>1);if(group)showGroup(group);}};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');}
@@ -295,7 +296,7 @@ function LotPreview({
           <SourceButton label="ГИС Торги" url={lot.gis_torgi_url} kind="gis" />
           <SourceButton label="ЭТП" url={lot.etp_url} kind="etp" />
           <SourceButton
-            label="Торги России"
+            label="Торги РФ"
             url={lot.torgi_russia_url}
             kind="russia"
           />
@@ -358,8 +359,33 @@ function LotPreview({
   );
 }
 
-export function MapView({ refreshToken }: { refreshToken: number }) {
+function relativeUpdate(value: string | null, now: number) {
+  if (!value) return "время обновления неизвестно";
+  const elapsed = Math.max(0, now - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "обновлено только что";
+  if (minutes < 60) return `обновлено ${minutes} мин назад`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `обновлено ${hours} ч назад`;
+  return `обновлено ${Math.floor(hours / 24)} дн назад`;
+}
+
+export function MapView({
+  refreshToken,
+  favoritesOnly = false,
+  onFavoriteCount,
+}: {
+  refreshToken: number;
+  favoritesOnly?: boolean;
+  onFavoriteCount?: (count: number) => void;
+}) {
   const [lots, setLots] = React.useState<MapLot[]>([]);
+  const [statistics, setStatistics] = React.useState({
+    total: 0,
+    withoutCoordinates: 0,
+    updatedAt: null as string | null,
+  });
+  const [clock, setClock] = React.useState(Date.now());
   const [regions, setRegions] = React.useState<RegionOption[]>([]);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
@@ -386,9 +412,15 @@ export function MapView({ refreshToken }: { refreshToken: number }) {
       setLoading(true);
       setError("");
       try {
-        setLots(
-          (await fetchMapLots(region || undefined, includeArchived)).items,
-        );
+        const response = await fetchMapLots(region || undefined, includeArchived);
+        setLots(response.items);
+        setStatistics({
+          total: response.total,
+          withoutCoordinates:
+            response.without_coordinates ??
+            Math.max(response.total - response.items.length, 0),
+          updatedAt: response.updated_at,
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Ошибка загрузки карты");
       } finally {
@@ -401,6 +433,13 @@ export function MapView({ refreshToken }: { refreshToken: number }) {
   React.useEffect(() => {
     void load();
   }, [load, refreshToken]);
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  React.useEffect(() => {
+    if (favoritesOnly) setSelectedLotId(null);
+  }, [favoritesOnly]);
   React.useEffect(() => {
     Promise.all([fetchCapabilities(), fetchRegions(), fetchCurrentUser()])
       .then(([capabilities, values, user]) => {
@@ -434,6 +473,12 @@ export function MapView({ refreshToken }: { refreshToken: number }) {
         (lot.current_price ?? Number.POSITIVE_INFINITY) <=
           Number(filters.maxPrice)),
   );
+  const favoriteLots = visibleLots.filter(
+    (lot) => lot.review_status === "approved",
+  );
+  React.useEffect(() => {
+    onFavoriteCount?.(favoriteLots.length);
+  }, [favoriteLots.length, onFavoriteCount]);
   const cadText = cad
     ? [
         cad.cadastral_number &&
@@ -468,6 +513,31 @@ export function MapView({ refreshToken }: { refreshToken: number }) {
               }
             }}
           />
+        ) : favoritesOnly ? (
+          <section className="mapFavoritesPanel" aria-label="Интересные лоты">
+            <header>
+              <Star size={18} fill="currentColor" />
+              <div>
+                <h2>Интересные лоты</h2>
+                <span>{favoriteLots.length} зелёных</span>
+              </div>
+            </header>
+            {favoriteLots.length ? (
+              <div className="mapFavoritesList">
+                {favoriteLots.map((lot) => (
+                  <button key={lot.id} onClick={() => setSelectedLotId(lot.id)}>
+                    <strong>{lot.title}</strong>
+                    <span>{lot.address || "Адрес не указан"}</span>
+                    <b>{money(lot.current_price)}</b>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <MapState>
+                Зелёных лотов пока нет. Отметьте интересный лот на карте.
+              </MapState>
+            )}
+          </section>
         ) : (
           <div className="mapControlPanel">
             <h2>Кадастровый поиск</h2>
@@ -617,13 +687,26 @@ export function MapView({ refreshToken }: { refreshToken: number }) {
           </div>
         )}
       </div>
-      <YandexDesktopMap
-        lots={visibleLots}
-        selectedCadastre={cad}
-        showCadastre={showCadastre}
-        selectedLotId={selectedLotId}
-        onSelect={setSelectedLotId}
-      />
+      <div className="mapDesktopCanvas">
+        <YandexDesktopMap
+          lots={visibleLots}
+          selectedCadastre={cad}
+          showCadastre={showCadastre}
+          selectedLotId={selectedLotId}
+          onSelect={setSelectedLotId}
+        />
+        <footer className="mapBottomStatus" aria-label="Состояние карты">
+          <span>
+            {statistics.total} объектов · {visibleLots.length} на карте ·{" "}
+            {statistics.withoutCoordinates} без координат ·{" "}
+            {relativeUpdate(statistics.updatedAt, clock)}
+          </span>
+          <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
+            <i />
+            {loading ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
+          </span>
+        </footer>
+      </div>
     </section>
   );
 }

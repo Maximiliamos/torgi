@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Activity, AlertCircle, Banknote, Bookmark, Building2, Calculator, CheckCircle2,
   ExternalLink, FileSearch, Files, Heart, ListFilter, Loader2, LogOut, Map,
-  MapPin, NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, X
+  NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
   addNote, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
@@ -156,10 +156,23 @@ function ReliabilityView({ refreshToken }: { refreshToken: number }) {
 }
 
 const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["reliability", "Надёжность", <Activity />]];
-export function App() {
-  const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null);
+export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
+  const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
-  return <main className="appShell"><header className="topBar"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header><nav className="mainNav">{nav.map(([id, text, icon]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}>{icon}{text}</button>)}</nav><div className={`viewContainer ${view === "map" ? "viewContainer--map" : ""}`}>{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "map" && <MapView refreshToken={refreshToken} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div><footer className="statusLine"><MapPin size={14} /> API same-origin · защищённая сессия</footer></main>;
+  const openView = (next: MainView) => { setMapFavorites(false); setView(next); };
+  return <main className="appShell">
+    <nav className="appRail" aria-label="Основная навигация">
+      <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
+      {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}</button>)}
+      <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
+      <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
+      <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
+    </nav>
+    <section className="appWorkspace">
+      {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
+      <div className={`viewContainer ${view === "map" ? "viewContainer--map" : ""}`}>{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "map" && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} onFavoriteCount={setFavoriteCount} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>
+    </section>
+  </main>;
 }
 
 export function AuthenticatedApp() {
@@ -167,7 +180,7 @@ export function AuthenticatedApp() {
   React.useEffect(() => { fetchCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setChecking(false)); }, []);
   if (checking) return <main className="authScreen"><Loader2 className="spin" /></main>;
   if (!user) return <main className="authScreen"><form className="authCard" onSubmit={async (event) => { event.preventDefault(); setError(""); try { setUser(await login(username, password)); setPassword(""); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка авторизации"); } }}><span className="eyebrow">BankrotAI Web</span><h1>Вход</h1><label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label><label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>{error && <State error>{error}</State>}<button className="primaryButton">Войти</button></form></main>;
-  return <><button className="logoutButton" onClick={async () => { await logout(); setUser(null); }}><LogOut size={15} />{user.username}</button><App /></>;
+  return <App username={user.username} onLogout={async () => { await logout(); setUser(null); }} />;
 }
 
 const root = document.getElementById("root"); if (root) createRoot(root).render(<AuthenticatedApp />);

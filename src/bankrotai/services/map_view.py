@@ -144,6 +144,12 @@ def build_map_lots_response(
     include_archived: bool,
     limit: int,
 ) -> dict:
+    filters = [ProcessedLot.duplicate_of_id.is_(None)]
+    if city_slug:
+        filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
+    if not include_archived:
+        filters.append(ProcessedLot.is_archived.is_(False))
+
     latest_geo = (
         select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
         .where(LotGeoSnapshot.centroid_lat.isnot(None), LotGeoSnapshot.centroid_lon.isnot(None))
@@ -154,15 +160,19 @@ def build_map_lots_response(
         select(ProcessedLot, LotGeoSnapshot)
         .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
         .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-        .where(ProcessedLot.duplicate_of_id.is_(None))
+        .where(*filters)
         .order_by(ProcessedLot.last_update.desc())
         .limit(limit)
     )
-    if city_slug:
-        statement = statement.where(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
-    if not include_archived:
-        statement = statement.where(ProcessedLot.is_archived.is_(False))
     rows = session.execute(statement).all()
+
+    total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
+    mapped_total = session.scalar(
+        select(func.count(ProcessedLot.id))
+        .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
+        .where(*filters)
+    ) or 0
+    updated_at = session.scalar(select(func.max(ProcessedLot.last_update)).where(*filters))
 
     primary_ids = [lot.id for lot, _geo in rows]
     source_map: dict[int, list[tuple[ProcessedLot, SourceLot]]] = defaultdict(list)
@@ -177,4 +187,10 @@ def build_map_lots_response(
             source_map[processed.duplicate_of_id or processed.id].append((processed, source_lot))
 
     items = [_map_lot_payload(lot, geo, source_map[lot.id]) for lot, geo in rows]
-    return {"items": items, "total": len(items)}
+    return {
+        "items": items,
+        "total": total,
+        "mapped_total": mapped_total,
+        "without_coordinates": max(total - mapped_total, 0),
+        "updated_at": updated_at,
+    }

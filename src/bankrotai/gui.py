@@ -149,7 +149,7 @@ def app_icon_path() -> Path:
 
 MAP_PREVIEW_STYLE = """
 .lot-preview {
-    position: absolute; z-index: 1000; top: 0; left: 0; bottom: 0; width: 380px;
+    position: absolute; z-index: 1000; top: 0; left: 0; bottom: 29px; width: 380px;
     box-sizing: border-box; overflow-y: auto; background: #fff; color: #273142;
     box-shadow: 4px 0 18px rgba(34, 46, 66, .22); font: 14px Arial, sans-serif;
     transform: translateX(-105%); transition: transform .22s ease;
@@ -203,6 +203,16 @@ MAP_PREVIEW_STYLE = """
 .review-button.active[data-status="approved"] { border-color: #22a76f; background: #e8f8f0; }
 .review-button.active[data-status="maybe"] { border-color: #e4b72c; background: #fff8d9; }
 .review-button.active[data-status="rejected"] { border-color: #df5252; background: #fff0f0; }
+.map-status {
+    position: absolute; z-index: 1100; left: 0; right: 0; bottom: 0; height: 29px;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 0 12px; overflow: hidden; border-top: 1px solid #d8dee4;
+    background: rgba(255,255,255,.98); color: #52606d; font: 11px Arial, sans-serif;
+    white-space: nowrap;
+}
+.map-status__summary { overflow: hidden; text-overflow: ellipsis; }
+.map-status__state { display: flex; align-items: center; flex: 0 0 auto; gap: 6px; color: #177d65; }
+.map-status__state::before { width: 7px; height: 7px; border-radius: 50%; background: #20a36e; content: ''; }
 """
 
 MAP_PREVIEW_HTML = """
@@ -225,7 +235,7 @@ MAP_PREVIEW_HTML = """
       <button class="lot-preview__source-button related-link" data-url-key="source_url">&#1048;&#1089;&#1090;&#1086;&#1095;&#1085;&#1080;&#1082;</button>
       <button class="lot-preview__source-button related-link" data-kind="gis" data-url-key="gis_torgi_url">&#1043;&#1048;&#1057; &#1058;&#1086;&#1088;&#1075;&#1080;</button>
       <button class="lot-preview__source-button related-link" data-kind="etp" data-url-key="etp_url">&#1069;&#1058;&#1055;</button>
-      <button class="lot-preview__source-button related-link" data-kind="russia" data-url-key="torgi_russia_url">&#1058;&#1086;&#1088;&#1075;&#1080; &#1056;&#1086;&#1089;&#1089;&#1080;&#1080;</button>
+      <button class="lot-preview__source-button related-link" data-kind="russia" data-url-key="torgi_russia_url">&#1058;&#1086;&#1088;&#1075;&#1080; &#1056;&#1060;</button>
     </div>
     <div class="lot-preview__review-title">&#1054;&#1094;&#1077;&#1085;&#1082;&#1072; &#1083;&#1086;&#1090;&#1072;</div>
     <div class="lot-preview__reviews">
@@ -235,6 +245,10 @@ MAP_PREVIEW_HTML = """
     </div>
   </div>
 </aside>
+<footer class="map-status" aria-label="Состояние карты">
+  <span id="map-status-summary" class="map-status__summary">0 объектов · 0 на карте · 0 без координат · обновление...</span>
+  <span class="map-status__state">Система готова</span>
+</footer>
 """
 
 MAP_PREVIEW_SCRIPT = """
@@ -242,6 +256,24 @@ let bankrotaiBridge = null;
 let selectedPreviewLot = null;
 let previewImages = [];
 let previewImageIndex = 0;
+
+function mapUpdateAge(value) {
+    if (!value) return 'время обновления неизвестно';
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 60000));
+    if (minutes < 1) return 'обновлено только что';
+    if (minutes < 60) return 'обновлено ' + minutes + ' мин назад';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return 'обновлено ' + hours + ' ч назад';
+    return 'обновлено ' + Math.floor(hours / 24) + ' дн назад';
+}
+
+window.setMapStatus = function(value) {
+    const stats = value || {};
+    document.getElementById('map-status-summary').textContent =
+        Number(stats.total || 0) + ' объектов · ' + Number(stats.mapped || 0) +
+        ' на карте · ' + Number(stats.without_coordinates || 0) +
+        ' без координат · ' + mapUpdateAge(stats.updated_at);
+};
 
 if (window.qt && window.qt.webChannelTransport) {
     new QWebChannel(qt.webChannelTransport, function(channel) {
@@ -6044,21 +6076,55 @@ class MainWindow(QMainWindow):
         lots = self._load_map_lots(lot_id=lot_id)
         return lots[0] if lots else None
 
+    def _map_statistics(self, mapped_lots: list[dict]) -> dict:
+        min_price = float(getattr(self, "map_filter_min_price", 0) or 0)
+        max_price = float(getattr(self, "map_filter_max_price", 0) or 0)
+        region_filter = str(getattr(self, "map_filter_region", "Все регионы") or "Все регионы")
+        total = 0
+        updated_at: datetime | None = None
+        with session_scope() as session:
+            lots = session.scalars(
+                select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
+            )
+            for lot in lots:
+                if not is_sale_real_estate_lot(NormalizedLot.from_processed_lot(lot)):
+                    continue
+                if not self._map_lot_matches_filters(
+                    lot,
+                    min_price=min_price,
+                    max_price=max_price,
+                    region=region_filter,
+                ):
+                    continue
+                total += 1
+                if lot.last_update and (updated_at is None or lot.last_update > updated_at):
+                    updated_at = lot.last_update
+        mapped = len(mapped_lots)
+        return {
+            "total": total,
+            "mapped": mapped,
+            "without_coordinates": max(total - mapped, 0),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+        }
+
     def update_map(self):
         lots = self._load_map_lots()
+        statistics = self._map_statistics(lots)
         html = self.build_map_html([])
         base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
-        self._set_map_document(self.map_view, html, lots, "_leaflet_load_handler", base_url)
+        self._set_map_document(self.map_view, html, lots, statistics, "_leaflet_load_handler", base_url)
         self.status_bar.showMessage(f"Карта обновлена: {len(lots)} лотов", 3000)
 
     def update_yandex_map(self):
         lots = self._load_map_lots()
+        statistics = self._map_statistics(lots)
         html = self.build_yandex_map_html([])
         base_url = QUrl.fromLocalFile(str(map_assets_directory()) + os.sep)
         self._set_map_document(
             self.yandex_map_view,
             html,
             lots,
+            statistics,
             "_yandex_load_handler",
             base_url,
         )
@@ -6069,6 +6135,7 @@ class MainWindow(QMainWindow):
         view: QWebEngineView,
         html: str,
         lots: list[dict],
+        statistics: dict,
         handler_attribute: str,
         base_url: QUrl,
     ) -> None:
@@ -6101,6 +6168,9 @@ class MainWindow(QMainWindow):
                 )
             view.page().runJavaScript(
                 "if (window.fitAllLots) { window.fitAllLots(); }"
+            )
+            view.page().runJavaScript(
+                f"if (window.setMapStatus) {{ window.setMapStatus({json.dumps(statistics, ensure_ascii=True)}); }}"
             )
 
         setattr(self, handler_attribute, loaded)

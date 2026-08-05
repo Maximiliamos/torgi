@@ -7,17 +7,19 @@ set "PROJECT_DIR=%~dp0"
 set "APP_EXE=%~dp0app\BankrotAI.exe"
 
 if /I "%~1"=="--check" goto CHECK
+where python >nul 2>&1
+if not errorlevel 1 if exist "%PROJECT_DIR%src\bankrotai\gui.py" goto START_SOURCE
 if exist "%APP_EXE%" goto START_EXE
-goto START_SOURCE
+goto START_FAILED
 
 :CHECK
-if exist "%APP_EXE%" goto CHECK_EXE_OK
 where python >nul 2>&1
-if errorlevel 1 goto CHECK_FAILED
-if exist "%PROJECT_DIR%src\bankrotai\gui.py" goto CHECK_SOURCE_OK
+if not errorlevel 1 if exist "%PROJECT_DIR%src\bankrotai\gui.py" goto CHECK_SOURCE_OK
+if exist "%APP_EXE%" goto CHECK_EXE_OK
+goto CHECK_FAILED
 
 :CHECK_FAILED
-echo ERROR: app\BankrotAI.exe and Python source fallback were not found.
+echo ERROR: Python source and app\BankrotAI.exe were not found.
 exit /b 1
 
 :CHECK_EXE_OK

@@ -104,7 +104,13 @@ test("authenticated list search detail and API failure smoke", async ({
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ total: 3, items: coincidentLots }),
+      body: JSON.stringify({
+        total: 10,
+        mapped_total: 3,
+        without_coordinates: 7,
+        updated_at: new Date().toISOString(),
+        items: coincidentLots,
+      }),
     }),
   );
   await page.route("**/api/lots/7001/review-status", (route) =>
@@ -124,6 +130,12 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(
     page.getByRole("button", { name: "Поиск всех лотов РФ" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Состояние карты")).toContainText(
+    "10 объектов · 3 на карте · 7 без координат",
+  );
+  await expect(page.getByLabel("Состояние карты")).toContainText(
+    "Система готова",
+  );
   await expect(
     page.frameLocator('iframe[title="Яндекс.Карта лотов"]').locator("#hint"),
   ).toBeHidden({ timeout: 30_000 });
@@ -195,6 +207,10 @@ test("authenticated list search detail and API failure smoke", async ({
     await clusterList.getByRole("button", { name: "Открыть" }).first().click();
     await expect(page.getByLabel("Карточка выбранного лота")).toBeVisible();
     await expect(page.getByText("Оценка лота")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Источник" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "ГИС Торги" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "ЭТП" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Торги РФ" })).toBeVisible();
     const viewportAfterSelect = await mapFrame.evaluate(() =>
       (
         window as unknown as {
@@ -270,6 +286,6 @@ test("authenticated list search detail and API failure smoke", async ({
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   await expect(page.locator(".workspace")).toBeVisible();
   await page.route("**/api/lots**", (route) => route.abort());
-  await page.locator(".topBar .primaryButton").click();
+  await page.locator(".pageHeader .primaryButton").click();
   await expect(page.locator(".errorBox")).toBeVisible();
 });
