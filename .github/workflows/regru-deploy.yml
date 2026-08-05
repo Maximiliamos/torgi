@@ -1,0 +1,256 @@
+name: Deploy API to REG.RU
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "Dockerfile"
+      - "requirements.lock"
+      - "pyproject.toml"
+      - "alembic/**"
+      - "src/**"
+      - ".github/workflows/regru-deploy.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: regru-production-deploy
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/bankrotai-api
+  SSH_HOST: 194.226.126.233
+  SSH_BOOTSTRAP_PORT: "443"
+  SSH_DEPLOY_PORT: "2222"
+  API_HOSTNAME: 194-226-126-233.sslip.io
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+          SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$DATABASE_URL"
+          test -n "$API_KEY"
+          test -n "$SESSION_SECRET"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Prepare SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_deploy"
+          chmod 600 "$HOME/.ssh/regru_deploy"
+          ssh-keyscan -T 20 -p "$SSH_BOOTSTRAP_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Prepare server and release HTTPS port
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "$SSH_BOOTSTRAP_PORT" "root@$SSH_HOST" \
+            "DEPLOY_PORT='$SSH_DEPLOY_PORT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl docker.io ufw
+          systemctl enable --now docker
+
+          if ! swapon --show=NAME --noheadings | grep -q .; then
+            fallocate -l 1G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            grep -qF '/swapfile none swap sw 0 0' /etc/fstab || \
+              printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+
+          printf 'Port %s\n' "$DEPLOY_PORT" > /etc/ssh/sshd_config.d/99-bankrotai.conf
+          sshd -t
+          ufw allow "$DEPLOY_PORT/tcp"
+          ufw allow 80/tcp
+          ufw allow 443/tcp
+          systemctl daemon-reload
+          systemctl restart ssh.socket
+          REMOTE
+
+      - name: Verify deployment SSH port
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if ssh-keyscan -T 10 -p "$SSH_DEPLOY_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts.deploy" 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s "$HOME/.ssh/known_hosts.deploy"
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            'test "$(id -u)" = 0 && docker version >/dev/null'
+
+      - name: Install production configuration
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+          SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_ENV_B64="$({
+            printf '%s\n' 'APP_ENV=production'
+            printf '%s\n' 'API_READ_ONLY=true'
+            printf '%s\n' 'API_RATE_LIMIT_PER_MINUTE=60'
+            printf '%s\n' 'DATABASE_POOL_SIZE=3'
+            printf '%s\n' 'DATABASE_MAX_OVERFLOW=2'
+            printf '%s\n' 'DATABASE_POOL_TIMEOUT=10'
+            printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
+            printf 'BANKROTAI_API_KEY=%s\n' "$API_KEY"
+            printf 'AUTH_SESSION_SECRET=%s\n' "$SESSION_SECRET"
+          } | base64 -w 0)"
+
+          printf '%s' "$API_ENV_B64" | ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            'install -d -m 700 /opt/bankrotai; base64 -d > /opt/bankrotai/api.env; chmod 600 /opt/bankrotai/api.env'
+
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            "API_HOSTNAME='$API_HOSTNAME' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cat > /opt/bankrotai/Caddyfile <<CADDY
+          ${API_HOSTNAME} {
+            encode zstd gzip
+            reverse_proxy bankrotai-api:8000
+            header {
+              X-Content-Type-Options nosniff
+              X-Frame-Options DENY
+              Referrer-Policy no-referrer
+            }
+            log {
+              output stdout
+              format json
+            }
+          }
+          CADDY
+          chmod 644 /opt/bankrotai/Caddyfile
+          REMOTE
+
+      - name: Pull and start production containers
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
+
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            "IMAGE='$IMAGE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker pull caddy:2-alpine
+          docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
+          docker rm -f bankrotai-api bankrotai-caddy >/dev/null 2>&1 || true
+          docker run -d \
+            --name bankrotai-api \
+            --restart unless-stopped \
+            --network bankrotai \
+            --env-file /opt/bankrotai/api.env \
+            --memory 512m \
+            --cpus 1.0 \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            "$IMAGE"
+          docker run -d \
+            --name bankrotai-caddy \
+            --restart unless-stopped \
+            --network bankrotai \
+            -p 80:80 \
+            -p 443:443 \
+            -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro \
+            -v bankrotai_caddy_data:/data \
+            -v bankrotai_caddy_config:/config \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            caddy:2-alpine
+          docker logout ghcr.io
+          docker image prune -af --filter 'until=168h'
+          REMOTE
+
+      - name: Verify public health endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --retry 18 --retry-delay 5 --retry-all-errors \
+            "https://$API_HOSTNAME/health/live"
+          printf '\n'
+          curl --fail --silent --show-error \
+            --retry 12 --retry-delay 5 --retry-all-errors \
+            "https://$API_HOSTNAME/health/ready"
+          printf '\n'
+
