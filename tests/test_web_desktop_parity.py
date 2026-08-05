@@ -106,12 +106,34 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
     assert map_payload["mapped_total"] == 1
     assert map_payload["without_coordinates"] == 0
     assert map_payload["updated_at"]
+    assert map_payload["timings"]["server_ms"] >= 0
+    assert map_response.headers["etag"]
+    cached = client.get(
+        "/api/map/lots",
+        headers={"If-None-Match": map_response.headers["etag"]},
+    )
+    assert cached.status_code == 304
+    assert cached.headers["x-map-cache"] == "HIT"
+    outside = client.get(
+        "/api/map/lots",
+        params={"west": 30, "south": 50, "east": 31, "north": 51},
+    )
+    assert outside.status_code == 200
+    assert outside.json()["items"] == []
+    assert outside.json()["total"] == 1
     map_item = map_payload["items"][0]
     assert map_item["id"] == lot_id
-    assert map_item["source_name"] == "Тестовая ЭТП"
-    assert map_item["procedure_number"] == "PROC-76-1"
-    assert map_item["image_urls"] == ["https://example.test/photo.jpg"]
-    assert map_item["sources"] == [{
+    assert set(map_item) == {
+        "id", "title", "address", "current_price", "status", "is_archived",
+        "review_status", "lat", "lon",
+    }
+    detail_response = client.get(f"/api/map/lots/{lot_id}")
+    assert detail_response.status_code == 200
+    map_detail = detail_response.json()
+    assert map_detail["source_name"] == "Тестовая ЭТП"
+    assert map_detail["procedure_number"] == "PROC-76-1"
+    assert map_detail["image_urls"] == ["https://example.test/photo.jpg"]
+    assert map_detail["sources"] == [{
         "processed_lot_id": lot_id,
         "source_system": "test",
         "external_id": "parity-lot",

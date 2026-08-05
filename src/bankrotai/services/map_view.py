@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime
+from time import perf_counter
 from urllib.parse import urlparse
 
 from sqlalchemy import func, or_, select
@@ -143,12 +143,20 @@ def build_map_lots_response(
     city_slug: str | None,
     include_archived: bool,
     limit: int,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+    review_status: str | None = None,
 ) -> dict:
+    started = perf_counter()
     filters = [ProcessedLot.duplicate_of_id.is_(None)]
     if city_slug:
         filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
     if not include_archived:
         filters.append(ProcessedLot.is_archived.is_(False))
+    if review_status:
+        filters.append(ProcessedLot.review_status == review_status)
 
     latest_geo = (
         select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
@@ -156,11 +164,39 @@ def build_map_lots_response(
         .group_by(LotGeoSnapshot.lot_id)
         .subquery()
     )
+    map_filters = list(filters)
+    if all(value is not None for value in (west, south, east, north)):
+        assert west is not None and south is not None and east is not None and north is not None
+        map_filters.extend((
+            LotGeoSnapshot.centroid_lat >= south,
+            LotGeoSnapshot.centroid_lat <= north,
+        ))
+        if west <= east:
+            map_filters.extend((
+                LotGeoSnapshot.centroid_lon >= west,
+                LotGeoSnapshot.centroid_lon <= east,
+            ))
+        else:
+            map_filters.append(or_(
+                LotGeoSnapshot.centroid_lon >= west,
+                LotGeoSnapshot.centroid_lon <= east,
+            ))
+
     statement = (
-        select(ProcessedLot, LotGeoSnapshot)
+        select(
+            ProcessedLot.id,
+            ProcessedLot.title,
+            ProcessedLot.address,
+            ProcessedLot.current_price,
+            ProcessedLot.auction_status,
+            ProcessedLot.is_archived,
+            ProcessedLot.review_status,
+            LotGeoSnapshot.centroid_lat,
+            LotGeoSnapshot.centroid_lon,
+        )
         .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
         .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-        .where(*filters)
+        .where(*map_filters)
         .order_by(ProcessedLot.last_update.desc())
         .limit(limit)
     )
@@ -174,23 +210,47 @@ def build_map_lots_response(
     ) or 0
     updated_at = session.scalar(select(func.max(ProcessedLot.last_update)).where(*filters))
 
-    primary_ids = [lot.id for lot, _geo in rows]
-    source_map: dict[int, list[tuple[ProcessedLot, SourceLot]]] = defaultdict(list)
-    if primary_ids:
-        source_rows = session.execute(
-            select(ProcessedLot, SourceLot)
-            .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
-            .where(or_(ProcessedLot.id.in_(primary_ids), ProcessedLot.duplicate_of_id.in_(primary_ids)))
-            .order_by(ProcessedLot.id, SourceLot.id)
-        )
-        for processed, source_lot in source_rows:
-            source_map[processed.duplicate_of_id or processed.id].append((processed, source_lot))
-
-    items = [_map_lot_payload(lot, geo, source_map[lot.id]) for lot, geo in rows]
+    items = [
+        {
+            "id": row.id,
+            "title": row.title,
+            "address": row.address,
+            "current_price": float(row.current_price) if row.current_price is not None else None,
+            "status": row.auction_status,
+            "is_archived": row.is_archived,
+            "review_status": row.review_status,
+            "lat": row.centroid_lat,
+            "lon": row.centroid_lon,
+        }
+        for row in rows
+    ]
     return {
         "items": items,
         "total": total,
         "mapped_total": mapped_total,
         "without_coordinates": max(total - mapped_total, 0),
         "updated_at": updated_at,
+        "timings": {"server_ms": round((perf_counter() - started) * 1000, 1)},
     }
+
+
+def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
+    latest_geo = session.scalar(
+        select(LotGeoSnapshot)
+        .where(
+            LotGeoSnapshot.lot_id == lot_id,
+            LotGeoSnapshot.centroid_lat.isnot(None),
+            LotGeoSnapshot.centroid_lon.isnot(None),
+        )
+        .order_by(LotGeoSnapshot.id.desc())
+    )
+    lot = session.get(ProcessedLot, lot_id)
+    if lot is None or latest_geo is None:
+        return None
+    source_rows = list(session.execute(
+        select(ProcessedLot, SourceLot)
+        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(or_(ProcessedLot.id == lot_id, ProcessedLot.duplicate_of_id == lot_id))
+        .order_by(ProcessedLot.id, SourceLot.id)
+    ))
+    return _map_lot_payload(lot, latest_geo, source_rows)

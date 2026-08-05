@@ -1,0 +1,38 @@
+name: Production geocoding backfill
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/bankrotai/geo.py"
+      - "src/bankrotai/services/geo_backfill.py"
+      - ".github/workflows/geocode-backfill.yml"
+  schedule:
+    - cron: "47 */3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-geocoding-backfill
+  cancel-in-progress: false
+
+jobs:
+  geocode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APP_ENV: production
+      API_READ_ONLY: "true"
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      DATABASE_MIGRATION_URL: ${{ secrets.NEON_DATABASE_MIGRATION_URL }}
+      BANKROTAI_API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+      AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.lock && pip install --no-deps -e .
+      - name: Geocode the next bounded batch
+        run: python -m bankrotai.cli geocode-pending --limit 150

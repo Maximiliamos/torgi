@@ -64,6 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     user_p.add_argument("--password-env", default="AUTH_BOOTSTRAP_PASSWORD")
     read_sync_p = subparsers.add_parser("sync-read-model", help="Synchronize the public read-only data model")
     read_sync_p.add_argument("--max-items-per-source", type=int, default=5000)
+    geo_p = subparsers.add_parser("geocode-pending", help="Geocode a bounded batch of stored lots")
+    geo_p.add_argument("--limit", type=int, default=250)
     return parser
 
 def main():
@@ -200,6 +202,12 @@ def main():
             max_items_per_source=max(1, min(args.max_items_per_source, 20_000)),
         )
         print(json.dumps(counts, ensure_ascii=False, indent=2))
+    elif args.command == "geocode-pending":
+        from bankrotai.services.geo_backfill import geocode_pending_lots
+
+        init_db()
+        result = geocode_pending_lots(session_scope, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     else: parser.print_help()
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          DATABASE_MIGRATION_URL: ${{ secrets.NEON_DATABASE_MIGRATION_URL }}
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
           SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
           AUTH_BOOTSTRAP_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
@@ -73,6 +74,7 @@ jobs:
           set -euo pipefail
           test -n "$SSH_PRIVATE_KEY"
           test -n "$DATABASE_URL"
+          test -n "$DATABASE_MIGRATION_URL"
           test -n "$API_KEY"
           test -n "$SESSION_SECRET"
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
@@ -162,6 +164,7 @@ jobs:
       - name: Install production configuration
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          DATABASE_MIGRATION_URL: ${{ secrets.NEON_DATABASE_MIGRATION_URL }}
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
           SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
         shell: bash
@@ -175,6 +178,7 @@ jobs:
             printf '%s\n' 'DATABASE_MAX_OVERFLOW=2'
             printf '%s\n' 'DATABASE_POOL_TIMEOUT=10'
             printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
+            printf 'DATABASE_MIGRATION_URL=%s\n' "$DATABASE_MIGRATION_URL"
             printf 'BANKROTAI_API_KEY=%s\n' "$API_KEY"
             printf 'AUTH_SESSION_SECRET=%s\n' "$SESSION_SECRET"
           } | base64 -w 0)"
@@ -304,6 +308,10 @@ jobs:
 
           pull_with_retry "$IMAGE"
           pull_with_retry caddy:2-alpine
+          docker run --rm \
+            --env-file /opt/bankrotai/api.env \
+            "$IMAGE" \
+            python -m bankrotai.cli init-db
           docker run --rm \
             --env-file /opt/bankrotai/caddy.env \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro \

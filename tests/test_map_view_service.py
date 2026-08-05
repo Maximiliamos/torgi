@@ -4,7 +4,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from bankrotai.db import Base, CanonicalLot, LotGeoSnapshot, ProcessedLot, SourceLot
-from bankrotai.services.map_view import build_map_lots_response, extract_map_image_urls
+from bankrotai.services.map_view import (
+    build_map_lot_detail,
+    build_map_lots_response,
+    extract_map_image_urls,
+)
 
 
 def test_map_images_accept_only_public_http_urls_and_remove_duplicates() -> None:
@@ -55,9 +59,11 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
         duplicate_id = duplicate.id
 
         response = build_map_lots_response(session, city_slug=None, include_archived=False, limit=100)
+        detail = build_map_lot_detail(session, primary_id)
 
     assert response["total"] == 1
-    publications = response["items"][0]["sources"]
+    assert detail is not None
+    publications = detail["sources"]
     assert [item["processed_lot_id"] for item in publications] == [primary_id, duplicate_id]
     assert [item["is_primary"] for item in publications] == [True, False]
     assert [item["url"] for item in publications] == [

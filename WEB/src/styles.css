@@ -59,6 +59,8 @@ button:disabled {
 .appRail .favorite span { align-items:center;background:#159765;border:2px solid #fff;border-radius:999px;color:#fff;display:flex;font-size:9px;font-weight:800;height:19px;justify-content:center;min-width:19px;padding:0 3px;position:absolute;right:-2px;top:-3px; }
 .appRail .appRailLogout { margin-top:auto; }
 .appWorkspace { min-width:0; }
+.mapPersistentHost { display:none; }
+.mapPersistentHost.active { display:block; }
 .pageHeader { align-items:center;display:flex;gap:16px;justify-content:space-between;margin:0 auto;max-width:1500px;padding:22px 24px 18px; }
 .pageHeader h1 { font-size:30px;line-height:1.1;margin:4px 0 0; }
 

@@ -106,6 +106,18 @@ export type OnlineLot = {
 export type OnlineSearchResponse = { source: SearchSource; items: OnlineLot[]; meta: Record<string, unknown> };
 export type RegionOption = { code: string; name: string };
 
+export type MapMarkerLot = {
+  id: number;
+  title: string;
+  address: string | null;
+  current_price: number | null;
+  status: string;
+  is_archived: boolean;
+  review_status: string | null;
+  lat: number;
+  lon: number;
+};
+
 export type MapLot = {
   id: number;
   external_id: string;
@@ -255,13 +267,77 @@ export const importOnlineLot = (lot: OnlineLot) => requestJson<{ id: number }>("
 });
 
 export type MapLotsResponse = {
-  items: MapLot[];
+  items: MapMarkerLot[];
   total: number;
   mapped_total: number;
   without_coordinates: number;
   updated_at: string | null;
+  timings: { server_ms: number };
 };
-export const fetchMapLots = (citySlug?: string, includeArchived = false) => requestJson<MapLotsResponse>("/api/map/lots", { city_slug: citySlug, include_archived: includeArchived });
+export type MapViewportQuery = {
+  city_slug?: string;
+  include_archived?: boolean;
+  west?: number;
+  south?: number;
+  east?: number;
+  north?: number;
+  review_status?: "approved" | "maybe" | "rejected";
+};
+export const fetchMapLots = (query: MapViewportQuery = {}) =>
+  requestJson<MapLotsResponse>("/api/map/lots", query);
+export const fetchMapLotDetail = (lotId: number) =>
+  requestJson<MapLot>(`/api/map/lots/${lotId}`);
+
+const MAP_CACHE_NAME = "bankrotai-map-v2";
+
+export async function fetchMapLotsSWR(
+  query: MapViewportQuery,
+  onCached?: (value: MapLotsResponse) => void,
+) {
+  const url = makeUrl("/api/map/lots", query);
+  const request = new Request(url, { credentials: "same-origin" });
+  const cache = "caches" in window ? await window.caches.open(MAP_CACHE_NAME) : null;
+  const cachedResponse = await cache?.match(request);
+  let cachedValue: MapLotsResponse | null = null;
+  if (cachedResponse) {
+    try {
+      cachedValue = await cachedResponse.clone().json() as MapLotsResponse;
+      onCached?.(cachedValue);
+    } catch {
+      await cache?.delete(request);
+    }
+  }
+
+  const started = performance.now();
+  try {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(cachedResponse?.headers.get("ETag")
+          ? { "If-None-Match": cachedResponse.headers.get("ETag") as string }
+          : {}),
+      },
+      cache: "no-cache",
+    });
+    if (response.status === 304 && cachedValue) {
+      return { data: cachedValue, networkMs: performance.now() - started, fromCache: true };
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `HTTP ${response.status}`);
+    }
+    const cacheCopy = response.clone();
+    const data = await response.json() as MapLotsResponse;
+    await cache?.put(request, cacheCopy);
+    return { data, networkMs: performance.now() - started, fromCache: false };
+  } catch (error) {
+    if (cachedValue) {
+      return { data: cachedValue, networkMs: performance.now() - started, fromCache: true };
+    }
+    throw error;
+  }
+}
 export const searchCadastre = (query: string) => requestJson<Record<string, unknown>>("/api/cadastre/search", { query });
 export const setReviewStatus = (lotId: number, status: string | null) =>
   requestJson(`/api/lots/${lotId}/review-status`, undefined, { method: "PUT", body: JSON.stringify({ status }) });

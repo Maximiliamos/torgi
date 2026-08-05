@@ -157,20 +157,21 @@ function ReliabilityView({ refreshToken }: { refreshToken: number }) {
 
 const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["reliability", "Надёжность", <Activity />]];
 export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
-  const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0);
+  const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(false);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
-  const openView = (next: MainView) => { setMapFavorites(false); setView(next); };
+  const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
   return <main className="appShell">
     <nav className="appRail" aria-label="Основная навигация">
       <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
       {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}</button>)}
-      <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
+      <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
       <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
     </nav>
     <section className="appWorkspace">
       {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
-      <div className={`viewContainer ${view === "map" ? "viewContainer--map" : ""}`}>{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "map" && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} onFavoriteCount={setFavoriteCount} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>
+      {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>}
+      <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} />}</div>
     </section>
   </main>;
 }

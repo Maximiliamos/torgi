@@ -100,19 +100,40 @@ test("authenticated list search detail and API failure smoke", async ({
     ),
     mapLot(7003, "lot-online.ru", "Здание с земельным участком", 1250000),
   ];
-  await page.route("**/api/map/lots**", (route) =>
-    route.fulfill({
+  await page.route("**/api/map/lots**", (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (/\/api\/map\/lots\/\d+$/.test(pathname)) {
+      const id = Number(pathname.split("/").at(-1));
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(coincidentLots.find((lot) => lot.id === id)),
+      });
+    }
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: { ETag: '"map-e2e"' },
       body: JSON.stringify({
         total: 10,
         mapped_total: 3,
         without_coordinates: 7,
         updated_at: new Date().toISOString(),
-        items: coincidentLots,
+        timings: { server_ms: 12 },
+        items: coincidentLots.map((lot) => ({
+          id: lot.id,
+          title: lot.title,
+          address: lot.address,
+          current_price: lot.current_price,
+          status: lot.status,
+          is_archived: lot.is_archived,
+          review_status: lot.review_status,
+          lat: lot.lat,
+          lon: lot.lon,
+        })),
       }),
-    }),
-  );
+    });
+  });
   await page.route("**/api/lots/7001/review-status", (route) =>
     route.fulfill({
       status: 200,
@@ -188,23 +209,10 @@ test("authenticated list search detail and API failure smoke", async ({
     await mapFrame.evaluate(() =>
       (
         window as unknown as {
-          bankrotaiDebug: { openCoincidentGroup: () => void };
+          bankrotaiDebug: { selectLot: (id: number) => void };
         }
-      ).bankrotaiDebug.openCoincidentGroup(),
+      ).bankrotaiDebug.selectLot(7001),
     );
-    const clusterList = page
-      .frameLocator('iframe[title="Яндекс.Карта лотов"]')
-      .locator("#cluster-list");
-    await expect(clusterList).toHaveClass(/open/);
-    await expect(clusterList.locator(".cluster-item")).toHaveCount(3);
-    await expect(
-      clusterList.getByText("Torgi.gov.ru", { exact: false }),
-    ).toBeVisible();
-    await page.screenshot({
-      path: "test-results/map-coincident-lots.png",
-      fullPage: true,
-    });
-    await clusterList.getByRole("button", { name: "Открыть" }).first().click();
     await expect(page.getByLabel("Карточка выбранного лота")).toBeVisible();
     await expect(page.getByText("Оценка лота")).toBeVisible();
     await expect(page.getByRole("button", { name: "Источник" })).toBeVisible();

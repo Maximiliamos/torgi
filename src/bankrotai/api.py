@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import hmac
+import threading
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -12,6 +15,7 @@ import uvicorn
 from fastapi import Cookie, FastAPI, Depends, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, text
@@ -60,7 +64,7 @@ from bankrotai.services.operations import (
     toggle_watchlist,
 )
 from bankrotai.services.quality import data_quality_snapshot, list_source_health
-from bankrotai.services.map_view import build_map_lots_response
+from bankrotai.services.map_view import build_map_lot_detail, build_map_lots_response
 from bankrotai.logic import log_action
 from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
@@ -78,11 +82,14 @@ settings = get_settings()
 
 app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
+_map_response_cache: dict[tuple, tuple[float, bytes, str]] = {}
+_map_response_cache_lock = threading.Lock()
+_MAP_RESPONSE_CACHE_SECONDS = 60
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
 _READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
-_EXPECTED_SCHEMA_REVISION = "e0f1a2b3c4d5"
+_EXPECTED_SCHEMA_REVISION = "f1a2b3c4d5e6"
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -322,6 +329,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/saved-searches",
         }:
             return True
+        if path.startswith("/api/map/lots/"):
+            return path.rsplit("/", 1)[-1].isdigit()
         if path.startswith("/api/search/"):
             return True
         if path.startswith("/api/lots/"):
@@ -888,7 +897,10 @@ def update_lot_review_status(
             raise HTTPException(status_code=404, detail="Lot not found")
         lot.review_status = request.status
         log_action(session, str(actor.id), "review_status", "lot", str(lot_id), {"status": request.status})
-        return {"lot_id": lot_id, "review_status": request.status}
+        result = {"lot_id": lot_id, "review_status": request.status}
+    with _map_response_cache_lock:
+        _map_response_cache.clear()
+    return result
 
 
 @app.post("/api/lots/{lot_id}/merge")
@@ -934,17 +946,71 @@ def get_stats(city_slug: str = DEFAULT_REGION):
 
 @app.get("/api/map/lots")
 def get_map_lots(
+    request: Request,
     city_slug: str | None = None,
     include_archived: bool = False,
     limit: int = Query(3000, ge=1, le=5000),
+    west: float | None = Query(None, ge=-180, le=180),
+    south: float | None = Query(None, ge=-90, le=90),
+    east: float | None = Query(None, ge=-180, le=180),
+    north: float | None = Query(None, ge=-90, le=90),
+    review_status: str | None = Query(None, pattern="^(approved|maybe|rejected)$"),
 ):
+    bounds = (west, south, east, north)
+    if any(value is not None for value in bounds) and not all(value is not None for value in bounds):
+        raise HTTPException(status_code=422, detail="west, south, east and north must be provided together")
+    cache_key = (city_slug, include_archived, limit, west, south, east, north, review_status)
+    now = time.monotonic()
+    with _map_response_cache_lock:
+        cached = _map_response_cache.get(cache_key)
+    cache_state = "HIT"
+    if cached is None or now - cached[0] >= _MAP_RESPONSE_CACHE_SECONDS:
+        cache_state = "MISS"
+        with session_scope() as session:
+            value = build_map_lots_response(
+                session,
+                city_slug=city_slug,
+                include_archived=include_archived,
+                limit=limit,
+                west=west,
+                south=south,
+                east=east,
+                north=north,
+                review_status=review_status,
+            )
+        encoded = jsonable_encoder(value)
+        body = json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        stable_value = {key: item for key, item in encoded.items() if key != "timings"}
+        stable_body = json.dumps(stable_value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        etag = '"' + hashlib.sha256(stable_body).hexdigest() + '"'
+        cached = (now, body, etag)
+        with _map_response_cache_lock:
+            expired = [key for key, item in _map_response_cache.items() if now - item[0] >= 300]
+            for key in expired:
+                _map_response_cache.pop(key, None)
+            if len(_map_response_cache) >= 256:
+                oldest = min(_map_response_cache, key=lambda key: _map_response_cache[key][0])
+                _map_response_cache.pop(oldest, None)
+            _map_response_cache[cache_key] = cached
+    _, body, etag = cached
+    headers = {
+        "Cache-Control": "private, max-age=60, stale-while-revalidate=300",
+        "ETag": etag,
+        "X-Map-Cache": cache_state,
+        "Server-Timing": f'map;desc="{cache_state}"',
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+@app.get("/api/map/lots/{lot_id}")
+def get_map_lot(lot_id: int):
     with session_scope() as session:
-        return build_map_lots_response(
-            session,
-            city_slug=city_slug,
-            include_archived=include_archived,
-            limit=limit,
-        )
+        value = build_map_lot_detail(session, lot_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Lot is not available on the map")
+    return value
 
 
 @app.get("/api/cadastre/search")
