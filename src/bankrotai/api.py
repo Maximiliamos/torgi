@@ -60,6 +60,7 @@ from bankrotai.services.operations import (
     toggle_watchlist,
 )
 from bankrotai.services.quality import data_quality_snapshot, list_source_health
+from bankrotai.services.map_view import build_map_lots_response
 from bankrotai.logic import log_action
 from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
@@ -931,46 +932,13 @@ def get_map_lots(
     include_archived: bool = False,
     limit: int = Query(3000, ge=1, le=5000),
 ):
-    latest_geo = (
-        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
-        .group_by(LotGeoSnapshot.lot_id)
-        .subquery()
-    )
-    statement = (
-        select(ProcessedLot, LotGeoSnapshot)
-        .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-        .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-        .order_by(ProcessedLot.last_update.desc())
-        .limit(limit)
-    )
-    if city_slug:
-        statement = statement.where(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
-    if not include_archived:
-        statement = statement.where(ProcessedLot.is_archived.is_(False))
     with session_scope() as session:
-        rows = session.execute(statement).all()
-        return {
-            "items": [
-                {
-                    "id": lot.id,
-                    "external_id": lot.external_id,
-                    "title": lot.title,
-                    "address": lot.address,
-                    "category": lot.category,
-                    "status": lot.auction_status,
-                    "review_status": lot.review_status,
-                    "current_price": float(lot.current_price) if lot.current_price is not None else None,
-                    "lat": geo.centroid_lat,
-                    "lon": geo.centroid_lon,
-                    "geometry": geo.geometry_json,
-                    "confidence": geo.geo_confidence,
-                    "source": geo.geo_source,
-                    "lot_url": lot.lot_url or lot.source_url,
-                }
-                for lot, geo in rows
-            ],
-            "total": len(rows),
-        }
+        return build_map_lots_response(
+            session,
+            city_slug=city_slug,
+            include_archived=include_archived,
+            limit=limit,
+        )
 
 
 @app.get("/api/cadastre/search")

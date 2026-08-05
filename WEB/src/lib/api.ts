@@ -110,9 +110,13 @@ export type MapLot = {
   id: number;
   external_id: string;
   title: string;
+  description: string;
   address: string | null;
+  cadastral_number: string | null;
   category: string;
+  region: string | null;
   status: string;
+  is_archived: boolean;
   review_status: string | null;
   current_price: number | null;
   lat: number;
@@ -120,7 +124,16 @@ export type MapLot = {
   geometry: GeoJSON.GeoJsonObject | null;
   confidence: string;
   source: string;
-  lot_url: string | null;
+  source_name: string;
+  source_url: string | null;
+  gis_torgi_url: string | null;
+  etp_url: string | null;
+  torgi_russia_url: string | null;
+  image_url: string | null;
+  image_urls: string[];
+  procedure_number: string | null;
+  application_deadline: string | null;
+  auction_at: string | null;
 };
 
 export type Procedure = Record<string, string | number | boolean | null | unknown[]>;

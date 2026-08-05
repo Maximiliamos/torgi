@@ -60,6 +60,10 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
             processed_lot_id=lot.id,
             source_system="test",
             external_id=lot.external_id,
+            source_url="https://example.test/lot/parity-lot",
+            platform_name="Тестовая ЭТП",
+            procedure_number="PROC-76-1",
+            raw_data={"photos": [{"url": "https://example.test/photo.jpg"}]},
         ))
         session.add(LotGeoSnapshot(
             lot_id=lot.id,
@@ -97,7 +101,11 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
 
     map_response = client.get("/api/map/lots")
     assert map_response.status_code == 200
-    assert map_response.json()["items"][0]["id"] == lot_id
+    map_item = map_response.json()["items"][0]
+    assert map_item["id"] == lot_id
+    assert map_item["source_name"] == "Тестовая ЭТП"
+    assert map_item["procedure_number"] == "PROC-76-1"
+    assert map_item["image_urls"] == ["https://example.test/photo.jpg"]
 
     assert client.get("/api/quality").status_code == 200
     assert client.get("/api/sources").status_code == 200

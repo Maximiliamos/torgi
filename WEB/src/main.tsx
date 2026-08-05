@@ -6,12 +6,13 @@ import {
   MapPin, NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, X
 } from "lucide-react";
 import {
-  addNote, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
-  fetchLotDetail, fetchLots, fetchMapLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions,
+  addNote, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
+  fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions,
   fetchSavedSearches, fetchSources, fetchStats, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
-  MainView, MapLot, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchCadastre, searchOnline,
-  saveSearch, SearchSource, setReviewStatus, SortMode, SourceHealth, splitLot, StatsResponse, syncRegion, toggleWatchlist
+  MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
+  saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
+import { MapView } from "./features/map/MapView";
 import "./styles.css";
 
 const CATEGORIES = [
@@ -132,55 +133,6 @@ function SearchView({ refreshToken }: { refreshToken: number }) {
   </section>;
 }
 
-function safeScriptJson(value: unknown) { return JSON.stringify(value).split("<").join("\\u003c"); }
-
-function YandexMap({ lots, selectedCadastre, onReview }: { lots: MapLot[]; selectedCadastre: Record<string, unknown> | null; onReview: (id: number, status: string) => void }) {
-  const frame = React.useRef<HTMLIFrameElement>(null);
-  React.useEffect(() => { const receive = (event: MessageEvent) => { if (event.source !== frame.current?.contentWindow || event.data?.type !== "bankrotai-review") return; onReview(Number(event.data.lotId), String(event.data.status)); }; window.addEventListener("message", receive); return () => window.removeEventListener("message", receive); }, [onReview]);
-  const html = React.useMemo(() => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU"></script><style>html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #d7dee8;border-radius:8px;padding:9px 12px;color:#42526b;box-shadow:0 4px 14px #0002}.balloon{min-width:260px}.balloon h3{font-size:14px;margin:0 0 8px}.balloon p{color:#64748b;margin:5px 0}.traffic{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:11px}.traffic button{background:#fff;border:2px solid #dbe2ea;border-radius:8px;cursor:pointer;font-size:20px;padding:7px}.traffic button:nth-child(1){color:#169b75}.traffic button:nth-child(2){color:#d69b00}.traffic button:nth-child(3){color:#dc3f4d}</style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
-const lots=${safeScriptJson(lots)};const cad=${safeScriptJson(selectedCadastre)};
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
-function ended(l){return ['closed','completed','cancelled','canceled','failed','annulled','archive','archived'].includes(String(l.status||'').toLowerCase());}
-function color(l){if(ended(l))return '#111111';return l.review_status==='approved'?'#24a269':l.review_status==='maybe'?'#e0aa16':l.review_status==='rejected'?'#d94b4b':'#7d8795';}
-function icon(l){const c=color(l);return '<svg xmlns="http://www.w3.org/2000/svg" width="38" height="48" viewBox="0 0 38 48"><path d="M19 1C9.1 1 1 9.1 1 19c0 13.2 18 28 18 28s18-14.8 18-28C37 9.1 28.9 1 19 1z" fill="'+c+'" stroke="white" stroke-width="2"/><path d="M12 23V14h14v9M10 23h18M15 18h2m4 0h2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg>';}
-function opts(l){return{iconLayout:'default#image',iconImageHref:'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(icon(l)),iconImageSize:[38,48],iconImageOffset:[-19,-48]};}
-function review(id,status){parent.postMessage({type:'bankrotai-review',lotId:id,status},'*');}
-function balloon(l){const price=l.current_price==null?'—':new Intl.NumberFormat('ru-RU').format(l.current_price)+' ₽';return '<div class="balloon"><h3>'+esc(l.title)+'</h3><p>'+esc(l.address||'Адрес не указан')+'</p><strong>'+price+'</strong><div class="traffic"><button title="Интересен" onclick="review('+Number(l.id)+',&quot;approved&quot;)">✓</button><button title="Сомневаюсь" onclick="review('+Number(l.id)+',&quot;maybe&quot;)">?</button><button title="Плохой" onclick="review('+Number(l.id)+',&quot;rejected&quot;)">×</button></div></div>';}
-function convert(coords){if(!Array.isArray(coords))return coords;if(coords.length===2&&typeof coords[0]==='number')return[coords[1],coords[0]];return coords.map(convert);}
-function init(){const map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});const cluster=new ymaps.Clusterer({preset:'islands#invertedDarkBlueClusterIcons',groupByCoordinates:false,clusterDisableClickZoom:false});const marks=[];lots.forEach(l=>{if(!Number.isFinite(l.lat)||!Number.isFinite(l.lon))return;marks.push(new ymaps.Placemark([l.lat,l.lon],{hintContent:esc(l.title),balloonContentBody:balloon(l)},opts(l)));if(l.geometry&&l.geometry.type==='Polygon')map.geoObjects.add(new ymaps.Polygon(convert(l.geometry.coordinates),{},{strokeColor:'#2468d8',strokeWidth:2,fillColor:'#2468d822'}));});cluster.add(marks);map.geoObjects.add(cluster);if(cad&&Number.isFinite(cad.lat)&&Number.isFinite(cad.lon)){const selected=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(selected);marks.push(selected);}if(marks.length)map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:40});document.getElementById('hint').style.display='none';}
-if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
-</script></body></html>`, [lots, selectedCadastre]);
-  return <iframe ref={frame} className="mapCanvas yandexFrame" title="Яндекс.Карта лотов" srcDoc={html} sandbox="allow-scripts allow-same-origin" />;
-}
-
-function MapView({ refreshToken }: { refreshToken: number }) {
-  const [lots, setLots] = React.useState<MapLot[]>([]);
-  const [error, setError] = React.useState(""); const [message, setMessage] = React.useState("");
-  const [cadQuery, setCadQuery] = React.useState(""); const [cad, setCad] = React.useState<Record<string, unknown> | null>(null);
-  const [canSync, setCanSync] = React.useState(false);
-  const [filters, setFilters] = React.useState({ region: "", minPrice: "", maxPrice: "", includeArchived: false });
-  const load = React.useCallback(async () => { try { setError(""); setLots((await fetchMapLots(filters.region || undefined, filters.includeArchived)).items); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка карты"); } }, [filters.region, filters.includeArchived]);
-  React.useEffect(() => { void load(); }, [load, refreshToken]);
-  React.useEffect(() => { fetchCapabilities().then((value) => setCanSync(value.region_sync)).catch(() => setCanSync(false)); }, []);
-  const review = React.useCallback(async (lotId: number, status: string) => { await setReviewStatus(lotId, status); setLots((items) => items.map((lot) => lot.id === lotId ? { ...lot, review_status: status } : lot)); }, []);
-  const visibleLots = lots.filter((lot) => (!filters.minPrice || (lot.current_price ?? 0) >= Number(filters.minPrice)) && (!filters.maxPrice || (lot.current_price ?? Infinity) <= Number(filters.maxPrice)));
-  return <section className="mapLayout">
-    <aside className="mapSidebar"><h2>Яндекс.Карта лотов</h2><p>{visibleLots.length} объектов с подтверждёнными координатами</p>
-      <label className="field"><span>Регион (пусто — вся РФ)</span><input value={filters.region} onChange={(e) => setFilters({ ...filters, region: e.target.value })} placeholder="76 или yaroslavl" /></label>
-      <div className="rangeGrid"><label className="field"><span>Цена от</span><input type="number" value={filters.minPrice} onChange={(e) => setFilters({ ...filters, minPrice: e.target.value })} /></label><label className="field"><span>Цена до</span><input type="number" value={filters.maxPrice} onChange={(e) => setFilters({ ...filters, maxPrice: e.target.value })} /></label></div>
-      <label className="checkField"><input type="checkbox" checked={filters.includeArchived} onChange={(e) => setFilters({ ...filters, includeArchived: e.target.checked })} />Архивные лоты</label>
-      {canSync && <button className="secondaryButton" onClick={async () => { try { const result = await syncRegion(filters.region || "yaroslavl", true); setMessage(`Синхронизация поставлена в очередь: ${result.dispatchMode || result.status}`); } catch (err) { setError(String(err)); } }}><RefreshCcw size={15} />Синхронизировать регион</button>}
-      {message && <div className="successBox"><CheckCircle2 size={16} />{message}</div>}
-      <label className="field"><span>Кадастровый номер или адрес</span><input value={cadQuery} onChange={(e) => setCadQuery(e.target.value)} /></label>
-      <button className="primaryButton" disabled={cadQuery.trim().length < 3} onClick={async () => { try { setCad(await searchCadastre(cadQuery)); } catch (err) { setError(String(err)); } }}><MapPin size={16} />Найти объект</button>
-      {cad && <pre className="cadInfo">{JSON.stringify(cad, null, 2)}</pre>}{error && <State error>{error}</State>}
-      <h3>Светофор оценки</h3><div className="legend"><span><i className="green" />Интересен</span><span><i className="amber" />Сомневаюсь</span><span><i className="red" />Плохой</span><span><i />Не проверено</span></div>
-      <div className="mapReviewList">{visibleLots.slice(0, 20).map((lot) => <article key={lot.id}><strong>{lot.title}</strong><div><button title="Интересен" onClick={() => review(lot.id, "approved")}>✓</button><button title="Сомневаюсь" onClick={() => review(lot.id, "maybe")}>?</button><button title="Плохой" onClick={() => review(lot.id, "rejected")}>×</button></div></article>)}</div>
-    </aside>
-    <YandexMap lots={visibleLots} selectedCadastre={cad} onReview={review} />
-  </section>;
-}
-
 const checklistLabels: Array<[keyof Omit<Participation, "lot_id" | "source_lot_id" | "notes">, string]> = [["etp_accredited", "Аккредитация на ЭТП"], ["signature_valid", "ЭЦП действительна"], ["application_completed", "Заявка заполнена"], ["deposit_sent", "Задаток отправлен"], ["payment_purpose_verified", "Назначение платежа проверено"], ["deposit_received", "Задаток зачислен"], ["documents_signed", "Документы подписаны"], ["application_accepted", "Заявка принята"]];
 function DealView({ selectedLotId }: { selectedLotId: number | null }) {
   const [lotId, setLotId] = React.useState(selectedLotId ? String(selectedLotId) : ""); const id = Number(lotId); const [tab, setTab] = React.useState("calculator"); const [error, setError] = React.useState("");
@@ -207,7 +159,7 @@ const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск"
 export function App() {
   const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
-  return <main className="appShell"><header className="topBar"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header><nav className="mainNav">{nav.map(([id, text, icon]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}>{icon}{text}</button>)}</nav><div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "map" && <MapView refreshToken={refreshToken} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div><footer className="statusLine"><MapPin size={14} /> API same-origin · защищённая сессия</footer></main>;
+  return <main className="appShell"><header className="topBar"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header><nav className="mainNav">{nav.map(([id, text, icon]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}>{icon}{text}</button>)}</nav><div className={`viewContainer ${view === "map" ? "viewContainer--map" : ""}`}>{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "map" && <MapView refreshToken={refreshToken} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div><footer className="statusLine"><MapPin size={14} /> API same-origin · защищённая сессия</footer></main>;
 }
 
 export function AuthenticatedApp() {

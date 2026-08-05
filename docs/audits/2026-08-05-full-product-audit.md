@@ -5,11 +5,11 @@
 Проверены локальная ветка `main` и публичный репозиторий
 `https://github.com/Maximiliamos/torgi` (commit `2b90c88`, расхождение с
 `origin/main`: `0/0`), desktop, FastAPI, Celery, модель данных, миграции,
-React-клиент, Docker и GitHub Actions. Полный suite выполняет 160 Python-тестов; web имеет
+React-клиент, Docker и GitHub Actions. Полный suite выполняет 161 Python-тест; web имеет
 5 unit-тестов и Playwright smoke. Production-зависимости npm: 0 известных
 уязвимостей на дату проверки.
 
-Локально успешно выполнены 160 Python-тестов (2 PostgreSQL-only пропущены), Ruff,
+Локально успешно выполнен 161 Python-тест (2 PostgreSQL-only пропущены), Ruff,
 Mypy, web typecheck, ESLint, unit tests, production build, npm audit и packaged
 desktop smoke. Обнаруженный устаревший EXE не содержал ревизию
 `e0f1a2b3c4d5`; он пересобран, наличие миграции внутри PyInstaller archive и
@@ -112,3 +112,17 @@ status, health/quality/diagnostics и постановку региональн�
 Полным паритетом это можно назвать только после BAT-301…BAT-307 из roadmap:
 браузер не должен имитировать desktop threads — длительные операции необходимо
 перенести в надёжные серверные jobs с idempotency, progress и audit trail.
+
+## Follow-up: desktop parity карты
+
+После внешнего ревью карта дополнена точным двухрежимным desktop UX: исходная
+левая панель содержит кадастровый поиск, управление границами/метками, поиск всей
+РФ и фильтры; выбор маркера заменяет её карточкой с галереей, источниками,
+кадастром, процедурой, сроками и «светофором». API карты теперь передаёт эти
+данные одним пакетным запросом без N+1. Функция вынесена из React-монолита в
+`features/map`, а серверная сборка payload — в `services/map_view.py`.
+
+Замечание по iframe закрыто: Яндекс.Карты проверены в sandbox только с
+`allow-scripts`. Родитель принимает сообщение лишь от ожидаемого `contentWindow`,
+с opaque origin `null` и уникальным channel id. Входящие URL изображений и
+исходящих кнопок ограничены протоколами HTTP(S).

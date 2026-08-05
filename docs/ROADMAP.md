@@ -142,6 +142,11 @@ Done 2026-08-05: web переведён с Leaflet на Яндекс.Карты,
 кадастровая геометрия, desktop-маркеры и смена статуса «светофором». Remaining:
 серверная viewport pagination и production API key/domain policy Яндекс.Карт.
 
+Follow-up 2026-08-05: web повторяет desktop-композицию карты в двух состояниях —
+панель кадастрового поиска/фильтров и карточка выбранного лота с фото, ссылками,
+процедурой и оценкой. Map feature вынесен из `main.tsx`; `allow-same-origin`
+удалён, сообщения защищены проверкой окна, opaque origin и уникального channel id.
+
 ### BAT-307 — Web parity acceptance suite
 
 - Playwright journeys: search/import, registry/detail, watchlist, map/review,
