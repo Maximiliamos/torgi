@@ -21,6 +21,16 @@ test("authenticated list search detail and API failure smoke", async ({ page }) 
     await expect(page.locator(".detailPanel")).toBeVisible();
     await page.locator(".detailPanel .iconButton").click();
   }
+  await page.getByRole("button", { name: "Поиск", exact: true }).click();
+  await expect(page.getByRole("button", { name: "ГИС Торги" })).toBeVisible();
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  await expect(page.locator(".mapCanvas")).toBeVisible();
+  await page.getByRole("button", { name: "Сделка", exact: true }).click();
+  await expect(page.getByText("Работа со сделкой")).toBeVisible();
+  await page.getByRole("button", { name: "Надёжность", exact: true }).click();
+  await expect(page.getByText("Состояние источников")).toBeVisible();
+  await page.getByRole("button", { name: "Реестр", exact: true }).click();
+  await expect(page.locator(".workspace")).toBeVisible();
   await page.route("**/api/lots**", route => route.abort());
   await page.locator(".topBar .primaryButton").click();
   await expect(page.locator(".errorBox")).toBeVisible();

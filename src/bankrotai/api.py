@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import hmac
 import time
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 import uvicorn
@@ -12,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -27,13 +29,41 @@ from bankrotai.db import (
     LotParticipationChecklist,
     SourceLot,
     DiagnosticEvent,
+    LotDocument,
+    LotDocumentChange,
+    LotDocumentVersion,
+    LotGeoSnapshot,
+    LotNote,
+    SavedMaxBidScenario,
+    SavedSearch,
+    SourceHealthState,
+    Watchlist,
 )
-from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response
+from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response, persist_lot
+from bankrotai.domain import NormalizedLot
 from bankrotai.finance import MaxBidInputs, calculate_max_bid
-from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSearchFilters
+from bankrotai.scrapers import (
+    LotOnlineClient,
+    TBankrotClient,
+    TorgiGovClient,
+    TorgiGovClientError,
+    TorgiGovSearchFilters,
+)
+from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters
+from bankrotai.geo import CadastralGeocoder
+from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
+from bankrotai.services.operations import (
+    add_lot_note,
+    diagnostic_export,
+    save_max_bid_scenario,
+    save_search,
+    toggle_watchlist,
+)
+from bankrotai.services.quality import data_quality_snapshot, list_source_health
+from bankrotai.logic import log_action
 from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
 
-from bankrotai.core import get_logger, get_settings, utc_now, DEFAULT_REGION
+from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
 from bankrotai.auth import (
     AuthenticatedUser,
     authenticate_user,
@@ -66,6 +96,9 @@ class BulkTorgiSyncRequest(BaseModel):
 
 
 class MaxBidRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_name: str | None = Field(None, max_length=200)
     conservative_sale_price: float = Field(gt=0)
     repair_cost: float = Field(0, ge=0)
     legal_cost: float = Field(0, ge=0)
@@ -98,6 +131,66 @@ class LoginRequest(BaseModel):
 
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=500)
+
+
+class NoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=10_000)
+
+
+class SavedSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field("", max_length=200)
+    query: dict[str, Any]
+
+
+class DuplicateMergeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secondary_lot_id: int = Field(gt=0)
+    reason: str = Field("", max_length=2000)
+
+
+class DuplicateSplitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field("", max_length=2000)
+
+
+class ReviewStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str | None = Field(None, pattern="^(approved|maybe|rejected)?$")
+
+
+class DocumentCompareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_version_id: int = Field(gt=0)
+    to_version_id: int = Field(gt=0)
+
+
+class OnlineLotImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_id: str = Field(min_length=1, max_length=100)
+    source: str = Field(min_length=1, max_length=50)
+    source_system: str = Field(min_length=1, max_length=50)
+    title: str = Field(min_length=1, max_length=5000)
+    description: str = Field("", max_length=50_000)
+    category: str = Field("other", max_length=100)
+    region_slug: str | None = Field(None, max_length=100)
+    region_name: str | None = Field(None, max_length=200)
+    address: str | None = Field(None, max_length=5000)
+    cadastral_number: str | None = Field(None, max_length=100)
+    current_price: float | None = Field(None, ge=0)
+    start_price: float | None = Field(None, ge=0)
+    auction_status: str = Field("unknown", max_length=100)
+    lot_url: str | None = Field(None, max_length=5000)
+    source_url: str | None = Field(None, max_length=5000)
+    published_at: datetime | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -208,14 +301,51 @@ def _consume_rate_limit(client_id: str) -> bool:
 
 def _is_read_only_mvp_path(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and path not in _LOGIN_PATHS:
-        return False
-    if path in _READ_ONLY_EXACT_PATHS:
+    method = request.method
+    if method in {"HEAD", "OPTIONS"}:
         return True
-    if path.startswith("/api/lots/"):
+    if path in _LOGIN_PATHS:
+        return method == "POST"
+    if method == "GET":
+        if path in _READ_ONLY_EXACT_PATHS:
+            return True
+        if path in {
+            "/api/map/lots",
+            "/api/cadastre/search",
+            "/api/quality",
+            "/api/sources",
+            "/api/diagnostics",
+            "/api/watchlist",
+            "/api/saved-searches",
+        }:
+            return True
+        if path.startswith("/api/search/"):
+            return True
+        if path.startswith("/api/lots/"):
+            parts = path.split("/")
+            return len(parts) == 4 and parts[3].isdigit() or (
+                len(parts) == 5
+                and parts[3].isdigit()
+                and parts[4] in {"procedure", "participation", "notes", "documents", "max-bid-scenarios"}
+            )
+        return False
+    if method == "POST":
+        if path in {"/api/saved-searches", "/api/search/import"}:
+            return True
+        if path.startswith("/api/lots/"):
+            parts = path.split("/")
+            return (
+                len(parts) == 5
+                and parts[3].isdigit()
+                and parts[4] in {"max-bid", "watchlist", "notes", "merge", "split", "documents-compare"}
+            )
+        return False
+    if method == "PUT" and path.startswith("/api/lots/"):
         parts = path.split("/")
-        return len(parts) == 4 and parts[3].isdigit() or (
-            len(parts) == 5 and parts[3].isdigit() and parts[4] == "procedure"
+        return (
+            len(parts) == 5
+            and parts[3].isdigit()
+            and parts[4] in {"participation", "review-status"}
         )
     return False
 
@@ -374,6 +504,99 @@ def get_torgi_gov_lots(
     return {"items": [_normalized_lot_to_dict(lot) for lot in lots], "meta": meta}
 
 
+@app.get("/api/search/{source}")
+async def search_auction_source(
+    source: str,
+    search: str = Query("", max_length=200),
+    region: str = Query("", max_length=200),
+    category: str = Query("", max_length=100),
+    price_min: float | None = Query(None, ge=0),
+    price_max: float | None = Query(None, ge=0),
+    page: int = Query(1, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=100),
+    include_closed: bool = False,
+):
+    """Search a public auction catalogue without mutating the local read model."""
+
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise HTTPException(status_code=422, detail="price_min must be <= price_max")
+    try:
+        if source == "torgi-gov":
+            filters = TorgiGovSearchFilters(
+                search_text=search,
+                subject_rf=region or None,
+                category_code=(
+                    TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(category.lower(), category) if category else None
+                ),
+                price_min=price_min,
+                price_max=price_max,
+                lot_status=None if include_closed else TorgiGovClient.DEFAULT_LOT_STATUS,
+                page=page,
+                page_size=page_size,
+            )
+            lots, metadata = await asyncio.to_thread(TorgiGovClient().search_lots, filters)
+        elif source == "tbankrot":
+            filters = TBankrotSearchFilters(
+                search_text=search,
+                region=region or None,
+                price_min=price_min,
+                price_max=price_max,
+                category_codes=category or "3,4,5",
+                show_closed=include_closed,
+                page=page,
+                page_size=page_size,
+            )
+            lots, metadata = await asyncio.to_thread(TBankrotClient().search_filtered_lots, filters)
+        elif source == "lot-online":
+            filters = LotOnlineSearchFilters(
+                search_text=search,
+                category_id=category or "1",
+                region_feature=region or None,
+                archive_mode="true" if include_closed else "false",
+                page=page,
+                page_size=page_size,
+            )
+            lots, metadata = await asyncio.to_thread(LotOnlineClient().search_lots, filters)
+        else:
+            raise HTTPException(status_code=404, detail="Unknown auction source")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Public search failed for %s: %s", source, exc)
+        raise HTTPException(status_code=502, detail=f"Source {source} is temporarily unavailable") from exc
+    return {
+        "source": source,
+        "items": [_normalized_lot_to_dict(lot) for lot in lots],
+        "meta": metadata,
+    }
+
+
+@app.post("/api/search/import", status_code=201)
+def import_online_lot(
+    request: OnlineLotImportRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    value = request.model_dump()
+    normalized = NormalizedLot(
+        **value,
+        vin=None,
+        area=None,
+        detail_level="search",
+        raw_data={"imported_from": "web_search"},
+    )
+    with session_scope() as session:
+        lot = persist_lot(session, normalized)
+        log_action(
+            session,
+            str(actor.id),
+            "import_search_result",
+            "lot",
+            str(lot.id),
+            {"source_system": request.source_system, "external_id": request.external_id},
+        )
+        return {"id": lot.id, "external_id": lot.external_id, "source_system": lot.source_system}
+
+
 @app.post("/api/online/torgi-gov/sync", status_code=202)
 def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     if request.price_min is not None and request.price_max is not None and request.price_min > request.price_max:
@@ -492,17 +715,76 @@ def get_lot_procedure(lot_id: int):
 
 
 @app.post("/api/lots/{lot_id}/max-bid")
-def calculate_lot_max_bid(lot_id: int, request: MaxBidRequest):
+def calculate_lot_max_bid(
+    lot_id: int,
+    request: MaxBidRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    input_values = request.model_dump(exclude={"scenario_name"})
+    inputs = MaxBidInputs(**input_values)
     with session_scope() as session:
         if session.get(ProcessedLot, lot_id) is None:
             raise HTTPException(status_code=404, detail="Lot not found")
-    scenarios = calculate_max_bid(MaxBidInputs(**request.model_dump()))
+        saved_id = None
+        if request.scenario_name:
+            saved = save_max_bid_scenario(
+                session,
+                lot_id,
+                inputs,
+                name=request.scenario_name,
+                user_id=str(actor.id),
+            )
+            saved_id = saved.id
+            log_action(session, str(actor.id), "save_max_bid", "lot", str(lot_id), {"scenario_id": saved.id})
+    scenarios = calculate_max_bid(inputs)
     return {
         "lot_id": lot_id,
+        "saved_scenario_id": saved_id,
         "valuation_source": "user_supplied_conservative_sale_price",
         "warning": "The bid ceiling is a financial scenario, not an independent property appraisal.",
         "scenarios": {name: asdict(value) for name, value in scenarios.items()},
     }
+
+
+@app.get("/api/lots/{lot_id}/max-bid-scenarios")
+def get_max_bid_scenarios(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        rows = session.scalars(
+            select(SavedMaxBidScenario)
+            .where(SavedMaxBidScenario.lot_id == lot_id, SavedMaxBidScenario.user_id == str(actor.id))
+            .order_by(SavedMaxBidScenario.created_at.desc())
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "inputs": row.inputs_json,
+                "results": row.results_json,
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
+
+
+@app.get("/api/lots/{lot_id}/participation")
+def get_participation_checklist(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        if source_lot is None:
+            raise HTTPException(status_code=404, detail="Source lot not found")
+        checklist = session.scalar(
+            select(LotParticipationChecklist).where(
+                LotParticipationChecklist.source_lot_id == source_lot.id,
+                LotParticipationChecklist.user_id == str(actor.id),
+            )
+        )
+        values: dict[str, Any] = {
+            name: False for name in ParticipationChecklistRequest.model_fields if name != "notes"
+        }
+        values["notes"] = None
+        if checklist is not None:
+            values = {name: getattr(checklist, name) for name in ParticipationChecklistRequest.model_fields}
+        return {"lot_id": lot_id, "source_lot_id": source_lot.id, **values}
 
 
 @app.put("/api/lots/{lot_id}/participation")
@@ -528,12 +810,299 @@ def update_participation_checklist(
             setattr(checklist, field_name, value)
         checklist.updated_at = utc_now()
         session.flush()
+        log_action(session, str(actor.id), "update_participation", "lot", str(lot_id), None)
         return {"lot_id": lot_id, "source_lot_id": source_lot.id, **request.model_dump()}
+
+
+@app.post("/api/lots/{lot_id}/watchlist")
+def toggle_lot_watchlist(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        try:
+            enabled = toggle_watchlist(session, lot_id, user_id=str(actor.id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        log_action(session, str(actor.id), "toggle_watchlist", "lot", str(lot_id), {"enabled": enabled})
+        return {"lot_id": lot_id, "watchlisted": enabled}
+
+
+@app.get("/api/watchlist")
+def get_watchlist(actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        lot_ids = session.scalars(
+            select(Watchlist.lot_id)
+            .where(Watchlist.user_id == str(actor.id), Watchlist.lot_id.is_not(None))
+            .order_by(Watchlist.created_at.desc())
+        ).all()
+        items = []
+        for lot_id in lot_ids:
+            item = get_lot_response(session, DEFAULT_REGION, lot_id)
+            if item is not None:
+                items.append(item)
+        return {"items": items, "total": len(items)}
+
+
+@app.get("/api/lots/{lot_id}/notes")
+def get_lot_note_items(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        rows = session.scalars(
+            select(LotNote)
+            .where(LotNote.lot_id == lot_id, LotNote.user_id == str(actor.id))
+            .order_by(LotNote.created_at.desc())
+        ).all()
+        return [
+            {"id": row.id, "content": row.content, "created_at": row.created_at, "updated_at": row.updated_at}
+            for row in rows
+        ]
+
+
+@app.post("/api/lots/{lot_id}/notes", status_code=201)
+def create_lot_note(lot_id: int, request: NoteRequest, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        try:
+            note = add_lot_note(session, lot_id, request.content, user_id=str(actor.id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        log_action(session, str(actor.id), "add_note", "lot", str(lot_id), {"note_id": note.id})
+        return {"id": note.id, "lot_id": lot_id, "content": note.content, "created_at": note.created_at}
+
+
+@app.put("/api/lots/{lot_id}/review-status")
+def update_lot_review_status(
+    lot_id: int,
+    request: ReviewStatusRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    with session_scope() as session:
+        lot = session.get(ProcessedLot, lot_id)
+        if lot is None:
+            raise HTTPException(status_code=404, detail="Lot not found")
+        lot.review_status = request.status
+        log_action(session, str(actor.id), "review_status", "lot", str(lot_id), {"status": request.status})
+        return {"lot_id": lot_id, "review_status": request.status}
+
+
+@app.post("/api/lots/{lot_id}/merge")
+def merge_lot_duplicate(
+    lot_id: int,
+    request: DuplicateMergeRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    with session_scope() as session:
+        try:
+            review = manual_merge_lots(
+                session,
+                lot_id,
+                request.secondary_lot_id,
+                reason=request.reason,
+                user_id=str(actor.id),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        log_action(session, str(actor.id), "merge_lots", "lot", str(lot_id), {"secondary": request.secondary_lot_id})
+        return {"review_id": review.id, "primary_lot_id": lot_id, "secondary_lot_id": request.secondary_lot_id}
+
+
+@app.post("/api/lots/{lot_id}/split")
+def split_lot_duplicate(
+    lot_id: int,
+    request: DuplicateSplitRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    with session_scope() as session:
+        try:
+            review = manual_split_lot(session, lot_id, reason=request.reason, user_id=str(actor.id))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        log_action(session, str(actor.id), "split_lot", "lot", str(lot_id), None)
+        return {"review_id": review.id, "lot_id": lot_id}
 
 @app.get("/api/stats")
 def get_stats(city_slug: str = DEFAULT_REGION):
     with session_scope() as session:
         return build_stats_response(session, city_slug)
+
+
+@app.get("/api/map/lots")
+def get_map_lots(
+    city_slug: str = DEFAULT_REGION,
+    include_archived: bool = False,
+    limit: int = Query(3000, ge=1, le=5000),
+):
+    latest_geo = (
+        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
+        .group_by(LotGeoSnapshot.lot_id)
+        .subquery()
+    )
+    statement = (
+        select(ProcessedLot, LotGeoSnapshot)
+        .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
+        .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
+        .where(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
+        .order_by(ProcessedLot.last_update.desc())
+        .limit(limit)
+    )
+    if not include_archived:
+        statement = statement.where(ProcessedLot.is_archived.is_(False))
+    with session_scope() as session:
+        rows = session.execute(statement).all()
+        return {
+            "items": [
+                {
+                    "id": lot.id,
+                    "external_id": lot.external_id,
+                    "title": lot.title,
+                    "address": lot.address,
+                    "category": lot.category,
+                    "status": lot.auction_status,
+                    "review_status": lot.review_status,
+                    "current_price": float(lot.current_price) if lot.current_price is not None else None,
+                    "lat": geo.centroid_lat,
+                    "lon": geo.centroid_lon,
+                    "geometry": geo.geometry_json,
+                    "confidence": geo.geo_confidence,
+                    "source": geo.geo_source,
+                    "lot_url": lot.lot_url or lot.source_url,
+                }
+                for lot, geo in rows
+            ],
+            "total": len(rows),
+        }
+
+
+@app.get("/api/cadastre/search")
+async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
+    try:
+        result = await asyncio.to_thread(CadastralGeocoder().search, query)
+    except Exception as exc:
+        logger.warning("Cadastre search failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Cadastre service is temporarily unavailable") from exc
+    return asdict(result)
+
+
+@app.get("/api/saved-searches")
+def get_saved_searches(actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        rows = session.scalars(
+            select(SavedSearch)
+            .where(SavedSearch.user_id == str(actor.id))
+            .order_by(SavedSearch.created_at.desc())
+        ).all()
+        return [
+            {"id": row.id, "name": row.name, "query": row.query_params, "created_at": row.created_at}
+            for row in rows
+        ]
+
+
+@app.post("/api/saved-searches", status_code=201)
+def create_saved_search(request: SavedSearchRequest, actor: AuthenticatedUser = Depends(require_user)):
+    with session_scope() as session:
+        row = save_search(session, request.name, request.query, user_id=str(actor.id))
+        log_action(session, str(actor.id), "save_search", "saved_search", str(row.id), None)
+        return {"id": row.id, "name": row.name, "query": row.query_params, "created_at": row.created_at}
+
+
+@app.get("/api/lots/{lot_id}/documents")
+def get_lot_documents(lot_id: int):
+    with session_scope() as session:
+        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        if source_lot is None:
+            return []
+        documents = session.scalars(
+            select(LotDocument)
+            .where(LotDocument.source_lot_id == source_lot.id)
+            .order_by(LotDocument.updated_at.desc())
+        ).all()
+        result = []
+        for document in documents:
+            versions = session.scalars(
+                select(LotDocumentVersion)
+                .where(LotDocumentVersion.document_id == document.id)
+                .order_by(LotDocumentVersion.fetched_at.desc())
+            ).all()
+            result.append({
+                "id": document.id,
+                "filename": document.filename,
+                "source_url": document.source_url,
+                "document_kind": document.document_kind,
+                "versions": [
+                    {
+                        "id": version.id,
+                        "sha256": version.sha256,
+                        "mime_type": version.mime_type,
+                        "size_bytes": version.size_bytes,
+                        "metadata": version.metadata_json,
+                        "fetched_at": version.fetched_at,
+                    }
+                    for version in versions
+                ],
+            })
+        return result
+
+
+@app.post("/api/lots/{lot_id}/documents-compare")
+def compare_lot_documents(
+    lot_id: int,
+    request: DocumentCompareRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    with session_scope() as session:
+        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        if source_lot is None:
+            raise HTTPException(status_code=404, detail="Source lot not found")
+        before = session.get(LotDocumentVersion, request.from_version_id)
+        after = session.get(LotDocumentVersion, request.to_version_id)
+        if before is None or after is None:
+            raise HTTPException(status_code=404, detail="Document version not found")
+        document = session.get(LotDocument, before.document_id)
+        if document is None or document.source_lot_id != source_lot.id:
+            raise HTTPException(status_code=422, detail="Document does not belong to this lot")
+        if before.document_id != after.document_id or before.id == after.id:
+            raise HTTPException(status_code=422, detail="Choose two versions of the same document")
+        existing = session.scalar(select(LotDocumentChange).where(
+            LotDocumentChange.from_version_id == before.id,
+            LotDocumentChange.to_version_id == after.id,
+        ))
+        if existing is None:
+            before_meta = before.metadata_json or {}
+            after_meta = after.metadata_json or {}
+            summary = {
+                "content_changed": before.sha256 != after.sha256,
+                "size": {"before": before.size_bytes, "after": after.size_bytes},
+                "mime_type": {"before": before.mime_type, "after": after.mime_type},
+                "metadata_changes": {
+                    key: {"before": before_meta.get(key), "after": after_meta.get(key)}
+                    for key in sorted(set(before_meta) | set(after_meta))
+                    if before_meta.get(key) != after_meta.get(key)
+                },
+            }
+            existing = LotDocumentChange(
+                document_id=before.document_id,
+                from_version_id=before.id,
+                to_version_id=after.id,
+                summary_json=summary,
+            )
+            session.add(existing)
+            session.flush()
+        log_action(session, str(actor.id), "compare_documents", "lot", str(lot_id), None)
+        return {"id": existing.id, "summary": existing.summary_json, "created_at": existing.created_at}
+
+
+@app.get("/api/quality")
+def get_data_quality():
+    with session_scope() as session:
+        return data_quality_snapshot(session).model_dump(mode="json")
+
+
+@app.get("/api/sources")
+def get_source_states():
+    with session_scope() as session:
+        return [item.model_dump(mode="json") for item in list_source_health(session)]
+
+
+@app.get("/api/diagnostics")
+def get_diagnostics():
+    with session_scope() as session:
+        return diagnostic_export(session)
 
 @app.post("/api/regions/{city_slug}/sync")
 def trigger_region_sync(city_slug: str, force: bool = False):
