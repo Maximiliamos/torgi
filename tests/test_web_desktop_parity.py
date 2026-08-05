@@ -106,6 +106,15 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
     assert map_item["source_name"] == "Тестовая ЭТП"
     assert map_item["procedure_number"] == "PROC-76-1"
     assert map_item["image_urls"] == ["https://example.test/photo.jpg"]
+    assert map_item["sources"] == [{
+        "processed_lot_id": lot_id,
+        "source_system": "test",
+        "external_id": "parity-lot",
+        "title": "Лот для веб-инструментов",
+        "price": 1_000_000.0,
+        "url": "https://example.test/lot/parity-lot",
+        "is_primary": True,
+    }]
 
     assert client.get("/api/quality").status_code == 200
     assert client.get("/api/sources").status_code == 200

@@ -5,11 +5,11 @@
 Проверены локальная ветка `main` и публичный репозиторий
 `https://github.com/Maximiliamos/torgi` (commit `2b90c88`, расхождение с
 `origin/main`: `0/0`), desktop, FastAPI, Celery, модель данных, миграции,
-React-клиент, Docker и GitHub Actions. Полный suite выполняет 161 Python-тест; web имеет
+React-клиент, Docker и GitHub Actions. Полный suite выполняет 162 Python-теста; web имеет
 5 unit-тестов и Playwright smoke. Production-зависимости npm: 0 известных
 уязвимостей на дату проверки.
 
-Локально успешно выполнен 161 Python-тест (2 PostgreSQL-only пропущены), Ruff,
+Локально успешно выполнен 162 Python-теста (2 PostgreSQL-only пропущены), Ruff,
 Mypy, web typecheck, ESLint, unit tests, production build, npm audit и packaged
 desktop smoke. Обнаруженный устаревший EXE не содержал ревизию
 `e0f1a2b3c4d5`; он пересобран, наличие миграции внутри PyInstaller archive и
@@ -126,3 +126,16 @@ status, health/quality/diagnostics и постановку региональн�
 `allow-scripts`. Родитель принимает сообщение лишь от ожидаемого `contentWindow`,
 с opaque origin `null` и уникальным channel id. Входящие URL изображений и
 исходящих кнопок ограничены протоколами HTTP(S).
+
+## Follow-up: наложенные и объединённые лоты
+
+Повторное внешнее ревью выявило два подтверждённых дефекта. Они закрыты без
+пересоздания карты: React отправляет долгоживущему iframe команды `replace-lots`,
+`select-lot`, `toggle-cadastre` и `show-cadastre-result`, а iframe сохраняет центр
+и масштаб. Точные совпадения координат раскрываются в список с названием, ценой,
+источником, адресом и отдельным выбором каждого лота.
+
+API основной метки возвращает `sources` для каждой объединённой публикации.
+Карточка показывает их количество и отдельные ссылки; администратору доступно
+разделение ошибочной группы. Операции merge/split дополнительно защищены серверной
+проверкой роли, а не только видимостью кнопки.

@@ -134,6 +134,15 @@ export type MapLot = {
   procedure_number: string | null;
   application_deadline: string | null;
   auction_at: string | null;
+  sources: Array<{
+    processed_lot_id: number;
+    source_system: string;
+    external_id: string;
+    title: string;
+    price: number | null;
+    url: string | null;
+    is_primary: boolean;
+  }>;
 };
 
 export type Procedure = Record<string, string | number | boolean | null | unknown[]>;

@@ -97,6 +97,11 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
     assert login.json()["username"] == "reader"
     assert "httponly" in login.headers["set-cookie"].lower()
     assert client.get("/api/lots", headers=service_headers).status_code == 200
+    assert client.post(
+        "/api/lots/1/split",
+        headers=service_headers,
+        json={"reason": "reader must not modify duplicate groups"},
+    ).status_code == 403
     assert client.post("/api/regions/yaroslavl/sync", headers=service_headers).status_code == 404
     assert "user_id" not in api.ParticipationChecklistRequest.model_fields
     with pytest.raises(ValidationError):

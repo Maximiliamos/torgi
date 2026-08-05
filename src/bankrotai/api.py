@@ -359,6 +359,12 @@ def require_user(request: Request) -> AuthenticatedUser:
         raise HTTPException(status_code=401, detail="Authentication required")
     return actor
 
+
+def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> AuthenticatedUser:
+    if actor.role != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    return actor
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
@@ -889,7 +895,7 @@ def update_lot_review_status(
 def merge_lot_duplicate(
     lot_id: int,
     request: DuplicateMergeRequest,
-    actor: AuthenticatedUser = Depends(require_user),
+    actor: AuthenticatedUser = Depends(require_admin),
 ):
     with session_scope() as session:
         try:
@@ -910,7 +916,7 @@ def merge_lot_duplicate(
 def split_lot_duplicate(
     lot_id: int,
     request: DuplicateSplitRequest,
-    actor: AuthenticatedUser = Depends(require_user),
+    actor: AuthenticatedUser = Depends(require_admin),
 ):
     with session_scope() as session:
         try:

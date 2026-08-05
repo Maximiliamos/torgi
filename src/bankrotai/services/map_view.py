@@ -55,7 +55,12 @@ def _display_datetime(value: datetime | None) -> str | None:
     return value.strftime("%d.%m.%Y %H:%M") if value else None
 
 
-def _map_lot_payload(lot: ProcessedLot, geo: LotGeoSnapshot, sources: list[SourceLot]) -> dict:
+def _map_lot_payload(
+    lot: ProcessedLot,
+    geo: LotGeoSnapshot,
+    source_rows: list[tuple[ProcessedLot, SourceLot]],
+) -> dict:
+    sources = [source for _processed, source in source_rows]
     primary = next(
         (item for item in sources if item.source_system == lot.source_system and item.external_id == lot.external_id),
         sources[0] if sources else None,
@@ -77,6 +82,28 @@ def _map_lot_payload(lot: ProcessedLot, geo: LotGeoSnapshot, sources: list[Sourc
         russia_url = russia_url or raw.get("torgi_russia_url")
 
     auction_at = max((item.auction_at for item in sources if item.auction_at), default=None)
+    publications = [
+        {
+            "processed_lot_id": processed.id,
+            "source_system": source.source_system,
+            "external_id": source.external_id,
+            "title": processed.title,
+            "price": float(processed.current_price) if processed.current_price is not None else None,
+            "url": source.source_url or processed.source_url or processed.lot_url,
+            "is_primary": processed.id == lot.id,
+        }
+        for processed, source in source_rows
+    ]
+    if not publications:
+        publications.append({
+            "processed_lot_id": lot.id,
+            "source_system": lot.source_system or lot.source,
+            "external_id": lot.external_id,
+            "title": lot.title,
+            "price": float(lot.current_price) if lot.current_price is not None else None,
+            "url": lot.source_url or lot.lot_url,
+            "is_primary": True,
+        })
     return {
         "id": lot.id,
         "external_id": lot.external_id,
@@ -106,6 +133,7 @@ def _map_lot_payload(lot: ProcessedLot, geo: LotGeoSnapshot, sources: list[Sourc
         "procedure_number": next((item.procedure_number for item in sources if item.procedure_number), None),
         "application_deadline": _display_datetime(next((item.application_deadline for item in sources if item.application_deadline), None)),
         "auction_at": _display_datetime(auction_at),
+        "sources": publications,
     }
 
 
@@ -137,15 +165,16 @@ def build_map_lots_response(
     rows = session.execute(statement).all()
 
     primary_ids = [lot.id for lot, _geo in rows]
-    source_map: dict[int, list[SourceLot]] = defaultdict(list)
+    source_map: dict[int, list[tuple[ProcessedLot, SourceLot]]] = defaultdict(list)
     if primary_ids:
         source_rows = session.execute(
-            select(ProcessedLot.id, ProcessedLot.duplicate_of_id, SourceLot)
+            select(ProcessedLot, SourceLot)
             .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
             .where(or_(ProcessedLot.id.in_(primary_ids), ProcessedLot.duplicate_of_id.in_(primary_ids)))
+            .order_by(ProcessedLot.id, SourceLot.id)
         )
-        for processed_id, duplicate_of_id, source_lot in source_rows:
-            source_map[duplicate_of_id or processed_id].append(source_lot)
+        for processed, source_lot in source_rows:
+            source_map[processed.duplicate_of_id or processed.id].append((processed, source_lot))
 
     items = [_map_lot_payload(lot, geo, source_map[lot.id]) for lot, geo in rows]
     return {"items": items, "total": len(items)}
