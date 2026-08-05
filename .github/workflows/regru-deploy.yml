@@ -25,7 +25,9 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: maximiliamos/bankrotai-api
   SSH_HOST: 194.226.126.233
-  SSH_BOOTSTRAP_PORT: "443"
+  # Port 443 is owned by Caddy after the initial bootstrap. Ongoing deploys
+  # must use the dedicated SSH listener configured on the server.
+  SSH_BOOTSTRAP_PORT: "2222"
   SSH_DEPLOY_PORT: "2222"
   API_HOSTNAME: 194-226-126-233.sslip.io
 
