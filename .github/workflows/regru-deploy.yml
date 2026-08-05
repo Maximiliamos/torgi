@@ -1,4 +1,4 @@
-name: Deploy API to REG.RU
+name: Deploy WEB and API to REG.RU
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ on:
       - "pyproject.toml"
       - "alembic/**"
       - "src/**"
+      - "WEB/**"
       - ".github/workflows/regru-deploy.yml"
 
 permissions:
@@ -40,12 +41,33 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: WEB/package-lock.json
+
+      - name: Build production WEB bundle
+        working-directory: WEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
+          printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/deployment.json
+          tar -C dist -czf "$RUNNER_TEMP/bankrotai-web.tgz" .
+
       - name: Validate required secrets
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
           SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+          AUTH_BOOTSTRAP_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -53,6 +75,7 @@ jobs:
           test -n "$DATABASE_URL"
           test -n "$API_KEY"
           test -n "$SESSION_SECRET"
+          test -n "$AUTH_BOOTSTRAP_PASSWORD"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -155,6 +178,7 @@ jobs:
             printf 'BANKROTAI_API_KEY=%s\n' "$API_KEY"
             printf 'AUTH_SESSION_SECRET=%s\n' "$SESSION_SECRET"
           } | base64 -w 0)"
+          CADDY_ENV_B64="$(printf 'BANKROTAI_API_KEY=%s\n' "$API_KEY" | base64 -w 0)"
 
           printf '%s' "$API_ENV_B64" | ssh \
             -i "$HOME/.ssh/regru_deploy" \
@@ -164,6 +188,22 @@ jobs:
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             'install -d -m 700 /opt/bankrotai; base64 -d > /opt/bankrotai/api.env; chmod 600 /opt/bankrotai/api.env'
 
+          printf '%s' "$CADDY_ENV_B64" | ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            'base64 -d > /opt/bankrotai/caddy.env; chmod 600 /opt/bankrotai/caddy.env'
+
+          scp \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -P "$SSH_DEPLOY_PORT" \
+            "$RUNNER_TEMP/bankrotai-web.tgz" "root@$SSH_HOST:/opt/bankrotai/web-release.tgz"
+
           ssh \
             -i "$HOME/.ssh/regru_deploy" \
             -o BatchMode=yes \
@@ -172,14 +212,44 @@ jobs:
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             "API_HOSTNAME='$API_HOSTNAME' bash -s" <<'REMOTE'
           set -euo pipefail
+          rm -rf /opt/bankrotai/web.next
+          install -d -m 755 /opt/bankrotai/web.next
+          tar -xzf /opt/bankrotai/web-release.tgz -C /opt/bankrotai/web.next
+          test -s /opt/bankrotai/web.next/index.html
+          test -s /opt/bankrotai/web.next/deployment.json
+          find /opt/bankrotai/web.next -type d -exec chmod 755 {} +
+          find /opt/bankrotai/web.next -type f -exec chmod 644 {} +
+          rm -rf /opt/bankrotai/web.previous
+          if [ -d /opt/bankrotai/web ]; then
+            mv /opt/bankrotai/web /opt/bankrotai/web.previous
+          fi
+          mv /opt/bankrotai/web.next /opt/bankrotai/web
+          rm -f /opt/bankrotai/web-release.tgz
+
           cat > /opt/bankrotai/Caddyfile <<CADDY
           ${API_HOSTNAME} {
             encode zstd gzip
-            reverse_proxy bankrotai-api:8000
+
+            @backend path /api /api/* /health /health/*
+            handle @backend {
+              reverse_proxy bankrotai-api:8000 {
+                header_up X-API-Key "{\$BANKROTAI_API_KEY}"
+              }
+            }
+
+            handle {
+              root * /srv
+              try_files {path} /index.html
+              file_server
+            }
+
+            @assets path /assets/*
+            header @assets Cache-Control "public, max-age=31536000, immutable"
             header {
               X-Content-Type-Options nosniff
               X-Frame-Options DENY
               Referrer-Policy no-referrer
+              Permissions-Policy "camera=(), microphone=(), geolocation=()"
             }
             log {
               output stdout
@@ -234,6 +304,11 @@ jobs:
 
           pull_with_retry "$IMAGE"
           pull_with_retry caddy:2-alpine
+          docker run --rm \
+            --env-file /opt/bankrotai/caddy.env \
+            -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro \
+            caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
           docker rm -f bankrotai-api bankrotai-caddy >/dev/null 2>&1 || true
           docker run -d \
@@ -250,9 +325,11 @@ jobs:
             --name bankrotai-caddy \
             --restart unless-stopped \
             --network bankrotai \
+            --env-file /opt/bankrotai/caddy.env \
             -p 80:80 \
             -p 443:443 \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro \
+            -v /opt/bankrotai/web:/srv:ro \
             -v bankrotai_caddy_data:/data \
             -v bankrotai_caddy_config:/config \
             --log-opt max-size=10m \
@@ -287,4 +364,29 @@ jobs:
             --retry 12 --retry-delay 5 --retry-all-errors \
             "https://$API_HOSTNAME/health/ready"
           printf '\n'
+
+      - name: Verify deployed WEB release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+            "https://$API_HOSTNAME/deployment.json" | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')" = "$GITHUB_SHA"
+          INDEX_HTML="$(curl --fail --silent --show-error "https://$API_HOSTNAME/")"
+          ASSET_PATH="$(printf '%s' "$INDEX_HTML" | grep -oE '/assets/index-[^"]+\.js' | head -n 1)"
+          test -n "$ASSET_PATH"
+          curl --fail --silent --show-error "https://$API_HOSTNAME$ASSET_PATH" > "$RUNNER_TEMP/public-app.js"
+          grep -Fq 'replace-lots' "$RUNNER_TEMP/public-app.js"
+          grep -Fq 'Объединено публикаций' "$RUNNER_TEMP/public-app.js"
+
+      - name: Install Playwright Chromium
+        working-directory: WEB
+        run: npx playwright install --with-deps chromium
+
+      - name: Run public WEB smoke
+        working-directory: WEB
+        env:
+          E2E_BASE_URL: https://${{ env.API_HOSTNAME }}
+          E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+          E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+        run: npm run test:e2e
 
