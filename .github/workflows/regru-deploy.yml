@@ -23,7 +23,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/bankrotai-api
+  IMAGE_NAME: maximiliamos/bankrotai-api
   SSH_HOST: 194.226.126.233
   SSH_BOOTSTRAP_PORT: "443"
   SSH_DEPLOY_PORT: "2222"
