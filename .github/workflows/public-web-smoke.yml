@@ -47,5 +47,5 @@ jobs:
         with:
           script: |
             const title = `Public WEB smoke failed: ${context.runId}`;
-            const body = `Public Pages/Koyeb smoke failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
+            const body = `Public Pages/REG.RU smoke failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
             await github.rest.issues.create({ ...context.repo, title, body });
