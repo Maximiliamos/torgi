@@ -1,0 +1,81 @@
+name: Bootstrap REG.RU SSH
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: REG.RU server public IP
+        required: true
+        default: "194.226.126.233"
+      port:
+        description: Temporary SSH port
+        required: true
+        default: "443"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regru-ssh-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SSH_HOST: ${{ inputs.host }}
+      SSH_PORT: ${{ inputs.port }}
+      SSH_USER: root
+      SSHPASS: ${{ secrets.REGRU_BOOTSTRAP_PASSWORD }}
+      SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS"
+          test -n "$SSH_PRIVATE_KEY"
+
+      - name: Install bootstrap dependency
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sshpass
+
+      - name: Prepare SSH identity and host key
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_deploy"
+          chmod 600 "$HOME/.ssh/regru_deploy"
+          ssh-keygen -y -f "$HOME/.ssh/regru_deploy" > "$HOME/.ssh/regru_deploy.pub"
+          ssh-keyscan -T 15 -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Install deployment public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh \
+            -o IdentitiesOnly=yes \
+            -o PreferredAuthentications=password \
+            -o PubkeyAuthentication=no \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            'umask 077; install -d -m 700 "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; chmod 600 "$HOME/.ssh/authorized_keys"; key=$(cat); grep -qxF "$key" "$HOME/.ssh/authorized_keys" || printf "%s\n" "$key" >> "$HOME/.ssh/authorized_keys"' \
+            < "$HOME/.ssh/regru_deploy.pub"
+
+      - name: Verify key-only access
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o PasswordAuthentication=no \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            'test "$(id -u)" = 0 && printf "key-only SSH access verified\n"'
