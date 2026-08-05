@@ -213,8 +213,27 @@ jobs:
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
-          docker pull "$IMAGE"
-          docker pull caddy:2-alpine
+          # Keep the currently running release, but reclaim stopped containers,
+          # dangling layers and old unreferenced images before downloading the
+          # next release. Small REG.RU disks otherwise fail during docker pull.
+          docker container prune -f
+          docker image prune -af --filter 'until=24h'
+
+          pull_with_retry() {
+            image="$1"
+            for attempt in 1 2 3 4; do
+              if docker pull "$image"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 4 ]; then
+                return 1
+              fi
+              sleep $((attempt * 5))
+            done
+          }
+
+          pull_with_retry "$IMAGE"
+          pull_with_retry caddy:2-alpine
           docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
           docker rm -f bankrotai-api bankrotai-caddy >/dev/null 2>&1 || true
           docker run -d \
@@ -242,6 +261,19 @@ jobs:
           docker logout ghcr.io
           docker image prune -af --filter 'until=168h'
           REMOTE
+
+      - name: Collect safe deployment diagnostics
+        if: failure()
+        continue-on-error: true
+        shell: bash
+        run: |
+          ssh \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
+            'df -h; docker system df; docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"'
 
       - name: Verify public health endpoints
         shell: bash
