@@ -100,17 +100,8 @@ test("authenticated list search detail and API failure smoke", async ({
     ),
     mapLot(7003, "lot-online.ru", "Здание с земельным участком", 1250000),
   ];
-  await page.route("**/api/map/lots**", (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (/\/api\/map\/lots\/\d+$/.test(pathname)) {
-      const id = Number(pathname.split("/").at(-1));
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(coincidentLots.find((lot) => lot.id === id)),
-      });
-    }
-    return route.fulfill({
+  await page.route(/\/api\/map\/lots(?:\?.*)?$/, (route) =>
+    route.fulfill({
       status: 200,
       contentType: "application/json",
       headers: { ETag: '"map-e2e"' },
@@ -132,7 +123,18 @@ test("authenticated list search detail and API failure smoke", async ({
           lon: lot.lon,
         })),
       }),
-    });
+    }),
+  );
+  await page.route(/\/api\/map\/lots\/(\d+)$/, (route) => {
+    const id = Number(new URL(route.request().url()).pathname.split("/").at(-1));
+    const lot = coincidentLots.find((item) => item.id === id);
+    return lot
+      ? route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(lot),
+        })
+      : route.fulfill({ status: 404, body: "not found" });
   });
   await page.route("**/api/lots/7001/review-status", (route) =>
     route.fulfill({

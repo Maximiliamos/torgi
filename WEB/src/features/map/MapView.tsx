@@ -110,7 +110,6 @@ function YandexDesktopMap({
     const receive = (event: MessageEvent) => {
       if (
         event.source !== frame.current?.contentWindow ||
-        event.origin !== "null" ||
         event.data?.channel !== channel
       )
         return;
@@ -406,6 +405,7 @@ export function MapView({
   const [selectedLot, setSelectedLot] = React.useState<MapLot | null>(null);
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
   const requestRevision = React.useRef(0);
+  const reviewOverrides = React.useRef(new Map<number, string>());
   const [statistics, setStatistics] = React.useState({
     total: 0,
     mapped: 0,
@@ -432,7 +432,12 @@ export function MapView({
   });
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
-    setLots(response.items);
+    setLots(
+      response.items.map((lot) => ({
+        ...lot,
+        review_status: reviewOverrides.current.get(lot.id) ?? lot.review_status,
+      })),
+    );
     setStatistics({
       total: response.total,
       mapped: response.mapped_total ?? response.items.length,
@@ -519,6 +524,7 @@ export function MapView({
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
       await setReviewStatus(lotId, status);
+      reviewOverrides.current.set(lotId, status);
       setLots((items) =>
         items.map((lot) =>
           lot.id === lotId ? { ...lot, review_status: status } : lot,
