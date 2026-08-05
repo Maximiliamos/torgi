@@ -4,11 +4,13 @@ test("authenticated list search detail and API failure smoke", async ({ page }) 
   await page.goto("/");
   await expect(page.locator("main")).toBeVisible();
   const loginField = page.locator('input[autocomplete="username"]');
+  const workspace = page.locator(".workspace");
+  await expect(loginField.or(workspace)).toBeVisible({ timeout: 30_000 });
   if (await loginField.isVisible()) {
     await loginField.fill(process.env.E2E_USERNAME || "reader");
     await page.locator('input[autocomplete="current-password"]').fill(process.env.E2E_PASSWORD || "");
     await page.getByRole("button", { name: "Войти" }).click();
-    await expect(page.locator(".workspace")).toBeVisible({ timeout: 30_000 });
+    await expect(workspace).toBeVisible({ timeout: 30_000 });
   }
   const search = page.locator(".searchBox input");
   await search.fill("земля");
