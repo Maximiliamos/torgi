@@ -1267,19 +1267,22 @@ class GeoWorker(QThread):
                 rows = session.scalars(
                     select(ProcessedLot).where(ProcessedLot.id.in_(lot_ids))
                 ).all()
-            payloads = [
-                {
-                    "lot_id": row.id,
-                    "cadastral_number": row.cadastral_number,
-                    "address": row.address,
-                    "title": row.title,
-                    "region_name": row.region_name,
-                    "source_system": row.source_system,
-                    "source_url": row.source_url or row.lot_url,
-                }
-                for row in rows
-                if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(row))
-            ]
+                # Copy every ORM attribute while the row is still attached.  The
+                # session scope commits on exit and SQLAlchemy expires instances;
+                # reading them afterwards caused DetachedInstanceError in GEO jobs.
+                payloads = [
+                    {
+                        "lot_id": row.id,
+                        "cadastral_number": row.cadastral_number,
+                        "address": row.address,
+                        "title": row.title,
+                        "region_name": row.region_name,
+                        "source_system": row.source_system,
+                        "source_url": row.source_url or row.lot_url,
+                    }
+                    for row in rows
+                    if is_sale_real_estate_lot(NormalizedLot.from_processed_lot(row))
+                ]
             total = len(payloads)
             max_workers = min(get_settings().geo_max_workers, max(total, 1))
             self.progress.emit(f"Параллельное геокодирование: {total} лотов, потоков: {max_workers}")

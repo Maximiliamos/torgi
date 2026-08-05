@@ -44,6 +44,12 @@ def test_builds_public_catalogue_query_for_yaroslavl() -> None:
     assert params["page"] == "2"
 
 
+def test_yaroslavl_region_accepts_official_code_and_name() -> None:
+    for value in ("76", "Ярославская область", "yaroslavl"):
+        params = LotOnlineClient()._build_query_params(LotOnlineSearchFilters(region_feature=value))
+        assert params["features_hash"] == "171-24392"
+
+
 def test_parses_listing_card_into_normalized_lot() -> None:
     filters = LotOnlineSearchFilters(region_feature="24392", archive_mode="false")
 

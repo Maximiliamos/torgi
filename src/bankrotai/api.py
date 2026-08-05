@@ -315,6 +315,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/quality",
             "/api/sources",
             "/api/diagnostics",
+            "/api/capabilities",
+            "/api/regions",
             "/api/watchlist",
             "/api/saved-searches",
         }:
@@ -520,11 +522,12 @@ async def search_auction_source(
 
     if price_min is not None and price_max is not None and price_min > price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
+    region_name = _normalize_public_region(region)
     try:
         if source == "torgi-gov":
             filters = TorgiGovSearchFilters(
                 search_text=search,
-                subject_rf=region or None,
+                subject_rf=region_name,
                 category_code=(
                     TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(category.lower(), category) if category else None
                 ),
@@ -538,7 +541,7 @@ async def search_auction_source(
         elif source == "tbankrot":
             filters = TBankrotSearchFilters(
                 search_text=search,
-                region=region or None,
+                region=TBankrotClient.normalize_region_filter(region),
                 price_min=price_min,
                 price_max=price_max,
                 category_codes=category or "3,4,5",
@@ -551,7 +554,7 @@ async def search_auction_source(
             filters = LotOnlineSearchFilters(
                 search_text=search,
                 category_id=category or "1",
-                region_feature=region or None,
+                region_feature=region_name,
                 archive_mode="true" if include_closed else "false",
                 page=page,
                 page_size=page_size,
@@ -924,7 +927,7 @@ def get_stats(city_slug: str = DEFAULT_REGION):
 
 @app.get("/api/map/lots")
 def get_map_lots(
-    city_slug: str = DEFAULT_REGION,
+    city_slug: str | None = None,
     include_archived: bool = False,
     limit: int = Query(3000, ge=1, le=5000),
 ):
@@ -937,10 +940,11 @@ def get_map_lots(
         select(ProcessedLot, LotGeoSnapshot)
         .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
         .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-        .where(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
         .order_by(ProcessedLot.last_update.desc())
         .limit(limit)
     )
+    if city_slug:
+        statement = statement.where(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
     if not include_archived:
         statement = statement.where(ProcessedLot.is_archived.is_(False))
     with session_scope() as session:
@@ -1103,6 +1107,39 @@ def get_source_states():
 def get_diagnostics():
     with session_scope() as session:
         return diagnostic_export(session)
+
+
+@app.get("/api/capabilities")
+def get_api_capabilities():
+    """Describe deployment-level operations so clients do not render dead actions."""
+    return {
+        "curated_mode": settings.api_read_only,
+        "region_sync": not settings.api_read_only,
+        "bulk_torgi_sync": not settings.api_read_only,
+        "background_jobs": not settings.api_read_only,
+    }
+
+
+def _public_regions() -> list[dict[str, str]]:
+    by_code: dict[str, str] = {}
+    for name, code in TBankrotClient.CADASTRAL_REGION_NAME_TO_CODE.items():
+        by_code.setdefault(code, name)
+    return [{"code": code, "name": name} for code, name in sorted(by_code.items(), key=lambda item: item[1])]
+
+
+def _normalize_public_region(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    cleaned = value.strip()
+    if cleaned.isdigit():
+        code = cleaned.zfill(2)
+        return next((item["name"] for item in _public_regions() if item["code"] == code), cleaned)
+    return cleaned
+
+
+@app.get("/api/regions")
+def get_public_regions():
+    return _public_regions()
 
 @app.post("/api/regions/{city_slug}/sync")
 def trigger_region_sync(city_slug: str, force: bool = False):

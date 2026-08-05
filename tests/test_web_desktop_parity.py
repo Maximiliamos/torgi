@@ -101,6 +101,15 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
 
     assert client.get("/api/quality").status_code == 200
     assert client.get("/api/sources").status_code == 200
+    regions = client.get("/api/regions")
+    assert regions.status_code == 200
+    assert {"code": "76", "name": "Ярославская область"} in regions.json()
+    assert client.get("/api/capabilities").json() == {
+        "curated_mode": True,
+        "region_sync": False,
+        "bulk_torgi_sync": False,
+        "background_jobs": False,
+    }
     assert client.post(f"/api/lots/{lot_id}/watchlist").json()["watchlisted"] is True
     assert client.get("/api/watchlist").json()["total"] == 1
     assert client.post(f"/api/lots/{lot_id}/notes", json={"content": "Проверить документы"}).status_code == 201

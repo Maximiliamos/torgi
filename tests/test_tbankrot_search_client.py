@@ -106,6 +106,13 @@ def test_tbankrot_region_slug_uses_official_cadastral_region_code():
     assert client._official_region_code("Ярославская область", "76:14:030102:303") == "76"
 
 
+def test_tbankrot_region_filter_accepts_official_code_name_and_slug():
+    assert TBankrotClient.normalize_region_filter("76") == "84"
+    assert TBankrotClient.normalize_region_filter("Ярославская область") == "84"
+    assert TBankrotClient.normalize_region_filter("yaroslavl") == "84"
+    assert TBankrotClient.normalize_region_filter("84") == "84"
+
+
 def test_tbankrot_normalized_lot_keeps_site_region_code_in_raw_data():
     item = ParsedLotData(
         external_id="1",
@@ -231,6 +238,17 @@ def test_tbankrot_online_search_keeps_only_real_estate(monkeypatch):
 
     lots, meta = client.search_filtered_lots(TBankrotSearchFilters())
 
-    assert [lot.external_id for lot in lots] == ["tbankrot:200"]
-    assert meta["loaded"] == 1
+    assert [lot.external_id for lot in lots] == ["tbankrot:100", "tbankrot:200"]
+    assert meta["loaded"] == 2
     assert meta["warnings"]
+    assert lots[0].raw_data["passes_investment_real_estate_filter"] is False
+    assert lots[1].raw_data["passes_investment_real_estate_filter"] is True
+
+
+def test_tbankrot_extracts_site_result_total() -> None:
+    html = """
+    <div class="search_result_col"><div><span>Найдено лотов:</span><b class="default">641</b></div></div>
+    <span class="gray_upper">641 аукционов</span>
+    """
+
+    assert TBankrotClient()._extract_search_total(html) == 641

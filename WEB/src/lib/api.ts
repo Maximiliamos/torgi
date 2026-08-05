@@ -104,6 +104,7 @@ export type OnlineLot = {
   published_at: string | null;
 };
 export type OnlineSearchResponse = { source: SearchSource; items: OnlineLot[]; meta: Record<string, unknown> };
+export type RegionOption = { code: string; name: string };
 
 export type MapLot = {
   id: number;
@@ -121,6 +122,17 @@ export type MapLot = {
   source: string;
   lot_url: string | null;
 };
+
+export type Procedure = Record<string, string | number | boolean | null | unknown[]>;
+export type MaxBidScenario = {
+  id: number;
+  name: string;
+  inputs: Record<string, unknown>;
+  results: Record<string, Record<string, number>>;
+  created_at: string;
+};
+export type DocumentVersion = { id: number; sha256: string; mime_type: string | null; size_bytes: number | null; fetched_at: string };
+export type LotDocument = { id: number; filename: string; source_url: string | null; document_kind: string | null; versions: DocumentVersion[] };
 
 export type Participation = {
   lot_id: number;
@@ -194,7 +206,7 @@ export function fetchLots(query: LotQuery) {
 }
 export const fetchStats = (citySlug: string) => requestJson<StatsResponse>("/api/stats", { city_slug: citySlug });
 export const fetchLotDetail = (id: number, citySlug: string) => requestJson<LotDetail>(`/api/lots/${id}`, { city_slug: citySlug });
-export const fetchProcedure = (id: number) => requestJson<Record<string, unknown>>(`/api/lots/${id}/procedure`);
+export const fetchProcedure = (id: number) => requestJson<Procedure>(`/api/lots/${id}/procedure`);
 
 export const searchOnline = (source: SearchSource, params: Record<string, string | number | boolean | undefined>) =>
   requestJson<OnlineSearchResponse>(`/api/search/${source}`, params);
@@ -220,7 +232,7 @@ export const importOnlineLot = (lot: OnlineLot) => requestJson<{ id: number }>("
   })
 });
 
-export const fetchMapLots = (citySlug: string) => requestJson<{ items: MapLot[]; total: number }>("/api/map/lots", { city_slug: citySlug });
+export const fetchMapLots = (citySlug?: string, includeArchived = false) => requestJson<{ items: MapLot[]; total: number }>("/api/map/lots", { city_slug: citySlug, include_archived: includeArchived });
 export const searchCadastre = (query: string) => requestJson<Record<string, unknown>>("/api/cadastre/search", { query });
 export const setReviewStatus = (lotId: number, status: string | null) =>
   requestJson(`/api/lots/${lotId}/review-status`, undefined, { method: "PUT", body: JSON.stringify({ status }) });
@@ -236,16 +248,19 @@ export const saveParticipation = (lotId: number, value: Omit<Participation, "lot
 
 export const calculateMaxBid = (lotId: number, value: Record<string, string | number | null>) =>
   requestJson<{ scenarios: Record<string, Record<string, number>>; warning: string }>(`/api/lots/${lotId}/max-bid`, undefined, { method: "POST", body: JSON.stringify(value) });
-export const fetchMaxBidScenarios = (lotId: number) => requestJson<Array<Record<string, unknown>>>(`/api/lots/${lotId}/max-bid-scenarios`);
+export const fetchMaxBidScenarios = (lotId: number) => requestJson<MaxBidScenario[]>(`/api/lots/${lotId}/max-bid-scenarios`);
 
-export const fetchDocuments = (lotId: number) => requestJson<Array<Record<string, unknown>>>(`/api/lots/${lotId}/documents`);
+export const fetchDocuments = (lotId: number) => requestJson<LotDocument[]>(`/api/lots/${lotId}/documents`);
 export const compareDocuments = (lotId: number, fromId: number, toId: number) =>
   requestJson(`/api/lots/${lotId}/documents-compare`, undefined, { method: "POST", body: JSON.stringify({ from_version_id: fromId, to_version_id: toId }) });
 
 export const fetchQuality = () => requestJson<QualitySnapshot>("/api/quality");
 export const fetchSources = () => requestJson<SourceHealth[]>("/api/sources");
 export const fetchDiagnostics = () => requestJson<Record<string, unknown>>("/api/diagnostics");
+export const fetchCapabilities = () => requestJson<{ curated_mode: boolean; region_sync: boolean; bulk_torgi_sync: boolean; background_jobs: boolean }>("/api/capabilities");
+export const fetchRegions = () => requestJson<RegionOption[]>("/api/regions");
 export const fetchSavedSearches = () => requestJson<Array<{ id: number; name: string; query: LotQuery }>>("/api/saved-searches");
 export const saveSearch = (name: string, query: LotQuery) => requestJson("/api/saved-searches", undefined, { method: "POST", body: JSON.stringify({ name, query }) });
 export const mergeLots = (primaryId: number, secondaryId: number, reason = "") => requestJson(`/api/lots/${primaryId}/merge`, undefined, { method: "POST", body: JSON.stringify({ secondary_lot_id: secondaryId, reason }) });
 export const splitLot = (lotId: number, reason = "") => requestJson(`/api/lots/${lotId}/split`, undefined, { method: "POST", body: JSON.stringify({ reason }) });
+export const syncRegion = (citySlug: string, force = false) => requestJson<{ status: string; dispatchMode: string }>(`/api/regions/${encodeURIComponent(citySlug)}/sync`, { force }, { method: "POST" });

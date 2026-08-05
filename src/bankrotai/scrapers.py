@@ -2395,8 +2395,20 @@ class TBankrotClient:
 
         lots = self._parse_listing_html(resp.text, filters=filters, raw_endpoint=resp.url or endpoint)
         raw_count = len(lots)
-        lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
+        # The source category is authoritative for the search results.  Applying the
+        # investment-screening predicate here used to hide valid apartments, land and
+        # buildings whenever their description mentioned a share, lease or another
+        # risk marker.  Keep that predicate for the registry/map workflow, but make the
+        # online search match the count and cards shown by TBankrot itself.
+        screened_out = 0
+        for lot in lots:
+            passes_screen = is_sale_real_estate_lot(lot)
+            if not passes_screen:
+                screened_out += 1
+            if isinstance(lot.raw_data, dict):
+                lot.raw_data["passes_investment_real_estate_filter"] = passes_screen
         pagination = self._extract_pagination_meta(resp.text)
+        site_total = self._extract_search_total(resp.text)
         meta = {
             "source": "tbankrot.ru",
             "mode": "page",
@@ -2406,8 +2418,9 @@ class TBankrotClient:
             "raw_params": params,
             "has_more": bool(pagination.get("total_pages") and filters.page < pagination["total_pages"]) or raw_count >= filters.page_size,
             "total_pages": pagination.get("total_pages"),
+            "total": site_total,
             "page_size": filters.page_size,
-            "warnings": ([f"{raw_count - len(lots)} non-real-estate lots hidden."] if raw_count != len(lots) else []),
+            "warnings": ([f"{screened_out} lots require investment-screen review but remain visible."] if screened_out else []),
         }
         return lots, meta
 
@@ -2461,7 +2474,7 @@ class TBankrotClient:
             if page_cb and new_lots:
                 page_cb(new_lots, page_meta)
             if progress_cb:
-                progress_cb(page, None, len(all_lots))
+                progress_cb(page, page_meta.get("total"), len(all_lots))
             page_diagnostics.append({
                 "page": page,
                 "items_on_page": len(lots_on_page),
@@ -2493,6 +2506,8 @@ class TBankrotClient:
             "loaded": len(all_lots),
             "pages_loaded": pages_loaded,
             "duplicates": duplicates,
+            "total": page_meta.get("total") if pages_loaded else None,
+            "total_pages": page_meta.get("total_pages") if pages_loaded else None,
             "stop_reason": stop_reason,
             "page_diagnostics": page_diagnostics,
             "has_more": stop_reason not in {"last_page", "duplicates_only"},
@@ -2572,7 +2587,46 @@ class TBankrotClient:
 
         return self._build_region_path_from_name(region_name)
 
-    def _normalize_region_lookup_name(self, name: str) -> str:
+    @classmethod
+    def normalize_region_filter(cls, value: str | None) -> str | None:
+        """Accept a TBankrot id, official cadastral code, slug, or region name."""
+        if not value:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        slug_code = cls.REGION_SLUGS.get(normalized.casefold())
+        if slug_code:
+            return slug_code
+
+        lookup_name = cls._official_region_name(normalized)
+        if lookup_name:
+            wanted = cls._normalize_region_lookup_name_static(lookup_name)
+            for site_code, site_name in cls.REGION_LABELS.items():
+                if cls._normalize_region_lookup_name_static(site_name) == wanted:
+                    return site_code
+
+        wanted = cls._normalize_region_lookup_name_static(normalized)
+        for site_code, site_name in cls.REGION_LABELS.items():
+            if cls._normalize_region_lookup_name_static(site_name) == wanted:
+                return site_code
+        return normalized if normalized in cls.REGION_LABELS else None
+
+    @classmethod
+    def _official_region_name(cls, value: str) -> str | None:
+        digits = value.zfill(2) if value.isdigit() else None
+        if digits:
+            for name, official_code in cls.CADASTRAL_REGION_NAME_TO_CODE.items():
+                if official_code == digits:
+                    return name
+        wanted = cls._normalize_region_lookup_name_static(value)
+        for name in cls.CADASTRAL_REGION_NAME_TO_CODE:
+            if cls._normalize_region_lookup_name_static(name) == wanted:
+                return name
+        return None
+
+    @staticmethod
+    def _normalize_region_lookup_name_static(name: str) -> str:
         normalized = name.lower().replace("ё", "е")
         normalized = normalized.replace("—", " ").replace("-", " ")
         normalized = normalized.replace("автономная область", "ао")
@@ -2581,6 +2635,9 @@ class TBankrotClient:
         normalized = normalized.replace("(", " ").replace(")", " ")
         normalized = re.sub(r"[^а-яa-z0-9]+", " ", normalized)
         return re.sub(r"\s+", " ", normalized).strip()
+
+    def _normalize_region_lookup_name(self, name: str) -> str:
+        return self._normalize_region_lookup_name_static(name)
 
     def _build_region_path_from_name(self, region_name: str) -> str:
         translit = {
@@ -2636,6 +2693,22 @@ class TBankrotClient:
             except ValueError:
                 continue
         return {"total_pages": max(pages) if pages else None}
+
+    def _extract_search_total(self, html: str) -> int | None:
+        """Read the source's own result counter without confusing it with prices."""
+        soup = BeautifulSoup(html, "lxml")
+        for label in soup.find_all(string=re.compile(r"Найдено\s+лотов", re.IGNORECASE)):
+            container = label.parent.parent if label.parent and label.parent.parent else label.parent
+            if container:
+                match = re.search(r"Найдено\s+лотов\s*:\s*([\d\s]+)", container.get_text(" ", strip=True), re.IGNORECASE)
+                if match:
+                    return int(re.sub(r"\D", "", match.group(1)))
+        heading = soup.select_one(".gray_upper")
+        if heading:
+            match = re.search(r"([\d\s]+)\s+аукцион", heading.get_text(" ", strip=True), re.IGNORECASE)
+            if match:
+                return int(re.sub(r"\D", "", match.group(1)))
+        return None
 
     def _format_query_number(self, value: float | int | None) -> str | None:
         if value is None:
@@ -2787,6 +2860,8 @@ class LotOnlineClient:
         normalized = str(value).strip()
         if normalized.startswith("171-"):
             return normalized
+        if normalized in {"76", "yaroslavl"}:
+            normalized = "Ярославская область"
         feature = cls.REGION_NAME_TO_FEATURE.get(normalized.lower(), normalized)
         if not feature.isdigit():
             raise ValueError(f"Неизвестный регион ЛОТ-ОНЛАЙН: {value}")

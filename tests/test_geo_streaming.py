@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
 from bankrotai.gui import (
+    GeoWorker,
     MainWindow,
     PreviewEnrichmentWorker,
     extract_preview_image_url,
@@ -196,3 +197,70 @@ def test_preview_worker_is_retained_until_native_qthread_finishes(monkeypatch) -
     assert not worker.isRunning()
     assert native_finished.count() == 1
     assert result_ready.count() == 1
+
+
+def test_geo_worker_copies_orm_values_before_session_expires(monkeypatch) -> None:
+    class ExpiringRow:
+        attached = True
+        values = {
+            "id": 41,
+            "cadastral_number": "76:23:010101:41",
+            "address": "Ярославль, Советская площадь, 1",
+            "title": "Нежилое помещение",
+            "region_name": "Ярославская область",
+            "source_system": "test",
+            "source_url": None,
+            "lot_url": None,
+        }
+
+        def __getattr__(self, name):
+            if not self.attached:
+                raise RuntimeError("detached ORM row was accessed")
+            return self.values[name]
+
+    row = ExpiringRow()
+    scope_number = 0
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class FakeSession:
+        def __init__(self, number):
+            self.number = number
+
+        def scalars(self, _statement):
+            return Result([41] if self.number == 1 else [row])
+
+        @staticmethod
+        def get(_model, _lot_id):
+            return None
+
+    @contextmanager
+    def expiring_session_scope():
+        nonlocal scope_number
+        scope_number += 1
+        try:
+            yield FakeSession(scope_number)
+        finally:
+            if scope_number == 2:
+                row.attached = False
+
+    monkeypatch.setattr("bankrotai.gui.session_scope", expiring_session_scope)
+    monkeypatch.setattr("bankrotai.gui.NormalizedLot.from_processed_lot", lambda _row: object())
+    monkeypatch.setattr("bankrotai.gui.is_sale_real_estate_lot", lambda _lot: True)
+    monkeypatch.setattr("bankrotai.geo.resolve_lot_geo", lambda *args, **kwargs: None)
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    worker = GeoWorker(lot_ids=[41])
+    errors = QSignalSpy(worker.error)
+    completed = QSignalSpy(worker.finished)
+
+    worker.run()
+    app.processEvents()
+
+    assert errors.count() == 0
+    assert completed.count() == 1

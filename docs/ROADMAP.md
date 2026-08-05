@@ -58,7 +58,7 @@ Done: authenticated connector contract. Blocked for live acceptance: production 
 - pessimistic/base/optimistic scenarios;
 - maximum bid, profit, ROI, annualized return and break-even.
 
-Remaining: desktop/web form, saved assumptions and approval history.
+Done: desktop/web form and saved assumptions. Remaining: approval history.
 
 ### BAT-102 — Participation control — delivered data/API foundation
 
@@ -67,7 +67,7 @@ Remaining: desktop/web form, saved assumptions and approval history.
 - countdowns from normalized procedure deadlines;
 - discrepancy warnings between notice and documents.
 
-Remaining: UI, notifications and document-to-field reconciliation.
+Done: desktop/web checklist UI. Remaining: notifications and document-to-field reconciliation.
 
 ### BAT-103 — Evidence-based valuation
 
@@ -96,3 +96,89 @@ Remaining: UI, notifications and document-to-field reconciliation.
 - S3/MinIO documents, encrypted backups and restore drills;
 - connector health dashboard, metrics, alerts and runbooks;
 - owner decision and publication of a root `LICENSE`.
+
+## P0 — завершение безопасного web/desktop parity
+
+### BAT-301 — Three-source bulk synchronization
+
+- единая Celery orchestration для ГИС «Торги», TBankrot и РАД/ЛОТ-ОНЛАЙН;
+- idempotency key, per-source cursor/progress/retry/cancel и частичный результат;
+- web показывает недоступные источники и не объявляет неполный проход успешным;
+- acceptance: повторный запуск не создаёт дублей, progress восстанавливается после restart worker.
+
+### BAT-302 — Background AI and GEO operations
+
+- queue endpoints для single/batch AI, GEO, retry failed GEO и re-geocode;
+- server-side concurrency/rate limits, budget limit и audit actor;
+- acceptance: browser disconnect не останавливает job, статус доступен после повторного входа.
+
+### BAT-303 — Real RBAC and tenant isolation
+
+- `reader` только читает, `analyst` меняет личный workflow, `admin` запускает jobs и merge/split;
+- tenant/user scope для watchlist, notes, scenarios, checklist, audit log;
+- отрицательные API-тесты для каждого endpoint и роли.
+
+### BAT-304 — Honest deployment modes
+
+- заменить двусмысленный `API_READ_ONLY` на curated/read-only режимы;
+- отдельные allowlists методов и route capabilities endpoint для UI;
+- скрывать недоступные кнопки, возвращать `403` для запрещённого действия.
+
+## P1 — оставшиеся desktop-возможности в web
+
+### BAT-305 — Import/export jobs
+
+- безопасная загрузка HTML с size/type limits и malware scan;
+- Excel export как streaming/background download с теми же колонками и фильтрами;
+- retention и удаление временных файлов по политике.
+
+### BAT-306 — Map parity
+
+- Yandex provider как optional web layer без silent fallback после успешной загрузки;
+- кадастровый WMS/proxy, marker clustering и серверная фильтрация цены/status/review;
+- viewport pagination вместо фиксированного лимита 5000 точек.
+
+Done 2026-08-05: web переведён с Leaflet на Яндекс.Карты, перенесены кластеризация,
+кадастровая геометрия, desktop-маркеры и смена статуса «светофором». Remaining:
+серверная viewport pagination и production API key/domain policy Яндекс.Карт.
+
+### BAT-307 — Web parity acceptance suite
+
+- Playwright journeys: search/import, registry/detail, watchlist, map/review,
+  calculator/history, participation, documents diff и duplicate review;
+- contract matrix «desktop action → API → web screen → role → automated test»;
+- parity считается готовым только при зелёной матрице, а не по наличию кнопки.
+
+Done 2026-08-05: базовый Playwright journey проверяет вход, реестр, поиск,
+ручной/списочный регион, фиксированную категорию, Яндекс.Карту, сделку и диагностику.
+Remaining: сценарии импорта и изменения данных для каждого workflow и роли.
+
+## P1 — аудит и эксплуатация
+
+### BAT-308 — Split monoliths
+
+- разнести GUI по feature widgets/controllers, API по routers/services, scraper implementations по connectors;
+- не допускать новых модулей свыше 1000 строк без ADR.
+
+### BAT-309 — Observability and recovery
+
+- SLO, Prometheus/OpenTelemetry, queue lag/source freshness/GEO/AI error alerts;
+- PostgreSQL encrypted backups, quarterly restore drill и документированный RPO/RTO;
+- release rollback rehearsal и migration compatibility window.
+
+### BAT-310 — Supply chain and governance
+
+- root `LICENSE`, SBOM, signed release images, dependency update policy;
+- branch protection, required checks, secret scanning/private vulnerability reporting.
+
+## P2 — качество интерфейса и данных
+
+### BAT-311 — Frontend architecture and accessibility
+
+- feature modules/routes, schema-derived labels, i18n и единый design system;
+- WCAG 2.2 AA keyboard/focus/contrast tests.
+
+### BAT-312 — Outcome and valuation evidence
+
+- comparable evidence policy и отказ от оценки при недостаточных данных;
+- полный outcome dataset, backtesting, calibration и drift monitoring.

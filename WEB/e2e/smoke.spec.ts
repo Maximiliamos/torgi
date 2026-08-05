@@ -23,8 +23,14 @@ test("authenticated list search detail and API failure smoke", async ({ page }) 
   }
   await page.getByRole("button", { name: "Поиск", exact: true }).click();
   await expect(page.getByRole("button", { name: "ГИС Торги" })).toBeVisible();
+  const region = page.getByLabel("Регион");
+  await expect(region).toHaveAttribute("list", "auction-regions");
+  await region.fill("76");
+  await expect(page.getByLabel("Категория")).toHaveValue("Вся недвижимость");
+  await expect(page.getByLabel("Категория")).toHaveAttribute("readonly", "");
   await page.getByRole("button", { name: "Карта", exact: true }).click();
-  await expect(page.locator(".mapCanvas")).toBeVisible();
+  await expect(page.locator('iframe[title="Яндекс.Карта лотов"]')).toBeVisible();
+  await expect(page.frameLocator('iframe[title="Яндекс.Карта лотов"]').locator("#hint")).toBeHidden({ timeout: 30_000 });
   await page.getByRole("button", { name: "Сделка", exact: true }).click();
   await expect(page.getByText("Работа со сделкой")).toBeVisible();
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
