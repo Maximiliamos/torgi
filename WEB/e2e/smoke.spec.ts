@@ -125,9 +125,10 @@ test("authenticated list search detail and API failure smoke", async ({
       }),
     }),
   );
-  await page.route(/\/api\/map\/lots\/(\d+)$/, (route) => {
+  await page.route(/\/api\/map\/lots\/(\d+)$/, async (route) => {
     const id = Number(new URL(route.request().url()).pathname.split("/").at(-1));
     const lot = coincidentLots.find((item) => item.id === id);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
     return lot
       ? route.fulfill({
           status: 200,
@@ -173,7 +174,7 @@ test("authenticated list search detail and API failure smoke", async ({
     path: "test-results/map-desktop-controls.png",
     fullPage: true,
   });
-  const mapFrame = page
+  let mapFrame = page
     .frames()
     .find(
       (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
@@ -208,14 +209,32 @@ test("authenticated list search detail and API failure smoke", async ({
         'iframe[title="Яндекс.Карта лотов"]',
       )?.contentWindow;
     });
-    await mapFrame.evaluate(() =>
-      (
-        window as unknown as {
-          bankrotaiDebug: { selectLot: (id: number) => void };
-        }
-      ).bankrotaiDebug.selectLot(7001),
-    );
-    await expect(page.getByLabel("Карточка выбранного лота")).toBeVisible();
+    mapFrame = page
+      .frames()
+      .find(
+        (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
+      );
+    try {
+      await mapFrame?.evaluate(() =>
+        (
+          window as unknown as {
+            bankrotaiDebug: { clickObject: (id: number) => void };
+          }
+        ).bankrotaiDebug.clickObject(7001),
+      );
+    } catch {
+      // Yandex can recreate its frame immediately after dispatching the click.
+    }
+    await expect(page.getByLabel("Карточка выбранного лота")).toBeVisible({
+      timeout: 1_000,
+    });
+    await expect(page.getByText("Загрузка полной карточки…")).toBeVisible();
+    mapFrame = page
+      .frames()
+      .find(
+        (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
+      );
+    expect(mapFrame).toBeTruthy();
     await expect(page.getByText("Оценка лота")).toBeVisible();
     await expect(page.getByRole("button", { name: "Источник" })).toBeVisible();
     await expect(page.getByRole("button", { name: "ГИС Торги" })).toBeVisible();

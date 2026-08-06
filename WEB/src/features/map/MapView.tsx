@@ -51,6 +51,31 @@ function safeExternalUrl(value: string | null) {
   }
 }
 
+function markerPreview(lot: MapMarkerLot): MapLot {
+  return {
+    ...lot,
+    external_id: String(lot.id),
+    description: lot.address || "Полная карточка загружается…",
+    cadastral_number: null,
+    category: "",
+    region: null,
+    geometry: null,
+    confidence: "",
+    source: "",
+    source_name: "Лот на карте",
+    source_url: null,
+    gis_torgi_url: null,
+    etp_url: null,
+    torgi_russia_url: null,
+    image_url: null,
+    image_urls: [],
+    procedure_number: null,
+    application_deadline: null,
+    auction_at: null,
+    sources: [],
+  };
+}
+
 function MapState({
   children,
   error = false,
@@ -170,7 +195,7 @@ function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankro
 function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,250);}
 function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];renderLots();}else if(data.type==='select-lot'){updateSelection(data.lotId);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
-function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});manager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});manager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});manager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lots.find(l=>Number(l.id)===Number(id))?.review_status||null,selectLot:id=>send('bankrotai-select',{lotId:Number(id)}),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
+function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});manager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});manager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});manager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lots.find(l=>Number(l.id)===Number(id))?.review_status||null,clickObject:id=>manager.objects.events.fire('click',{objectId:Number(id)}),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
 </script></body></html>`,
     [channel],
@@ -218,12 +243,16 @@ function LotPreview({
   onClose,
   onReview,
   onSplit,
+  detailLoading,
+  detailError,
 }: {
   lot: MapLot;
   isAdmin: boolean;
   onClose: () => void;
   onReview: (status: string) => void;
   onSplit: (processedLotId: number) => void;
+  detailLoading: boolean;
+  detailError: string;
 }) {
   const images = lot.image_urls.length
     ? lot.image_urls
@@ -321,6 +350,8 @@ function LotPreview({
             kind="russia"
           />
         </div>
+        {detailLoading && <MapState>Загрузка полной карточки…</MapState>}
+        {detailError && <MapState error>{detailError}</MapState>}
         <details className="mapPublications" open={lot.sources.length > 1}>
           <summary>Объединено публикаций: {lot.sources.length}</summary>
           <div>
@@ -403,6 +434,8 @@ export function MapView({
 }) {
   const [lots, setLots] = React.useState<MapMarkerLot[]>([]);
   const [selectedLot, setSelectedLot] = React.useState<MapLot | null>(null);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
   const requestRevision = React.useRef(0);
   const reviewOverrides = React.useRef(new Map<number, string>());
@@ -502,13 +535,24 @@ export function MapView({
   React.useEffect(() => {
     if (selectedLotId == null) {
       setSelectedLot(null);
+      setDetailLoading(false);
+      setDetailError("");
       return;
     }
-    setSelectedLot(null);
+    setDetailLoading(true);
+    setDetailError("");
     let cancelled = false;
     fetchMapLotDetail(selectedLotId)
       .then((value) => { if (!cancelled) setSelectedLot(value); })
-      .catch((err) => { if (!cancelled) setError(String(err)); });
+      .catch((err) => {
+        if (!cancelled)
+          setDetailError(
+            err instanceof Error
+              ? `Не удалось загрузить полную карточку: ${err.message}`
+              : "Не удалось загрузить полную карточку",
+          );
+      })
+      .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [selectedLotId]);
   React.useEffect(() => {
@@ -582,6 +626,15 @@ export function MapView({
     [],
   );
 
+  const selectLot = React.useCallback(
+    (lotId: number) => {
+      const marker = lots.find((lot) => lot.id === lotId);
+      if (marker) setSelectedLot(markerPreview(marker));
+      setSelectedLotId(lotId);
+    },
+    [lots],
+  );
+
   return (
     <section className="mapDesktopShell">
       <div className="mapDesktopSidebar">
@@ -591,6 +644,8 @@ export function MapView({
             isAdmin={isAdmin}
             onClose={() => setSelectedLotId(null)}
             onReview={(status) => review(selectedLot.id, status)}
+            detailLoading={detailLoading}
+            detailError={detailError}
             onSplit={async (processedLotId) => {
               try {
                 await splitLot(
@@ -616,7 +671,7 @@ export function MapView({
             {favoriteLots.length ? (
               <div className="mapFavoritesList">
                 {favoriteLots.map((lot) => (
-                  <button key={lot.id} onClick={() => setSelectedLotId(lot.id)}>
+                  <button key={lot.id} onClick={() => selectLot(lot.id)}>
                     <strong>{lot.title}</strong>
                     <span>{lot.address || "Адрес не указан"}</span>
                     <b>{money(lot.current_price)}</b>
@@ -786,7 +841,7 @@ export function MapView({
           selectedLotId={selectedLotId}
           selectedLotGeometry={selectedLot?.geometry || null}
           active={active}
-          onSelect={setSelectedLotId}
+          onSelect={selectLot}
           onViewport={handleViewport}
           onRendered={(durationMs) =>
             setTimings((value) => ({ ...value, render: durationMs }))
