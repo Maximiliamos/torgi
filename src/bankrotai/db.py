@@ -605,6 +605,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
+SCHEMA_REVISION = "a2b3c4d5e6f7"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
