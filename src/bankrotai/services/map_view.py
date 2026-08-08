@@ -14,8 +14,18 @@ from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
 def extract_map_image_urls(raw_data: object) -> list[str]:
     """Extract unique public image URLs from heterogeneous source payloads."""
     preferred_keys = (
-        "image_url", "photo_url", "thumbnail_url", "main_image", "image",
-        "photo", "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
+        "image_url",
+        "photo_url",
+        "thumbnail_url",
+        "main_image",
+        "image",
+        "photo",
+        "thumbnail",
+        "image_urls",
+        "photo_urls",
+        "images",
+        "photos",
+        "gallery",
     )
     found: list[str] = []
 
@@ -95,15 +105,17 @@ def _map_lot_payload(
         for processed, source in source_rows
     ]
     if not publications:
-        publications.append({
-            "processed_lot_id": lot.id,
-            "source_system": lot.source_system or lot.source,
-            "external_id": lot.external_id,
-            "title": lot.title,
-            "price": float(lot.current_price) if lot.current_price is not None else None,
-            "url": lot.source_url or lot.lot_url,
-            "is_primary": True,
-        })
+        publications.append(
+            {
+                "processed_lot_id": lot.id,
+                "source_system": lot.source_system or lot.source,
+                "external_id": lot.external_id,
+                "title": lot.title,
+                "price": float(lot.current_price) if lot.current_price is not None else None,
+                "url": lot.source_url or lot.lot_url,
+                "is_primary": True,
+            }
+        )
     return {
         "id": lot.id,
         "external_id": lot.external_id,
@@ -123,7 +135,9 @@ def _map_lot_payload(
         "confidence": geo.geo_confidence,
         "geo_source": geo.geo_source,
         "source": lot.source_system or lot.source,
-        "source_name": " / ".join(dict.fromkeys(item.platform_name or item.source_system for item in sources)) if sources else lot.source_system or lot.source,
+        "source_name": " / ".join(dict.fromkeys(item.platform_name or item.source_system for item in sources))
+        if sources
+        else lot.source_system or lot.source,
         "source_url": source_url,
         "gis_torgi_url": gis_url or (source_url if "torgi.gov" in source_system else None),
         "etp_url": etp_url or (source_url if "lot-online" in source_system else None),
@@ -131,7 +145,9 @@ def _map_lot_payload(
         "image_url": images[0] if images else None,
         "image_urls": images,
         "procedure_number": next((item.procedure_number for item in sources if item.procedure_number), None),
-        "application_deadline": _display_datetime(next((item.application_deadline for item in sources if item.application_deadline), None)),
+        "application_deadline": _display_datetime(
+            next((item.application_deadline for item in sources if item.application_deadline), None)
+        ),
         "auction_at": _display_datetime(auction_at),
         "sources": publications,
     }
@@ -167,20 +183,26 @@ def build_map_lots_response(
     map_filters = list(filters)
     if all(value is not None for value in (west, south, east, north)):
         assert west is not None and south is not None and east is not None and north is not None
-        map_filters.extend((
-            LotGeoSnapshot.centroid_lat >= south,
-            LotGeoSnapshot.centroid_lat <= north,
-        ))
+        map_filters.extend(
+            (
+                LotGeoSnapshot.centroid_lat >= south,
+                LotGeoSnapshot.centroid_lat <= north,
+            )
+        )
         if west <= east:
-            map_filters.extend((
-                LotGeoSnapshot.centroid_lon >= west,
-                LotGeoSnapshot.centroid_lon <= east,
-            ))
+            map_filters.extend(
+                (
+                    LotGeoSnapshot.centroid_lon >= west,
+                    LotGeoSnapshot.centroid_lon <= east,
+                )
+            )
         else:
-            map_filters.append(or_(
-                LotGeoSnapshot.centroid_lon >= west,
-                LotGeoSnapshot.centroid_lon <= east,
-            ))
+            map_filters.append(
+                or_(
+                    LotGeoSnapshot.centroid_lon >= west,
+                    LotGeoSnapshot.centroid_lon <= east,
+                )
+            )
 
     statement = (
         select(
@@ -198,16 +220,19 @@ def build_map_lots_response(
         .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
         .where(*map_filters)
         .order_by(ProcessedLot.last_update.desc())
-        .limit(limit)
+        .limit(limit + 1)
     )
     rows = session.execute(statement).all()
+    truncated = len(rows) > limit
+    rows = rows[:limit]
 
     total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
-    mapped_total = session.scalar(
-        select(func.count(ProcessedLot.id))
-        .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-        .where(*filters)
-    ) or 0
+    mapped_total = (
+        session.scalar(
+            select(func.count(ProcessedLot.id)).join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id).where(*filters)
+        )
+        or 0
+    )
     updated_at = session.scalar(select(func.max(ProcessedLot.last_update)).where(*filters))
 
     items = [
@@ -226,6 +251,9 @@ def build_map_lots_response(
     ]
     return {
         "items": items,
+        "returned": len(items),
+        "limit": limit,
+        "truncated": truncated,
         "total": total,
         "mapped_total": mapped_total,
         "without_coordinates": max(total - mapped_total, 0),
@@ -247,10 +275,12 @@ def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
     lot = session.get(ProcessedLot, lot_id)
     if lot is None or latest_geo is None:
         return None
-    source_rows = list(session.execute(
-        select(ProcessedLot, SourceLot)
-        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
-        .where(or_(ProcessedLot.id == lot_id, ProcessedLot.duplicate_of_id == lot_id))
-        .order_by(ProcessedLot.id, SourceLot.id)
-    ))
+    source_rows = list(
+        session.execute(
+            select(ProcessedLot, SourceLot)
+            .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+            .where(or_(ProcessedLot.id == lot_id, ProcessedLot.duplicate_of_id == lot_id))
+            .order_by(ProcessedLot.id, SourceLot.id)
+        )
+    )
     return _map_lot_payload(lot, latest_geo, source_rows)

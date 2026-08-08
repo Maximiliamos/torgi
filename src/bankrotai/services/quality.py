@@ -27,31 +27,42 @@ def data_quality_snapshot(session: Session) -> DataQualityDTO:
         active_lots=scalar(select(func.count()).where(ProcessedLot.auction_status == "active")) or 0,
         archived_lots=scalar(select(func.count()).where(ProcessedLot.is_archived.is_(True))) or 0,
         duplicate_lots=scalar(select(func.count()).where(ProcessedLot.duplicate_of_id.isnot(None))) or 0,
-        missing_address=scalar(select(func.count()).where(
-            (ProcessedLot.address.is_(None)) | (func.trim(ProcessedLot.address) == "")
-        )) or 0,
-        missing_cadastre=scalar(select(func.count()).where(
-            (ProcessedLot.cadastral_number.is_(None)) | (func.trim(ProcessedLot.cadastral_number) == "")
-        )) or 0,
-        missing_price=scalar(select(func.count()).where(
-            ProcessedLot.current_price.is_(None), ProcessedLot.start_price.is_(None)
-        )) or 0,
+        missing_address=scalar(
+            select(func.count()).where((ProcessedLot.address.is_(None)) | (func.trim(ProcessedLot.address) == ""))
+        )
+        or 0,
+        missing_cadastre=scalar(
+            select(func.count()).where(
+                (ProcessedLot.cadastral_number.is_(None)) | (func.trim(ProcessedLot.cadastral_number) == "")
+            )
+        )
+        or 0,
+        missing_price=scalar(
+            select(func.count()).where(ProcessedLot.current_price.is_(None), ProcessedLot.start_price.is_(None))
+        )
+        or 0,
         geocoded_lots=scalar(select(func.count(func.distinct(LotGeoSnapshot.lot_id)))) or 0,
         geo_attention_lots=scalar(select(func.count()).where(ProcessedLot.needs_geo_check.is_(True))) or 0,
-        queued_geo_failures=scalar(select(func.count()).where(GeoFailure.status != "resolved")) or 0,
+        queued_geo_failures=scalar(
+            select(func.count()).where(GeoFailure.status.not_in(("resolved", "terminal")))
+        )
+        or 0,
         unknown_status_lots=scalar(select(func.count()).where(ProcessedLot.auction_status == "unknown")) or 0,
-        ai_analyzed_lots=scalar(select(func.count()).where(
-            (ProcessedLot.market_price.isnot(None)) | (ProcessedLot.ai_recommendation.isnot(None))
-        )) or 0,
+        ai_analyzed_lots=scalar(
+            select(func.count()).where(
+                (ProcessedLot.market_price.isnot(None)) | (ProcessedLot.ai_recommendation.isnot(None))
+            )
+        )
+        or 0,
         document_versions=scalar(select(func.count()).select_from(LotDocumentVersion)) or 0,
     )
 
 
 def list_source_health(session: Session) -> list[SourceHealthDTO]:
     states = {row.source_system: row for row in session.scalars(select(SourceHealthState)).all()}
-    counts = dict(session.execute(
-        select(ProcessedLot.source_system, func.count()).group_by(ProcessedLot.source_system)
-    ).all())
+    counts = dict(
+        session.execute(select(ProcessedLot.source_system, func.count()).group_by(ProcessedLot.source_system)).all()
+    )
     names = sorted(set(states) | set(counts))
     return [
         SourceHealthDTO(
@@ -139,33 +150,38 @@ def resolve_geo_failure(session: Session, lot_id: int) -> bool:
 
 def geo_retry_lot_ids(session: Session, *, limit: int = 100) -> list[int]:
     now = utc_now()
-    return list(session.scalars(
-        select(GeoFailure.lot_id)
-        .where(GeoFailure.status != "resolved")
-        .where((GeoFailure.next_retry_at.is_(None)) | (GeoFailure.next_retry_at <= now))
-        .order_by(GeoFailure.last_failed_at)
-        .limit(max(1, min(limit, 1000)))
-    ).all())
+    return list(
+        session.scalars(
+            select(GeoFailure.lot_id)
+            .where(GeoFailure.status.not_in(("resolved", "terminal")))
+            .where((GeoFailure.next_retry_at.is_(None)) | (GeoFailure.next_retry_at <= now))
+            .order_by(GeoFailure.last_failed_at)
+            .limit(max(1, min(limit, 1000)))
+        ).all()
+    )
 
 
 def apply_raw_payload_retention(session: Session, *, retention_days: int = 30) -> dict[str, int]:
     cutoff = utc_now() - timedelta(days=max(1, retention_days))
     raw_deleted = session.execute(delete(RawLot).where(RawLot.created_at < cutoff)).rowcount or 0
-    source_cleared = session.execute(
-        update(SourceLot)
-        .where(SourceLot.created_at < cutoff, SourceLot.raw_data.isnot(None))
-        .values(raw_data=None)
-    ).rowcount or 0
-    session.add(DiagnosticEvent(
-        severity="info",
-        component="retention",
-        message="Raw payload retention completed",
-        context_json={
-            "retention_days": retention_days,
-            "raw_deleted": raw_deleted,
-            "source_cleared": source_cleared,
-        },
-    ))
+    source_cleared = (
+        session.execute(
+            update(SourceLot).where(SourceLot.created_at < cutoff, SourceLot.raw_data.isnot(None)).values(raw_data=None)
+        ).rowcount
+        or 0
+    )
+    session.add(
+        DiagnosticEvent(
+            severity="info",
+            component="retention",
+            message="Raw payload retention completed",
+            context_json={
+                "retention_days": retention_days,
+                "raw_deleted": raw_deleted,
+                "source_cleared": source_cleared,
+            },
+        )
+    )
     return {"raw_deleted": raw_deleted, "source_cleared": source_cleared}
 
 

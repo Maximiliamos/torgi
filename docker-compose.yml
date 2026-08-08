@@ -52,6 +52,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
+      API_READ_ONLY: ${API_READ_ONLY:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +82,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
+      API_READ_ONLY: ${API_READ_ONLY:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,6 +105,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bankrotai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bankrotai}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
+      API_READ_ONLY: ${API_READ_ONLY:-false}
     depends_on:
       postgres:
         condition: service_healthy

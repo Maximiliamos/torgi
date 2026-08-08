@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -33,27 +34,61 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         primary = ProcessedLot(
-            external_id="primary", source="test", source_system="tbankrot.ru",
-            title="Основная публикация", description="", category="land",
-            current_price=Decimal("1000000"), auction_status="active",
+            external_id="primary",
+            source="test",
+            source_system="tbankrot.ru",
+            title="Основная публикация",
+            description="",
+            category="land",
+            current_price=Decimal("1000000"),
+            auction_status="active",
         )
         session.add(primary)
         session.flush()
         duplicate = ProcessedLot(
-            external_id="duplicate", source="test", source_system="torgi.gov.ru",
-            title="Публикация ГИС Торги", description="", category="land",
-            current_price=Decimal("1100000"), auction_status="active", duplicate_of_id=primary.id,
+            external_id="duplicate",
+            source="test",
+            source_system="torgi.gov.ru",
+            title="Публикация ГИС Торги",
+            description="",
+            category="land",
+            current_price=Decimal("1100000"),
+            auction_status="active",
+            duplicate_of_id=primary.id,
         )
         session.add(duplicate)
         session.flush()
-        canonical = CanonicalLot(canonical_key="map-group", legacy_processed_lot_id=primary.id, title=primary.title, category="land")
+        canonical = CanonicalLot(
+            canonical_key="map-group", legacy_processed_lot_id=primary.id, title=primary.title, category="land"
+        )
         session.add(canonical)
         session.flush()
-        session.add_all([
-            SourceLot(canonical_lot_id=canonical.id, processed_lot_id=primary.id, source_system="tbankrot.ru", external_id="primary", source_url="https://example.test/tbankrot"),
-            SourceLot(canonical_lot_id=canonical.id, processed_lot_id=duplicate.id, source_system="torgi.gov.ru", external_id="duplicate", source_url="https://example.test/gis"),
-            LotGeoSnapshot(lot_id=primary.id, geo_source="test", geo_method="fixture", geo_confidence="high", centroid_lat=57.6, centroid_lon=39.8),
-        ])
+        session.add_all(
+            [
+                SourceLot(
+                    canonical_lot_id=canonical.id,
+                    processed_lot_id=primary.id,
+                    source_system="tbankrot.ru",
+                    external_id="primary",
+                    source_url="https://example.test/tbankrot",
+                ),
+                SourceLot(
+                    canonical_lot_id=canonical.id,
+                    processed_lot_id=duplicate.id,
+                    source_system="torgi.gov.ru",
+                    external_id="duplicate",
+                    source_url="https://example.test/gis",
+                ),
+                LotGeoSnapshot(
+                    lot_id=primary.id,
+                    geo_source="test",
+                    geo_method="fixture",
+                    geo_confidence="high",
+                    centroid_lat=57.6,
+                    centroid_lon=39.8,
+                ),
+            ]
+        )
         session.commit()
         primary_id = primary.id
         duplicate_id = duplicate.id
@@ -70,3 +105,51 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
         "https://example.test/tbankrot",
         "https://example.test/gis",
     ]
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected_returned", "expected_truncated"),
+    [(2, 2, True), (3, 3, False), (4, 3, False)],
+)
+def test_map_payload_reports_viewport_truncation(
+    limit: int,
+    expected_returned: int,
+    expected_truncated: bool,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for index in range(3):
+            lot = ProcessedLot(
+                external_id=f"viewport-{index}",
+                source="test",
+                source_system="test",
+                title=f"Лот {index}",
+                description="",
+                category="land",
+                auction_status="active",
+            )
+            session.add(lot)
+            session.flush()
+            session.add(
+                LotGeoSnapshot(
+                    lot_id=lot.id,
+                    geo_source="test",
+                    geo_method="fixture",
+                    geo_confidence="high",
+                    centroid_lat=57.6 + index / 100,
+                    centroid_lon=39.8 + index / 100,
+                )
+            )
+        session.commit()
+
+        response = build_map_lots_response(
+            session,
+            city_slug=None,
+            include_archived=False,
+            limit=limit,
+        )
+
+    assert response["returned"] == expected_returned
+    assert response["limit"] == limit
+    assert response["truncated"] is expected_truncated

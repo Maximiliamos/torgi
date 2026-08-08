@@ -268,6 +268,9 @@ export const importOnlineLot = (lot: OnlineLot) => requestJson<{ id: number }>("
 
 export type MapLotsResponse = {
   items: MapMarkerLot[];
+  returned: number;
+  limit: number;
+  truncated: boolean;
   total: number;
   mapped_total: number;
   without_coordinates: number;
@@ -288,17 +291,45 @@ export const fetchMapLots = (query: MapViewportQuery = {}) =>
 export const fetchMapLotDetail = (lotId: number) =>
   requestJson<MapLot>(`/api/map/lots/${lotId}`);
 
-const MAP_CACHE_NAME = "bankrotai-map-v2";
+const MAP_CACHE_NAME = "bankrotai-map-v3";
+const MAP_CACHE_MAX_ENTRIES = 50;
+const MAP_CACHE_TTL_MS = 10 * 60 * 1000;
+const MAP_CACHE_TIMESTAMP_HEADER = "X-BankrotAI-Cached-At";
+
+async function pruneMapCache(cache: Cache) {
+  const requests = await cache.keys();
+  const entries = await Promise.all(requests.map(async (request) => {
+    const response = await cache.match(request);
+    return {
+      request,
+      cachedAt: Number(response?.headers.get(MAP_CACHE_TIMESTAMP_HEADER) || 0),
+    };
+  }));
+  entries.sort((left, right) => right.cachedAt - left.cachedAt);
+  await Promise.all(entries.slice(MAP_CACHE_MAX_ENTRIES).map(({ request }) => cache.delete(request)));
+}
+
+export async function clearMapCache() {
+  if ("caches" in window) await window.caches.delete(MAP_CACHE_NAME);
+}
 
 export async function fetchMapLotsSWR(
   query: MapViewportQuery,
   onCached?: (value: MapLotsResponse) => void,
+  signal?: AbortSignal,
 ) {
   const url = makeUrl("/api/map/lots", query);
   const request = new Request(url, { credentials: "same-origin" });
   const cache = "caches" in window ? await window.caches.open(MAP_CACHE_NAME) : null;
-  const cachedResponse = await cache?.match(request);
+  let cachedResponse = await cache?.match(request);
   let cachedValue: MapLotsResponse | null = null;
+  if (cachedResponse) {
+    const cachedAt = Number(cachedResponse.headers.get(MAP_CACHE_TIMESTAMP_HEADER) || 0);
+    if (!cachedAt || Date.now() - cachedAt > MAP_CACHE_TTL_MS) {
+      await cache?.delete(request);
+      cachedResponse = undefined;
+    }
+  }
   if (cachedResponse) {
     try {
       cachedValue = await cachedResponse.clone().json() as MapLotsResponse;
@@ -319,6 +350,7 @@ export async function fetchMapLotsSWR(
           : {}),
       },
       cache: "no-cache",
+      signal,
     });
     if (response.status === 304 && cachedValue) {
       return { data: cachedValue, networkMs: performance.now() - started, fromCache: true };
@@ -329,9 +361,19 @@ export async function fetchMapLotsSWR(
     }
     const cacheCopy = response.clone();
     const data = await response.json() as MapLotsResponse;
-    await cache?.put(request, cacheCopy);
+    if (cache) {
+      const headers = new Headers(cacheCopy.headers);
+      headers.set(MAP_CACHE_TIMESTAMP_HEADER, String(Date.now()));
+      await cache.put(request, new Response(await cacheCopy.blob(), {
+        status: cacheCopy.status,
+        statusText: cacheCopy.statusText,
+        headers,
+      }));
+      await pruneMapCache(cache);
+    }
     return { data, networkMs: performance.now() - started, fromCache: false };
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     if (cachedValue) {
       return { data: cachedValue, networkMs: performance.now() - started, fromCache: true };
     }

@@ -164,7 +164,9 @@ def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Pa
     with db.get_engine().connect() as connection:
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(ROOT / "alembic"))
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == ScriptDirectory.from_config(config).get_current_head()
+        migration_head = ScriptDirectory.from_config(config).get_current_head()
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == migration_head
+        assert db.SCHEMA_REVISION == migration_head
     db.get_engine().dispose()
     db.get_engine.cache_clear()
     core._settings_cache = None

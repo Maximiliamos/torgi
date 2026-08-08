@@ -42,6 +42,7 @@ from bankrotai.db import (
     SavedSearch,
     SourceHealthState,
     Watchlist,
+    SCHEMA_REVISION,
 )
 from bankrotai.logic import build_lots_response, build_stats_response, get_lot_response, persist_lot
 from bankrotai.domain import NormalizedLot
@@ -89,7 +90,7 @@ _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
 _READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
-_EXPECTED_SCHEMA_REVISION = "f1a2b3c4d5e6"
+_EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
 
 
 class BulkTorgiSyncRequest(BaseModel):
