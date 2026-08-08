@@ -61,6 +61,19 @@ button:disabled {
 .appWorkspace { min-width:0; }
 .mapPersistentHost { display:none; }
 .mapPersistentHost.active { display:block; }
+.coincidentLotsPanel { background:#fff; border-bottom:1px solid #dfe5ec; padding:14px; max-height:42vh; overflow:auto; }
+.coincidentLotsPanel > header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.coincidentLotsPanel > header div { display:grid; gap:3px; }
+.coincidentLotsPanel > header span { color:#66758a; font-size:12px; }
+.coincidentLotsPanel > header button { border:0; background:transparent; color:#66758a; cursor:pointer; padding:2px; }
+.coincidentLotsPanel > div { display:grid; gap:7px; }
+.coincidentLotsPanel > div > button { display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:9px; width:100%; padding:9px; border:1px solid #dfe5ec; border-radius:8px; background:#f8fafc; color:#203149; text-align:left; cursor:pointer; }
+.coincidentLotsPanel > div > button.active { border-color:#167c68; background:#eaf7f3; }
+.coincidentLotsPanel > div > button > span { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:#e6ebf1; font-size:12px; }
+.coincidentLotsPanel > div > button > div { display:grid; gap:2px; min-width:0; }
+.coincidentLotsPanel > div > button strong,.coincidentLotsPanel > div > button small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.coincidentLotsPanel > div > button small { color:#6a788a; }
+.coincidentLotsPanel > div > button b { white-space:nowrap; font-size:12px; }
 .pageHeader { align-items:center;display:flex;gap:16px;justify-content:space-between;margin:0 auto;max-width:1500px;padding:22px 24px 18px; }
 .pageHeader h1 { font-size:30px;line-height:1.1;margin:4px 0 0; }
 
@@ -678,10 +691,11 @@ textarea, input { font: inherit; }
 .mapDesktopShell { background:#fff;display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;min-height:680px;overflow:hidden; }
 .mapDesktopShell:has(.mapLotPreview) { grid-template-columns:380px minmax(0,1fr); }
 .mapDesktopSidebar { background:#fff;border-right:1px solid #c9cfd6;min-width:0;overflow:auto;position:relative;z-index:3; }
-.mapDesktopCanvas { display:grid;grid-template-rows:minmax(0,1fr) 30px;min-width:0; }
+.mapDesktopCanvas { display:grid;grid-template-rows:minmax(0,1fr) 30px;min-width:0;position:relative; }
 .yandexDesktopFrame { border:0;height:100%;min-height:0;min-width:0;width:100%; }
 .mapBottomStatus { align-items:center;background:#fff;border-top:1px solid #d8dee4;color:#52606d;display:flex;font-size:11px;gap:16px;justify-content:space-between;min-width:0;padding:0 12px;white-space:nowrap; }
 .mapBottomStatus>span:first-child { overflow:hidden;text-overflow:ellipsis; }
+.mapViewportWarning { background:#fff4cc;border:1px solid #e7b94f;border-radius:5px;bottom:40px;color:#6f4c00;font-size:12px;left:50%;max-width:520px;padding:8px 12px;position:absolute;transform:translateX(-50%);z-index:4; }
 .mapAppState { align-items:center;color:#177d65;display:flex;flex:0 0 auto;gap:6px; }
 .mapAppState i { background:#20a36e;border-radius:50%;height:7px;width:7px; }
 .mapAppState--error { color:#b42318; }.mapAppState--error i { background:#d64545; }

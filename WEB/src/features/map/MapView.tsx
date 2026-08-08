@@ -96,6 +96,50 @@ function MapState({
   );
 }
 
+function CoincidentLotsPanel({
+  lots,
+  selectedLotId,
+  onSelect,
+  onClose,
+}: {
+  lots: MapMarkerLot[];
+  selectedLotId: number | null;
+  onSelect: (id: number) => void;
+  onClose: () => void;
+}) {
+  return (
+    <section className="coincidentLotsPanel" aria-label="Лоты в выбранной точке">
+      <header>
+        <div>
+          <strong>В этой точке найдено {lots.length} лота</strong>
+          <span>Выберите объект для открытия карточки</span>
+        </div>
+        <button type="button" title="Закрыть список" onClick={onClose}>
+          <X size={17} />
+        </button>
+      </header>
+      <div>
+        {lots.map((lot, index) => (
+          <button
+            type="button"
+            key={lot.id}
+            data-lot-id={lot.id}
+            className={lot.id === selectedLotId ? "active" : ""}
+            onClick={() => onSelect(lot.id)}
+          >
+            <span>{index + 1}</span>
+            <div>
+              <strong>{lot.title}</strong>
+              <small>{lot.address || "Адрес не указан"}</small>
+            </div>
+            <b>{money(lot.current_price)}</b>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function YandexDesktopMap({
   lots,
   selectedCadastre,
@@ -104,6 +148,7 @@ function YandexDesktopMap({
   selectedLotGeometry,
   active,
   onSelect,
+  onClusterSelect,
   onViewport,
   onRendered,
 }: {
@@ -114,6 +159,7 @@ function YandexDesktopMap({
   selectedLotGeometry: GeoJSON.GeoJsonObject | null;
   active: boolean;
   onSelect: (id: number) => void;
+  onClusterSelect: (ids: number[]) => void;
   onViewport: (bounds: [number, number, number, number], zoom: number) => void;
   onRendered: (durationMs: number, count: number) => void;
 }) {
@@ -140,6 +186,12 @@ function YandexDesktopMap({
         return;
       if (event.data?.type === "bankrotai-select")
         onSelect(Number(event.data.lotId));
+      if (event.data?.type === "bankrotai-cluster-select")
+        onClusterSelect(
+          Array.isArray(event.data.lotIds)
+            ? event.data.lotIds.map(Number).filter(Number.isFinite)
+            : [],
+        );
       if (event.data?.type === "bankrotai-ready")
         setReadyRevision((value) => value + 1);
       if (event.data?.type === "bankrotai-viewport")
@@ -149,7 +201,7 @@ function YandexDesktopMap({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [channel, onRendered, onSelect, onViewport]);
+  }, [channel, onClusterSelect, onRendered, onSelect, onViewport]);
 
   React.useEffect(() => {
     if (readyRevision) postCommand("replace-lots", { lots });
@@ -186,6 +238,7 @@ function opts(l){return{iconLayout:'default#image',iconImageHref:'data:image/svg
 function send(type,payload={}){parent.postMessage({type,channel,...payload},'*');}
 function convert(coords){if(!Array.isArray(coords))return coords;if(coords.length===2&&typeof coords[0]==='number')return[coords[1],coords[0]];return coords.map(convert);}
 function feature(l){return{type:'Feature',id:Number(l.id),geometry:{type:'Point',coordinates:[l.lat,l.lon]},properties:{hintContent:esc(l.title),lotId:Number(l.id)},options:opts(l)};}
+function clusterSelection(clusterId,objects){const entries=Array.isArray(objects)?objects:[];const lotIds=entries.map(item=>Number(item.id??item.properties?.lotId)).filter(Number.isFinite);const coords=entries.map(item=>item.geometry?.coordinates).filter(value=>Array.isArray(value)&&value.length===2);const samePoint=coords.length>1&&coords.every(value=>Math.abs(Number(value[0])-Number(coords[0][0]))<1e-9&&Math.abs(Number(value[1])-Number(coords[0][1]))<1e-9);if(lotIds.length>1&&(samePoint||map.getZoom()>=18)){send('bankrotai-cluster-select',{clusterId,lotIds,zoom:map.getZoom()});return true;}return false;}
 function clearOverlays(){overlayObjects.forEach(item=>map.geoObjects.remove(item));overlayObjects=[];}
 function addGeometry(value,style){if(!value||!value.type||!value.coordinates)return;const sets=value.type==='MultiPolygon'?value.coordinates:[value.coordinates];sets.forEach(coords=>{const polygon=new ymaps.Polygon(convert(coords),{},style);map.geoObjects.add(polygon);overlayObjects.push(polygon);});}
 function renderOverlays(focus=false){if(!map)return;clearOverlays();if(cad&&Number.isFinite(cad.lat)&&Number.isFinite(cad.lon)){const point=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(point);overlayObjects.push(point);if(showCad&&cad.geometry)addGeometry(cad.geometry,{strokeColor:'#7c3aed',strokeWidth:3,fillColor:'#7c3aed22'});if(focus)map.setCenter([cad.lat,cad.lon],Math.max(map.getZoom(),16));}if(showCad&&selectedGeometry)addGeometry(selectedGeometry,{strokeColor:'#2468d8',strokeWidth:3,fillColor:'#2468d822'});}
@@ -195,7 +248,7 @@ function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankro
 function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,250);}
 function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];renderLots();}else if(data.type==='select-lot'){updateSelection(data.lotId);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
-function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});manager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});manager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});manager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lots.find(l=>Number(l.id)===Number(id))?.review_status||null,clickObject:id=>manager.objects.events.fire('click',{objectId:Number(id)}),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
+function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});manager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});manager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});manager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));manager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=manager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lots.find(l=>Number(l.id)===Number(id))?.review_status||null,clickObject:id=>manager.objects.events.fire('click',{objectId:Number(id)}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
 </script></body></html>`,
     [channel],
@@ -438,11 +491,15 @@ export function MapView({
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
   const requestRevision = React.useRef(0);
+  const requestController = React.useRef<AbortController | null>(null);
   const reviewOverrides = React.useRef(new Map<number, string>());
   const [statistics, setStatistics] = React.useState({
     total: 0,
     mapped: 0,
     withoutCoordinates: 0,
+    returned: 0,
+    limit: 0,
+    truncated: false,
     updatedAt: null as string | null,
   });
   const [timings, setTimings] = React.useState({ api: 0, server: 0, render: 0, cached: false });
@@ -457,6 +514,7 @@ export function MapView({
   const [cad, setCad] = React.useState<Record<string, unknown> | null>(null);
   const [showCadastre, setShowCadastre] = React.useState(true);
   const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null);
+  const [coincidentLotIds, setCoincidentLotIds] = React.useState<number[]>([]);
   const [filters, setFilters] = React.useState({
     region: "",
     minPrice: "",
@@ -477,6 +535,9 @@ export function MapView({
       withoutCoordinates:
         response.without_coordinates ??
         Math.max(response.total - response.items.length, 0),
+      returned: response.returned ?? response.items.length,
+      limit: response.limit ?? response.items.length,
+      truncated: response.truncated ?? false,
       updatedAt: response.updated_at,
     });
     setTimings((value) => ({
@@ -494,6 +555,9 @@ export function MapView({
     ) => {
       if (!favoritesOnly && !viewport) return;
       const revision = ++requestRevision.current;
+      requestController.current?.abort();
+      const controller = new AbortController();
+      requestController.current = controller;
       setLoading(true);
       setError("");
       try {
@@ -509,12 +573,14 @@ export function MapView({
             };
         const result = await fetchMapLotsSWR(query, (cached) => {
           if (revision === requestRevision.current) applyResponse(cached, true);
-        });
+        }, controller.signal);
         if (revision === requestRevision.current) {
           applyResponse(result.data, result.fromCache, result.networkMs);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Ошибка загрузки карты");
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          setError(err instanceof Error ? err.message : "Ошибка загрузки карты");
+        }
       } finally {
         if (revision === requestRevision.current) setLoading(false);
       }
@@ -525,6 +591,7 @@ export function MapView({
   React.useEffect(() => {
     if (active) void load();
   }, [active, load, refreshToken]);
+  React.useEffect(() => () => requestController.current?.abort(), []);
   React.useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
@@ -569,6 +636,10 @@ export function MapView({
     try {
       await setReviewStatus(lotId, status);
       reviewOverrides.current.set(lotId, status);
+      if (reviewOverrides.current.size > 500) {
+        const oldest = reviewOverrides.current.keys().next().value;
+        if (oldest !== undefined) reviewOverrides.current.delete(oldest);
+      }
       setLots((items) =>
         items.map((lot) =>
           lot.id === lotId ? { ...lot, review_status: status } : lot,
@@ -609,15 +680,16 @@ export function MapView({
     : "Введите кадастровый номер или адрес";
 
   const handleViewport = React.useCallback(
-    (bounds: [number, number, number, number]) => {
+    (bounds: [number, number, number, number], zoom: number) => {
       const [west, south, east, north] = bounds;
       const lonPadding = Math.max((east - west) * 0.15, 0.02);
       const latPadding = Math.max((north - south) * 0.15, 0.02);
+      const precision = zoom >= 16 ? 4 : zoom >= 10 ? 3 : 2;
       const next: [number, number, number, number] = [
-        Math.max(-180, Number((west - lonPadding).toFixed(3))),
-        Math.max(-90, Number((south - latPadding).toFixed(3))),
-        Math.min(180, Number((east + lonPadding).toFixed(3))),
-        Math.min(90, Number((north + latPadding).toFixed(3))),
+        Math.max(-180, Number((west - lonPadding).toFixed(precision))),
+        Math.max(-90, Number((south - latPadding).toFixed(precision))),
+        Math.min(180, Number((east + lonPadding).toFixed(precision))),
+        Math.min(90, Number((north + latPadding).toFixed(precision))),
       ];
       setViewport((current) =>
         current?.every((value, index) => value === next[index]) ? current : next,
@@ -634,11 +706,23 @@ export function MapView({
     },
     [lots],
   );
+  const coincidentLots = coincidentLotIds
+    .map((id) => lots.find((lot) => lot.id === id))
+    .filter((lot): lot is MapMarkerLot => Boolean(lot));
 
   return (
     <section className="mapDesktopShell">
       <div className="mapDesktopSidebar">
         {selectedLot ? (
+          <>
+          {coincidentLots.length > 1 && (
+            <CoincidentLotsPanel
+              lots={coincidentLots}
+              selectedLotId={selectedLotId}
+              onSelect={selectLot}
+              onClose={() => setCoincidentLotIds([])}
+            />
+          )}
           <LotPreview
             lot={selectedLot}
             isAdmin={isAdmin}
@@ -658,6 +742,14 @@ export function MapView({
                 setError(String(err));
               }
             }}
+          />
+          </>
+        ) : coincidentLots.length > 1 ? (
+          <CoincidentLotsPanel
+            lots={coincidentLots}
+            selectedLotId={selectedLotId}
+            onSelect={selectLot}
+            onClose={() => setCoincidentLotIds([])}
           />
         ) : favoritesOnly ? (
           <section className="mapFavoritesPanel" aria-label="Интересные лоты">
@@ -759,7 +851,7 @@ export function MapView({
                 />
               </label>
               <label>
-                <span>Регион</span>
+                <span>Регион карты</span>
                 <select
                   value={filters.region}
                   onChange={(event) =>
@@ -842,6 +934,10 @@ export function MapView({
           selectedLotGeometry={selectedLot?.geometry || null}
           active={active}
           onSelect={selectLot}
+          onClusterSelect={(ids) => {
+            setCoincidentLotIds(Array.from(new Set(ids)));
+            setSelectedLotId(null);
+          }}
           onViewport={handleViewport}
           onRendered={(durationMs) =>
             setTimings((value) => ({ ...value, render: durationMs }))
@@ -861,6 +957,11 @@ export function MapView({
             {loading ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
           </span>
         </footer>
+        {statistics.truncated && (
+          <div className="mapViewportWarning" role="status">
+            В этой области слишком много объектов. Показаны первые {statistics.limit}. Приблизьте карту.
+          </div>
+        )}
       </div>
     </section>
   );

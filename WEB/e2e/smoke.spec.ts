@@ -28,11 +28,12 @@ test("authenticated list search detail and API failure smoke", async ({
   }
   await page.getByRole("button", { name: "Поиск", exact: true }).click();
   await expect(page.getByRole("button", { name: "ГИС Торги" })).toBeVisible();
-  const region = page.getByLabel("Регион");
+  const searchView = page.getByRole("region", { name: "Онлайн-поиск" });
+  const region = searchView.getByLabel("Регион онлайн-поиска");
   await expect(region).toHaveAttribute("list", "auction-regions");
   await region.fill("76");
-  await expect(page.getByLabel("Категория")).toHaveValue("Вся недвижимость");
-  await expect(page.getByLabel("Категория")).toHaveAttribute("readonly", "");
+  await expect(searchView.getByLabel("Категория")).toHaveValue("Вся недвижимость");
+  await expect(searchView.getByLabel("Категория")).toHaveAttribute("readonly", "");
   const previewImage =
     "data:image/svg+xml;charset=UTF-8," +
     encodeURIComponent(
@@ -106,6 +107,9 @@ test("authenticated list search detail and API failure smoke", async ({
       contentType: "application/json",
       headers: { ETag: '"map-e2e"' },
       body: JSON.stringify({
+        returned: 3,
+        limit: 3,
+        truncated: true,
         total: 10,
         mapped_total: 3,
         without_coordinates: 7,
@@ -159,6 +163,9 @@ test("authenticated list search detail and API failure smoke", async ({
   );
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "Система готова",
+  );
+  await expect(page.locator(".mapViewportWarning")).toContainText(
+    "Показаны первые 3. Приблизьте карту",
   );
   await expect(
     page.frameLocator('iframe[title="Яндекс.Карта лотов"]').locator("#hint"),
@@ -214,8 +221,25 @@ test("authenticated list search detail and API failure smoke", async ({
       .find(
         (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
       );
+    await mapFrame.evaluate(() =>
+      (
+        window as unknown as {
+          bankrotaiDebug: { clickCoincident: (ids: number[]) => void };
+        }
+      ).bankrotaiDebug.clickCoincident([7001, 7002, 7003]),
+    );
+    const coincidentPanel = page.getByLabel("Лоты в выбранной точке");
+    await expect(coincidentPanel).toBeVisible();
+    for (const [id, title] of [
+      [7002, "Земельный участок в Ярославском районе"],
+      [7003, "Здание с земельным участком"],
+      [7001, "Нежилое помещение площадью 65,4 кв.м"],
+    ] as const) {
+      await coincidentPanel.locator(`[data-lot-id="${id}"]`).click();
+      await expect(page.getByLabel("Карточка выбранного лота")).toContainText(title, { timeout: 1_000 });
+    }
     try {
-      await mapFrame?.evaluate(() =>
+      await mapFrame.evaluate(() =>
         (
           window as unknown as {
             bankrotaiDebug: { clickObject: (id: number) => void };

@@ -93,8 +93,8 @@ jobs:
         shell: cmd
         run: START_TORGI.bat --check
 
-  docker-smoke:
-    name: Docker full-stack smoke test
+  docker-smoke-readonly:
+    name: Docker read-only production smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,4 +102,11 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - working-directory: WEB
         run: npm ci && npx playwright install --with-deps chromium
-      - run: bash scripts/docker-smoke.sh
+      - run: bash scripts/docker-smoke-readonly.sh
+
+  docker-smoke-operator:
+    name: Docker operator queue smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/docker-smoke-operator.sh
