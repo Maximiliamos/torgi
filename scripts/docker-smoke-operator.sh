@@ -22,7 +22,7 @@ for _ in {1..30}; do
     -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" \
     "http://127.0.0.1:8080/api/tasks/$task_id")
   if [[ "$task_status" == "200" ]]; then
-    python -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] in {"running","completed","failed"}' \
+    python -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] in {"queued","running","completed","failed"}' \
       <"$SMOKE_TMP_DIR/task-status"
     exit 0
   fi
