@@ -73,16 +73,20 @@ jobs:
           [Service]
           Type=simple
           ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:8000
-          ExecStartPost=/usr/local/sbin/bankrotai-register-tunnel ${REGISTRATION_ENDPOINT}
           Restart=always
           RestartSec=10
           [Install]
           WantedBy=multi-user.target
           SERVICE
           systemctl daemon-reload
-          systemctl enable --now bankrotai-cloudflared.service
+          systemctl enable bankrotai-cloudflared.service
           systemctl restart bankrotai-cloudflared.service
-          timeout 150 bash -c 'until systemctl is-active --quiet bankrotai-cloudflared.service; do sleep 2; done'
+          timeout 30 bash -c 'until systemctl is-active --quiet bankrotai-cloudflared.service; do sleep 2; done'
+          if ! timeout 150 /usr/local/sbin/bankrotai-register-tunnel "$REGISTRATION_ENDPOINT"; then
+            systemctl status bankrotai-cloudflared.service --no-pager || true
+            journalctl -u bankrotai-cloudflared.service --since '-3 minutes' --no-pager || true
+            exit 1
+          fi
           REMOTE
 
       - name: Verify global proxy
