@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bankrotai",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-08-01",
+  "kv_namespaces": [
+    {
+      "binding": "TUNNEL_REGISTRY",
+      "id": "bbb0456b4bdf40a2bf3a1bf71de8b19e"
+    }
+  ]
+}
