@@ -323,6 +323,7 @@ jobs:
             --name bankrotai-api \
             --restart unless-stopped \
             --network bankrotai \
+            -p 127.0.0.1:8000:8000 \
             --env-file /opt/bankrotai/api.env \
             --memory 512m \
             --cpus 1.0 \
