@@ -92,5 +92,12 @@ jobs:
       - name: Verify global proxy
         run: |
           set -euo pipefail
-          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors \
-            https://bankrotai.pages.dev/api/auth/me >/dev/null
+          for attempt in {1..12}; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              https://bankrotai.pages.dev/api/auth/me || true)"
+            if [ "$status" = 401 ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1

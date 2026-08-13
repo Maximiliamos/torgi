@@ -31,7 +31,3 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   await context.env.TUNNEL_REGISTRY.put("active-origin", payload.origin);
   return Response.json({ status: "registered" });
 }
-
-export function onRequest(): Response {
-  return new Response("Not found", { status: 404 });
-}
