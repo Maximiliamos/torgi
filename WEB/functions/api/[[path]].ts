@@ -1,6 +1,7 @@
 interface Env {
   KOYEB_API_ORIGIN: string;
   KOYEB_SERVICE_KEY: string;
+  TUNNEL_REGISTRY: { get(key: string): Promise<string | null> };
 }
 
 interface PagesContext {
@@ -9,7 +10,8 @@ interface PagesContext {
 }
 
 export async function onRequest(context: PagesContext): Promise<Response> {
-  const origin = new URL(context.env.KOYEB_API_ORIGIN);
+  const registeredOrigin = await context.env.TUNNEL_REGISTRY.get("active-origin");
+  const origin = new URL(registeredOrigin || context.env.KOYEB_API_ORIGIN);
   if (origin.protocol !== "https:") {
     return Response.json({ detail: "Upstream API configuration is invalid" }, { status: 503 });
   }

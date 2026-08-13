@@ -1,0 +1,92 @@
+name: Maintain REG.RU Cloudflare tunnel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regru-cloudflare-tunnel
+  cancel-in-progress: false
+
+jobs:
+  install-and-register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SSH_HOST: 194.226.126.233
+      SSH_PORT: "2222"
+      REGISTRATION_ENDPOINT: https://bankrotai.pages.dev/tunnel-register
+    steps:
+      - name: Prepare SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_deploy"
+          chmod 600 "$HOME/.ssh/regru_deploy"
+          ssh-keyscan -T 20 -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Install and start outbound tunnel
+        env:
+          REGISTRATION_SECRET: ${{ secrets.CLOUDFLARE_TUNNEL_REGISTRATION_SECRET }}
+        run: |
+          set -euo pipefail
+          SECRET_B64="$(printf '%s' "$REGISTRATION_SECRET" | base64 -w 0)"
+          ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
+            "REGISTRATION_ENDPOINT='$REGISTRATION_ENDPOINT' SECRET_B64='$SECRET_B64' bash -s" <<'REMOTE'
+          set -euo pipefail
+          if ! command -v cloudflared >/dev/null; then
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+              -o /usr/local/bin/cloudflared
+            chmod 755 /usr/local/bin/cloudflared
+          fi
+          printf '%s' "$SECRET_B64" | base64 -d > /opt/bankrotai/tunnel-registration-secret
+          chmod 600 /opt/bankrotai/tunnel-registration-secret
+          cat > /usr/local/sbin/bankrotai-register-tunnel <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          endpoint="$1"
+          for attempt in {1..60}; do
+            origin="$(journalctl -u bankrotai-cloudflared.service --since '-2 minutes' --no-pager \
+              | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -n 1 || true)"
+            if [ -n "$origin" ]; then
+              curl -fsS --retry 6 --retry-all-errors -X POST "$endpoint" \
+                -H "Authorization: Bearer $(cat /opt/bankrotai/tunnel-registration-secret)" \
+                -H 'Content-Type: application/json' --data "{\"origin\":\"$origin\"}"
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+          SCRIPT
+          chmod 700 /usr/local/sbin/bankrotai-register-tunnel
+          cat > /etc/systemd/system/bankrotai-cloudflared.service <<SERVICE
+          [Unit]
+          Description=BankrotAI outbound Cloudflare quick tunnel
+          After=network-online.target docker.service
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:8000
+          ExecStartPost=/usr/local/sbin/bankrotai-register-tunnel ${REGISTRATION_ENDPOINT}
+          Restart=always
+          RestartSec=10
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+          systemctl daemon-reload
+          systemctl enable --now bankrotai-cloudflared.service
+          systemctl restart bankrotai-cloudflared.service
+          timeout 150 bash -c 'until systemctl is-active --quiet bankrotai-cloudflared.service; do sleep 2; done'
+          REMOTE
+
+      - name: Verify global proxy
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors \
+            https://bankrotai.pages.dev/api/auth/me >/dev/null
