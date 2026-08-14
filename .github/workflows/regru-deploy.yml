@@ -344,6 +344,12 @@ jobs:
             --log-opt max-size=10m \
             --log-opt max-file=3 \
             caddy:2-alpine
+          # The tunnel resolves Docker service names inside the bankrotai
+          # network. Restart it after replacing the API container so it cannot
+          # retain the previous container address during the public smoke.
+          if docker container inspect bankrotai-cloudflared >/dev/null 2>&1; then
+            docker restart bankrotai-cloudflared >/dev/null
+          fi
           docker logout ghcr.io
           docker image prune -af --filter 'until=168h'
           REMOTE
@@ -372,6 +378,10 @@ jobs:
           curl --fail --silent --show-error \
             --retry 12 --retry-delay 5 --retry-all-errors \
             "https://$API_HOSTNAME/health/ready"
+          printf '\n'
+          curl --fail --silent --show-error \
+            --retry 18 --retry-delay 5 --retry-all-errors \
+            "https://api.dezster.ru/health/ready"
           printf '\n'
 
       - name: Verify deployed WEB release
