@@ -77,8 +77,9 @@ jobs:
             'bash -s' <<'REMOTE'
           set -euo pipefail
           systemctl is-active --quiet cloudflared.service
-          curl --fail --silent --show-error --max-time 15 \
-            http://127.0.0.1:8000/health/live >/dev/null
+          curl --fail --silent --show-error --max-time 15 --insecure \
+            --resolve 194-226-126-233.sslip.io:443:127.0.0.1 \
+            https://194-226-126-233.sslip.io/health/live >/dev/null
           sleep 10
           if ! timeout 15 journalctl -u cloudflared.service --since "-5 minutes" --no-pager \
             | grep -Fq "Registered tunnel connection"; then
