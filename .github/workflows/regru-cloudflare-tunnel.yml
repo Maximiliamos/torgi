@@ -52,6 +52,7 @@ jobs:
             --name bankrotai-cloudflared \
             --restart unless-stopped \
             --network bankrotai \
+            --user 0:0 \
             --memory 128m \
             --log-opt max-size=10m \
             --log-opt max-file=3 \
