@@ -74,7 +74,7 @@ jobs:
           test "$(docker inspect -f '{{.State.Running}}' bankrotai-cloudflared)" = true
           sleep 10
           if ! timeout 15 docker logs bankrotai-cloudflared 2>&1 \
-            | grep -Fq "Registered tunnel connection"; then
+            | grep -F "Registered tunnel connection" >/dev/null; then
             timeout 15 docker logs --tail 80 bankrotai-cloudflared 2>&1 \
               | tail -n 80 \
               | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
