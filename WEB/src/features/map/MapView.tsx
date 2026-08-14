@@ -164,7 +164,7 @@ function YandexDesktopMap({
   onRendered: (durationMs: number, count: number) => void;
 }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
-  const channel = React.useMemo(() => crypto.randomUUID(), []);
+  const channel = "bankrotai-map-v1";
   const [readyRevision, setReadyRevision] = React.useState(0);
 
   const postCommand = React.useCallback(
