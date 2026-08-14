@@ -84,3 +84,17 @@ jobs:
             | grep -F "Registered tunnel connection" \
             | tail -n 1
           REMOTE
+
+      - name: Verify public named tunnel endpoint
+        run: |
+          set -euo pipefail
+          if curl --fail --silent --show-error --max-time 20 \
+            https://api.dezster.ru/health/live; then
+            printf '\n'
+            exit 0
+          fi
+          ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
+            'docker logs --tail 80 bankrotai-cloudflared 2>&1' \
+            | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
+          exit 1
