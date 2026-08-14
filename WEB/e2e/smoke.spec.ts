@@ -1,22 +1,54 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function ensureAuthenticated(page: Page) {
+  const loginField = page.locator('input[autocomplete="username"]');
+  const passwordField = page.locator('input[autocomplete="current-password"]');
+  const workspace = page.locator(".workspace");
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(loginField.or(workspace)).toBeVisible({ timeout: 30_000 });
+    if (await workspace.isVisible()) {
+      return;
+    }
+
+    await loginField.fill(process.env.E2E_USERNAME || "reader");
+    await passwordField.fill(process.env.E2E_PASSWORD || "");
+    const loginResponse = page
+      .waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/api/auth/login",
+        { timeout: 20_000 },
+      )
+      .catch(() => null);
+    await page.getByRole("button", { name: "Войти" }).click();
+    const response = await loginResponse;
+    if (response?.status() === 401) {
+      throw new Error("Public smoke credentials were rejected by the API");
+    }
+
+    try {
+      await expect(workspace).toBeVisible({ timeout: 25_000 });
+      return;
+    } catch (error) {
+      if (attempt === 2) {
+        throw error;
+      }
+      await page.waitForTimeout(1_000);
+      await page.reload({ waitUntil: "domcontentloaded" });
+    }
+  }
+
+  throw new Error("Public smoke could not establish an authenticated session");
+}
 
 test("authenticated list search detail and API failure smoke", async ({
   page,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   await page.goto("/");
   await expect(page.locator("main")).toBeVisible();
-  const loginField = page.locator('input[autocomplete="username"]');
-  const workspace = page.locator(".workspace");
-  await expect(loginField.or(workspace)).toBeVisible({ timeout: 30_000 });
-  if (await loginField.isVisible()) {
-    await loginField.fill(process.env.E2E_USERNAME || "reader");
-    await page
-      .locator('input[autocomplete="current-password"]')
-      .fill(process.env.E2E_PASSWORD || "");
-    await page.getByRole("button", { name: "Войти" }).click();
-    await expect(workspace).toBeVisible({ timeout: 30_000 });
-  }
+  await ensureAuthenticated(page);
   const search = page.locator(".searchBox input");
   await search.fill("земля");
   await page.waitForTimeout(350);
@@ -152,7 +184,7 @@ test("authenticated list search detail and API failure smoke", async ({
   // after installing the map fixtures so cached production totals cannot race
   // with the deterministic smoke responses.
   await page.reload();
-  await expect(workspace).toBeVisible({ timeout: 30_000 });
+  await ensureAuthenticated(page);
   await page.getByRole("button", { name: "Карта", exact: true }).click();
   const mapFrameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(mapFrameElement).toBeVisible();

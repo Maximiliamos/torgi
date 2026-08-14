@@ -28,14 +28,37 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   headers.set("x-forwarded-host", incoming.host);
   headers.set("x-forwarded-proto", "https");
 
+  const method = context.request.method.toUpperCase();
+  const isIdempotent = ["GET", "HEAD"].includes(method);
+  const attempts = isIdempotent ? 2 : 1;
+
   try {
-    const response = await fetch(upstream, {
-      method: context.request.method,
-      headers,
-      body: ["GET", "HEAD"].includes(context.request.method) ? undefined : context.request.body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(15_000),
-    });
+    let response: Response | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        response = await fetch(upstream, {
+          method,
+          headers,
+          body: isIdempotent ? undefined : context.request.body,
+          redirect: "manual",
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (![502, 503, 504].includes(response.status) || attempt === attempts - 1) {
+          break;
+        }
+        await response.body?.cancel();
+      } catch (error) {
+        lastError = error;
+        if (attempt === attempts - 1) {
+          throw error;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (!response) {
+      throw lastError || new Error("API upstream did not return a response");
+    }
     const outgoingHeaders = new Headers(response.headers);
     outgoingHeaders.set("cache-control", "no-store");
     outgoingHeaders.set("x-content-type-options", "nosniff");
