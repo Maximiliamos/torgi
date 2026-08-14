@@ -13,7 +13,15 @@ export default {
     }
 
     const upstream = new URL(`${incoming.pathname}${incoming.search}`, PAGES_ORIGIN);
-    const response = await fetch(new Request(upstream, request));
+    const upstreamHeaders = new Headers(request.headers);
+    upstreamHeaders.delete("host");
+    const upstreamRequest = new Request(upstream, {
+      method: request.method,
+      headers: upstreamHeaders,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      redirect: "manual",
+    });
+    const response = await fetch(upstreamRequest);
     const headers = new Headers(response.headers);
     const location = headers.get("location");
 
