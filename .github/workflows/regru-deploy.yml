@@ -394,7 +394,7 @@ jobs:
       - name: Run public WEB smoke
         working-directory: WEB
         env:
-          E2E_BASE_URL: https://${{ env.API_HOSTNAME }}
+          E2E_BASE_URL: ${{ secrets.PUBLIC_WEB_URL }}
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         run: npm run test:e2e
