@@ -148,6 +148,11 @@ test("authenticated list search detail and API failure smoke", async ({
       body: JSON.stringify({ lot_id: 7001, status: "approved" }),
     }),
   );
+  // The application preloads map totals during its initial bootstrap. Reload
+  // after installing the map fixtures so cached production totals cannot race
+  // with the deterministic smoke responses.
+  await page.reload();
+  await expect(workspace).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "Карта", exact: true }).click();
   const mapFrameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(mapFrameElement).toBeVisible();

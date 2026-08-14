@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "bankrotai-domain-proxy",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-08-14",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "dezster.ru/*",
+      "zone_name": "dezster.ru"
+    },
+    {
+      "pattern": "www.dezster.ru/*",
+      "zone_name": "dezster.ru"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
