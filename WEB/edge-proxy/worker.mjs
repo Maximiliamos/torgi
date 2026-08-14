@@ -1,3 +1,5 @@
+/* global URL, Response, fetch, Request, Headers */
+
 const PAGES_ORIGIN = "https://bankrotai.pages.dev";
 const PRIMARY_HOST = "dezster.ru";
 
