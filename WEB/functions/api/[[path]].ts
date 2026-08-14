@@ -11,7 +11,10 @@ interface PagesContext {
 
 export async function onRequest(context: PagesContext): Promise<Response> {
   const registeredOrigin = await context.env.TUNNEL_REGISTRY.get("active-origin");
-  const origin = new URL(registeredOrigin || context.env.KOYEB_API_ORIGIN);
+  // A configured production origin is authoritative. The registry remains only
+  // as a compatibility fallback for installations still using a quick tunnel.
+  const configuredOrigin = context.env.KOYEB_API_ORIGIN?.trim();
+  const origin = new URL(configuredOrigin || registeredOrigin || "https://invalid.invalid");
   if (origin.protocol !== "https:") {
     return Response.json({ detail: "Upstream API configuration is invalid" }, { status: 503 });
   }

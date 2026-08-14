@@ -74,4 +74,18 @@ jobs:
           set -euo pipefail
           ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
-            'systemctl is-active --quiet cloudflared.service'
+            'bash -s' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-active --quiet cloudflared.service
+          curl --fail --silent --show-error http://127.0.0.1:8000/health/live >/dev/null
+          if ! timeout 90 bash -c \
+            'until journalctl -u cloudflared.service --since "-3 minutes" --no-pager | grep -Fq "Registered tunnel connection"; do sleep 2; done'; then
+            journalctl -u cloudflared.service --since "-3 minutes" --no-pager \
+              | tail -n 80 \
+              | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
+            exit 1
+          fi
+          journalctl -u cloudflared.service --since "-3 minutes" --no-pager \
+            | grep -F "Registered tunnel connection" \
+            | tail -n 1
+          REMOTE
