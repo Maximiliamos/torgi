@@ -40,33 +40,27 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
             "TOKEN_B64='$TOKEN_B64' bash -s" <<'REMOTE'
           set -euo pipefail
-          if ! command -v cloudflared >/dev/null; then
-            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-              -o /usr/local/bin/cloudflared
-            chmod 755 /usr/local/bin/cloudflared
-          fi
           install -d -m 700 /opt/bankrotai
           printf '%s' "$TOKEN_B64" | base64 -d > /opt/bankrotai/cloudflare-tunnel-token
           chmod 600 /opt/bankrotai/cloudflare-tunnel-token
           systemctl disable --now bankrotai-cloudflared.service 2>/dev/null || true
-          cat > /etc/systemd/system/cloudflared.service <<'SERVICE'
-          [Unit]
-          Description=BankrotAI named Cloudflare tunnel
-          After=network-online.target docker.service
-          Wants=network-online.target
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --protocol http2 run --token-file /opt/bankrotai/cloudflare-tunnel-token
-          Restart=always
-          RestartSec=10
-          [Install]
-          WantedBy=multi-user.target
-          SERVICE
-          systemctl daemon-reload
-          systemctl enable cloudflared.service
-          systemctl restart cloudflared.service
-          timeout 45 bash -c 'until systemctl is-active --quiet cloudflared.service; do sleep 2; done'
-          systemctl is-active --quiet cloudflared.service
+          systemctl disable --now cloudflared.service 2>/dev/null || true
+          docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
+          docker pull cloudflare/cloudflared:latest
+          docker rm -f bankrotai-cloudflared >/dev/null 2>&1 || true
+          docker run -d \
+            --name bankrotai-cloudflared \
+            --restart unless-stopped \
+            --network bankrotai \
+            --memory 128m \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
+            cloudflare/cloudflared:latest \
+            tunnel --no-autoupdate --protocol http2 run \
+            --token-file /run/secrets/cloudflare-tunnel-token
+          timeout 45 bash -c \
+            'until docker ps --filter name=bankrotai-cloudflared --filter status=running --format "{{.Names}}" | grep -Fxq bankrotai-cloudflared; do sleep 2; done'
           REMOTE
 
       - name: Verify named tunnel connector
@@ -76,19 +70,16 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
             'bash -s' <<'REMOTE'
           set -euo pipefail
-          systemctl is-active --quiet cloudflared.service
-          curl --fail --silent --show-error --max-time 15 --insecure \
-            --resolve 194-226-126-233.sslip.io:443:127.0.0.1 \
-            https://194-226-126-233.sslip.io/health/live >/dev/null
+          test "$(docker inspect -f '{{.State.Running}}' bankrotai-cloudflared)" = true
           sleep 10
-          if ! timeout 15 journalctl -u cloudflared.service --since "-5 minutes" --no-pager \
+          if ! timeout 15 docker logs bankrotai-cloudflared 2>&1 \
             | grep -Fq "Registered tunnel connection"; then
-            timeout 15 journalctl -u cloudflared.service --since "-5 minutes" --no-pager \
+            timeout 15 docker logs --tail 80 bankrotai-cloudflared 2>&1 \
               | tail -n 80 \
               | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
             exit 1
           fi
-          timeout 15 journalctl -u cloudflared.service --since "-5 minutes" --no-pager \
+          timeout 15 docker logs bankrotai-cloudflared 2>&1 \
             | grep -F "Registered tunnel connection" \
             | tail -n 1
           REMOTE
