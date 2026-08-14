@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 15
     env:
       SSH_HOST: 194.226.126.233
-      SSH_PORT: "443"
+      SSH_PORT: "2222"
       REGISTRATION_ENDPOINT: https://bankrotai.pages.dev/tunnel-register
     steps:
       - name: Prepare SSH identity
