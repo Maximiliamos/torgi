@@ -11,13 +11,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  install-and-register:
+  install-named-tunnel:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       SSH_HOST: 194.226.126.233
       SSH_PORT: "2222"
-      REGISTRATION_ENDPOINT: https://bankrotai.pages.dev/tunnel-register
     steps:
       - name: Prepare SSH identity
         env:
@@ -30,74 +29,72 @@ jobs:
           ssh-keyscan -T 20 -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Install and start outbound tunnel
+      - name: Install and start named tunnel
         env:
-          REGISTRATION_SECRET: ${{ secrets.CLOUDFLARE_TUNNEL_REGISTRATION_SECRET }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           set -euo pipefail
-          SECRET_B64="$(printf '%s' "$REGISTRATION_SECRET" | base64 -w 0)"
+          test -n "$CLOUDFLARE_TUNNEL_TOKEN"
+          TOKEN_B64="$(printf '%s' "$CLOUDFLARE_TUNNEL_TOKEN" | base64 -w 0)"
           ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
-            "REGISTRATION_ENDPOINT='$REGISTRATION_ENDPOINT' SECRET_B64='$SECRET_B64' bash -s" <<'REMOTE'
+            "TOKEN_B64='$TOKEN_B64' bash -s" <<'REMOTE'
           set -euo pipefail
-          if ! command -v cloudflared >/dev/null; then
-            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-              -o /usr/local/bin/cloudflared
-            chmod 755 /usr/local/bin/cloudflared
-          fi
-          printf '%s' "$SECRET_B64" | base64 -d > /opt/bankrotai/tunnel-registration-secret
-          chmod 600 /opt/bankrotai/tunnel-registration-secret
-          cat > /usr/local/sbin/bankrotai-register-tunnel <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          endpoint="$1"
-          for attempt in {1..60}; do
-            origin="$(journalctl -u bankrotai-cloudflared.service --since '-2 minutes' --no-pager \
-              | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -n 1 || true)"
-            if [ -n "$origin" ]; then
-              curl -fsS --retry 6 --retry-all-errors -X POST "$endpoint" \
-                -H "Authorization: Bearer $(cat /opt/bankrotai/tunnel-registration-secret)" \
-                -H 'Content-Type: application/json' --data "{\"origin\":\"$origin\"}"
-              exit 0
-            fi
-            sleep 2
-          done
-          exit 1
-          SCRIPT
-          chmod 700 /usr/local/sbin/bankrotai-register-tunnel
-          cat > /etc/systemd/system/bankrotai-cloudflared.service <<SERVICE
-          [Unit]
-          Description=BankrotAI outbound Cloudflare quick tunnel
-          After=network-online.target docker.service
-          Wants=network-online.target
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:8000
-          Restart=always
-          RestartSec=10
-          [Install]
-          WantedBy=multi-user.target
-          SERVICE
-          systemctl daemon-reload
-          systemctl enable bankrotai-cloudflared.service
-          systemctl restart bankrotai-cloudflared.service
-          timeout 30 bash -c 'until systemctl is-active --quiet bankrotai-cloudflared.service; do sleep 2; done'
-          if ! timeout 150 /usr/local/sbin/bankrotai-register-tunnel "$REGISTRATION_ENDPOINT"; then
-            systemctl status bankrotai-cloudflared.service --no-pager || true
-            journalctl -u bankrotai-cloudflared.service --since '-3 minutes' --no-pager || true
-            exit 1
-          fi
+          install -d -m 700 /opt/bankrotai
+          printf '%s' "$TOKEN_B64" | base64 -d > /opt/bankrotai/cloudflare-tunnel-token
+          chmod 600 /opt/bankrotai/cloudflare-tunnel-token
+          systemctl disable --now bankrotai-cloudflared.service 2>/dev/null || true
+          systemctl disable --now cloudflared.service 2>/dev/null || true
+          docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
+          docker pull cloudflare/cloudflared:latest
+          docker rm -f bankrotai-cloudflared >/dev/null 2>&1 || true
+          docker run -d \
+            --name bankrotai-cloudflared \
+            --restart unless-stopped \
+            --network bankrotai \
+            --user 0:0 \
+            --memory 128m \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
+            cloudflare/cloudflared:latest \
+            tunnel --no-autoupdate --protocol http2 run \
+            --token-file /run/secrets/cloudflare-tunnel-token
+          timeout 45 bash -c \
+            'until docker ps --filter name=bankrotai-cloudflared --filter status=running --format "{{.Names}}" | grep -Fxq bankrotai-cloudflared; do sleep 2; done'
           REMOTE
 
-      - name: Verify global proxy
+      - name: Verify named tunnel connector
         run: |
           set -euo pipefail
-          for attempt in {1..12}; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' \
-              https://bankrotai.pages.dev/api/auth/me || true)"
-            if [ "$status" = 401 ]; then
-              exit 0
-            fi
-            sleep 5
-          done
+          ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
+            'bash -s' <<'REMOTE'
+          set -euo pipefail
+          test "$(docker inspect -f '{{.State.Running}}' bankrotai-cloudflared)" = true
+          sleep 10
+          if ! timeout 15 docker logs bankrotai-cloudflared 2>&1 \
+            | grep -F "Registered tunnel connection" >/dev/null; then
+            timeout 15 docker logs --tail 80 bankrotai-cloudflared 2>&1 \
+              | tail -n 80 \
+              | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
+            exit 1
+          fi
+          timeout 15 docker logs bankrotai-cloudflared 2>&1 \
+            | grep -F "Registered tunnel connection" \
+            | tail -n 1
+          REMOTE
+
+      - name: Verify public named tunnel endpoint
+        run: |
+          set -euo pipefail
+          if curl --fail --silent --show-error --max-time 20 \
+            https://api.dezster.ru/health/live; then
+            printf '\n'
+            exit 0
+          fi
+          ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
+            'docker logs --tail 80 bankrotai-cloudflared 2>&1' \
+            | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
           exit 1

@@ -2,7 +2,11 @@
 
 ## Схема
 
-`*.pages.dev` → Cloudflare Pages Function `/api/*` → Koyeb FastAPI → Neon PostgreSQL.
+`dezster.ru` → Cloudflare edge Worker → Pages Function `/api/*` → REG.RU FastAPI → Neon PostgreSQL.
+
+`bankrotai.pages.dev` остаётся техническим адресом Pages. Edge Worker из `WEB/edge-proxy/`
+обслуживает корневой домен и перенаправляет `www.dezster.ru` на `dezster.ru`. Доступ к REG.RU
+должен выполняться через Cloudflare Tunnel; прямой `sslip.io` используется только для диагностики.
 
 Браузер не получает межсервисный ключ. Function добавляет `KOYEB_SERVICE_KEY`, а FastAPI
 дополнительно требует персональную HttpOnly-сессию. Production API работает с
@@ -31,11 +35,12 @@ python scripts/verify_postgres.py
 Скрипт требует пустые целевые таблицы, сверяет количество записей во всех таблицах и ищет
 осиротевшие внешние ключи. Он намеренно отказывается работать через pooled URL.
 
-## Koyeb
+## REG.RU origin
 
-Создайте один Free Web Service из GitHub-репозитория, Dockerfile из корня, порт `8000`, route `/`.
-Run command уже задан Dockerfile. Настройте HTTP health check `/health/live`; `/health/ready`
-проверяет конфигурацию, схему и Neon, но не требует Redis в read-only режиме.
+Production развёртывается workflow `.github/workflows/regru-deploy.yml` из ветки `main`.
+Caddy раздаёт собранный WEB и проксирует `/api/*` в FastAPI на внутреннем Docker network.
+Контейнер API публикуется только на `127.0.0.1:8000`; `/health/live` проверяет процесс,
+а `/health/ready` — конфигурацию, схему и Neon.
 
 Переменные/секреты:
 
@@ -51,9 +56,9 @@ DATABASE_MAX_OVERFLOW=2
 DATABASE_POOL_TIMEOUT=10
 ```
 
-Free Instance имеет ограниченные ресурсы и засыпает при простое; первый запрос после сна может
-занять несколько секунд. В Koyeb runtime logs сохраняется журнал API-ошибок, а критические ошибки
-дополнительно пишутся в `diagnostic_events`.
+REG.RU Free Tier имеет ограниченные CPU, память и диск. Workflow перед развёртыванием удаляет
+неиспользуемые Docker-образы, а контейнеры работают с ограничениями памяти и ротацией журналов.
+Критические ошибки дополнительно пишутся в `diagnostic_events`.
 
 ## Cloudflare Pages
 
@@ -62,12 +67,12 @@ Free Instance имеет ограниченные ресурсы и засыпа
 - Root directory: `WEB`
 - Build command: `npm ci && npm run build`
 - Build output: `dist`
-- Plain variable `KOYEB_API_ORIGIN=https://<app>.koyeb.app`
-- Encrypted secret `KOYEB_SERVICE_KEY`, совпадающий с `BANKROTAI_API_KEY` в Koyeb
+- Plain variable `KOYEB_API_ORIGIN=https://<резервный-origin>` — имя сохранено для обратной совместимости
+- Encrypted secret `KOYEB_SERVICE_KEY`, совпадающий с `BANKROTAI_API_KEY` на REG.RU
 
 Pages Function находится в `WEB/functions/api/[[path]].ts`. В настройках Runtime выберите
-fail closed, поскольку Function является частью границы авторизации. На бесплатном этапе
-используйте выданный домен `*.pages.dev`; собственный домен не требуется.
+fail closed, поскольку Function является частью границы авторизации. Основной публичный адрес —
+`https://dezster.ru`; `*.pages.dev` используется для диагностики и аварийного доступа.
 
 ## GitHub Actions
 

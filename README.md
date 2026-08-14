@@ -2,6 +2,11 @@
 
 BankrotAI — desktop-приложение и web-сервис для сбора, поиска, геокодирования и предварительного AI-анализа лотов банкротных и публичных торгов.
 
+Production WEB доступен по адресу [https://dezster.ru](https://dezster.ru). `www.dezster.ru`
+перенаправляется на основной домен, а `bankrotai.pages.dev` остаётся техническим адресом
+Cloudflare Pages. Публичный домен обслуживает edge-прокси из `WEB/edge-proxy/`; API проходит
+через Pages Function к закрытому origin на REG.RU и использует Neon PostgreSQL.
+
 ## Архитектура
 
 - `src/bankrotai/gui.py` — PySide6 desktop-интерфейс, импорт файлов и Excel-экспорт.

@@ -164,7 +164,7 @@ function YandexDesktopMap({
   onRendered: (durationMs: number, count: number) => void;
 }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
-  const channel = React.useMemo(() => crypto.randomUUID(), []);
+  const channel = "bankrotai-map-v1";
   const [readyRevision, setReadyRevision] = React.useState(0);
 
   const postCommand = React.useCallback(
@@ -226,7 +226,7 @@ function YandexDesktopMap({
   }, [active, postCommand, readyRevision]);
 
   const html = React.useMemo(
-    () => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU"></script><style>
+    () => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1.77/?lang=ru_RU&amp;csp=true"></script><style>
 html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}
 </style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
 const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let lots=[];let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;

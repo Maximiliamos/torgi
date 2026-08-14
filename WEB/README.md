@@ -44,6 +44,32 @@ docker compose ps
 API проверяет ключ на всех маршрутах, кроме healthchecks, использует общий Redis
 rate limit и возвращает `503`, если production-конфигурация небезопасна.
 
+## Публичное развёртывание
+
+Основной адрес — [https://dezster.ru](https://dezster.ru). Статический frontend и Pages
+Function публикуются в проект `bankrotai`:
+
+```powershell
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npx wrangler pages deploy dist --project-name bankrotai --branch main
+```
+
+Маршруты `dezster.ru/*` и `www.dezster.ru/*` управляются Worker-конфигурацией
+`edge-proxy/wrangler.jsonc`. Worker не содержит секретов, перенаправляет `www` на корневой
+домен и потоково проксирует остальные запросы в Pages:
+
+```powershell
+npx wrangler deploy --config edge-proxy/wrangler.jsonc
+```
+
+`bankrotai.pages.dev` является техническим адресом и не должен публиковаться как основной.
+API origin остаётся закрытым за Cloudflare Pages Function/Tunnel; браузер не получает
+`KOYEB_SERVICE_KEY`.
+
 ## Проверки
 
 ```powershell
