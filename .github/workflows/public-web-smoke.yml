@@ -2,6 +2,12 @@ name: Public WEB smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      functional_audit:
+        description: Run only the deep production journey for pre-merge branch verification
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "47 */6 * * *"
 
@@ -21,7 +27,7 @@ jobs:
       E2E_BASE_URL: https://dezster.ru
       # Keep this workflow on the critical path only. The scheduled/manual
       # production-functional workflow owns the deep real-data journey.
-      E2E_PRODUCTION_AUDIT: "0"
+      E2E_PRODUCTION_AUDIT: ${{ inputs.functional_audit && '1' || '0' }}
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:
@@ -51,8 +57,14 @@ jobs:
             -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
             | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
           test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
-      - working-directory: WEB
-        run: npm run test:e2e
+      - name: Run fast critical-path smoke
+        if: github.event_name != 'workflow_dispatch' || !inputs.functional_audit
+        working-directory: WEB
+        run: npx playwright test e2e/smoke.spec.ts
+      - name: Run deep production branch audit
+        if: github.event_name == 'workflow_dispatch' && inputs.functional_audit
+        working-directory: WEB
+        run: npx playwright test e2e/production-readonly.spec.ts
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
