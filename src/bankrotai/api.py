@@ -24,7 +24,8 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from bankrotai.db import (
-    session_scope, 
+    session_scope,
+    read_session_scope,
     get_processed_lot, 
     get_top_lots, 
     ProcessedLot, 
@@ -103,7 +104,7 @@ _AUTH_PENDING_CAPACITY = threading.BoundedSemaphore(_AUTH_PENDING_LIMIT)
 
 
 def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
-    with session_scope() as session:
+    with read_session_scope() as session:
         return verify_session_token(session, token, settings.auth_session_secret or "")
 
 
@@ -471,7 +472,7 @@ def readiness_check():
         checks["configuration"] = configuration_errors
         return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     try:
-        with session_scope() as session:
+        with read_session_scope() as session:
             session.execute(text("SELECT 1"))
             checks["database"] = "ok"
             version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
@@ -719,7 +720,7 @@ def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
 
 @app.get("/api/tasks/{task_id}", dependencies=[Depends(require_admin)])
 def get_background_task_status(task_id: str):
-    with session_scope() as session:
+    with read_session_scope() as session:
         state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
         if state is None:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -757,7 +758,7 @@ def get_lots(
     cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
     stat_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
     
-    with session_scope() as session:
+    with read_session_scope() as session:
         return build_lots_response(
             session, city_slug, 
             page=page, per_page=per_page, search=search,
@@ -769,7 +770,7 @@ def get_lots(
 
 @app.get("/api/lots/{lot_id}")
 def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
-    with session_scope() as session:
+    with read_session_scope() as session:
         item = get_lot_response(session, city_slug, lot_id)
         if item is None:
             raise HTTPException(status_code=404, detail="Lot not found")
@@ -778,7 +779,7 @@ def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
 
 @app.get("/api/lots/{lot_id}/procedure")
 def get_lot_procedure(lot_id: int):
-    with session_scope() as session:
+    with read_session_scope() as session:
         source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
         if source_lot is None:
             raise HTTPException(status_code=404, detail="Source lot not found")
@@ -845,7 +846,7 @@ def calculate_lot_max_bid(
 
 @app.get("/api/lots/{lot_id}/max-bid-scenarios")
 def get_max_bid_scenarios(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
-    with session_scope() as session:
+    with read_session_scope() as session:
         rows = session.scalars(
             select(SavedMaxBidScenario)
             .where(SavedMaxBidScenario.lot_id == lot_id, SavedMaxBidScenario.user_id == str(actor.id))
@@ -865,7 +866,7 @@ def get_max_bid_scenarios(lot_id: int, actor: AuthenticatedUser = Depends(requir
 
 @app.get("/api/lots/{lot_id}/participation")
 def get_participation_checklist(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
-    with session_scope() as session:
+    with read_session_scope() as session:
         source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
         if source_lot is None:
             raise HTTPException(status_code=404, detail="Source lot not found")
@@ -924,7 +925,7 @@ def toggle_lot_watchlist(lot_id: int, actor: AuthenticatedUser = Depends(require
 
 @app.get("/api/watchlist")
 def get_watchlist(actor: AuthenticatedUser = Depends(require_user)):
-    with session_scope() as session:
+    with read_session_scope() as session:
         lot_ids = session.scalars(
             select(Watchlist.lot_id)
             .where(Watchlist.user_id == str(actor.id), Watchlist.lot_id.is_not(None))
@@ -940,7 +941,7 @@ def get_watchlist(actor: AuthenticatedUser = Depends(require_user)):
 
 @app.get("/api/lots/{lot_id}/notes")
 def get_lot_note_items(lot_id: int, actor: AuthenticatedUser = Depends(require_user)):
-    with session_scope() as session:
+    with read_session_scope() as session:
         rows = session.scalars(
             select(LotNote)
             .where(LotNote.lot_id == lot_id, LotNote.user_id == str(actor.id))
@@ -1018,7 +1019,7 @@ def split_lot_duplicate(
 
 @app.get("/api/stats")
 def get_stats(city_slug: str = DEFAULT_REGION):
-    with session_scope() as session:
+    with read_session_scope() as session:
         return build_stats_response(session, city_slug)
 
 
@@ -1044,7 +1045,7 @@ def get_map_lots(
     cache_state = "HIT"
     if cached is None or now - cached[0] >= _MAP_RESPONSE_CACHE_SECONDS:
         cache_state = "MISS"
-        with session_scope() as session:
+        with read_session_scope() as session:
             value = build_map_lots_response(
                 session,
                 city_slug=city_slug,
@@ -1084,7 +1085,7 @@ def get_map_lots(
 
 @app.get("/api/map/lots/{lot_id}")
 def get_map_lot(lot_id: int):
-    with session_scope() as session:
+    with read_session_scope() as session:
         value = build_map_lot_detail(session, lot_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Lot is not available on the map")
@@ -1103,7 +1104,7 @@ async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
 
 @app.get("/api/saved-searches")
 def get_saved_searches(actor: AuthenticatedUser = Depends(require_user)):
-    with session_scope() as session:
+    with read_session_scope() as session:
         rows = session.scalars(
             select(SavedSearch)
             .where(SavedSearch.user_id == str(actor.id))
@@ -1125,7 +1126,7 @@ def create_saved_search(request: SavedSearchRequest, actor: AuthenticatedUser = 
 
 @app.get("/api/lots/{lot_id}/documents")
 def get_lot_documents(lot_id: int):
-    with session_scope() as session:
+    with read_session_scope() as session:
         source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
         if source_lot is None:
             return []
@@ -1211,19 +1212,19 @@ def compare_lot_documents(
 
 @app.get("/api/quality")
 def get_data_quality():
-    with session_scope() as session:
+    with read_session_scope() as session:
         return data_quality_snapshot(session).model_dump(mode="json")
 
 
 @app.get("/api/sources")
 def get_source_states():
-    with session_scope() as session:
+    with read_session_scope() as session:
         return [item.model_dump(mode="json") for item in list_source_health(session)]
 
 
 @app.get("/api/diagnostics", dependencies=[Depends(require_admin)])
 def get_diagnostics():
-    with session_scope() as session:
+    with read_session_scope() as session:
         return diagnostic_export(session)
 
 
@@ -1273,7 +1274,7 @@ def trigger_region_sync(city_slug: str, force: bool = False):
 
 @app.get("/api/regions/{city_slug}/sync-status", dependencies=[Depends(require_admin)])
 def get_sync_status(city_slug: str):
-    with session_scope() as session:
+    with read_session_scope() as session:
         state = get_region_sync_state(session, city_slug)
         if not state:
             return {

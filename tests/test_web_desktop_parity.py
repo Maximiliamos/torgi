@@ -76,6 +76,7 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
         lot_id = lot.id
 
     monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "app_env", "production")
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")

@@ -696,16 +696,27 @@ def init_db() -> None:
 
 
 @contextmanager
-def session_scope():
+def session_scope(*, commit: bool = True):
     session = SessionLocal()
     try:
         yield session
-        session.commit()
+        if commit:
+            session.commit()
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+
+
+def read_session_scope():
+    """Return a session scope that never commits a read-only transaction.
+
+    Keeping this separate from the default write scope makes accidental writes
+    in API GET handlers visible in review and avoids a needless PostgreSQL
+    COMMIT round trip after every successful SELECT.
+    """
+    return session_scope(commit=False)
 
 
 # --- Repository Helpers ---
