@@ -2,6 +2,12 @@ name: Neon migrations and read-model sync
 
 on:
   workflow_dispatch:
+    inputs:
+      credential_rotation_only:
+        description: Update and verify the bootstrap user without running source sync or backup
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 */6 * * *"
 
@@ -25,6 +31,7 @@ jobs:
       BANKROTAI_API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
       AUTH_BOOTSTRAP_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+      AUTH_BOOTSTRAP_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
@@ -57,12 +64,30 @@ jobs:
       - name: Apply migrations using direct Neon URL
         run: alembic upgrade head
       - name: Ensure initial reader exists
-        run: python -m bankrotai.cli create-user "${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}"
+        run: python -m bankrotai.cli create-user "$AUTH_BOOTSTRAP_USERNAME"
+      - name: Verify bootstrap credential
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from bankrotai.auth import authenticate_user
+          from bankrotai.db import session_scope
+
+          with session_scope() as session:
+              assert authenticate_user(
+                  session,
+                  os.environ["AUTH_BOOTSTRAP_USERNAME"],
+                  os.environ["AUTH_BOOTSTRAP_PASSWORD"],
+              ) is not None
+          PY
       - name: Synchronize read model
+        if: github.event_name != 'workflow_dispatch' || !inputs.credential_rotation_only
         run: python -m bankrotai.cli sync-read-model --max-items-per-source 5000
       - name: Verify readiness schema and counts
+        if: github.event_name != 'workflow_dispatch' || !inputs.credential_rotation_only
         run: python scripts/verify_postgres.py
       - name: Create encrypted PostgreSQL recovery dump
+        if: github.event_name != 'workflow_dispatch' || !inputs.credential_rotation_only
         shell: bash
         run: |
           set -euo pipefail
@@ -72,6 +97,7 @@ jobs:
             | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_ENCRYPTION_PASSWORD \
             -out "bankrotai-${GITHUB_RUN_ID}.dump.enc"
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || !inputs.credential_rotation_only
         with:
           name: neon-backup-${{ github.run_id }}
           path: bankrotai-${{ github.run_id }}.dump.enc

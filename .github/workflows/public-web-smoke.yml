@@ -19,7 +19,9 @@ jobs:
     timeout-minutes: 15
     env:
       E2E_BASE_URL: https://dezster.ru
-      E2E_PRODUCTION_AUDIT: ${{ github.ref != 'refs/heads/main' }}
+      # Keep this workflow on the critical path only. The scheduled/manual
+      # production-functional workflow owns the deep real-data journey.
+      E2E_PRODUCTION_AUDIT: "0"
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:

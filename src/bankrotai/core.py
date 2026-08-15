@@ -124,6 +124,10 @@ class AppSettings:
     database_pool_size: int = 3
     database_max_overflow: int = 2
     database_pool_timeout: int = 10
+    database_connect_timeout: int = 5
+    database_tcp_user_timeout_ms: int = 15_000
+    database_statement_timeout_ms: int = 30_000
+    database_auth_timeout_seconds: float = 20.0
     allow_local_task_fallback: bool = False
     sync_retry_max_attempts: int = 4
     sync_retry_backoff_seconds: int = 5
@@ -215,6 +219,16 @@ def load_settings() -> AppSettings:
         database_pool_size=max(1, min(10, int(os.getenv("DATABASE_POOL_SIZE", "3")))),
         database_max_overflow=max(0, min(10, int(os.getenv("DATABASE_MAX_OVERFLOW", "2")))),
         database_pool_timeout=max(1, min(60, int(os.getenv("DATABASE_POOL_TIMEOUT", "10")))),
+        database_connect_timeout=max(1, min(30, int(os.getenv("DATABASE_CONNECT_TIMEOUT", "5")))),
+        database_tcp_user_timeout_ms=max(
+            1_000, min(120_000, int(os.getenv("DATABASE_TCP_USER_TIMEOUT_MS", "15000")))
+        ),
+        database_statement_timeout_ms=max(
+            1_000, min(300_000, int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "30000")))
+        ),
+        database_auth_timeout_seconds=max(
+            1.0, min(60.0, float(os.getenv("DATABASE_AUTH_TIMEOUT_SECONDS", "20")))
+        ),
         allow_local_task_fallback=os.getenv("ALLOW_LOCAL_TASK_FALLBACK", "false").lower() in {"1", "true", "yes"},
         sync_retry_max_attempts=int(os.getenv("SYNC_RETRY_MAX_ATTEMPTS", "4")),
         sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),

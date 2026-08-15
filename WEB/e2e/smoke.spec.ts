@@ -23,6 +23,9 @@ async function ensureAuthenticated(page: Page) {
       .catch(() => null);
     await page.getByRole("button", { name: "Войти" }).click();
     const response = await loginResponse;
+    if (await passwordField.isVisible()) {
+      await passwordField.fill("");
+    }
     if (response?.status() === 401) {
       throw new Error("Public smoke credentials were rejected by the API");
     }

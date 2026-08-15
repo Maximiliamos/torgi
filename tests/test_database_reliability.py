@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
@@ -170,6 +171,41 @@ def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Pa
     db.get_engine().dispose()
     db.get_engine.cache_clear()
     core._settings_cache = None
+
+
+def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_engine(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    settings = core.AppSettings(
+        database_url="postgresql+psycopg://user:password@ep-example-pooler.eu.neon.tech/db",
+        database_connect_timeout=4,
+        database_tcp_user_timeout_ms=12_000,
+        database_statement_timeout_ms=25_000,
+    )
+    monkeypatch.setattr(db, "get_settings", lambda: settings)
+    monkeypatch.setattr(db, "create_engine", fake_create_engine)
+    db.get_engine.cache_clear()
+    try:
+        db.get_engine()
+    finally:
+        db.get_engine.cache_clear()
+
+    assert captured["pool_pre_ping"] is True
+    assert captured["pool_use_lifo"] is True
+    assert captured["connect_args"] == {
+        "connect_timeout": 4,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+        "tcp_user_timeout": 12_000,
+        "options": "-c statement_timeout=25000 -c lock_timeout=5000",
+    }
 
 
 def test_existing_database_updates_to_head_without_losing_user_data(tmp_path: Path) -> None:

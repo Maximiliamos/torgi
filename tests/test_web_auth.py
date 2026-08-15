@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
+import time
 
 from fastapi.testclient import TestClient
+import httpx
 from pydantic import ValidationError
 import pytest
 from sqlalchemy import create_engine
@@ -10,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from bankrotai import api
-from bankrotai.auth import authenticate_user, hash_password, upsert_user, verify_password
+from bankrotai.auth import AuthenticatedUser, authenticate_user, hash_password, upsert_user, verify_password
 from bankrotai.db import Base, ProcessedLot
 
 
@@ -149,3 +152,47 @@ def test_review_status_rejects_empty_or_unknown_values() -> None:
         api.ReviewStatusRequest(status="")
     with pytest.raises(ValidationError):
         api.ReviewStatusRequest(status="admin-approved")
+
+
+def test_stalled_session_database_lookup_does_not_block_liveness(monkeypatch) -> None:
+    @contextmanager
+    def stalled_scope():
+        yield object()
+
+    def stalled_verification(_session, _token: str, _secret: str) -> AuthenticatedUser:
+        time.sleep(0.5)
+        return AuthenticatedUser(id=1, username="reader", role="reader")
+
+    monkeypatch.setattr(api, "session_scope", stalled_scope)
+    monkeypatch.setattr(api, "verify_session_token", stalled_verification)
+    monkeypatch.setattr(api.settings, "app_env", "production")
+    monkeypatch.setattr(api.settings, "api_read_only", True)
+    monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
+    monkeypatch.setattr(api.settings, "auth_session_secret", "session-secret-" * 4)
+    monkeypatch.setattr(api.settings, "database_auth_timeout_seconds", 0.1)
+    monkeypatch.setattr(
+        api.settings,
+        "database_url",
+        "postgresql+psycopg://bankrotai:password@ep-example-pooler.eu.neon.tech/db?sslmode=require",
+    )
+    monkeypatch.setattr(api, "_consume_rate_limit", lambda _client_id: True)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=api.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://testserver",
+            cookies={"bankrotai_session": "validly-shaped-test-token"},
+        ) as client:
+            started = time.perf_counter()
+            stalled = asyncio.create_task(client.get(
+                "/api/auth/me",
+                headers={"X-API-Key": api.settings.public_api_key},
+            ))
+            await asyncio.sleep(0.02)
+            live = await client.get("/health/live")
+            assert live.status_code == 200
+            assert time.perf_counter() - started < 0.25
+            assert (await stalled).status_code == 503
+
+    asyncio.run(exercise())

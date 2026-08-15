@@ -40,7 +40,14 @@ async function login(page: Page) {
 
   await page.getByLabel("Пароль").fill(password);
   await page.getByRole("button", { name: "Войти" }).click();
-  await expect(page.locator(".workspace")).toBeVisible({ timeout: 40_000 });
+  try {
+    await expect(page.locator(".workspace")).toBeVisible({ timeout: 40_000 });
+  } finally {
+    const passwordField = page.locator('input[autocomplete="current-password"]');
+    if (await passwordField.isVisible()) {
+      await passwordField.fill("");
+    }
+  }
 }
 
 async function browserJson<T>(page: Page, path: string): Promise<{ status: number; body: T }> {

@@ -7,6 +7,7 @@ import logging
 import hmac
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -91,6 +92,25 @@ _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
 _READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 _EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
+_AUTH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(2, settings.database_pool_size + settings.database_max_overflow),
+    thread_name_prefix="bankrotai-auth",
+)
+
+
+def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
+    with session_scope() as session:
+        return verify_session_token(session, token, settings.auth_session_secret or "")
+
+
+def _persist_request_failure(method: str, path: str, error: str) -> None:
+    with session_scope() as session:
+        session.add(DiagnosticEvent(
+            severity="error",
+            component="api",
+            message="Unhandled API request error",
+            context_json={"method": method, "path": path, "error": error[:2000]},
+        ))
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -244,8 +264,18 @@ async def log_requests(request: Request, call_next):
         token = request.cookies.get(_SESSION_COOKIE, "")
         if not token or not settings.auth_session_secret:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-        with session_scope() as session:
-            actor = verify_session_token(session, token, settings.auth_session_secret)
+        try:
+            actor_future = asyncio.get_running_loop().run_in_executor(_AUTH_EXECUTOR, _resolve_session_actor, token)
+            actor = await asyncio.wait_for(
+                actor_future,
+                timeout=settings.database_auth_timeout_seconds,
+            )
+        except TimeoutError:
+            logger.error("Session verification timed out")
+            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+        except Exception as exc:
+            logger.error("Session verification failed: %s", exc)
+            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
         if actor is None:
             return JSONResponse(status_code=401, content={"detail": "Session is invalid or expired"})
         request.state.authenticated_user = actor
@@ -256,7 +286,7 @@ async def log_requests(request: Request, call_next):
     # only stable, non-spoofable rate-limit key for authenticated traffic.
     client_ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
     rate_limit_key = f"user:{actor.id}" if actor is not None else f"ip:{client_ip}"
-    if not _consume_rate_limit(rate_limit_key):
+    if not await asyncio.to_thread(_consume_rate_limit, rate_limit_key):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
     start_time = time.time()
@@ -269,13 +299,10 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         logger.exception("Error processing request: %s", e)
         try:
-            with session_scope() as session:
-                session.add(DiagnosticEvent(
-                    severity="error",
-                    component="api",
-                    message="Unhandled API request error",
-                    context_json={"method": request.method, "path": request.url.path, "error": str(e)[:2000]},
-                ))
+            await asyncio.wait_for(
+                asyncio.to_thread(_persist_request_failure, request.method, request.url.path, str(e)),
+                timeout=settings.database_auth_timeout_seconds,
+            )
         except Exception:
             logger.exception("Failed to persist API diagnostic event")
         return JSONResponse(
