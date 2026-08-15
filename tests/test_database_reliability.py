@@ -219,6 +219,34 @@ def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
     ]
 
 
+def test_read_session_scope_does_not_commit_after_successful_select(monkeypatch) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.commits = 0
+            self.rollbacks = 0
+            self.closes = 0
+
+        def commit(self) -> None:
+            self.commits += 1
+            raise AssertionError("read-only requests must not commit")
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+        def close(self) -> None:
+            self.closes += 1
+
+    session = FakeSession()
+    monkeypatch.setattr(db, "SessionLocal", lambda: session)
+
+    with db.read_session_scope() as current:
+        assert current is session
+
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.closes == 1
+
+
 def test_existing_database_updates_to_head_without_losing_user_data(tmp_path: Path) -> None:
     path = tmp_path / "upgrade.db"
     _upgrade_database(path, "e7b1c2d3a4f5")

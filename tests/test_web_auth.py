@@ -77,6 +77,7 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
             auction_status="active",
         ))
     monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "app_env", "production")
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
@@ -129,6 +130,7 @@ def test_operator_and_diagnostics_endpoints_require_admin(monkeypatch) -> None:
     with scope() as session:
         upsert_user(session, "reader", "a sufficiently secure password", role="reader")
     monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "app_env", "production")
     monkeypatch.setattr(api.settings, "api_read_only", False)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
@@ -164,6 +166,7 @@ def test_authenticated_rate_limit_uses_verified_user_not_proxy_ip(monkeypatch) -
     with scope() as session:
         upsert_user(session, "reader", "a sufficiently secure password", role="reader")
     monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "app_env", "production")
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
@@ -206,6 +209,8 @@ def test_stalled_session_database_lookup_does_not_block_liveness(monkeypatch) ->
     @contextmanager
     def stalled_scope():
         yield object()
+
+    monkeypatch.setattr(api, "read_session_scope", stalled_scope)
 
     def stalled_verification(_session, _token: str, _secret: str) -> AuthenticatedUser:
         time.sleep(0.5)
@@ -264,6 +269,7 @@ def test_repeated_stalled_session_lookups_have_bounded_capacity(monkeypatch) -> 
 
     monkeypatch.setattr(api, "session_scope", stalled_scope)
     monkeypatch.setattr(api, "verify_session_token", stalled_verification)
+    monkeypatch.setattr(api, "read_session_scope", stalled_scope)
     monkeypatch.setattr(api.settings, "app_env", "production")
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")

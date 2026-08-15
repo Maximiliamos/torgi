@@ -152,6 +152,7 @@ def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
             yield session
 
     monkeypatch.setattr(api, "session_scope", postgres_scope)
+    monkeypatch.setattr(api, "read_session_scope", postgres_scope)
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(type(api.settings), "production_configuration_errors", lambda _self: [])
     ready = api.readiness_check()
