@@ -30,7 +30,8 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.pool import NullPool
 
 from bankrotai.core import get_settings
 
@@ -618,16 +619,25 @@ def get_engine():
     if settings.database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
     else:
-        engine_kwargs.update(
-            {
-                "pool_pre_ping": True,
-                "pool_recycle": 300,
-                "pool_use_lifo": True,
-                "pool_size": settings.database_pool_size,
-                "max_overflow": settings.database_max_overflow,
-                "pool_timeout": settings.database_pool_timeout,
-            }
-        )
+        database_host = (make_url(settings.database_url).host or "").lower()
+        if "-pooler." in database_host and database_host.endswith(".neon.tech"):
+            # Neon already places PgBouncer in front of this hostname.  Keeping
+            # another long-lived QueuePool on the VPS exposed requests to TCP
+            # connections that could die after pre_ping but before BEGIN.  A
+            # fresh client connection per transaction avoids that stale-socket
+            # race while Neon continues to pool the server connections.
+            engine_kwargs["poolclass"] = NullPool
+        else:
+            engine_kwargs.update(
+                {
+                    "pool_pre_ping": True,
+                    "pool_recycle": 300,
+                    "pool_use_lifo": True,
+                    "pool_size": settings.database_pool_size,
+                    "max_overflow": settings.database_max_overflow,
+                    "pool_timeout": settings.database_pool_timeout,
+                }
+            )
         if settings.database_url.startswith("postgresql"):
             engine_kwargs["connect_args"] = {
                 "connect_timeout": settings.database_connect_timeout,
