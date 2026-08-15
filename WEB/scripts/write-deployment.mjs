@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 
 function currentCommit() {
-  const fromEnvironment = process.env.CF_PAGES_COMMIT_SHA || process.env.GITHUB_SHA;
+  const fromEnvironment =
+    process.env.DEPLOYMENT_COMMIT || process.env.CF_PAGES_COMMIT_SHA || process.env.GITHUB_SHA;
   if (fromEnvironment) return fromEnvironment.trim();
   return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 }

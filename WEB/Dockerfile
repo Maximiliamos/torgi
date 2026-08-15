@@ -1,6 +1,8 @@
 FROM node:22-alpine AS build
 
 WORKDIR /app
+ARG DEPLOYMENT_COMMIT
+ENV DEPLOYMENT_COMMIT=${DEPLOYMENT_COMMIT}
 COPY WEB/package.json WEB/package-lock.json ./
 RUN npm ci
 COPY WEB ./
