@@ -124,6 +124,16 @@ jobs:
           fi
           section health_from_tunnel_container
           bounded 15 docker exec bankrotai-cloudflared wget -S -O - -T 8 http://bankrotai-api:8000/health/live
+          section api_tls_trust
+          bounded 15 docker exec bankrotai-api sh -c 'ls -l /etc/ssl/certs/*ussian* 2>/dev/null || true'
+          bounded 15 docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' bankrotai-api \
+            | grep -E '^(REQUESTS_CA_BUNDLE|SSL_CERT_FILE)=' || true
+          bounded 15 docker exec bankrotai-api python -c \
+            'import ssl; print(ssl.get_default_verify_paths())'
+          bounded 20 docker exec bankrotai-api python -c \
+            'import socket,ssl; context=ssl.create_default_context(); context.check_hostname=False; context.verify_mode=ssl.CERT_NONE; raw=socket.create_connection(("torgi.gov.ru",443),5); tls=context.wrap_socket(raw,server_hostname="torgi.gov.ru"); print([certificate.get_info() for certificate in tls._sslobj.get_unverified_chain()])'
+          bounded 20 docker exec bankrotai-api python -c \
+            'import requests; response=requests.get("https://torgi.gov.ru/new/api/public/lotcards/search", timeout=(5, 10)); print(response.status_code)'
           REMOTE
 
   build-and-deploy:
