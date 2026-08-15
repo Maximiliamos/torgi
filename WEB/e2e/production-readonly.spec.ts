@@ -103,8 +103,9 @@ test("real production auth, registry, sources, GEO, images and source links", as
   });
   await search.fill(missingQuery);
   expect((await emptySearchResponse).status()).toBe(200);
+  await expect(page.getByText("Загрузка лотов", { exact: true })).toBeHidden({ timeout: 30_000 });
   await expect(page.locator(".lotRow")).toHaveCount(0, { timeout: 30_000 });
-  await expect(page.getByText("0 найдено")).toBeVisible();
+  await expect(page.getByText("0 найдено", { exact: true })).toBeVisible();
   await search.fill("");
   await page.getByLabel("Сортировка").selectOption("price_asc");
   const categoryRequest = page.waitForResponse((response) =>
@@ -219,6 +220,11 @@ test("real production auth, registry, sources, GEO, images and source links", as
   }]);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+
+  await login(page);
+  const repeatedMe = await browserJson<{ username: string; role: string }>(page, "/api/auth/me");
+  expect(repeatedMe.status).toBe(200);
+  expect(repeatedMe.body.username).toBe(process.env.E2E_USERNAME || "reader");
 
   await attachFailures(testInfo, failures);
   expect(failures, "No unknown browser/runtime/network/5xx failures are allowed").toEqual([]);
