@@ -98,6 +98,8 @@ _AUTH_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="bankrotai-auth",
 )
 _AUTH_EXECUTOR_CAPACITY = threading.BoundedSemaphore(_AUTH_EXECUTOR_WORKERS)
+_AUTH_PENDING_LIMIT = max(100, _AUTH_EXECUTOR_WORKERS * 10)
+_AUTH_PENDING_CAPACITY = threading.BoundedSemaphore(_AUTH_PENDING_LIMIT)
 
 
 def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
@@ -110,6 +112,15 @@ def _resolve_session_actor_with_capacity(token: str) -> AuthenticatedUser | None
         return _resolve_session_actor(token)
     finally:
         _AUTH_EXECUTOR_CAPACITY.release()
+
+
+async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
+    loop = asyncio.get_running_loop()
+    while loop.time() < deadline:
+        if _AUTH_EXECUTOR_CAPACITY.acquire(blocking=False):
+            return True
+        await asyncio.sleep(min(0.005, max(0.0, deadline - loop.time())))
+    return False
 
 
 def _persist_request_failure(method: str, path: str, error: str) -> None:
@@ -273,29 +284,37 @@ async def log_requests(request: Request, call_next):
         token = request.cookies.get(_SESSION_COOKIE, "")
         if not token or not settings.auth_session_secret:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-        if not _AUTH_EXECUTOR_CAPACITY.acquire(blocking=False):
-            logger.error("Session verification capacity exhausted")
+        if not _AUTH_PENDING_CAPACITY.acquire(blocking=False):
+            logger.error("Session verification pending limit exhausted")
             return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
         try:
-            actor_future = asyncio.get_running_loop().run_in_executor(
-                _AUTH_EXECUTOR,
-                _resolve_session_actor_with_capacity,
-                token,
-            )
-        except Exception:
-            _AUTH_EXECUTOR_CAPACITY.release()
-            raise
-        try:
-            actor = await asyncio.wait_for(
-                actor_future,
-                timeout=settings.database_auth_timeout_seconds,
-            )
-        except TimeoutError:
-            logger.error("Session verification timed out")
-            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
-        except Exception as exc:
-            logger.error("Session verification failed: %s", exc)
-            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + settings.database_auth_timeout_seconds
+            if not await _wait_for_auth_executor_capacity(deadline):
+                logger.error("Session verification timed out waiting for executor capacity")
+                return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+            try:
+                actor_future = loop.run_in_executor(
+                    _AUTH_EXECUTOR,
+                    _resolve_session_actor_with_capacity,
+                    token,
+                )
+            except Exception:
+                _AUTH_EXECUTOR_CAPACITY.release()
+                raise
+            try:
+                actor = await asyncio.wait_for(
+                    actor_future,
+                    timeout=max(0.001, deadline - loop.time()),
+                )
+            except TimeoutError:
+                logger.error("Session verification timed out")
+                return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+            except Exception as exc:
+                logger.error("Session verification failed: %s", exc)
+                return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+        finally:
+            _AUTH_PENDING_CAPACITY.release()
         if actor is None:
             return JSONResponse(status_code=401, content={"detail": "Session is invalid or expired"})
         request.state.authenticated_user = actor

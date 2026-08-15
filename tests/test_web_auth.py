@@ -283,7 +283,7 @@ def test_repeated_stalled_session_lookups_have_bounded_capacity(monkeypatch) -> 
                     "/api/auth/me",
                     headers={"X-API-Key": api.settings.public_api_key},
                 ))
-                for _ in range(api._AUTH_EXECUTOR_WORKERS + 8)
+                for _ in range(api._AUTH_PENDING_LIMIT + 8)
             ]
             await asyncio.sleep(0.01)
             started = time.perf_counter()
