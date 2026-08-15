@@ -171,7 +171,7 @@ class DuplicateSplitRequest(BaseModel):
 class ReviewStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(None, pattern="^(approved|maybe|rejected)?$")
+    status: str | None = Field(None, pattern="^(approved|maybe|rejected)$")
 
 
 class DocumentCompareRequest(BaseModel):
@@ -250,8 +250,13 @@ async def log_requests(request: Request, call_next):
             return JSONResponse(status_code=401, content={"detail": "Session is invalid or expired"})
         request.state.authenticated_user = actor
 
+    actor = getattr(request.state, "authenticated_user", None)
+    # Cloudflare replaces CF-Connecting-IP with a shared Worker address on
+    # cross-zone subrequests.  A verified session identity is therefore the
+    # only stable, non-spoofable rate-limit key for authenticated traffic.
     client_ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
-    if not _consume_rate_limit(client_ip):
+    rate_limit_key = f"user:{actor.id}" if actor is not None else f"ip:{client_ip}"
+    if not _consume_rate_limit(rate_limit_key):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
     start_time = time.time()
@@ -380,7 +385,9 @@ def read_root():
     return {"message": "Welcome to BankrotAI API"}
 
 @app.get("/health/live")
-def liveness_check():
+async def liveness_check():
+    # Keep liveness off AnyIO's shared worker-thread pool. Slow synchronous
+    # source/database calls must not make a healthy event loop look dead.
     return {"status": "alive", "version": __version__}
 
 
@@ -540,6 +547,7 @@ async def search_auction_source(
     if price_min is not None and price_max is not None and price_min > price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
     region_name = _normalize_public_region(region)
+    request_timeout = (settings.external_connect_timeout, settings.external_read_timeout)
     try:
         if source == "torgi-gov":
             filters = TorgiGovSearchFilters(
@@ -554,7 +562,7 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(TorgiGovClient().search_lots, filters)
+            lots, metadata = await asyncio.to_thread(TorgiGovClient(timeout=request_timeout).search_lots, filters)
         elif source == "tbankrot":
             filters = TBankrotSearchFilters(
                 search_text=search,
@@ -566,7 +574,10 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(TBankrotClient().search_filtered_lots, filters)
+            lots, metadata = await asyncio.to_thread(
+                TBankrotClient(timeout=settings.external_read_timeout).search_filtered_lots,
+                filters,
+            )
         elif source == "lot-online":
             filters = LotOnlineSearchFilters(
                 search_text=search,
@@ -576,7 +587,7 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(LotOnlineClient().search_lots, filters)
+            lots, metadata = await asyncio.to_thread(LotOnlineClient(timeout=request_timeout).search_lots, filters)
         else:
             raise HTTPException(status_code=404, detail="Unknown auction source")
     except HTTPException:

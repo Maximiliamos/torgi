@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/docker-smoke-lib.sh"
 
 export API_READ_ONLY=true
+export API_RATE_LIMIT_PER_MINUTE=10000
 docker compose up -d --build postgres redis migrate api web
 wait_for_stack
 
@@ -34,3 +35,4 @@ expect_status 404 POST http://127.0.0.1:8080/api/online/torgi-gov/sync \
   -d '{"search":"smoke-test-no-results","max_items":1}' >/dev/null
 
 npm --prefix WEB run test:e2e
+python scripts/load-test-readonly.py

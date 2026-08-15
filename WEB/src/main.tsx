@@ -6,7 +6,7 @@ import {
   NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
-  addNote, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
+  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions,
   fetchSavedSearches, fetchSources, fetchStats, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
@@ -177,9 +177,25 @@ export function App({ username = "Пользователь", onLogout = () => un
 }
 
 export function AuthenticatedApp() {
-  const [user, setUser] = React.useState<AuthUser | null>(null); const [checking, setChecking] = React.useState(true); const [username, setUsername] = React.useState(""); const [password, setPassword] = React.useState(""); const [error, setError] = React.useState("");
-  React.useEffect(() => { fetchCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setChecking(false)); }, []);
+  const [user, setUser] = React.useState<AuthUser | null>(null); const [checking, setChecking] = React.useState(true); const [startupError, setStartupError] = React.useState(""); const [username, setUsername] = React.useState(""); const [password, setPassword] = React.useState(""); const [error, setError] = React.useState("");
+  const checkSession = React.useCallback(async () => {
+    setChecking(true);
+    setStartupError("");
+    try {
+      setUser(await fetchCurrentUser());
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setUser(null);
+      } else {
+        setStartupError(err instanceof Error ? err.message : "Сервис временно недоступен");
+      }
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+  React.useEffect(() => { void checkSession(); }, [checkSession]);
   if (checking) return <main className="authScreen"><Loader2 className="spin" /></main>;
+  if (startupError) return <main className="authScreen"><section className="authCard" role="alert"><span className="eyebrow">BankrotAI Web</span><h1>Нет связи с сервисом</h1><State error>{startupError}</State><button className="primaryButton" onClick={() => void checkSession()}><RefreshCcw size={16} />Повторить</button></section></main>;
   if (!user) return <main className="authScreen"><form className="authCard" onSubmit={async (event) => { event.preventDefault(); setError(""); try { setUser(await login(username, password)); setPassword(""); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка авторизации"); } }}><span className="eyebrow">BankrotAI Web</span><h1>Вход</h1><label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label><label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>{error && <State error>{error}</State>}<button className="primaryButton">Войти</button></form></main>;
   return <App username={user.username} onLogout={async () => { await logout(); await clearMapCache(); setUser(null); }} />;
 }

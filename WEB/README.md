@@ -66,6 +66,12 @@ npx wrangler pages deploy dist --project-name bankrotai --branch main
 npx wrangler deploy --config edge-proxy/wrangler.jsonc
 ```
 
+Для production используйте ручной workflow `Deploy Cloudflare edge proxy` и отдельный
+минимально привилегированный secret `CLOUDFLARE_API_TOKEN`. `CLOUDFLARE_TUNNEL_TOKEN` и
+`KOYEB_SERVICE_KEY` не являются deploy-токенами Cloudflare. Сборка создаёт
+`dist/deployment.json` из `CF_PAGES_COMMIT_SHA`; smoke/reliability workflow сверяют его с
+актуальным `main`, поэтому незаметная публикация старой версии считается ошибкой deploy.
+
 `bankrotai.pages.dev` является техническим адресом и не должен публиковаться как основной.
 API origin остаётся закрытым за Cloudflare Pages Function/Tunnel; браузер не получает
 `KOYEB_SERVICE_KEY`.

@@ -208,6 +208,14 @@ jobs:
             -P "$SSH_DEPLOY_PORT" \
             "$RUNNER_TEMP/bankrotai-web.tgz" "root@$SSH_HOST:/opt/bankrotai/web-release.tgz"
 
+          scp \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -P "$SSH_DEPLOY_PORT" \
+            scripts/regru-api-watchdog.sh "root@$SSH_HOST:/opt/bankrotai/api-watchdog.sh"
+
           ssh \
             -i "$HOME/.ssh/regru_deploy" \
             -o BatchMode=yes \
@@ -262,6 +270,34 @@ jobs:
           }
           CADDY
           chmod 644 /opt/bankrotai/Caddyfile
+          chmod 700 /opt/bankrotai/api-watchdog.sh
+
+          cat > /etc/systemd/system/bankrotai-api-watchdog.service <<'UNIT'
+          [Unit]
+          Description=BankrotAI API liveness watchdog
+          After=docker.service network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/opt/bankrotai/api-watchdog.sh
+          UNIT
+
+          cat > /etc/systemd/system/bankrotai-api-watchdog.timer <<'UNIT'
+          [Unit]
+          Description=Run BankrotAI API watchdog every minute
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec=1min
+          AccuracySec=10s
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now bankrotai-api-watchdog.timer
           REMOTE
 
       - name: Pull and start production containers
@@ -397,6 +433,24 @@ jobs:
           grep -Fq 'replace-lots' "$RUNNER_TEMP/public-app.js"
           grep -Fq 'Объединено публикаций' "$RUNNER_TEMP/public-app.js"
 
+      - name: Verify canonical Cloudflare production path
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)"
+            DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
+            if test "$AUTH_STATUS" = "401" && test "$DEPLOYED_SHA" = "$GITHUB_SHA"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Canonical production path did not reach the expected release" >&2
+          exit 1
+
       - name: Install Playwright Chromium
         working-directory: WEB
         run: npx playwright install --with-deps chromium
@@ -404,7 +458,7 @@ jobs:
       - name: Run public WEB smoke
         working-directory: WEB
         env:
-          E2E_BASE_URL: ${{ secrets.PUBLIC_WEB_URL }}
+          E2E_BASE_URL: https://dezster.ru
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         run: npm run test:e2e

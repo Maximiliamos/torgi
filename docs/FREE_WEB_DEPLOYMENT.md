@@ -10,7 +10,11 @@
 
 Браузер не получает межсервисный ключ. Function добавляет `KOYEB_SERVICE_KEY`, а FastAPI
 дополнительно требует персональную HttpOnly-сессию. Production API работает с
-`API_READ_ONLY=true`: доступны только авторизация, список/карточка/процедура лота и статистика.
+`API_READ_ONLY=true` означает curated WEB mode: массовая синхронизация регионов и фоновые
+операторские очереди закрыты, но авторизованному пользователю доступны обратимые персональные
+операции (watchlist, заметки, сохранённые фильтры, калькулятор и участие). Merge/split требует
+роли `admin`. Название переменной сохранено для обратной совместимости и не означает полностью
+запрещённые HTTP mutations.
 
 ## Neon
 
@@ -87,11 +91,19 @@ Secrets:
 - `AUTH_BOOTSTRAP_PASSWORD`
 - `BACKUP_ENCRYPTION_PASSWORD`
 - `PUBLIC_WEB_URL` — для smoke workflow
+- `CLOUDFLARE_API_TOKEN` — отдельный scoped token только для ручного workflow
+  `Deploy Cloudflare edge proxy`; tunnel token для этого не подходит
 
 Variable: `AUTH_BOOTSTRAP_USERNAME`.
 
 Workflow имеет единый concurrency lock, timeout 50 минут и создаёт GitHub Issue при ошибке.
 Каждый успешный запуск сохраняет зашифрованный dump на три дня.
+
+`Public WEB smoke` каждые шесть часов быстро проверяет канонический `https://dezster.ru`.
+`Production functional reliability` ежедневно выполняет отдельный реальный read-only journey
+через Cloudflare: auth, реестр, три внешних источника, GEO, изображения, ссылки ЭТП и карту.
+REG.RU deploy устанавливает минутный liveness-watchdog; после трёх последовательных зависаний
+он перезапускает API и tunnel, а единичная ошибка readiness только журналируется.
 
 ## Восстановление
 

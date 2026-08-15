@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      E2E_BASE_URL: ${{ secrets.PUBLIC_WEB_URL }}
+      E2E_BASE_URL: https://dezster.ru
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:
@@ -29,6 +29,20 @@ jobs:
         run: npm ci
       - working-directory: WEB
         run: npx playwright install --with-deps chromium
+      - name: Verify canonical production path and deployed SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 \
+            https://api.dezster.ru/health/live >/dev/null
+          curl --fail --silent --show-error --max-time 20 \
+            https://api.dezster.ru/health/ready >/dev/null
+          test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+            https://dezster.ru/api/auth/me)" = "401"
+          DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
+            -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+          test "$DEPLOYED_SHA" = "$GITHUB_SHA"
       - working-directory: WEB
         run: npm run test:e2e
       - if: failure()

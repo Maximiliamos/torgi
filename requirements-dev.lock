@@ -144,7 +144,7 @@ pyside6-essentials==6.11.1
     # via
     #   pyside6
     #   pyside6-addons
-pytest==8.4.2
+pytest==9.1.1
     # via bankrotai-finder (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via celery

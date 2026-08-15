@@ -1,13 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./main";
+import { App, AuthenticatedApp } from "./main";
 
 vi.mock("./lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("./lib/api")>();
-  return { ...original, fetchLots: vi.fn(), fetchStats: vi.fn(), fetchLotDetail: vi.fn() };
+  return { ...original, fetchLots: vi.fn(), fetchStats: vi.fn(), fetchLotDetail: vi.fn(), fetchCurrentUser: vi.fn() };
 });
 
-import { fetchLots, fetchStats } from "./lib/api";
+import { ApiError, fetchCurrentUser, fetchLots, fetchStats } from "./lib/api";
 
 describe("App states", () => {
   beforeEach(() => {
@@ -27,5 +27,27 @@ describe("App states", () => {
     vi.mocked(fetchLots).mockRejectedValue(new Error("API offline"));
     render(<App />);
     expect(await screen.findByText("API offline")).toBeInTheDocument();
+  });
+});
+
+describe("Authentication bootstrap", () => {
+  it("shows a recoverable service state instead of a false logout", async () => {
+    vi.mocked(fetchCurrentUser).mockRejectedValue(new ApiError(
+      "Сервис временно недоступен. Повторите попытку через несколько секунд.",
+    ));
+
+    render(<AuthenticatedApp />);
+
+    expect(await screen.findByRole("heading", { name: "Нет связи с сервисом" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Вход" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Повторить/ })).toBeInTheDocument();
+  });
+
+  it("shows login only when the session is actually unauthorized", async () => {
+    vi.mocked(fetchCurrentUser).mockRejectedValue(new ApiError("Authentication required", 401));
+
+    render(<AuthenticatedApp />);
+
+    expect(await screen.findByRole("heading", { name: "Вход" })).toBeInTheDocument();
   });
 });

@@ -89,7 +89,9 @@ jobs:
         run: |
           set -euo pipefail
           if curl --fail --silent --show-error --max-time 20 \
-            https://api.dezster.ru/health/live; then
+            https://api.dezster.ru/health/live \
+            && test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me)" = "401"; then
             printf '\n'
             exit 0
           fi

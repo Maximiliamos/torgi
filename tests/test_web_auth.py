@@ -106,3 +106,46 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
     assert "user_id" not in api.ParticipationChecklistRequest.model_fields
     with pytest.raises(ValidationError):
         api.ParticipationChecklistRequest(user_id="attacker")
+
+
+def test_authenticated_rate_limit_uses_verified_user_not_proxy_ip(monkeypatch) -> None:
+    scope = _session_factory()
+    with scope() as session:
+        upsert_user(session, "reader", "a sufficiently secure password", role="reader")
+    monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api.settings, "app_env", "production")
+    monkeypatch.setattr(api.settings, "api_read_only", True)
+    monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
+    monkeypatch.setattr(api.settings, "auth_session_secret", "session-secret-" * 4)
+    monkeypatch.setattr(
+        api.settings,
+        "database_url",
+        "postgresql+psycopg://bankrotai:password@ep-example-pooler.eu.neon.tech/db"
+        "?sslmode=require&channel_binding=require",
+    )
+    observed: list[str] = []
+    monkeypatch.setattr(api, "_consume_rate_limit", lambda client_id: observed.append(client_id) or True)
+    client = TestClient(api.app, base_url="https://testserver")
+    headers = {
+        "X-API-Key": api.settings.public_api_key,
+        "CF-Connecting-IP": "2a06:98c0:3600::103",
+    }
+
+    assert client.post(
+        "/api/auth/login",
+        headers=headers,
+        json={"username": "reader", "password": "a sufficiently secure password"},
+    ).status_code == 200
+    assert client.get("/api/auth/me", headers=headers).status_code == 200
+
+    assert observed[0] == "ip:2a06:98c0:3600::103"
+    assert observed[1] == "user:1"
+
+
+def test_review_status_rejects_empty_or_unknown_values() -> None:
+    assert api.ReviewStatusRequest(status=None).status is None
+    assert api.ReviewStatusRequest(status="approved").status == "approved"
+    with pytest.raises(ValidationError):
+        api.ReviewStatusRequest(status="")
+    with pytest.raises(ValidationError):
+        api.ReviewStatusRequest(status="admin-approved")

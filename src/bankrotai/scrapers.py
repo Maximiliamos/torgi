@@ -2363,8 +2363,9 @@ class TBankrotClient:
         "Севастополь": "92",
     }
 
-    def __init__(self, diagnostics: bool = False):
+    def __init__(self, diagnostics: bool = False, timeout: float = 25):
         self.diagnostics = diagnostics
+        self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -2388,7 +2389,7 @@ class TBankrotClient:
         endpoint = self._prepare_url(params, filters)
         request_url = self._base_url_for_filters(filters)
         try:
-            resp = self.session.get(request_url, params=params, timeout=25)
+            resp = self.session.get(request_url, params=params, timeout=self.timeout)
             resp.raise_for_status()
         except Exception as exc:
             raise RuntimeError(f"TBankrot: не удалось загрузить страницу поиска: {exc}") from exc

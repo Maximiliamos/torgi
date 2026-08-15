@@ -53,6 +53,7 @@ services:
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
       API_READ_ONLY: ${API_READ_ONLY:-false}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-60}
     depends_on:
       postgres:
         condition: service_healthy
