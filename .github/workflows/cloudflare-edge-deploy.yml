@@ -2,6 +2,8 @@ name: Deploy Cloudflare edge proxy
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,24 +18,61 @@ jobs:
     timeout-minutes: 10
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
-      - name: Require a scoped Cloudflare deploy token
-        run: test -n "$CLOUDFLARE_API_TOKEN"
+      - name: Require scoped Cloudflare deployment credentials
+        run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
       - working-directory: WEB
         run: npm ci
+      - name: Validate and build Pages release
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
+          test "$(python -c 'import json; print(json.load(open("dist/deployment.json"))["commit"])')" = "$GITHUB_SHA"
       - name: Validate Worker bundle
         working-directory: WEB
         run: npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
+      - name: Deploy Pages release
+        working-directory: WEB
+        run: >-
+          npx wrangler@4 pages deploy dist
+          --project-name bankrotai
+          --branch main
+          --commit-hash "$GITHUB_SHA"
       - name: Deploy edge proxy
         working-directory: WEB
         run: npx wrangler@4 deploy --config edge-proxy/wrangler.jsonc
       - name: Verify canonical edge behavior
         run: |
           set -euo pipefail
-          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-            https://dezster.ru/api/auth/me)" = "401"
+          for attempt in $(seq 1 24); do
+            PAGES_SHA="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Cache-Control: no-cache' https://bankrotai.pages.dev/deployment.json 2>/dev/null \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
+            CANONICAL_SHA="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
+            AUTH_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)"
+            if test "$PAGES_SHA" = "$GITHUB_SHA" \
+              && test "$CANONICAL_SHA" = "$GITHUB_SHA" \
+              && test "$AUTH_STATUS" = "401"; then
+              break
+            fi
+            if test "$attempt" = 24; then
+              echo "Cloudflare Pages/Worker did not reach $GITHUB_SHA" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          curl --fail --silent --show-error --max-time 20 -I https://dezster.ru/deployment.json \
+            | grep -qi '^cache-control: no-store'
           curl --fail --silent --show-error --max-time 20 -I https://dezster.ru/ \
             | grep -qi '^strict-transport-security:'
