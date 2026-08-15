@@ -7,6 +7,7 @@ import logging
 import hmac
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -91,6 +92,25 @@ _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
 _READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 _EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
+_AUTH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(2, settings.database_pool_size + settings.database_max_overflow),
+    thread_name_prefix="bankrotai-auth",
+)
+
+
+def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
+    with session_scope() as session:
+        return verify_session_token(session, token, settings.auth_session_secret or "")
+
+
+def _persist_request_failure(method: str, path: str, error: str) -> None:
+    with session_scope() as session:
+        session.add(DiagnosticEvent(
+            severity="error",
+            component="api",
+            message="Unhandled API request error",
+            context_json={"method": method, "path": path, "error": error[:2000]},
+        ))
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -171,7 +191,7 @@ class DuplicateSplitRequest(BaseModel):
 class ReviewStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(None, pattern="^(approved|maybe|rejected)?$")
+    status: str | None = Field(None, pattern="^(approved|maybe|rejected)$")
 
 
 class DocumentCompareRequest(BaseModel):
@@ -244,14 +264,29 @@ async def log_requests(request: Request, call_next):
         token = request.cookies.get(_SESSION_COOKIE, "")
         if not token or not settings.auth_session_secret:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-        with session_scope() as session:
-            actor = verify_session_token(session, token, settings.auth_session_secret)
+        try:
+            actor_future = asyncio.get_running_loop().run_in_executor(_AUTH_EXECUTOR, _resolve_session_actor, token)
+            actor = await asyncio.wait_for(
+                actor_future,
+                timeout=settings.database_auth_timeout_seconds,
+            )
+        except TimeoutError:
+            logger.error("Session verification timed out")
+            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
+        except Exception as exc:
+            logger.error("Session verification failed: %s", exc)
+            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
         if actor is None:
             return JSONResponse(status_code=401, content={"detail": "Session is invalid or expired"})
         request.state.authenticated_user = actor
 
+    actor = getattr(request.state, "authenticated_user", None)
+    # Cloudflare replaces CF-Connecting-IP with a shared Worker address on
+    # cross-zone subrequests.  A verified session identity is therefore the
+    # only stable, non-spoofable rate-limit key for authenticated traffic.
     client_ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
-    if not _consume_rate_limit(client_ip):
+    rate_limit_key = f"user:{actor.id}" if actor is not None else f"ip:{client_ip}"
+    if not await asyncio.to_thread(_consume_rate_limit, rate_limit_key):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
     start_time = time.time()
@@ -264,13 +299,10 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         logger.exception("Error processing request: %s", e)
         try:
-            with session_scope() as session:
-                session.add(DiagnosticEvent(
-                    severity="error",
-                    component="api",
-                    message="Unhandled API request error",
-                    context_json={"method": request.method, "path": request.url.path, "error": str(e)[:2000]},
-                ))
+            await asyncio.wait_for(
+                asyncio.to_thread(_persist_request_failure, request.method, request.url.path, str(e)),
+                timeout=settings.database_auth_timeout_seconds,
+            )
         except Exception:
             logger.exception("Failed to persist API diagnostic event")
         return JSONResponse(
@@ -380,7 +412,9 @@ def read_root():
     return {"message": "Welcome to BankrotAI API"}
 
 @app.get("/health/live")
-def liveness_check():
+async def liveness_check():
+    # Keep liveness off AnyIO's shared worker-thread pool. Slow synchronous
+    # source/database calls must not make a healthy event loop look dead.
     return {"status": "alive", "version": __version__}
 
 
@@ -540,6 +574,7 @@ async def search_auction_source(
     if price_min is not None and price_max is not None and price_min > price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
     region_name = _normalize_public_region(region)
+    request_timeout = (settings.external_connect_timeout, settings.external_read_timeout)
     try:
         if source == "torgi-gov":
             filters = TorgiGovSearchFilters(
@@ -554,7 +589,7 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(TorgiGovClient().search_lots, filters)
+            lots, metadata = await asyncio.to_thread(TorgiGovClient(timeout=request_timeout).search_lots, filters)
         elif source == "tbankrot":
             filters = TBankrotSearchFilters(
                 search_text=search,
@@ -566,7 +601,10 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(TBankrotClient().search_filtered_lots, filters)
+            lots, metadata = await asyncio.to_thread(
+                TBankrotClient(timeout=settings.external_read_timeout).search_filtered_lots,
+                filters,
+            )
         elif source == "lot-online":
             filters = LotOnlineSearchFilters(
                 search_text=search,
@@ -576,7 +614,7 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(LotOnlineClient().search_lots, filters)
+            lots, metadata = await asyncio.to_thread(LotOnlineClient(timeout=request_timeout).search_lots, filters)
         else:
             raise HTTPException(status_code=404, detail="Unknown auction source")
     except HTTPException:
@@ -617,7 +655,7 @@ def import_online_lot(
         return {"id": lot.id, "external_id": lot.external_id, "source_system": lot.source_system}
 
 
-@app.post("/api/online/torgi-gov/sync", status_code=202)
+@app.post("/api/online/torgi-gov/sync", status_code=202, dependencies=[Depends(require_admin)])
 def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     if request.price_min is not None and request.price_max is not None and request.price_min > request.price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
@@ -640,7 +678,7 @@ def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     return {"task_id": task_id, "status": "queued"}
 
 
-@app.get("/api/tasks/{task_id}")
+@app.get("/api/tasks/{task_id}", dependencies=[Depends(require_admin)])
 def get_background_task_status(task_id: str):
     with session_scope() as session:
         state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
@@ -1144,7 +1182,7 @@ def get_source_states():
         return [item.model_dump(mode="json") for item in list_source_health(session)]
 
 
-@app.get("/api/diagnostics")
+@app.get("/api/diagnostics", dependencies=[Depends(require_admin)])
 def get_diagnostics():
     with session_scope() as session:
         return diagnostic_export(session)
@@ -1182,7 +1220,7 @@ def _normalize_public_region(value: str | None) -> str | None:
 def get_public_regions():
     return _public_regions()
 
-@app.post("/api/regions/{city_slug}/sync")
+@app.post("/api/regions/{city_slug}/sync", dependencies=[Depends(require_admin)])
 def trigger_region_sync(city_slug: str, force: bool = False):
     try:
         dispatch_mode = schedule_region_sync(city_slug, force=force)
@@ -1194,7 +1232,7 @@ def trigger_region_sync(city_slug: str, force: bool = False):
         "dispatchMode": dispatch_mode
     }
 
-@app.get("/api/regions/{city_slug}/sync-status")
+@app.get("/api/regions/{city_slug}/sync-status", dependencies=[Depends(require_admin)])
 def get_sync_status(city_slug: str):
     with session_scope() as session:
         state = get_region_sync_state(session, city_slug)

@@ -1,0 +1,68 @@
+name: Production functional reliability
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: production-functional-reliability
+  cancel-in-progress: true
+
+jobs:
+  production-functional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E_BASE_URL: https://dezster.ru
+      E2E_PRODUCTION_AUDIT: "1"
+      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - name: Verify production provenance and public health
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$EXPECTED_SHA"
+          curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/live >/dev/null
+          curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/ready >/dev/null
+          test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+            https://dezster.ru/api/auth/me)" = "401"
+          DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
+            -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+          test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
+      - working-directory: WEB
+        run: npm ci
+      - working-directory: WEB
+        run: npx playwright install --with-deps chromium
+      - name: Run real read-only production journey
+        working-directory: WEB
+        run: npx playwright test e2e/production-readonly.spec.ts
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-functional-${{ github.run_id }}
+          path: WEB/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  notify-failure:
+    needs: production-functional
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `Production functional reliability failed: ${context.runId}`;
+            const body = `The canonical production journey failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
+            await github.rest.issues.create({ ...context.repo, title, body });

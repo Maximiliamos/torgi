@@ -9,6 +9,16 @@ export API_READ_ONLY=false
 docker compose up -d --build
 wait_for_stack
 
+# The default curated user must not be able to enqueue global operator jobs.
+login_user >/dev/null
+expect_status 403 POST http://127.0.0.1:8080/api/online/torgi-gov/sync \
+  -b "$COOKIE_JAR" -u "$WEB_BASIC_AUTH_USER:$WEB_BASIC_AUTH_PASSWORD" \
+  -H 'Content-Type: application/json' \
+  -d '{"search":"reader-must-not-sync","max_items":1}' >/dev/null
+
+docker compose exec -T -e AUTH_BOOTSTRAP_PASSWORD="$AUTH_BOOTSTRAP_PASSWORD" api \
+  python -m bankrotai.cli create-user operator --role admin >/dev/null
+export E2E_USERNAME=operator
 login_user >/dev/null
 docker compose exec -T worker celery -A bankrotai.tasks:celery_app inspect ping --timeout 10
 

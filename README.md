@@ -282,7 +282,7 @@ bash scripts/docker-smoke.sh
 
 ## CI
 
-GitHub Actions запускается для push и pull request в `main`: Ruff/Mypy, SQLite tests, upgrade существующей БД, PostgreSQL integration/Alembic, WEB typecheck/lint/unit/build и Docker/Playwright smoke. Python и npm зависимости устанавливаются по lock-файлам.
+GitHub Actions запускается для push и pull request в `main`: Ruff/Mypy, SQLite tests, upgrade существующей БД, PostgreSQL integration/Alembic, WEB typecheck/lint/unit/build и Docker/Playwright smoke. Отдельный ежедневный production reliability workflow проверяет канонический домен, реальные источники, GEO, изображения и ссылки ЭТП без необратимых записей. Python и npm зависимости устанавливаются по lock-файлам.
 
 ## Ограничения
 

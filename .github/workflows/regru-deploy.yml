@@ -2,6 +2,12 @@ name: Deploy WEB and API to REG.RU
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: Collect read-only production diagnostics without deploying or restarting
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -33,16 +39,104 @@ env:
   API_HOSTNAME: 194-226-126-233.sslip.io
 
 jobs:
+  diagnostics:
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnostics_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      SSH_HOST: 194.226.126.233
+      SSH_PORT: "2222"
+    steps:
+      - name: Prepare SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_diagnostics"
+          chmod 600 "$HOME/.ssh/regru_diagnostics"
+          ssh-keyscan -T 20 -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Collect read-only API diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/regru_diagnostics" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "$SSH_PORT" "root@$SSH_HOST" \
+            'bash -s' <<'REMOTE'
+          set -u
+          section() { printf '\n===== %s =====\n' "$1"; }
+          bounded() { timeout "$1" "${@:2}" 2>&1 || printf '[command exit=%s]\n' "$?"; }
+
+          section timestamp
+          date --iso-8601=seconds
+          uptime
+          section memory_and_disk
+          free -h
+          df -h
+          section docker_ps
+          bounded 15 docker ps -a --no-trunc
+          section docker_stats
+          bounded 15 docker stats --no-stream
+          section api_inspect_allowlist
+          bounded 15 docker inspect --format \
+            'state={{json .State}} restart_count={{.RestartCount}} image={{.Config.Image}} memory={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCpus}} pids_limit={{.HostConfig.PidsLimit}} networks={{json .NetworkSettings.Networks}}' \
+            bankrotai-api
+          section api_logs
+          bounded 20 docker logs --timestamps --tail 500 bankrotai-api
+          section tunnel_logs
+          bounded 20 docker logs --timestamps --tail 300 bankrotai-cloudflared \
+            | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
+          section api_processes
+          bounded 15 docker exec bankrotai-api ps aux
+          bounded 15 docker top bankrotai-api -eo pid,ppid,nlwp,stat,etime,time,pcpu,pmem,wchan:32,args
+          section api_proc_limits
+          api_pid="$(docker inspect --format '{{.State.Pid}}' bankrotai-api 2>/dev/null || true)"
+          if test -n "$api_pid" && test "$api_pid" != 0; then
+            cat "/proc/$api_pid/status" 2>&1 || true
+            cat "/proc/$api_pid/limits" 2>&1 || true
+            printf 'fd_count='; find "/proc/$api_pid/fd" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l
+            printf 'wchan='; cat "/proc/$api_pid/wchan" 2>&1 || true
+          fi
+          section host_sockets
+          bounded 15 ss -s
+          bounded 15 ss -tanp
+          section health_from_host
+          bounded 12 curl --verbose --fail --show-error --connect-timeout 2 --max-time 8 http://127.0.0.1:8000/health/live
+          printf '\n'
+          bounded 20 curl --verbose --fail --show-error --connect-timeout 2 --max-time 15 http://127.0.0.1:8000/health/ready
+          printf '\n'
+          section health_from_api_network_ip
+          api_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' bankrotai-api 2>/dev/null || true)"
+          if test -n "$api_ip"; then
+            bounded 12 curl --verbose --fail --show-error --connect-timeout 2 --max-time 8 "http://$api_ip:8000/health/live"
+            printf '\n'
+            bounded 20 curl --verbose --fail --show-error --connect-timeout 2 --max-time 15 "http://$api_ip:8000/health/ready"
+            printf '\n'
+          fi
+          section health_from_tunnel_container
+          bounded 15 docker exec bankrotai-cloudflared wget -S -O - -T 8 http://bankrotai-api:8000/health/live
+          REMOTE
+
   build-and-deploy:
+    if: github.event_name != 'workflow_dispatch' || !inputs.diagnostics_only
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -80,14 +174,14 @@ jobs:
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -208,6 +302,14 @@ jobs:
             -P "$SSH_DEPLOY_PORT" \
             "$RUNNER_TEMP/bankrotai-web.tgz" "root@$SSH_HOST:/opt/bankrotai/web-release.tgz"
 
+          scp \
+            -i "$HOME/.ssh/regru_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
+            -P "$SSH_DEPLOY_PORT" \
+            scripts/regru-api-watchdog.sh "root@$SSH_HOST:/opt/bankrotai/api-watchdog.sh"
+
           ssh \
             -i "$HOME/.ssh/regru_deploy" \
             -o BatchMode=yes \
@@ -262,6 +364,34 @@ jobs:
           }
           CADDY
           chmod 644 /opt/bankrotai/Caddyfile
+          chmod 700 /opt/bankrotai/api-watchdog.sh
+
+          cat > /etc/systemd/system/bankrotai-api-watchdog.service <<'UNIT'
+          [Unit]
+          Description=BankrotAI API liveness watchdog
+          After=docker.service network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/opt/bankrotai/api-watchdog.sh
+          UNIT
+
+          cat > /etc/systemd/system/bankrotai-api-watchdog.timer <<'UNIT'
+          [Unit]
+          Description=Run BankrotAI API watchdog every minute
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec=1min
+          AccuracySec=10s
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now bankrotai-api-watchdog.timer
           REMOTE
 
       - name: Pull and start production containers
@@ -397,6 +527,24 @@ jobs:
           grep -Fq 'replace-lots' "$RUNNER_TEMP/public-app.js"
           grep -Fq 'Объединено публикаций' "$RUNNER_TEMP/public-app.js"
 
+      - name: Verify canonical Cloudflare production path
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)"
+            DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
+            if test "$AUTH_STATUS" = "401" && test "$DEPLOYED_SHA" = "$GITHUB_SHA"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Canonical production path did not reach the expected release" >&2
+          exit 1
+
       - name: Install Playwright Chromium
         working-directory: WEB
         run: npx playwright install --with-deps chromium
@@ -404,7 +552,7 @@ jobs:
       - name: Run public WEB smoke
         working-directory: WEB
         env:
-          E2E_BASE_URL: ${{ secrets.PUBLIC_WEB_URL }}
+          E2E_BASE_URL: https://dezster.ru
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         run: npm run test:e2e

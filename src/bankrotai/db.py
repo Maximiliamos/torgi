@@ -622,12 +622,35 @@ def get_engine():
             {
                 "pool_pre_ping": True,
                 "pool_recycle": 300,
+                "pool_use_lifo": True,
                 "pool_size": settings.database_pool_size,
                 "max_overflow": settings.database_max_overflow,
                 "pool_timeout": settings.database_pool_timeout,
             }
         )
+        if settings.database_url.startswith("postgresql"):
+            engine_kwargs["connect_args"] = {
+                "connect_timeout": settings.database_connect_timeout,
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 3,
+                # Linux otherwise permits a black-holed established Neon TCP
+                # connection to block a synchronous psycopg read for minutes.
+                "tcp_user_timeout": settings.database_tcp_user_timeout_ms,
+            }
     engine = create_engine(settings.database_url, **engine_kwargs)
+    if engine.dialect.name == "postgresql":
+
+        def _configure_transaction_timeouts(connection) -> None:
+            # Neon pooled connections reject statement_timeout in the startup
+            # packet. SET LOCAL is transaction-scoped and pooler-safe.
+            connection.exec_driver_sql(
+                f"SET LOCAL statement_timeout={settings.database_statement_timeout_ms}"
+            )
+            connection.exec_driver_sql("SET LOCAL lock_timeout=5000")
+
+        event.listen(engine, "begin", _configure_transaction_timeouts)
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

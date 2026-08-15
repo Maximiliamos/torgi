@@ -53,6 +53,7 @@ services:
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
       API_READ_ONLY: ${API_READ_ONLY:-false}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-60}
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,6 +121,8 @@ services:
     build:
       context: .
       dockerfile: WEB/Dockerfile
+      args:
+        DEPLOYMENT_COMMIT: ${DEPLOYMENT_COMMIT:-0000000000000000000000000000000000000000}
     environment:
       BANKROTAI_API_KEY: ${BANKROTAI_API_KEY:?Set BANKROTAI_API_KEY in .env}
       WEB_BASIC_AUTH_USER: ${WEB_BASIC_AUTH_USER:?Set WEB_BASIC_AUTH_USER in .env}

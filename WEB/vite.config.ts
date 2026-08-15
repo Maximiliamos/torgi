@@ -8,7 +8,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}"]
+    include: ["src/**/*.test.{ts,tsx}", "edge-proxy/**/*.test.mjs"]
   },
   server: {
     port: 5173,

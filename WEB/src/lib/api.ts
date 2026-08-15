@@ -193,6 +193,58 @@ export type SourceHealth = {
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
+const READ_RETRY_DELAY_MS = 250;
+const TEMPORARY_UNAVAILABLE_MESSAGE =
+  "Сервис временно недоступен. Повторите попытку через несколько секунд.";
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+async function waitForReadRetry(signal?: AbortSignal) {
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(resolve, READ_RETRY_DELAY_MS);
+    signal?.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    }, { once: true });
+  });
+}
+
+async function fetchWithReadRetry(input: RequestInfo | URL, init: RequestInit = {}) {
+  const method = (init.method || "GET").toUpperCase();
+  const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (!RETRYABLE_READ_STATUSES.has(response.status) || attempt === attempts - 1) {
+        return response;
+      }
+      await response.body?.cancel();
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      lastError = error;
+      if (attempt === attempts - 1) {
+        throw new ApiError(TEMPORARY_UNAVAILABLE_MESSAGE);
+      }
+    }
+    await waitForReadRetry(init.signal ?? undefined);
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new ApiError(TEMPORARY_UNAVAILABLE_MESSAGE);
+}
 
 export function makeUrl(path: string, params?: Record<string, string | number | boolean | undefined>) {
   const url = new URL(`${API_BASE}${path}`, window.location.origin);
@@ -207,7 +259,7 @@ export async function requestJson<T>(
   params?: Record<string, string | number | boolean | undefined>,
   init?: RequestInit
 ): Promise<T> {
-  const response = await fetch(makeUrl(path, params), {
+  const response = await fetchWithReadRetry(makeUrl(path, params), {
     ...init,
     headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
     credentials: "same-origin"
@@ -216,7 +268,10 @@ export async function requestJson<T>(
     const text = await response.text();
     let message = text || `HTTP ${response.status}`;
     try { message = JSON.parse(text).detail || message; } catch { /* plain text */ }
-    throw new Error(message);
+    if (RETRYABLE_READ_STATUSES.has(response.status)) {
+      message = TEMPORARY_UNAVAILABLE_MESSAGE;
+    }
+    throw new ApiError(message, response.status);
   }
   return response.json() as Promise<T>;
 }
@@ -341,7 +396,7 @@ export async function fetchMapLotsSWR(
 
   const started = performance.now();
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithReadRetry(url, {
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
@@ -357,7 +412,12 @@ export async function fetchMapLotsSWR(
     }
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || `HTTP ${response.status}`);
+      throw new ApiError(
+        RETRYABLE_READ_STATUSES.has(response.status)
+          ? TEMPORARY_UNAVAILABLE_MESSAGE
+          : text || `HTTP ${response.status}`,
+        response.status,
+      );
     }
     const cacheCopy = response.clone();
     const data = await response.json() as MapLotsResponse;

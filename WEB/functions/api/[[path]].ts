@@ -30,7 +30,15 @@ export async function onRequest(context: PagesContext): Promise<Response> {
 
   const method = context.request.method.toUpperCase();
   const isIdempotent = ["GET", "HEAD"].includes(method);
-  const attempts = isIdempotent ? 2 : 1;
+  const isExpensiveExternalRead =
+    incoming.pathname.startsWith("/api/search/") ||
+    incoming.pathname.startsWith("/api/online/") ||
+    incoming.pathname === "/api/cadastre/search";
+  // External catalogues are idempotent but not cheaply cancellable: retrying a
+  // timed-out thread doubles load while the first source request is still
+  // running. Give it one bounded attempt instead.
+  const attempts = isIdempotent && !isExpensiveExternalRead ? 2 : 1;
+  const timeoutMs = isExpensiveExternalRead ? 35_000 : 12_000;
 
   try {
     let response: Response | undefined;
@@ -42,7 +50,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
           headers,
           body: isIdempotent ? undefined : context.request.body,
           redirect: "manual",
-          signal: AbortSignal.timeout(12_000),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         if (![502, 503, 504].includes(response.status) || attempt === attempts - 1) {
           break;

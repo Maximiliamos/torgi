@@ -2,6 +2,39 @@
 
 const PAGES_ORIGIN = "https://bankrotai.pages.dev";
 const PRIMARY_HOST = "dezster.ru";
+const SECURITY_HEADERS = {
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "same-origin",
+};
+
+function withSecurityHeaders(headers = new Headers()) {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  headers.set("x-bankrotai-edge", "cloudflare");
+  return headers;
+}
+
+function unavailableResponse(incoming) {
+  const headers = withSecurityHeaders(new Headers({
+    "cache-control": "no-store",
+    "retry-after": "5",
+  }));
+  if (incoming.pathname.startsWith("/api/")) {
+    headers.set("content-type", "application/json; charset=utf-8");
+    return new Response(JSON.stringify({ detail: "Service temporarily unavailable" }), {
+      status: 503,
+      headers,
+    });
+  }
+  headers.set("content-type", "text/html; charset=utf-8");
+  return new Response(
+    "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>BankrotAI временно недоступен</title><main><h1>Сервис временно недоступен</h1><p>Повторите попытку через несколько секунд.</p></main></html>",
+    { status: 503, headers },
+  );
+}
 
 export default {
   async fetch(request) {
@@ -9,7 +42,10 @@ export default {
 
     if (incoming.protocol !== "https:" || incoming.hostname === `www.${PRIMARY_HOST}`) {
       const canonical = new URL(`${incoming.pathname}${incoming.search}`, `https://${PRIMARY_HOST}`);
-      return Response.redirect(canonical.toString(), 308);
+      return new Response(null, {
+        status: 308,
+        headers: withSecurityHeaders(new Headers({ location: canonical.toString() })),
+      });
     }
 
     const upstream = new URL(`${incoming.pathname}${incoming.search}`, PAGES_ORIGIN);
@@ -21,8 +57,16 @@ export default {
       body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
       redirect: "manual",
     });
-    const response = await fetch(upstreamRequest);
-    const headers = new Headers(response.headers);
+    let response;
+    try {
+      response = await fetch(
+        upstreamRequest,
+        incoming.pathname === "/deployment.json" ? { cache: "no-store" } : undefined,
+      );
+    } catch {
+      return unavailableResponse(incoming);
+    }
+    const headers = withSecurityHeaders(new Headers(response.headers));
     const location = headers.get("location");
 
     if (location) {
@@ -33,7 +77,9 @@ export default {
       }
     }
 
-    headers.set("x-bankrotai-edge", "cloudflare");
+    if (incoming.pathname === "/deployment.json") {
+      headers.set("cache-control", "no-store");
+    }
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,

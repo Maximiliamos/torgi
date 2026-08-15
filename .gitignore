@@ -12,6 +12,7 @@ tmp_*
 tmp/
 .cache/
 .pytest_cache/
+uv.lock
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -33,6 +34,7 @@ WEB/.env.*.local
 *.dump
 *.dump.enc
 output/playwright/
+.artifacts/
 .playwright-cli/
 /app/
 /backups/
