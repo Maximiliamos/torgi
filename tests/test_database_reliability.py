@@ -182,7 +182,7 @@ def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
         return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
     settings = core.AppSettings(
-        database_url="postgresql+psycopg://user:password@ep-example-pooler.eu.neon.tech/db",
+        database_url="postgresql+psycopg://user:password@postgres.example.com/db",
         database_connect_timeout=4,
         database_tcp_user_timeout_ms=12_000,
         database_statement_timeout_ms=25_000,
@@ -217,6 +217,31 @@ def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
         "SET LOCAL statement_timeout=25000",
         "SET LOCAL lock_timeout=5000",
     ]
+
+
+def test_neon_pooler_does_not_reuse_client_tcp_connections(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_engine(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    settings = core.AppSettings(
+        database_url="postgresql+psycopg://user:password@ep-example-pooler.eu.neon.tech/db",
+    )
+    monkeypatch.setattr(db, "get_settings", lambda: settings)
+    monkeypatch.setattr(db, "create_engine", fake_create_engine)
+    monkeypatch.setattr(db.event, "listen", lambda *_args, **_kwargs: None)
+    db.get_engine.cache_clear()
+    try:
+        db.get_engine()
+    finally:
+        db.get_engine.cache_clear()
+
+    assert captured["poolclass"] is db.NullPool
+    assert "pool_size" not in captured
+    assert "pool_pre_ping" not in captured
 
 
 def test_read_session_scope_does_not_commit_after_successful_select(monkeypatch) -> None:
