@@ -137,6 +137,47 @@ jobs:
           section torgi_safe_result_counts
           bounded 90 docker exec bankrotai-api python -c \
             'import time; from bankrotai.scrapers import TorgiGovClient,TorgiGovSearchFilters; client=TorgiGovClient(timeout=(5,10),rate_limit=(0,0)); [(lambda started,result: print({"region":region or "all","loaded":len(result[0]),"total":result[1].get("total"),"elapsed_seconds":round(time.monotonic()-started,3),"warnings":len(result[1].get("warnings",[]))}))(time.monotonic(),client.search_lots(TorgiGovSearchFilters(subject_rf=region,page=1,page_size=20))) for region in ("Ярославская область","Москва","Московская область",None)]'
+          bounded 90 docker exec -i bankrotai-api python - <<'PY'
+          import time
+
+          import requests
+
+          endpoint = "https://torgi.gov.ru/new/api/public/lotcards/search"
+          base = {"page": "0", "size": "20", "sort": "firstVersionPublicationDate,desc"}
+          cases = {
+              "empty": {},
+              "page": base,
+              "published": {**base, "lotStatus": "PUBLISHED"},
+              "submissions": {**base, "lotStatus": "APPLICATIONS_SUBMISSION"},
+              "combined_status": {**base, "lotStatus": "PUBLISHED,APPLICATIONS_SUBMISSION"},
+              "sale": {**base, "typeTransaction": "SALE"},
+              "real_estate": {**base, "catCode": "2,8,9,10,11,12,903"},
+              "combined": {
+                  **base,
+                  "lotStatus": "PUBLISHED,APPLICATIONS_SUBMISSION",
+                  "typeTransaction": "SALE",
+                  "catCode": "2,8,9,10,11,12,903",
+              },
+          }
+          session = requests.Session()
+          for name, params in cases.items():
+              started = time.monotonic()
+              response = session.get(endpoint, params=params, timeout=(5, 10))
+              payload = response.json()
+              content = payload.get("content", []) if isinstance(payload, dict) else []
+              page = payload.get("page", {}) if isinstance(payload, dict) else {}
+              print({
+                  "case": name,
+                  "status": response.status_code,
+                  "elapsed_seconds": round(time.monotonic() - started, 3),
+                  "keys": sorted(payload) if isinstance(payload, dict) else [type(payload).__name__],
+                  "content_count": len(content) if isinstance(content, list) else None,
+                  "total": payload.get("total") if isinstance(payload, dict) else None,
+                  "total_elements": payload.get("totalElements", page.get("totalElements"))
+                  if isinstance(payload, dict)
+                  else None,
+              })
+          PY
           REMOTE
 
   build-and-deploy:
