@@ -23,8 +23,8 @@ jobs:
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - name: Verify production provenance and public health
         shell: bash
@@ -48,7 +48,7 @@ jobs:
         working-directory: WEB
         run: npx playwright test e2e/production-readonly.spec.ts
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-functional-${{ github.run_id }}
           path: WEB/test-results
@@ -60,7 +60,7 @@ jobs:
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v9
         with:
           script: |
             const title = `Production functional reliability failed: ${context.runId}`;

@@ -655,7 +655,7 @@ def import_online_lot(
         return {"id": lot.id, "external_id": lot.external_id, "source_system": lot.source_system}
 
 
-@app.post("/api/online/torgi-gov/sync", status_code=202)
+@app.post("/api/online/torgi-gov/sync", status_code=202, dependencies=[Depends(require_admin)])
 def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     if request.price_min is not None and request.price_max is not None and request.price_min > request.price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
@@ -678,7 +678,7 @@ def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     return {"task_id": task_id, "status": "queued"}
 
 
-@app.get("/api/tasks/{task_id}")
+@app.get("/api/tasks/{task_id}", dependencies=[Depends(require_admin)])
 def get_background_task_status(task_id: str):
     with session_scope() as session:
         state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
@@ -1182,7 +1182,7 @@ def get_source_states():
         return [item.model_dump(mode="json") for item in list_source_health(session)]
 
 
-@app.get("/api/diagnostics")
+@app.get("/api/diagnostics", dependencies=[Depends(require_admin)])
 def get_diagnostics():
     with session_scope() as session:
         return diagnostic_export(session)
@@ -1220,7 +1220,7 @@ def _normalize_public_region(value: str | None) -> str | None:
 def get_public_regions():
     return _public_regions()
 
-@app.post("/api/regions/{city_slug}/sync")
+@app.post("/api/regions/{city_slug}/sync", dependencies=[Depends(require_admin)])
 def trigger_region_sync(city_slug: str, force: bool = False):
     try:
         dispatch_mode = schedule_region_sync(city_slug, force=force)
@@ -1232,7 +1232,7 @@ def trigger_region_sync(city_slug: str, force: bool = False):
         "dispatchMode": dispatch_mode
     }
 
-@app.get("/api/regions/{city_slug}/sync-status")
+@app.get("/api/regions/{city_slug}/sync-status", dependencies=[Depends(require_admin)])
 def get_sync_status(city_slug: str):
     with session_scope() as session:
         state = get_region_sync_state(session, city_slug)

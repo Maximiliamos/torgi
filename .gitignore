@@ -34,6 +34,7 @@ WEB/.env.*.local
 *.dump
 *.dump.enc
 output/playwright/
+.artifacts/
 .playwright-cli/
 /app/
 /backups/

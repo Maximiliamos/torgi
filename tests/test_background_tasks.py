@@ -6,9 +6,21 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bankrotai import api, tasks
+from bankrotai.auth import AuthenticatedUser
 
 
 client = TestClient(api.app)
+
+
+@pytest.fixture(autouse=True)
+def _operator_auth():
+    api.app.dependency_overrides[api.require_admin] = lambda: AuthenticatedUser(
+        id=1,
+        username="operator",
+        role="admin",
+    )
+    yield
+    api.app.dependency_overrides.pop(api.require_admin, None)
 
 
 def test_excessive_synchronous_get_is_rejected() -> None:

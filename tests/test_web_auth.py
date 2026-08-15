@@ -111,6 +111,41 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
         api.ParticipationChecklistRequest(user_id="attacker")
 
 
+def test_operator_and_diagnostics_endpoints_require_admin(monkeypatch) -> None:
+    scope = _session_factory()
+    with scope() as session:
+        upsert_user(session, "reader", "a sufficiently secure password", role="reader")
+    monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api.settings, "app_env", "production")
+    monkeypatch.setattr(api.settings, "api_read_only", False)
+    monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
+    monkeypatch.setattr(api.settings, "auth_session_secret", "session-secret-" * 4)
+    monkeypatch.setattr(
+        api.settings,
+        "database_url",
+        "postgresql+psycopg://bankrotai:password@postgres.test/db?sslmode=require&channel_binding=require",
+    )
+    monkeypatch.setattr(api.settings, "redis_url", "redis://:password@redis.test:6379/0")
+    monkeypatch.setattr(api, "_consume_rate_limit", lambda _client_id: True)
+    client = TestClient(api.app, base_url="https://testserver")
+    headers = {"X-API-Key": api.settings.public_api_key}
+
+    login = client.post(
+        "/api/auth/login",
+        headers=headers,
+        json={"username": "reader", "password": "a sufficiently secure password"},
+    )
+    assert login.status_code == 200
+    for method, path in (
+        ("get", "/api/diagnostics"),
+        ("post", "/api/online/torgi-gov/sync"),
+        ("get", "/api/tasks/unowned-task"),
+        ("post", "/api/regions/yaroslavl/sync"),
+        ("get", "/api/regions/yaroslavl/sync-status"),
+    ):
+        assert getattr(client, method)(path, headers=headers).status_code == 403
+
+
 def test_authenticated_rate_limit_uses_verified_user_not_proxy_ip(monkeypatch) -> None:
     scope = _session_factory()
     with scope() as session:

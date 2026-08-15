@@ -30,8 +30,8 @@ jobs:
       BANKROTAI_API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements.lock && pip install --no-deps -e .
       - name: Geocode the next bounded batch

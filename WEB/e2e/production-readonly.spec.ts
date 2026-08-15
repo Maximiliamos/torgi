@@ -96,7 +96,13 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await page.locator(".detailPanel .iconButton").click();
 
   const search = page.locator(".searchBox input");
-  await search.fill(`no-result-${Date.now()}`);
+  const missingQuery = `no-result-${Date.now()}`;
+  const emptySearchResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/lots" && url.searchParams.get("search") === missingQuery;
+  });
+  await search.fill(missingQuery);
+  expect((await emptySearchResponse).status()).toBe(200);
   await expect(page.locator(".lotRow")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByText("0 найдено")).toBeVisible();
   await search.fill("");
