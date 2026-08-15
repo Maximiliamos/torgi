@@ -32,6 +32,7 @@ jobs:
       AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
       AUTH_BOOTSTRAP_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
       AUTH_BOOTSTRAP_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      AUTH_BOOTSTRAP_ROLE: ${{ vars.AUTH_BOOTSTRAP_ROLE || 'reader' }}
       BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
@@ -63,22 +64,44 @@ jobs:
       - run: pip install -r requirements.lock && pip install --no-deps -e .
       - name: Apply migrations using direct Neon URL
         run: alembic upgrade head
-      - name: Ensure initial reader exists
-        run: python -m bankrotai.cli create-user "$AUTH_BOOTSTRAP_USERNAME"
+      - name: Ensure bootstrap user exists with the configured role
+        run: python -m bankrotai.cli create-user "$AUTH_BOOTSTRAP_USERNAME" --role "$AUTH_BOOTSTRAP_ROLE"
       - name: Verify bootstrap credential
         shell: bash
         run: |
           python - <<'PY'
+          import json
           import os
+          from sqlalchemy import func, select
           from bankrotai.auth import authenticate_user
-          from bankrotai.db import session_scope
+          from bankrotai.db import AppUser, session_scope
 
           with session_scope() as session:
+              username = os.environ["AUTH_BOOTSTRAP_USERNAME"].strip().casefold()
+              users = list(session.scalars(
+                  select(AppUser).where(func.lower(AppUser.username) == username)
+              ))
+              assert len(users) == 1
+              user = users[0]
+              assert user.role == os.environ["AUTH_BOOTSTRAP_ROLE"]
+              assert user.is_active is True
+              assert user.password_hash.startswith("scrypt$")
               assert authenticate_user(
                   session,
-                  os.environ["AUTH_BOOTSTRAP_USERNAME"],
+                  username,
                   os.environ["AUTH_BOOTSTRAP_PASSWORD"],
               ) is not None
+              print(json.dumps({
+                  "count": len(users),
+                  "username": user.username,
+                  "role": user.role,
+                  "is_active": user.is_active,
+                  "token_version": user.token_version,
+                  "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+                  "password_hash_present": bool(user.password_hash),
+                  "password_hash_format_valid": user.password_hash.startswith("scrypt$"),
+                  "credential_matches": True,
+              }))
           PY
       - name: Synchronize read model
         if: github.event_name != 'workflow_dispatch' || !inputs.credential_rotation_only

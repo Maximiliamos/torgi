@@ -92,15 +92,24 @@ _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
 _READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 _EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
+_AUTH_EXECUTOR_WORKERS = max(2, settings.database_pool_size + settings.database_max_overflow)
 _AUTH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=max(2, settings.database_pool_size + settings.database_max_overflow),
+    max_workers=_AUTH_EXECUTOR_WORKERS,
     thread_name_prefix="bankrotai-auth",
 )
+_AUTH_EXECUTOR_CAPACITY = threading.BoundedSemaphore(_AUTH_EXECUTOR_WORKERS)
 
 
 def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
     with session_scope() as session:
         return verify_session_token(session, token, settings.auth_session_secret or "")
+
+
+def _resolve_session_actor_with_capacity(token: str) -> AuthenticatedUser | None:
+    try:
+        return _resolve_session_actor(token)
+    finally:
+        _AUTH_EXECUTOR_CAPACITY.release()
 
 
 def _persist_request_failure(method: str, path: str, error: str) -> None:
@@ -264,8 +273,19 @@ async def log_requests(request: Request, call_next):
         token = request.cookies.get(_SESSION_COOKIE, "")
         if not token or not settings.auth_session_secret:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        if not _AUTH_EXECUTOR_CAPACITY.acquire(blocking=False):
+            logger.error("Session verification capacity exhausted")
+            return JSONResponse(status_code=503, content={"detail": "Authentication dependency unavailable"})
         try:
-            actor_future = asyncio.get_running_loop().run_in_executor(_AUTH_EXECUTOR, _resolve_session_actor, token)
+            actor_future = asyncio.get_running_loop().run_in_executor(
+                _AUTH_EXECUTOR,
+                _resolve_session_actor_with_capacity,
+                token,
+            )
+        except Exception:
+            _AUTH_EXECUTOR_CAPACITY.release()
+            raise
+        try:
             actor = await asyncio.wait_for(
                 actor_future,
                 timeout=settings.database_auth_timeout_seconds,

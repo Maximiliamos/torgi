@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -98,7 +99,11 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
     )
     assert login.status_code == 200
     assert login.json()["username"] == "reader"
-    assert "httponly" in login.headers["set-cookie"].lower()
+    cookie = login.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=strict" in cookie
+    assert client.get("/api/auth/me", headers=service_headers).status_code == 200
     assert client.get("/api/lots", headers=service_headers).status_code == 200
     assert client.post(
         "/api/lots/1/split",
@@ -106,6 +111,14 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
         json={"reason": "reader must not modify duplicate groups"},
     ).status_code == 403
     assert client.post("/api/regions/yaroslavl/sync", headers=service_headers).status_code == 404
+    assert client.post("/api/auth/logout", headers=service_headers).status_code == 200
+    assert client.get("/api/auth/me", headers=service_headers).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        headers=service_headers,
+        json={"username": "reader", "password": "a sufficiently secure password"},
+    ).status_code == 200
+    assert client.get("/api/auth/me", headers=service_headers).status_code == 200
     assert "user_id" not in api.ParticipationChecklistRequest.model_fields
     with pytest.raises(ValidationError):
         api.ParticipationChecklistRequest(user_id="attacker")
@@ -231,3 +244,82 @@ def test_stalled_session_database_lookup_does_not_block_liveness(monkeypatch) ->
             assert (await stalled).status_code == 503
 
     asyncio.run(exercise())
+
+
+def test_repeated_stalled_session_lookups_have_bounded_capacity(monkeypatch) -> None:
+    release = threading.Event()
+    entered = 0
+    entered_lock = threading.Lock()
+
+    @contextmanager
+    def stalled_scope():
+        yield object()
+
+    def stalled_verification(_session, _token: str, _secret: str) -> AuthenticatedUser:
+        nonlocal entered
+        with entered_lock:
+            entered += 1
+        release.wait(timeout=1)
+        return AuthenticatedUser(id=1, username="reader", role="reader")
+
+    monkeypatch.setattr(api, "session_scope", stalled_scope)
+    monkeypatch.setattr(api, "verify_session_token", stalled_verification)
+    monkeypatch.setattr(api.settings, "app_env", "production")
+    monkeypatch.setattr(api.settings, "api_read_only", True)
+    monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
+    monkeypatch.setattr(api.settings, "auth_session_secret", "session-secret-" * 4)
+    monkeypatch.setattr(api.settings, "database_auth_timeout_seconds", 0.05)
+    monkeypatch.setattr(api, "_consume_rate_limit", lambda _client_id: True)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=api.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://testserver",
+            cookies={"bankrotai_session": "validly-shaped-test-token"},
+        ) as client:
+            requests = [
+                asyncio.create_task(client.get(
+                    "/api/auth/me",
+                    headers={"X-API-Key": api.settings.public_api_key},
+                ))
+                for _ in range(api._AUTH_EXECUTOR_WORKERS + 8)
+            ]
+            await asyncio.sleep(0.01)
+            started = time.perf_counter()
+            live = await client.get("/health/live")
+            assert live.status_code == 200
+            assert time.perf_counter() - started < 0.25
+            responses = await asyncio.gather(*requests)
+            assert all(response.status_code == 503 for response in responses)
+            assert entered <= api._AUTH_EXECUTOR_WORKERS
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+
+    acquired = 0
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        while acquired < api._AUTH_EXECUTOR_WORKERS and api._AUTH_EXECUTOR_CAPACITY.acquire(blocking=False):
+            acquired += 1
+        if acquired == api._AUTH_EXECUTOR_WORKERS:
+            break
+        for _ in range(acquired):
+            api._AUTH_EXECUTOR_CAPACITY.release()
+        acquired = 0
+        time.sleep(0.01)
+    for _ in range(acquired):
+        api._AUTH_EXECUTOR_CAPACITY.release()
+    assert acquired == api._AUTH_EXECUTOR_WORKERS
+
+    recovered = TestClient(
+        api.app,
+        base_url="https://testserver",
+        cookies={"bankrotai_session": "validly-shaped-test-token"},
+    )
+    assert recovered.get(
+        "/api/auth/me",
+        headers={"X-API-Key": api.settings.public_api_key},
+    ).status_code == 200
