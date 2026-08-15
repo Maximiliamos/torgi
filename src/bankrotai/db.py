@@ -638,12 +638,19 @@ def get_engine():
                 # Linux otherwise permits a black-holed established Neon TCP
                 # connection to block a synchronous psycopg read for minutes.
                 "tcp_user_timeout": settings.database_tcp_user_timeout_ms,
-                "options": (
-                    f"-c statement_timeout={settings.database_statement_timeout_ms} "
-                    "-c lock_timeout=5000"
-                ),
             }
     engine = create_engine(settings.database_url, **engine_kwargs)
+    if engine.dialect.name == "postgresql":
+
+        def _configure_transaction_timeouts(connection) -> None:
+            # Neon pooled connections reject statement_timeout in the startup
+            # packet. SET LOCAL is transaction-scoped and pooler-safe.
+            connection.exec_driver_sql(
+                f"SET LOCAL statement_timeout={settings.database_statement_timeout_ms}"
+            )
+            connection.exec_driver_sql("SET LOCAL lock_timeout=5000")
+
+        event.listen(engine, "begin", _configure_transaction_timeouts)
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

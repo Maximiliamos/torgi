@@ -189,6 +189,11 @@ def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
     )
     monkeypatch.setattr(db, "get_settings", lambda: settings)
     monkeypatch.setattr(db, "create_engine", fake_create_engine)
+    monkeypatch.setattr(
+        db.event,
+        "listen",
+        lambda _target, name, fn: captured.update(event_name=name, event_fn=fn),
+    )
     db.get_engine.cache_clear()
     try:
         db.get_engine()
@@ -204,8 +209,14 @@ def test_postgres_engine_bounds_blackholed_connections(monkeypatch) -> None:
         "keepalives_interval": 10,
         "keepalives_count": 3,
         "tcp_user_timeout": 12_000,
-        "options": "-c statement_timeout=25000 -c lock_timeout=5000",
     }
+    assert captured["event_name"] == "begin"
+    commands: list[str] = []
+    captured["event_fn"](SimpleNamespace(exec_driver_sql=commands.append))
+    assert commands == [
+        "SET LOCAL statement_timeout=25000",
+        "SET LOCAL lock_timeout=5000",
+    ]
 
 
 def test_existing_database_updates_to_head_without_losing_user_data(tmp_path: Path) -> None:
