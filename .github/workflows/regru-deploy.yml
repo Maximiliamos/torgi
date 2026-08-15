@@ -134,6 +134,9 @@ jobs:
             'import socket,ssl; context=ssl.create_default_context(); context.check_hostname=False; context.verify_mode=ssl.CERT_NONE; raw=socket.create_connection(("torgi.gov.ru",443),5); tls=context.wrap_socket(raw,server_hostname="torgi.gov.ru"); print([certificate.get_info() for certificate in tls._sslobj.get_unverified_chain()])'
           bounded 20 docker exec bankrotai-api python -c \
             'import requests; response=requests.get("https://torgi.gov.ru/new/api/public/lotcards/search", timeout=(5, 10)); print(response.status_code)'
+          section torgi_safe_result_counts
+          bounded 90 docker exec bankrotai-api python -c \
+            'import time; from bankrotai.scrapers import TorgiGovClient,TorgiGovSearchFilters; client=TorgiGovClient(timeout=(5,10),rate_limit=(0,0)); [(lambda started,result: print({"region":region or "all","loaded":len(result[0]),"total":result[1].get("total"),"elapsed_seconds":round(time.monotonic()-started,3),"warnings":len(result[1].get("warnings",[]))}))(time.monotonic(),client.search_lots(TorgiGovSearchFilters(subject_rf=region,page=1,page_size=20))) for region in ("Ярославская область","Москва","Московская область",None)]'
           REMOTE
 
   build-and-deploy:
