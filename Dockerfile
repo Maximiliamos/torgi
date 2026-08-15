@@ -14,7 +14,7 @@ COPY src ./src
 COPY tests ./tests
 COPY alembic ./alembic
 COPY alembic.ini ./
-COPY certs/russian_trusted_root_ca.crt certs/russian_trusted_sub_ca.crt /usr/local/share/ca-certificates/
+COPY certs/russian_trusted_root_ca.crt certs/russian_trusted_sub_ca.crt certs/russian_trusted_sub_ca_2024.crt /usr/local/share/ca-certificates/
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

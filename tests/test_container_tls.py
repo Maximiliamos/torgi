@@ -16,6 +16,10 @@ EXPECTED_CERTIFICATES = {
         "Russian Trusted Sub CA",
         "bbbde2103e790b999ec62bd03cf625a5a2e7c316e10afe6a490eedead8b3fd9b",
     ),
+    "russian_trusted_sub_ca_2024.crt": (
+        "Russian Trusted Sub CA",
+        "2155785036c900dbb5f1bb2a1569c80c55595bd6bf94867a29bbddbc7d88a3f2",
+    ),
 }
 
 
