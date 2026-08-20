@@ -59,6 +59,7 @@ def test_torgi_gov_filters_are_converted_to_query_params() -> None:
             search_text=LAND_SEARCH,
             subject_rf=OMSK_REGION,
             category_code="2",
+            type_transaction="SALE",
             price_min=1000,
             price_max=5000,
             notice_number="2200001",
@@ -74,7 +75,7 @@ def test_torgi_gov_filters_are_converted_to_query_params() -> None:
     assert params["text"] == LAND_SEARCH
     assert params["dynSubjRF"] == "55"
     assert params["catCode"] == "2"
-    assert params["typeTransaction"] == "SALE"
+    assert params["typeTransaction"] == "sale"
     assert params["priceMin"] == "1000"
     assert params["priceMax"] == "5000"
     assert params["noticeNumber"] == "2200001"
@@ -83,6 +84,68 @@ def test_torgi_gov_filters_are_converted_to_query_params() -> None:
     assert params["pubTo"] == "2026-05-08"
     assert params["page"] == "0"
     assert params["size"] == "25"
+
+
+def test_torgi_gov_fans_out_multi_category_filters_and_paginates_globally() -> None:
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.requests = []
+
+        def get(self, _url, *, params, timeout):
+            self.requests.append((dict(params), timeout))
+            category = params["catCode"]
+            page = int(params["page"])
+            dates = {
+                ("8", 0): ["2026-05-06", "2026-05-04"],
+                ("8", 1): ["2026-05-02"],
+                ("9", 0): ["2026-05-05", "2026-05-03"],
+                ("9", 1): ["2026-05-01"],
+            }[(category, page)]
+            return FakeResponse({
+                "content": [
+                    {
+                        "id": f"{category}_{date}",
+                        "categoryCode": category,
+                        "lotStatus": "PUBLISHED",
+                        "firstVersionPublicationDate": date,
+                    }
+                    for date in dates
+                ],
+                "totalElements": 3,
+                "totalPages": 2,
+                "number": page,
+                "last": page == 1,
+            })
+
+    session = FakeSession()
+    client = TorgiGovClient(session=session, rate_limit=(0, 0))
+
+    payload = client._request_json({"catCode": "8,9", "page": "1", "size": "2"})
+
+    assert [item["firstVersionPublicationDate"] for item in payload["content"]] == [
+        "2026-05-04",
+        "2026-05-03",
+    ]
+    assert payload["totalElements"] == 6
+    assert payload["totalPages"] == 3
+    assert payload["number"] == 1
+    assert [request[0] for request in session.requests] == [
+        {"catCode": "8", "page": "0", "size": "2"},
+        {"catCode": "8", "page": "1", "size": "2"},
+        {"catCode": "9", "page": "0", "size": "2"},
+        {"catCode": "9", "page": "1", "size": "2"},
+    ]
 
 
 def test_torgi_gov_plain_location_is_not_sent_as_fias() -> None:
