@@ -820,10 +820,12 @@ class TorgiGovClient:
                 value = self._subject_code(str(value).strip())
             if attr == "category_code":
                 value = self.CATEGORY_GROUP_CODE_MAP.get(str(value).strip(), value)
+            if attr == "type_transaction":
+                value = str(value).strip().lower()
             params[query_name] = str(value).strip()
 
         params.setdefault("catCode", self.REAL_ESTATE_CATEGORY_CODES)
-        params.setdefault("typeTransaction", "SALE")
+        params.setdefault("typeTransaction", "sale")
 
         if filters.price_min is not None:
             params["priceMin"] = self._format_number(filters.price_min)
@@ -835,10 +837,67 @@ class TorgiGovClient:
         return params, warnings
 
     def _request_json(self, params: dict[str, str]) -> Any:
+        category_codes = [code.strip() for code in params.get("catCode", "").split(",") if code.strip()]
+        if len(category_codes) > 1:
+            return self._request_json_by_category(params, category_codes)
         self._respect_rate_limit()
         response = self.session.get(self.SEARCH_ENDPOINT, params=params, timeout=self.timeout)
         response.raise_for_status()
         return response.json()
+
+    def _request_json_by_category(self, params: dict[str, str], category_codes: list[str]) -> dict[str, Any]:
+        requested_page = max(0, int(params.get("page", "0")))
+        page_size = max(1, min(int(params.get("size", "100")), 100))
+        collected: list[dict[str, Any]] = []
+        total_elements = 0
+
+        for category_code in category_codes:
+            category_total: int | None = None
+            for category_page in range(requested_page + 1):
+                category_params = dict(params)
+                category_params["catCode"] = category_code
+                category_params["page"] = str(category_page)
+                self._respect_rate_limit()
+                response = self.session.get(self.SEARCH_ENDPOINT, params=category_params, timeout=self.timeout)
+                response.raise_for_status()
+                payload = response.json()
+                items, extracted_total, _warning = self._extract_items(payload)
+                collected.extend(item for item in items if isinstance(item, dict))
+                if category_total is None:
+                    category_total = extracted_total if extracted_total is not None else len(items)
+                if self._has_more(payload, category_page + 1, page_size, len(items), extracted_total) is False:
+                    break
+            total_elements += category_total or 0
+
+        unique: dict[str, dict[str, Any]] = {}
+        for item in collected:
+            item_id = self._external_base_from_payload(item)
+            key = item_id or hashlib.sha256(
+                json.dumps(item, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            unique.setdefault(key, item)
+        ordered = sorted(
+            unique.values(),
+            key=lambda item: str(
+                self._pick(item, "firstVersionPublicationDate", "publishDate", "publicationDate", "publishedAt")
+                or ""
+            ),
+            reverse=True,
+        )
+        start = requested_page * page_size
+        content = ordered[start : start + page_size]
+        total_pages = (total_elements + page_size - 1) // page_size if total_elements else 0
+        return {
+            "content": content,
+            "totalElements": total_elements,
+            "totalPages": total_pages,
+            "number": requested_page,
+            "size": page_size,
+            "numberOfElements": len(content),
+            "first": requested_page == 0,
+            "last": requested_page + 1 >= total_pages,
+            "empty": not content,
+        }
 
     def _build_excel_export_params(self, filters: TorgiGovSearchFilters) -> tuple[dict[str, str], list[str]]:
         params, warnings = self._build_query_params(filters)
