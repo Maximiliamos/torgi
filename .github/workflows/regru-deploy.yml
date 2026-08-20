@@ -489,6 +489,9 @@ jobs:
           # retain the previous container address during the public smoke.
           if docker container inspect bankrotai-cloudflared >/dev/null 2>&1; then
             docker restart bankrotai-cloudflared >/dev/null
+            tunnel_started_at="$(docker inspect --format '{{.State.StartedAt}}' bankrotai-cloudflared)"
+            timeout 45 bash -c \
+              'until docker logs --since "'$tunnel_started_at'" bankrotai-cloudflared 2>&1 | grep -F "Registered tunnel connection" >/dev/null; do sleep 2; done'
           fi
           docker logout ghcr.io
           docker image prune -af --filter 'until=168h'
@@ -523,6 +526,15 @@ jobs:
             --retry 18 --retry-delay 5 --retry-all-errors \
             "https://api.dezster.ru/health/ready"
           printf '\n'
+          for stability_check in $(seq 1 6); do
+            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://api.dezster.ru/health/live || true)" = "200"
+            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)" = "401"
+            if test "$stability_check" != 6; then
+              sleep 5
+            fi
+          done
 
       - name: Verify deployed WEB release
         shell: bash
