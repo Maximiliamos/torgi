@@ -177,6 +177,29 @@ jobs:
                   if isinstance(payload, dict)
                   else None,
               })
+          response = session.get(
+              endpoint,
+              params={"page": "0", "size": "20", "withFacets": "true"},
+              timeout=(5, 10),
+          )
+          payload = response.json()
+          for item in payload.get("content", []):
+              print({
+                  "sample": {
+                      key: item.get(key)
+                      for key in (
+                          "id",
+                          "categoryCode",
+                          "categoryName",
+                          "typeTransaction",
+                          "typeTransactionName",
+                          "lotStatus",
+                          "subjectRFCode",
+                          "subjectRFName",
+                      )
+                  }
+              })
+          print({"category_facet": payload.get("categoryFacet")})
           PY
           REMOTE
 
