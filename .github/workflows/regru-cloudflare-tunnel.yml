@@ -86,17 +86,39 @@ jobs:
           REMOTE
 
       - name: Verify public named tunnel endpoint
+        id: public-tunnel-check
+        continue-on-error: true
         run: |
           set -euo pipefail
-          if curl --fail --silent --show-error --max-time 20 \
-            https://api.dezster.ru/health/live \
-            && test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me)" = "401"; then
-            printf '\n'
-            exit 0
-          fi
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 20 \
+              https://api.dezster.ru/health/live \
+              && test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+                https://dezster.ru/api/auth/me || true)" = "401"; then
+              printf '\n'
+              break
+            fi
+            if test "$attempt" = 12; then
+              exit 1
+            fi
+            sleep 5
+          done
+          for stability_check in $(seq 1 6); do
+            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://api.dezster.ru/health/live || true)" = "200"
+            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)" = "401"
+            if test "$stability_check" != 6; then
+              sleep 5
+            fi
+          done
+
+      - name: Report unstable named tunnel
+        if: steps.public-tunnel-check.outcome == 'failure'
+        run: |
+          set -euo pipefail
           ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
-            'docker logs --tail 80 bankrotai-cloudflared 2>&1' \
+            'docker inspect --format "running={{.State.Running}} restart_count={{.RestartCount}} started={{.State.StartedAt}}" bankrotai-cloudflared; docker logs --tail 80 bankrotai-cloudflared 2>&1' \
             | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
           exit 1
