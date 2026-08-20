@@ -186,6 +186,21 @@ jobs:
                   if isinstance(payload, dict)
                   else None,
               })
+          repeated_params = (
+              list(base.items())
+              + [("typeTransaction", "sale")]
+              + [("catCode", code) for code in ("2", "8", "9", "10", "11", "12", "903")]
+          )
+          started = time.monotonic()
+          response = session.get(endpoint, params=repeated_params, timeout=(5, 10))
+          payload = response.json()
+          print({
+              "case": "repeated_categories",
+              "status": response.status_code,
+              "elapsed_seconds": round(time.monotonic() - started, 3),
+              "content_count": len(payload.get("content", [])),
+              "total_elements": payload.get("totalElements"),
+          })
           response = session.get(
               endpoint,
               params={"page": "0", "size": "20", "withFacets": "true"},
