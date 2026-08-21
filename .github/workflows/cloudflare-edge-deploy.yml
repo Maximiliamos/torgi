@@ -2,6 +2,12 @@ name: Deploy Cloudflare edge proxy
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: Read Cloudflare control-plane state without deploying
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
 
@@ -13,7 +19,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  diagnostics:
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnostics_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Inspect Cloudflare control plane safely
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          base = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          expected_account_id = os.environ["EXPECTED_ACCOUNT_ID"]
+          expected_zone_id = os.environ["EXPECTED_ZONE_ID"]
+          failures = []
+
+          if account_id != expected_account_id:
+              raise SystemExit("CLOUDFLARE_ACCOUNT_ID does not match the owner-provided account ID")
+
+          def get(label, path):
+              request = urllib.request.Request(
+                  base + path,
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = json.load(response)
+                      print(json.dumps({"label": label, "http_status": response.status, "payload": payload}, ensure_ascii=False))
+                      return payload
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", "replace")
+                  try:
+                      detail = json.loads(body)
+                  except json.JSONDecodeError:
+                      detail = {"message": body[:1000]}
+                  print(json.dumps({"label": label, "http_status": exc.code, "error": detail}, ensure_ascii=False))
+                  failures.append({"label": label, "path": path, "http_status": exc.code})
+                  return None
+
+          get("token_verify", "/user/tokens/verify")
+          get("account", f"/accounts/{account_id}")
+          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
+          zone_results = zones.get("result", []) if zones else []
+          if len(zone_results) != 1 or zone_results[0].get("id") != expected_zone_id:
+              failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
+          zone_id = zone_results[0]["id"] if len(zone_results) == 1 else expected_zone_id
+          get("dns_records", f"/zones/{zone_id}/dns_records?per_page=100")
+          get("worker_routes", f"/zones/{zone_id}/workers/routes")
+          get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
+          get("pages_projects", f"/accounts/{account_id}/pages/projects")
+          tunnels = get("tunnels", f"/accounts/{account_id}/cfd_tunnel?is_deleted=false&per_page=100")
+          for tunnel in (tunnels.get("result", []) if tunnels else []):
+              tunnel_id = tunnel.get("id")
+              if not tunnel_id:
+                  continue
+              get(f"tunnel_config:{tunnel_id}", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations")
+              get(f"tunnel_connections:{tunnel_id}", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/connections")
+          if failures:
+              print(json.dumps({"cloudflare_diagnostics_failures": failures}, ensure_ascii=False))
+              sys.exit(1)
+          PY
+
   deploy:
+    if: github.event_name != 'workflow_dispatch' || !inputs.diagnostics_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
