@@ -65,7 +65,7 @@ jobs:
           AB_API_KEY: ${{ steps.service-key.outputs.api_key }}
         run: |
           set +e
-          AB_LABEL=worker AB_BASE_URL=https://api.dezster.ru python scripts/origin-ab-test.py
+          AB_API_KEY= AB_LABEL=worker AB_BASE_URL=https://api.dezster.ru python scripts/origin-ab-test.py
           worker_exit=$?
           AB_LABEL=direct AB_BASE_URL=https://194-226-126-233.sslip.io python scripts/origin-ab-test.py
           direct_exit=$?
