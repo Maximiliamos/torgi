@@ -132,6 +132,7 @@ class ProcessedLot(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     category: Mapped[str] = mapped_column(String(50), nullable=False)
     region_slug: Mapped[str | None] = mapped_column(String(100), index=True)
+    region_code: Mapped[str | None] = mapped_column(String(3), index=True)
     region_name: Mapped[str | None] = mapped_column(String(200))
     address: Mapped[str | None] = mapped_column(Text)
     cadastral_number: Mapped[str | None] = mapped_column(String(50), index=True)
@@ -203,6 +204,7 @@ class CanonicalLot(Base):
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False, default="other")
+    region_code: Mapped[str | None] = mapped_column(String(3), index=True)
     address: Mapped[str | None] = mapped_column(Text)
     cadastral_number: Mapped[str | None] = mapped_column(String(50), index=True)
     area: Mapped[float | None] = mapped_column(Float)
@@ -225,6 +227,18 @@ class SourceLot(Base):
     source_system: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     source_url: Mapped[str | None] = mapped_column(Text)
+    lot_url: Mapped[str | None] = mapped_column(Text)
+    etp_url: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(50), index=True)
+    region_code: Mapped[str | None] = mapped_column(String(3), index=True)
+    region_name: Mapped[str | None] = mapped_column(String(200))
+    address: Mapped[str | None] = mapped_column(Text)
+    cadastral_number: Mapped[str | None] = mapped_column(String(50), index=True)
+    start_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2), index=True)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    source_status: Mapped[str | None] = mapped_column(String(100), index=True)
     platform_name: Mapped[str | None] = mapped_column(String(300), index=True)
     platform_code: Mapped[str | None] = mapped_column(String(100), index=True)
     procedure_number: Mapped[str | None] = mapped_column(String(150), index=True)
@@ -240,6 +254,8 @@ class SourceLot(Base):
     deposit_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     application_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     auction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     auction_step_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     auction_step_percent: Mapped[float | None] = mapped_column(Float)
     auction_type: Mapped[str | None] = mapped_column(String(100), index=True)
@@ -250,7 +266,16 @@ class SourceLot(Base):
     inspection_procedure: Mapped[str | None] = mapped_column(Text)
     organizer_contact: Mapped[str | None] = mapped_column(Text)
     raw_data: Mapped[dict | None] = mapped_column(JSON)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    last_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("lot_sync_runs.id", ondelete="SET NULL"), index=True
+    )
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+    is_archived: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    archive_reason: Mapped[str | None] = mapped_column(String(200))
+    missing_successful_runs: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
@@ -411,6 +436,61 @@ class BackgroundTaskState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class LotSyncRun(Base):
+    __tablename__ = "lot_sync_runs"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(100), index=True)
+    trigger_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    total_sources: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(200), index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    checkpoint_json: Mapped[dict | None] = mapped_column(JSON)
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class LotSyncSourceRun(Base):
+    __tablename__ = "lot_sync_source_runs"
+    __table_args__ = (UniqueConstraint("sync_run_id", "source_system", name="uq_lot_sync_source_run"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sync_run_id: Mapped[str] = mapped_column(
+        ForeignKey("lot_sync_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_system: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    complete_source_run: Mapped[bool] = mapped_column(default=False, nullable=False)
+    pages_scanned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_inserted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_unchanged: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_archived: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    geocoded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duplicates_merged: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    checkpoint_json: Mapped[dict | None] = mapped_column(JSON)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class RegionDirectoryEntry(Base):
+    __tablename__ = "region_directory"
+    code: Mapped[str] = mapped_column(String(3), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    gis_torgi_code: Mapped[str | None] = mapped_column(String(100))
+    tbankrot_code: Mapped[str | None] = mapped_column(String(100))
+    torgi_russia_code: Mapped[str | None] = mapped_column(String(100))
+    lot_online_code: Mapped[str | None] = mapped_column(String(100))
 
 
 class SourceHealthState(Base):
@@ -606,7 +686,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "a2b3c4d5e6f7"
+SCHEMA_REVISION = "b3c4d5e6f7a8"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
