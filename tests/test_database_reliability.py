@@ -151,6 +151,20 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
         item["name"] for item in schema.get_unique_constraints("processed_lots")
     }
     assert "uq_processed_lots_source_system_external_id" in unique_constraints
+    assert {"region_directory", "lot_sync_runs", "lot_sync_source_runs"} <= set(schema.get_table_names())
+    source_columns = {column["name"] for column in schema.get_columns("source_lots")}
+    assert {
+        "region_code",
+        "start_price",
+        "first_seen_at",
+        "last_seen_at",
+        "last_sync_run_id",
+        "is_active",
+        "is_archived",
+        "missing_successful_runs",
+    } <= source_columns
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM region_directory").scalar() == 89
 
 
 def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Path) -> None:
