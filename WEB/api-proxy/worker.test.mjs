@@ -39,4 +39,17 @@ describe("API origin failover proxy", () => {
     expect(response.headers.get("x-request-id")).toBeTruthy();
     expect(await response.json()).toEqual({ detail: "API upstream is temporarily unavailable" });
   });
+
+  it("preserves a bounded caller request ID for end-to-end correlation", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/health/live", {
+      headers: { "x-request-id": "availability-sample-42" },
+    }), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    const upstream = fetchMock.mock.calls[0][0];
+    expect(upstream.headers.get("x-request-id")).toBe("availability-sample-42");
+    expect(response.headers.get("x-request-id")).toBe("availability-sample-42");
+  });
 });
