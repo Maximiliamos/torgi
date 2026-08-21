@@ -46,7 +46,7 @@ jobs:
           systemctl disable --now bankrotai-cloudflared.service 2>/dev/null || true
           systemctl disable --now cloudflared.service 2>/dev/null || true
           docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
-          docker pull cloudflare/cloudflared:latest
+          docker pull cloudflare/cloudflared:2026.7.2
           docker rm -f bankrotai-cloudflared >/dev/null 2>&1 || true
           docker run -d \
             --name bankrotai-cloudflared \
@@ -57,7 +57,7 @@ jobs:
             --log-opt max-size=10m \
             --log-opt max-file=3 \
             -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
-            cloudflare/cloudflared:latest \
+            cloudflare/cloudflared:2026.7.2 \
             tunnel --no-autoupdate --protocol http2 run \
             --token-file /run/secrets/cloudflare-tunnel-token
           timeout 45 bash -c \
