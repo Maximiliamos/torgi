@@ -129,7 +129,36 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await page.getByRole("button", { name: "Поиск", exact: true }).click();
   const searchView = page.getByRole("region", { name: "Онлайн-поиск" });
   await searchView.getByLabel("Регион онлайн-поиска").fill("Ярославская область");
-  for (const source of ["ГИС Торги", "Т‑Банкрот", "РАД / ЛОТ‑ОНЛАЙН"]) {
+  const gisResponsePromise = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/search/torgi-gov",
+  );
+  await searchView.getByRole("button", { name: "Найти онлайн" }).click();
+  const gisRegionalResponse = await gisResponsePromise;
+  expect(gisRegionalResponse.status()).toBe(200);
+  const gisRegionalPayload = await gisRegionalResponse.json() as { items?: unknown[] };
+  expect(Array.isArray(gisRegionalPayload.items)).toBe(true);
+
+  // A live source does not guarantee inventory in a specific region. Prove that
+  // the regional empty state is healthy, then use current nationwide inventory
+  // to verify real GIS rendering and source mapping without fixtures.
+  await searchView.getByLabel("Регион онлайн-поиска").fill("");
+  const gisNationwideResponsePromise = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/search/torgi-gov",
+  );
+  await searchView.getByRole("button", { name: "Найти онлайн" }).click();
+  const gisNationwideResponse = await gisNationwideResponsePromise;
+  expect(gisNationwideResponse.status()).toBe(200);
+  const gisNationwidePayload = await gisNationwideResponse.json() as { items?: unknown[] };
+  expect(gisNationwidePayload.items?.length ?? 0, "ГИС Торги nationwide query must expose current real inventory")
+    .toBeGreaterThan(0);
+  const gisCard = searchView.locator(".onlineCard").first();
+  await expect(gisCard).toBeVisible({ timeout: 90_000 });
+  const gisLink = gisCard.getByRole("link", { name: /Источник/ });
+  await expect(gisLink).toBeVisible();
+  expect(new URL(await gisLink.getAttribute("href") || "").protocol).toMatch(/^https?:$/);
+
+  await searchView.getByLabel("Регион онлайн-поиска").fill("Ярославская область");
+  for (const source of ["Т‑Банкрот", "РАД / ЛОТ‑ОНЛАЙН"]) {
     await searchView.getByRole("button", { name: source, exact: true }).click();
     await searchView.getByRole("button", { name: "Найти онлайн" }).click();
     const card = searchView.locator(".onlineCard").first();
