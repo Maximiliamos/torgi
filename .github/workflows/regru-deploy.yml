@@ -531,14 +531,17 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error \
+            --connect-timeout 3 --max-time 10 \
             --retry 18 --retry-delay 5 --retry-all-errors \
             "https://$API_HOSTNAME/health/live"
           printf '\n'
           curl --fail --silent --show-error \
+            --connect-timeout 3 --max-time 15 \
             --retry 12 --retry-delay 5 --retry-all-errors \
             "https://$API_HOSTNAME/health/ready"
           printf '\n'
           curl --fail --silent --show-error \
+            --connect-timeout 3 --max-time 15 \
             --retry 18 --retry-delay 5 --retry-all-errors \
             "https://api.dezster.ru/health/ready"
           printf '\n'
