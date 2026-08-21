@@ -47,23 +47,21 @@ jobs:
           systemctl disable --now cloudflared.service 2>/dev/null || true
           docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
           docker pull cloudflare/cloudflared:latest
-          docker rm -f bankrotai-cloudflared bankrotai-cloudflared-replica >/dev/null 2>&1 || true
-          for connector in bankrotai-cloudflared bankrotai-cloudflared-replica; do
-            docker run -d \
-              --name "$connector" \
-              --restart unless-stopped \
-              --network bankrotai \
-              --user 0:0 \
-              --memory 128m \
-              --log-opt max-size=10m \
-              --log-opt max-file=3 \
-              -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
-              cloudflare/cloudflared:latest \
-              tunnel --no-autoupdate --protocol http2 run \
-              --token-file /run/secrets/cloudflare-tunnel-token
-          done
+          docker rm -f bankrotai-cloudflared >/dev/null 2>&1 || true
+          docker run -d \
+            --name bankrotai-cloudflared \
+            --restart unless-stopped \
+            --network bankrotai \
+            --user 0:0 \
+            --memory 128m \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
+            cloudflare/cloudflared:latest \
+            tunnel --no-autoupdate --protocol http2 run \
+            --token-file /run/secrets/cloudflare-tunnel-token
           timeout 45 bash -c \
-            'until test "$(docker ps --filter name=bankrotai-cloudflared --filter status=running --format "{{.Names}}" | wc -l)" = 2; do sleep 2; done'
+            'until docker ps --filter name=bankrotai-cloudflared --filter status=running --format "{{.Names}}" | grep -Fxq bankrotai-cloudflared; do sleep 2; done'
           REMOTE
 
       - name: Verify named tunnel connector
@@ -73,20 +71,18 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
             'bash -s' <<'REMOTE'
           set -euo pipefail
+          test "$(docker inspect -f '{{.State.Running}}' bankrotai-cloudflared)" = true
           sleep 10
-          for connector in bankrotai-cloudflared bankrotai-cloudflared-replica; do
-            test "$(docker inspect -f '{{.State.Running}}' "$connector")" = true
-            if ! timeout 15 docker logs "$connector" 2>&1 \
-              | grep -F "Registered tunnel connection" >/dev/null; then
-              timeout 15 docker logs --tail 80 "$connector" 2>&1 \
-                | tail -n 80 \
-                | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
-              exit 1
-            fi
-            timeout 15 docker logs "$connector" 2>&1 \
-              | grep -F "Registered tunnel connection" \
-              | tail -n 1
-          done
+          if ! timeout 15 docker logs bankrotai-cloudflared 2>&1 \
+            | grep -F "Registered tunnel connection" >/dev/null; then
+            timeout 15 docker logs --tail 80 bankrotai-cloudflared 2>&1 \
+              | tail -n 80 \
+              | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
+            exit 1
+          fi
+          timeout 15 docker logs bankrotai-cloudflared 2>&1 \
+            | grep -F "Registered tunnel connection" \
+            | tail -n 1
           REMOTE
 
       - name: Verify public named tunnel endpoint
@@ -107,12 +103,12 @@ jobs:
             fi
             sleep 5
           done
-          for stability_check in $(seq 1 20); do
+          for stability_check in $(seq 1 6); do
             test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
               https://api.dezster.ru/health/live || true)" = "200"
             test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
               https://dezster.ru/api/auth/me || true)" = "401"
-            if test "$stability_check" != 20; then
+            if test "$stability_check" != 6; then
               sleep 5
             fi
           done
@@ -123,6 +119,6 @@ jobs:
           set -euo pipefail
           ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p "$SSH_PORT" "root@$SSH_HOST" \
-            'for connector in bankrotai-cloudflared bankrotai-cloudflared-replica; do docker inspect --format "name={{.Name}} running={{.State.Running}} restart_count={{.RestartCount}} started={{.State.StartedAt}}" "$connector"; docker logs --tail 80 "$connector" 2>&1; done' \
+            'docker inspect --format "running={{.State.Running}} restart_count={{.RestartCount}} started={{.State.StartedAt}}" bankrotai-cloudflared; docker logs --tail 80 bankrotai-cloudflared 2>&1' \
             | sed -E 's/eyJ[A-Za-z0-9+\/_=-]+/[REDACTED]/g'
           exit 1
