@@ -366,6 +366,7 @@ jobs:
             handle @backend {
               reverse_proxy bankrotai-api:8000 {
                 header_up X-API-Key "{\$BANKROTAI_API_KEY}"
+                header_up X-Request-ID "{http.request.header.X-Request-ID}"
               }
             }
 

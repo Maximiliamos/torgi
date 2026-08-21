@@ -7,6 +7,7 @@ import logging
 import hmac
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
@@ -252,6 +253,10 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    supplied_request_id = request.headers.get("x-request-id", "")
+    request_id = supplied_request_id if len(supplied_request_id) <= 128 else ""
+    request_id = request_id or str(uuid.uuid4())
+    request.state.request_id = request_id
     if request.url.path in _PUBLIC_HEALTH_PATHS:
         return await call_next(request)
 
@@ -330,11 +335,17 @@ async def log_requests(request: Request, call_next):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
     
     start_time = time.time()
-    logger.info("Incoming request: %s %s", request.method, request.url)
+    logger.info("Incoming request: request_id=%s method=%s url=%s", request_id, request.method, request.url)
     try:
         response = await call_next(request)
         process_time = (time.time() - start_time) * 1000
-        logger.info("Response status: %s (took %.2fms)", response.status_code, process_time)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "Response complete: request_id=%s status=%s duration_ms=%.2f",
+            request_id,
+            response.status_code,
+            process_time,
+        )
         return response
     except Exception as e:
         logger.exception("Error processing request: %s", e)
