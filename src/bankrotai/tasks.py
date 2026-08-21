@@ -11,12 +11,20 @@ from celery.exceptions import SoftTimeLimitExceeded
 from bankrotai.core import get_region_sync_slug, get_settings
 from bankrotai.db import (
     BackgroundTaskState,
+    LotSyncRun,
+    SessionLocal,
     get_region_sync_state,
     init_db,
     session_scope,
     upsert_region_sync_state,
 )
 from bankrotai.logic import cleanup_closed_lots, persist_lot
+from bankrotai.services.ingestion import (
+    NationwideIngestionService,
+    SyncAlreadyRunningError,
+    default_source_specs,
+    run_nationwide_sync,
+)
 from bankrotai.scrapers import (
     TorgiGovClient,
     TorgiGovSearchFilters,
@@ -178,6 +186,46 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
     result = bulk_torgi_gov_sync_task.apply_async(args=[filters_data, max_items])
     _set_task_state(result.id, status="queued", progress=_progress())
     return result.id
+
+
+@celery_app.task(bind=True, name="bankrotai.tasks.nationwide_lot_sync_task")
+def nationwide_lot_sync_task(self, run_id: str) -> dict:
+    try:
+        return run_nationwide_sync(SessionLocal, run_id, default_source_specs())
+    except Exception as exc:
+        with session_scope() as session:
+            run = session.get(LotSyncRun, run_id)
+            if run is not None:
+                run.status = "failed"
+                run.finished_at = _utc_now()
+                run.heartbeat_at = _utc_now()
+                run.lease_expires_at = None
+                run.error_message = str(exc)
+        logger.exception("Nationwide lot sync %s failed", run_id)
+        raise
+
+
+def schedule_nationwide_lot_sync(*, triggered_by: str) -> str:
+    if not broker_is_available():
+        raise QueueUnavailableError("Background task queue is unavailable")
+    service = NationwideIngestionService(SessionLocal)
+    run_id = service.create_run(
+        triggered_by=triggered_by,
+        trigger_type="manual",
+        total_sources=len(default_source_specs()),
+    )
+    try:
+        nationwide_lot_sync_task.apply_async(args=[run_id], task_id=run_id)
+    except Exception as exc:
+        with session_scope() as session:
+            run = session.get(LotSyncRun, run_id)
+            if run is not None:
+                run.status = "failed"
+                run.finished_at = _utc_now()
+                run.lease_expires_at = None
+                run.error_message = "Queue dispatch failed"
+        raise QueueUnavailableError("Background task dispatch failed") from exc
+    return run_id
 
 
 def schedule_region_sync(city_slug: str, force: bool = False, search: str | None = None) -> str:

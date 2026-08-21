@@ -11,6 +11,7 @@ from sqlalchemy import String, asc, cast, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
+from bankrotai.regions import normalize_region_code
 from bankrotai.db import (
     LotGeoSnapshot,
     LotStatusHistory,
@@ -281,6 +282,20 @@ def _sync_source_lot(
         source_lot.canonical_lot_id = canonical.id
 
     source_lot.source_url = normalized.source_url or normalized.lot_url
+    source_lot.lot_url = normalized.lot_url
+    source_lot.etp_url = _raw_value(raw, "etp_url")
+    source_lot.title = normalized.title
+    source_lot.description = normalized.description
+    source_lot.category = normalized.category
+    source_lot.region_code = normalize_region_code(
+        str(raw.get("region_code") or normalized.region_name or normalized.region_slug or "")
+    )
+    source_lot.region_name = normalized.region_name
+    source_lot.address = normalized.address
+    source_lot.cadastral_number = normalized.cadastral_number
+    source_lot.start_price = _to_decimal(normalized.start_price)
+    source_lot.current_price = _to_decimal(normalized.current_price)
+    source_lot.source_status = normalized.auction_status
     source_lot.platform_name = normalized.platform_name or _raw_value(raw, "etp", "platform_name", "trade_place")
     source_lot.platform_code = normalized.platform_code or _raw_value(raw, "etp_code", "platform_code")
     source_lot.procedure_number = normalized.procedure_number or _raw_value(raw, "procedure_number", "trade_number")
@@ -310,6 +325,8 @@ def _sync_source_lot(
     source_lot.auction_at = normalized.auction_at or _to_datetime(
         _raw_value(raw, "auction_start_date", "auction_at")
     )
+    source_lot.published_at = normalized.published_at
+    source_lot.source_updated_at = _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update"))
     source_lot.auction_step_amount = _to_decimal(
         normalized.auction_step_amount
         if normalized.auction_step_amount is not None
@@ -333,6 +350,20 @@ def _sync_source_lot(
     source_lot.organizer_contact = normalized.organizer_contact or _raw_value(raw, "organizer_contact")
     source_lot.raw_data = raw
     source_lot.last_seen_at = utc_now()
+    normalized_source_status = normalize_status(normalized.auction_status)
+    if normalized_source_status == "closed":
+        source_lot.is_active = False
+        source_lot.is_archived = True
+        source_lot.archived_at = source_lot.archived_at or utc_now()
+        source_lot.archive_reason = "source_status"
+    elif normalized_source_status in {"active", "scheduled"}:
+        source_lot.is_active = True
+        source_lot.is_archived = False
+        source_lot.archived_at = None
+        source_lot.archive_reason = None
+    source_lot.missing_successful_runs = 0
+    processed.region_code = source_lot.region_code or processed.region_code
+    canonical.region_code = source_lot.region_code or canonical.region_code
     session.flush()
     return source_lot
 

@@ -33,6 +33,8 @@ from bankrotai.db import (
     get_region_sync_state,
     upsert_region_sync_state,
     BackgroundTaskState,
+    LotSyncRun,
+    LotSyncSourceRun,
     LotParticipationChecklist,
     SourceLot,
     DiagnosticEvent,
@@ -70,7 +72,13 @@ from bankrotai.services.operations import (
 from bankrotai.services.quality import data_quality_snapshot, list_source_health
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lots_response
 from bankrotai.logic import log_action
-from bankrotai.tasks import QueueUnavailableError, schedule_bulk_torgi_sync, schedule_region_sync
+from bankrotai.tasks import (
+    QueueUnavailableError,
+    schedule_bulk_torgi_sync,
+    schedule_nationwide_lot_sync,
+    schedule_region_sync,
+)
+from bankrotai.services.ingestion import SyncAlreadyRunningError
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
 from bankrotai.auth import (
@@ -417,6 +425,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return path.rsplit("/", 1)[-1].isdigit()
         if path.startswith("/api/search/"):
             return True
+        if path.startswith("/api/sync/lots/"):
+            return True
         if path.startswith("/api/lots/"):
             parts = path.split("/")
             return len(parts) == 4 and parts[3].isdigit() or (
@@ -426,7 +436,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             )
         return False
     if method == "POST":
-        if path in {"/api/saved-searches", "/api/search/import"}:
+        if path in {"/api/saved-searches", "/api/search/import", "/api/sync/lots"}:
             return True
         if path.startswith("/api/lots/"):
             parts = path.split("/")
@@ -742,6 +752,60 @@ def get_background_task_status(task_id: str):
             "progress": state.progress_json,
             "result": state.result_json,
             "error": state.error_message,
+        }
+
+
+@app.post("/api/sync/lots", status_code=202)
+def start_nationwide_lot_sync(actor: AuthenticatedUser = Depends(require_admin)):
+    try:
+        task_id = schedule_nationwide_lot_sync(triggered_by=actor.username)
+    except SyncAlreadyRunningError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"task_id": exc.run_id, "status": "already_running"},
+        )
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.get("/api/sync/lots/{task_id}")
+def get_nationwide_lot_sync(task_id: str, actor: AuthenticatedUser = Depends(require_user)):
+    with read_session_scope() as session:
+        run = session.get(LotSyncRun, task_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Synchronization task not found")
+        sources = session.scalars(
+            select(LotSyncSourceRun)
+            .where(LotSyncSourceRun.sync_run_id == task_id)
+            .order_by(LotSyncSourceRun.source_system)
+        ).all()
+        return {
+            "task_id": run.id,
+            "status": run.status,
+            "trigger_type": run.trigger_type,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "heartbeat_at": run.heartbeat_at,
+            "result": run.result_json,
+            "sources": [
+                {
+                    "source_system": source.source_system,
+                    "status": source.status,
+                    "complete_source_run": source.complete_source_run,
+                    "pages_scanned": source.pages_scanned,
+                    "items_seen": source.items_seen,
+                    "items_inserted": source.items_inserted,
+                    "items_updated": source.items_updated,
+                    "items_unchanged": source.items_unchanged,
+                    "items_archived": source.items_archived,
+                    "items_failed": source.items_failed,
+                    "geocoded": source.geocoded,
+                    "duplicates_merged": source.duplicates_merged,
+                    "error": source.error_message,
+                }
+                for source in sources
+            ],
         }
 
 @app.get("/api/lots")
