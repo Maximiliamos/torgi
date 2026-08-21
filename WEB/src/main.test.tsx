@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, AuthenticatedApp } from "./main";
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -8,6 +8,13 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 import { ApiError, fetchCurrentUser, fetchLots, fetchStats } from "./lib/api";
+
+afterEach(async () => {
+  cleanup();
+  // React schedules part of concurrent unmount work with setImmediate. Let it
+  // drain while jsdom still owns `window`, instead of racing environment teardown.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+});
 
 describe("App states", () => {
   beforeEach(() => {
