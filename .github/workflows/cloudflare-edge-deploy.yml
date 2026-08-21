@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      configure_direct_origin_only:
+        description: Point the Pages API proxy at the stable REG.RU HTTPS origin
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -77,7 +82,7 @@ jobs:
                   failures.append({"label": label, "path": path, "http_status": exc.code})
                   return None
 
-          get("token_verify", "/user/tokens/verify")
+          get("token_verify", f"/accounts/{account_id}/tokens/verify")
           get("account", f"/accounts/{account_id}")
           zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
           zone_results = zones.get("result", []) if zones else []
@@ -100,8 +105,26 @@ jobs:
               sys.exit(1)
           PY
 
+  configure-direct-origin:
+    if: github.event_name == 'workflow_dispatch' && inputs.configure_direct_origin_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - name: Configure encrypted Pages API origin
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          printf '%s' 'https://194-226-126-233.sslip.io' \
+            | npx wrangler@4 pages secret put KOYEB_API_ORIGIN --project-name bankrotai
+
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
