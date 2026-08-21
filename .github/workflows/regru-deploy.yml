@@ -113,6 +113,9 @@ jobs:
           bounded 15 docker inspect --format \
             'state={{json .State}} restart_count={{.RestartCount}} image={{.Config.Image}} memory={{.HostConfig.Memory}} networks={{json .NetworkSettings.Networks}}' \
             bankrotai-cloudflared
+          section tunnel_metrics
+          bounded 15 docker exec bankrotai-cloudflared wget -qO- http://127.0.0.1:20241/metrics \
+            | grep -E '^(cloudflared_tunnel_ha_connections|cloudflared_tunnel_timer_retries|cloudflared_tunnel_tunnel_(authenticate|register)_(success|fail))'
           section host_network_counters
           bounded 15 ip -s link
           bounded 15 netstat -s
