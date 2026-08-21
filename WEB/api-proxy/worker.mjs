@@ -4,7 +4,10 @@ const ORIGIN = "https://194-226-126-233.sslip.io";
 
 export default {
   async fetch(request, env) {
-    const requestId = crypto.randomUUID();
+    const suppliedRequestId = request.headers.get("x-request-id")?.trim();
+    const requestId = suppliedRequestId && suppliedRequestId.length <= 128
+      ? suppliedRequestId
+      : crypto.randomUUID();
     const startedAt = Date.now();
     const incoming = new URL(request.url);
     const upstream = new URL(`${incoming.pathname}${incoming.search}`, ORIGIN);

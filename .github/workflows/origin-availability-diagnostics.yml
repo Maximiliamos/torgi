@@ -1,0 +1,95 @@
+name: Origin availability diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_count:
+        description: Sequential authenticated GET requests per path
+        required: true
+        default: "50"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    env:
+      AB_COUNT: ${{ inputs.request_count }}
+      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'admin' }}
+      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - name: Prepare SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_availability"
+          chmod 600 "$HOME/.ssh/regru_availability"
+          ssh-keyscan -T 20 -p 2222 194.226.126.233 > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Start Worker tail and localhost FastAPI tunnel
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          npm ci
+          npx wrangler tail bankrotai-api-proxy --format json > "$RUNNER_TEMP/worker-tail.jsonl" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/worker-tail.pid"
+          ssh -N -L 18000:127.0.0.1:8000 \
+            -i "$HOME/.ssh/regru_availability" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o ExitOnForwardFailure=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p 2222 root@194.226.126.233 &
+          echo "$!" > "$RUNNER_TEMP/ssh-tunnel.pid"
+          sleep 5
+      - name: Read masked service key for localhost FastAPI only
+        id: service-key
+        run: |
+          set -euo pipefail
+          API_KEY="$(ssh -i "$HOME/.ssh/regru_availability" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p 2222 root@194.226.126.233 \
+            "docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' bankrotai-api | sed -n 's/^BANKROTAI_API_KEY=//p'")"
+          test -n "$API_KEY"
+          echo "::add-mask::$API_KEY"
+          echo "api_key=$API_KEY" >> "$GITHUB_OUTPUT"
+      - name: Compare authenticated safe GET paths
+        env:
+          AB_API_KEY: ${{ steps.service-key.outputs.api_key }}
+        run: |
+          set +e
+          AB_LABEL=worker AB_BASE_URL=https://api.dezster.ru python scripts/origin-ab-test.py
+          worker_exit=$?
+          AB_LABEL=direct AB_BASE_URL=https://194-226-126-233.sslip.io python scripts/origin-ab-test.py
+          direct_exit=$?
+          AB_LABEL=localhost AB_BASE_URL=http://127.0.0.1:18000 python scripts/origin-ab-test.py
+          localhost_exit=$?
+          printf 'exit_codes worker=%s direct=%s localhost=%s\n' "$worker_exit" "$direct_exit" "$localhost_exit"
+          exit 0
+      - name: Stop tails and show correlated Worker events
+        if: always()
+        run: |
+          set -euo pipefail
+          kill "$(cat "$RUNNER_TEMP/worker-tail.pid")" 2>/dev/null || true
+          kill "$(cat "$RUNNER_TEMP/ssh-tunnel.pid")" 2>/dev/null || true
+          grep -E 'primary_response|primary_transport_failure|ab-worker-' "$RUNNER_TEMP/worker-tail.jsonl" \
+            | tail -n 500 || true
+      - name: Collect matching origin and network evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/regru_availability" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p 2222 root@194.226.126.233 'bash -s' <<'REMOTE'
+          set -u
+          docker logs --timestamps --since 30m bankrotai-api 2>&1 | grep -E 'ab-(worker|direct|localhost)-' | tail -n 1000 || true
+          docker logs --timestamps --since 30m bankrotai-caddy 2>&1 | tail -n 500 || true
+          ss -s
+          netstat -s | grep -Ei 'reset|retransmit|failed|timeout' | head -n 100 || true
+          REMOTE
