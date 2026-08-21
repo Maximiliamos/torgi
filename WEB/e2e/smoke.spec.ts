@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 async function ensureAuthenticated(page: Page) {
   const loginField = page.locator('input[autocomplete="username"]');
   const passwordField = page.locator('input[autocomplete="current-password"]');
-  const workspace = page.locator(".workspace");
+  const workspace = page.locator(".appShell");
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await expect(loginField.or(workspace)).toBeVisible({ timeout: 30_000 });
