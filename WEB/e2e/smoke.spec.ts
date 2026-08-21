@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 async function ensureAuthenticated(page: Page) {
   const loginField = page.locator('input[autocomplete="username"]');
   const passwordField = page.locator('input[autocomplete="current-password"]');
-  const workspace = page.locator(".workspace");
+  const workspace = page.locator(".appShell");
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await expect(loginField.or(workspace)).toBeVisible({ timeout: 30_000 });
@@ -52,6 +52,7 @@ test("authenticated list search detail and API failure smoke", async ({
   await page.goto("/");
   await expect(page.locator("main")).toBeVisible();
   await ensureAuthenticated(page);
+  await page.getByRole("button", { name: "Реестр", exact: true }).click();
   const search = page.locator(".searchBox input");
   await search.fill("земля");
   await page.waitForTimeout(350);
@@ -193,11 +194,12 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(mapFrameElement).toBeVisible();
   await expect(mapFrameElement).toHaveAttribute("sandbox", "allow-scripts");
   await expect(
-    page.getByRole("heading", { name: "Кадастровый поиск" }),
+    page.getByRole("heading", { name: "Лоты недвижимости" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Поиск всех лотов РФ" }),
-  ).toBeVisible();
+  await expect(page.getByLabel("Кадастровый номер или адрес")).toBeVisible();
+  await expect(page.getByText("Стартовая цена от")).toBeVisible();
+  await expect(page.getByText("Стартовая цена до")).toBeVisible();
+  await expect(page.getByText("Субъект РФ")).toBeVisible();
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "10 объектов · 3 на карте · 7 без координат",
   );

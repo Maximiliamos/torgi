@@ -79,6 +79,7 @@ from bankrotai.tasks import (
     schedule_region_sync,
 )
 from bankrotai.services.ingestion import SyncAlreadyRunningError
+from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
 from bankrotai.auth import (
@@ -1102,6 +1103,9 @@ def get_stats(city_slug: str = DEFAULT_REGION):
 def get_map_lots(
     request: Request,
     city_slug: str | None = None,
+    region_code: str | None = Query(None, pattern="^\\d{2,3}$"),
+    min_start_price: float | None = Query(None, ge=0),
+    max_start_price: float | None = Query(None, ge=0),
     include_archived: bool = False,
     limit: int = Query(3000, ge=1, le=5000),
     west: float | None = Query(None, ge=-180, le=180),
@@ -1113,7 +1117,12 @@ def get_map_lots(
     bounds = (west, south, east, north)
     if any(value is not None for value in bounds) and not all(value is not None for value in bounds):
         raise HTTPException(status_code=422, detail="west, south, east and north must be provided together")
-    cache_key = (city_slug, include_archived, limit, west, south, east, north, review_status)
+    if min_start_price is not None and max_start_price is not None and min_start_price > max_start_price:
+        raise HTTPException(status_code=422, detail="min_start_price must not exceed max_start_price")
+    cache_key = (
+        city_slug, region_code, min_start_price, max_start_price,
+        include_archived, limit, west, south, east, north, review_status,
+    )
     now = time.monotonic()
     with _map_response_cache_lock:
         cached = _map_response_cache.get(cache_key)
@@ -1124,6 +1133,9 @@ def get_map_lots(
             value = build_map_lots_response(
                 session,
                 city_slug=city_slug,
+                region_code=region_code,
+                min_start_price=min_start_price,
+                max_start_price=max_start_price,
                 include_archived=include_archived,
                 limit=limit,
                 west=west,
@@ -1315,10 +1327,10 @@ def get_api_capabilities():
 
 
 def _public_regions() -> list[dict[str, str]]:
-    by_code: dict[str, str] = {}
-    for name, code in TBankrotClient.CADASTRAL_REGION_NAME_TO_CODE.items():
-        by_code.setdefault(code, name)
-    return [{"code": code, "name": name} for code, name in sorted(by_code.items(), key=lambda item: item[1])]
+    return [
+        {"code": region.code, "name": region.name}
+        for region in sorted(REGION_DIRECTORY, key=lambda item: item.name)
+    ]
 
 
 def _normalize_public_region(value: str | None) -> str | None:

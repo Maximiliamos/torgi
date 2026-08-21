@@ -157,7 +157,7 @@ function ReliabilityView({ refreshToken }: { refreshToken: number }) {
 
 const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["reliability", "Надёжность", <Activity />]];
 export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
-  const [view, setView] = React.useState<MainView>("registry"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(false);
+  const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
   const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
   return <main className="appShell">

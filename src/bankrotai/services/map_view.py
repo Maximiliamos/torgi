@@ -157,8 +157,11 @@ def build_map_lots_response(
     session: Session,
     *,
     city_slug: str | None,
-    include_archived: bool,
-    limit: int,
+    region_code: str | None = None,
+    min_start_price: float | None = None,
+    max_start_price: float | None = None,
+    include_archived: bool = False,
+    limit: int = 3000,
     west: float | None = None,
     south: float | None = None,
     east: float | None = None,
@@ -169,6 +172,12 @@ def build_map_lots_response(
     filters = [ProcessedLot.duplicate_of_id.is_(None)]
     if city_slug:
         filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
+    if region_code:
+        filters.append(ProcessedLot.region_code == region_code)
+    if min_start_price is not None:
+        filters.append(ProcessedLot.start_price >= min_start_price)
+    if max_start_price is not None:
+        filters.append(ProcessedLot.start_price <= max_start_price)
     if not include_archived:
         filters.append(ProcessedLot.is_archived.is_(False))
     if review_status:
@@ -210,6 +219,8 @@ def build_map_lots_response(
             ProcessedLot.title,
             ProcessedLot.address,
             ProcessedLot.current_price,
+            ProcessedLot.start_price,
+            ProcessedLot.region_code,
             ProcessedLot.auction_status,
             ProcessedLot.is_archived,
             ProcessedLot.review_status,
@@ -241,6 +252,8 @@ def build_map_lots_response(
             "title": row.title,
             "address": row.address,
             "current_price": float(row.current_price) if row.current_price is not None else None,
+            "start_price": float(row.start_price) if row.start_price is not None else None,
+            "region_code": row.region_code,
             "status": row.auction_status,
             "is_archived": row.is_archived,
             "review_status": row.review_status,

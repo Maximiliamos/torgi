@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
-  MapPin,
   RefreshCcw,
   Search,
   Star,
@@ -12,18 +11,19 @@ import {
 } from "lucide-react";
 
 import {
-  fetchCapabilities,
+  clearMapCache,
   fetchCurrentUser,
   fetchMapLotDetail,
   fetchMapLotsSWR,
   fetchRegions,
+  fetchNationwideLotSync,
   MapLot,
   MapMarkerLot,
   RegionOption,
   searchCadastre,
   setReviewStatus,
   splitLot,
-  syncRegion,
+  startNationwideLotSync,
 } from "../../lib/api";
 
 const money = (value?: number | null) =>
@@ -508,7 +508,6 @@ export function MapView({
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [loading, setLoading] = React.useState(false);
-  const [canSync, setCanSync] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [cadQuery, setCadQuery] = React.useState("");
   const [cad, setCad] = React.useState<Record<string, unknown> | null>(null);
@@ -519,8 +518,9 @@ export function MapView({
     region: "",
     minPrice: "",
     maxPrice: "",
-    includeArchived: false,
   });
+  const [appliedFilters, setAppliedFilters] = React.useState(filters);
+  const [syncing, setSyncing] = React.useState(false);
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     setLots(
@@ -550,8 +550,7 @@ export function MapView({
 
   const load = React.useCallback(
     async (
-      region = filters.region,
-      includeArchived = filters.includeArchived,
+      applied = appliedFilters,
     ) => {
       if (!favoritesOnly && !viewport) return;
       const revision = ++requestRevision.current;
@@ -562,10 +561,11 @@ export function MapView({
       setError("");
       try {
         const query = favoritesOnly
-          ? { city_slug: region || undefined, include_archived: includeArchived, review_status: "approved" as const }
+          ? { region_code: applied.region || undefined, review_status: "approved" as const }
           : {
-              city_slug: region || undefined,
-              include_archived: includeArchived,
+              region_code: applied.region || undefined,
+              min_start_price: applied.minPrice ? Number(applied.minPrice) : undefined,
+              max_start_price: applied.maxPrice ? Number(applied.maxPrice) : undefined,
               west: viewport?.[0],
               south: viewport?.[1],
               east: viewport?.[2],
@@ -585,7 +585,7 @@ export function MapView({
         if (revision === requestRevision.current) setLoading(false);
       }
     },
-    [applyResponse, favoritesOnly, filters.includeArchived, filters.region, viewport],
+    [appliedFilters, applyResponse, favoritesOnly, viewport],
   );
 
   React.useEffect(() => {
@@ -623,13 +623,12 @@ export function MapView({
     return () => { cancelled = true; };
   }, [selectedLotId]);
   React.useEffect(() => {
-    Promise.all([fetchCapabilities(), fetchRegions(), fetchCurrentUser()])
-      .then(([capabilities, values, user]) => {
-        setCanSync(capabilities.region_sync);
+    Promise.all([fetchRegions(), fetchCurrentUser()])
+      .then(([values, user]) => {
         setRegions(values);
         setIsAdmin(user.role === "admin");
       })
-      .catch(() => setCanSync(false));
+      .catch(() => setIsAdmin(false));
   }, []);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
@@ -653,14 +652,7 @@ export function MapView({
     }
   }, []);
 
-  const visibleLots = lots.filter(
-    (lot) =>
-      (!filters.minPrice ||
-        (lot.current_price ?? 0) >= Number(filters.minPrice)) &&
-      (!filters.maxPrice ||
-        (lot.current_price ?? Number.POSITIVE_INFINITY) <=
-          Number(filters.maxPrice)),
-  );
+  const visibleLots = lots;
   const favoriteLots = visibleLots.filter(
     (lot) => lot.review_status === "approved",
   );
@@ -709,6 +701,32 @@ export function MapView({
   const coincidentLots = coincidentLotIds
     .map((id) => lots.find((lot) => lot.id === id))
     .filter((lot): lot is MapMarkerLot => Boolean(lot));
+
+  const refreshCatalogue = React.useCallback(async () => {
+    setSyncing(true);
+    setError("");
+    try {
+      const started = await startNationwideLotSync();
+      setMessage("Обновление каталога запущено. Текущие метки остаются доступны.");
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        const status = await fetchNationwideLotSync(started.task_id);
+        const sourceProgress = status.sources?.map((source) => `${source.source_system}: ${source.items_seen}`).join(" · ");
+        setMessage(`Обновление лотов${sourceProgress ? ` · ${sourceProgress}` : "…"}`);
+        if (["success", "failed", "partial"].includes(status.status)) {
+          if (status.status === "failed") throw new Error("Обновление источников не выполнено");
+          await clearMapCache();
+          setMessage(status.status === "success" ? "Каталог обновлён" : "Каталог обновлён частично; прежние данные недоступного источника сохранены");
+          await load();
+          break;
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось обновить каталог");
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
 
   return (
     <section className="mapDesktopShell">
@@ -778,58 +796,11 @@ export function MapView({
           </section>
         ) : (
           <div className="mapControlPanel">
-            <h2>Кадастровый поиск</h2>
-            <label className="srOnly" htmlFor="cadastre-map-search">
-              Кадастровый номер или адрес
-            </label>
-            <input
-              id="cadastre-map-search"
-              value={cadQuery}
-              onChange={(event) => setCadQuery(event.target.value)}
-              placeholder="Кадастровый номер или адрес"
-            />
-            <button
-              disabled={cadQuery.trim().length < 3}
-              onClick={async () => {
-                try {
-                  setError("");
-                  setCad(await searchCadastre(cadQuery));
-                } catch (err) {
-                  setError(String(err));
-                }
-              }}
-            >
-              <Search size={14} />
-              Найти объект
-            </button>
-            <label className="mapControlCheck">
-              <input
-                type="checkbox"
-                checked={showCadastre}
-                onChange={(event) => setShowCadastre(event.target.checked)}
-              />
-              Показать кадастровые границы
-            </label>
-            <button onClick={() => load()}>
-              <RefreshCcw size={14} />
-              Обновить метки лотов
-            </button>
-            <button
-              className="mapAllRussiaButton"
-              onClick={() => {
-                const next = { ...filters, region: "" };
-                setFilters(next);
-                void load("", next.includeArchived);
-              }}
-            >
-              <MapPin size={15} />
-              Поиск всех лотов РФ
-            </button>
-
+            <h2>Лоты недвижимости</h2>
             <fieldset className="mapFiltersBox">
-              <legend>Фильтры лотов</legend>
+              <legend>Фильтры</legend>
               <label>
-                <span>Цена от</span>
+                <span>Стартовая цена от</span>
                 <input
                   type="number"
                   value={filters.minPrice}
@@ -840,7 +811,7 @@ export function MapView({
                 />
               </label>
               <label>
-                <span>Цена до</span>
+                <span>Стартовая цена до</span>
                 <input
                   type="number"
                   value={filters.maxPrice}
@@ -851,7 +822,7 @@ export function MapView({
                 />
               </label>
               <label>
-                <span>Регион карты</span>
+                <span>Субъект РФ</span>
                 <select
                   value={filters.region}
                   onChange={(event) =>
@@ -861,61 +832,24 @@ export function MapView({
                   <option value="">Все регионы</option>
                   {regions.map((region) => (
                     <option key={region.code} value={region.code}>
-                      {region.name}
+                      {region.code} — {region.name}
                     </option>
                   ))}
                 </select>
               </label>
-              <label className="mapControlCheck">
-                <input
-                  type="checkbox"
-                  checked={filters.includeArchived}
-                  onChange={(event) =>
-                    setFilters({
-                      ...filters,
-                      includeArchived: event.target.checked,
-                    })
-                  }
-                />
-                Показывать архивные
-              </label>
               <div>
-                <button onClick={() => load()}>Применить</button>
+                <button onClick={() => setAppliedFilters(filters)}>Применить</button>
                 <button
                   onClick={() => {
-                    const empty = {
-                      region: "",
-                      minPrice: "",
-                      maxPrice: "",
-                      includeArchived: false,
-                    };
+                    const empty = { region: "", minPrice: "", maxPrice: "" };
                     setFilters(empty);
-                    void load("", false);
+                    setAppliedFilters(empty);
                   }}
                 >
                   Сбросить
                 </button>
               </div>
             </fieldset>
-            <pre className="mapCadastreResult">{cadText}</pre>
-            {canSync && (
-              <button
-                className="mapSyncButton"
-                disabled={!filters.region}
-                onClick={async () => {
-                  try {
-                    const result = await syncRegion(filters.region, true);
-                    setMessage(
-                      `Синхронизация: ${result.dispatchMode || result.status}`,
-                    );
-                  } catch (err) {
-                    setError(String(err));
-                  }
-                }}
-              >
-                Синхронизировать выбранный регион
-              </button>
-            )}
             {loading && <MapState>Обновление меток…</MapState>}
             {message && <MapState>{message}</MapState>}
             {error && <MapState error>{error}</MapState>}
@@ -926,6 +860,16 @@ export function MapView({
         )}
       </div>
       <div className="mapDesktopCanvas">
+        <div className="mapTopToolbar">
+          <input value={cadQuery} onChange={(event) => setCadQuery(event.target.value)} placeholder="Кадастровый номер или адрес" aria-label="Кадастровый номер или адрес" />
+          <button disabled={cadQuery.trim().length < 3} onClick={async () => {
+            try { setError(""); setCad(await searchCadastre(cadQuery)); setShowCadastre(true); }
+            catch (err) { setError(String(err)); }
+          }}><Search size={14} />Найти</button>
+          {cad && <span title={cadText}>Кадастровый объект найден</span>}
+          <button onClick={() => load()}><RefreshCcw size={14} />Обновить метки</button>
+          {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
+        </div>
         <YandexDesktopMap
           lots={visibleLots}
           selectedCadastre={cad}

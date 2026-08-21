@@ -111,6 +111,8 @@ export type MapMarkerLot = {
   title: string;
   address: string | null;
   current_price: number | null;
+  start_price: number | null;
+  region_code: string | null;
   status: string;
   is_archived: boolean;
   review_status: string | null;
@@ -334,6 +336,9 @@ export type MapLotsResponse = {
 };
 export type MapViewportQuery = {
   city_slug?: string;
+  region_code?: string;
+  min_start_price?: number;
+  max_start_price?: number;
   include_archived?: boolean;
   west?: number;
   south?: number;
@@ -341,6 +346,18 @@ export type MapViewportQuery = {
   north?: number;
   review_status?: "approved" | "maybe" | "rejected";
 };
+export type LotSyncStatus = {
+  task_id: string;
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  result?: Record<string, unknown> | null;
+  sources?: Array<{ source_system: string; status: string; items_seen: number }>;
+};
+export const startNationwideLotSync = () =>
+  requestJson<{ task_id: string; status: string }>("/api/sync/lots", undefined, { method: "POST" });
+export const fetchNationwideLotSync = (taskId: string) =>
+  requestJson<LotSyncStatus>(`/api/sync/lots/${encodeURIComponent(taskId)}`);
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>

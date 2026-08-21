@@ -42,6 +42,8 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
             description="",
             category="land",
             region_slug="76",
+            region_code="76",
+            start_price=Decimal("900000"),
             current_price=Decimal("1000000"),
             auction_status="active",
         )
@@ -125,9 +127,14 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
     map_item = map_payload["items"][0]
     assert map_item["id"] == lot_id
     assert set(map_item) == {
-        "id", "title", "address", "current_price", "status", "is_archived",
+        "id", "title", "address", "current_price", "start_price", "region_code", "status", "is_archived",
         "review_status", "lat", "lon",
     }
+    filtered = client.get("/api/map/lots", params={"region_code": "76", "max_start_price": 1_000_000})
+    assert [item["id"] for item in filtered.json()["items"]] == [lot_id]
+    assert client.get(
+        "/api/map/lots", params={"region_code": "77", "max_start_price": 1_000_000}
+    ).json()["items"] == []
     detail_response = client.get(f"/api/map/lots/{lot_id}")
     assert detail_response.status_code == 200
     map_detail = detail_response.json()
