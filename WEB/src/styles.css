@@ -691,7 +691,11 @@ textarea, input { font: inherit; }
 .mapDesktopShell { background:#fff;display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;min-height:680px;overflow:hidden; }
 .mapDesktopShell:has(.mapLotPreview) { grid-template-columns:380px minmax(0,1fr); }
 .mapDesktopSidebar { background:#fff;border-right:1px solid #c9cfd6;min-width:0;overflow:auto;position:relative;z-index:3; }
-.mapDesktopCanvas { display:grid;grid-template-rows:minmax(0,1fr) 30px;min-width:0;position:relative; }
+.mapDesktopCanvas { display:grid;grid-template-rows:42px minmax(0,1fr) 30px;min-width:0;position:relative; }
+.mapTopToolbar { align-items:center;background:#fff;border-bottom:1px solid #c9cfd6;display:flex;gap:6px;padding:5px 8px;z-index:4; }
+.mapTopToolbar input { border:1px solid #8d9298;height:28px;min-width:240px;padding:3px 7px; }
+.mapTopToolbar button { align-items:center;background:#f4f5f6;border:1px solid #aeb2b7;display:flex;gap:5px;height:29px;padding:3px 8px; }
+.mapTopToolbar span { color:#176c4c;font-size:12px; }
 .yandexDesktopFrame { border:0;height:100%;min-height:0;min-width:0;width:100%; }
 .mapBottomStatus { align-items:center;background:#fff;border-top:1px solid #d8dee4;color:#52606d;display:flex;font-size:11px;gap:16px;justify-content:space-between;min-width:0;padding:0 12px;white-space:nowrap; }
 .mapBottomStatus>span:first-child { overflow:hidden;text-overflow:ellipsis; }

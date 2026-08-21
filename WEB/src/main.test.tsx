@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, AuthenticatedApp } from "./main";
 
@@ -26,6 +26,7 @@ describe("App states", () => {
   it("renders an empty result without crashing", async () => {
     vi.mocked(fetchLots).mockResolvedValue({ items: [], total: 0 });
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Реестр" }));
     await waitFor(() => expect(fetchLots).toHaveBeenCalled());
     expect(screen.getByText("1 / 1")).toBeInTheDocument();
   });
@@ -33,7 +34,14 @@ describe("App states", () => {
   it("renders a network error", async () => {
     vi.mocked(fetchLots).mockRejectedValue(new Error("API offline"));
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Реестр" }));
     expect(await screen.findByText("API offline")).toBeInTheDocument();
+  });
+
+  it("opens the nationwide map as the primary workspace", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Карта" })).toHaveClass("active");
+    expect(screen.getByText("Лоты недвижимости")).toBeInTheDocument();
   });
 });
 
