@@ -6,9 +6,8 @@ import sys
 import time
 import uuid
 from collections import Counter
-from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import Request, build_opener
 
 
 BASE_URL = os.environ["AB_BASE_URL"].rstrip("/")
@@ -27,8 +26,13 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def main() -> int:
-    opener = build_opener(HTTPCookieProcessor(CookieJar()))
-    login_headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    opener = build_opener()
+    user_agent = "Mozilla/5.0 BankrotAI-Availability-Diagnostic/1.0"
+    login_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": user_agent,
+    }
     if API_KEY:
         login_headers["X-API-Key"] = API_KEY
     login = Request(
@@ -41,11 +45,19 @@ def main() -> int:
         response.read()
         if response.status != 200:
             raise RuntimeError(f"{LABEL}: login HTTP {response.status}")
+        cookie = response.headers.get("Set-Cookie", "").split(";", 1)[0]
+    if not cookie:
+        raise RuntimeError(f"{LABEL}: login did not return a session cookie")
 
     samples: list[dict[str, object]] = []
     for index in range(1, COUNT + 1):
         request_id = f"ab-{LABEL}-{uuid.uuid4()}"
-        headers = {"Accept": "application/json", "X-Request-ID": request_id}
+        headers = {
+            "Accept": "application/json",
+            "Cookie": cookie,
+            "User-Agent": user_agent,
+            "X-Request-ID": request_id,
+        }
         if API_KEY:
             headers["X-API-Key"] = API_KEY
         request = Request(f"{BASE_URL}{PATH}", headers=headers)
