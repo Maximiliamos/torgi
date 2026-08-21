@@ -267,6 +267,51 @@ test("real production auth, registry, sources, GEO, images and source links", as
   expect(repeatedMe.status).toBe(200);
   expect(repeatedMe.body.username).toBe(process.env.E2E_USERNAME || "reader");
 
+  const soakSamples = await page.evaluate(async () => {
+    const targets = [
+      ["live", "https://api.dezster.ru/health/live", 200],
+      ["ready", "https://api.dezster.ru/health/ready", 200],
+      ["auth_me", "/api/auth/me", 200],
+      ["lots", "/api/lots?city_slug=yaroslavl&page=1&per_page=1", 200],
+    ] as const;
+    const samples: Array<{ target: string; cycle: number; status: number; duration_ms: number }> = [];
+    for (let cycle = 1; cycle <= 30; cycle += 1) {
+      const cycleSamples = await Promise.all(targets.map(async ([target, url]) => {
+        const started = performance.now();
+        let status = 0;
+        try {
+          status = (await fetch(url, { credentials: "include", cache: "no-store" })).status;
+        } catch {
+          status = 0;
+        }
+        return { target, cycle, status, duration_ms: Math.round((performance.now() - started) * 10) / 10 };
+      }));
+      samples.push(...cycleSamples);
+    }
+    return samples;
+  });
+  const soakSummary = Object.fromEntries(["live", "ready", "auth_me", "lots"].map((target) => {
+    const samples = soakSamples.filter((sample) => sample.target === target);
+    const durations = samples.map((sample) => sample.duration_ms).sort((a, b) => a - b);
+    const percentile = (value: number) => durations[Math.floor((durations.length - 1) * value)];
+    return [target, {
+      success: samples.filter((sample) => sample.status === 200).length,
+      timeouts: samples.filter((sample) => sample.status === 0).length,
+      server_errors: samples.filter((sample) => sample.status >= 500).length,
+      statuses: Object.fromEntries([...new Set(samples.map((sample) => sample.status))]
+        .map((status) => [status, samples.filter((sample) => sample.status === status).length])),
+      p50_ms: percentile(0.50),
+      p95_ms: percentile(0.95),
+      max_ms: durations.at(-1),
+    }];
+  }));
+  await testInfo.attach("authenticated-production-soak.json", {
+    body: Buffer.from(JSON.stringify(soakSummary, null, 2)),
+    contentType: "application/json",
+  });
+  expect(soakSamples.filter((sample) => sample.status !== 200), "30-cycle authenticated soak must be clean")
+    .toEqual([]);
+
   await attachFailures(testInfo, failures);
   expect(failures, "No unknown browser/runtime/network/5xx failures are allowed").toEqual([]);
 });
