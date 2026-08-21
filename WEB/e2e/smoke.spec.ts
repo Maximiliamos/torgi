@@ -194,11 +194,12 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(mapFrameElement).toBeVisible();
   await expect(mapFrameElement).toHaveAttribute("sandbox", "allow-scripts");
   await expect(
-    page.getByRole("heading", { name: "Кадастровый поиск" }),
+    page.getByRole("heading", { name: "Лоты недвижимости" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Поиск всех лотов РФ" }),
-  ).toBeVisible();
+  await expect(page.getByLabel("Кадастровый номер или адрес")).toBeVisible();
+  await expect(page.getByText("Стартовая цена от")).toBeVisible();
+  await expect(page.getByText("Стартовая цена до")).toBeVisible();
+  await expect(page.getByText("Субъект РФ")).toBeVisible();
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "10 объектов · 3 на карте · 7 без координат",
   );
