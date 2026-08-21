@@ -92,6 +92,8 @@ jobs:
           get("dns_records", f"/zones/{zone_id}/dns_records?per_page=100")
           get("worker_routes", f"/zones/{zone_id}/workers/routes")
           get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
+          get("domain_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-domain-proxy/settings")
+          get("legacy_tunnel_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-tunnel-proxy/settings")
           get("pages_projects", f"/accounts/{account_id}/pages/projects")
           tunnels = get("tunnels", f"/accounts/{account_id}/cfd_tunnel?is_deleted=false&per_page=100")
           for tunnel in (tunnels.get("result", []) if tunnels else []):
