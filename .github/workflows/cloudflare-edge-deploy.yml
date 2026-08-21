@@ -2,8 +2,28 @@ name: Deploy Cloudflare edge proxy
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: Read Cloudflare control-plane state without deploying
+        required: false
+        default: false
+        type: boolean
+      configure_direct_origin_only:
+        description: Point the Pages API proxy at the stable REG.RU HTTPS origin
+        required: false
+        default: false
+        type: boolean
+      configure_api_proxy_only:
+        description: Deploy the controlled API hostname failover Worker
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/cloudflare-edge-deploy.yml"
 
 permissions:
   contents: read
@@ -13,18 +33,148 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  diagnostics:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.diagnostics_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      - name: Inspect Cloudflare control plane safely
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          base = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          expected_account_id = os.environ["EXPECTED_ACCOUNT_ID"]
+          expected_zone_id = os.environ["EXPECTED_ZONE_ID"]
+          failures = []
+
+          if account_id != expected_account_id:
+              raise SystemExit("CLOUDFLARE_ACCOUNT_ID does not match the owner-provided account ID")
+
+          def get(label, path):
+              request = urllib.request.Request(
+                  base + path,
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = json.load(response)
+                      print(json.dumps({"label": label, "http_status": response.status, "payload": payload}, ensure_ascii=False))
+                      return payload
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", "replace")
+                  try:
+                      detail = json.loads(body)
+                  except json.JSONDecodeError:
+                      detail = {"message": body[:1000]}
+                  print(json.dumps({"label": label, "http_status": exc.code, "error": detail}, ensure_ascii=False))
+                  failures.append({"label": label, "path": path, "http_status": exc.code})
+                  return None
+
+          get("token_verify", f"/accounts/{account_id}/tokens/verify")
+          get("account", f"/accounts/{account_id}")
+          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
+          zone_results = zones.get("result", []) if zones else []
+          if len(zone_results) != 1 or zone_results[0].get("id") != expected_zone_id:
+              failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
+          zone_id = zone_results[0]["id"] if len(zone_results) == 1 else expected_zone_id
+          get("dns_records", f"/zones/{zone_id}/dns_records?per_page=100")
+          get("worker_routes", f"/zones/{zone_id}/workers/routes")
+          get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
+          get("domain_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-domain-proxy/settings")
+          get("legacy_tunnel_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-tunnel-proxy/settings")
+          get("pages_projects", f"/accounts/{account_id}/pages/projects")
+          tunnels = get("tunnels", f"/accounts/{account_id}/cfd_tunnel?is_deleted=false&per_page=100")
+          for tunnel in (tunnels.get("result", []) if tunnels else []):
+              tunnel_id = tunnel.get("id")
+              if not tunnel_id:
+                  continue
+              get(f"tunnel_config:{tunnel_id}", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations")
+              get(f"tunnel_connections:{tunnel_id}", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/connections")
+          if failures:
+              print(json.dumps({"cloudflare_diagnostics_failures": failures}, ensure_ascii=False))
+              sys.exit(1)
+          PY
+
+  configure-direct-origin:
+    if: github.event_name == 'workflow_dispatch' && inputs.configure_direct_origin_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - name: Configure encrypted Pages API origin
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          printf '%s' 'https://194-226-126-233.sslip.io' \
+            | npx wrangler@4 pages secret put KOYEB_API_ORIGIN --project-name bankrotai
+
+  configure-api-proxy:
+    if: github.event_name == 'workflow_dispatch' && inputs.configure_api_proxy_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - working-directory: WEB
+        run: npm ci
+      - name: Test and validate API proxy
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          npm test -- api-proxy/worker.test.mjs
+          npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
+      - name: Configure encrypted API service binding
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          test -n "$KOYEB_SERVICE_KEY"
+          printf '%s' "$KOYEB_SERVICE_KEY" \
+            | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+      - name: Deploy API failover route
+        working-directory: WEB
+        run: npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
+
+  deploy:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+    steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - name: Require scoped Cloudflare deployment credentials
-        run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+        run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID" && test -n "$KOYEB_SERVICE_KEY"
       - working-directory: WEB
         run: npm ci
       - name: Validate and build Pages release
@@ -38,7 +188,10 @@ jobs:
           test "$(python -c 'import json; print(json.load(open("dist/deployment.json"))["commit"])')" = "$GITHUB_SHA"
       - name: Validate Worker bundle
         working-directory: WEB
-        run: npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
+        run: |
+          set -euo pipefail
+          npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
+          npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
       - name: Deploy Pages release
         working-directory: WEB
         run: >-
@@ -49,17 +202,24 @@ jobs:
       - name: Deploy edge proxy
         working-directory: WEB
         run: npx wrangler@4 deploy --config edge-proxy/wrangler.jsonc
+      - name: Deploy API failover proxy
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          printf '%s' "$KOYEB_SERVICE_KEY" \
+            | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+          npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
       - name: Verify canonical edge behavior
         run: |
           set -euo pipefail
           for attempt in $(seq 1 24); do
-            PAGES_SHA="$(curl --fail --silent --show-error --max-time 20 \
+            PAGES_SHA="$(curl --ipv4 --fail --silent --show-error --max-time 20 \
               -H 'Cache-Control: no-cache' https://bankrotai.pages.dev/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
-            CANONICAL_SHA="$(curl --fail --silent --show-error --max-time 20 \
+            CANONICAL_SHA="$(curl --ipv4 --fail --silent --show-error --max-time 20 \
               -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
-            AUTH_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+            AUTH_STATUS="$(curl --ipv4 --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
               https://dezster.ru/api/auth/me || true)"
             if test "$PAGES_SHA" = "$GITHUB_SHA" \
               && test "$CANONICAL_SHA" = "$GITHUB_SHA" \
@@ -67,12 +227,12 @@ jobs:
               break
             fi
             if test "$attempt" = 24; then
-              echo "Cloudflare Pages/Worker did not reach $GITHUB_SHA" >&2
+              echo "Cloudflare verification failed: pages_sha=${PAGES_SHA:-missing} canonical_sha=${CANONICAL_SHA:-missing} auth_status=${AUTH_STATUS:-missing}" >&2
               exit 1
             fi
             sleep 5
           done
-          curl --fail --silent --show-error --max-time 20 -I https://dezster.ru/deployment.json \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/deployment.json \
             | grep -qi '^cache-control: no-store'
-          curl --fail --silent --show-error --max-time 20 -I https://dezster.ru/ \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/ \
             | grep -qi '^strict-transport-security:'
