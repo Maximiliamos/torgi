@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from bankrotai import api, tasks
 from bankrotai.auth import AuthenticatedUser
+from bankrotai.services.ingestion import SyncAlreadyRunningError
 
 
 client = TestClient(api.app)
@@ -46,6 +47,23 @@ def test_unavailable_queue_returns_503(monkeypatch) -> None:
 
     monkeypatch.setattr(api, "schedule_bulk_torgi_sync", unavailable)
     assert client.post("/api/online/torgi-gov/sync", json={}).status_code == 503
+
+
+def test_nationwide_sync_start_returns_queued_task(monkeypatch) -> None:
+    monkeypatch.setattr(api, "schedule_nationwide_lot_sync", lambda **_kwargs: "sync-123")
+    response = client.post("/api/sync/lots")
+    assert response.status_code == 202
+    assert response.json() == {"task_id": "sync-123", "status": "queued"}
+
+
+def test_duplicate_nationwide_sync_returns_existing_task(monkeypatch) -> None:
+    def duplicate(**_kwargs):
+        raise SyncAlreadyRunningError("sync-running")
+
+    monkeypatch.setattr(api, "schedule_nationwide_lot_sync", duplicate)
+    response = client.post("/api/sync/lots")
+    assert response.status_code == 409
+    assert response.json() == {"task_id": "sync-running", "status": "already_running"}
 
 
 def test_transient_errors_are_classified_for_retry() -> None:
