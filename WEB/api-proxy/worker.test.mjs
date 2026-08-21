@@ -52,4 +52,53 @@ describe("API origin failover proxy", () => {
     expect(upstream.headers.get("x-request-id")).toBe("availability-sample-42");
     expect(response.headers.get("x-request-id")).toBe("availability-sample-42");
   });
+
+  it("fails a safe read over to the secondary after primary transport failure", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("primary reset"))
+      .mockResolvedValueOnce(Response.json({ status: "alive" }));
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/health/live"), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0].url).toBe("https://secondary.example.test/health/live");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "alive" });
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"])("never retries %s mutations", async (method) => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("primary reset"));
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/auth/login", {
+      method,
+      body: "{}",
+    }), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(502);
+  });
+
+  it("falls back when successful primary response headers are followed by a body disconnect", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broken = new Response(new globalThis.ReadableStream({
+      pull(controller) { controller.error(new TypeError("body reset")); },
+    }), { status: 200 });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(broken)
+      .mockResolvedValueOnce(new Response("complete", { status: 200 }));
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots"), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+    expect(await response.text()).toBe("complete");
+  });
 });
