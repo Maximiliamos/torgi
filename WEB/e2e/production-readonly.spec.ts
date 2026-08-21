@@ -9,7 +9,12 @@ type BrowserFailure = { kind: string; value: string };
 
 function observeBrowserFailures(page: Page, failures: BrowserFailure[]) {
   page.on("console", (message) => {
-    if (message.type() === "error") failures.push({ kind: "console.error", value: message.text() });
+    if (message.type() !== "error") return;
+    // Chromium emits a URL-less console error for every expected negative HTTP
+    // response. The response listener below records unexpected 4xx/5xx with
+    // their URL, so keeping this generic duplicate would create false failures.
+    if (/^Failed to load resource: the server responded with a status of (401|404) \(\)$/.test(message.text())) return;
+    failures.push({ kind: "console.error", value: message.text() });
   });
   page.on("pageerror", (error) => failures.push({ kind: "pageerror", value: error.message }));
   page.on("requestfailed", (request) => {
@@ -19,9 +24,13 @@ function observeBrowserFailures(page: Page, failures: BrowserFailure[]) {
     }
   });
   page.on("response", (response) => {
-    if (response.status() >= 500) {
-      failures.push({ kind: `http-${response.status()}`, value: response.url() });
-    }
+    if (response.status() < 400) return;
+    const url = new URL(response.url());
+    const expectedNegativeResponse =
+      (response.status() === 401 && url.pathname === "/api/auth/login" && response.request().method() === "POST") ||
+      (response.status() === 401 && url.pathname === "/api/auth/me") ||
+      (response.status() === 404 && url.pathname === "/api/lots/2147483647");
+    if (!expectedNegativeResponse) failures.push({ kind: `http-${response.status()}`, value: response.url() });
   });
 }
 
