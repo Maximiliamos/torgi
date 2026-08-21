@@ -1,9 +1,11 @@
-/* global Headers, Request, Response, URL, fetch */
+/* global Headers, Request, Response, URL, console, crypto, fetch */
 
 const ORIGIN = "https://194-226-126-233.sslip.io";
 
 export default {
   async fetch(request, env) {
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
     const incoming = new URL(request.url);
     const upstream = new URL(`${incoming.pathname}${incoming.search}`, ORIGIN);
     const headers = new Headers(request.headers);
@@ -13,6 +15,7 @@ export default {
     headers.set("x-api-key", env.KOYEB_SERVICE_KEY);
     headers.set("x-forwarded-host", incoming.host);
     headers.set("x-forwarded-proto", "https");
+    headers.set("x-request-id", requestId);
 
     try {
       const response = await fetch(new Request(upstream, {
@@ -25,15 +28,32 @@ export default {
       outgoing.set("cache-control", "no-store");
       outgoing.set("x-content-type-options", "nosniff");
       outgoing.set("referrer-policy", "same-origin");
+      outgoing.set("x-request-id", response.headers.get("x-request-id") || requestId);
+      console.log(JSON.stringify({
+        event: "primary_response",
+        request_id: requestId,
+        method: request.method,
+        path: incoming.pathname,
+        status: response.status,
+        duration_ms: Date.now() - startedAt,
+      }));
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
         headers: outgoing,
       });
-    } catch {
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "primary_transport_failure",
+        request_id: requestId,
+        method: request.method,
+        path: incoming.pathname,
+        duration_ms: Date.now() - startedAt,
+        error: error instanceof Error ? error.name : "UnknownError",
+      }));
       return Response.json({ detail: "API upstream is temporarily unavailable" }, {
         status: 502,
-        headers: { "cache-control": "no-store" },
+        headers: { "cache-control": "no-store", "x-request-id": requestId },
       });
     }
   },

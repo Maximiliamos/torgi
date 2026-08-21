@@ -90,7 +90,10 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
     )
     monkeypatch.setattr(api, "_consume_rate_limit", lambda _client_id: True)
     client = TestClient(api.app, base_url="https://testserver")
-    service_headers = {"X-API-Key": api.settings.public_api_key}
+    service_headers = {
+        "X-API-Key": api.settings.public_api_key,
+        "X-Request-ID": "test-request-correlation",
+    }
 
     assert client.get("/api/lots", headers=service_headers).status_code == 401
     login = client.post(
@@ -99,6 +102,7 @@ def test_read_only_api_requires_user_session_and_never_accepts_user_id(monkeypat
         json={"username": "reader", "password": "a sufficiently secure password"},
     )
     assert login.status_code == 200
+    assert login.headers["x-request-id"] == "test-request-correlation"
     assert login.json()["username"] == "reader"
     cookie = login.headers["set-cookie"].lower()
     assert "httponly" in cookie
