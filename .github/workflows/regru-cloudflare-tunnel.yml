@@ -58,7 +58,7 @@ jobs:
             --log-opt max-file=3 \
             -v /opt/bankrotai/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro \
             cloudflare/cloudflared:latest \
-            tunnel --no-autoupdate --protocol http2 run \
+            tunnel --no-autoupdate --protocol auto run \
             --token-file /run/secrets/cloudflare-tunnel-token
           timeout 45 bash -c \
             'until docker ps --filter name=bankrotai-cloudflared --filter status=running --format "{{.Names}}" | grep -Fxq bankrotai-cloudflared; do sleep 2; done'
