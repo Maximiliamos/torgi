@@ -109,6 +109,19 @@ jobs:
           section host_sockets
           bounded 15 ss -s
           bounded 15 ss -tanp
+          section tunnel_inspect_allowlist
+          bounded 15 docker inspect --format \
+            'state={{json .State}} restart_count={{.RestartCount}} image={{.Config.Image}} memory={{.HostConfig.Memory}} networks={{json .NetworkSettings.Networks}}' \
+            bankrotai-cloudflared
+          section host_network_counters
+          bounded 15 ip -s link
+          bounded 15 netstat -s
+          bounded 15 sh -c 'test -r /proc/sys/net/netfilter/nf_conntrack_count && printf "conntrack_count=" && cat /proc/sys/net/netfilter/nf_conntrack_count; test -r /proc/sys/net/netfilter/nf_conntrack_max && printf "conntrack_max=" && cat /proc/sys/net/netfilter/nf_conntrack_max'
+          bounded 15 sysctl net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max net.ipv4.udp_rmem_min net.ipv4.udp_wmem_min
+          section recent_network_kernel_messages
+          bounded 15 dmesg --ctime --level=alert,crit,err,warn \
+            | grep -Ei 'network|netdev|conntrack|drop|udp|tcp|eth|virtio|oom' \
+            | tail -n 200
           section health_from_host
           bounded 12 curl --verbose --fail --show-error --connect-timeout 2 --max-time 8 http://127.0.0.1:8000/health/live
           printf '\n'
