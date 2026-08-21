@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      configure_api_proxy_only:
+        description: Deploy the controlled API hostname failover Worker
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -125,8 +130,39 @@ jobs:
           printf '%s' 'https://194-226-126-233.sslip.io' \
             | npx wrangler@4 pages secret put KOYEB_API_ORIGIN --project-name bankrotai
 
+  configure-api-proxy:
+    if: github.event_name == 'workflow_dispatch' && inputs.configure_api_proxy_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - working-directory: WEB
+        run: npm ci
+      - name: Test and validate API proxy
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          npm test -- api-proxy/worker.test.mjs
+          npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
+      - name: Configure encrypted API service binding
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          test -n "$KOYEB_SERVICE_KEY"
+          printf '%s' "$KOYEB_SERVICE_KEY" \
+            | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+      - name: Deploy API failover route
+        working-directory: WEB
+        run: npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
+
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
