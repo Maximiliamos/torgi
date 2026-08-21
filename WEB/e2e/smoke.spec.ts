@@ -52,6 +52,7 @@ test("authenticated list search detail and API failure smoke", async ({
   await page.goto("/");
   await expect(page.locator("main")).toBeVisible();
   await ensureAuthenticated(page);
+  await page.getByRole("button", { name: "Реестр", exact: true }).click();
   const search = page.locator(".searchBox input");
   await search.fill("земля");
   await page.waitForTimeout(350);
