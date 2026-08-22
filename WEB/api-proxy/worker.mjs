@@ -75,7 +75,8 @@ async function completedResponse(request, incoming, origin, headers) {
   }
   // Buffer safe reads before returning headers. This catches the production
   // failure where the origin sends HTTP 200 headers but never completes body.
-  const body = request.method === "HEAD" ? null : await response.arrayBuffer();
+  const bodyForbidden = request.method === "HEAD" || [204, 205, 304].includes(response.status);
+  const body = bodyForbidden ? null : await response.arrayBuffer();
   return { response, body };
 }
 

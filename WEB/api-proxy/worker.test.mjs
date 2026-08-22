@@ -137,4 +137,20 @@ describe("API origin failover proxy", () => {
     });
     expect(await response.text()).toBe("complete");
   });
+
+  it("preserves a bodyless upstream 304 without activating fallback", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 304, headers: { etag: '"map-v1"' } }),
+    );
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/map/lots", {
+      headers: { "if-none-match": '"map-v1"' },
+    }), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0].headers.get("if-none-match")).toBe('"map-v1"');
+    expect(response.status).toBe(304);
+    expect(response.headers.get("etag")).toBe('"map-v1"');
+  });
 });
