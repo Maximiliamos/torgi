@@ -207,6 +207,7 @@ jobs:
             --name $env:WORKER_CONTAINER `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            --no-healthcheck `
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=128m `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `

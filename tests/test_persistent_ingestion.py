@@ -14,10 +14,16 @@ from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SourceSyncSpec,
     SyncAlreadyRunningError,
+    regional_source_specs,
 )
 
 
-def lot(external_id: str = "lot-1", *, price: float = 500_000) -> NormalizedLot:
+def lot(
+    external_id: str = "lot-1",
+    *,
+    price: float = 500_000,
+    region_code: str = "76",
+) -> NormalizedLot:
     return NormalizedLot(
         external_id=external_id,
         source="test",
@@ -37,7 +43,7 @@ def lot(external_id: str = "lot-1", *, price: float = 500_000) -> NormalizedLot:
         lot_url="https://example.test/lot-1",
         source_url="https://example.test/lot-1",
         detail_level="search",
-        raw_data={"region_code": "76"},
+        raw_data={"region_code": region_code},
     )
 
 
@@ -119,6 +125,38 @@ def test_failed_source_never_increments_missing_or_archives(sessions) -> None:
         row = session.scalar(select(SourceLot))
         assert row is not None and row.is_archived is False
         assert row.missing_successful_runs == 0
+
+
+def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot("yaroslavl"), lot("moscow", region_code="77")]]))
+    service.connector_factory = lambda _source: FakeConnector([[]])
+    for _ in range(2):
+        run_id = service.create_run(triggered_by="admin", trigger_type="pilot", total_sources=1)
+        asyncio.run(service.run(
+            run_id,
+            (SourceSyncSpec("test-source", {}, archive_region_code="76"),),
+        ))
+
+    with sessions() as session:
+        rows = {row.external_id: row for row in session.scalars(select(SourceLot)).all()}
+        assert rows["yaroslavl"].is_archived is True
+        assert rows["moscow"].is_archived is False
+        assert rows["moscow"].missing_successful_runs == 0
+
+
+def test_yaroslavl_pilot_builds_three_region_scoped_sources() -> None:
+    specs = regional_source_specs(region_code="76", region_name="Ярославская область")
+
+    assert tuple(spec.source_id for spec in specs) == (
+        "torgi.gov.ru",
+        "tbankrot.ru",
+        "lot-online.ru",
+    )
+    assert all(spec.archive_region_code == "76" for spec in specs)
+    assert specs[0].filters.subject_rf == "76"
+    assert specs[1].filters.region is not None
+    assert specs[2].filters.region_feature == "Ярославская область"
 
 
 def test_active_database_lease_prevents_duplicate_full_sync(sessions) -> None:

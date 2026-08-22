@@ -12,6 +12,7 @@ def test_home_deploy_keeps_public_api_read_only_and_runs_private_worker() -> Non
     assert "WORKER_CONTAINER: bankrotai-home-ingestion-worker" in workflow
     assert "REDIS_CONTAINER: bankrotai-home-redis" in workflow
     assert "celery -A bankrotai.tasks:celery_app worker" in workflow
+    assert "--no-healthcheck" in workflow
     assert "--network $env:DOCKER_NETWORK" in workflow
 
 
