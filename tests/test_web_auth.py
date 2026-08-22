@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import httpx
 from pydantic import ValidationError
 import pytest
+from redis.exceptions import RedisError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -198,6 +199,25 @@ def test_authenticated_rate_limit_uses_verified_user_not_proxy_ip(monkeypatch) -
 
     assert observed[0] == "ip:2a06:98c0:3600::103"
     assert observed[1] == "user:1"
+
+
+def test_verified_user_rate_limit_does_not_weaken_anonymous_ip_limit(monkeypatch) -> None:
+    class UnavailableRedis:
+        def incr(self, _key: str) -> int:
+            raise RedisError("unavailable")
+
+    monkeypatch.setattr(api.Redis, "from_url", lambda *_args, **_kwargs: UnavailableRedis())
+    monkeypatch.setattr(api.settings, "app_env", "development")
+    monkeypatch.setattr(api.settings, "api_rate_limit_per_minute", 2)
+    api._rate_limit_hits.clear()
+
+    assert api._consume_rate_limit("ip:203.0.113.10") is True
+    assert api._consume_rate_limit("ip:203.0.113.10") is True
+    assert api._consume_rate_limit("ip:203.0.113.10") is False
+
+    assert all(api._consume_rate_limit("user:1") for _ in range(20))
+    assert api._consume_rate_limit("user:1") is False
+    api._rate_limit_hits.clear()
 
 
 def test_review_status_rejects_empty_or_unknown_values() -> None:
