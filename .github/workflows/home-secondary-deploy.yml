@@ -55,8 +55,8 @@ jobs:
           & icacls.exe $passwordPath /inheritance:r /grant:r `
             'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
 
-          docker network inspect $env:DOCKER_NETWORK *> $null
-          if ($LASTEXITCODE -ne 0) { docker network create $env:DOCKER_NETWORK | Out-Null }
+          $network = docker network ls --filter "name=^${env:DOCKER_NETWORK}$" --format '{{.Name}}'
+          if ($network -ne $env:DOCKER_NETWORK) { docker network create $env:DOCKER_NETWORK | Out-Null }
           $postgres = docker ps -a --filter "name=^/${env:POSTGRES_CONTAINER}$" --format '{{.Names}}'
           if ($postgres -ne $env:POSTGRES_CONTAINER) {
             docker run --detach --restart unless-stopped `
@@ -112,6 +112,7 @@ jobs:
           [System.IO.File]::WriteAllLines($configPath, @(
             'APP_ENV=production'
             'API_READ_ONLY=true'
+            'DATABASE_TRUSTED_LOCAL=true'
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
@@ -122,7 +123,7 @@ jobs:
             'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
           ))
           & icacls.exe $configPath /inheritance:r /grant:r `
-            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
 
       - name: Replace only the home secondary container
         shell: powershell
