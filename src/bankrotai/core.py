@@ -76,6 +76,7 @@ class AppSettings:
     openai_model_search: str = "gpt-4o"
     openai_model_risk: str = "gpt-4o-mini"
     tbankrot_api_key: str | None = None
+    torgi_gov_base_url: str = "https://torgi.gov.ru"
 
     # AI Provider
     ai_provider: str = "omniroute"  # "omniroute", "openai", "deepseek", "grok", "groq", "opencode", "nvidia", "gemini", "github"
@@ -193,6 +194,7 @@ def load_settings() -> AppSettings:
         openai_model_search=os.getenv("OPENAI_MODEL_SEARCH", "gpt-4o"),
         openai_model_risk=os.getenv("OPENAI_MODEL_RISK", "gpt-4o-mini"),
         tbankrot_api_key=os.getenv("TBANKROT_API_KEY"),
+        torgi_gov_base_url=os.getenv("TORGI_GOV_BASE_URL", "https://torgi.gov.ru").rstrip("/"),
 
         # AI Provider settings
         ai_provider=os.getenv("AI_PROVIDER", "omniroute"),

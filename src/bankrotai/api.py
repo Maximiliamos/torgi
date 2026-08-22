@@ -612,7 +612,7 @@ def get_torgi_gov_lots(
         page_size=page_size,
     )
     try:
-        client = TorgiGovClient(diagnostics=diagnostics)
+        client = TorgiGovClient(diagnostics=diagnostics, base_url=settings.torgi_gov_base_url)
         lots, meta = client.search_lots(filters)
     except TorgiGovClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -651,7 +651,10 @@ async def search_auction_source(
                 page=page,
                 page_size=page_size,
             )
-            lots, metadata = await asyncio.to_thread(TorgiGovClient(timeout=request_timeout).search_lots, filters)
+            lots, metadata = await asyncio.to_thread(
+                TorgiGovClient(timeout=request_timeout, base_url=settings.torgi_gov_base_url).search_lots,
+                filters,
+            )
         elif source == "tbankrot":
             filters = TBankrotSearchFilters(
                 search_text=search,

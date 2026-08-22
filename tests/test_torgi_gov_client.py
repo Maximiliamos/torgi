@@ -3,6 +3,13 @@ from __future__ import annotations
 from bankrotai.scrapers import TorgiGovClient, TorgiGovSearchFilters
 
 
+def test_torgi_client_can_use_a_bounded_egress_base_url():
+    client = TorgiGovClient(base_url="https://proxy.example.test/torgi/")
+
+    assert client.SEARCH_ENDPOINT == "https://proxy.example.test/torgi/new/api/public/lotcards/search"
+    assert client.FALLBACK_LIST_URL == "https://proxy.example.test/torgi/new/public/lots/reg"
+
+
 LAND_SEARCH = "\u0437\u0435\u043c\u0435\u043b\u044c\u043d\u044b\u0439 \u0443\u0447\u0430\u0441\u0442\u043e\u043a"
 OMSK_REGION = "\u041e\u043c\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c"
 

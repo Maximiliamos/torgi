@@ -4,6 +4,36 @@ const DEFAULT_PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;
+const TORGI_PROXY_PREFIX = "/__public-source/torgi";
+const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
+
+async function publicSourceResponse(request, incoming) {
+  if (!SAFE_METHODS.has(request.method)) return new Response("Method Not Allowed", { status: 405 });
+  const path = incoming.pathname.slice(TORGI_PROXY_PREFIX.length);
+  if (!TORGI_ALLOWED_PATHS.some((prefix) => path.startsWith(prefix)) || incoming.search.length > 4096) {
+    return new Response("Not Found", { status: 404 });
+  }
+  const target = new URL(`${path}${incoming.search}`, "https://torgi.gov.ru");
+  try {
+    const response = await fetch(new Request(target, {
+      method: request.method,
+      headers: { accept: request.headers.get("accept") || "application/json" },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    }));
+    const headers = new Headers(response.headers);
+    headers.delete("set-cookie");
+    headers.set("cache-control", "no-store");
+    return new Response(request.method === "HEAD" ? null : await response.arrayBuffer(), {
+      status: response.status,
+      headers,
+    });
+  } catch {
+    return Response.json({ detail: "Public source is temporarily unavailable" }, {
+      status: 502,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+}
 
 function normalizedOrigin(value, fallback = null) {
   value = value?.trim();
@@ -69,6 +99,9 @@ export default {
       : crypto.randomUUID();
     const startedAt = Date.now();
     const incoming = new URL(request.url);
+    if (incoming.pathname.startsWith(TORGI_PROXY_PREFIX)) {
+      return publicSourceResponse(request, incoming);
+    }
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("x-api-key");

@@ -113,6 +113,7 @@ jobs:
             'APP_ENV=production'
             'API_READ_ONLY=true'
             'DATABASE_TRUSTED_LOCAL=true'
+            'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
