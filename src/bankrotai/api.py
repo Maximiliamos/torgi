@@ -589,8 +589,12 @@ def _cached_public_source_lots(
 ) -> tuple[list[dict[str, Any]], int]:
     with read_session_scope() as session:
         conditions = [SourceLot.source_system == source_system, SourceLot.is_archived.is_(False)]
+        cached_region_name = func.coalesce(
+            SourceLot.region_name,
+            SourceLot.raw_data["region_name"].as_string(),
+        )
         if region:
-            conditions.append(func.lower(SourceLot.region_name).contains(region.casefold()))
+            conditions.append(func.lower(cached_region_name).contains(region.casefold()))
         if search:
             pattern = f"%{search.casefold()}%"
             conditions.append(
@@ -616,8 +620,8 @@ def _cached_public_source_lots(
         "title": row.title or "Лот без названия",
         "description": row.description or "",
         "category": row.category or "real_estate",
-        "region_slug": row.region_code,
-        "region_name": row.region_name,
+        "region_slug": row.region_code or ((row.raw_data or {}).get("region_code") if isinstance(row.raw_data, dict) else None),
+        "region_name": row.region_name or ((row.raw_data or {}).get("region_name") if isinstance(row.raw_data, dict) else None),
         "address": row.address,
         "cadastral_number": row.cadastral_number,
         "area": None,
