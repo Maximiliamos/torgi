@@ -145,6 +145,23 @@ def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> Non
         assert rows["moscow"].missing_successful_runs == 0
 
 
+def test_cardinality_collapse_is_not_treated_as_complete_source_run(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    baseline = [lot(f"lot-{index}") for index in range(20)]
+    run_with(service, FakeConnector([baseline]))
+
+    _, result = run_with(service, FakeConnector([[baseline[0]]]))
+
+    source = result["sources"][0]
+    assert source["status"] == "failed"
+    assert source["complete_source_run"] is False
+    assert "coverage guard" in source["error"]
+    with sessions() as session:
+        rows = session.scalars(select(SourceLot)).all()
+        assert all(row.is_archived is False for row in rows)
+        assert all(row.missing_successful_runs == 0 for row in rows)
+
+
 def test_yaroslavl_pilot_builds_three_region_scoped_sources() -> None:
     specs = regional_source_specs(region_code="76", region_name="Ярославская область")
 

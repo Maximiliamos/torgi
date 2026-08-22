@@ -20,6 +20,8 @@ from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, 
 
 
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
+MIN_COVERAGE_GUARD_BASELINE = 20
+MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +201,10 @@ class NationwideIngestionService:
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
+        active_baseline = self._active_source_count(
+            spec.source_id,
+            region_code=spec.archive_region_code,
+        )
         self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
         cursor: str | None = None
@@ -214,6 +220,15 @@ class NationwideIngestionService:
                 cursor = page.next_cursor
             if not result.complete_source_run:
                 raise RuntimeError("source pagination exceeded the safety page limit")
+            if (
+                active_baseline >= MIN_COVERAGE_GUARD_BASELINE
+                and result.items_seen < active_baseline * MIN_COMPLETE_RUN_COVERAGE_RATIO
+            ):
+                result.complete_source_run = False
+                raise RuntimeError(
+                    "source coverage guard rejected reconciliation: "
+                    f"seen={result.items_seen}, active_baseline={active_baseline}"
+                )
             result.items_archived = self._archive_missing_after_complete_run(
                 run_id,
                 spec.source_id,
@@ -225,6 +240,16 @@ class NationwideIngestionService:
             result.error = str(exc)
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
         return result
+
+    def _active_source_count(self, source_id: str, *, region_code: str | None) -> int:
+        with self.session_factory() as session:
+            query = select(SourceLot.id).where(
+                SourceLot.source_system == source_id,
+                SourceLot.is_archived.is_(False),
+            )
+            if region_code is not None:
+                query = query.where(SourceLot.region_code == region_code)
+            return len(session.scalars(query).all())
 
     def _persist_page(self, run_id: str, result: SourceSyncResult, lots: list[Any]) -> None:
         with self.session_factory() as session:
