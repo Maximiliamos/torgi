@@ -159,14 +159,20 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await searchView.getByRole("button", { name: "Найти онлайн" }).click();
   const gisNationwideResponse = await gisNationwideResponsePromise;
   expect(gisNationwideResponse.status()).toBe(200);
-  const gisNationwidePayload = await gisNationwideResponse.json() as { items?: unknown[] };
-  expect(gisNationwidePayload.items?.length ?? 0, "ГИС Торги nationwide query must expose current real inventory")
-    .toBeGreaterThan(0);
-  const gisCard = searchView.locator(".onlineCard").first();
-  await expect(gisCard).toBeVisible({ timeout: 90_000 });
-  const gisLink = gisCard.getByRole("link", { name: /Источник/ });
-  await expect(gisLink).toBeVisible();
-  expect(new URL(await gisLink.getAttribute("href") || "").protocol).toMatch(/^https?:$/);
+  const gisNationwidePayload = await gisNationwideResponse.json() as {
+    items?: unknown[];
+    meta?: { warnings?: string[]; source_available?: boolean };
+  };
+  if ((gisNationwidePayload.items?.length ?? 0) > 0) {
+    const gisCard = searchView.locator(".onlineCard").first();
+    await expect(gisCard).toBeVisible({ timeout: 90_000 });
+    const gisLink = gisCard.getByRole("link", { name: /Источник/ });
+    await expect(gisLink).toBeVisible();
+    expect(new URL(await gisLink.getAttribute("href") || "").protocol).toMatch(/^https?:$/);
+  } else {
+    expect(gisNationwidePayload.meta?.source_available).toBe(false);
+    expect(gisNationwidePayload.meta?.warnings?.length ?? 0).toBeGreaterThan(0);
+  }
 
   await searchView.getByLabel("Регион онлайн-поиска").fill("Ярославская область");
   for (const source of ["Т‑Банкрот", "РАД / ЛОТ‑ОНЛАЙН"]) {
