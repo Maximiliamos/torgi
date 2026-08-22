@@ -26,6 +26,7 @@ ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_sub
 class SourceSyncSpec:
     source_id: str
     filters: Any
+    archive_region_code: str | None = None
 
 
 @dataclass(slots=True)
@@ -73,6 +74,49 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
                 page=1,
                 page_size=96,
             ),
+        ),
+    )
+
+
+def regional_source_specs(
+    *,
+    region_code: str,
+    region_name: str,
+) -> tuple[SourceSyncSpec, ...]:
+    """Build a complete regional pilot without reconciling other regions."""
+    return (
+        SourceSyncSpec(
+            "torgi.gov.ru",
+            TorgiGovSearchFilters(
+                type_transaction="SALE",
+                category_code=TorgiGovClient.REAL_ESTATE_CATEGORY_CODES,
+                lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
+                subject_rf=region_code,
+                page=1,
+                page_size=100,
+            ),
+            archive_region_code=region_code,
+        ),
+        SourceSyncSpec(
+            "tbankrot.ru",
+            TBankrotSearchFilters(
+                category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
+                region=TBankrotClient.normalize_region_filter(region_code),
+                page=1,
+                page_size=100,
+            ),
+            archive_region_code=region_code,
+        ),
+        SourceSyncSpec(
+            "lot-online.ru",
+            LotOnlineSearchFilters(
+                category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
+                region_feature=region_name,
+                archive_mode="false",
+                page=1,
+                page_size=96,
+            ),
+            archive_region_code=region_code,
         ),
     )
 
@@ -170,7 +214,11 @@ class NationwideIngestionService:
                 cursor = page.next_cursor
             if not result.complete_source_run:
                 raise RuntimeError("source pagination exceeded the safety page limit")
-            result.items_archived = self._archive_missing_after_complete_run(run_id, spec.source_id)
+            result.items_archived = self._archive_missing_after_complete_run(
+                run_id,
+                spec.source_id,
+                region_code=spec.archive_region_code,
+            )
             result.status = "success"
         except Exception as exc:
             result.status = "failed"
@@ -209,14 +257,23 @@ class NationwideIngestionService:
                     result.items_inserted += 1
             session.commit()
 
-    def _archive_missing_after_complete_run(self, run_id: str, source_id: str) -> int:
+    def _archive_missing_after_complete_run(
+        self,
+        run_id: str,
+        source_id: str,
+        *,
+        region_code: str | None = None,
+    ) -> int:
         archived = 0
         with self.session_factory() as session:
-            rows = session.scalars(select(SourceLot).where(
+            query = select(SourceLot).where(
                 SourceLot.source_system == source_id,
                 SourceLot.is_archived.is_(False),
                 or_(SourceLot.last_sync_run_id.is_(None), SourceLot.last_sync_run_id != run_id),
-            )).all()
+            )
+            if region_code is not None:
+                query = query.where(SourceLot.region_code == region_code)
+            rows = session.scalars(query).all()
             for row in rows:
                 row.missing_successful_runs += 1
                 if row.missing_successful_runs < 2:
