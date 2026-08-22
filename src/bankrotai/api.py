@@ -684,6 +684,17 @@ async def search_auction_source(
             raise HTTPException(status_code=404, detail="Unknown auction source")
     except HTTPException:
         raise
+    except TorgiGovClientError as exc:
+        logger.warning("Public GIS search unavailable; returning a controlled empty state: %s", exc)
+        return {
+            "source": source,
+            "items": [],
+            "meta": {
+                "total": 0,
+                "warnings": ["ГИС Торги временно недоступен; показано корректное пустое состояние."],
+                "source_available": False,
+            },
+        }
     except Exception as exc:
         logger.warning("Public search failed for %s: %s", source, exc)
         raise HTTPException(status_code=502, detail=f"Source {source} is temporarily unavailable") from exc

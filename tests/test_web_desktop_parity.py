@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai import api
 from bankrotai.auth import upsert_user
 from bankrotai.db import Base, CanonicalLot, LotGeoSnapshot, ProcessedLot, SourceLot
+from bankrotai.scrapers import TorgiGovClientError
 
 
 def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
@@ -206,3 +207,18 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
 
     # Queue-backed bulk mutations stay outside the curated web surface.
     assert client.post("/api/regions/yaroslavl/sync").status_code == 404
+
+
+def test_gis_outage_returns_an_explicit_controlled_empty_state(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+
+    def unavailable(*_args, **_kwargs):
+        raise TorgiGovClientError("upstream connect timeout")
+
+    monkeypatch.setattr(api.TorgiGovClient, "search_lots", unavailable)
+    response = client.get("/api/search/torgi-gov", params={"region": "Ярославская область"})
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["meta"]["source_available"] is False
+    assert response.json()["meta"]["warnings"]
