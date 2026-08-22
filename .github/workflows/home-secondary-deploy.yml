@@ -1,0 +1,90 @@
+name: Deploy home secondary origin
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-secondary-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    env:
+      IMAGE_NAME: bankrotai-home-api
+      CONTAINER_NAME: bankrotai-home-secondary
+      CONFIG_ROOT: C:\ProgramData\BankrotAI
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+      SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require production secrets
+        shell: pwsh
+        run: |
+          if (-not $env:DATABASE_URL -or -not $env:API_KEY -or -not $env:SESSION_SECRET) {
+            throw "Required production secrets are unavailable"
+          }
+
+      - name: Build current-main API image
+        shell: pwsh
+        run: docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
+
+      - name: Install protected runtime configuration
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
+          $configPath = Join-Path $env:CONFIG_ROOT 'home-secondary.env'
+          [System.IO.File]::WriteAllLines($configPath, @(
+            'APP_ENV=production'
+            'API_READ_ONLY=true'
+            'API_RATE_LIMIT_PER_MINUTE=60'
+            'DATABASE_POOL_SIZE=3'
+            'DATABASE_MAX_OVERFLOW=2'
+            'DATABASE_POOL_TIMEOUT=10'
+            "DATABASE_URL=$env:DATABASE_URL"
+            "BANKROTAI_API_KEY=$env:API_KEY"
+            "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
+            'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
+          ))
+          & icacls.exe $configPath /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' | Out-Null
+
+      - name: Replace only the home secondary container
+        shell: pwsh
+        run: |
+          $existing = docker ps -a --filter "name=^/${env:CONTAINER_NAME}$" --format '{{.Names}}'
+          if ($existing -eq $env:CONTAINER_NAME) {
+            docker rm --force $env:CONTAINER_NAME | Out-Null
+          }
+          docker run --detach --restart unless-stopped `
+            --name $env:CONTAINER_NAME `
+            --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
+            --publish 127.0.0.1:18000:8000 `
+            --read-only `
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m `
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" | Out-Null
+
+      - name: Verify local API stability
+        shell: pwsh
+        run: |
+          $statuses = @()
+          foreach ($attempt in 1..30) {
+            try {
+              $live = Invoke-WebRequest http://127.0.0.1:18000/health/live -TimeoutSec 5 -UseBasicParsing
+              $ready = Invoke-WebRequest http://127.0.0.1:18000/health/ready -TimeoutSec 10 -UseBasicParsing
+              $statuses += "live=$($live.StatusCode),ready=$($ready.StatusCode)"
+            } catch {
+              docker logs --tail 100 $env:CONTAINER_NAME
+              throw
+            }
+            Start-Sleep -Seconds 1
+          }
+          if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
+            throw "Local secondary stability gate failed"
+          }
+          "Local secondary stability gate: 30/30 PASS"
