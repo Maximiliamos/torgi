@@ -179,7 +179,8 @@ jobs:
           $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
           Write-Output "::add-mask::$redisPassword"
           foreach ($attempt in 1..30) {
-            docker exec $env:REDIS_CONTAINER redis-cli -a $redisPassword ping *> $null
+            docker exec --env "REDISCLI_AUTH=$redisPassword" `
+              $env:REDIS_CONTAINER redis-cli ping *> $null
             if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 2
           }
