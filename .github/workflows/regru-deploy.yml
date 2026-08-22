@@ -240,6 +240,15 @@ jobs:
             "DEPLOY_PORT='$SSH_DEPLOY_PORT' bash -s" <<'REMOTE'
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
+          # Keep the small origin deployable without touching running containers
+          # or persistent volumes. Old release images and build/package caches are
+          # reproducible and otherwise eventually exhaust the root filesystem.
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+          if command -v docker >/dev/null 2>&1; then
+            docker builder prune --all --force || true
+            docker image prune --all --force || true
+          fi
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl docker.io ufw
           systemctl enable --now docker
