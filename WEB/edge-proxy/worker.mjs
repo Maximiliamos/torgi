@@ -38,7 +38,7 @@ function unavailableResponse(incoming) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const incoming = new URL(request.url);
 
     if (incoming.protocol !== "https:" || incoming.hostname === `www.${PRIMARY_HOST}`) {
@@ -63,10 +63,12 @@ export default {
     });
     let response;
     try {
-      response = await fetch(
-        upstreamRequest,
-        incoming.pathname === "/deployment.json" ? { cache: "no-store" } : undefined,
-      );
+      response = incoming.pathname.startsWith("/api/")
+        ? await env.API_PROXY.fetch(upstreamRequest)
+        : await fetch(
+          upstreamRequest,
+          incoming.pathname === "/deployment.json" ? { cache: "no-store" } : undefined,
+        );
     } catch {
       return unavailableResponse(incoming);
     }

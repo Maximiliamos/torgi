@@ -27,18 +27,20 @@ describe("canonical Cloudflare edge proxy", () => {
   });
 
   it("routes API requests directly to the dedicated API Worker", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const pagesFetch = vi.spyOn(globalThis, "fetch");
+    const apiFetch = vi.fn().mockResolvedValue(
       Response.json({ detail: "Not authenticated" }, { status: 401 }),
     );
 
     const response = await worker.fetch(new Request("https://dezster.ru/api/auth/me", {
       headers: { cookie: "session=signed" },
-    }));
+    }), { API_PROXY: { fetch: apiFetch } });
 
-    const upstream = fetchMock.mock.calls[0][0];
+    const upstream = apiFetch.mock.calls[0][0];
     expect(upstream.url).toBe("https://api.dezster.ru/api/auth/me");
     expect(upstream.headers.get("cookie")).toBe("session=signed");
     expect(response.status).toBe(401);
+    expect(pagesFetch).not.toHaveBeenCalled();
   });
 
   it("returns a controlled error when Pages is unreachable", async () => {
