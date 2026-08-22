@@ -28,6 +28,25 @@ describe("API origin failover proxy", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("uses a configured primary origin for every method", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ status: "ok" }),
+    );
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/auth/login", {
+      method: "POST",
+      body: "{}",
+    }), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      PRIMARY_API_ORIGIN: "https://home.example.test",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0].url).toBe("https://home.example.test/api/auth/login");
+    expect(response.status).toBe(200);
+  });
+
   it("returns a bounded upstream error without leaking details", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network down"));
