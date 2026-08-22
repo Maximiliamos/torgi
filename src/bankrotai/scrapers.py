@@ -123,6 +123,9 @@ class TorgiGovClient:
     FALLBACK_LIST_URL = f"{BASE_URL}/new/public/lots/reg"
     DEFAULT_LOT_STATUS = "PUBLISHED,APPLICATIONS_SUBMISSION"
     REAL_ESTATE_CATEGORY_CODES = "2,8,9,10,11,12,903"
+    # Public registry top-level groups that make up the real-estate ingestion scope.
+    # Group 7 is expanded to its API child category codes by CATEGORY_GROUP_CODE_MAP.
+    REAL_ESTATE_ROOT_CATEGORY_CODES = "903,7,2"
 
     CATEGORY_CODE_LABELS = {
         "903": "Земельный участок со зданием",
