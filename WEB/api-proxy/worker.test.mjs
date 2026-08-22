@@ -107,6 +107,28 @@ describe("API origin failover proxy", () => {
     expect(await response.json()).toEqual({ status: "alive" });
   });
 
+  it("retries a map read once on the primary before using the secondary", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("home tunnel response reset"))
+      .mockResolvedValueOnce(Response.json({ items: [{ id: 1 }] }));
+
+    const response = await worker.fetch(new Request(
+      "https://api.dezster.ru/api/map/lots?west=33&south=55&east=46&north=60",
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      PRIMARY_API_ORIGIN: "https://home.example.test",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0].url).toContain("home.example.test/api/map/lots");
+    expect(fetchMock.mock.calls[1][0].url).toContain("home.example.test/api/map/lots");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [{ id: 1 }] });
+  });
+
   it.each(["POST", "PUT", "PATCH", "DELETE"])("never retries %s mutations", async (method) => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("primary reset"));
