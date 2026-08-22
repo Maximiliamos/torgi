@@ -50,7 +50,8 @@ async function login(page: Page) {
   await page.getByLabel("Пароль").fill(password);
   await page.getByRole("button", { name: "Войти" }).click();
   try {
-    await expect(page.locator(".workspace")).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
+      .toBeVisible({ timeout: 40_000 });
   } finally {
     const passwordField = page.locator('input[autocomplete="current-password"]');
     if (await passwordField.isVisible()) {
@@ -97,6 +98,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
   expect(secondTabMe.body.username).toBe(process.env.E2E_USERNAME || "reader");
   await secondTab.close();
 
+  await page.getByRole("button", { name: "Реестр", exact: true }).click();
   const firstRow = page.locator(".lotRow").first();
   await expect(firstRow).toBeVisible({ timeout: 40_000 });
   await firstRow.click();
