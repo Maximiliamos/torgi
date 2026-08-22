@@ -12,6 +12,7 @@ from bankrotai.core import get_region_sync_slug, get_settings
 from bankrotai.db import (
     BackgroundTaskState,
     LotSyncRun,
+    LotSyncSourceRun,
     SessionLocal,
     get_region_sync_state,
     init_db,
@@ -188,19 +189,34 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
     return result.id
 
 
-@celery_app.task(bind=True, name="bankrotai.tasks.nationwide_lot_sync_task")
+@celery_app.task(
+    bind=True,
+    name="bankrotai.tasks.nationwide_lot_sync_task",
+    soft_time_limit=6_900,
+    time_limit=7_200,
+)
 def nationwide_lot_sync_task(self, run_id: str) -> dict:
     try:
         return run_nationwide_sync(SessionLocal, run_id, default_source_specs())
     except Exception as exc:
         with session_scope() as session:
+            error_message = str(exc) or exc.__class__.__name__
             run = session.get(LotSyncRun, run_id)
             if run is not None:
                 run.status = "failed"
                 run.finished_at = _utc_now()
                 run.heartbeat_at = _utc_now()
                 run.lease_expires_at = None
-                run.error_message = str(exc)
+                run.error_message = error_message
+            source_runs = session.query(LotSyncSourceRun).filter_by(
+                sync_run_id=run_id,
+                status="running",
+            ).all()
+            for source_run in source_runs:
+                source_run.status = "failed"
+                source_run.complete_source_run = False
+                source_run.finished_at = _utc_now()
+                source_run.error_message = error_message
         logger.exception("Nationwide lot sync %s failed", run_id)
         raise
 
