@@ -49,6 +49,7 @@ class SourceSyncResult:
     items_archived: int = 0
     items_failed: int = 0
     duplicates_merged: int = 0
+    category_pages: dict[str, int] = field(default_factory=dict)
     error: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
 
@@ -59,7 +60,7 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             "torgi.gov.ru",
             TorgiGovSearchFilters(
                 type_transaction="SALE",
-                category_code=TorgiGovClient.REAL_ESTATE_CATEGORY_CODES,
+                category_code=TorgiGovClient.REAL_ESTATE_ROOT_CATEGORY_CODES,
                 lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
                 page=1,
                 page_size=100,
@@ -100,7 +101,7 @@ def regional_source_specs(
             "torgi.gov.ru",
             TorgiGovSearchFilters(
                 type_transaction="SALE",
-                category_code=TorgiGovClient.REAL_ESTATE_CATEGORY_CODES,
+                category_code=TorgiGovClient.REAL_ESTATE_ROOT_CATEGORY_CODES,
                 lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
                 subject_rf=region_code,
                 page=1,
@@ -221,6 +222,10 @@ class NationwideIngestionService:
             for _page_number in range(1, self.max_pages_per_source + 1):
                 page = await connector.search(spec.filters, cursor)
                 result.pages_scanned += 1
+                category_group = page.metadata.get("requested_category_group")
+                if category_group:
+                    group = str(category_group)
+                    result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 self._persist_page(run_id, result, page.items)
                 self._heartbeat(run_id)
                 if page.next_cursor is None:
@@ -370,6 +375,7 @@ class NationwideIngestionService:
             row.items_failed = result.items_failed
             row.duplicates_merged = result.duplicates_merged
             row.error_message = result.error
+            row.checkpoint_json = {"category_pages": result.category_pages} if result.category_pages else None
             row.started_at = row.started_at or started_at
             row.finished_at = finished_at
             session.commit()
@@ -407,6 +413,7 @@ class NationwideIngestionService:
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
             "duplicates_merged": result.duplicates_merged,
+            "category_pages": result.category_pages,
             "error": result.error,
         }
 
