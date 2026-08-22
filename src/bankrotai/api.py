@@ -705,6 +705,14 @@ async def search_auction_source(
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
     region_name = _normalize_public_region(region)
     request_timeout = (settings.external_connect_timeout, settings.external_read_timeout)
+    # The browser-facing route crosses an edge proxy with a 10-second request
+    # deadline. GIS search can make a JSON request and then an HTML fallback, so
+    # keep each attempt bounded and leave time to return the controlled empty
+    # state when the public source is unavailable.
+    torgi_request_timeout = (
+        min(settings.external_connect_timeout, 2.0),
+        min(settings.external_read_timeout, 3.0),
+    )
     cached_system = {"tbankrot": "tbankrot.ru", "lot-online": "lot-online.ru"}.get(source)
     if settings.online_source_cache_first and cached_system:
         items, total = await asyncio.to_thread(
@@ -737,7 +745,7 @@ async def search_auction_source(
                 page_size=page_size,
             )
             lots, metadata = await asyncio.to_thread(
-                TorgiGovClient(timeout=request_timeout, base_url=settings.torgi_gov_base_url).search_lots,
+                TorgiGovClient(timeout=torgi_request_timeout, base_url=settings.torgi_gov_base_url).search_lots,
                 filters,
             )
         elif source == "tbankrot":

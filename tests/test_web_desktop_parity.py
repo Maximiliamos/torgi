@@ -224,6 +224,24 @@ def test_gis_outage_returns_an_explicit_controlled_empty_state(monkeypatch) -> N
     assert response.json()["meta"]["warnings"]
 
 
+def test_browser_gis_search_bounds_both_fallback_attempts(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+    captured: dict[str, object] = {}
+
+    def capture_init(self, *, timeout, base_url):
+        captured["timeout"] = timeout
+        captured["base_url"] = base_url
+
+    monkeypatch.setattr(api.TorgiGovClient, "__init__", capture_init)
+    monkeypatch.setattr(api.TorgiGovClient, "search_lots", lambda *_args: ([], {"total": 0}))
+
+    response = client.get("/api/search/torgi-gov", params={"region": "Ярославская область"})
+
+    assert response.status_code == 200
+    assert captured["timeout"] == (2.0, 3.0)
+    assert captured["base_url"] == api.settings.torgi_gov_base_url
+
+
 def test_cache_first_public_source_does_not_call_unavailable_live_site(monkeypatch) -> None:
     client, _ = _authenticated_client(monkeypatch)
     monkeypatch.setattr(api.settings, "online_source_cache_first", True)
