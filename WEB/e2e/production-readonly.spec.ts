@@ -8,8 +8,17 @@ test.skip(
 type BrowserFailure = { kind: string; value: string };
 
 function observeBrowserFailures(page: Page, failures: BrowserFailure[]) {
+  let pendingYandexTelemetryConsoleDuplicate = 0;
   page.on("console", (message) => {
     if (message.type() !== "error") return;
+    if (message.text().includes("https://log.api-maps.yandex.ru/services/logging/error-booster")) {
+      pendingYandexTelemetryConsoleDuplicate += 1;
+      return;
+    }
+    if (message.text() === "Failed to load resource: net::ERR_FAILED" && pendingYandexTelemetryConsoleDuplicate > 0) {
+      pendingYandexTelemetryConsoleDuplicate -= 1;
+      return;
+    }
     // Chromium emits a URL-less console error for every expected negative HTTP
     // response. The response listener below records unexpected 4xx/5xx with
     // their URL, so keeping this generic duplicate would create false failures.
@@ -19,6 +28,7 @@ function observeBrowserFailures(page: Page, failures: BrowserFailure[]) {
   page.on("pageerror", (error) => failures.push({ kind: "pageerror", value: error.message }));
   page.on("requestfailed", (request) => {
     const reason = request.failure()?.errorText || "unknown";
+    if (request.url().startsWith("https://log.api-maps.yandex.ru/services/logging/error-booster")) return;
     if (!reason.includes("ERR_ABORTED") && !reason.includes("NS_BINDING_ABORTED")) {
       failures.push({ kind: "requestfailed", value: `${request.method()} ${request.url()} ${reason}` });
     }
