@@ -4,6 +4,10 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-08-21",
   "workers_dev": false,
+  "vars": {
+    "PRIMARY_API_ORIGIN": "https://home-api.dezster.ru",
+    "SECONDARY_API_ORIGIN": "https://194-226-126-233.sslip.io"
+  },
   "routes": [
     {
       "pattern": "api.dezster.ru/*",

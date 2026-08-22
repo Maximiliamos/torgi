@@ -1,19 +1,28 @@
 /* global AbortSignal, Headers, Request, Response, URL, console, crypto, fetch */
 
-const PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
+const DEFAULT_PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;
 
-function normalizedSecondary(env) {
-  const value = env.SECONDARY_API_ORIGIN?.trim();
+function normalizedOrigin(value, fallback = null) {
+  value = value?.trim();
   if (!value) return null;
   try {
     const url = new URL(value);
     return url.protocol === "https:" ? url.origin : null;
   } catch {
-    return null;
+    return fallback;
   }
+}
+
+function primaryOrigin(env) {
+  return normalizedOrigin(env.PRIMARY_API_ORIGIN, DEFAULT_PRIMARY_ORIGIN)
+    || DEFAULT_PRIMARY_ORIGIN;
+}
+
+function secondaryOrigin(env) {
+  return normalizedOrigin(env.SECONDARY_API_ORIGIN);
 }
 
 function upstreamRequest(request, incoming, origin, headers) {
@@ -70,7 +79,7 @@ export default {
     headers.set("x-request-id", requestId);
 
     try {
-      const primary = await completedResponse(request, incoming, PRIMARY_ORIGIN, headers);
+      const primary = await completedResponse(request, incoming, primaryOrigin(env), headers);
       console.log(JSON.stringify({
         event: "primary_success", request_id: requestId, method: request.method,
         path: incoming.pathname, status: primary.response.status, duration_ms: Date.now() - startedAt,
@@ -82,13 +91,13 @@ export default {
         path: incoming.pathname, duration_ms: Date.now() - startedAt,
         error: primaryError instanceof Error ? primaryError.name : "UnknownError",
       }));
-      const secondaryOrigin = SAFE_METHODS.has(request.method) ? normalizedSecondary(env) : null;
-      if (secondaryOrigin) {
+      const fallbackOrigin = SAFE_METHODS.has(request.method) ? secondaryOrigin(env) : null;
+      if (fallbackOrigin) {
         console.log(JSON.stringify({
           event: "fallback_activation", request_id: requestId, method: request.method, path: incoming.pathname,
         }));
         try {
-          const secondary = await completedResponse(request, incoming, secondaryOrigin, headers);
+          const secondary = await completedResponse(request, incoming, fallbackOrigin, headers);
           console.log(JSON.stringify({
             event: "secondary_success", request_id: requestId, method: request.method,
             path: incoming.pathname, status: secondary.response.status, duration_ms: Date.now() - startedAt,
