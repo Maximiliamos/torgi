@@ -4,6 +4,7 @@ const DEFAULT_PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;
+const PUBLIC_SOURCE_TIMEOUT_MS = 4_000;
 const TORGI_PROXY_PREFIX = "/__public-source/torgi";
 const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
 
@@ -18,7 +19,7 @@ async function publicSourceResponse(request, incoming) {
     const response = await fetch(new Request(target, {
       method: request.method,
       headers: { accept: request.headers.get("accept") || "application/json" },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(PUBLIC_SOURCE_TIMEOUT_MS),
     }));
     const headers = new Headers(response.headers);
     headers.delete("set-cookie");
