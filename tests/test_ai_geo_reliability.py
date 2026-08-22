@@ -206,6 +206,14 @@ def test_unavailable_pkk_opens_circuit_and_skips_repeated_timeouts(monkeypatch) 
     assert len(calls) == 1
 
 
+def test_cadastre_provider_deadlines_fit_inside_edge_deadline() -> None:
+    from bankrotai.geo import CADASTRAL_REQUEST_TIMEOUT
+
+    connect_timeout, read_timeout = CADASTRAL_REQUEST_TIMEOUT
+    assert connect_timeout <= 2.0
+    assert read_timeout <= 3.0
+
+
 def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> None:
     geocoder = CadastralGeocoder()
     monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *args, **kwargs: None)

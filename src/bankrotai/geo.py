@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 CADASTRAL_RE = re.compile(r"^\d{2}:\d{2}:\d{6,7}:\d+$")
 REQUEST_TIMEOUT = (get_settings().external_connect_timeout, get_settings().external_read_timeout)
+# Cadastre providers are optional read dependencies behind a 10-second edge
+# deadline. Keep each provider attempt bounded so an unavailable PKK followed
+# by an unavailable NSPD still returns a controlled result before that deadline.
+CADASTRAL_REQUEST_TIMEOUT = (
+    min(get_settings().external_connect_timeout, 2.0),
+    min(get_settings().external_read_timeout, 3.0),
+)
 NSPD_REFERER = "https://nspd.gov.ru/map?thematic=PKK"
 NOMINATIM_MIN_REQUEST_INTERVAL = 1.05
 CADASTRAL_MIN_REQUEST_INTERVAL = 0.35
@@ -191,7 +198,7 @@ class CadastralGeocoder:
                 return None
             self._rate_limit()
             try:
-                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp = requests.get(url, params=params, timeout=CADASTRAL_REQUEST_TIMEOUT)
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
@@ -280,7 +287,7 @@ class CadastralGeocoder:
                     self.nspd_search_url,
                     params=params,
                     headers=headers,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=CADASTRAL_REQUEST_TIMEOUT,
                     verify=nspd_tls_verify(),
                 )
                 resp.raise_for_status()

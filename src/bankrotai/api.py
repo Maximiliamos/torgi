@@ -98,6 +98,7 @@ _rate_limit_hits: dict[str, list[float]] = {}
 _map_response_cache: dict[tuple, tuple[float, bytes, str]] = {}
 _map_response_cache_lock = threading.Lock()
 _MAP_RESPONSE_CACHE_SECONDS = 60
+_CADASTRAL_GEOCODER = CadastralGeocoder()
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
@@ -1273,7 +1274,7 @@ def get_map_lot(lot_id: int):
 @app.get("/api/cadastre/search")
 async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
     try:
-        result = await asyncio.to_thread(CadastralGeocoder().search, query)
+        result = await asyncio.to_thread(_CADASTRAL_GEOCODER.search, query)
     except Exception as exc:
         logger.warning("Cadastre search failed: %s", exc)
         raise HTTPException(status_code=502, detail="Cadastre service is temporarily unavailable") from exc
