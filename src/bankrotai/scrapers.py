@@ -349,6 +349,7 @@ class TorgiGovClient:
         session: requests.Session | None = None,
         diagnostics: bool = False,
         base_url: str | None = None,
+        allow_html_fallback: bool = True,
     ):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
@@ -357,7 +358,9 @@ class TorgiGovClient:
         self.timeout = timeout
         self.rate_limit = rate_limit
         self.diagnostics = diagnostics
+        self.allow_html_fallback = allow_html_fallback
         self._last_request_at: float | None = None
+        self._last_request_timing: dict[str, float | int] = {}
         self.session = session or requests.Session()
         self.session.headers.update({
             "User-Agent": user_agent
@@ -380,10 +383,14 @@ class TorgiGovClient:
             message = self._request_error_message(exc)
             logger.warning("TorgiGov JSON API request failed: %s", exc)
             warnings.append(f"JSON API torgi.gov.ru недоступен: {message}")
+            if not self.allow_html_fallback:
+                raise
             return self._search_lots_html_fallback(filters, warnings)
         except ValueError as exc:
             logger.warning("TorgiGov JSON API returned non-JSON response: %s", exc)
             warnings.append("JSON API torgi.gov.ru вернул ответ не в формате JSON.")
+            if not self.allow_html_fallback:
+                raise
             return self._search_lots_html_fallback(filters, warnings)
 
         items, total, structure_warning = self._extract_items(payload)
@@ -392,6 +399,7 @@ class TorgiGovClient:
         total_pages = self._extract_total_pages(payload)
         page_info = self._extract_page_info(payload)
 
+        normalize_started = time.perf_counter()
         lots: list[NormalizedLot] = []
         seen: set[str] = set()
         plain_location_filter = bool(filters.fias and not self._looks_like_fias_identifier(filters.fias))
@@ -469,6 +477,10 @@ class TorgiGovClient:
             "raw_endpoint": raw_endpoint,
             "raw_params": dict(params),
             "warnings": warnings,
+            "timings": {
+                **self._last_request_timing,
+                "normalize_ms": round((time.perf_counter() - normalize_started) * 1000, 3),
+            },
         }
         if self.diagnostics:
             logger.info(
@@ -849,15 +861,29 @@ class TorgiGovClient:
         if len(category_codes) > 1:
             return self._request_json_by_category(params, category_codes)
         self._respect_rate_limit()
+        request_started = time.perf_counter()
         response = self.session.get(self.SEARCH_ENDPOINT, params=params, timeout=self.timeout)
+        request_ms = (time.perf_counter() - request_started) * 1000
         response.raise_for_status()
-        return response.json()
+        decode_started = time.perf_counter()
+        payload = response.json()
+        self._last_request_timing = {
+            "http_requests": 1,
+            "request_ms": round(request_ms, 3),
+            "json_decode_ms": round((time.perf_counter() - decode_started) * 1000, 3),
+            "response_bytes": len(getattr(response, "content", b"")),
+        }
+        return payload
 
     def _request_json_by_category(self, params: dict[str, str], category_codes: list[str]) -> dict[str, Any]:
         requested_page = max(0, int(params.get("page", "0")))
         page_size = max(1, min(int(params.get("size", "100")), 100))
         collected: list[dict[str, Any]] = []
         total_elements = 0
+        request_ms = 0.0
+        json_decode_ms = 0.0
+        response_bytes = 0
+        http_requests = 0
 
         for category_code in category_codes:
             category_total: int | None = None
@@ -866,9 +892,15 @@ class TorgiGovClient:
                 category_params["catCode"] = category_code
                 category_params["page"] = str(category_page)
                 self._respect_rate_limit()
+                request_started = time.perf_counter()
                 response = self.session.get(self.SEARCH_ENDPOINT, params=category_params, timeout=self.timeout)
+                request_ms += (time.perf_counter() - request_started) * 1000
                 response.raise_for_status()
+                decode_started = time.perf_counter()
                 payload = response.json()
+                json_decode_ms += (time.perf_counter() - decode_started) * 1000
+                response_bytes += len(getattr(response, "content", b""))
+                http_requests += 1
                 items, extracted_total, _warning = self._extract_items(payload)
                 collected.extend(item for item in items if isinstance(item, dict))
                 if category_total is None:
@@ -895,6 +927,12 @@ class TorgiGovClient:
         start = requested_page * page_size
         content = ordered[start : start + page_size]
         total_pages = (total_elements + page_size - 1) // page_size if total_elements else 0
+        self._last_request_timing = {
+            "http_requests": http_requests,
+            "request_ms": round(request_ms, 3),
+            "json_decode_ms": round(json_decode_ms, 3),
+            "response_bytes": response_bytes,
+        }
         return {
             "content": content,
             "totalElements": total_elements,

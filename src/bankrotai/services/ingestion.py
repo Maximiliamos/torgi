@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import event, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.connectors.base import AuctionConnector
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.db import LotSyncRun, LotSyncSourceRun, ProcessedLot, SourceLot, utc_now
-from bankrotai.logic import persist_lot, reconcile_cross_source_duplicates
+from bankrotai.logic import (
+    _raw_value,
+    _to_datetime,
+    _to_decimal,
+    normalize_region_code,
+    normalize_status,
+    persist_lot,
+    reconcile_cross_source_duplicates,
+)
 from bankrotai.scraper_contracts import (
     LotOnlineSearchFilters,
     TBankrotSearchFilters,
@@ -22,6 +31,7 @@ from bankrotai.scraper_contracts import (
     TorgiRussiaSearchFilters,
 )
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
+from bankrotai.services.batch_persistence import persist_changed_lots_batch
 
 
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
@@ -48,8 +58,16 @@ class SourceSyncResult:
     items_unchanged: int = 0
     items_archived: int = 0
     items_failed: int = 0
+    items_duplicates: int = 0
     duplicates_merged: int = 0
     category_pages: dict[str, int] = field(default_factory=dict)
+    timing_ms: dict[str, float] = field(default_factory=dict)
+    sql_statements: int = 0
+    http_requests: int = 0
+    response_bytes: int = 0
+    elapsed_seconds: float = 0.0
+    current_category: str | None = None
+    total_pages: int | None = None
     error: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
 
@@ -147,11 +165,17 @@ class NationwideIngestionService:
         connector_factory: Callable[[str], AuctionConnector] = connector_registry.create,
         lease_minutes: int = 10,
         max_pages_per_source: int = 10_000,
+        profile_timings: bool = False,
+        use_gis_batch_persistence: bool = True,
+        gis_batch_size: int = 500,
     ) -> None:
         self.session_factory = session_factory
         self.connector_factory = connector_factory
         self.lease_minutes = lease_minutes
         self.max_pages_per_source = max_pages_per_source
+        self.profile_timings = profile_timings
+        self.use_gis_batch_persistence = use_gis_batch_persistence
+        self.gis_batch_size = gis_batch_size
 
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
@@ -188,15 +212,21 @@ class NationwideIngestionService:
         for spec in specs:
             result = await self._sync_source(run_id, spec)
             results.append(result)
+        dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
             session.commit()
+        canonical_dedupe_ms = round((time.perf_counter() - dedupe_started) * 1000, 3)
         if results:
             results[-1].duplicates_merged += merged
         status = "success" if all(item.status == "success" for item in results) else (
             "failed" if all(item.status == "failed" for item in results) else "partial"
         )
-        payload = {"status": status, "sources": [self._result_payload(item) for item in results]}
+        payload = {
+            "status": status,
+            "sources": [self._result_payload(item) for item in results],
+            "profile": {"canonical_dedupe_ms": canonical_dedupe_ms} if self.profile_timings else {},
+        }
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
             if run is not None:
@@ -211,6 +241,7 @@ class NationwideIngestionService:
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
+        wall_started = time.perf_counter()
         active_baseline = self._active_source_count(
             spec.source_id,
             region_code=spec.archive_region_code,
@@ -221,13 +252,34 @@ class NationwideIngestionService:
         try:
             for _page_number in range(1, self.max_pages_per_source + 1):
                 page = await connector.search(spec.filters, cursor)
-                result.pages_scanned += 1
+                pages_fetched = max(1, int(page.metadata.get("pages_fetched") or 1))
+                result.pages_scanned += pages_fetched
+                result.current_category = page.metadata.get("current_category") or page.metadata.get(
+                    "requested_category_group"
+                )
+                if page.metadata.get("total_pages") is not None:
+                    result.total_pages = int(page.metadata["total_pages"])
+                if self.profile_timings:
+                    for key, value in page.metadata.get("timings", {}).items():
+                        if isinstance(value, (int, float)):
+                            if key.endswith("_ms"):
+                                result.timing_ms[key] = result.timing_ms.get(key, 0.0) + float(value)
+                            elif key == "http_requests":
+                                result.http_requests += int(value)
+                            elif key == "response_bytes":
+                                result.response_bytes += int(value)
+                category_page_counts = page.metadata.get("category_pages")
+                if isinstance(category_page_counts, dict):
+                    for group, count in category_page_counts.items():
+                        result.category_pages[str(group)] = result.category_pages.get(str(group), 0) + int(count)
                 category_group = page.metadata.get("requested_category_group")
-                if category_group:
+                if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 self._persist_page(run_id, result, page.items)
+                result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
+                self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
                     result.complete_source_run = True
                     break
@@ -252,6 +304,7 @@ class NationwideIngestionService:
         except Exception as exc:
             result.status = "failed"
             result.error = str(exc)
+        result.elapsed_seconds = time.perf_counter() - wall_started
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
         return result
 
@@ -266,35 +319,115 @@ class NationwideIngestionService:
             return len(session.scalars(query).all())
 
     def _persist_page(self, run_id: str, result: SourceSyncResult, lots: list[Any]) -> None:
+        batch_started = time.perf_counter()
         with self.session_factory() as session:
-            for normalized in lots:
-                if not is_sale_real_estate_lot(normalized):
+            bind = session.get_bind()
+
+            def count_statement(*_args: Any, **_kwargs: Any) -> None:
+                result.sql_statements += 1
+
+            if self.profile_timings:
+                event.listen(bind, "before_cursor_execute", count_statement)
+            accepted = []
+            page_ids: set[str] = set()
+            for lot in lots:
+                if not is_sale_real_estate_lot(lot):
                     continue
+                if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
+                    result.items_duplicates += 1
+                    continue
+                page_ids.add(lot.external_id)
+                accepted.append(lot)
+            if result.source_system != "torgi.gov.ru" or not self.use_gis_batch_persistence:
+                self._persist_page_legacy(session, run_id, result, accepted)
+                commit_started = time.perf_counter()
+                session.commit()
+                self._add_timing(result, "commit_ms", commit_started)
+                if self.profile_timings:
+                    event.remove(bind, "before_cursor_execute", count_statement)
+                self._add_timing(result, "total_batch_ms", batch_started)
+                return
+            external_ids = [lot.external_id for lot in accepted]
+            lookup_started = time.perf_counter()
+            existing_rows = {
+                row.external_id: row
+                for row in session.scalars(select(SourceLot).where(
+                    SourceLot.source_system == result.source_system,
+                    SourceLot.external_id.in_(external_ids),
+                )).all()
+            } if external_ids else {}
+            self._add_timing(result, "db_lookup_ms", lookup_started)
+            changed_or_new: list[Any] = []
+            for normalized in accepted:
                 result.items_seen += 1
                 result.seen_external_ids.add(normalized.external_id)
-                source_row = session.scalar(select(SourceLot).where(
-                    SourceLot.source_system == normalized.source_system,
-                    SourceLot.external_id == normalized.external_id,
-                ))
+                source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
                 before = self._source_fingerprint(source_row) if source_row is not None else None
-                persist_lot(session, normalized)
-                source_row = session.scalar(select(SourceLot).where(
-                    SourceLot.source_system == normalized.source_system,
-                    SourceLot.external_id == normalized.external_id,
-                ))
-                if source_row is None:
-                    result.items_failed += 1
+                if source_row is not None and before == self._normalized_source_fingerprint(normalized, source_row):
+                    source_row.last_sync_run_id = run_id
+                    source_row.last_seen_at = utc_now()
+                    source_row.missing_successful_runs = 0
+                    result.items_unchanged += 1
                     continue
-                source_row.last_sync_run_id = run_id
-                source_row.missing_successful_runs = 0
+                changed_or_new.append(normalized)
                 if existed:
-                    changed = self._source_fingerprint(source_row) != before
-                    result.items_updated += int(changed)
-                    result.items_unchanged += int(not changed)
+                    result.items_updated += 1
                 else:
                     result.items_inserted += 1
+            persist_started = time.perf_counter()
+            persist_changed_lots_batch(
+                session,
+                changed_or_new,
+                run_id,
+                batch_size=self.gis_batch_size,
+                existing_sources=existing_rows,
+            )
+            self._add_timing(result, "persist_ms", persist_started)
+            commit_started = time.perf_counter()
             session.commit()
+            self._add_timing(result, "commit_ms", commit_started)
+            if self.profile_timings:
+                event.remove(bind, "before_cursor_execute", count_statement)
+        self._add_timing(result, "total_batch_ms", batch_started)
+
+    def _persist_page_legacy(
+        self,
+        session: Session,
+        run_id: str,
+        result: SourceSyncResult,
+        lots: list[Any],
+    ) -> None:
+        for normalized in lots:
+            result.items_seen += 1
+            result.seen_external_ids.add(normalized.external_id)
+            source_row = session.scalar(select(SourceLot).where(
+                SourceLot.source_system == normalized.source_system,
+                SourceLot.external_id == normalized.external_id,
+            ))
+            existed = source_row is not None
+            before = self._source_fingerprint(source_row) if source_row is not None else None
+            persist_lot(session, normalized)
+            source_row = session.scalar(select(SourceLot).where(
+                SourceLot.source_system == normalized.source_system,
+                SourceLot.external_id == normalized.external_id,
+            ))
+            if source_row is None:
+                result.items_failed += 1
+                continue
+            source_row.last_sync_run_id = run_id
+            source_row.missing_successful_runs = 0
+            if existed:
+                changed = self._source_fingerprint(source_row) != before
+                result.items_updated += int(changed)
+                result.items_unchanged += int(not changed)
+            else:
+                result.items_inserted += 1
+
+    def _add_timing(self, result: SourceSyncResult, key: str, started: float) -> None:
+        if not self.profile_timings:
+            return
+        result.timing_ms[key] = result.timing_ms.get(key, 0.0) + (time.perf_counter() - started) * 1000
 
     def _archive_missing_after_complete_run(
         self,
@@ -375,7 +508,13 @@ class NationwideIngestionService:
             row.items_failed = result.items_failed
             row.duplicates_merged = result.duplicates_merged
             row.error_message = result.error
-            row.checkpoint_json = {"category_pages": result.category_pages} if result.category_pages else None
+            row.checkpoint_json = {
+                "category_pages": result.category_pages,
+                "current_category": result.current_category,
+                "total_pages": result.total_pages,
+                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+                if result.elapsed_seconds else 0,
+            } if result.category_pages or result.current_category else None
             row.started_at = row.started_at or started_at
             row.finished_at = finished_at
             session.commit()
@@ -400,7 +539,33 @@ class NationwideIngestionService:
         )
 
     @staticmethod
-    def _result_payload(result: SourceSyncResult) -> dict[str, Any]:
+    def _normalized_source_fingerprint(normalized: Any, existing: SourceLot) -> tuple[Any, ...]:
+        raw = normalized.raw_data or {}
+        normalized_status = normalize_status(normalized.auction_status)
+        is_active = existing.is_active
+        is_archived = existing.is_archived
+        if normalized_status == "closed":
+            is_active, is_archived = False, True
+        elif normalized_status in {"active", "scheduled"}:
+            is_active, is_archived = True, False
+        return (
+            normalized.title,
+            normalized.description,
+            normalized.category,
+            normalize_region_code(str(raw.get("region_code") or normalized.region_name or normalized.region_slug or "")),
+            normalized.address,
+            normalized.cadastral_number,
+            _to_decimal(normalized.start_price),
+            _to_decimal(normalized.current_price),
+            normalized.auction_status,
+            normalized.application_deadline or _to_datetime(_raw_value(raw, "bidd_end_time", "application_deadline")),
+            normalized.auction_at or _to_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
+            _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update")),
+            is_active,
+            is_archived,
+        )
+
+    def _result_payload(self, result: SourceSyncResult) -> dict[str, Any]:
         return {
             "source_system": result.source_system,
             "status": result.status,
@@ -412,8 +577,23 @@ class NationwideIngestionService:
             "items_unchanged": result.items_unchanged,
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
+            "items_duplicates": result.items_duplicates,
             "duplicates_merged": result.duplicates_merged,
             "category_pages": result.category_pages,
+            "current_category": result.current_category,
+            "total_pages": result.total_pages,
+            "profile": {
+                **{key: round(value, 3) for key, value in result.timing_ms.items()},
+                "sql_statements": result.sql_statements,
+                "http_requests": result.http_requests,
+                "response_bytes": result.response_bytes,
+                "sql_statements_per_100_lots": round(result.sql_statements * 100 / result.items_seen, 2)
+                if result.items_seen else 0,
+                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+                if result.elapsed_seconds else 0,
+                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
+                if result.elapsed_seconds else 0,
+            } if self.profile_timings else {},
             "error": result.error,
         }
 
