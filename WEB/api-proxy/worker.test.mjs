@@ -6,6 +6,23 @@ import worker from "./worker.mjs";
 describe("API origin failover proxy", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("proxies only allowlisted public GIS GET paths", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ content: [] }),
+    );
+    const response = await worker.fetch(new Request(
+      "https://api.dezster.ru/__public-source/torgi/new/api/public/lotcards/search?page=0&size=1",
+    ), {});
+    expect(fetchMock.mock.calls[0][0].url)
+      .toBe("https://torgi.gov.ru/new/api/public/lotcards/search?page=0&size=1");
+    expect(response.status).toBe(200);
+
+    const denied = await worker.fetch(new Request(
+      "https://api.dezster.ru/__public-source/torgi/admin/private",
+    ), {});
+    expect(denied.status).toBe(404);
+  });
+
   it("replaces caller credentials with the service binding", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(

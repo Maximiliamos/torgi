@@ -345,7 +345,12 @@ class TorgiGovClient:
         rate_limit: tuple[float, float] = (0.5, 1.5),
         session: requests.Session | None = None,
         diagnostics: bool = False,
+        base_url: str | None = None,
     ):
+        self.base_url = (base_url or self.BASE_URL).rstrip("/")
+        self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
+        self.EXCEL_EXPORT_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/export/excel"
+        self.FALLBACK_LIST_URL = f"{self.base_url}/new/public/lots/reg"
         self.timeout = timeout
         self.rate_limit = rate_limit
         self.diagnostics = diagnostics
