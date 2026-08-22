@@ -15,7 +15,12 @@ from bankrotai.connectors.base import AuctionConnector
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.db import LotSyncRun, LotSyncSourceRun, ProcessedLot, SourceLot, utc_now
 from bankrotai.logic import persist_lot, reconcile_cross_source_duplicates
-from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters, TorgiGovSearchFilters
+from bankrotai.scraper_contracts import (
+    LotOnlineSearchFilters,
+    TBankrotSearchFilters,
+    TorgiGovSearchFilters,
+    TorgiRussiaSearchFilters,
+)
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
 
 
@@ -76,6 +81,10 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
                 page=1,
                 page_size=96,
             ),
+        ),
+        SourceSyncSpec(
+            "torgi-russia.ru",
+            TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
         ),
     )
 

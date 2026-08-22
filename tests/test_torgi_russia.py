@@ -33,3 +33,29 @@ def test_torgi_russia_lot_page_parses_gallery_and_related_links() -> None:
         "https://xn----etbpba5admdlad.xn--p1ai/pictures/one.jpg",
         "https://cdn.example/two.jpg",
     ]
+
+
+def test_torgi_russia_parse_search_page() -> None:
+    html = """
+    <main><article class="card">
+      <div class="card-meta"><div class="card-meta__item">7143576</div><div class="card-meta__item">Республика Башкортостан</div></div>
+      <div class="card-gallery" data-photos='[{"url":"/pictures/one.png"}]'></div>
+      <h3 class="card__title"><a href="/lot/7143576">Земельный участок 02:31:040801:78</a></h3>
+      <p class="card__excerpt">Участок площадью 1489 кв.м.</p>
+      <div class="card__bids" data-current-bid="345 870,00" data-start-bid="500 000,00"></div>
+    </article></main>
+    """
+    lots = TorgiRussiaClient.parse_search_page(
+        html,
+        "https://xn----etbpba5admdlad.xn--p1ai/search?categories%5B0%5D=6&history_only=0",
+    )
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.external_id == "torgi-russia:7143576"
+    assert lot.region_slug == "02"
+    assert lot.cadastral_number == "02:31:040801:78"
+    assert lot.start_price == 500000
+    assert lot.current_price == 345870
+    assert lot.raw_data["image_urls"] == [
+        "https://xn----etbpba5admdlad.xn--p1ai/pictures/one.png"
+    ]

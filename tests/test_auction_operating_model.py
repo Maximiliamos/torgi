@@ -177,7 +177,13 @@ def test_finance_rejects_impossible_inputs() -> None:
 
 
 def test_builtin_connector_registry_is_explicit() -> None:
-    assert connector_registry.source_ids() == ("fedresurs.ru", "lot-online.ru", "tbankrot.ru", "torgi.gov.ru")
+    assert connector_registry.source_ids() == (
+        "fedresurs.ru",
+        "lot-online.ru",
+        "tbankrot.ru",
+        "torgi-russia.ru",
+        "torgi.gov.ru",
+    )
     assert connector_registry.create("lot-online.ru").source_id == "lot-online.ru"
     assert connector_registry.create("torgi.gov.ru").source_id == "torgi.gov.ru"
 

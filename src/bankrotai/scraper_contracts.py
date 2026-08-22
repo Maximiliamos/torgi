@@ -118,3 +118,10 @@ class LotOnlineSearchFilters:
     archive_mode: str = "false"
     page: int = 1
     page_size: int = 96
+
+
+@dataclass
+class TorgiRussiaSearchFilters:
+    category_id: str = "6"
+    history_only: bool = False
+    page: int = 1
