@@ -577,6 +577,62 @@ def _normalized_lot_to_dict(lot) -> dict:
     }
 
 
+def _cached_public_source_lots(
+    source_system: str,
+    *,
+    search: str,
+    region: str | None,
+    price_min: float | None,
+    price_max: float | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    with read_session_scope() as session:
+        conditions = [SourceLot.source_system == source_system, SourceLot.is_archived.is_(False)]
+        if region:
+            conditions.append(func.lower(SourceLot.region_name).contains(region.casefold()))
+        if search:
+            pattern = f"%{search.casefold()}%"
+            conditions.append(
+                func.lower(func.coalesce(SourceLot.title, "")).like(pattern)
+                | func.lower(func.coalesce(SourceLot.address, "")).like(pattern)
+            )
+        if price_min is not None:
+            conditions.append(func.coalesce(SourceLot.current_price, SourceLot.start_price) >= price_min)
+        if price_max is not None:
+            conditions.append(func.coalesce(SourceLot.current_price, SourceLot.start_price) <= price_max)
+        total = session.scalar(select(func.count()).select_from(SourceLot).where(*conditions)) or 0
+        rows = session.scalars(
+            select(SourceLot)
+            .where(*conditions)
+            .order_by(SourceLot.last_seen_at.desc(), SourceLot.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    items = [{
+        "external_id": row.external_id,
+        "source": source_system,
+        "source_system": source_system,
+        "title": row.title or "Лот без названия",
+        "description": row.description or "",
+        "category": row.category or "real_estate",
+        "region_slug": row.region_code,
+        "region_name": row.region_name,
+        "address": row.address,
+        "cadastral_number": row.cadastral_number,
+        "area": None,
+        "start_price": row.start_price,
+        "current_price": row.current_price,
+        "auction_status": row.source_status or "active",
+        "lot_url": row.lot_url or row.source_url,
+        "source_url": row.source_url or row.lot_url,
+        "detail_level": "cached",
+        "published_at": row.published_at.isoformat() if row.published_at else None,
+        "raw_data": row.raw_data or {},
+    } for row in rows]
+    return items, total
+
+
 @app.get("/api/online/torgi-gov/lots")
 def get_torgi_gov_lots(
     search: str = Query("", max_length=200),
@@ -637,6 +693,23 @@ async def search_auction_source(
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
     region_name = _normalize_public_region(region)
     request_timeout = (settings.external_connect_timeout, settings.external_read_timeout)
+    cached_system = {"tbankrot": "tbankrot.ru", "lot-online": "lot-online.ru"}.get(source)
+    if settings.online_source_cache_first and cached_system:
+        items, total = await asyncio.to_thread(
+            _cached_public_source_lots,
+            cached_system,
+            search=search,
+            region=region_name,
+            price_min=price_min,
+            price_max=price_max,
+            page=page,
+            page_size=page_size,
+        )
+        return {
+            "source": source,
+            "items": items,
+            "meta": {"total": total, "cached": True, "source_available": None, "warnings": []},
+        }
     try:
         if source == "torgi-gov":
             filters = TorgiGovSearchFilters(
