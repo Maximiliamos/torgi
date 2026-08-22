@@ -9,5 +9,9 @@ describe("production security headers", () => {
     expect(headers).toContain("script-src 'self'");
     expect(headers).toContain("https://static.cloudflareinsights.com");
     expect(headers).toContain("connect-src 'self' https://cloudflareinsights.com");
+    expect(headers).toMatch(
+      /script-src[^;]*https:\/\/core-renderer-tiles\.maps\.yandex\.net[^;]*;/,
+    );
+    expect(headers).not.toMatch(/script-src[^;]*https:\/\/\*\.maps\.yandex\.net/);
   });
 });
