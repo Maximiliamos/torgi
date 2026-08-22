@@ -60,7 +60,7 @@ from bankrotai.scrapers import (
     TorgiGovSearchFilters,
 )
 from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters
-from bankrotai.geo import CadastralGeocoder
+from bankrotai.geo import CadastralGeocoder, CadastralObjectResult
 from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
 from bankrotai.services.operations import (
     add_lot_note,
@@ -99,6 +99,8 @@ _map_response_cache: dict[tuple, tuple[float, bytes, str]] = {}
 _map_response_cache_lock = threading.Lock()
 _MAP_RESPONSE_CACHE_SECONDS = 60
 _CADASTRAL_GEOCODER = CadastralGeocoder()
+_CADASTRAL_CAPACITY = threading.BoundedSemaphore(1)
+_CADASTRAL_DEADLINE_SECONDS = 7.0
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
@@ -1273,8 +1275,31 @@ def get_map_lot(lot_id: int):
 
 @app.get("/api/cadastre/search")
 async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
+    def unavailable_result() -> dict[str, Any]:
+        cadastral_number = query if ":" in query else None
+        return asdict(CadastralObjectResult(
+            query=query,
+            cadastral_number=cadastral_number,
+            source="pkk/nspd",
+            confidence="none",
+            error="Кадастровые API временно недоступны; повторите проверку позже.",
+        ))
+
+    if not _CADASTRAL_CAPACITY.acquire(blocking=False):
+        return unavailable_result()
+
+    def bounded_search() -> CadastralObjectResult:
+        try:
+            return _CADASTRAL_GEOCODER.search(query)
+        finally:
+            _CADASTRAL_CAPACITY.release()
+
+    task = asyncio.create_task(asyncio.to_thread(bounded_search))
     try:
-        result = await asyncio.to_thread(_CADASTRAL_GEOCODER.search, query)
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=_CADASTRAL_DEADLINE_SECONDS)
+    except TimeoutError:
+        task.add_done_callback(lambda completed: completed.exception() if not completed.cancelled() else None)
+        return unavailable_result()
     except Exception as exc:
         logger.warning("Cadastre search failed: %s", exc)
         raise HTTPException(status_code=502, detail="Cadastre service is temporarily unavailable") from exc

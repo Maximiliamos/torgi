@@ -214,6 +214,37 @@ def test_cadastre_provider_deadlines_fit_inside_edge_deadline() -> None:
     assert read_timeout <= 3.0
 
 
+def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkeypatch) -> None:
+    import asyncio
+    import threading
+    import time
+
+    from bankrotai import api
+
+    calls = []
+
+    def stalled_search(query: str):
+        calls.append(query)
+        time.sleep(0.08)
+        return api.CadastralObjectResult(query=query)
+
+    monkeypatch.setattr(api, "_CADASTRAL_CAPACITY", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(api, "_CADASTRAL_DEADLINE_SECONDS", 0.02)
+    monkeypatch.setattr(api._CADASTRAL_GEOCODER, "search", stalled_search)
+
+    async def run_requests():
+        first = asyncio.create_task(api.search_cadastre("76:23:010101:10"))
+        await asyncio.sleep(0.005)
+        second = await api.search_cadastre("76:23:010101:11")
+        return await first, second
+
+    first, second = asyncio.run(run_requests())
+
+    assert first["confidence"] == "none"
+    assert second["confidence"] == "none"
+    assert calls == ["76:23:010101:10"]
+
+
 def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> None:
     geocoder = CadastralGeocoder()
     monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *args, **kwargs: None)
