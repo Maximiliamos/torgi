@@ -375,7 +375,12 @@ async def log_requests(request: Request, call_next):
 
 
 def _consume_rate_limit(client_id: str) -> bool:
-    limit = max(settings.api_rate_limit_per_minute, 1)
+    base_limit = max(settings.api_rate_limit_per_minute, 1)
+    # Keep login and other unauthenticated traffic on the strict per-IP limit.
+    # The map workspace legitimately fans out many reads, so a cryptographically
+    # verified session gets a larger per-user bucket without weakening brute-force
+    # protection on the login endpoint.
+    limit = base_limit * 10 if client_id.startswith("user:") else base_limit
     bucket = int(time.time() // 60)
     try:
         redis = Redis.from_url(
