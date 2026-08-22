@@ -222,3 +222,26 @@ def test_gis_outage_returns_an_explicit_controlled_empty_state(monkeypatch) -> N
     assert response.json()["items"] == []
     assert response.json()["meta"]["source_available"] is False
     assert response.json()["meta"]["warnings"]
+
+
+def test_cache_first_public_source_does_not_call_unavailable_live_site(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+    monkeypatch.setattr(api.settings, "online_source_cache_first", True)
+    cached_item = {"external_id": "cached-1", "title": "Реальный сохранённый лот"}
+    monkeypatch.setattr(api, "_cached_public_source_lots", lambda *_args, **_kwargs: ([cached_item], 1))
+    monkeypatch.setattr(
+        api.TBankrotClient,
+        "search_filtered_lots",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("live site must not be called")),
+    )
+
+    response = client.get("/api/search/tbankrot", params={"region": "Ярославская область"})
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [cached_item]
+    assert response.json()["meta"] == {
+        "total": 1,
+        "cached": True,
+        "source_available": None,
+        "warnings": [],
+    }
