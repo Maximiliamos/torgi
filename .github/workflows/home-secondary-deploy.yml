@@ -18,6 +18,8 @@ jobs:
     env:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
+      WORKER_CONTAINER: bankrotai-home-ingestion-worker
+      REDIS_CONTAINER: bankrotai-home-redis
       POSTGRES_CONTAINER: bankrotai-home-postgres
       DOCKER_NETWORK: bankrotai-home
       CONFIG_ROOT: C:\ProgramData\BankrotAI
@@ -52,7 +54,18 @@ jobs:
           }
           $password = [IO.File]::ReadAllText($passwordPath).Trim()
           Write-Output "::add-mask::$password"
+          $redisPasswordPath = Join-Path $env:CONFIG_ROOT 'redis-password.txt'
+          if (-not (Test-Path -LiteralPath $redisPasswordPath)) {
+            $bytes = New-Object byte[] 32
+            [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            $redisPassword = ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+            [IO.File]::WriteAllText($redisPasswordPath, $redisPassword)
+          }
+          $redisPassword = [IO.File]::ReadAllText($redisPasswordPath).Trim()
+          Write-Output "::add-mask::$redisPassword"
           & icacls.exe $passwordPath /inheritance:r /grant:r `
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
+          & icacls.exe $redisPasswordPath /inheritance:r /grant:r `
             'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
 
           $network = docker network ls --filter "name=^${env:DOCKER_NETWORK}$" --format '{{.Name}}'
@@ -107,7 +120,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
           $password = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'postgres-password.txt')).Trim()
+          $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
           Write-Output "::add-mask::$password"
+          Write-Output "::add-mask::$redisPassword"
+          $redisConfigPath = Join-Path $env:CONFIG_ROOT 'redis.conf'
+          [System.IO.File]::WriteAllLines($redisConfigPath, @(
+            'bind 0.0.0.0'
+            'protected-mode yes'
+            'appendonly yes'
+            "requirepass $redisPassword"
+          ))
           $configPath = Join-Path $env:CONFIG_ROOT 'home-secondary.env'
           [System.IO.File]::WriteAllLines($configPath, @(
             'APP_ENV=production'
@@ -120,16 +142,49 @@ jobs:
             'DATABASE_MAX_OVERFLOW=2'
             'DATABASE_POOL_TIMEOUT=10'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
+            "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
             "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
             'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
           ))
-          & icacls.exe $configPath /inheritance:r /grant:r `
-            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
+          $workerConfigPath = Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'
+          [System.IO.File]::WriteAllLines($workerConfigPath, @(
+            'APP_ENV=production'
+            'API_READ_ONLY=false'
+            'DATABASE_TRUSTED_LOCAL=true'
+            'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
+            "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
+            "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
+            "BANKROTAI_API_KEY=$env:API_KEY"
+          ))
+          foreach ($protectedPath in @($redisConfigPath, $configPath, $workerConfigPath)) {
+            & icacls.exe $protectedPath /inheritance:r /grant:r `
+              'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
+          }
 
-      - name: Replace only the home secondary container
+      - name: Start private queue and replace API and trusted ingestion worker
         shell: powershell
         run: |
+          $redis = docker ps -a --filter "name=^/${env:REDIS_CONTAINER}$" --format '{{.Names}}'
+          if ($redis -ne $env:REDIS_CONTAINER) {
+            docker run --detach --restart unless-stopped `
+              --name $env:REDIS_CONTAINER `
+              --network $env:DOCKER_NETWORK `
+              --mount "type=bind,source=$env:CONFIG_ROOT\redis.conf,target=/usr/local/etc/redis/redis.conf,readonly" `
+              --volume bankrotai-home-redis:/data `
+              redis:7-alpine redis-server /usr/local/etc/redis/redis.conf | Out-Null
+          } else {
+            docker start $env:REDIS_CONTAINER | Out-Null
+          }
+          $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
+          Write-Output "::add-mask::$redisPassword"
+          foreach ($attempt in 1..30) {
+            docker exec $env:REDIS_CONTAINER redis-cli -a $redisPassword ping *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Private Redis did not become ready" }
+
           $existing = docker ps -a --filter "name=^/${env:CONTAINER_NAME}$" --format '{{.Names}}'
           if ($existing -eq $env:CONTAINER_NAME) {
             docker rm --force $env:CONTAINER_NAME | Out-Null
@@ -142,6 +197,19 @@ jobs:
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=64m `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" | Out-Null
+
+          $existingWorker = docker ps -a --filter "name=^/${env:WORKER_CONTAINER}$" --format '{{.Names}}'
+          if ($existingWorker -eq $env:WORKER_CONTAINER) {
+            docker rm --force $env:WORKER_CONTAINER | Out-Null
+          }
+          docker run --detach --restart unless-stopped `
+            --name $env:WORKER_CONTAINER `
+            --network $env:DOCKER_NETWORK `
+            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            --read-only `
+            --tmpfs /tmp:rw,noexec,nosuid,size=128m `
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
+            celery -A bankrotai.tasks:celery_app worker --loglevel=INFO --concurrency=2 | Out-Null
 
       - name: Verify local API stability
         shell: powershell
@@ -172,4 +240,11 @@ jobs:
           if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
             throw "Local secondary stability gate failed"
           }
+          docker exec $env:WORKER_CONTAINER `
+            celery -A bankrotai.tasks:celery_app inspect ping --timeout 10 *> $null
+          if ($LASTEXITCODE -ne 0) {
+            docker logs --tail 100 $env:WORKER_CONTAINER
+            throw "Trusted ingestion worker did not answer Celery ping"
+          }
           "Local secondary stability gate: 30/30 PASS"
+          "Trusted ingestion worker gate: PASS"
