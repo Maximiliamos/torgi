@@ -75,7 +75,7 @@ async function attachFailures(testInfo: TestInfo, failures: BrowserFailure[]) {
   });
 }
 
-test("real production auth, registry, sources, GEO, images and source links", async ({ page, context }, testInfo) => {
+test("real production auth, registry, sources, GEO, images and source links", async ({ page, context, request }, testInfo) => {
   test.setTimeout(360_000);
   const failures: BrowserFailure[] = [];
   observeBrowserFailures(page, failures);
@@ -281,10 +281,21 @@ test("real production auth, registry, sources, GEO, images and source links", as
   expect(repeatedMe.status).toBe(200);
   expect(repeatedMe.body.username).toBe(process.env.E2E_USERNAME || "reader");
 
-  const soakSamples = await page.evaluate(async () => {
+  const apiHealthSamples: Array<{ target: string; cycle: number; status: number; duration_ms: number }> = [];
+  for (let cycle = 1; cycle <= 30; cycle += 1) {
+    const cycleSamples = await Promise.all([
+      ["live", "https://api.dezster.ru/health/live"] as const,
+      ["ready", "https://api.dezster.ru/health/ready"] as const,
+    ].map(async ([target, url]) => {
+      const started = performance.now();
+      const response = await request.get(url, { failOnStatusCode: false });
+      return { target, cycle, status: response.status(), duration_ms: Math.round((performance.now() - started) * 10) / 10 };
+    }));
+    apiHealthSamples.push(...cycleSamples);
+  }
+
+  const browserSoakSamples = await page.evaluate(async () => {
     const targets = [
-      ["live", "https://api.dezster.ru/health/live", 200],
-      ["ready", "https://api.dezster.ru/health/ready", 200],
       ["auth_me", "/api/auth/me", 200],
       ["lots", "/api/lots?city_slug=yaroslavl&page=1&per_page=1", 200],
     ] as const;
@@ -304,6 +315,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
     }
     return samples;
   });
+  const soakSamples = [...apiHealthSamples, ...browserSoakSamples];
   const soakSummary = Object.fromEntries(["live", "ready", "auth_me", "lots"].map((target) => {
     const samples = soakSamples.filter((sample) => sample.target === target);
     const durations = samples.map((sample) => sample.duration_ms).sort((a, b) => a - b);
