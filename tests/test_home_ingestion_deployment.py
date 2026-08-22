@@ -22,5 +22,7 @@ def test_home_redis_is_authenticated_persistent_and_not_published() -> None:
     assert "--volume bankrotai-home-redis:/data" in workflow
     assert "redis-password.txt" in workflow
     assert "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0" in workflow
+    assert 'docker exec --env "REDISCLI_AUTH=$redisPassword"' in workflow
+    assert "redis-cli -a" not in workflow
     assert "--publish 127.0.0.1:6379:6379" not in workflow
     assert "--publish 0.0.0.0:6379:6379" not in workflow
