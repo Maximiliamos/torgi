@@ -52,7 +52,8 @@ jobs:
             "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
             'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
           ))
-          & icacls.exe $configPath /inheritance:r /grant:r 'SYSTEM:F' '*S-1-5-32-544:F' | Out-Null
+          & icacls.exe $configPath /inheritance:r /grant:r `
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
 
       - name: Replace only the home secondary container
         shell: powershell
