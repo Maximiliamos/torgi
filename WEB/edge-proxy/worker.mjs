@@ -1,6 +1,7 @@
 /* global URL, Response, fetch, Request, Headers */
 
 const PAGES_ORIGIN = "https://bankrotai.pages.dev";
+const API_ORIGIN = "https://api.dezster.ru";
 const PRIMARY_HOST = "dezster.ru";
 const SECURITY_HEADERS = {
   "strict-transport-security": "max-age=31536000; includeSubDomains",
@@ -48,7 +49,10 @@ export default {
       });
     }
 
-    const upstream = new URL(`${incoming.pathname}${incoming.search}`, PAGES_ORIGIN);
+    // API requests already have a dedicated Worker route. Sending them through
+    // Pages adds an unnecessary proxy hop and caused observed 41-second stalls.
+    const origin = incoming.pathname.startsWith("/api/") ? API_ORIGIN : PAGES_ORIGIN;
+    const upstream = new URL(`${incoming.pathname}${incoming.search}`, origin);
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.delete("host");
     const upstreamRequest = new Request(upstream, {
@@ -71,7 +75,7 @@ export default {
 
     if (location) {
       const redirect = new URL(location, upstream);
-      if (redirect.hostname === "bankrotai.pages.dev") {
+      if (redirect.hostname === "bankrotai.pages.dev" || redirect.hostname === "api.dezster.ru") {
         redirect.hostname = PRIMARY_HOST;
         headers.set("location", redirect.toString());
       }

@@ -26,6 +26,21 @@ describe("canonical Cloudflare edge proxy", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("routes API requests directly to the dedicated API Worker", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ detail: "Not authenticated" }, { status: 401 }),
+    );
+
+    const response = await worker.fetch(new Request("https://dezster.ru/api/auth/me", {
+      headers: { cookie: "session=signed" },
+    }));
+
+    const upstream = fetchMock.mock.calls[0][0];
+    expect(upstream.url).toBe("https://api.dezster.ru/api/auth/me");
+    expect(upstream.headers.get("cookie")).toBe("session=signed");
+    expect(response.status).toBe(401);
+  });
+
   it("returns a controlled error when Pages is unreachable", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network down"));
 
