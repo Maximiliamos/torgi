@@ -12,10 +12,11 @@ def test_gis_connector_paginates_root_categories_independently() -> None:
 
     def fake_search(filters):
         calls.append((filters.category_code, filters.page))
-        has_more = filters.category_code == "903" and filters.page == 1
-        return [], {"has_more": has_more}
+        total_pages = 2 if filters.category_code == "903" else 1
+        return [], {"has_more": filters.page < total_pages, "total_pages": total_pages}
 
-    connector.client.search_lots = fake_search
+    for client in connector._batch_clients:
+        client.search_lots = fake_search
     filters = TorgiGovSearchFilters(category_code="903,7,2", page=1)
 
     async def exercise() -> list[dict]:
@@ -31,7 +32,7 @@ def test_gis_connector_paginates_root_categories_independently() -> None:
 
     metadata = asyncio.run(exercise())
 
-    assert calls == [
+    assert sorted(calls) == sorted([
         ("903", 1),
         ("903", 2),
         ("8", 1),
@@ -40,13 +41,12 @@ def test_gis_connector_paginates_root_categories_independently() -> None:
         ("11", 1),
         ("12", 1),
         ("2", 1),
-    ]
-    assert [item["requested_category_group"] for item in metadata] == [
-        "903", "903", "7", "7", "7", "7", "7", "2",
-    ]
-    assert [item["source_category_code"] for item in metadata] == [
-        "903", "903", "8", "9", "10", "11", "12", "2",
-    ]
+    ])
+    assert sum(item["pages_fetched"] for item in metadata) == 8
+    assert {
+        group: sum(item["category_pages"].get(group, 0) for item in metadata)
+        for group in ("903", "7", "2")
+    } == {"903": 2, "7": 5, "2": 1}
 
 
 def test_gis_connector_keeps_legacy_single_category_cursor() -> None:
