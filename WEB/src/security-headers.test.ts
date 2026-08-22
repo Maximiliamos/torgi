@@ -8,7 +8,6 @@ describe("production security headers", () => {
 
     expect(headers).toContain("script-src 'self'");
     expect(headers).toContain("https://static.cloudflareinsights.com");
-    expect(headers).toContain("connect-src 'self' https://api.dezster.ru");
-    expect(headers).toContain("https://cloudflareinsights.com");
+    expect(headers).toContain("connect-src 'self' https://cloudflareinsights.com");
   });
 });
