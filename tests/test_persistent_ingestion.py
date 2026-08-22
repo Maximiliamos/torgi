@@ -97,6 +97,18 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_duplicate_external_id_across_pages_is_counted_once(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    _, result = run_with(service, FakeConnector([[lot()], [lot()]]))
+
+    source = result["sources"][0]
+    assert source["items_seen"] == 1
+    assert source["items_inserted"] == 1
+    assert source["items_duplicates"] == 1
+    with sessions() as session:
+        assert len(session.scalars(select(SourceLot)).all()) == 1
+
+
 def test_missing_lot_archives_only_after_two_complete_successful_runs(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_with(service, FakeConnector([[lot()]]))

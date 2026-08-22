@@ -58,6 +58,7 @@ class SourceSyncResult:
     items_unchanged: int = 0
     items_archived: int = 0
     items_failed: int = 0
+    items_duplicates: int = 0
     duplicates_merged: int = 0
     category_pages: dict[str, int] = field(default_factory=dict)
     timing_ms: dict[str, float] = field(default_factory=dict)
@@ -165,12 +166,16 @@ class NationwideIngestionService:
         lease_minutes: int = 10,
         max_pages_per_source: int = 10_000,
         profile_timings: bool = False,
+        use_gis_batch_persistence: bool = True,
+        gis_batch_size: int = 500,
     ) -> None:
         self.session_factory = session_factory
         self.connector_factory = connector_factory
         self.lease_minutes = lease_minutes
         self.max_pages_per_source = max_pages_per_source
         self.profile_timings = profile_timings
+        self.use_gis_batch_persistence = use_gis_batch_persistence
+        self.gis_batch_size = gis_batch_size
 
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
@@ -323,8 +328,17 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
-            accepted = [lot for lot in lots if is_sale_real_estate_lot(lot)]
-            if result.source_system != "torgi.gov.ru":
+            accepted = []
+            page_ids: set[str] = set()
+            for lot in lots:
+                if not is_sale_real_estate_lot(lot):
+                    continue
+                if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
+                    result.items_duplicates += 1
+                    continue
+                page_ids.add(lot.external_id)
+                accepted.append(lot)
+            if result.source_system != "torgi.gov.ru" or not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
                 commit_started = time.perf_counter()
                 session.commit()
@@ -362,7 +376,13 @@ class NationwideIngestionService:
                 else:
                     result.items_inserted += 1
             persist_started = time.perf_counter()
-            persist_changed_lots_batch(session, changed_or_new, run_id)
+            persist_changed_lots_batch(
+                session,
+                changed_or_new,
+                run_id,
+                batch_size=self.gis_batch_size,
+                existing_sources=existing_rows,
+            )
             self._add_timing(result, "persist_ms", persist_started)
             commit_started = time.perf_counter()
             session.commit()
@@ -557,6 +577,7 @@ class NationwideIngestionService:
             "items_unchanged": result.items_unchanged,
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
+            "items_duplicates": result.items_duplicates,
             "duplicates_merged": result.duplicates_merged,
             "category_pages": result.category_pages,
             "current_category": result.current_category,

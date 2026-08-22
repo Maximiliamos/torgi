@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from bankrotai.db import CanonicalLot, ProcessedLot, SourceLot, utc_now
+from bankrotai.db import CanonicalLot, LotStatusHistory, ProcessedLot, SourceLot, utc_now
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import (
     _canonical_key,
@@ -20,7 +20,10 @@ from bankrotai.logic import (
 )
 
 
-def _processed_values(lot: NormalizedLot) -> dict[str, Any]:
+def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) -> dict[str, Any]:
+    auction_status = lot.auction_status
+    if normalize_status(auction_status) == "unknown" and existing is not None:
+        auction_status = existing.auction_status
     return {
         "external_id": lot.external_id,
         "source": lot.source,
@@ -36,7 +39,7 @@ def _processed_values(lot: NormalizedLot) -> dict[str, Any]:
         "vin": lot.vin,
         "start_price": _to_decimal(lot.start_price),
         "current_price": _to_decimal(lot.current_price),
-        "auction_status": lot.auction_status,
+        "auction_status": auction_status,
         "lot_url": lot.lot_url,
         "source_url": lot.source_url,
         "area": lot.area,
@@ -72,12 +75,19 @@ def _source_values(
     run_id: str,
     canonical_lot_id: int,
     processed_lot_id: int,
+    existing: SourceLot | None = None,
 ) -> dict[str, Any]:
     raw = lot.raw_data or {}
-    status = normalize_status(lot.auction_status)
-    is_active = status in {"active", "scheduled"}
-    is_archived = status == "closed"
     now = utc_now()
+    status = normalize_status(lot.auction_status)
+    is_active = existing.is_active if existing is not None else True
+    is_archived = existing.is_archived if existing is not None else False
+    archived_at = existing.archived_at if existing is not None else None
+    archive_reason = existing.archive_reason if existing is not None else None
+    if status in {"active", "scheduled"}:
+        is_active, is_archived, archived_at, archive_reason = True, False, None, None
+    elif status == "closed":
+        is_active, is_archived, archived_at, archive_reason = False, True, now, "source_status"
     return {
         "canonical_lot_id": canonical_lot_id,
         "processed_lot_id": processed_lot_id,
@@ -149,8 +159,8 @@ def _source_values(
         "last_sync_run_id": run_id,
         "is_active": is_active,
         "is_archived": is_archived,
-        "archived_at": now if is_archived else None,
-        "archive_reason": "source_status" if is_archived else None,
+        "archived_at": archived_at,
+        "archive_reason": archive_reason,
         "missing_successful_runs": 0,
     }
 
@@ -161,15 +171,27 @@ def persist_changed_lots_batch(
     run_id: str,
     *,
     batch_size: int = 500,
+    existing_sources: dict[str, SourceLot] | None = None,
 ) -> None:
     """Set-based exact-identity persistence; fuzzy reconciliation remains a later phase."""
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     for offset in range(0, len(lots), batch_size):
-        _persist_changed_lots_chunk(session, lots[offset : offset + batch_size], run_id)
+        _persist_changed_lots_chunk(
+            session,
+            lots[offset : offset + batch_size],
+            run_id,
+            existing_sources=existing_sources or {},
+        )
 
 
-def _persist_changed_lots_chunk(session: Session, lots: list[NormalizedLot], run_id: str) -> None:
+def _persist_changed_lots_chunk(
+    session: Session,
+    lots: list[NormalizedLot],
+    run_id: str,
+    *,
+    existing_sources: dict[str, SourceLot],
+) -> None:
     if not lots:
         return
     dialect = session.get_bind().dialect.name
@@ -212,7 +234,23 @@ def _persist_changed_lots_chunk(session: Session, lots: list[NormalizedLot], run
     }
 
     external_ids = [lot.external_id for lot in lots]
-    processed_values = [_processed_values(lot) for lot in lots]
+    existing_processed = {
+        row.external_id: row
+        for row in session.scalars(select(ProcessedLot).where(
+            ProcessedLot.source_system == lots[0].source_system,
+            ProcessedLot.external_id.in_(external_ids),
+        )).all()
+    }
+    old_status_by_id = {
+        external_id: row.auction_status
+        for external_id, row in existing_processed.items()
+    }
+    protected_ids = {
+        external_id
+        for external_id, row in existing_processed.items()
+        if row.review_status is not None
+    }
+    processed_values = [_processed_values(lot, existing_processed.get(lot.external_id)) for lot in lots]
     processed_statement = insert_factory(ProcessedLot).values(processed_values)
     processed_excluded = processed_statement.excluded
     immutable_processed = {"source_system", "external_id", "id", "created_at", "review_status"}
@@ -232,6 +270,19 @@ def _persist_changed_lots_chunk(session: Session, lots: list[NormalizedLot], run
             ProcessedLot.external_id.in_(external_ids),
         )).all()
     }
+    history_values = []
+    for lot, proposed in zip(lots, processed_values, strict=True):
+        old_status = old_status_by_id.get(lot.external_id)
+        new_status = old_status if lot.external_id in protected_ids else proposed["auction_status"]
+        if new_status and new_status != old_status:
+            history_values.append({
+                "lot_id": processed[lot.external_id].id,
+                "old_status": old_status,
+                "new_status": new_status,
+                "source": lot.source or "sync",
+            })
+    if history_values:
+        session.execute(insert(LotStatusHistory), history_values)
 
     values = [
         _source_values(
@@ -239,6 +290,7 @@ def _persist_changed_lots_chunk(session: Session, lots: list[NormalizedLot], run
             run_id=run_id,
             canonical_lot_id=canonicals[_canonical_key(lot)].id,
             processed_lot_id=processed[lot.external_id].id,
+            existing=existing_sources.get(lot.external_id),
         )
         for lot in lots
     ]

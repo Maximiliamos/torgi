@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotStatusHistory, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
@@ -101,3 +101,60 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
         source = session.scalar(select(SourceLot))
         assert processed.title == "Проверенное название"
         assert source is not None and source.title == "Новое название источника"
+
+
+def test_unknown_update_preserves_last_known_status_and_source_state() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-1")
+        persist_changed_lots_batch(session, [make_lot("gis-1")], "run-1")
+        session.commit()
+        existing = session.scalar(select(SourceLot))
+        assert existing is not None
+
+        unknown = make_lot("gis-1")
+        unknown.auction_status = "unknown"
+        add_run(session, "run-2")
+        persist_changed_lots_batch(
+            session,
+            [unknown],
+            "run-2",
+            existing_sources={"gis-1": existing},
+        )
+        session.commit()
+
+        source = session.scalar(select(SourceLot))
+        processed = session.scalar(select(ProcessedLot))
+        assert source is not None and source.is_active is True and source.is_archived is False
+        assert processed is not None and processed.auction_status == "active"
+        assert session.scalar(select(func.count()).select_from(LotStatusHistory)) == 1
+
+
+def test_status_history_records_only_real_status_changes() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-1")
+        persist_changed_lots_batch(session, [make_lot("gis-1")], "run-1")
+        session.commit()
+        existing = session.scalar(select(SourceLot))
+        assert existing is not None
+
+        closed = make_lot("gis-1")
+        closed.auction_status = "closed"
+        add_run(session, "run-2")
+        persist_changed_lots_batch(
+            session,
+            [closed],
+            "run-2",
+            existing_sources={"gis-1": existing},
+        )
+        session.commit()
+
+        histories = session.scalars(select(LotStatusHistory).order_by(LotStatusHistory.id)).all()
+        assert [(row.old_status, row.new_status) for row in histories] == [
+            (None, "active"),
+            ("active", "closed"),
+        ]
+        source = session.scalar(select(SourceLot))
+        session.refresh(source)
+        assert source is not None and source.is_active is False and source.is_archived is True

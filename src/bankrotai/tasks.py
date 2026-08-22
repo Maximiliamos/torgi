@@ -192,8 +192,8 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.nationwide_lot_sync_task",
-    soft_time_limit=6_900,
-    time_limit=7_200,
+    soft_time_limit=settings.celery_soft_time_limit,
+    time_limit=settings.celery_hard_time_limit,
 )
 def nationwide_lot_sync_task(self, run_id: str) -> dict:
     try:

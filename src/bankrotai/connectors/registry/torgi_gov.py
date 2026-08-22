@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -21,9 +22,15 @@ class TorgiGovConnector(AuctionConnector):
         self.client = TorgiGovClient()
         self.concurrency = max(1, min(concurrency, 4))
         self._limiter = _DeterministicRateLimiter(requests_per_second)
-        self._batch_clients = [TorgiGovClient(rate_limit=(0, 0)) for _ in range(self.concurrency)]
+        self._batch_clients = [
+            TorgiGovClient(rate_limit=(0, 0), allow_html_fallback=False)
+            for _ in range(self.concurrency)
+        ]
         for client in self._batch_clients:
             client._respect_rate_limit = self._limiter.wait
+        self._client_pool: queue.Queue[Any] = queue.Queue()
+        for client in self._batch_clients:
+            self._client_pool.put(client)
         self._page_jobs: list[tuple[str, str, int]] | None = None
         self._total_pages = 0
         self._batch_number = 0
@@ -114,26 +121,26 @@ class TorgiGovConnector(AuctionConnector):
         normalized: TorgiGovSearchFilters,
         jobs: list[tuple[str, str, int]],
     ) -> list[tuple[list[Any], dict[str, Any]]]:
-        def run(index: int, job: tuple[str, str, int]) -> tuple[list[Any], dict[str, Any]]:
+        def run(job: tuple[str, str, int]) -> tuple[list[Any], dict[str, Any]]:
             _group, category, page = job
-            client = self._batch_clients[index % len(self._batch_clients)]
+            client = self._client_pool.get()
             page_filters = replace(normalized, category_code=category, page=page, page_size=10)
-            for attempt in range(3):
-                try:
-                    result = client.search_lots(page_filters)
-                    if result[1].get("stop_reason") == "html_fallback":
-                        raise RuntimeError("GIS JSON API failed; HTML fallback cannot prove a complete source page")
-                    return result
-                except Exception as exc:
-                    message = str(exc).lower()
-                    transient = any(code in message for code in ("429", "500", "502", "503", "504"))
-                    if not transient or attempt == 2:
-                        raise
-                    time.sleep(0.5 * (2 ** attempt))
-            raise RuntimeError("unreachable GIS retry state")
+            try:
+                for attempt in range(3):
+                    try:
+                        return client.search_lots(page_filters)
+                    except Exception as exc:
+                        message = str(exc).lower()
+                        transient = any(code in message for code in ("429", "500", "502", "503", "504"))
+                        if not transient or attempt == 2:
+                            raise
+                        time.sleep(0.5 * (2 ** attempt))
+                raise RuntimeError("unreachable GIS retry state")
+            finally:
+                self._client_pool.put(client)
 
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            futures = [pool.submit(run, index, job) for index, job in enumerate(jobs)]
+            futures = [pool.submit(run, job) for job in jobs]
             return [future.result() for future in futures]
 
     def _category_sequence(self, category_code: str | None) -> list[tuple[str, str]]:

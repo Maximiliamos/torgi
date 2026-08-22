@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -64,10 +65,8 @@ def replay_lots(count: int) -> list[NormalizedLot]:
     ]
 
 
-def run_profile(rows: int) -> dict:
-    with tempfile.TemporaryDirectory(prefix="bankrotai-gis-profile-") as temp_dir:
-        database_path = Path(temp_dir) / "profile.sqlite3"
-        engine = create_engine(f"sqlite:///{database_path}")
+def _run_profile(rows: int, database_url: str, persistence: str, batch_size: int) -> dict:
+        engine = create_engine(database_url)
         Base.metadata.create_all(engine)
         sessions = sessionmaker(bind=engine, expire_on_commit=False)
         connector = ReplayConnector(replay_lots(rows))
@@ -75,6 +74,8 @@ def run_profile(rows: int) -> dict:
             sessions,
             connector_factory=lambda _source: connector,
             profile_timings=True,
+            use_gis_batch_persistence=persistence == "batch",
+            gis_batch_size=batch_size,
         )
         reports = []
         for mode in ("insert", "update"):
@@ -82,16 +83,51 @@ def run_profile(rows: int) -> dict:
             result = asyncio.run(service.run(run_id, (SourceSyncSpec("torgi.gov.ru", {}),)))
             reports.append({"mode": mode, **result["sources"][0], **result["profile"]})
         engine.dispose()
-    return {"rows": rows, "transport": "offline replay", "reports": reports}
+        return {
+            "rows": rows,
+            "transport": "offline replay",
+            "persistence": persistence,
+            "batch_size": batch_size if persistence == "batch" else None,
+            "reports": reports,
+        }
+
+
+def run_profile(
+    rows: int,
+    *,
+    database_url: str | None = None,
+    persistence: str = "batch",
+    batch_size: int = 500,
+) -> dict:
+    if database_url is not None:
+        return _run_profile(rows, database_url, persistence, batch_size)
+    with tempfile.TemporaryDirectory(prefix="bankrotai-gis-profile-") as temp_dir:
+        database_path = Path(temp_dir) / "profile.sqlite3"
+        return _run_profile(rows, f"sqlite:///{database_path}", persistence, batch_size)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Profile the existing GIS per-lot persistence path safely.")
     parser.add_argument("--rows", type=int, default=100)
+    parser.add_argument("--persistence", choices=("legacy", "batch"), default="batch")
+    parser.add_argument("--database-url-env")
+    parser.add_argument("--batch-size", type=int, choices=(250, 500, 1000), default=500)
     args = parser.parse_args()
     if args.rows < 1:
         parser.error("--rows must be positive")
-    print(json.dumps(run_profile(args.rows), ensure_ascii=False, indent=2))
+    database_url = os.environ.get(args.database_url_env) if args.database_url_env else None
+    if args.database_url_env and not database_url:
+        parser.error(f"environment variable {args.database_url_env!r} is not set")
+    print(json.dumps(
+        run_profile(
+            args.rows,
+            database_url=database_url,
+            persistence=args.persistence,
+            batch_size=args.batch_size,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 if __name__ == "__main__":

@@ -349,6 +349,7 @@ class TorgiGovClient:
         session: requests.Session | None = None,
         diagnostics: bool = False,
         base_url: str | None = None,
+        allow_html_fallback: bool = True,
     ):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
@@ -357,6 +358,7 @@ class TorgiGovClient:
         self.timeout = timeout
         self.rate_limit = rate_limit
         self.diagnostics = diagnostics
+        self.allow_html_fallback = allow_html_fallback
         self._last_request_at: float | None = None
         self._last_request_timing: dict[str, float | int] = {}
         self.session = session or requests.Session()
@@ -381,10 +383,14 @@ class TorgiGovClient:
             message = self._request_error_message(exc)
             logger.warning("TorgiGov JSON API request failed: %s", exc)
             warnings.append(f"JSON API torgi.gov.ru недоступен: {message}")
+            if not self.allow_html_fallback:
+                raise
             return self._search_lots_html_fallback(filters, warnings)
         except ValueError as exc:
             logger.warning("TorgiGov JSON API returned non-JSON response: %s", exc)
             warnings.append("JSON API torgi.gov.ru вернул ответ не в формате JSON.")
+            if not self.allow_html_fallback:
+                raise
             return self._search_lots_html_fallback(filters, warnings)
 
         items, total, structure_warning = self._extract_items(payload)
