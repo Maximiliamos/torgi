@@ -119,6 +119,7 @@ class AppSettings:
     public_api_key: str | None = None
     api_rate_limit_per_minute: int = 120
     api_read_only: bool = False
+    database_trusted_local: bool = False
     auth_session_secret: str | None = None
     auth_session_ttl_seconds: int = 28_800
     database_pool_size: int = 3
@@ -155,14 +156,20 @@ class AppSettings:
 
         database = urlparse(self.database_url)
         if database.scheme.startswith("postgres"):
+            trusted_local = (
+                self.api_read_only
+                and self.database_trusted_local
+                and (database.hostname or "").lower()
+                in {"bankrotai-home-postgres", "localhost", "127.0.0.1"}
+            )
             if not database.password:
                 errors.append("DATABASE_URL must contain a PostgreSQL password")
             if (database.username or "").lower() == "postgres" and database.password == "postgres":
                 errors.append("DATABASE_URL must not use postgres/postgres")
             query = parse_qs(database.query)
-            if query.get("sslmode") != ["require"]:
+            if not trusted_local and query.get("sslmode") != ["require"]:
                 errors.append("DATABASE_URL must set sslmode=require")
-            if query.get("channel_binding") != ["require"]:
+            if not trusted_local and query.get("channel_binding") != ["require"]:
                 errors.append("DATABASE_URL must set channel_binding=require")
             if "neon.tech" in (database.hostname or "") and "-pooler." not in (database.hostname or ""):
                 errors.append("DATABASE_URL must use the pooled Neon hostname")
@@ -214,6 +221,7 @@ def load_settings() -> AppSettings:
         public_api_key=os.getenv("BANKROTAI_API_KEY") or os.getenv("WEB_API_KEY"),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
         api_read_only=os.getenv("API_READ_ONLY", "false").lower() in {"1", "true", "yes"},
+        database_trusted_local=os.getenv("DATABASE_TRUSTED_LOCAL", "false").lower() in {"1", "true", "yes"},
         auth_session_secret=os.getenv("AUTH_SESSION_SECRET") or None,
         auth_session_ttl_seconds=max(300, int(os.getenv("AUTH_SESSION_TTL_SECONDS", "28800"))),
         database_pool_size=max(1, min(10, int(os.getenv("DATABASE_POOL_SIZE", "3")))),

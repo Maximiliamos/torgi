@@ -83,3 +83,25 @@ def test_read_only_neon_configuration_requires_pooler_and_tls() -> None:
     errors = valid.production_configuration_errors()
     assert any("sslmode=require" in error for error in errors)
     assert any("pooled Neon" in error for error in errors)
+
+
+def test_read_only_local_postgres_requires_explicit_trust_and_known_hostname() -> None:
+    settings = core.AppSettings(
+        app_env="production",
+        api_read_only=True,
+        database_trusted_local=True,
+        public_api_key="k" * 32,
+        auth_session_secret="s" * 48,
+        database_url=(
+            "postgresql+psycopg://bankrotai:secure-password@"
+            "bankrotai-home-postgres:5432/bankrotai"
+        ),
+    )
+    assert settings.production_configuration_errors() == []
+
+    settings.database_trusted_local = False
+    assert any("sslmode=require" in error for error in settings.production_configuration_errors())
+
+    settings.database_trusted_local = True
+    settings.database_url = "postgresql+psycopg://bankrotai:secure-password@remote-db:5432/bankrotai"
+    assert any("sslmode=require" in error for error in settings.production_configuration_errors())
