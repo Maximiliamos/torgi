@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import event, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.connectors.base import AuctionConnector
@@ -50,6 +51,11 @@ class SourceSyncResult:
     items_failed: int = 0
     duplicates_merged: int = 0
     category_pages: dict[str, int] = field(default_factory=dict)
+    timing_ms: dict[str, float] = field(default_factory=dict)
+    sql_statements: int = 0
+    http_requests: int = 0
+    response_bytes: int = 0
+    elapsed_seconds: float = 0.0
     error: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
 
@@ -147,11 +153,13 @@ class NationwideIngestionService:
         connector_factory: Callable[[str], AuctionConnector] = connector_registry.create,
         lease_minutes: int = 10,
         max_pages_per_source: int = 10_000,
+        profile_timings: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.connector_factory = connector_factory
         self.lease_minutes = lease_minutes
         self.max_pages_per_source = max_pages_per_source
+        self.profile_timings = profile_timings
 
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
@@ -188,15 +196,21 @@ class NationwideIngestionService:
         for spec in specs:
             result = await self._sync_source(run_id, spec)
             results.append(result)
+        dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
             session.commit()
+        canonical_dedupe_ms = round((time.perf_counter() - dedupe_started) * 1000, 3)
         if results:
             results[-1].duplicates_merged += merged
         status = "success" if all(item.status == "success" for item in results) else (
             "failed" if all(item.status == "failed" for item in results) else "partial"
         )
-        payload = {"status": status, "sources": [self._result_payload(item) for item in results]}
+        payload = {
+            "status": status,
+            "sources": [self._result_payload(item) for item in results],
+            "profile": {"canonical_dedupe_ms": canonical_dedupe_ms} if self.profile_timings else {},
+        }
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
             if run is not None:
@@ -211,6 +225,7 @@ class NationwideIngestionService:
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
+        wall_started = time.perf_counter()
         active_baseline = self._active_source_count(
             spec.source_id,
             region_code=spec.archive_region_code,
@@ -222,6 +237,15 @@ class NationwideIngestionService:
             for _page_number in range(1, self.max_pages_per_source + 1):
                 page = await connector.search(spec.filters, cursor)
                 result.pages_scanned += 1
+                if self.profile_timings:
+                    for key, value in page.metadata.get("timings", {}).items():
+                        if isinstance(value, (int, float)):
+                            if key.endswith("_ms"):
+                                result.timing_ms[key] = result.timing_ms.get(key, 0.0) + float(value)
+                            elif key == "http_requests":
+                                result.http_requests += int(value)
+                            elif key == "response_bytes":
+                                result.response_bytes += int(value)
                 category_group = page.metadata.get("requested_category_group")
                 if category_group:
                     group = str(category_group)
@@ -252,6 +276,7 @@ class NationwideIngestionService:
         except Exception as exc:
             result.status = "failed"
             result.error = str(exc)
+        result.elapsed_seconds = time.perf_counter() - wall_started
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
         return result
 
@@ -266,23 +291,37 @@ class NationwideIngestionService:
             return len(session.scalars(query).all())
 
     def _persist_page(self, run_id: str, result: SourceSyncResult, lots: list[Any]) -> None:
+        batch_started = time.perf_counter()
         with self.session_factory() as session:
+            bind = session.get_bind()
+
+            def count_statement(*_args: Any, **_kwargs: Any) -> None:
+                result.sql_statements += 1
+
+            if self.profile_timings:
+                event.listen(bind, "before_cursor_execute", count_statement)
             for normalized in lots:
                 if not is_sale_real_estate_lot(normalized):
                     continue
                 result.items_seen += 1
                 result.seen_external_ids.add(normalized.external_id)
+                lookup_started = time.perf_counter()
                 source_row = session.scalar(select(SourceLot).where(
                     SourceLot.source_system == normalized.source_system,
                     SourceLot.external_id == normalized.external_id,
                 ))
+                self._add_timing(result, "db_lookup_ms", lookup_started)
                 existed = source_row is not None
                 before = self._source_fingerprint(source_row) if source_row is not None else None
+                persist_started = time.perf_counter()
                 persist_lot(session, normalized)
+                self._add_timing(result, "persist_ms", persist_started)
+                lookup_started = time.perf_counter()
                 source_row = session.scalar(select(SourceLot).where(
                     SourceLot.source_system == normalized.source_system,
                     SourceLot.external_id == normalized.external_id,
                 ))
+                self._add_timing(result, "db_lookup_ms", lookup_started)
                 if source_row is None:
                     result.items_failed += 1
                     continue
@@ -294,7 +333,17 @@ class NationwideIngestionService:
                     result.items_unchanged += int(not changed)
                 else:
                     result.items_inserted += 1
+            commit_started = time.perf_counter()
             session.commit()
+            self._add_timing(result, "commit_ms", commit_started)
+            if self.profile_timings:
+                event.remove(bind, "before_cursor_execute", count_statement)
+        self._add_timing(result, "total_batch_ms", batch_started)
+
+    def _add_timing(self, result: SourceSyncResult, key: str, started: float) -> None:
+        if not self.profile_timings:
+            return
+        result.timing_ms[key] = result.timing_ms.get(key, 0.0) + (time.perf_counter() - started) * 1000
 
     def _archive_missing_after_complete_run(
         self,
@@ -399,8 +448,7 @@ class NationwideIngestionService:
             row.is_archived,
         )
 
-    @staticmethod
-    def _result_payload(result: SourceSyncResult) -> dict[str, Any]:
+    def _result_payload(self, result: SourceSyncResult) -> dict[str, Any]:
         return {
             "source_system": result.source_system,
             "status": result.status,
@@ -414,6 +462,18 @@ class NationwideIngestionService:
             "items_failed": result.items_failed,
             "duplicates_merged": result.duplicates_merged,
             "category_pages": result.category_pages,
+            "profile": {
+                **{key: round(value, 3) for key, value in result.timing_ms.items()},
+                "sql_statements": result.sql_statements,
+                "http_requests": result.http_requests,
+                "response_bytes": result.response_bytes,
+                "sql_statements_per_100_lots": round(result.sql_statements * 100 / result.items_seen, 2)
+                if result.items_seen else 0,
+                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+                if result.elapsed_seconds else 0,
+                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
+                if result.elapsed_seconds else 0,
+            } if self.profile_timings else {},
             "error": result.error,
         }
 
