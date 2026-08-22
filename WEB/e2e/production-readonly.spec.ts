@@ -216,16 +216,15 @@ test("real production auth, registry, sources, GEO, images and source links", as
   expect(detailCandidates.some(({ body }) => body.image_url || body.image_urls.length > 0),
     "At least one sampled production map lot must expose a parsed image").toBe(true);
 
-  const etagResult = await page.evaluate(async () => {
-    const first = await fetch("/api/map/lots?limit=25", { credentials: "same-origin" });
-    const etag = first.headers.get("etag");
-    await first.arrayBuffer();
-    const second = await fetch("/api/map/lots?limit=25", {
-      credentials: "same-origin",
-      headers: etag ? { "If-None-Match": etag } : {},
-    });
-    return { etag, status: second.status };
+  // Browser fetch transparently turns a successful cache revalidation into a
+  // synthetic 200 response. APIRequestContext exposes the actual wire status,
+  // which is what this production check needs to verify.
+  const firstMapResponse = await page.context().request.get("/api/map/lots?limit=25");
+  const etag = firstMapResponse.headers()["etag"];
+  const secondMapResponse = await page.context().request.get("/api/map/lots?limit=25", {
+    headers: etag ? { "If-None-Match": etag } : {},
   });
+  const etagResult = { etag, status: secondMapResponse.status() };
   expect(etagResult.etag).toBeTruthy();
   expect(etagResult.status).toBe(304);
 
