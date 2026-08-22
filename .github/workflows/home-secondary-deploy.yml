@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -17,17 +18,20 @@ jobs:
     env:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
+      POSTGRES_CONTAINER: bankrotai-home-postgres
+      DOCKER_NETWORK: bankrotai-home
       CONFIG_ROOT: C:\ProgramData\BankrotAI
-      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+      BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Require production secrets
         shell: powershell
         run: |
-          if (-not $env:DATABASE_URL -or -not $env:API_KEY -or -not $env:SESSION_SECRET) {
+          if (-not $env:API_KEY -or -not $env:SESSION_SECRET -or -not $env:BACKUP_ENCRYPTION_PASSWORD) {
             throw "Required production secrets are unavailable"
           }
 
@@ -35,10 +39,75 @@ jobs:
         shell: powershell
         run: docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
 
+      - name: Restore latest encrypted Neon backup to local PostgreSQL
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
+          $passwordPath = Join-Path $env:CONFIG_ROOT 'postgres-password.txt'
+          if (-not (Test-Path -LiteralPath $passwordPath)) {
+            $bytes = New-Object byte[] 32
+            [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            $password = ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+            [IO.File]::WriteAllText($passwordPath, $password)
+          }
+          $password = [IO.File]::ReadAllText($passwordPath).Trim()
+          Write-Output "::add-mask::$password"
+          & icacls.exe $passwordPath /inheritance:r /grant:r `
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
+
+          docker network inspect $env:DOCKER_NETWORK *> $null
+          if ($LASTEXITCODE -ne 0) { docker network create $env:DOCKER_NETWORK | Out-Null }
+          $postgres = docker ps -a --filter "name=^/${env:POSTGRES_CONTAINER}$" --format '{{.Names}}'
+          if ($postgres -ne $env:POSTGRES_CONTAINER) {
+            docker run --detach --restart unless-stopped `
+              --name $env:POSTGRES_CONTAINER --network $env:DOCKER_NETWORK `
+              --env POSTGRES_USER=bankrotai --env POSTGRES_DB=bankrotai `
+              --env "POSTGRES_PASSWORD=$password" `
+              --volume bankrotai-home-postgres:/var/lib/postgresql/data `
+              postgres:17 | Out-Null
+          } else {
+            docker start $env:POSTGRES_CONTAINER | Out-Null
+          }
+          foreach ($attempt in 1..30) {
+            docker exec $env:POSTGRES_CONTAINER pg_isready -U bankrotai -d bankrotai *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Local PostgreSQL did not become ready" }
+
+          $restoreMarker = Join-Path $env:CONFIG_ROOT 'restored-backup.txt'
+          if (-not (Test-Path -LiteralPath $restoreMarker)) {
+            $runs = gh run list --repo $env:GITHUB_REPOSITORY --workflow neon-sync.yml `
+              --limit 20 --json databaseId,conclusion,createdAt | ConvertFrom-Json
+            $run = $runs | Where-Object { $_.conclusion -eq 'success' } | Select-Object -First 1
+            if (-not $run) { throw "No successful Neon backup run is available" }
+            $artifactName = "neon-backup-$($run.databaseId)"
+            $restoreRoot = Join-Path $env:RUNNER_TEMP 'home-postgres-restore'
+            New-Item -ItemType Directory -Path $restoreRoot -Force | Out-Null
+            gh run download $run.databaseId --repo $env:GITHUB_REPOSITORY `
+              --name $artifactName --dir $restoreRoot
+            $encrypted = Get-ChildItem -LiteralPath $restoreRoot -Filter '*.dump.enc' | Select-Object -First 1
+            if (-not $encrypted) { throw "Encrypted recovery dump is missing" }
+            $dump = Join-Path $restoreRoot 'bankrotai.dump'
+            $gitRoot = Split-Path (Split-Path (Get-Command git.exe).Source -Parent) -Parent
+            $openssl = Join-Path $gitRoot 'usr\bin\openssl.exe'
+            & $openssl enc -d -aes-256-cbc -pbkdf2 `
+              -pass env:BACKUP_ENCRYPTION_PASSWORD -in $encrypted.FullName -out $dump
+            if ($LASTEXITCODE -ne 0) { throw "Backup decryption failed" }
+            docker cp $dump "${env:POSTGRES_CONTAINER}:/tmp/bankrotai.dump"
+            docker exec $env:POSTGRES_CONTAINER pg_restore --clean --if-exists `
+              --no-owner --no-acl -U bankrotai -d bankrotai /tmp/bankrotai.dump
+            if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore failed" }
+            docker exec $env:POSTGRES_CONTAINER rm -f /tmp/bankrotai.dump
+            [IO.File]::WriteAllText($restoreMarker, "$($run.databaseId) $($run.createdAt)")
+          }
+
       - name: Install protected runtime configuration
         shell: powershell
         run: |
           New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
+          $password = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'postgres-password.txt')).Trim()
+          Write-Output "::add-mask::$password"
           $configPath = Join-Path $env:CONFIG_ROOT 'home-secondary.env'
           [System.IO.File]::WriteAllLines($configPath, @(
             'APP_ENV=production'
@@ -47,7 +116,7 @@ jobs:
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
             'DATABASE_POOL_TIMEOUT=10'
-            "DATABASE_URL=$env:DATABASE_URL"
+            "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "BANKROTAI_API_KEY=$env:API_KEY"
             "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
             'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
@@ -64,6 +133,7 @@ jobs:
           }
           docker run --detach --restart unless-stopped `
             --name $env:CONTAINER_NAME `
+            --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
             --publish 127.0.0.1:18000:8000 `
             --read-only `
@@ -73,6 +143,17 @@ jobs:
       - name: Verify local API stability
         shell: powershell
         run: |
+          foreach ($warmup in 1..30) {
+            try {
+              $ready = Invoke-WebRequest http://127.0.0.1:18000/health/ready -TimeoutSec 10 -UseBasicParsing
+              if ($ready.StatusCode -eq 200) { break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ready -or $ready.StatusCode -ne 200) {
+            docker logs --tail 100 $env:CONTAINER_NAME
+            throw "Local secondary did not become ready"
+          }
           $statuses = @()
           foreach ($attempt in 1..30) {
             try {
