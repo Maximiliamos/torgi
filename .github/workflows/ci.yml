@@ -84,6 +84,7 @@ jobs:
       - run: npm run test
       - run: npm run build
       - run: npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
+      - run: npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
 
   desktop-source-smoke:
     name: Windows desktop BAT smoke

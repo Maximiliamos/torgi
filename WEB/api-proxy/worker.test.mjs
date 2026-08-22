@@ -71,6 +71,32 @@ describe("API origin failover proxy", () => {
     expect(await response.json()).toEqual({ status: "alive" });
   });
 
+  it("fails a safe read over to the Cloudflare container binding", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("primary reset"));
+    const container = {
+      startAndWaitForPorts: vi.fn().mockResolvedValue(undefined),
+      fetch: vi.fn().mockResolvedValue(Response.json({ status: "alive" })),
+    };
+    const binding = {
+      idFromName: vi.fn().mockReturnValue("production-api-id"),
+      get: vi.fn().mockReturnValue(container),
+    };
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/health/live"), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      NEON_DATABASE_URL: "postgresql://user:password@pooler.neon.tech/db?sslmode=require&channel_binding=require",
+      AUTH_SESSION_SECRET: "session-secret-with-at-least-thirty-two-characters",
+      BANKROTAI_SECONDARY: binding,
+    });
+
+    expect(container.startAndWaitForPorts).toHaveBeenCalledTimes(1);
+    expect(container.fetch).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "alive" });
+  });
+
   it.each(["POST", "PUT", "PATCH", "DELETE"])("never retries %s mutations", async (method) => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("primary reset"));

@@ -1,9 +1,18 @@
 /* global AbortSignal, Headers, Request, Response, URL, console, crypto, fetch */
 
+import { Container, getContainer } from "@cloudflare/containers";
+
 const PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;
+
+export class BankrotAISecondary extends Container {
+  defaultPort = 8000;
+  requiredPorts = [8000];
+  sleepAfter = "2h";
+  enableInternet = true;
+}
 
 function normalizedSecondary(env) {
   const value = env.SECONDARY_API_ORIGIN?.trim();
@@ -52,6 +61,39 @@ function proxyResponse(result, requestId) {
   });
 }
 
+async function completedContainerResponse(request, headers, env) {
+  if (!env.BANKROTAI_SECONDARY || !env.NEON_DATABASE_URL || !env.AUTH_SESSION_SECRET) {
+    return null;
+  }
+  const container = getContainer(env.BANKROTAI_SECONDARY, "production-api");
+  await container.startAndWaitForPorts({
+    ports: 8000,
+    startOptions: {
+      envVars: {
+        APP_ENV: "production",
+        API_READ_ONLY: "true",
+        API_RATE_LIMIT_PER_MINUTE: "60",
+        DATABASE_URL: env.NEON_DATABASE_URL,
+        BANKROTAI_API_KEY: env.KOYEB_SERVICE_KEY,
+        AUTH_SESSION_SECRET: env.AUTH_SESSION_SECRET,
+        CORS_ORIGINS: "https://dezster.ru,https://bankrotai.pages.dev",
+      },
+    },
+    cancellationOptions: { portReadyTimeoutMS: 20_000, instanceGetTimeoutMS: 8_000 },
+  });
+  const response = await container.fetch(new Request(request.url, {
+    method: request.method,
+    headers,
+    redirect: "manual",
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  }));
+  if (TRANSPORT_STATUSES.has(response.status)) {
+    throw new Error(`Secondary transport status ${response.status}`);
+  }
+  const body = request.method === "HEAD" ? null : await response.arrayBuffer();
+  return { response, body };
+}
+
 export default {
   async fetch(request, env) {
     const suppliedRequestId = request.headers.get("x-request-id")?.trim();
@@ -83,12 +125,16 @@ export default {
         error: primaryError instanceof Error ? primaryError.name : "UnknownError",
       }));
       const secondaryOrigin = SAFE_METHODS.has(request.method) ? normalizedSecondary(env) : null;
-      if (secondaryOrigin) {
+      const containerEnabled = SAFE_METHODS.has(request.method) && env.BANKROTAI_SECONDARY;
+      if (secondaryOrigin || containerEnabled) {
         console.log(JSON.stringify({
           event: "fallback_activation", request_id: requestId, method: request.method, path: incoming.pathname,
         }));
         try {
-          const secondary = await completedResponse(request, incoming, secondaryOrigin, headers);
+          const secondary = secondaryOrigin
+            ? await completedResponse(request, incoming, secondaryOrigin, headers)
+            : await completedContainerResponse(request, headers, env);
+          if (!secondary) throw new Error("Secondary is not configured");
           console.log(JSON.stringify({
             event: "secondary_success", request_id: requestId, method: request.method,
             path: incoming.pathname, status: secondary.response.status, duration_ms: Date.now() - startedAt,

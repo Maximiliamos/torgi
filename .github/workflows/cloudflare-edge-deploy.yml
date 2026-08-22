@@ -138,6 +138,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -157,6 +159,10 @@ jobs:
           test -n "$KOYEB_SERVICE_KEY"
           printf '%s' "$KOYEB_SERVICE_KEY" \
             | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+          printf '%s' "$NEON_DATABASE_URL" \
+            | npx wrangler@4 secret put NEON_DATABASE_URL --config api-proxy/wrangler.jsonc
+          printf '%s' "$AUTH_SESSION_SECRET" \
+            | npx wrangler@4 secret put AUTH_SESSION_SECRET --config api-proxy/wrangler.jsonc
       - name: Deploy API failover route
         working-directory: WEB
         run: npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
@@ -169,12 +175,17 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - name: Require scoped Cloudflare deployment credentials
-        run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID" && test -n "$KOYEB_SERVICE_KEY"
+        run: >-
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          && test -n "$KOYEB_SERVICE_KEY" && test -n "$NEON_DATABASE_URL"
+          && test -n "$AUTH_SESSION_SECRET"
       - working-directory: WEB
         run: npm ci
       - name: Validate and build Pages release
@@ -208,6 +219,10 @@ jobs:
           set -euo pipefail
           printf '%s' "$KOYEB_SERVICE_KEY" \
             | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+          printf '%s' "$NEON_DATABASE_URL" \
+            | npx wrangler@4 secret put NEON_DATABASE_URL --config api-proxy/wrangler.jsonc
+          printf '%s' "$AUTH_SESSION_SECRET" \
+            | npx wrangler@4 secret put AUTH_SESSION_SECRET --config api-proxy/wrangler.jsonc
           npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
       - name: Verify canonical edge behavior
         run: |
