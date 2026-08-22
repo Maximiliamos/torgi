@@ -4,6 +4,8 @@ const DEFAULT_PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;
+const MAP_ATTEMPT_TIMEOUT_MS = 4_000;
+const MAP_FALLBACK_TIMEOUT_MS = 2_000;
 const PUBLIC_SOURCE_TIMEOUT_MS = 4_000;
 const TORGI_PROXY_PREFIX = "/__public-source/torgi";
 const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
@@ -56,7 +58,7 @@ function secondaryOrigin(env) {
   return normalizedOrigin(env.SECONDARY_API_ORIGIN);
 }
 
-function upstreamRequest(request, incoming, origin, headers) {
+function upstreamRequest(request, incoming, origin, headers, timeoutMs = UPSTREAM_TIMEOUT_MS) {
   const upstream = new URL(`${incoming.pathname}${incoming.search}`, origin);
   return new Request(upstream, {
     method: request.method,
@@ -64,12 +66,12 @@ function upstreamRequest(request, incoming, origin, headers) {
     body: SAFE_METHODS.has(request.method) ? undefined : request.body,
     duplex: SAFE_METHODS.has(request.method) ? undefined : "half",
     redirect: "manual",
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 }
 
-async function completedResponse(request, incoming, origin, headers) {
-  const response = await fetch(upstreamRequest(request, incoming, origin, headers));
+async function completedResponse(request, incoming, origin, headers, timeoutMs = UPSTREAM_TIMEOUT_MS) {
+  const response = await fetch(upstreamRequest(request, incoming, origin, headers, timeoutMs));
   if (TRANSPORT_STATUSES.has(response.status)) {
     throw new Error(`Upstream transport status ${response.status}`);
   }
@@ -112,9 +114,13 @@ export default {
     headers.set("x-forwarded-host", incoming.host);
     headers.set("x-forwarded-proto", "https");
     headers.set("x-request-id", requestId);
+    const retryMapRead = request.method === "GET" && incoming.pathname === "/api/map/lots";
 
     try {
-      const primary = await completedResponse(request, incoming, primaryOrigin(env), headers);
+      const primary = await completedResponse(
+        request, incoming, primaryOrigin(env), headers,
+        retryMapRead ? MAP_ATTEMPT_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS,
+      );
       console.log(JSON.stringify({
         event: "primary_success", request_id: requestId, method: request.method,
         path: incoming.pathname, status: primary.response.status, duration_ms: Date.now() - startedAt,
@@ -126,13 +132,34 @@ export default {
         path: incoming.pathname, duration_ms: Date.now() - startedAt,
         error: primaryError instanceof Error ? primaryError.name : "UnknownError",
       }));
+      if (retryMapRead) {
+        try {
+          const retry = await completedResponse(
+            request, incoming, primaryOrigin(env), headers, MAP_ATTEMPT_TIMEOUT_MS,
+          );
+          console.log(JSON.stringify({
+            event: "primary_retry_success", request_id: requestId, method: request.method,
+            path: incoming.pathname, status: retry.response.status, duration_ms: Date.now() - startedAt,
+          }));
+          return proxyResponse(retry, requestId);
+        } catch (retryError) {
+          console.error(JSON.stringify({
+            event: "primary_retry_failure", request_id: requestId, method: request.method,
+            path: incoming.pathname, duration_ms: Date.now() - startedAt,
+            error: retryError instanceof Error ? retryError.name : "UnknownError",
+          }));
+        }
+      }
       const fallbackOrigin = SAFE_METHODS.has(request.method) ? secondaryOrigin(env) : null;
       if (fallbackOrigin) {
         console.log(JSON.stringify({
           event: "fallback_activation", request_id: requestId, method: request.method, path: incoming.pathname,
         }));
         try {
-          const secondary = await completedResponse(request, incoming, fallbackOrigin, headers);
+          const secondary = await completedResponse(
+            request, incoming, fallbackOrigin, headers,
+            retryMapRead ? MAP_FALLBACK_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS,
+          );
           console.log(JSON.stringify({
             event: "secondary_success", request_id: requestId, method: request.method,
             path: incoming.pathname, status: secondary.response.status, duration_ms: Date.now() - startedAt,
