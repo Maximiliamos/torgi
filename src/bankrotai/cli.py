@@ -66,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     read_sync_p.add_argument("--max-items-per-source", type=int, default=5000)
     geo_p = subparsers.add_parser("geocode-pending", help="Geocode a bounded batch of stored lots")
     geo_p.add_argument("--limit", type=int, default=250)
+    repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
+    repair_p.add_argument("--limit", type=int, default=1000)
     return parser
 
 def main():
@@ -207,6 +209,13 @@ def main():
 
         init_db()
         result = geocode_pending_lots(session_scope, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "repair-map-read-model":
+        from bankrotai.services.read_model_repair import repair_missing_processed_links
+
+        init_db()
+        with session_scope() as session:
+            result = repair_missing_processed_links(session, limit=args.limit)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else: parser.print_help()
 

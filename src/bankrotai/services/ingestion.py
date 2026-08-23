@@ -389,7 +389,11 @@ class NationwideIngestionService:
                 source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
                 before = self._source_fingerprint(source_row) if source_row is not None else None
-                if source_row is not None and before == self._normalized_source_fingerprint(normalized, source_row):
+                if (
+                    source_row is not None
+                    and source_row.processed_lot_id is not None
+                    and before == self._normalized_source_fingerprint(normalized, source_row)
+                ):
                     source_row.last_sync_run_id = run_id
                     source_row.last_seen_at = utc_now()
                     source_row.missing_successful_runs = 0
