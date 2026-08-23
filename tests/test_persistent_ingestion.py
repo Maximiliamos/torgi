@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -12,6 +13,7 @@ from bankrotai.db import Base, LotSyncRun, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
+    SourceSyncResult,
     SourceSyncSpec,
     SyncAlreadyRunningError,
     fast_source_specs,
@@ -164,6 +166,26 @@ def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
     assert len(specs) == 4
     assert all(spec.reconcile_missing is False and spec.max_batches == 1 for spec in specs)
     assert specs[0].filters.publish_date_from == "2026-08-22"
+
+
+def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:
+    service = NationwideIngestionService(sessions)
+
+    async def delayed(_run_id, spec):
+        await asyncio.sleep(0.12)
+        return SourceSyncResult(source_system=spec.source_id, status="success")
+
+    monkeypatch.setattr(service, "_sync_source", delayed)
+    specs = (
+        SourceSyncSpec("source-a", {}, reconcile_missing=False, max_batches=1),
+        SourceSyncSpec("source-b", {}, reconcile_missing=False, max_batches=1),
+    )
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual_fast", total_sources=2)
+    started = time.perf_counter()
+    result = asyncio.run(service.run(run_id, specs))
+
+    assert time.perf_counter() - started < 0.2
+    assert result["status"] == "success"
 
 
 def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> None:

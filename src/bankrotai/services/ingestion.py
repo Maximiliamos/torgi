@@ -221,10 +221,13 @@ class NationwideIngestionService:
 
     async def run(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
         self._mark_run_running(run_id)
-        results: list[SourceSyncResult] = []
-        for spec in specs:
-            result = await self._sync_source(run_id, spec)
-            results.append(result)
+        if specs and all(not spec.reconcile_missing for spec in specs):
+            results = list(await asyncio.gather(*(self._sync_source(run_id, spec) for spec in specs)))
+        else:
+            results = []
+            for spec in specs:
+                result = await self._sync_source(run_id, spec)
+                results.append(result)
         dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
