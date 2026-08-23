@@ -25,6 +25,7 @@ from bankrotai.logic import (
     reconcile_cross_source_duplicates,
 )
 from bankrotai.scraper_contracts import (
+    BidExpertSearchFilters,
     LotOnlineSearchFilters,
     TBankrotSearchFilters,
     TorgiGovSearchFilters,
@@ -106,6 +107,10 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
         SourceSyncSpec(
             "torgi-russia.ru",
             TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
+        ),
+        SourceSyncSpec(
+            "bidexpert.ru",
+            BidExpertSearchFilters(category="all", page=1),
         ),
     )
 

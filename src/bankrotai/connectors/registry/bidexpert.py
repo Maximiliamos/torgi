@@ -18,7 +18,20 @@ class BidExpertConnector(AuctionConnector):
 
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         normalized = filters if isinstance(filters, BidExpertSearchFilters) else BidExpertSearchFilters(**filters)
-        if cursor:
+        category = normalized.category.lower()
+        if category == "all":
+            phase, page = (cursor.split(":", 1) if cursor else ("realty", "1"))
+            if phase not in {"realty", "land"}:
+                raise ValueError(f"Invalid BidExpert cursor phase: {phase}")
+            normalized = replace(normalized, category=phase, page=max(1, int(page)))
+        elif cursor:
             normalized = replace(normalized, page=max(1, int(cursor)))
         lots, meta = await asyncio.to_thread(self.client.search_lots, normalized)
-        return ConnectorPage(lots, str(normalized.page + 1) if meta["has_more"] else None, meta)
+        if category == "all":
+            next_cursor = f"{normalized.category}:{normalized.page + 1}" if meta["has_more"] else (
+                "land:1" if normalized.category == "realty" else None
+            )
+        else:
+            next_cursor = str(normalized.page + 1) if meta["has_more"] else None
+        meta["category_phase"] = normalized.category
+        return ConnectorPage(lots, next_cursor, meta)

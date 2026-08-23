@@ -1,4 +1,7 @@
+import asyncio
+
 from bankrotai.bidexpert import BidExpertClient
+from bankrotai.connectors.registry.bidexpert import BidExpertConnector
 from bankrotai.scraper_contracts import BidExpertSearchFilters
 
 
@@ -20,3 +23,19 @@ def test_bidexpert_real_sample_excludes_leases_and_keeps_real_estate() -> None:
     assert known.cadastral_number == "64:17:190312:13"
     assert known.start_price == 2126167.0
     assert known.application_deadline and known.application_deadline.year == 2026
+
+
+def test_bidexpert_all_cursor_scans_realty_then_land() -> None:
+    class Client:
+        def search_lots(self, filters):
+            return [], {"has_more": False, "total_pages": 1}
+
+    connector = BidExpertConnector()
+    connector.client = Client()
+    first = asyncio.run(connector.search(BidExpertSearchFilters(category="all")))
+    second = asyncio.run(connector.search(BidExpertSearchFilters(category="all"), first.next_cursor))
+
+    assert first.metadata["category_phase"] == "realty"
+    assert first.next_cursor == "land:1"
+    assert second.metadata["category_phase"] == "land"
+    assert second.next_cursor is None
