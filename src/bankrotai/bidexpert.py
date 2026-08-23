@@ -17,6 +17,13 @@ from bankrotai.scraper_contracts import BidExpertSearchFilters, parse_money
 class BidExpertClient:
     BASE_URL = "https://bidexpert.ru"
     SEARCH_ENDPOINT = f"{BASE_URL}/bids/"
+    LEASE_LISTING_PATTERNS = (
+        re.compile(r"\bобъект\s+аренды\b", re.I),
+        re.compile(r"\bк\s+аренде\s+предлага", re.I),
+        re.compile(r"\bправо\s+заключения\s+договора\s+аренды\b", re.I),
+        re.compile(r"\b(?:размер|предмет\s+аукциона)[^.]{0,160}\bарендн\w*\s+плат", re.I),
+        re.compile(r"\bаукцион\w*[^.]{0,160}\bпо\s+(?:продаже\s+)?\(аренде\)", re.I),
+    )
 
     def __init__(self, *, timeout: tuple[float, float] | float = (10, 45), session: requests.Session | None = None) -> None:
         self.timeout = timeout
@@ -56,8 +63,9 @@ class BidExpertClient:
             text = card.get_text(" ", strip=True)
             title_node = card.select_one(".title")
             title = title_node.get_text(" ", strip=True) if title_node else text
-            # BidExpert's `category-realty=1` sample explicitly contains leases.
-            if re.search(r"\bаренд[аы]\b|объект аренды", title, re.I):
+            # Exclude the transaction itself being a lease, while retaining a
+            # sale whose description merely says the underlying land is leased.
+            if any(pattern.search(title) for pattern in self.LEASE_LISTING_PATTERNS):
                 continue
             numbers = extract_cadastral_numbers(title)
             price_node = card.select_one(".start-price")

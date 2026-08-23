@@ -34,4 +34,5 @@ class BidExpertConnector(AuctionConnector):
         else:
             next_cursor = str(normalized.page + 1) if meta["has_more"] else None
         meta["category_phase"] = normalized.category
+        meta["requested_category_group"] = normalized.category
         return ConnectorPage(lots, next_cursor, meta)

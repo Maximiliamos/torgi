@@ -25,6 +25,17 @@ def test_bidexpert_real_sample_excludes_leases_and_keeps_real_estate() -> None:
     assert known.application_deadline and known.application_deadline.year == 2026
 
 
+def test_bidexpert_excludes_explicit_lease_transactions_but_keeps_sale_encumbrances() -> None:
+    html = """
+    <div class="bid-item"><a href="/bids/lot/?n=1"><div class="title">К аренде предлагаются нежилые помещения площадью 404 кв. м.</div></a></div>
+    <div class="bid-item"><a href="/bids/lot/?n=2"><div class="title">Предмет аукциона – размер ежегодной арендной платы за земельный участок.</div></a></div>
+    <div class="bid-item"><a href="/bids/lot/?n=3"><div class="title">Здание продаётся, земельный участок под ним находится в аренде.</div></a></div>
+    """
+    lots = BidExpertClient().parse_listing_html(html, filters=BidExpertSearchFilters(category="realty"))
+
+    assert [lot.external_id for lot in lots] == ["bidexpert:3"]
+
+
 def test_bidexpert_all_cursor_scans_realty_then_land() -> None:
     class Client:
         def search_lots(self, filters):
@@ -36,6 +47,8 @@ def test_bidexpert_all_cursor_scans_realty_then_land() -> None:
     second = asyncio.run(connector.search(BidExpertSearchFilters(category="all"), first.next_cursor))
 
     assert first.metadata["category_phase"] == "realty"
+    assert first.metadata["requested_category_group"] == "realty"
     assert first.next_cursor == "land:1"
     assert second.metadata["category_phase"] == "land"
+    assert second.metadata["requested_category_group"] == "land"
     assert second.next_cursor is None
