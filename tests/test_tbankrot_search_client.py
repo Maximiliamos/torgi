@@ -252,3 +252,35 @@ def test_tbankrot_extracts_site_result_total() -> None:
     """
 
     assert TBankrotClient()._extract_search_total(html) == 641
+
+
+def test_tbankrot_rejects_login_limited_nationwide_listing(monkeypatch) -> None:
+    html = """
+    <div class="search_result_col not_auth">
+      <span>Найдено лотов:</span><b class="default">54 616</b>
+    </div>
+    <div class="blockModal"><p>Для просмотра лотов зарегистрируйтесь или войдите</p></div>
+    <div class="lot_list_container blur">
+      <div class="lot_container"><div class="lot" data-id="7962479"></div></div>
+    </div>
+    """
+
+    class Response:
+        url = "https://tbankrot.ru/?p=search&parent_cat=2&sub_cat=3%2C4%2C5"
+        text = html
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    client = TBankrotClient()
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: Response())
+
+    try:
+        client.search_filtered_lots(TBankrotSearchFilters())
+    except RuntimeError as exc:
+        assert "access_limited" in str(exc)
+        assert "54616" in str(exc)
+        assert "only 1 cards" in str(exc)
+    else:
+        raise AssertionError("access-limited listing must not be treated as a complete page")

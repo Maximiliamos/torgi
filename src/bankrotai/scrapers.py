@@ -2501,6 +2501,13 @@ class TBankrotClient:
 
         lots = self._parse_listing_html(resp.text, filters=filters, raw_endpoint=resp.url or endpoint)
         raw_count = len(lots)
+        site_total = self._extract_search_total(resp.text)
+        if self._is_listing_access_limited(resp.text):
+            raise RuntimeError(
+                "TBankrot access_limited: the public listing reports "
+                f"{site_total if site_total is not None else 'more'} results but exposes only "
+                f"{raw_count} cards and requires registration/login; refusing incomplete reconciliation"
+            )
         # The source category is authoritative for the search results.  Applying the
         # investment-screening predicate here used to hide valid apartments, land and
         # buildings whenever their description mentioned a share, lease or another
@@ -2514,7 +2521,6 @@ class TBankrotClient:
             if isinstance(lot.raw_data, dict):
                 lot.raw_data["passes_investment_real_estate_filter"] = passes_screen
         pagination = self._extract_pagination_meta(resp.text)
-        site_total = self._extract_search_total(resp.text)
         meta = {
             "source": "tbankrot.ru",
             "mode": "page",
@@ -2529,6 +2535,13 @@ class TBankrotClient:
             "warnings": ([f"{screened_out} lots require investment-screen review but remain visible."] if screened_out else []),
         }
         return lots, meta
+
+    @staticmethod
+    def _is_listing_access_limited(html: str) -> bool:
+        soup = BeautifulSoup(html, "lxml")
+        blocked = soup.select_one(".lot_list_container.blur")
+        prompt = soup.find(string=re.compile(r"Для\s+просмотра\s+лотов", re.IGNORECASE))
+        return blocked is not None and prompt is not None
 
     def search_all_lots(
         self,
