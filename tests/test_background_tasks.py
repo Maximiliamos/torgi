@@ -56,6 +56,15 @@ def test_nationwide_sync_start_returns_queued_task(monkeypatch) -> None:
     assert response.json() == {"task_id": "sync-123", "status": "queued"}
 
 
+def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(tasks, "run_nationwide_sync", lambda _sessions, _run_id, specs: captured.update(specs=specs) or {})
+    tasks.nationwide_lot_sync_task.run("run-123", "source:bidexpert.ru")
+    assert len(captured["specs"]) == 1
+    assert captured["specs"][0].source_id == "bidexpert.ru"
+    assert captured["specs"][0].reconcile_missing is True
+
+
 def test_duplicate_nationwide_sync_returns_existing_task(monkeypatch) -> None:
     def duplicate(**_kwargs):
         raise SyncAlreadyRunningError("sync-running")

@@ -126,6 +126,18 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
     return tuple(specs)
 
 
+def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
+    """Return one complete, archive-safe source specification.
+
+    This is used for controlled VPN-OFF source validation.  It deliberately
+    retains full pagination and missing reconciliation, unlike fast refresh.
+    """
+    for spec in default_source_specs():
+        if spec.source_id == source_id:
+            return (spec,)
+    raise ValueError(f"Unsupported source-only full sync: {source_id}")
+
+
 def regional_source_specs(
     *,
     region_code: str,

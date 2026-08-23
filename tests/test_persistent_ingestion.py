@@ -18,6 +18,7 @@ from bankrotai.services.ingestion import (
     SyncAlreadyRunningError,
     fast_source_specs,
     regional_source_specs,
+    source_full_specs,
 )
 
 
@@ -166,6 +167,19 @@ def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
     assert len(specs) == 5
     assert all(spec.reconcile_missing is False and spec.max_batches == 1 for spec in specs)
     assert specs[0].filters.publish_date_from == "2026-08-22"
+
+
+def test_source_full_specs_preserve_complete_reconciliation() -> None:
+    specs = source_full_specs("bidexpert.ru")
+    assert len(specs) == 1
+    assert specs[0].source_id == "bidexpert.ru"
+    assert specs[0].reconcile_missing is True
+    assert specs[0].max_batches is None
+
+
+def test_source_full_specs_reject_unknown_source() -> None:
+    with pytest.raises(ValueError, match="Unsupported source-only"):
+        source_full_specs("unknown.example")
 
 
 def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:

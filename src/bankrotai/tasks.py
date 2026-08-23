@@ -26,6 +26,7 @@ from bankrotai.services.ingestion import (
     default_source_specs,
     fast_source_specs,
     run_nationwide_sync,
+    source_full_specs,
 )
 from bankrotai.scrapers import (
     TorgiGovClient,
@@ -211,6 +212,8 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
             specs = fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat())
         elif mode == "full":
             specs = default_source_specs()
+        elif mode.startswith("source:"):
+            specs = source_full_specs(mode.removeprefix("source:"))
         else:
             raise ValueError(f"Unsupported nationwide sync mode: {mode}")
         return run_nationwide_sync(SessionLocal, run_id, specs)
@@ -238,15 +241,16 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
-    if mode not in {"fast", "full"}:
+    if mode not in {"fast", "full"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
+    specs = source_full_specs(mode.removeprefix("source:")) if mode.startswith("source:") else default_source_specs()
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
     run_id = service.create_run(
         triggered_by=triggered_by,
-        trigger_type=f"manual_{mode}",
-        total_sources=len(default_source_specs()),
+        trigger_type=f"manual_{mode.replace(':', '_')}",
+        total_sources=len(specs),
     )
     try:
         nationwide_lot_sync_task.apply_async(args=[run_id, mode], task_id=run_id)
