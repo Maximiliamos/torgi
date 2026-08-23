@@ -178,6 +178,7 @@ def test_finance_rejects_impossible_inputs() -> None:
 
 def test_builtin_connector_registry_is_explicit() -> None:
     assert connector_registry.source_ids() == (
+        "bidexpert.ru",
         "fedresurs.ru",
         "lot-online.ru",
         "tbankrot.ru",
