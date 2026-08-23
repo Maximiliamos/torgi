@@ -65,6 +65,23 @@ def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
     assert captured["specs"][0].reconcile_missing is True
 
 
+def test_source_only_schedule_uses_schema_safe_trigger_type(monkeypatch) -> None:
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **kwargs):
+            assert kwargs["trigger_type"] == "manual_source_full"
+            assert len(kwargs["trigger_type"]) <= 20
+            assert kwargs["total_sources"] == 1
+            return "source-run"
+
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks.nationwide_lot_sync_task, "apply_async", lambda **_kwargs: None)
+    assert tasks.schedule_nationwide_lot_sync(triggered_by="test", mode="source:bidexpert.ru") == "source-run"
+
+
 def test_duplicate_nationwide_sync_returns_existing_task(monkeypatch) -> None:
     def duplicate(**_kwargs):
         raise SyncAlreadyRunningError("sync-running")

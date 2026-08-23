@@ -243,13 +243,17 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
     if mode not in {"fast", "full"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
-    specs = source_full_specs(mode.removeprefix("source:")) if mode.startswith("source:") else default_source_specs()
+    is_source_only = mode.startswith("source:")
+    specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else default_source_specs()
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
     run_id = service.create_run(
         triggered_by=triggered_by,
-        trigger_type=f"manual_{mode.replace(':', '_')}",
+        # LotSyncRun.trigger_type is a legacy VARCHAR(20). The source identity
+        # is represented by LotSyncSourceRun, so keep this operational label
+        # stable and within the existing schema limit.
+        trigger_type="manual_source_full" if is_source_only else f"manual_{mode}",
         total_sources=len(specs),
     )
     try:
