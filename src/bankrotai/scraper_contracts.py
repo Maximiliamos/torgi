@@ -125,3 +125,13 @@ class TorgiRussiaSearchFilters:
     category_id: str = "6"
     history_only: bool = False
     page: int = 1
+
+
+@dataclass
+class BidExpertSearchFilters:
+    """Public BidExpert listing filters documented by the saved public form."""
+    category: str = "realty"  # realty or land
+    region: str | None = None
+    price_min: float | None = None
+    price_max: float | None = None
+    page: int = 1

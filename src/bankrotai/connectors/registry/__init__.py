@@ -32,6 +32,7 @@ connector_registry = ConnectorRegistry()
 
 
 def _register_builtins() -> None:
+    from bankrotai.connectors.registry.bidexpert import BidExpertConnector
     from bankrotai.connectors.registry.fedresurs import FedresursConnector
     from bankrotai.connectors.registry.lot_online import LotOnlineConnector
     from bankrotai.connectors.registry.tbankrot import TBankrotConnector
@@ -43,6 +44,7 @@ def _register_builtins() -> None:
     connector_registry.register(FedresursConnector.source_id, FedresursConnector)
     connector_registry.register(LotOnlineConnector.source_id, LotOnlineConnector)
     connector_registry.register(TorgiRussiaConnector.source_id, TorgiRussiaConnector)
+    connector_registry.register(BidExpertConnector.source_id, BidExpertConnector)
 
 
 _register_builtins()
