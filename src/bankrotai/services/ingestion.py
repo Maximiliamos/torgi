@@ -5,7 +5,7 @@ import socket
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
 
@@ -44,6 +44,8 @@ class SourceSyncSpec:
     source_id: str
     filters: Any
     archive_region_code: str | None = None
+    reconcile_missing: bool = True
+    max_batches: int | None = None
 
 
 @dataclass(slots=True)
@@ -106,6 +108,17 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
         ),
     )
+
+
+def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
+    """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
+    specs = []
+    for spec in default_source_specs():
+        filters = spec.filters
+        if spec.source_id == "torgi.gov.ru":
+            filters = replace(filters, publish_date_from=gis_publish_date_from)
+        specs.append(replace(spec, filters=filters, reconcile_missing=False, max_batches=1))
+    return tuple(specs)
 
 
 def regional_source_specs(
@@ -250,7 +263,9 @@ class NationwideIngestionService:
         connector = self.connector_factory(spec.source_id)
         cursor: str | None = None
         try:
-            for _page_number in range(1, self.max_pages_per_source + 1):
+            page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
+            reached_source_end = False
+            for _page_number in range(1, page_limit + 1):
                 page = await connector.search(spec.filters, cursor)
                 pages_fetched = max(1, int(page.metadata.get("pages_fetched") or 1))
                 result.pages_scanned += pages_fetched
@@ -281,10 +296,17 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
-                    result.complete_source_run = True
+                    reached_source_end = True
                     break
                 cursor = page.next_cursor
-            if not result.complete_source_run:
+            if not spec.reconcile_missing:
+                result.complete_source_run = False
+                result.status = "success"
+                result.elapsed_seconds = time.perf_counter() - wall_started
+                self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
+                return result
+            result.complete_source_run = reached_source_end
+            if not reached_source_end:
                 raise RuntimeError("source pagination exceeded the safety page limit")
             if (
                 active_baseline >= MIN_COVERAGE_GUARD_BASELINE

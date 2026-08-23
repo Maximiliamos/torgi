@@ -14,6 +14,7 @@ from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SourceSyncSpec,
     SyncAlreadyRunningError,
+    fast_source_specs,
     regional_source_specs,
 )
 
@@ -137,6 +138,32 @@ def test_failed_source_never_increments_missing_or_archives(sessions) -> None:
         row = session.scalar(select(SourceLot))
         assert row is not None and row.is_archived is False
         assert row.missing_successful_runs == 0
+
+
+def test_fast_discovery_never_reconciles_missing_rows(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot("existing")]]))
+    service.connector_factory = lambda _source: FakeConnector([[]])
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual_fast", total_sources=1)
+    result = asyncio.run(service.run(
+        run_id,
+        (SourceSyncSpec("test-source", {}, reconcile_missing=False, max_batches=1),),
+    ))
+
+    assert result["sources"][0]["status"] == "success"
+    assert result["sources"][0]["complete_source_run"] is False
+    assert result["sources"][0]["items_archived"] == 0
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        assert row is not None and row.missing_successful_runs == 0 and row.is_archived is False
+
+
+def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
+    specs = fast_source_specs(gis_publish_date_from="2026-08-22")
+
+    assert len(specs) == 4
+    assert all(spec.reconcile_missing is False and spec.max_batches == 1 for spec in specs)
+    assert specs[0].filters.publish_date_from == "2026-08-22"
 
 
 def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> None:
