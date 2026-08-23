@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from celery import Celery
@@ -24,6 +24,7 @@ from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SyncAlreadyRunningError,
     default_source_specs,
+    fast_source_specs,
     run_nationwide_sync,
 )
 from bankrotai.scrapers import (
@@ -195,9 +196,24 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
     soft_time_limit=settings.celery_soft_time_limit,
     time_limit=settings.celery_hard_time_limit,
 )
-def nationwide_lot_sync_task(self, run_id: str) -> dict:
+def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
-        return run_nationwide_sync(SessionLocal, run_id, default_source_specs())
+        if mode == "fast":
+            with session_scope() as session:
+                latest_gis = session.query(LotSyncSourceRun).filter_by(
+                    source_system="torgi.gov.ru",
+                    status="success",
+                    complete_source_run=True,
+                ).order_by(LotSyncSourceRun.finished_at.desc()).first()
+                overlap_start = (
+                    latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
+                ) - timedelta(days=1)
+            specs = fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat())
+        elif mode == "full":
+            specs = default_source_specs()
+        else:
+            raise ValueError(f"Unsupported nationwide sync mode: {mode}")
+        return run_nationwide_sync(SessionLocal, run_id, specs)
     except Exception as exc:
         with session_scope() as session:
             error_message = str(exc) or exc.__class__.__name__
@@ -221,17 +237,19 @@ def nationwide_lot_sync_task(self, run_id: str) -> dict:
         raise
 
 
-def schedule_nationwide_lot_sync(*, triggered_by: str) -> str:
+def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
+    if mode not in {"fast", "full"}:
+        raise ValueError(f"Unsupported nationwide sync mode: {mode}")
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
     run_id = service.create_run(
         triggered_by=triggered_by,
-        trigger_type="manual",
+        trigger_type=f"manual_{mode}",
         total_sources=len(default_source_specs()),
     )
     try:
-        nationwide_lot_sync_task.apply_async(args=[run_id], task_id=run_id)
+        nationwide_lot_sync_task.apply_async(args=[run_id, mode], task_id=run_id)
     except Exception as exc:
         with session_scope() as session:
             run = session.get(LotSyncRun, run_id)
