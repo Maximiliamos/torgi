@@ -113,6 +113,7 @@ def geocode_pending_lots(
                 .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
                 .where(
                     ProcessedLot.duplicate_of_id.is_(None),
+                    ProcessedLot.is_archived.is_(False),
                     or_(
                         ProcessedLot.cadastral_number.isnot(None),
                         ProcessedLot.address.isnot(None),
