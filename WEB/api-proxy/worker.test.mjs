@@ -124,17 +124,17 @@ describe("API origin failover proxy", () => {
     expect(response.status).toBe(200);
   });
 
-  it("preserves a real not-found response returned by both origins", async () => {
+  it("preserves a real not-found response without consulting the secondary", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
+    const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
 
     const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots/999999999"), {
       KOYEB_SERVICE_KEY: "bound-secret",
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(404);
   });
 

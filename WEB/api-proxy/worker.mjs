@@ -120,7 +120,9 @@ export default {
       const primary = await completedResponse(
         request, incoming, primaryOrigin(env), headers,
         retryMapRead ? MAP_ATTEMPT_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS,
-        SAFE_METHODS.has(request.method) && Boolean(secondaryOrigin(env)),
+        SAFE_METHODS.has(request.method)
+          && incoming.pathname === "/api/time"
+          && Boolean(secondaryOrigin(env)),
       );
       console.log(JSON.stringify({
         event: "primary_success", request_id: requestId, method: request.method,
