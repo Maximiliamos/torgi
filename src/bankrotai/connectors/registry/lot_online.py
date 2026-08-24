@@ -10,7 +10,7 @@ from bankrotai.scraper_contracts import LotOnlineSearchFilters
 
 class LotOnlineConnector(AuctionConnector):
     source_id = "lot-online.ru"
-    capabilities = frozenset({"search"})
+    capabilities = frozenset({"search", "detail_enrichment"})
 
     def __init__(self) -> None:
         from bankrotai.scrapers import LotOnlineClient
@@ -24,3 +24,16 @@ class LotOnlineConnector(AuctionConnector):
         lots, metadata = await asyncio.to_thread(self.client.search_lots, normalized)
         next_cursor = str(normalized.page + 1) if metadata.get("has_more") else None
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata=metadata)
+
+    async def enrich_lot(self, lot):
+        detail = await asyncio.to_thread(self.client.fetch_detail_fields, lot.source_url or lot.lot_url or "")
+        raw = dict(lot.raw_data or {})
+        raw.update(detail)
+        raw["detail_enrichment_status"] = "success"
+        lot.raw_data = raw
+        lot.address = detail.get("address") or lot.address
+        cadastral_numbers = detail.get("cadastral_numbers") or []
+        lot.cadastral_number = (cadastral_numbers[0] if cadastral_numbers else None) or lot.cadastral_number
+        lot.description = detail.get("description") or lot.description
+        lot.detail_level = "detail"
+        return lot
