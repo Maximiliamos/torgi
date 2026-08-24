@@ -21,6 +21,7 @@ def test_bidexpert_real_sample_excludes_leases_and_keeps_real_estate() -> None:
     assert all("аренды" not in lot.title.lower() for lot in lots)
     known = next(lot for lot in lots if lot.external_id == "bidexpert:1072939")
     assert known.cadastral_number == "64:17:190312:13"
+    assert known.address == "Саратовская область, г. Красный Кут, ул. Комсомольская, д. 36"
     assert known.start_price == 2126167.0
     assert known.application_deadline and known.application_deadline.year == 2026
 
@@ -52,3 +53,43 @@ def test_bidexpert_all_cursor_scans_realty_then_land() -> None:
     assert second.metadata["category_phase"] == "land"
     assert second.metadata["requested_category_group"] == "land"
     assert second.next_cursor is None
+
+
+def test_bidexpert_address_keeps_common_abbreviations_and_house_number() -> None:
+    samples = {
+        36190: (
+            "Продажа имущества по адресу: Российская Федерация, Смоленская область, "
+            "д. Пигулино, ул. Нижняя, земельный участок 86А.",
+            "Российская Федерация, Смоленская область, д. Пигулино, ул. Нижняя, земельный участок 86А",
+        ),
+        36183: (
+            "Объект расположен по адресу: Саратовская область, Новоузенский район, "
+            "с. Куриловка, ул. Центральная, д. 12.",
+            "Саратовская область, Новоузенский район, с. Куриловка, ул. Центральная, д. 12",
+        ),
+        36182: (
+            "Недвижимость по адресу: Ивановская область, Заволжский район, "
+            "д. Новлянское, ул. Полевая, д. 7.",
+            "Ивановская область, Заволжский район, д. Новлянское, ул. Полевая, д. 7",
+        ),
+        36167: (
+            "Лот по адресу: Саратовская область, г. Новоузенск, ул. Рабочая, д. 3.",
+            "Саратовская область, г. Новоузенск, ул. Рабочая, д. 3",
+        ),
+        36152: (
+            "Имущество по адресу: Волгоградская область, ст. Кумылженская, "
+            "ул. Советская, д. 20.",
+            "Волгоградская область, ст. Кумылженская, ул. Советская, д. 20",
+        ),
+    }
+    html = "".join(
+        f'<div class="bid-item"><a href="/bids/lot/?n={lot_id}">'
+        f'<div class="title">{title}</div></a></div>'
+        for lot_id, (title, _expected) in samples.items()
+    )
+
+    lots = BidExpertClient().parse_listing_html(html, filters=BidExpertSearchFilters(category="realty"))
+
+    assert {lot.external_id: lot.address for lot in lots} == {
+        f"bidexpert:{lot_id}": expected for lot_id, (_title, expected) in samples.items()
+    }

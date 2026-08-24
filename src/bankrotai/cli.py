@@ -70,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("geocoding-stats", help="Show persisted geocoding quality statistics")
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
+    bidexpert_repair_p = subparsers.add_parser("repair-bidexpert-addresses", help="Repair truncated BidExpert addresses")
+    bidexpert_repair_p.add_argument("--limit", type=int, default=20_000)
+    bidexpert_repair_p.add_argument("--apply", action="store_true")
     return parser
 
 def main():
@@ -229,6 +232,13 @@ def main():
         init_db()
         with session_scope() as session:
             result = repair_missing_processed_links(session, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "repair-bidexpert-addresses":
+        from bankrotai.services.bidexpert_address_repair import repair_bidexpert_addresses
+
+        init_db()
+        with session_scope() as session:
+            result = repair_bidexpert_addresses(session, limit=args.limit, apply=args.apply)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else: parser.print_help()
 
