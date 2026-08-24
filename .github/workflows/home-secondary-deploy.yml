@@ -225,7 +225,7 @@ jobs:
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=128m `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            celery -A bankrotai.tasks:celery_app worker --beat --loglevel=INFO --concurrency=2 | Out-Null
+            celery -A bankrotai.tasks:celery_app worker --beat --schedule /tmp/celerybeat-schedule --loglevel=INFO --concurrency=2 | Out-Null
 
       - name: Verify local API stability
         shell: powershell
