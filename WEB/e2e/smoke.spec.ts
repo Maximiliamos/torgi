@@ -383,6 +383,7 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Состояние источников")).toBeVisible();
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   await expect(page.locator(".workspace")).toBeVisible();
+  await expect(page.locator(".lotToolbar")).toBeVisible();
   let failedRegistryRequests = 0;
   await page.route(/\/api\/lots\?/, (route) => {
     failedRegistryRequests += 1;
