@@ -107,6 +107,37 @@ describe("API origin failover proxy", () => {
     expect(await response.json()).toEqual({ status: "alive" });
   });
 
+  it("checks the current secondary when a stale primary does not know a safe route", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ synchronized: true }));
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/time"), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0].url).toBe("https://secondary.example.test/api/time");
+    expect(response.status).toBe(200);
+  });
+
+  it("preserves a real not-found response returned by both origins", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
+      .mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
+
+    const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots/999999999"), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+    expect(response.status).toBe(404);
+  });
+
   it("retries a map read once on the primary before using the secondary", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);

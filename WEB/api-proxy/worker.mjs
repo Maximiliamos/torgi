@@ -70,9 +70,9 @@ function upstreamRequest(request, incoming, origin, headers, timeoutMs = UPSTREA
   });
 }
 
-async function completedResponse(request, incoming, origin, headers, timeoutMs = UPSTREAM_TIMEOUT_MS) {
+async function completedResponse(request, incoming, origin, headers, timeoutMs = UPSTREAM_TIMEOUT_MS, notFoundIsFailure = false) {
   const response = await fetch(upstreamRequest(request, incoming, origin, headers, timeoutMs));
-  if (TRANSPORT_STATUSES.has(response.status)) {
+  if (TRANSPORT_STATUSES.has(response.status) || (notFoundIsFailure && response.status === 404)) {
     throw new Error(`Upstream transport status ${response.status}`);
   }
   // Buffer safe reads before returning headers. This catches the production
@@ -120,6 +120,7 @@ export default {
       const primary = await completedResponse(
         request, incoming, primaryOrigin(env), headers,
         retryMapRead ? MAP_ATTEMPT_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS,
+        SAFE_METHODS.has(request.method) && Boolean(secondaryOrigin(env)),
       );
       console.log(JSON.stringify({
         event: "primary_success", request_id: requestId, method: request.method,
