@@ -603,7 +603,18 @@ def _cached_public_source_lots(
             SourceLot.raw_data["region_name"].as_string(),
         )
         if region:
-            conditions.append(func.lower(cached_region_name).contains(region.casefold()))
+            region_pattern = f"%{region.casefold()}%"
+            missing_region = func.coalesce(cached_region_name, "") == ""
+            conditions.append(
+                func.lower(cached_region_name).like(region_pattern)
+                | (
+                    missing_region
+                    & (
+                        func.lower(func.coalesce(SourceLot.address, "")).like(region_pattern)
+                        | func.lower(func.coalesce(SourceLot.title, "")).like(region_pattern)
+                    )
+                )
+            )
         if search:
             pattern = f"%{search.casefold()}%"
             conditions.append(

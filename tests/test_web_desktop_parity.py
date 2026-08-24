@@ -286,3 +286,54 @@ def test_cache_first_public_source_does_not_call_unavailable_live_site(monkeypat
         "source_available": None,
         "warnings": [],
     }
+
+
+def test_cached_source_region_falls_back_to_address_when_region_metadata_is_missing(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+
+    with scope() as session:
+        canonical = CanonicalLot(
+            canonical_key="lot-online-yaroslavl",
+            title="земельный участок в ярославле",
+            category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(
+            SourceLot(
+                canonical_lot_id=canonical.id,
+                source_system="lot-online.ru",
+                external_id="lot-online:yaroslavl",
+                title="земельный участок",
+                address="ярославская область, г. ярославль",
+                region_name=None,
+                raw_data={},
+                source_url="https://catalog.lot-online.ru/lot/yaroslavl",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    items, total = api._cached_public_source_lots(
+        "lot-online.ru",
+        search="",
+        region="ярославская область",
+        price_min=None,
+        price_max=None,
+        page=1,
+        page_size=20,
+    )
+
+    assert total == 1
+    assert [item["external_id"] for item in items] == ["lot-online:yaroslavl"]
