@@ -52,10 +52,6 @@ def geocode_pending_lots(
                     ProcessedLot.duplicate_of_id.is_(None),
                     ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
                     or_(
-                        ProcessedLot.cadastral_number.isnot(None),
-                        ProcessedLot.address.isnot(None),
-                    ),
-                    or_(
                         GeoFailure.id.is_(None),
                         GeoFailure.next_retry_at.is_(None),
                         GeoFailure.next_retry_at <= now,
@@ -78,6 +74,7 @@ def geocode_pending_lots(
                     lot.cadastral_number,
                     lot.address,
                     title=lot.title,
+                    description=lot.description,
                     region_name=lot.region_name,
                 )
                 if apply_lot_geo_result(session, lot, value):

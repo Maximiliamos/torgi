@@ -41,6 +41,19 @@ def test_existing_lot_online_title_can_supply_address_for_geocoding() -> None:
     assert "улица Ленина" in candidates[0]
 
 
+def test_description_and_region_can_supply_address_for_geocoding() -> None:
+    candidates = build_geocoding_address_candidates(
+        None,
+        title="Продажа имущества",
+        description="Адрес (местоположение): г. Рыбинск, ул. Ленина, д. 10",
+        region_name="Ярославская область",
+    )
+
+    assert candidates
+    assert "Рыбинск" in candidates[0]
+    assert "Ярославская область" in candidates[0]
+
+
 def test_nominatim_selects_matching_district_not_first_namesake(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):
@@ -207,6 +220,7 @@ def test_geo_worker_copies_orm_values_before_session_expires(monkeypatch) -> Non
             "cadastral_number": "76:23:010101:41",
             "address": "Ярославль, Советская площадь, 1",
             "title": "Нежилое помещение",
+            "description": "",
             "region_name": "Ярославская область",
             "source_system": "test",
             "source_url": None,
