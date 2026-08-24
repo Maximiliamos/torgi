@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import event, or_, select
@@ -253,6 +253,7 @@ class NationwideIngestionService:
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
             session.commit()
+        expired_after_auction = self._expire_elapsed_auctions()
         canonical_dedupe_ms = round((time.perf_counter() - dedupe_started) * 1000, 3)
         if results:
             results[-1].duplicates_merged += merged
@@ -262,6 +263,7 @@ class NationwideIngestionService:
         payload = {
             "status": status,
             "sources": [self._result_payload(item) for item in results],
+            "expired_after_auction": expired_after_auction,
             "profile": {"canonical_dedupe_ms": canonical_dedupe_ms} if self.profile_timings else {},
         }
         with self.session_factory() as session:
@@ -274,6 +276,43 @@ class NationwideIngestionService:
                 run.result_json = payload
                 session.commit()
         return payload
+
+    def _expire_elapsed_auctions(self, *, now: datetime | None = None) -> int:
+        """Archive publications 15 minutes after auction start, preserving active siblings."""
+        observed_at = now or utc_now()
+        cutoff = observed_at - timedelta(minutes=15)
+        with self.session_factory() as session:
+            rows = session.scalars(select(SourceLot).where(
+                SourceLot.is_active.is_(True),
+                SourceLot.is_archived.is_(False),
+                SourceLot.auction_at.isnot(None),
+                SourceLot.auction_at < cutoff,
+            )).all()
+            processed_ids: set[int] = set()
+            for row in rows:
+                row.is_active = False
+                row.is_archived = True
+                row.archived_at = observed_at
+                row.archive_reason = "auction_elapsed_15_minutes"
+                row.source_status = "expired"
+                if row.processed_lot_id is not None:
+                    processed_ids.add(row.processed_lot_id)
+            session.flush()
+            for processed_id in processed_ids:
+                has_active_sibling = session.scalar(select(SourceLot.id).where(
+                    SourceLot.processed_lot_id == processed_id,
+                    SourceLot.is_active.is_(True),
+                    SourceLot.is_archived.is_(False),
+                ).limit(1)) is not None
+                if has_active_sibling:
+                    continue
+                processed = session.get(ProcessedLot, processed_id)
+                if processed is not None:
+                    processed.auction_status = "expired"
+                    processed.is_archived = True
+                    processed.archived_at = processed.archived_at or observed_at
+            session.commit()
+            return len(rows)
 
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
