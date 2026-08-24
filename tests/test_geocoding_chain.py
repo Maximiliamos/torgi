@@ -43,6 +43,7 @@ def test_ik12_success_stops_fallback(monkeypatch) -> None:
     calls = install(monkeypatch, ik12=result("ik12_cadastral"))
     resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область")
     assert resolved.source == "ik12_cadastral"
+    assert "5а/17" in resolved.address
     assert calls == ["ik12"]
 
 
