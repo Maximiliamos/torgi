@@ -69,7 +69,7 @@ jobs:
             'https://dezster.ru/api/map/lots?limit=25')" = "304"
       - name: Run real read-only production journey
         working-directory: WEB
-        run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5
+        run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
       - if: always()
         uses: actions/upload-artifact@v7
         with:
