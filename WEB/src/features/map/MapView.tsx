@@ -30,6 +30,18 @@ export const MAP_SELECTION_SCRIPT = `
 function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{const lot=lots.find(item=>Number(item.id)===Number(id));if(manager&&lot)manager.objects.setObjectOptions(Number(id),opts(lot));});const selected=lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
 `;
 
+export const formatMoscowDate = (value: string) => {
+  const explicitUtc = /[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`;
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(explicitUtc));
+};
+
 const money = (value?: number | null) =>
   value == null
     ? "—"
@@ -387,13 +399,13 @@ function LotPreview({
           {lot.application_deadline && (
             <>
               <dt>Заявки до:</dt>
-              <dd>{lot.application_deadline}</dd>
+              <dd>{formatMoscowDate(lot.application_deadline)} МСК</dd>
             </>
           )}
           {lot.auction_at && (
             <>
               <dt>Торги:</dt>
-              <dd>{lot.auction_at}</dd>
+              <dd>{formatMoscowDate(lot.auction_at)} МСК</dd>
             </>
           )}
         </dl>
