@@ -7,7 +7,7 @@ services:
       REGION: russia
       LANGUAGES: ru,en
       LOG_LEVEL: INFO
-      JAVA_OPTS: -Xms2g -Xmx10g
+      JAVA_PARAMS: -Xms2g -Xmx10g
     volumes:
       - ${PHOTON_DATA_DIR:-photon_data}:/photon/data
     ports:
