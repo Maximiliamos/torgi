@@ -54,6 +54,18 @@ def test_description_and_region_can_supply_address_for_geocoding() -> None:
     assert "Ярославская область" in candidates[0]
 
 
+def test_complete_description_address_wins_over_structured_garbage() -> None:
+    candidates = build_geocoding_address_candidates(
+        "г. Ярославль, ул. Свердлова, д. помещения",
+        description="Адрес (местоположение): г. Ярославль, ул. Свердлова, д. 5а/17; площадь 109,8 м²",
+        region_name="Ярославская область",
+    )
+
+    assert candidates
+    assert "5а/17" in candidates[0]
+    assert "д. помещения" not in candidates[0]
+
+
 def test_nominatim_selects_matching_district_not_first_namesake(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):

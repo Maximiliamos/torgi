@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any
+import hashlib
 import logging
 import math
 import re
@@ -66,6 +67,90 @@ class CadastralObjectResult:
     info: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    status: str = "GEOCODED"
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+
+
+IK12_API_BASE = "https://api.roscadastres.com/pkk_files"
+IK12_MAX_NONCE = 5_000_000
+CITY_SANITY_ANCHORS = {
+    "ярославл": (57.6261, 39.8845, 45.0),
+    "москв": (55.7558, 37.6176, 90.0),
+    "санкт-петербург": (59.9343, 30.3351, 75.0),
+}
+
+
+class IK12Geocoder:
+    """Minimal HTTP client for the public IK12 cadastral map challenge API."""
+
+    def __init__(self) -> None:
+        self.session = requests.Session()
+
+    @staticmethod
+    def _solve_pow(timestamp: int, query: str, threshold: int) -> int:
+        prefix = f"{timestamp}{query}".encode()
+        for nonce in range(IK12_MAX_NONCE):
+            digest = hashlib.sha256(prefix + str(nonce).encode()).digest()
+            if int.from_bytes(digest[:4], "big") < threshold:
+                return nonce
+        raise RuntimeError("IK12 proof-of-work limit exceeded")
+
+    def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult | None:
+        started = time.monotonic()
+        try:
+            token_response = self.session.get(
+                f"{IK12_API_BASE}/token.php",
+                params={"query": cadastral_number, "action": "search"},
+                timeout=CADASTRAL_REQUEST_TIMEOUT,
+            )
+            token_response.raise_for_status()
+            token = token_response.json()
+            nonce = self._solve_pow(int(token["timestamp"]), cadastral_number, int(token["threshold"]))
+            elapsed = max(1, round((time.monotonic() - started) * 1000))
+            response = self.session.get(
+                f"{IK12_API_BASE}/search3.php",
+                params={
+                    "query": cadastral_number,
+                    "action": "search",
+                    "type": 1,
+                    "timestamp": token["timestamp"],
+                    "hash": token["hash"],
+                    "threshold": token["threshold"],
+                    "version": token["version"],
+                    "nonce": nonce,
+                    "elapsed": elapsed,
+                },
+                timeout=CADASTRAL_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (KeyError, TypeError, ValueError, requests.RequestException, RuntimeError) as exc:
+            logger.warning("IK12 request failed for %s: %s", cadastral_number, exc)
+            return None
+
+        features = ((payload.get("object_data") or {}).get("features") or [])
+        expected = cadastral_number.replace(" ", "")
+        feature = next(
+            (item for item in features if str((item.get("attrs") or {}).get("cn") or "").replace(" ", "") == expected),
+            None,
+        )
+        if feature is None:
+            return None
+        center = feature.get("center") or {}
+        if "x" not in center or "y" not in center:
+            return None
+        lon, lat = web_mercator_to_wgs84(float(center["x"]), float(center["y"]))
+        return CadastralObjectResult(
+            query=cadastral_number,
+            cadastral_number=expected,
+            object_type=str(payload.get("object_type") or ""),
+            lat=lat,
+            lon=lon,
+            source="ik12_cadastral",
+            confidence="high",
+            raw=feature,
+            info={"Кадастровый номер": expected},
+        )
 
 
 class CadastralGeocoder:
@@ -372,13 +457,23 @@ def build_geocoding_address_candidates(
 ) -> list[str]:
     """Build conservative Nominatim queries from Russian auction-card addresses."""
     value = (address or "").strip()
-    if not value and (title or description):
+    address_is_incomplete = bool(
+        value
+        and re.search(
+            r"\b(?:д|дом)\.?\s*(?:помещени[ея]|объект[а-я]*|имуще(?:ство|ства))\b",
+            value,
+            re.IGNORECASE,
+        )
+    )
+    if (not value or address_is_incomplete) and (title or description):
         # Keep this fallback aligned with extractors.extract_address so that
         # already imported shallow LOT-ONLINE cards can be geocoded without a
         # full re-import.
         from bankrotai.extractors import extract_address
 
-        value = extract_address(" ".join(part for part in (title, description) if part)) or ""
+        extracted = extract_address(" ".join(part for part in (title, description) if part)) or ""
+        if extracted:
+            value = extracted
     if not value:
         return []
 
@@ -568,6 +663,7 @@ class NominatimGeocoder:
 
 NOMINATIM_GEOCODER = NominatimGeocoder()
 CADASTRAL_GEOCODER = CadastralGeocoder()
+IK12_GEOCODER = IK12Geocoder()
 
 
 def centroid_from_geometry(geom: dict | None) -> tuple[float | None, float | None]:
@@ -711,12 +807,31 @@ def resolve_lot_geo(
     description: str | None = None,
     region_name: str | None = None,
 ) -> CadastralObjectResult | None:
-    final_result = None
+    attempts: list[dict[str, Any]] = []
+
+    def accept(result: CadastralObjectResult | None, provider: str) -> CadastralObjectResult | None:
+        valid, reason = validate_geocoding_result(
+            result,
+            cadastral_number=cadastral_number,
+            address=address,
+            region_name=region_name,
+        )
+        attempts.append({"source": provider, "valid": valid, "reason": reason})
+        if result is not None:
+            result.attempts = list(attempts)
+        return result if valid else None
 
     if cadastral_number:
-        cad_result = CADASTRAL_GEOCODER.search_by_cadastral_number(cadastral_number)
-        if cad_result and cad_result.lat and cad_result.lon:
-            final_result = cad_result
+        ik12_result = accept(IK12_GEOCODER.search_by_cadastral_number(cadastral_number), "ik12_cadastral")
+        if ik12_result:
+            return ik12_result
+        try:
+            nspd_candidate = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral_number)
+        except NSPDTLSVerificationError:
+            nspd_candidate = None
+        nspd_result = accept(nspd_candidate, "nspd_cadastral")
+        if nspd_result:
+            return nspd_result
 
     address_candidates = build_geocoding_address_candidates(
         address,
@@ -724,12 +839,59 @@ def resolve_lot_geo(
         description=description,
         region_name=region_name,
     )
-    if final_result is None and address_candidates:
+    if address_candidates:
         addr_result = CADASTRAL_GEOCODER.search_by_address(address_candidates[0])
-        if addr_result and addr_result.lat and addr_result.lon:
-            final_result = addr_result
+        accepted = accept(addr_result, "address_geocoder")
+        if accepted:
+            return accepted
 
-    return final_result
+    return CadastralObjectResult(
+        query=cadastral_number or (address_candidates[0] if address_candidates else ""),
+        cadastral_number=cadastral_number,
+        source="geocoding_chain",
+        confidence="none",
+        status="GEOCODING_FAILED",
+        attempts=attempts,
+        error="No validated geocoding result",
+    )
+
+
+def validate_geocoding_result(
+    result: CadastralObjectResult | None,
+    *,
+    cadastral_number: str | None,
+    address: str | None,
+    region_name: str | None,
+) -> tuple[bool, str]:
+    if result is None or result.lat is None or result.lon is None:
+        return False, "no_coordinates"
+    if not (-90 <= result.lat <= 90 and -180 <= result.lon <= 180):
+        return False, "coordinates_out_of_range"
+    if result.confidence in {"none", "low", "unknown"}:
+        return False, "low_confidence"
+    expected_cad = (cadastral_number or "").replace(" ", "")
+    observed_cad = (result.cadastral_number or "").replace(" ", "")
+    if expected_cad and observed_cad and expected_cad != observed_cad:
+        return False, "cadastral_number_mismatch"
+
+    expected_region = expected_cad.split(":", 1)[0].zfill(2) if ":" in expected_cad else None
+    if region_name:
+        from bankrotai.regions import normalize_region_code
+
+        named_region = normalize_region_code(region_name)
+        if expected_region and named_region and expected_region != named_region:
+            return False, "region_cadastral_mismatch"
+
+    expected_text = " ".join(part for part in (address, region_name) if part).casefold()
+    observed_text = (result.address or "").casefold()
+    for city_key, (city_lat, city_lon, max_distance) in CITY_SANITY_ANCHORS.items():
+        if city_key in expected_text:
+            if distance_between(result.lat, result.lon, city_lat, city_lon) > max_distance:
+                return False, "city_distance_mismatch"
+            if observed_text and city_key not in observed_text:
+                return False, "city_name_mismatch"
+            break
+    return True, "validated"
 
 
 def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: CadastralObjectResult | None) -> bool:
@@ -755,6 +917,8 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
             "info": final_result.info,
             "source": final_result.source,
             "error": final_result.error,
+            "status": final_result.status,
+            "attempts": final_result.attempts,
         },
         trace_reason=(
             f"{final_result.source}: "
