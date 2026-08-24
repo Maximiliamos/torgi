@@ -69,6 +69,7 @@ export type StatsResponse = {
   region: string;
 };
 export type AuthUser = { id: number; username: string; role: string };
+export type ServerTime = { utc: string; moscow: string; timezone: string; source: string; synchronized: boolean; offset_seconds: number };
 export type LotQuery = {
   city_slug: string;
   page: number;
@@ -285,6 +286,7 @@ export async function login(username: string, password: string) {
   });
 }
 export const fetchCurrentUser = () => requestJson<AuthUser>("/api/auth/me");
+export const fetchServerTime = () => requestJson<ServerTime>("/api/time");
 export const logout = () => requestJson<{ status: string }>("/api/auth/logout", undefined, { method: "POST" });
 
 export function fetchLots(query: LotQuery) {

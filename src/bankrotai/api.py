@@ -83,6 +83,7 @@ from bankrotai.services.ingestion import SyncAlreadyRunningError
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
+from bankrotai.services.trusted_time import trusted_time_status
 from bankrotai.auth import (
     AuthenticatedUser,
     authenticate_user,
@@ -481,6 +482,11 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
+
+
+@app.get("/api/time")
+def current_time(_: AuthenticatedUser = Depends(require_user)):
+    return trusted_time_status()
 
 @app.get("/health/live")
 async def liveness_check():

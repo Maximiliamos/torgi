@@ -43,6 +43,17 @@ celery_app.conf.update(
     task_soft_time_limit=settings.celery_soft_time_limit,
     task_time_limit=settings.celery_hard_time_limit,
     broker_connection_retry_on_startup=True,
+    beat_schedule={
+        "expire-ended-lots": {
+            "task": "bankrotai.tasks.expire_ended_lots_task",
+            "schedule": 60.0,
+        },
+        "geocode-pending-lots": {
+            "task": "bankrotai.tasks.geocode_pending_lots_task",
+            "schedule": 900.0,
+            "options": {"expires": 840},
+        },
+    },
 )
 
 
@@ -52,6 +63,19 @@ class QueueUnavailableError(RuntimeError):
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@celery_app.task(name="bankrotai.tasks.expire_ended_lots_task")
+def expire_ended_lots_task() -> dict[str, int]:
+    service = NationwideIngestionService(SessionLocal)
+    return {"archived": service._expire_elapsed_auctions()}
+
+
+@celery_app.task(name="bankrotai.tasks.geocode_pending_lots_task")
+def geocode_pending_lots_task() -> dict[str, int]:
+    from bankrotai.services.geo_backfill import geocode_pending_lots
+
+    return geocode_pending_lots(SessionLocal, limit=50)
 
 
 def _progress(**overrides: Any) -> dict[str, Any]:

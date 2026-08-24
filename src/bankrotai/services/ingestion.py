@@ -33,6 +33,7 @@ from bankrotai.scraper_contracts import (
     TorgiRussiaSearchFilters,
 )
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
+from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 
 
@@ -279,7 +280,7 @@ class NationwideIngestionService:
 
     def _expire_elapsed_auctions(self, *, now: datetime | None = None) -> int:
         """Archive publications 15 minutes after auction start, preserving active siblings."""
-        observed_at = now or utc_now()
+        observed_at = now or trusted_utc_now().replace(tzinfo=None)
         cutoff = observed_at - timedelta(minutes=15)
         with self.session_factory() as session:
             rows = session.scalars(select(SourceLot).where(
