@@ -98,7 +98,9 @@ def test_procedure_fields_are_queryable_and_not_only_raw_json() -> None:
                 "etp": "Test ETP",
                 "notice_number": "N-42",
                 "deposit": 100_000,
+                "application_start_at": "2030-01-01 09:00:00",
                 "bidd_end_time": "2030-01-02 12:30:00",
+                "auction_timezone": "Europe/Moscow",
             },
         )
         persist_lot(session, lot)
@@ -108,7 +110,9 @@ def test_procedure_fields_are_queryable_and_not_only_raw_json() -> None:
         assert source_lot.platform_name == "Test ETP"
         assert source_lot.notice_number == "N-42"
         assert float(source_lot.deposit_amount) == 100_000
+        assert source_lot.application_start_at == datetime(2030, 1, 1, 9, 0)
         assert source_lot.application_deadline == datetime(2030, 1, 2, 12, 30)
+        assert source_lot.auction_timezone == "Europe/Moscow"
 
 
 def test_document_versions_are_content_addressed_and_deduplicated() -> None:

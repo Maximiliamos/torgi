@@ -45,8 +45,10 @@ class NormalizedLot:
     deposit_percent: float | None = None
     deposit_payment_details: str | None = None
     deposit_deadline: datetime | None = None
+    application_start_at: datetime | None = None
     application_deadline: datetime | None = None
     auction_at: datetime | None = None
+    auction_timezone: str | None = None
     auction_step_amount: float | None = None
     auction_step_percent: float | None = None
     auction_type: str | None = None

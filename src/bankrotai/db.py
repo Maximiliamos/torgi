@@ -252,8 +252,10 @@ class SourceLot(Base):
     deposit_percent: Mapped[float | None] = mapped_column(Float)
     deposit_payment_details: Mapped[str | None] = mapped_column(Text)
     deposit_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    application_start_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     application_deadline: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     auction_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    auction_timezone: Mapped[str | None] = mapped_column(String(64))
     published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     auction_step_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
@@ -686,7 +688,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "b3c4d5e6f7a8"
+SCHEMA_REVISION = "c4d5e6f7a8b9"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False

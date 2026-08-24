@@ -319,11 +319,17 @@ def _sync_source_lot(
         raw, "deposit_payment_details", "deposit_requisites"
     )
     source_lot.deposit_deadline = normalized.deposit_deadline or _to_datetime(_raw_value(raw, "deposit_deadline"))
+    source_lot.application_start_at = normalized.application_start_at or _to_datetime(
+        _raw_value(raw, "bidd_start_time", "application_start_at", "application_start")
+    )
     source_lot.application_deadline = normalized.application_deadline or _to_datetime(
         _raw_value(raw, "bidd_end_time", "application_deadline")
     )
     source_lot.auction_at = normalized.auction_at or _to_datetime(
         _raw_value(raw, "auction_start_date", "auction_at")
+    )
+    source_lot.auction_timezone = normalized.auction_timezone or _raw_value(
+        raw, "auction_timezone", "timezone", "time_zone"
     )
     source_lot.published_at = normalized.published_at
     source_lot.source_updated_at = _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update"))

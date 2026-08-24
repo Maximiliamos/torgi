@@ -34,8 +34,10 @@ class TorgiRussiaConnector(AuctionConnector):
         raw["detail_enrichment_status"] = "success"
         lot.raw_data = raw
         lot.address = detail.address or lot.address
+        lot.application_start_at = detail.application_start_at or lot.application_start_at
         lot.application_deadline = detail.application_deadline or lot.application_deadline
         lot.auction_at = detail.auction_at or lot.auction_at
+        lot.auction_timezone = lot.auction_timezone or "Europe/Moscow"
         lot.procedure_number = detail.procedure_number or lot.procedure_number
         lot.detail_level = "detail"
         return lot
