@@ -383,7 +383,7 @@ class NationwideIngestionService:
                 continue
             page_ids.add(lot.external_id)
             accepted.append(lot)
-        if result.source_system == "lot-online.ru" and accepted and connector is not None:
+        if result.source_system in {"lot-online.ru", "torgi-russia.ru"} and accepted and connector is not None:
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
                     row.external_id: row
@@ -408,7 +408,7 @@ class NationwideIngestionService:
                         async with enrichment_limit:
                             await connector.enrich_lot(lot)
                     except Exception as exc:
-                        logger.warning("LOT-ONLINE detail enrichment failed for %s: %s", lot.external_id, exc)
+                        logger.warning("%s detail enrichment failed for %s: %s", result.source_system, lot.external_id, exc)
                         current_raw["detail_enrichment_status"] = "failed"
                         lot.raw_data = current_raw
                     return
@@ -416,6 +416,9 @@ class NationwideIngestionService:
                 lot.address = existing.address or lot.address
                 lot.cadastral_number = existing.cadastral_number or lot.cadastral_number
                 lot.description = existing.description or lot.description
+                lot.application_deadline = existing.application_deadline or lot.application_deadline
+                lot.auction_at = existing.auction_at or lot.auction_at
+                lot.procedure_number = existing.procedure_number or lot.procedure_number
                 lot.detail_level = "detail"
                 lot.raw_data = {**current_raw, **previous_raw}
 
