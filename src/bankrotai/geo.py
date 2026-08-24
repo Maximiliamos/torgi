@@ -457,14 +457,7 @@ def build_geocoding_address_candidates(
 ) -> list[str]:
     """Build conservative Nominatim queries from Russian auction-card addresses."""
     value = (address or "").strip()
-    address_is_incomplete = bool(
-        value
-        and re.search(
-            r"\b(?:д|дом)\.?\s*(?:помещени[ея]|объект[а-я]*|имуще(?:ство|ства))\b",
-            value,
-            re.IGNORECASE,
-        )
-    )
+    address_is_incomplete = is_incomplete_address(value)
     if (not value or address_is_incomplete) and (title or description):
         # Keep this fallback aligned with extractors.extract_address so that
         # already imported shallow LOT-ONLINE cards can be geocoded without a
@@ -557,6 +550,17 @@ def build_geocoding_address_candidates(
             seen.add(key)
             unique.append(normalized)
     return unique
+
+
+def is_incomplete_address(value: str | None) -> bool:
+    return bool(
+        value
+        and re.search(
+            r"\b(?:д|дом)\.?\s*(?:помещени[ея]|объект[а-я]*|имуще(?:ство|ства))\b",
+            value,
+            re.IGNORECASE,
+        )
+    )
 
 
 class NominatimGeocoder:
@@ -808,6 +812,12 @@ def resolve_lot_geo(
     region_name: str | None = None,
 ) -> CadastralObjectResult | None:
     attempts: list[dict[str, Any]] = []
+    address_candidates = build_geocoding_address_candidates(
+        address,
+        title=title,
+        description=description,
+        region_name=region_name,
+    )
 
     def accept(result: CadastralObjectResult | None, provider: str) -> CadastralObjectResult | None:
         valid, reason = validate_geocoding_result(
@@ -819,6 +829,8 @@ def resolve_lot_geo(
         attempts.append({"source": provider, "valid": valid, "reason": reason})
         if result is not None:
             result.attempts = list(attempts)
+            if valid and not result.address and address_candidates:
+                result.address = address_candidates[0]
         return result if valid else None
 
     if cadastral_number:
@@ -833,12 +845,6 @@ def resolve_lot_geo(
         if nspd_result:
             return nspd_result
 
-    address_candidates = build_geocoding_address_candidates(
-        address,
-        title=title,
-        description=description,
-        region_name=region_name,
-    )
     if address_candidates:
         addr_result = CADASTRAL_GEOCODER.search_by_address(address_candidates[0])
         accepted = accept(addr_result, "address_geocoder")
@@ -928,7 +934,11 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
 
     session.add(snapshot)
 
-    if final_result.address and (not lot.address or len(lot.address) < 15):
+    if final_result.address and (
+        not lot.address
+        or len(lot.address) < 15
+        or is_incomplete_address(lot.address)
+    ):
         lot.address = final_result.address
 
     lot.needs_geo_check = final_result.confidence not in {"high", "medium"}
