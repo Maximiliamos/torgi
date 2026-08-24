@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.domain import NormalizedLot
-from bankrotai.extractors import extract_cadastral_numbers
+from bankrotai.extractors import extract_address, extract_cadastral_numbers
 from bankrotai.logic import classify_category
 from bankrotai.scraper_contracts import BidExpertSearchFilters, parse_money
 
@@ -71,12 +71,12 @@ class BidExpertClient:
             price_node = card.select_one(".start-price")
             deadline_node = card.select_one(".application-submit-end span")
             deadline = self._parse_moscow_datetime(deadline_node.get_text(" ", strip=True) if deadline_node else "")
-            address_match = re.search(r"(?:по адресу|адрес[^:]*:)\s*([^.;]+)", title, re.I)
+            address = extract_address(title)
             result.append(NormalizedLot(
                 external_id=f"bidexpert:{match.group(1)}", source="bidexpert", source_system="bidexpert.ru",
                 title=title[:500], description=title[:5000], category=classify_category(title, title),
                 region_slug=(numbers[0].split(":", 1)[0].zfill(2) if numbers else None), region_name=None,
-                address=address_match.group(1).strip() if address_match else None,
+                address=address,
                 cadastral_number=numbers[0] if numbers else None, vin=None, area=None,
                 start_price=parse_money(price_node.get_text(" ", strip=True) if price_node else None), current_price=None,
                 auction_status="active", lot_url=href, source_url=href, detail_level="search",
