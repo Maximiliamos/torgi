@@ -36,7 +36,8 @@ os.environ["QT_XCB_GL_INTEGRATION"] = "none"
 os.environ["QT_OPENGL"] = "software"
 os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import (
     Qt, QTimer, QUrl, QThread, Signal, Slot, QObject, QStandardPaths,
@@ -5929,7 +5930,10 @@ class MainWindow(QMainWindow):
         source_lots: list[SourceLot] | None = None,
     ) -> dict:
         def display_datetime(value: datetime | None) -> str | None:
-            return value.strftime("%d.%m.%Y %H:%M") if value else None
+            if not value:
+                return None
+            utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            return utc_value.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M МСК")
 
         source_lots = source_lots or []
         primary_source = next(
@@ -5965,13 +5969,13 @@ class MainWindow(QMainWindow):
             torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
         auction_times = [source.auction_at for source in source_lots if source.auction_at]
         auction_at = max(auction_times) if auction_times else None
-        auction_now = datetime.now(auction_at.tzinfo) if auction_at and auction_at.tzinfo else datetime.now()
+        auction_now = datetime.now(auction_at.tzinfo) if auction_at and auction_at.tzinfo else datetime.utcnow()
         ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
         is_ended = bool(
             lot.is_archived
             or lot.closed_at
             or (lot.auction_status or "").casefold() in ended_statuses
-            or (auction_at is not None and auction_at <= auction_now)
+            or (auction_at is not None and auction_at + timedelta(minutes=15) < auction_now)
         )
         return {
             "id": lot.id,
@@ -6248,7 +6252,7 @@ function isLotEnded(lot) {{
     if (lot.is_ended) return true;
     const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
     if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
-    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+    return false;
 }}
 
 function markerColor(lot) {{
@@ -6647,7 +6651,7 @@ function isLotEnded(lot) {{
     if (lot.is_ended) return true;
     const endedStatuses = ['closed', 'completed', 'cancelled', 'canceled', 'failed', 'annulled', 'archive'];
     if (endedStatuses.includes(String(lot.status || '').toLowerCase())) return true;
-    return Boolean(lot.auction_at_iso && Date.parse(lot.auction_at_iso) <= Date.now());
+    return false;
 }}
 
 function markerColor(lot) {{

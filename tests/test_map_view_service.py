@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -71,6 +72,7 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     source_system="tbankrot.ru",
                     external_id="primary",
                     source_url="https://example.test/tbankrot",
+                    application_deadline=datetime(2026, 8, 23, 19, 30),
                 ),
                 SourceLot(
                     canonical_lot_id=canonical.id,
@@ -105,6 +107,7 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
         "https://example.test/tbankrot",
         "https://example.test/gis",
     ]
+    assert detail["application_deadline"] == "2026-08-23T19:30:00Z"
 
 
 @pytest.mark.parametrize(
