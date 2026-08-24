@@ -164,6 +164,18 @@ jobs:
               'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
           }
 
+      - name: Apply database migrations before replacing production containers
+        shell: powershell
+        run: |
+          docker run --rm `
+            --network $env:DOCKER_NETWORK `
+            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
+            python -m bankrotai.cli init-db
+          if ($LASTEXITCODE -ne 0) {
+            throw "Database migration failed; existing production containers were left running"
+          }
+
       - name: Start private queue and replace API and trusted ingestion worker
         shell: powershell
         run: |
