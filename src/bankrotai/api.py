@@ -980,8 +980,10 @@ def get_lot_procedure(lot_id: int):
             "deposit_amount": float(source_lot.deposit_amount) if source_lot.deposit_amount is not None else None,
             "deposit_percent": source_lot.deposit_percent,
             "deposit_deadline": source_lot.deposit_deadline,
+            "application_start_at": source_lot.application_start_at,
             "application_deadline": source_lot.application_deadline,
             "auction_at": source_lot.auction_at,
+            "auction_timezone": source_lot.auction_timezone,
             "auction_step_amount": (
                 float(source_lot.auction_step_amount) if source_lot.auction_step_amount is not None else None
             ),
