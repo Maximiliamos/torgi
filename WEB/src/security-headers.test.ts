@@ -7,6 +7,7 @@ describe("production security headers", () => {
     const headers = readFileSync(join(process.cwd(), "public", "_headers"), "utf8");
 
     expect(headers).toContain("script-src 'self'");
+    expect(headers).toContain("'sha256-Puf8QeJoXBahFDJL2moTJGL+2XkjzInTBH9UK8uAGuE='");
     expect(headers).toContain("https://static.cloudflareinsights.com");
     expect(headers).toContain("connect-src 'self' https://cloudflareinsights.com");
     expect(headers).toMatch(
