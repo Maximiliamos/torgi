@@ -2,6 +2,8 @@ name: Deploy home secondary origin
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   actions: read
