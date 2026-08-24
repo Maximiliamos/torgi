@@ -383,7 +383,12 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Состояние источников")).toBeVisible();
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   await expect(page.locator(".workspace")).toBeVisible();
-  await page.route("**/api/lots**", (route) => route.abort());
+  let failedRegistryRequests = 0;
+  await page.route(/\/api\/lots\?/, (route) => {
+    failedRegistryRequests += 1;
+    return route.abort();
+  });
   await page.locator(".pageHeader .primaryButton").click();
-  await expect(page.locator(".errorBox")).toBeVisible();
+  await expect.poll(() => failedRegistryRequests).toBeGreaterThanOrEqual(2);
+  await expect(page.locator(".errorBox")).toBeVisible({ timeout: 10_000 });
 });
