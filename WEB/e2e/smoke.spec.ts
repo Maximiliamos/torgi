@@ -199,6 +199,23 @@ test("authenticated list search detail and API failure smoke", async ({
   const mapFrameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(mapFrameElement).toBeVisible();
   await expect(mapFrameElement).toHaveAttribute("sandbox", "allow-scripts");
+  const bootstrapMapFrame = page
+    .frames()
+    .find(
+      (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
+    );
+  expect(bootstrapMapFrame).toBeTruthy();
+  await bootstrapMapFrame!.evaluate(() =>
+    parent.postMessage(
+      {
+        type: "bankrotai-viewport",
+        channel: "bankrotai-map-v1",
+        bounds: [38.5, 56.8, 41.2, 58.5],
+        zoom: 7,
+      },
+      "*",
+    ),
+  );
   await expect(
     page.getByRole("heading", { name: "Лоты недвижимости" }),
   ).toBeVisible();
