@@ -367,17 +367,18 @@ def build_geocoding_address_candidates(
     address: str | None,
     *,
     title: str | None = None,
+    description: str | None = None,
     region_name: str | None = None,
 ) -> list[str]:
     """Build conservative Nominatim queries from Russian auction-card addresses."""
     value = (address or "").strip()
-    if not value and title:
+    if not value and (title or description):
         # Keep this fallback aligned with extractors.extract_address so that
         # already imported shallow LOT-ONLINE cards can be geocoded without a
         # full re-import.
         from bankrotai.extractors import extract_address
 
-        value = extract_address(title) or ""
+        value = extract_address(" ".join(part for part in (title, description) if part)) or ""
     if not value:
         return []
 
@@ -707,6 +708,7 @@ def resolve_lot_geo(
     address: str | None = None,
     *,
     title: str | None = None,
+    description: str | None = None,
     region_name: str | None = None,
 ) -> CadastralObjectResult | None:
     final_result = None
@@ -716,7 +718,12 @@ def resolve_lot_geo(
         if cad_result and cad_result.lat and cad_result.lon:
             final_result = cad_result
 
-    address_candidates = build_geocoding_address_candidates(address, title=title, region_name=region_name)
+    address_candidates = build_geocoding_address_candidates(
+        address,
+        title=title,
+        description=description,
+        region_name=region_name,
+    )
     if final_result is None and address_candidates:
         addr_result = CADASTRAL_GEOCODER.search_by_address(address_candidates[0])
         if addr_result and addr_result.lat and addr_result.lon:
@@ -766,7 +773,13 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
 
 
 def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
-    final_result = resolve_lot_geo(lot.cadastral_number, lot.address)
+    final_result = resolve_lot_geo(
+        lot.cadastral_number,
+        lot.address,
+        title=lot.title,
+        description=lot.description,
+        region_name=lot.region_name,
+    )
     return apply_lot_geo_result(session, lot, final_result)
 
 

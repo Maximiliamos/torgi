@@ -1308,6 +1308,7 @@ class GeoWorker(QThread):
                         "cadastral_number": row.cadastral_number,
                         "address": row.address,
                         "title": row.title,
+                        "description": row.description,
                         "region_name": row.region_name,
                         "source_system": row.source_system,
                         "source_url": row.source_url or row.lot_url,
@@ -1339,6 +1340,7 @@ class GeoWorker(QThread):
                     cadastral_number,
                     address,
                     title=payload["title"],
+                    description=payload["description"],
                     region_name=payload["region_name"],
                 ), enriched
 
