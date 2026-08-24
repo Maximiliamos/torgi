@@ -66,6 +66,21 @@ def test_complete_description_address_wins_over_structured_garbage() -> None:
     assert "д. помещения" not in candidates[0]
 
 
+def test_later_numbered_address_wins_over_first_placeholder() -> None:
+    candidates = build_geocoding_address_candidates(
+        "город Ярославль, улица Свердлова, дом помещения, Ярославская область",
+        description=(
+            "расположенного по адресу: г. Ярославль, ул. Свердлова, д. помещения, "
+            "назначение нежилое; расположенные по адресу: г. Ярославль, "
+            "ул. Свердлова, д. 5а/17, существующие ограничения отсутствуют"
+        ),
+        region_name="Ярославская область",
+    )
+
+    assert candidates
+    assert "5а/17" in candidates[0]
+
+
 def test_nominatim_selects_matching_district_not_first_namesake(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):

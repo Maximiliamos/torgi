@@ -464,7 +464,8 @@ def build_geocoding_address_candidates(
         # full re-import.
         from bankrotai.extractors import extract_address
 
-        extracted = extract_address(" ".join(part for part in (title, description) if part)) or ""
+        source_text = " ".join(part for part in (title, description) if part)
+        extracted = extract_best_numbered_address(source_text) or extract_address(source_text) or ""
         if extracted:
             value = extracted
     if not value:
@@ -550,6 +551,21 @@ def build_geocoding_address_candidates(
             seen.add(key)
             unique.append(normalized)
     return unique
+
+
+def extract_best_numbered_address(text: str | None) -> str | None:
+    """Prefer an address that contains a real house number over an earlier placeholder."""
+    if not text:
+        return None
+    compact = re.sub(r"\s+", " ", text)
+    pattern = re.compile(
+        r"(?:г\.|город)\s*[^,.;]+,\s*"
+        r"(?:ул\.|улица|проспект|пр-т|пер\.)\s*[^,.;]+,\s*"
+        r"(?:д\.|дом)\s*[0-9][^,.;]*",
+        re.IGNORECASE,
+    )
+    matches = [match.group(0).strip(" ,.;") for match in pattern.finditer(compact)]
+    return max(matches, key=len) if matches else None
 
 
 def is_incomplete_address(value: str | None) -> bool:
