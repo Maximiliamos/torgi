@@ -35,6 +35,26 @@ def test_torgi_russia_lot_page_parses_gallery_and_related_links() -> None:
     ]
 
 
+def test_torgi_russia_lot_page_parses_structured_detail_fields() -> None:
+    html = """
+    <dl>
+      <dt>Адрес местонахождения имущества</dt><dd>г. Ярославль, ул. Свободы, 1</dd>
+      <dt>Категория имущества</dt><dd>Земельные участки</dd>
+      <dt>Начало приема заявок</dt><dd>20.08.2026 в 09:00</dd>
+      <dt>Окончание приема заявок</dt><dd>25.08.2026 в 18:00</dd>
+      <dt>Дата проведения аукциона</dt><dd>27.08.2026 в 10:30</dd>
+    </dl>
+    """
+
+    result = TorgiRussiaClient.parse_lot_page(html, "https://торги-россии.рф/lot/1")
+
+    assert result.address == "г. Ярославль, ул. Свободы, 1"
+    assert result.category == "Земельные участки"
+    assert result.application_start_at.isoformat() == "2026-08-20T09:00:00"
+    assert result.application_deadline.isoformat() == "2026-08-25T18:00:00"
+    assert result.auction_at.isoformat() == "2026-08-27T10:30:00"
+
+
 def test_torgi_russia_parse_search_page() -> None:
     html = """
     <main><article class="card">
