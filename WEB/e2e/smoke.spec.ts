@@ -189,6 +189,12 @@ test("authenticated list search detail and API failure smoke", async ({
   // with the deterministic smoke responses.
   await page.reload();
   await ensureAuthenticated(page);
+  const fixtureMapResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/map/lots" &&
+      response.status() === 200,
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: "Карта", exact: true }).click();
   const mapFrameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(mapFrameElement).toBeVisible();
@@ -200,8 +206,10 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Стартовая цена от")).toBeVisible();
   await expect(page.getByText("Стартовая цена до")).toBeVisible();
   await expect(page.getByText("Субъект РФ")).toBeVisible();
+  await fixtureMapResponse;
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "10 объектов · 3 на карте · 7 без координат",
+    { timeout: 30_000 },
   );
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "Система готова",
