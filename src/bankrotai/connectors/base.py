@@ -27,6 +27,7 @@ class ConnectorHealth:
 
 class AuctionConnector(ABC):
     source_id: str
+    detail_enrichment_version: int = 1
     capabilities: frozenset[str] = frozenset({"search"})
 
     @abstractmethod

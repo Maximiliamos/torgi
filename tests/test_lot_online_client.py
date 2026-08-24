@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from bankrotai.scraper_contracts import LotOnlineSearchFilters
 from bankrotai.domain import NormalizedLot
 from bankrotai.scrapers import LotOnlineClient, is_sale_real_estate_lot
@@ -116,7 +118,12 @@ def test_fetch_detail_fields_reads_structured_address_and_cadastre() -> None:
     class Response:
         content = """
         <html><head><title>Нежилое помещение</title></head><body>
-          <dl><div><dt>Адрес</dt><dd>Рязанская область, г. Сасово, ул. Ленина, д. 7</dd></div></dl>
+          <dl>
+            <div><dt>Адрес</dt><dd>Рязанская область, г. Сасово, ул. Ленина, д. 7</dd></div>
+            <div><dt>Начало подачи заявок</dt><dd>20.08.2026 09:00</dd></div>
+            <div><dt>Окончание подачи заявок</dt><dd>25.08.2026 в 18:00 (МСК)</dd></div>
+            <div><dt>Дата проведения торгов</dt><dd>27.08.2026 10:30</dd></div>
+          </dl>
           <div class="ty-product__full-description">
             Нежилое помещение, кадастровый номер 62:27:0010101:15
           </div>
@@ -139,3 +146,6 @@ def test_fetch_detail_fields_reads_structured_address_and_cadastre() -> None:
 
     assert fields["address"] == "Рязанская область, г. Сасово, ул. Ленина, д. 7"
     assert fields["cadastral_numbers"] == ["62:27:0010101:15"]
+    assert fields["application_start_at"] == datetime(2026, 8, 20, 9, 0)
+    assert fields["application_deadline"] == datetime(2026, 8, 25, 18, 0)
+    assert fields["auction_at"] == datetime(2026, 8, 27, 10, 30)

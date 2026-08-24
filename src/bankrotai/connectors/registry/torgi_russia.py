@@ -11,6 +11,7 @@ from bankrotai.torgi_russia import TorgiRussiaClient
 
 class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
+    detail_enrichment_version = 2
     capabilities = frozenset({"search", "detail_enrichment"})
 
     def __init__(self) -> None:
@@ -32,6 +33,7 @@ class TorgiRussiaConnector(AuctionConnector):
         raw = dict(lot.raw_data or {})
         raw.update(detail.as_dict())
         raw["detail_enrichment_status"] = "success"
+        raw["detail_enrichment_version"] = self.detail_enrichment_version
         lot.raw_data = raw
         lot.address = detail.address or lot.address
         lot.application_start_at = detail.application_start_at or lot.application_start_at

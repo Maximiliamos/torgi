@@ -10,6 +10,7 @@ from bankrotai.scraper_contracts import LotOnlineSearchFilters
 
 class LotOnlineConnector(AuctionConnector):
     source_id = "lot-online.ru"
+    detail_enrichment_version = 2
     capabilities = frozenset({"search", "detail_enrichment"})
 
     def __init__(self) -> None:
@@ -30,10 +31,15 @@ class LotOnlineConnector(AuctionConnector):
         raw = dict(lot.raw_data or {})
         raw.update(detail)
         raw["detail_enrichment_status"] = "success"
+        raw["detail_enrichment_version"] = self.detail_enrichment_version
         lot.raw_data = raw
         lot.address = detail.get("address") or lot.address
         cadastral_numbers = detail.get("cadastral_numbers") or []
         lot.cadastral_number = (cadastral_numbers[0] if cadastral_numbers else None) or lot.cadastral_number
         lot.description = detail.get("description") or lot.description
+        lot.application_start_at = detail.get("application_start_at") or lot.application_start_at
+        lot.application_deadline = detail.get("application_deadline") or lot.application_deadline
+        lot.auction_at = detail.get("auction_at") or lot.auction_at
+        lot.auction_timezone = lot.auction_timezone or "Europe/Moscow"
         lot.detail_level = "detail"
         return lot
