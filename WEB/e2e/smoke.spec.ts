@@ -319,7 +319,10 @@ test("authenticated list search detail and API failure smoke", async ({
         }
       ).bankrotaiDebug.getViewport(),
     );
-    expect(viewportAfterSelect).toEqual(viewportBefore);
+    expect(viewportAfterSelect.instanceId).toBe(viewportBefore.instanceId);
+    expect(viewportAfterSelect.center[0]).toBeCloseTo(57.6261, 3);
+    expect(viewportAfterSelect.center[1]).toBeCloseTo(39.8845, 3);
+    expect(viewportAfterSelect.zoom).toBeGreaterThanOrEqual(16);
     expect(
       await page.evaluate(
         () =>
@@ -358,7 +361,7 @@ test("authenticated list search detail and API failure smoke", async ({
         }
       ).bankrotaiDebug.getViewport(),
     );
-    expect(viewportAfterReview).toEqual(viewportBefore);
+    expect(viewportAfterReview).toEqual(viewportAfterSelect);
     expect(
       await page.evaluate(
         () =>
