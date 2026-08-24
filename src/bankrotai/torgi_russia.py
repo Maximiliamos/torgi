@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
+from hashlib import sha256
 from dataclasses import dataclass, field
 from urllib.parse import urldefrag, urljoin, urlparse
 
@@ -28,6 +30,11 @@ class TorgiRussiaDetails:
     etp_url: str | None = None
     image_urls: list[str] = field(default_factory=list)
     procedure_number: str | None = None
+    address: str | None = None
+    category: str | None = None
+    application_start_at: datetime | None = None
+    application_deadline: datetime | None = None
+    auction_at: datetime | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -35,6 +42,11 @@ class TorgiRussiaDetails:
             "gis_torgi_url": self.gis_torgi_url,
             "etp_url": self.etp_url,
             "torgi_russia_image_urls": list(self.image_urls),
+            "address": self.address,
+            "category": self.category,
+            "application_start_at": self.application_start_at,
+            "application_deadline": self.application_deadline,
+            "auction_at": self.auction_at,
         }
 
 
@@ -162,6 +174,13 @@ class TorgiRussiaClient:
                     "raw_endpoint": page_url,
                     "image_urls": list(dict.fromkeys(photos)),
                     "cadastral_numbers": list(dict.fromkeys(cadastres)),
+                    "listing_fingerprint": sha256(json.dumps({
+                        "title": title,
+                        "description": description,
+                        "start_price": start_price,
+                        "current_price": current_price,
+                        "photos": photos,
+                    }, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
                 },
             ))
         return lots
@@ -184,6 +203,32 @@ class TorgiRussiaClient:
     @staticmethod
     def parse_lot_page(html: str, page_url: str) -> TorgiRussiaDetails:
         soup = BeautifulSoup(html, "html.parser")
+        labels: dict[str, str] = {}
+        for term in soup.select("dt"):
+            value = term.find_next_sibling("dd")
+            if value:
+                labels[term.get_text(" ", strip=True).lower()] = value.get_text(" ", strip=True)
+        for row in soup.select("tr"):
+            cells = row.select("th, td")
+            if len(cells) >= 2:
+                labels[cells[0].get_text(" ", strip=True).lower()] = cells[1].get_text(" ", strip=True)
+
+        def labelled(*needles: str) -> str | None:
+            return next((value for key, value in labels.items() if any(needle in key for needle in needles)), None)
+
+        def parse_date(value: str | None) -> datetime | None:
+            if not value:
+                return None
+            match = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+[вВ]?\s*\d{1,2}:\d{2})?", value)
+            if not match:
+                return None
+            normalized = re.sub(r"\s+[вВ]\s+", " ", match.group(0))
+            for pattern in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+                try:
+                    return datetime.strptime(normalized, pattern)
+                except ValueError:
+                    pass
+            return None
         image_urls: list[str] = []
         gallery = soup.select_one("#lot-gallery[data-gallery]")
         if gallery:
@@ -216,4 +261,9 @@ class TorgiRussiaClient:
             procedure_number=(
                 match.group(0) if (match := re.search(r"\b[A-Z0-9]{7,12}-\d{4}-\d{4}-\d\b", soup.get_text(" "))) else None
             ),
+            address=labelled("адрес", "местонахожд"),
+            category=labelled("категор", "вид имущества"),
+            application_start_at=parse_date(labelled("начал")),
+            application_deadline=parse_date(labelled("окончан", "прием заяв", "приём заяв")),
+            auction_at=parse_date(labelled("дата торгов", "дата аукцион", "проведен")),
         )

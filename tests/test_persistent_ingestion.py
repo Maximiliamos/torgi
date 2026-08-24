@@ -102,18 +102,18 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
-def test_lot_online_enriches_only_new_or_changed_listings(sessions) -> None:
+@pytest.mark.parametrize("source_id", ["lot-online.ru", "torgi-russia.ru"])
+def test_detail_sources_enrich_only_new_or_changed_listings(sessions, source_id: str) -> None:
     class LotOnlineConnector(FakeConnector):
-        source_id = "lot-online.ru"
-
         def __init__(self) -> None:
             super().__init__()
+            self.source_id = source_id
             self.enrichment_calls = 0
             self.listing_fingerprint = "stable"
 
         async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
-            item = lot("lot-online:1")
-            item.source = "lot-online"
+            item = lot(f"{source_id}:1")
+            item.source = source_id
             item.source_system = self.source_id
             item.description = item.title
             item.address = None
@@ -134,12 +134,12 @@ def test_lot_online_enriches_only_new_or_changed_listings(sessions) -> None:
     service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
     for _ in range(2):
         run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
-        asyncio.run(service.run(run_id, (SourceSyncSpec("lot-online.ru", {}),)))
+        asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
 
     assert connector.enrichment_calls == 1
     connector.listing_fingerprint = "changed"
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
-    asyncio.run(service.run(run_id, (SourceSyncSpec("lot-online.ru", {}),)))
+    asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
     assert connector.enrichment_calls == 2
     with sessions() as session:
         row = session.scalar(select(SourceLot))
