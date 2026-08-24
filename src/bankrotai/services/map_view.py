@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from urllib.parse import urlparse
 
@@ -62,7 +62,10 @@ def extract_map_image_urls(raw_data: object) -> list[str]:
 
 
 def _display_datetime(value: datetime | None) -> str | None:
-    return value.strftime("%d.%m.%Y %H:%M") if value else None
+    if not value:
+        return None
+    utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return utc_value.isoformat().replace("+00:00", "Z")
 
 
 def _map_lot_payload(
