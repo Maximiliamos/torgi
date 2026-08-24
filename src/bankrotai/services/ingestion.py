@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import time
 import uuid
@@ -33,6 +34,9 @@ from bankrotai.scraper_contracts import (
 )
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+
+
+logger = logging.getLogger(__name__)
 
 
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
@@ -311,7 +315,7 @@ class NationwideIngestionService:
                 if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
-                self._persist_page(run_id, result, page.items)
+                await self._persist_page(run_id, result, page.items, connector=connector)
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
@@ -360,8 +364,62 @@ class NationwideIngestionService:
                 query = query.where(SourceLot.region_code == region_code)
             return len(session.scalars(query).all())
 
-    def _persist_page(self, run_id: str, result: SourceSyncResult, lots: list[Any]) -> None:
+    async def _persist_page(
+        self,
+        run_id: str,
+        result: SourceSyncResult,
+        lots: list[Any],
+        *,
+        connector: AuctionConnector | None = None,
+    ) -> None:
         batch_started = time.perf_counter()
+        accepted = []
+        page_ids: set[str] = set()
+        for lot in lots:
+            if not is_sale_real_estate_lot(lot):
+                continue
+            if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
+                result.items_duplicates += 1
+                continue
+            page_ids.add(lot.external_id)
+            accepted.append(lot)
+        if result.source_system == "lot-online.ru" and accepted and connector is not None:
+            with self.session_factory() as lookup_session:
+                existing_lot_online = {
+                    row.external_id: row
+                    for row in lookup_session.scalars(select(SourceLot).where(
+                        SourceLot.source_system == result.source_system,
+                        SourceLot.external_id.in_([lot.external_id for lot in accepted]),
+                    )).all()
+                }
+            enrichment_limit = asyncio.Semaphore(4)
+
+            async def enrich_if_needed(lot: Any) -> None:
+                existing = existing_lot_online.get(lot.external_id)
+                previous_raw = existing.raw_data if existing and isinstance(existing.raw_data, dict) else {}
+                current_raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+                needs_detail = (
+                    existing is None
+                    or previous_raw.get("listing_fingerprint") != current_raw.get("listing_fingerprint")
+                    or previous_raw.get("detail_enrichment_status") != "success"
+                )
+                if needs_detail:
+                    try:
+                        async with enrichment_limit:
+                            await connector.enrich_lot(lot)
+                    except Exception as exc:
+                        logger.warning("LOT-ONLINE detail enrichment failed for %s: %s", lot.external_id, exc)
+                        current_raw["detail_enrichment_status"] = "failed"
+                        lot.raw_data = current_raw
+                    return
+                assert existing is not None
+                lot.address = existing.address or lot.address
+                lot.cadastral_number = existing.cadastral_number or lot.cadastral_number
+                lot.description = existing.description or lot.description
+                lot.detail_level = "detail"
+                lot.raw_data = {**current_raw, **previous_raw}
+
+            await asyncio.gather(*(enrich_if_needed(lot) for lot in accepted))
         with self.session_factory() as session:
             bind = session.get_bind()
 
@@ -370,16 +428,6 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
-            accepted = []
-            page_ids: set[str] = set()
-            for lot in lots:
-                if not is_sale_real_estate_lot(lot):
-                    continue
-                if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
-                    result.items_duplicates += 1
-                    continue
-                page_ids.add(lot.external_id)
-                accepted.append(lot)
             if result.source_system != "torgi.gov.ru" or not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
                 commit_started = time.perf_counter()
