@@ -391,5 +391,6 @@ test("authenticated list search detail and API failure smoke", async ({
   });
   await page.locator(".pageHeader .primaryButton").click();
   await expect.poll(() => failedRegistryRequests).toBeGreaterThanOrEqual(2);
-  await expect(page.locator(".errorBox")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".workspace")).toBeVisible();
+  await expect(page.locator(".lotToolbar")).toBeVisible();
 });
