@@ -42,6 +42,17 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
             auction_status="active",
         )
         session.add(lot)
+        session.add(ProcessedLot(
+            external_id="geo-backfill-archived",
+            source="test",
+            source_system="test",
+            title="Архивный участок",
+            description="",
+            category="land",
+            address="Ярославль, улица Свободы, 2",
+            auction_status="expired",
+            is_archived=True,
+        ))
         session.flush()
         lot_id = lot.id
 
