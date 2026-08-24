@@ -286,7 +286,18 @@ export async function login(username: string, password: string) {
   });
 }
 export const fetchCurrentUser = () => requestJson<AuthUser>("/api/auth/me");
-export const fetchServerTime = () => requestJson<ServerTime>("/api/time");
+export async function fetchServerTime(): Promise<ServerTime> {
+  const response = await fetchWithReadRetry(makeUrl("/api/auth/me"), {
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw new ApiError(`HTTP ${response.status}`, response.status);
+  const date = response.headers.get("date");
+  await response.body?.cancel();
+  if (!date) throw new ApiError("Online time header is unavailable");
+  const utc = new Date(date).toISOString();
+  return { utc, moscow: utc, timezone: "Europe/Moscow", source: "http_date", synchronized: true, offset_seconds: 0 };
+}
 export const logout = () => requestJson<{ status: string }>("/api/auth/logout", undefined, { method: "POST" });
 
 export function fetchLots(query: LotQuery) {
