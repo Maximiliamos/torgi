@@ -66,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     read_sync_p.add_argument("--max-items-per-source", type=int, default=5000)
     geo_p = subparsers.add_parser("geocode-pending", help="Geocode a bounded batch of stored lots")
     geo_p.add_argument("--limit", type=int, default=250)
+    geo_p.add_argument("--re-geocode-existing", action="store_true")
+    subparsers.add_parser("geocoding-stats", help="Show persisted geocoding quality statistics")
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
     return parser
@@ -208,7 +210,18 @@ def main():
         from bankrotai.services.geo_backfill import geocode_pending_lots
 
         init_db()
-        result = geocode_pending_lots(session_scope, limit=args.limit)
+        result = geocode_pending_lots(
+            session_scope,
+            limit=args.limit,
+            re_geocode_existing=args.re_geocode_existing,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "geocoding-stats":
+        from bankrotai.services.geo_backfill import geocoding_statistics
+
+        init_db()
+        with session_scope() as session:
+            result = geocoding_statistics(session)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "repair-map-read-model":
         from bankrotai.services.read_model_repair import repair_missing_processed_links
