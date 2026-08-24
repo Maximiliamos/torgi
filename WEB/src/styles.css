@@ -58,7 +58,10 @@ button:disabled {
 .appRail .favorite { margin-top:7px; }
 .appRail .favorite span { align-items:center;background:#159765;border:2px solid #fff;border-radius:999px;color:#fff;display:flex;font-size:9px;font-weight:800;height:19px;justify-content:center;min-width:19px;padding:0 3px;position:absolute;right:-2px;top:-3px; }
 .appRail .appRailLogout { margin-top:auto; }
-.appWorkspace { min-width:0; }
+.appWorkspace { display:flex;flex-direction:column;min-height:100vh;min-width:0; }
+.globalClock { align-items:center;background:#fff;border-top:1px solid #d8dee4;color:#536174;display:flex;font-size:12px;gap:8px;justify-content:flex-end;margin-top:auto;min-height:28px;padding:4px 12px; }
+.globalClock i { background:#d18b18;border-radius:50%;height:7px;width:7px; }
+.globalClock i.online { background:#159765; }
 .mapPersistentHost { display:none; }
 .mapPersistentHost.active { display:block; }
 .coincidentLotsPanel { background:#fff; border-bottom:1px solid #dfe5ec; padding:14px; max-height:42vh; overflow:auto; }
