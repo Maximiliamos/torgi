@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.connectors.base import AuctionConnector, ConnectorPage
-from bankrotai.db import Base, LotSyncRun, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
@@ -176,6 +177,57 @@ def test_missing_lot_archives_only_after_two_complete_successful_runs(sessions) 
         row = session.scalar(select(SourceLot))
         assert row is not None and row.is_archived is True
         assert row.archive_reason == "missing_after_two_complete_syncs"
+
+
+def test_auction_expiration_waits_15_minutes_and_preserves_active_sibling(sessions) -> None:
+    now = datetime(2026, 8, 24, 12, 0)
+    with sessions() as session:
+        old_processed = ProcessedLot(
+            external_id="expiring", source="test", source_system="test", title="Лот",
+            description="", category="land", auction_status="active",
+        )
+        current_processed = ProcessedLot(
+            external_id="current", source="test", source_system="test", title="Лот",
+            description="", category="land", auction_status="active",
+        )
+        session.add_all([old_processed, current_processed])
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="expiration-test", legacy_processed_lot_id=old_processed.id,
+            title="Лот", category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add_all([
+            SourceLot(
+                canonical_lot_id=canonical.id, processed_lot_id=old_processed.id,
+                source_system="old-source", external_id="old",
+                title="Лот", category="land", source_status="active",
+                auction_at=now - timedelta(minutes=16),
+            ),
+            SourceLot(
+                canonical_lot_id=canonical.id, processed_lot_id=current_processed.id,
+                source_system="current-source", external_id="current",
+                title="Лот", category="land", source_status="active",
+                auction_at=now - timedelta(minutes=14),
+            ),
+        ])
+        session.commit()
+
+    service = NationwideIngestionService(sessions)
+    assert service._expire_elapsed_auctions(now=now) == 1
+    with sessions() as session:
+        rows = {row.external_id: row for row in session.scalars(select(SourceLot)).all()}
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "current"))
+        assert rows["old"].archive_reason == "auction_elapsed_15_minutes"
+        assert rows["current"].is_active is True
+        assert processed is not None and processed.is_archived is False
+
+    assert service._expire_elapsed_auctions(now=now + timedelta(minutes=2)) == 1
+    with sessions() as session:
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "current"))
+        assert processed is not None and processed.is_archived is True
+        assert processed.auction_status == "expired"
 
 
 def test_failed_source_never_increments_missing_or_archives(sessions) -> None:
