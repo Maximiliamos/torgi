@@ -15,24 +15,26 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-geocoding-backfill
+  # Serialize with home-secondary-deploy so the container cannot be replaced
+  # while a bounded geocoding batch is running.
+  group: home-secondary-production
   cancel-in-progress: false
 
 jobs:
   geocode:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 45
-    env:
-      APP_ENV: production
-      API_READ_ONLY: "true"
-      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-      DATABASE_MIGRATION_URL: ${{ secrets.NEON_DATABASE_MIGRATION_URL }}
-      BANKROTAI_API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
-      AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with: { python-version: "3.11", cache: pip }
-      - run: pip install -r requirements.lock && pip install --no-deps -e .
+      - name: Require the canonical home ingestion worker
+        shell: powershell
+        run: |
+          $container = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
+          if ($container -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Canonical home ingestion worker is not running'
+          }
       - name: Geocode the next bounded batch
-        run: python -m bankrotai.cli geocode-pending --limit 150
+        shell: powershell
+        run: |
+          docker exec bankrotai-home-ingestion-worker `
+            python -m bankrotai.cli geocode-pending --limit 150
+          if ($LASTEXITCODE -ne 0) { throw 'Production geocoding batch failed' }
