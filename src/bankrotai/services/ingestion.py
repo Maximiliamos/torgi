@@ -442,11 +442,15 @@ class NationwideIngestionService:
                     existing is None
                     or previous_raw.get("listing_fingerprint") != current_raw.get("listing_fingerprint")
                     or previous_raw.get("detail_enrichment_status") != "success"
+                    or previous_raw.get("detail_enrichment_version") != connector.detail_enrichment_version
                 )
                 if needs_detail:
                     try:
                         async with enrichment_limit:
                             await connector.enrich_lot(lot)
+                        enriched_raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+                        enriched_raw["detail_enrichment_version"] = connector.detail_enrichment_version
+                        lot.raw_data = enriched_raw
                     except Exception as exc:
                         logger.warning("%s detail enrichment failed for %s: %s", result.source_system, lot.external_id, exc)
                         current_raw["detail_enrichment_status"] = "failed"

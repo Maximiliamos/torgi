@@ -3040,6 +3040,28 @@ class LotOnlineClient:
             value = self._detail_text(value_node)
             if label and value:
                 labelled[label] = value
+        for group in soup.select(".ty-control-group"):
+            label = self._detail_text(group.select_one(".ty-control-group__label")).casefold()
+            value = self._detail_text(group.select_one(".ty-control-group__item"))
+            if label and value:
+                labelled[label] = value
+
+        def labelled_value(*needles: str) -> str | None:
+            return next((value for label, value in labelled.items() if any(needle in label for needle in needles)), None)
+
+        def parse_datetime(value: str | None) -> datetime | None:
+            if not value:
+                return None
+            match = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+(?:в\s*)?\d{1,2}:\d{2})?", value, re.I)
+            if not match:
+                return None
+            normalized = re.sub(r"\s+в\s*", " ", match.group(0), flags=re.I)
+            for pattern in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+                try:
+                    return datetime.strptime(normalized, pattern)
+                except ValueError:
+                    continue
+            return None
 
         descriptions = [
             self._detail_text(node)
@@ -3058,6 +3080,9 @@ class LotOnlineClient:
             "address": address,
             "cadastral_numbers": list(dict.fromkeys(cadastral_numbers)),
             "description": description or None,
+            "application_start_at": parse_datetime(labelled_value("начал")),
+            "application_deadline": parse_datetime(labelled_value("окончан")),
+            "auction_at": parse_datetime(labelled_value("дата торгов", "дата аукцион", "проведен")),
             "url": response.url or url,
         }
 
