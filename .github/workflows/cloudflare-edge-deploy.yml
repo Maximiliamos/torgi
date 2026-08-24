@@ -199,9 +199,6 @@ jobs:
           --project-name bankrotai
           --branch main
           --commit-hash "$GITHUB_SHA"
-      - name: Deploy edge proxy
-        working-directory: WEB
-        run: npx wrangler@4 deploy --config edge-proxy/wrangler.jsonc
       - name: Deploy API failover proxy
         working-directory: WEB
         run: |
@@ -209,6 +206,9 @@ jobs:
           printf '%s' "$KOYEB_SERVICE_KEY" \
             | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
           npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
+      - name: Deploy edge proxy with current API service binding
+        working-directory: WEB
+        run: npx wrangler@4 deploy --config edge-proxy/wrangler.jsonc
       - name: Verify canonical edge behavior
         run: |
           set -euo pipefail
