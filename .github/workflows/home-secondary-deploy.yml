@@ -139,6 +139,7 @@ jobs:
             'DATABASE_TRUSTED_LOCAL=true'
             'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
             'ONLINE_SOURCE_CACHE_FIRST=true'
+            'PHOTON_BASE_URL=http://bankrotai-photon:2322'
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
@@ -155,6 +156,7 @@ jobs:
             'API_READ_ONLY=false'
             'DATABASE_TRUSTED_LOCAL=true'
             'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
+            'PHOTON_BASE_URL=http://bankrotai-photon:2322'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
