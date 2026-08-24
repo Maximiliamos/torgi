@@ -5,6 +5,7 @@ from typing import Any
 import hashlib
 import logging
 import math
+import os
 import re
 import time
 import threading
@@ -241,13 +242,16 @@ class CadastralGeocoder:
         )
 
     def search_by_address(self, address: str) -> CadastralObjectResult:
-        result = NOMINATIM_GEOCODER.geocode(address)
+        result = PHOTON_GEOCODER.geocode(address)
+        source = "photon" if result else "nominatim"
+        if not result:
+            result = NOMINATIM_GEOCODER.geocode(address)
 
         if not result:
             return CadastralObjectResult(
                 query=address,
                 address=address,
-                source="nominatim",
+                source=source,
                 confidence="none",
                 error="Адрес не найден",
             )
@@ -258,11 +262,11 @@ class CadastralGeocoder:
             address=address,
             lat=result.get("centroid_lat"),
             lon=result.get("centroid_lon"),
-            source="nominatim",
+            source=source,
             confidence=result.get("geo_confidence", "medium"),
             info={
                 "Адрес": address,
-                "Источник": "Nominatim / OpenStreetMap",
+                "Источник": "Local Photon / OpenStreetMap" if source == "photon" else "Nominatim / OpenStreetMap",
                 "Примечание": result.get("trace_reason", ""),
             },
         )
@@ -682,6 +686,48 @@ class NominatimGeocoder:
 
 
 NOMINATIM_GEOCODER = NominatimGeocoder()
+class PhotonGeocoder:
+    def __init__(self, base_url: str | None = None):
+        self.base_url = (base_url if base_url is not None else os.getenv("PHOTON_BASE_URL", "")).rstrip("/")
+
+    def geocode(self, address: str) -> dict[str, Any] | None:
+        if not self.base_url or len(address.strip()) < 5:
+            return None
+        try:
+            response = requests.get(
+                f"{self.base_url}/api",
+                params={"q": address, "limit": 10, "lang": "ru", "countrycode": "RU"},
+                timeout=(2, 5),
+            )
+            response.raise_for_status()
+            features = response.json().get("features") or []
+        except (requests.RequestException, ValueError, AttributeError) as exc:
+            logger.warning("Local Photon geocoding failed: %s", exc)
+            return None
+        expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for feature in features:
+            props = feature.get("properties") or {}
+            haystack = " ".join(str(value) for value in props.values()).casefold()
+            score = sum(token in haystack for token in expected)
+            scored.append((score, feature))
+        if not scored:
+            return None
+        score, feature = max(scored, key=lambda item: item[0])
+        if expected and score < min(2, len(expected)):
+            return None
+        coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+        if len(coordinates) < 2:
+            return None
+        return {
+            "centroid_lat": float(coordinates[1]),
+            "centroid_lon": float(coordinates[0]),
+            "geo_confidence": "high" if score >= 3 else "medium",
+            "trace_reason": "Local Photon / OpenStreetMap",
+        }
+
+
+PHOTON_GEOCODER = PhotonGeocoder()
 CADASTRAL_GEOCODER = CadastralGeocoder()
 IK12_GEOCODER = IK12Geocoder()
 

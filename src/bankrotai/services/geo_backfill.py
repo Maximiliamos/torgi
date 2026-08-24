@@ -48,7 +48,7 @@ def geocoding_statistics(session: Any) -> dict[str, int]:
         key = (
             "ik12" if source == "ik12_cadastral"
             else "nspd" if source == "nspd"
-            else "address" if source == "nominatim"
+            else "address" if source in {"nominatim", "photon"}
             else None
         )
         if key:
@@ -100,7 +100,7 @@ def geocode_pending_lots(
                     (LotGeoSnapshot.id == latest_geo_id)
                     & or_(
                         LotGeoSnapshot.geo_confidence.in_(("low", "none", "unknown")),
-                        LotGeoSnapshot.geo_source.not_in(("ik12_cadastral", "nspd", "nominatim")),
+                        LotGeoSnapshot.geo_source.not_in(("ik12_cadastral", "nspd", "nominatim", "photon")),
                     )
                 ),
             )
