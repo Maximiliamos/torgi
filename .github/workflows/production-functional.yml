@@ -2,6 +2,9 @@ name: Production functional reliability
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Deploy Cloudflare edge proxy]
+    types: [completed]
   schedule:
     - cron: "23 2 * * *"
 
@@ -15,8 +18,9 @@ concurrency:
 
 jobs:
   production-functional:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       E2E_BASE_URL: https://dezster.ru
       E2E_PRODUCTION_AUDIT: "1"
@@ -65,7 +69,7 @@ jobs:
             'https://dezster.ru/api/map/lots?limit=25')" = "304"
       - name: Run real read-only production journey
         working-directory: WEB
-        run: npx playwright test e2e/production-readonly.spec.ts
+        run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5
       - if: always()
         uses: actions/upload-artifact@v7
         with:
