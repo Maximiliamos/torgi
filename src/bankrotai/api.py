@@ -21,6 +21,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -1288,6 +1289,41 @@ def get_map_lot(lot_id: int):
 
 @app.get("/api/cadastre/search")
 async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
+    normalized_query = query.strip()
+    normalized_cadastral = normalized_query.replace(" ", "") if ":" in normalized_query else None
+    try:
+        with read_session_scope() as session:
+            database_query = select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
+            if normalized_cadastral:
+                database_query = database_query.where(
+                    func.replace(ProcessedLot.cadastral_number, " ", "") == normalized_cadastral
+                )
+            else:
+                database_query = database_query.where(ProcessedLot.address.ilike(f"%{normalized_query}%"))
+            stored_lot = session.scalar(database_query.order_by(ProcessedLot.is_archived, ProcessedLot.last_update.desc()))
+            if stored_lot is not None:
+                snapshot = session.scalar(
+                    select(LotGeoSnapshot)
+                    .where(LotGeoSnapshot.lot_id == stored_lot.id)
+                    .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
+                )
+                return asdict(CadastralObjectResult(
+                    query=normalized_query,
+                    cadastral_number=stored_lot.cadastral_number,
+                    object_type=stored_lot.category,
+                    title=stored_lot.title,
+                    address=stored_lot.address,
+                    lat=snapshot.centroid_lat if snapshot else None,
+                    lon=snapshot.centroid_lon if snapshot else None,
+                    geometry_json=snapshot.geometry_json if snapshot else None,
+                    has_boundary=bool(snapshot and snapshot.geometry_json),
+                    source="bankrotai_database",
+                    confidence=snapshot.geo_confidence if snapshot else "medium",
+                    info={"lot_id": stored_lot.id, "is_archived": stored_lot.is_archived},
+                ))
+    except SQLAlchemyError as exc:
+        logger.warning("Cadastre database-first lookup unavailable: %s", exc)
+
     def unavailable_result() -> dict[str, Any]:
         cadastral_number = query if ":" in query else None
         return asdict(CadastralObjectResult(

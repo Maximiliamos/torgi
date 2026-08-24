@@ -44,6 +44,8 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
             category="land",
             region_slug="76",
             region_code="76",
+            address="Ярославская область, г. Ярославль, ул. Свободы, д. 1",
+            cadastral_number="76:23:010101:10",
             start_price=Decimal("900000"),
             current_price=Decimal("1000000"),
             auction_status="active",
@@ -108,6 +110,8 @@ def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -
     map_payload = map_response.json()
     assert map_payload["total"] == 1
     assert map_payload["mapped_total"] == 1
+
+
     assert map_payload["without_coordinates"] == 0
     assert map_payload["updated_at"]
     assert map_payload["timings"]["server_ms"] >= 0
@@ -240,6 +244,25 @@ def test_browser_gis_search_bounds_both_fallback_attempts(monkeypatch) -> None:
     assert response.status_code == 200
     assert captured["timeout"] == (2.0, 3.0)
     assert captured["base_url"] == api.settings.torgi_gov_base_url
+
+
+def test_cadastre_search_uses_persisted_database_before_external_provider(monkeypatch) -> None:
+    client, lot_id = _authenticated_client(monkeypatch)
+    monkeypatch.setattr(
+        api._CADASTRAL_GEOCODER,
+        "search",
+        lambda _query: (_ for _ in ()).throw(AssertionError("external provider must not run")),
+    )
+
+    by_number = client.get("/api/cadastre/search", params={"query": "76:23:010101:10"})
+    by_address = client.get("/api/cadastre/search", params={"query": "ул. Свободы, д. 1"})
+
+    assert by_number.status_code == 200
+    assert by_number.json()["source"] == "bankrotai_database"
+    assert by_number.json()["info"]["lot_id"] == lot_id
+    assert by_number.json()["lat"] == 57.6261
+    assert by_address.status_code == 200
+    assert by_address.json()["source"] == "bankrotai_database"
 
 
 def test_cache_first_public_source_does_not_call_unavailable_live_site(monkeypatch) -> None:
