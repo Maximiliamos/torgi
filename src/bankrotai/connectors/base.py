@@ -36,6 +36,10 @@ class AuctionConnector(ABC):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         raise ConnectorCapabilityError(f"{self.source_id} does not implement fetch_lot")
 
+    async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+        """Optionally upgrade a shallow listing before persistence."""
+        return lot
+
     async def fetch_documents(self, external_id: str) -> list[dict[str, Any]]:
         raise ConnectorCapabilityError(f"{self.source_id} does not implement fetch_documents")
 

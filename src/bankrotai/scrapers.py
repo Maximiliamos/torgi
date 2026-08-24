@@ -3150,6 +3150,17 @@ class LotOnlineClient:
                 "image_url": image_urls[0] if image_urls else None,
                 "image_urls": image_urls,
             }
+            raw_data["listing_fingerprint"] = hashlib.sha256(json.dumps(
+                {
+                    "title": title,
+                    "price": price,
+                    "procedure_number": procedure_number,
+                    "image_urls": image_urls,
+                    "archive_mode": filters.archive_mode,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")).hexdigest()
             lots.append(NormalizedLot(
                 external_id=f"lot-online:{product_id}",
                 source="lot-online",
