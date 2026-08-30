@@ -169,6 +169,15 @@ jobs:
       - name: Apply database migrations before replacing production containers
         shell: powershell
         run: |
+          $photon = docker ps --filter 'name=^/bankrotai-photon$' --format '{{.Names}}'
+          if ($photon -ne 'bankrotai-photon') {
+            throw 'Local Photon container is not running'
+          }
+          $photonNetworks = docker inspect bankrotai-photon --format '{{json .NetworkSettings.Networks}}'
+          if ($photonNetworks -notmatch '"bankrotai-home"') {
+            docker network connect $env:DOCKER_NETWORK bankrotai-photon
+            if ($LASTEXITCODE -ne 0) { throw 'Could not attach Photon to the production network' }
+          }
           docker run --rm `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
@@ -264,5 +273,11 @@ jobs:
             docker logs --tail 100 $env:WORKER_CONTAINER
             throw "Trusted ingestion worker did not answer Celery ping"
           }
+          docker exec $env:WORKER_CONTAINER python -c `
+            "import urllib.request; response = urllib.request.urlopen('http://bankrotai-photon:2322/api?q=Yaroslavl&limit=1', timeout=15); assert response.status == 200"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Trusted ingestion worker cannot reach local Photon"
+          }
           "Local secondary stability gate: 30/30 PASS"
           "Trusted ingestion worker gate: PASS"
+          "Local Photon connectivity gate: PASS"
