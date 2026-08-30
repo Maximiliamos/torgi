@@ -2,9 +2,21 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 from bankrotai.domain import NormalizedLot
+
+
+def json_safe_value(value: Any) -> Any:
+    """Convert connector evidence to values accepted by JSON database columns."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe_value(item) for item in value]
+    return value
 
 
 class ConnectorCapabilityError(NotImplementedError):

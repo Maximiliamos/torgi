@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 from typing import Any
 
-from bankrotai.connectors.base import AuctionConnector, ConnectorPage
+from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe_value
 from bankrotai.scraper_contracts import LotOnlineSearchFilters
 
 
@@ -29,7 +29,7 @@ class LotOnlineConnector(AuctionConnector):
     async def enrich_lot(self, lot):
         detail = await asyncio.to_thread(self.client.fetch_detail_fields, lot.source_url or lot.lot_url or "")
         raw = dict(lot.raw_data or {})
-        raw.update(detail)
+        raw.update(json_safe_value(detail))
         raw["detail_enrichment_status"] = "success"
         raw["detail_enrichment_version"] = self.detail_enrichment_version
         lot.raw_data = raw
