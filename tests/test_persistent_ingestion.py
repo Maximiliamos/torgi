@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.connectors.base import AuctionConnector, ConnectorPage
+from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe_value
 from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
@@ -85,6 +85,12 @@ def run_with(service: NationwideIngestionService, connector: AuctionConnector) -
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
     result = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}),)))
     return run_id, result
+
+
+def test_connector_evidence_datetimes_are_json_safe() -> None:
+    value = json_safe_value({"started": datetime(2026, 8, 30, 12, 30), "nested": [datetime(2026, 9, 1, 9, 0)]})
+
+    assert value == {"started": "2026-08-30T12:30:00", "nested": ["2026-09-01T09:00:00"]}
 
 
 def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) -> None:

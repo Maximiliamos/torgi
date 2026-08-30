@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 from typing import Any
 
-from bankrotai.connectors.base import AuctionConnector, ConnectorPage
+from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe_value
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
 from bankrotai.torgi_russia import TorgiRussiaClient
 
@@ -31,7 +31,7 @@ class TorgiRussiaConnector(AuctionConnector):
         response.raise_for_status()
         detail = self.client.parse_lot_page(response.text, response.url or page_url)
         raw = dict(lot.raw_data or {})
-        raw.update(detail.as_dict())
+        raw.update(json_safe_value(detail.as_dict()))
         raw["detail_enrichment_status"] = "success"
         raw["detail_enrichment_version"] = self.detail_enrichment_version
         lot.raw_data = raw
