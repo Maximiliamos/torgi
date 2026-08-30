@@ -1,4 +1,4 @@
-name: Neon migrations and read-model sync
+name: Legacy Neon maintenance (manual only)
 
 on:
   workflow_dispatch:
@@ -8,15 +8,12 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
-  group: neon-production-sync
+  group: legacy-neon-maintenance
   cancel-in-progress: false
 
 jobs:
@@ -127,14 +124,3 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-  notify-failure:
-    needs: migrate-and-sync
-    if: failure()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v9
-        with:
-          script: |
-            const title = `Neon sync failed: ${context.runId}`;
-            const body = `Scheduled collector failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
-            await github.rest.issues.create({ ...context.repo, title, body });
