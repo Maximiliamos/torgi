@@ -122,6 +122,16 @@ def _record_scheduled_failure(session: Any, lot_id: int, error: str) -> None:
     failure.next_retry_at = utc_now() + timedelta(seconds=delay)
 
 
+def _geocoding_failure_message(value: Any) -> str:
+    if value is None:
+        return "Geocoding chain returned no result"
+    payload = {
+        "error": getattr(value, "error", None) or "No validated coordinates",
+        "attempts": getattr(value, "attempts", None) or [],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
+
+
 def _geocode_pending_lots_unlocked(
     session_factory: Callable[[], Any],
     *,
@@ -175,7 +185,11 @@ def _geocode_pending_lots_unlocked(
                     ),
                     or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
                 )
-                .order_by(ProcessedLot.needs_geo_check.desc(), ProcessedLot.last_update.desc())
+                .order_by(
+                    GeoFailure.id.is_(None).desc(),
+                    ProcessedLot.needs_geo_check.desc(),
+                    ProcessedLot.last_update.desc(),
+                )
                 .limit(batch_limit)
             ).all()
         )
@@ -204,7 +218,7 @@ def _geocode_pending_lots_unlocked(
                     _record_scheduled_failure(
                         session,
                         lot_id,
-                        "Coordinates were not found by the scheduled geocoder",
+                        _geocoding_failure_message(value),
                     )
                     result["failed"] += 1
         except Exception as exc:
