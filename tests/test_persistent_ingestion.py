@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai.connectors.base import AuctionConnector, ConnectorPage
 from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
+from bankrotai.logic import persist_lot
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SourceSyncResult,
@@ -100,6 +101,20 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert len(rows) == 1
         assert rows[0].region_code == "76"
         assert float(rows[0].start_price or 0) == 500_000
+
+
+def test_changed_geo_input_resets_hash_and_requeues_lot(sessions) -> None:
+    with sessions.begin() as session:
+        processed = persist_lot(session, lot())
+        processed.geo_input_hash = "a" * 64
+        processed.needs_geo_check = False
+
+    changed = lot()
+    changed.address = "Ярославль, улица Свободы, 1"
+    with sessions.begin() as session:
+        processed = persist_lot(session, changed)
+        assert processed.needs_geo_check is True
+        assert processed.geo_input_hash is None
 
 
 @pytest.mark.parametrize("source_id", ["lot-online.ru", "torgi-russia.ru"])

@@ -687,6 +687,13 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
     else:
         # Обновляем существующий лот, если он еще не прошел ручную проверку
         if processed.review_status is None:
+            previous_geo_input = (
+                processed.address,
+                processed.cadastral_number,
+                processed.title,
+                processed.description,
+                processed.region_name,
+            )
             processed.title = normalized.title
             processed.description = normalized.description
             processed.category = normalized.category
@@ -716,6 +723,16 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             processed.object_name = normalized.object_name or processed.object_name
             processed.property_type = normalized.property_type or processed.property_type
             processed.vin = normalized.vin or processed.vin
+            current_geo_input = (
+                processed.address,
+                processed.cadastral_number,
+                processed.title,
+                processed.description,
+                processed.region_name,
+            )
+            if current_geo_input != previous_geo_input:
+                processed.needs_geo_check = True
+                processed.geo_input_hash = None
         
         processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
