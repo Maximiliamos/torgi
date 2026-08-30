@@ -9,6 +9,7 @@ on:
     - cron: "23 2 * * *"
 
 permissions:
+  actions: read
   contents: read
   issues: write
 
@@ -26,6 +27,7 @@ jobs:
       E2E_PRODUCTION_AUDIT: "1"
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -36,10 +38,30 @@ jobs:
           set -euo pipefail
           EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
           test -n "$EXPECTED_SHA"
-          curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/live >/dev/null
-          curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/ready >/dev/null
-          test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-            https://dezster.ru/api/auth/me)" = "401"
+          for attempt in $(seq 1 120); do
+            RUN_STATE="$(curl --fail --silent --show-error --max-time 20 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=50" \
+              | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((r for r in runs if r.get("name") == "Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+            if [ "$RUN_STATE" = 'completed:success' ]; then break; fi
+            if [[ "$RUN_STATE" == completed:* ]]; then
+              echo "Home deployment failed for $EXPECTED_SHA: $RUN_STATE" >&2
+              exit 1
+            fi
+            if [ "$attempt" -eq 120 ]; then
+              echo "Timed out waiting for home deployment of $EXPECTED_SHA" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          for attempt in $(seq 1 6); do
+            curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/live >/dev/null
+            curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/ready >/dev/null
+            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me)" = "401"
+            if [ "$attempt" -lt 6 ]; then sleep 10; fi
+          done
           DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
             -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
             | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
