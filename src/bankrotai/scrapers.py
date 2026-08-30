@@ -3045,6 +3045,11 @@ class LotOnlineClient:
             value = self._detail_text(group.select_one(".ty-control-group__item"))
             if label and value:
                 labelled[label] = value
+        for row in soup.select(".row-request-date, .row-auction-date"):
+            label = self._detail_text(row.select_one("dt, .label")).casefold()
+            value = self._detail_text(row.select_one("dd"))
+            if label and value:
+                labelled[label] = value
 
         def labelled_value(*needles: str) -> str | None:
             return next((value for label, value in labelled.items() if any(needle in label for needle in needles)), None)
@@ -3063,6 +3068,12 @@ class LotOnlineClient:
                     continue
             return None
 
+        def parse_last_datetime(value: str | None) -> datetime | None:
+            if not value:
+                return None
+            matches = re.findall(r"\d{2}\.\d{2}\.\d{4}(?:\s+(?:в\s*)?\d{1,2}:\d{2})?", value, re.I)
+            return parse_datetime(matches[-1]) if matches else None
+
         descriptions = [
             self._detail_text(node)
             for node in soup.select(".ty-product__full-description")
@@ -3080,9 +3091,9 @@ class LotOnlineClient:
             "address": address,
             "cadastral_numbers": list(dict.fromkeys(cadastral_numbers)),
             "description": description or None,
-            "application_start_at": parse_datetime(labelled_value("начал")),
-            "application_deadline": parse_datetime(labelled_value("окончан")),
-            "auction_at": parse_datetime(labelled_value("дата торгов", "дата аукцион", "проведен")),
+            "application_start_at": parse_datetime(labelled_value("начал", "период приема заявок", "период приёма заявок")),
+            "application_deadline": parse_last_datetime(labelled_value("окончан", "период приема заявок", "период приёма заявок")),
+            "auction_at": parse_last_datetime(labelled_value("дата торгов", "дата аукцион", "аукцион", "проведен")),
             "url": response.url or url,
         }
 

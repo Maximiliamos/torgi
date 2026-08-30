@@ -149,3 +149,35 @@ def test_fetch_detail_fields_reads_structured_address_and_cadastre() -> None:
     assert fields["application_start_at"] == datetime(2026, 8, 20, 9, 0)
     assert fields["application_deadline"] == datetime(2026, 8, 25, 18, 0)
     assert fields["auction_at"] == datetime(2026, 8, 27, 10, 30)
+
+
+def test_fetch_detail_fields_reads_current_listing_date_rows() -> None:
+    class Response:
+        content = """
+        <dl>
+          <div class="subsection row-request-date"><dt>Период приема заявок</dt><dd>
+            <span>20.08.2026 17:00</span> - <span>03.09.2026 17:00</span>
+          </dd></div>
+          <div class="subsection row-auction-date"><dt>Дата и время аукциона</dt><dd>
+            <span>20.08.2026 14:00</span> - <span>03.09.2026 14:00</span>
+          </dd></div>
+        </dl>
+        """.encode("utf-8")
+        url = "https://catalog.lot-online.ru/lot/2"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
+
+    assert fields["application_start_at"] == datetime(2026, 8, 20, 17, 0)
+    assert fields["application_deadline"] == datetime(2026, 9, 3, 17, 0)
+    assert fields["auction_at"] == datetime(2026, 9, 3, 14, 0)

@@ -55,6 +55,21 @@ def test_torgi_russia_lot_page_parses_structured_detail_fields() -> None:
     assert result.auction_at.isoformat() == "2026-08-27T10:30:00"
 
 
+def test_torgi_russia_lot_page_parses_current_lot_data_rows() -> None:
+    html = """
+    <div class="lot-data__text"><span>Начало приёма заявок:</span> 24.08.2026 10:00</div>
+    <div class="lot-data__text"><span>Конец приёма заявок:</span> 28.09.2026 10:00</div>
+    <div class="lot-data__text"><span>Начало приема ценовых предложений:</span> 30.09.2026 10:00</div>
+    <div class="lot-data__text"><span>Конец приема ценовых предложений:</span> 30.09.2026 15:00</div>
+    """
+
+    result = TorgiRussiaClient.parse_lot_page(html, "https://торги-россии.рф/lot/2")
+
+    assert result.application_start_at.isoformat() == "2026-08-24T10:00:00"
+    assert result.application_deadline.isoformat() == "2026-09-28T10:00:00"
+    assert result.auction_at.isoformat() == "2026-09-30T15:00:00"
+
+
 def test_torgi_russia_parse_search_page() -> None:
     html = """
     <main><article class="card">
