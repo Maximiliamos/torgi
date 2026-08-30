@@ -4,12 +4,14 @@ import hashlib
 import json
 import logging
 import math
+import os
 import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import urlencode, urljoin
 from typing import Any
 
@@ -2468,7 +2470,12 @@ class TBankrotClient:
         "Севастополь": "92",
     }
 
-    def __init__(self, diagnostics: bool = False, timeout: float = 25):
+    def __init__(
+        self,
+        diagnostics: bool = False,
+        timeout: float = 25,
+        cookie_file: str | None = None,
+    ):
         self.diagnostics = diagnostics
         self.timeout = timeout
         self.session = requests.Session()
@@ -2477,6 +2484,33 @@ class TBankrotClient:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         })
+        self._load_session_cookies(cookie_file or os.getenv("TBANKROT_COOKIE_FILE"))
+
+    def _load_session_cookies(self, cookie_file: str | None) -> None:
+        """Load a user-created TBankrot browser session without exposing its values."""
+        if not cookie_file:
+            return
+        try:
+            payload = json.loads(Path(cookie_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("TBankrot session cookie file is unavailable or invalid") from exc
+        cookies = payload.get("cookies", payload) if isinstance(payload, dict) else payload
+        if not isinstance(cookies, list):
+            raise RuntimeError("TBankrot session cookie file has an invalid format")
+        loaded = 0
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            name, value = item.get("name"), item.get("value")
+            domain = str(item.get("domain") or ".tbankrot.ru").lower()
+            if not name or not isinstance(value, str) or not domain.lstrip(".").endswith("tbankrot.ru"):
+                continue
+            self.session.cookies.set(
+                str(name), value, domain=domain, path=str(item.get("path") or "/")
+            )
+            loaded += 1
+        if not loaded:
+            raise RuntimeError("TBankrot session cookie file contains no TBankrot cookies")
 
     def search_lots(
         self,

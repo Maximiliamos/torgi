@@ -140,6 +140,7 @@ jobs:
             'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
             'ONLINE_SOURCE_CACHE_FIRST=true'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
@@ -157,6 +158,7 @@ jobs:
             'DATABASE_TRUSTED_LOCAL=true'
             'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
@@ -164,6 +166,10 @@ jobs:
           foreach ($protectedPath in @($redisConfigPath, $configPath, $workerConfigPath)) {
             & icacls.exe $protectedPath /inheritance:r /grant:r `
               'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
+          }
+          $tbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
+          if (-not (Test-Path -LiteralPath $tbankrotCookiePath)) {
+            throw 'Protected TBankrot session is missing; run the local session capture first'
           }
 
       - name: Apply database migrations before replacing production containers
@@ -219,6 +225,7 @@ jobs:
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
+            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
             --publish 127.0.0.1:18000:8000 `
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=64m `
@@ -232,6 +239,7 @@ jobs:
             --name $env:WORKER_CONTAINER `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
             --no-healthcheck `
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=128m `
