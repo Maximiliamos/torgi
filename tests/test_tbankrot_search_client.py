@@ -1,4 +1,5 @@
 from bankrotai.scrapers import ParsedLotData, TBankrotClient, TBankrotSearchFilters
+import json
 
 
 def test_tbankrot_search_params_match_site_form_fields():
@@ -284,3 +285,16 @@ def test_tbankrot_rejects_login_limited_nationwide_listing(monkeypatch) -> None:
         assert "only 1 cards" in str(exc)
     else:
         raise AssertionError("access-limited listing must not be treated as a complete page")
+
+
+def test_tbankrot_loads_only_tbankrot_session_cookies(tmp_path) -> None:
+    cookie_file = tmp_path / "cookies.json"
+    cookie_file.write_text(json.dumps({"cookies": [
+        {"name": "session", "value": "secret", "domain": ".tbankrot.ru", "path": "/"},
+        {"name": "foreign", "value": "ignore", "domain": ".example.com", "path": "/"},
+    ]}), encoding="utf-8")
+
+    client = TBankrotClient(cookie_file=str(cookie_file))
+
+    assert client.session.cookies.get("session", domain=".tbankrot.ru") == "secret"
+    assert client.session.cookies.get("foreign") is None
