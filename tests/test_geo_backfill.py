@@ -75,3 +75,7 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
         snapshot = session.scalar(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot_id))
         assert snapshot is not None
         assert snapshot.centroid_lat == 57.6261
+        lot = session.get(ProcessedLot, lot_id)
+        assert lot is not None
+        assert lot.geo_input_hash is not None
+        assert len(lot.geo_input_hash) == 64

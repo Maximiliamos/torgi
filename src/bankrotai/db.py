@@ -160,6 +160,7 @@ class ProcessedLot(Base):
     is_deal_of_the_week: Mapped[bool] = mapped_column(default=False, nullable=False)
     review_status: Mapped[str | None] = mapped_column(String(20), default=None)  # 'approved', 'rejected', 'maybe'
     needs_geo_check: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    geo_input_hash: Mapped[str | None] = mapped_column(String(64))
     published_at: Mapped[datetime | None] = mapped_column(DateTime)
     duplicate_of_id: Mapped[int | None] = mapped_column(
         ForeignKey("processed_lots.id", ondelete="SET NULL"), index=True
@@ -688,7 +689,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "c4d5e6f7a8b9"
+SCHEMA_REVISION = "d5e6f7a8b9c0"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
