@@ -6,7 +6,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.db import Base, LotGeoSnapshot, ProcessedLot
+from bankrotai.core import utc_now
+from bankrotai.db import Base, GeoFailure, LotGeoSnapshot, ProcessedLot
 from bankrotai.geo import CadastralObjectResult
 from bankrotai.services import geo_backfill
 
@@ -53,7 +54,26 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
             auction_status="expired",
             is_archived=True,
         ))
+        retry_lot = ProcessedLot(
+            external_id="geo-backfill-retry",
+            source="test",
+            source_system="test",
+            title="Старый неуспешный адрес",
+            description="",
+            category="land",
+            address="Ярославль, неизвестный адрес",
+            auction_status="active",
+        )
+        session.add(retry_lot)
         session.flush()
+        session.add(GeoFailure(
+            lot_id=retry_lot.id,
+            status="queued",
+            attempt_count=2,
+            error_message="previous failure",
+            last_failed_at=utc_now(),
+            next_retry_at=utc_now(),
+        ))
         lot_id = lot.id
 
     monkeypatch.setattr(
@@ -68,7 +88,7 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
         ),
     )
 
-    result = geo_backfill.geocode_pending_lots(scope, limit=10)
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
 
     assert result == {"queued": 1, "geocoded": 1, "failed": 0}
     with scope() as session:
