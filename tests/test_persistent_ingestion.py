@@ -152,10 +152,14 @@ def test_detail_sources_enrich_only_new_or_changed_listings(sessions, source_id:
         asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
 
     assert connector.enrichment_calls == 1
-    connector.listing_fingerprint = "changed"
+    connector.detail_enrichment_version = 2
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
     asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
     assert connector.enrichment_calls == 2
+    connector.listing_fingerprint = "changed"
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
+    assert connector.enrichment_calls == 3
     with sessions() as session:
         row = session.scalar(select(SourceLot))
         assert row is not None
