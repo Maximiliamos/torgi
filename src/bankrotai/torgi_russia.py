@@ -212,6 +212,17 @@ class TorgiRussiaClient:
             cells = row.select("th, td")
             if len(cells) >= 2:
                 labels[cells[0].get_text(" ", strip=True).lower()] = cells[1].get_text(" ", strip=True)
+        for row in soup.select(".lot-data__text"):
+            label_node = row.select_one("span")
+            if label_node is None:
+                continue
+            label = label_node.get_text(" ", strip=True).rstrip(":").casefold()
+            value = row.get_text(" ", strip=True)
+            prefix = label_node.get_text(" ", strip=True)
+            if value.startswith(prefix):
+                value = value[len(prefix):].strip()
+            if label and value:
+                labels[label] = value
 
         def labelled(*needles: str) -> str | None:
             return next((value for key, value in labels.items() if any(needle in key for needle in needles)), None)
@@ -263,7 +274,13 @@ class TorgiRussiaClient:
             ),
             address=labelled("адрес", "местонахожд"),
             category=labelled("категор", "вид имущества"),
-            application_start_at=parse_date(labelled("начал")),
-            application_deadline=parse_date(labelled("окончан", "прием заяв", "приём заяв")),
-            auction_at=parse_date(labelled("дата торгов", "дата аукцион", "проведен")),
+            application_start_at=parse_date(labelled("начало приема заявок", "начало приёма заявок")),
+            application_deadline=parse_date(labelled(
+                "конец приема заявок", "конец приёма заявок",
+                "окончание приема заявок", "окончание приёма заявок",
+            )),
+            auction_at=parse_date(labelled(
+                "конец приема ценовых предложений", "конец приёма ценовых предложений",
+                "дата торгов", "дата аукцион", "проведен",
+            )),
         )
