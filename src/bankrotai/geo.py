@@ -259,13 +259,14 @@ class CadastralGeocoder:
         return CadastralObjectResult(
             query=address,
             title="Адрес найден",
-            address=address,
+            address=result.get("matched_address") or address,
             lat=result.get("centroid_lat"),
             lon=result.get("centroid_lon"),
             source=source,
             confidence=result.get("geo_confidence", "medium"),
             info={
-                "Адрес": address,
+                "Адрес запроса": address,
+                "Найденный адрес": result.get("matched_address") or address,
                 "Источник": "Local Photon / OpenStreetMap" if source == "photon" else "Nominatim / OpenStreetMap",
                 "Примечание": result.get("trace_reason", ""),
             },
@@ -693,37 +694,95 @@ class PhotonGeocoder:
     def geocode(self, address: str) -> dict[str, Any] | None:
         if not self.base_url or len(address.strip()) < 5:
             return None
-        try:
-            response = requests.get(
-                f"{self.base_url}/api",
-                params={"q": address, "limit": 10, "lang": "ru", "countrycode": "RU"},
-                timeout=(2, 5),
-            )
-            response.raise_for_status()
-            features = response.json().get("features") or []
-        except (requests.RequestException, ValueError, AttributeError) as exc:
-            logger.warning("Local Photon geocoding failed: %s", exc)
-            return None
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for feature in features:
-            props = feature.get("properties") or {}
-            haystack = " ".join(str(value) for value in props.values()).casefold()
-            score = sum(token in haystack for token in expected)
-            scored.append((score, feature))
+        locality_match = re.search(
+            r"(?:^|[,;]\s*)(?:г\.|город)\s*([^,;]+)", address, re.IGNORECASE
+        )
+        expected_locality = locality_match.group(1).strip().casefold() if locality_match else ""
+        street_match = re.search(
+            r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок)\s*([^,;]+)",
+            address,
+            re.IGNORECASE,
+        )
+        expected_street = street_match.group(1).strip().casefold() if street_match else ""
+        house_match = re.search(r"(?:д\.|дом)\s*([0-9]+[а-яa-z]?)", address, re.IGNORECASE)
+        def normalize_house(value: str) -> str:
+            confusables = str.maketrans(
+                {"а": "a", "в": "b", "с": "c", "е": "e", "х": "x", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "т": "t"}
+            )
+            return re.sub(r"\s+", "", value.casefold()).translate(confusables).split("/", 1)[0]
+
+        expected_house = normalize_house(house_match.group(1)) if house_match else ""
+        from bankrotai.regions import normalize_region_code
+
+        expected_region = normalize_region_code(address)
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        for query_index, candidate in enumerate(build_geocoding_address_candidates(address)):
+            exact_candidate_found = False
+            try:
+                response = requests.get(
+                    f"{self.base_url}/api",
+                    params={"q": candidate, "limit": 10, "lang": "ru", "countrycode": "RU"},
+                    timeout=(2, 5),
+                )
+                response.raise_for_status()
+                features = response.json().get("features") or []
+            except (requests.RequestException, ValueError, AttributeError) as exc:
+                logger.warning("Local Photon geocoding failed for '%s': %s", candidate, exc)
+                continue
+            for feature in features:
+                props = feature.get("properties") or {}
+                city = str(props.get("city") or props.get("town") or props.get("village") or "")
+                state = str(props.get("state") or "")
+                street = str(props.get("street") or "")
+                house = normalize_house(str(props.get("housenumber") or ""))
+                if expected_locality and city and expected_locality not in city.casefold():
+                    continue
+                if expected_street and street and expected_street not in street.casefold():
+                    continue
+                if expected_region and state and normalize_region_code(state) != expected_region:
+                    continue
+                if expected_house and house and house != expected_house:
+                    continue
+                haystack = " ".join(str(value) for value in props.values()).casefold()
+                score = sum(token in haystack for token in expected)
+                score += 4 if expected_locality and expected_locality in city.casefold() else 0
+                score += 3 if expected_street and expected_street in street.casefold() else 0
+                score += 2 if expected_region and normalize_region_code(state) == expected_region else 0
+                score += 2 if expected_house and house == expected_house else 0
+                scored.append((score, -query_index, feature))
+                exact_candidate_found = bool(
+                    expected_locality
+                    and expected_locality in city.casefold()
+                    and (not expected_street or expected_street in street.casefold())
+                    and (not expected_region or normalize_region_code(state) == expected_region)
+                    and (not expected_house or house == expected_house)
+                )
+            if exact_candidate_found:
+                break
         if not scored:
             return None
-        score, feature = max(scored, key=lambda item: item[0])
+        score, _query_rank, feature = max(scored, key=lambda item: (item[0], item[1]))
         if expected and score < min(2, len(expected)):
             return None
         coordinates = (feature.get("geometry") or {}).get("coordinates") or []
         if len(coordinates) < 2:
             return None
+        props = feature.get("properties") or {}
+        matched_address = ", ".join(
+            str(value)
+            for value in (
+                props.get("city") or props.get("town") or props.get("village"),
+                props.get("street"), props.get("housenumber"), props.get("state"),
+            )
+            if value
+        )
         return {
             "centroid_lat": float(coordinates[1]),
             "centroid_lon": float(coordinates[0]),
             "geo_confidence": "high" if score >= 3 else "medium",
             "trace_reason": "Local Photon / OpenStreetMap",
+            "matched_address": matched_address or None,
         }
 
 
