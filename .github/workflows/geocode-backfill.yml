@@ -2,14 +2,12 @@ name: Production geocoding backfill
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "src/bankrotai/geo.py"
-      - "src/bankrotai/services/geo_backfill.py"
-      - ".github/workflows/geocode-backfill.yml"
-  schedule:
-    - cron: "47 */3 * * *"
+    inputs:
+      limit:
+        description: "Bounded number of lots to geocode (1-500)"
+        required: true
+        default: "10"
+        type: number
 
 permissions:
   contents: read
@@ -35,6 +33,8 @@ jobs:
       - name: Geocode the next bounded batch
         shell: powershell
         run: |
+          $limit = [int]"${{ inputs.limit }}"
+          if ($limit -lt 1 -or $limit -gt 500) { throw 'limit must be between 1 and 500' }
           docker exec bankrotai-home-ingestion-worker `
-            python -m bankrotai.cli geocode-pending --limit 150
+            python -m bankrotai.cli geocode-pending --limit $limit
           if ($LASTEXITCODE -ne 0) { throw 'Production geocoding batch failed' }
