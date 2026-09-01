@@ -53,7 +53,7 @@ jobs:
             - !ReverseTunnel
               protocol: [Tcp]
               port: [18080]
-              cidr: [127.0.0.1/32]
+              cidr: [0.0.0.0/0]
           EOF
           )"
           restriction_b64="$(printf '%s\n' "$restriction" | base64 -w 0)"
@@ -72,39 +72,18 @@ jobs:
           tar -xzf "$archive" -C /opt/bankrotai/wstunnel
           install -m 755 /opt/bankrotai/wstunnel/wstunnel /usr/local/bin/bankrotai-wstunnel
           rm -f "$archive"
-          docker_gateway="$(docker network inspect bankrotai --format '{{(index .IPAM.Config 0).Gateway}}')"
-          test -n "$docker_gateway"
-          cat > /etc/systemd/system/bankrotai-wstunnel.service <<UNIT
-          [Unit]
-          Description=BankrotAI authenticated home API WSS relay
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/bankrotai-wstunnel server --restrict-config /opt/bankrotai/wstunnel/restrictions.yaml ws://${docker_gateway}:18081
-          Restart=always
-          RestartSec=3
-          User=root
-          NoNewPrivileges=true
-          ProtectSystem=strict
-          ProtectHome=true
-          PrivateTmp=true
-
-          [Install]
-          WantedBy=multi-user.target
-          UNIT
-          systemctl daemon-reload
-          systemctl enable bankrotai-wstunnel.service
-          systemctl restart bankrotai-wstunnel.service
-          timeout 30 sh -c 'until systemctl is-active --quiet bankrotai-wstunnel.service; do sleep 1; done'
-          listener_status="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "http://${docker_gateway}:18081/" || true)"
-          if [ "$listener_status" = 000 ]; then
-            systemctl status bankrotai-wstunnel.service --no-pager || true
-            journalctl -u bankrotai-wstunnel.service -n 40 --no-pager || true
-            ss -ltnp | grep -E ':(18080|18081) ' || true
-            exit 1
-          fi
+          docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
+          cat > /opt/bankrotai/wstunnel/Dockerfile <<'DOCKERFILE'
+          FROM debian:trixie-slim
+          COPY wstunnel /usr/local/bin/bankrotai-wstunnel
+          ENTRYPOINT ["/usr/local/bin/bankrotai-wstunnel"]
+          DOCKERFILE
+          docker build --pull -t bankrotai-wstunnel:10.7.0 /opt/bankrotai/wstunnel
+          systemctl disable --now bankrotai-wstunnel.service >/dev/null 2>&1 || true
+          docker rm -f bankrotai-wstunnel >/dev/null 2>&1 || true
+          docker run -d --name bankrotai-wstunnel --restart unless-stopped --network bankrotai \
+            -v /opt/bankrotai/wstunnel/restrictions.yaml:/restrictions.yaml:ro \
+            bankrotai-wstunnel:10.7.0 server --restrict-config /restrictions.yaml ws://0.0.0.0:18081
           if ! grep -q "^${WSS_HOSTNAME} {" /opt/bankrotai/Caddyfile; then
             cat >> /opt/bankrotai/Caddyfile <<CADDY
 
@@ -118,8 +97,8 @@ jobs:
           }
           CADDY
           fi
-          sed -i -E "s#reverse_proxy [^ ]+:18081#reverse_proxy ${docker_gateway}:18081#g" /opt/bankrotai/Caddyfile
-          sed -i -E "s#reverse_proxy [^ ]+:18080#reverse_proxy ${docker_gateway}:18080#g" /opt/bankrotai/Caddyfile
+          sed -i -E "s#reverse_proxy [^ ]+:18081#reverse_proxy bankrotai-wstunnel:18081#g" /opt/bankrotai/Caddyfile
+          sed -i -E "s#reverse_proxy [^ ]+:18080#reverse_proxy bankrotai-wstunnel:18080#g" /opt/bankrotai/Caddyfile
           docker run --rm --env-file /opt/bankrotai/caddy.env \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -130,10 +109,10 @@ jobs:
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/bankrotai/web:/srv:ro \
             -v bankrotai_caddy_data:/data -v bankrotai_caddy_config:/config caddy:2-alpine
           sleep 3
-          if ! docker exec bankrotai-caddy sh -c "wget -S -O /dev/null http://${docker_gateway}:18081/ 2>&1 | grep -F 'HTTP/'"; then
+          if ! docker exec bankrotai-caddy sh -c "wget -S -O /dev/null http://bankrotai-wstunnel:18081/ 2>&1 | grep -F 'HTTP/'"; then
             docker inspect bankrotai-caddy --format '{{json .NetworkSettings.Networks}}'
             docker exec bankrotai-caddy cat /etc/hosts
-            ss -ltnp | grep -E ':(18080|18081) ' || true
+            docker logs --tail 40 bankrotai-wstunnel || true
             exit 1
           fi
           REMOTE
@@ -182,9 +161,9 @@ jobs:
           $headers = Join-Path $root 'relay-headers.txt'
           $log = Join-Path $root 'relay-wss.log'
           $env:NO_COLOR = 'true'
-          $existing = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*127.0.0.1:18080:127.0.0.1:18000*' }
+          $existing = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*0.0.0.0:18080:127.0.0.1:18000*' }
           if ($existing) { exit 0 }
-          $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://127.0.0.1:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
+          $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://0.0.0.0:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
           Start-Process -FilePath $binary -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
           '@
           [IO.File]::WriteAllText($watchdog, $script, [Text.Encoding]::ASCII)
@@ -204,7 +183,7 @@ jobs:
       - name: Verify process and local API
         shell: powershell
         run: |
-          $process = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*127.0.0.1:18080:127.0.0.1:18000*' }
+          $process = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*0.0.0.0:18080:127.0.0.1:18000*' }
           if (-not $process) { throw 'WSS relay process is not running' }
           $status = & curl.exe -sS --max-time 10 -o NUL -w '%{http_code}' http://127.0.0.1:18000/health/live
           if ($status -ne '200') { throw "Local API returned $status" }

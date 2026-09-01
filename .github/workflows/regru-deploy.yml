@@ -405,7 +405,7 @@ jobs:
 
           ${HOME_RELAY_HOSTNAME} {
             encode zstd gzip
-            reverse_proxy ${DOCKER_GATEWAY}:18080 {
+            reverse_proxy bankrotai-wstunnel:18080 {
               header_up X-Request-ID "{http.request.header.X-Request-ID}"
             }
             header {
