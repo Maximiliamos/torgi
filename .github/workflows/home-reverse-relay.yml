@@ -75,7 +75,7 @@ jobs:
           docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
           cat > /opt/bankrotai/wstunnel/Dockerfile <<'DOCKERFILE'
           FROM debian:trixie-slim
-          COPY wstunnel /usr/local/bin/bankrotai-wstunnel
+          COPY --chmod=755 wstunnel /usr/local/bin/bankrotai-wstunnel
           ENTRYPOINT ["/usr/local/bin/bankrotai-wstunnel"]
           DOCKERFILE
           docker build --pull -t bankrotai-wstunnel:10.7.0 /opt/bankrotai/wstunnel

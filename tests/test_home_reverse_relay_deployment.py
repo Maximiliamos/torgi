@@ -27,6 +27,7 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "--websocket-ping-frequency','15s'" in workflow
     assert "Require 20 consecutive public successes" in workflow
     assert "--network bankrotai" in workflow
+    assert "COPY --chmod=755 wstunnel" in workflow
     assert "ghcr.io/erebe/wstunnel" not in workflow
     assert "ws://0.0.0.0:18081" in workflow
     assert 'reverse_proxy [^ ]+:18081#reverse_proxy bankrotai-wstunnel:18081' in workflow
