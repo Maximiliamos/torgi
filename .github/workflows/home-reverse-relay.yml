@@ -71,7 +71,9 @@ jobs:
           tar -xzf "$archive" -C /opt/bankrotai/wstunnel
           install -m 755 /opt/bankrotai/wstunnel/wstunnel /usr/local/bin/bankrotai-wstunnel
           rm -f "$archive"
-          cat > /etc/systemd/system/bankrotai-wstunnel.service <<'UNIT'
+          docker_gateway="$(docker network inspect bankrotai --format '{{(index .IPAM.Config 0).Gateway}}')"
+          test -n "$docker_gateway"
+          cat > /etc/systemd/system/bankrotai-wstunnel.service <<UNIT
           [Unit]
           Description=BankrotAI authenticated home API WSS relay
           After=network-online.target
@@ -79,7 +81,7 @@ jobs:
 
           [Service]
           Type=simple
-          ExecStart=/usr/local/bin/bankrotai-wstunnel server --restrict-config /opt/bankrotai/wstunnel/restrictions.yaml ws://127.0.0.1:18081
+          ExecStart=/usr/local/bin/bankrotai-wstunnel server --restrict-config /opt/bankrotai/wstunnel/restrictions.yaml ws://${docker_gateway}:18081
           Restart=always
           RestartSec=3
           User=root
@@ -158,6 +160,7 @@ jobs:
           $binary = Join-Path $root 'wstunnel.exe'
           $headers = Join-Path $root 'relay-headers.txt'
           $log = Join-Path $root 'relay-wss.log'
+          $env:NO_COLOR = 'true'
           $existing = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*127.0.0.1:18080:127.0.0.1:18000*' }
           if ($existing) { exit 0 }
           $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://127.0.0.1:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
@@ -172,7 +175,9 @@ jobs:
           $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
           $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-          Register-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          if (-not (Get-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -ErrorAction SilentlyContinue)) {
+            Register-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          }
           & $watchdog
           Start-Sleep -Seconds 12
       - name: Verify process and local API
