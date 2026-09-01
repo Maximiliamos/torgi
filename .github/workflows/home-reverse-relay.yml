@@ -162,7 +162,9 @@ jobs:
           $headers = Join-Path $root 'relay-headers.txt'
           $log = Join-Path $root 'relay-wss.log'
           $env:NO_COLOR = 'true'
-          $existing = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*0.0.0.0:18080:127.0.0.1:18000*' }
+          # A non-elevated self-hosted runner cannot read CommandLine for the
+          # SYSTEM-owned connector, but it can reliably observe the process.
+          $existing = Get-Process -Name 'wstunnel' -ErrorAction SilentlyContinue
           if ($existing) { exit 0 }
           $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://0.0.0.0:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
           Start-Process -FilePath $binary -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
@@ -188,7 +190,7 @@ jobs:
       - name: Verify process and local API
         shell: powershell
         run: |
-          $process = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*0.0.0.0:18080:127.0.0.1:18000*' }
+          $process = Get-Process -Name 'wstunnel' -ErrorAction SilentlyContinue
           if (-not $process) { throw 'WSS relay process is not running' }
           $status = & curl.exe -sS --max-time 10 -o NUL -w '%{http_code}' http://127.0.0.1:18000/health/live
           if ($status -ne '200') { throw "Local API returned $status" }
