@@ -30,8 +30,9 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "ghcr.io/erebe/wstunnel" not in workflow
     assert "docker network inspect bankrotai" in workflow
     assert "ws://${docker_gateway}:18081" in workflow
-    assert 's#host.docker.internal:18081#${docker_gateway}:18081#g' in workflow
-    assert 's#host.docker.internal:18080#${docker_gateway}:18080#g' in workflow
+    assert 'reverse_proxy [^ ]+:18081#reverse_proxy ${docker_gateway}:18081' in workflow
+    assert 'reverse_proxy [^ ]+:18080#reverse_proxy ${docker_gateway}:18080' in workflow
+    assert 'wget -S -O /dev/null http://${docker_gateway}:18081/' in workflow
     assert "$env:NO_COLOR = 'true'" in workflow
 
 

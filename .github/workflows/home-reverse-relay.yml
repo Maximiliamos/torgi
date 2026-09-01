@@ -109,8 +109,8 @@ jobs:
           }
           CADDY
           fi
-          sed -i "s#host.docker.internal:18081#${docker_gateway}:18081#g" /opt/bankrotai/Caddyfile
-          sed -i "s#host.docker.internal:18080#${docker_gateway}:18080#g" /opt/bankrotai/Caddyfile
+          sed -i -E "s#reverse_proxy [^ ]+:18081#reverse_proxy ${docker_gateway}:18081#g" /opt/bankrotai/Caddyfile
+          sed -i -E "s#reverse_proxy [^ ]+:18080#reverse_proxy ${docker_gateway}:18080#g" /opt/bankrotai/Caddyfile
           docker run --rm --env-file /opt/bankrotai/caddy.env \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -120,6 +120,8 @@ jobs:
             -p 80:80 -p 443:443 \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/bankrotai/web:/srv:ro \
             -v bankrotai_caddy_data:/data -v bankrotai_caddy_config:/config caddy:2-alpine
+          sleep 3
+          docker exec bankrotai-caddy sh -c "wget -S -O /dev/null http://${docker_gateway}:18081/ 2>&1 | grep -F 'HTTP/'"
           REMOTE
 
   configure-client:
