@@ -259,30 +259,156 @@ jobs:
           $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
           $taskName = 'BankrotAI Home WSS Relay'
-          Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
-          if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-            throw "Scheduled SYSTEM watchdog '$taskName' was not found after registration"
+          $expectedArguments = '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\BankrotAI\relay\ensure-home-relay.ps1"'
+          function Get-TaskProperty {
+            param([object] $object, [string] $name)
+            if ($null -eq $object) { return $null }
+            $property = $object.PSObject.Properties[$name]
+            if ($null -eq $property -or $null -eq $property.Value) { return $null }
+            return $property.Value
+          }
+          function Test-TaskHasProperty {
+            param([object] $object, [string] $name)
+            return ($null -ne $object -and $null -ne $object.PSObject.Properties[$name])
+          }
+          function Resolve-TaskPrincipalSid {
+            param([object] $userId)
+            if ($null -eq $userId -or [string]::IsNullOrWhiteSpace([string] $userId)) { return $null }
+            $principalText = [string] $userId
+            try {
+              return (New-Object Security.Principal.SecurityIdentifier($principalText)).Value
+            } catch {}
+            $candidates = New-Object 'System.Collections.Generic.List[string]'
+            $candidates.Add($principalText) | Out-Null
+            try {
+              $systemAccount = (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')).Translate([Security.Principal.NTAccount]).Value
+              $systemLeaf = $systemAccount.Split('\')[-1]
+              if ($principalText -ceq 'SYSTEM' -or $principalText -ceq $systemLeaf) {
+                $candidates.Add($systemAccount) | Out-Null
+              }
+            } catch {}
+            foreach ($candidate in $candidates) {
+              try {
+                return (New-Object Security.Principal.NTAccount($candidate)).Translate([Security.Principal.SecurityIdentifier]).Value
+              } catch {}
+            }
+            return $null
+          }
+          function ConvertTo-TaskBoundary {
+            param([object] $value)
+            if ($value -is [datetime]) { return $value }
+            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string] $value)) { return $null }
+            $boundary = [datetime]::MinValue
+            if (-not [datetime]::TryParse([string] $value, [ref] $boundary)) { return $null }
+            return $boundary
+          }
+          function Test-IndefiniteRepetitionDuration {
+            param([object] $duration)
+            if ($null -eq $duration -or [string]::IsNullOrWhiteSpace([string] $duration)) { return $true }
+            return ([string] $duration -ceq 'PT0S')
+          }
+          function Get-NextTimeTriggerOccurrence {
+            param([datetime] $startBoundary, [datetime] $observationStart)
+            if ($startBoundary -ge $observationStart) { return $startBoundary }
+            $intervalsElapsed = [math]::Ceiling(($observationStart - $startBoundary).TotalMinutes)
+            return $startBoundary.AddMinutes($intervalsElapsed)
+          }
+          function Test-HomeRelayTask {
+            param([object] $task, [datetime] $observationStart = (Get-Date))
+            $observationDeadline = $observationStart.AddSeconds(130)
+            $actions = @(Get-TaskProperty $task 'Actions')
+            if ($actions.Count -ne 1) { return $false }
+            if ((Get-TaskProperty $actions[0] 'Execute') -cne 'powershell.exe') { return $false }
+            if ((Get-TaskProperty $actions[0] 'Arguments') -cne $expectedArguments) { return $false }
+            $principalReadBack = Get-TaskProperty $task 'Principal'
+            $principalSid = Resolve-TaskPrincipalSid (Get-TaskProperty $principalReadBack 'UserId')
+            if ($principalSid -cne 'S-1-5-18') { return $false }
+            if ((Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Highest') { return $false }
+            $settingsReadBack = Get-TaskProperty $task 'Settings'
+            if ((Get-TaskProperty $settingsReadBack 'Enabled') -ne $true) { return $false }
+            if ((Get-TaskProperty $settingsReadBack 'ExecutionTimeLimit') -cne 'PT1M') { return $false }
+            if ((Get-TaskProperty $settingsReadBack 'MultipleInstances') -cne 'IgnoreNew') { return $false }
+            $triggers = @(Get-TaskProperty $task 'Triggers')
+            if ($triggers.Count -ne 2) { return $false }
+            $startupCount = 0
+            $repeatCount = 0
+            foreach ($trigger in $triggers) {
+              $cimClass = Get-TaskProperty $trigger 'CimClass'
+              $className = Get-TaskProperty $cimClass 'CimClassName'
+              if ($className -ceq 'MSFT_TaskBootTrigger') {
+                if ((Get-TaskProperty $trigger 'Enabled') -ne $true) { return $false }
+                $startupCount++
+                continue
+              }
+              if ($className -ceq 'MSFT_TaskTimeTrigger') {
+                if ((Get-TaskProperty $trigger 'Enabled') -ne $true) { return $false }
+                $repetition = Get-TaskProperty $trigger 'Repetition'
+                if ((Get-TaskProperty $repetition 'Interval') -cne 'PT1M') { return $false }
+                if (-not (Test-TaskHasProperty $repetition 'Duration')) { return $false }
+                if (-not (Test-IndefiniteRepetitionDuration (Get-TaskProperty $repetition 'Duration'))) { return $false }
+                if (-not (Test-TaskHasProperty $trigger 'StartBoundary')) { return $false }
+                $startBoundary = ConvertTo-TaskBoundary (Get-TaskProperty $trigger 'StartBoundary')
+                if ($null -eq $startBoundary) { return $false }
+                $nextOccurrence = Get-NextTimeTriggerOccurrence $startBoundary $observationStart
+                if ($nextOccurrence -gt $observationDeadline) { return $false }
+                if (Test-TaskHasProperty $trigger 'RandomDelay') {
+                  $randomDelay = Get-TaskProperty $trigger 'RandomDelay'
+                  if ($null -ne $randomDelay -and -not [string]::IsNullOrWhiteSpace([string] $randomDelay) -and [string] $randomDelay -cne 'PT0S') { return $false }
+                }
+                if (-not (Test-TaskHasProperty $trigger 'EndBoundary')) { return $false }
+                $endBoundaryValue = Get-TaskProperty $trigger 'EndBoundary'
+                if ($null -ne $endBoundaryValue -and -not [string]::IsNullOrWhiteSpace([string] $endBoundaryValue)) {
+                  $endBoundary = ConvertTo-TaskBoundary $endBoundaryValue
+                  if ($null -eq $endBoundary -or $endBoundary -lt $observationStart -or $endBoundary -lt $nextOccurrence) { return $false }
+                }
+                $repeatCount++
+                continue
+              }
+              return $false
+            }
+            return ($startupCount -eq 1 -and $repeatCount -eq 1)
+          }
+          try {
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          } catch {
+            Write-Warning "Unable to update scheduled SYSTEM watchdog '$taskName'; validating the existing task instead: $($_.Exception.Message)"
+          }
+          $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+          if (-not (Test-HomeRelayTask $task)) {
+            throw "Scheduled SYSTEM watchdog '$taskName' is missing or does not match the required action, identity, settings, and triggers"
           }
           $beforeDispatch = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+          if ($null -eq $beforeDispatch.LastRunTime) {
+            throw "Scheduled SYSTEM watchdog '$taskName' has no readable LastRunTime"
+          }
           $previousLastRun = $beforeDispatch.LastRunTime
-          $dispatchTime = Get-Date
+          $waitStarted = Get-Date
           try {
             Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
           } catch {
-            throw "Scheduled SYSTEM watchdog '$taskName' could not be dispatched: $($_.Exception.Message)"
+            Write-Warning "Unable to start scheduled SYSTEM watchdog '$taskName'; waiting for its validated minute trigger: $($_.Exception.Message)"
           }
-          $completionDeadline = $dispatchTime.AddSeconds(55)
+          $completionDeadline = $waitStarted.AddSeconds(130)
           $completed = $false
           do {
             Start-Sleep -Seconds 2
             $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            if (-not (Test-HomeRelayTask $task)) {
+              throw "Scheduled SYSTEM watchdog '$taskName' changed while waiting for execution"
+            }
             $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
-            $isDispatchedRun = $taskInfo.LastRunTime -gt $previousLastRun -and $taskInfo.LastRunTime -ge $dispatchTime.AddSeconds(-1)
-            if ($isDispatchedRun -and $task.State -ne 'Running') {
-              if ($taskInfo.LastTaskResult -ne 0) {
+            $lastRunTime = $taskInfo.LastRunTime
+            $lastTaskResult = Get-TaskProperty $taskInfo 'LastTaskResult'
+            $state = Get-TaskProperty $task 'State'
+            if ($null -eq $lastRunTime -or $null -eq $lastTaskResult -or $null -eq $state) {
+              throw "Scheduled SYSTEM watchdog '$taskName' has unreadable execution state"
+            }
+            $isCorrelatedRun = $lastRunTime -gt $previousLastRun -and $lastRunTime -ge $waitStarted.AddSeconds(-1) -and $lastRunTime -le $completionDeadline
+            if ($isCorrelatedRun -and $state -ne 'Running') {
+              if ($lastTaskResult -ne 0) {
                 throw "Scheduled SYSTEM watchdog '$taskName' failed after dispatch: result=$($taskInfo.LastTaskResult); lastRun=$($taskInfo.LastRunTime.ToString('o'))"
               }
-              Write-Host "Scheduled SYSTEM watchdog '$taskName' completed successfully after dispatch at $($taskInfo.LastRunTime.ToString('o'))"
+              Write-Host "Scheduled SYSTEM watchdog '$taskName' completed successfully after the validated dispatch window at $($taskInfo.LastRunTime.ToString('o'))"
               $completed = $true
               break
             }
