@@ -96,6 +96,13 @@ jobs:
           systemctl daemon-reload
           systemctl enable --now bankrotai-wstunnel.service
           timeout 30 sh -c 'until systemctl is-active --quiet bankrotai-wstunnel.service; do sleep 1; done'
+          listener_status="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "http://${docker_gateway}:18081/" || true)"
+          if [ "$listener_status" = 000 ]; then
+            systemctl status bankrotai-wstunnel.service --no-pager || true
+            journalctl -u bankrotai-wstunnel.service -n 40 --no-pager || true
+            ss -ltnp | grep -E ':(18080|18081) ' || true
+            exit 1
+          fi
           if ! grep -q "^${WSS_HOSTNAME} {" /opt/bankrotai/Caddyfile; then
             cat >> /opt/bankrotai/Caddyfile <<CADDY
 
@@ -121,7 +128,12 @@ jobs:
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/bankrotai/web:/srv:ro \
             -v bankrotai_caddy_data:/data -v bankrotai_caddy_config:/config caddy:2-alpine
           sleep 3
-          docker exec bankrotai-caddy sh -c "wget -S -O /dev/null http://${docker_gateway}:18081/ 2>&1 | grep -F 'HTTP/'"
+          if ! docker exec bankrotai-caddy sh -c "wget -S -O /dev/null http://${docker_gateway}:18081/ 2>&1 | grep -F 'HTTP/'"; then
+            docker inspect bankrotai-caddy --format '{{json .NetworkSettings.Networks}}'
+            docker exec bankrotai-caddy cat /etc/hosts
+            ss -ltnp | grep -E ':(18080|18081) ' || true
+            exit 1
+          fi
           REMOTE
 
   configure-client:
