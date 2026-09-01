@@ -314,7 +314,7 @@ jobs:
             return $startBoundary.AddMinutes($intervalsElapsed)
           }
           function Test-HomeRelayTask {
-            param([object] $task, [datetime] $observationStart = (Get-Date))
+            param([object] $task, [ValidateSet('SYSTEM','runner')] [string] $mode, [string] $expectedPrincipalSid, [datetime] $observationStart = (Get-Date))
             $observationDeadline = $observationStart.AddSeconds(130)
             $actions = @(Get-TaskProperty $task 'Actions')
             if ($actions.Count -ne 1) { return $false }
@@ -322,20 +322,23 @@ jobs:
             if ((Get-TaskProperty $actions[0] 'Arguments') -cne $expectedArguments) { return $false }
             $principalReadBack = Get-TaskProperty $task 'Principal'
             $principalSid = Resolve-TaskPrincipalSid (Get-TaskProperty $principalReadBack 'UserId')
-            if ($principalSid -cne 'S-1-5-18') { return $false }
-            if ((Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Highest') { return $false }
+            if ($principalSid -cne $expectedPrincipalSid) { return $false }
+            if ($mode -ceq 'SYSTEM' -and ((Get-TaskProperty $principalReadBack 'LogonType') -cne 'ServiceAccount' -or (Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Highest')) { return $false }
+            if ($mode -ceq 'runner' -and ((Get-TaskProperty $principalReadBack 'LogonType') -cne 'S4U' -or (Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Limited')) { return $false }
             $settingsReadBack = Get-TaskProperty $task 'Settings'
             if ((Get-TaskProperty $settingsReadBack 'Enabled') -ne $true) { return $false }
+            if ($mode -ceq 'runner' -and (Get-TaskProperty $settingsReadBack 'StartWhenAvailable') -ne $false) { return $false }
             if ((Get-TaskProperty $settingsReadBack 'ExecutionTimeLimit') -cne 'PT1M') { return $false }
             if ((Get-TaskProperty $settingsReadBack 'MultipleInstances') -cne 'IgnoreNew') { return $false }
             $triggers = @(Get-TaskProperty $task 'Triggers')
-            if ($triggers.Count -ne 2) { return $false }
+            if (($mode -ceq 'SYSTEM' -and $triggers.Count -ne 2) -or ($mode -ceq 'runner' -and $triggers.Count -ne 1)) { return $false }
             $startupCount = 0
             $repeatCount = 0
             foreach ($trigger in $triggers) {
               $cimClass = Get-TaskProperty $trigger 'CimClass'
               $className = Get-TaskProperty $cimClass 'CimClassName'
               if ($className -ceq 'MSFT_TaskBootTrigger') {
+                if ($mode -cne 'SYSTEM') { return $false }
                 if ((Get-TaskProperty $trigger 'Enabled') -ne $true) { return $false }
                 $startupCount++
                 continue
@@ -357,64 +360,120 @@ jobs:
                 }
                 if (-not (Test-TaskHasProperty $trigger 'EndBoundary')) { return $false }
                 $endBoundaryValue = Get-TaskProperty $trigger 'EndBoundary'
-                if ($null -ne $endBoundaryValue -and -not [string]::IsNullOrWhiteSpace([string] $endBoundaryValue)) {
-                  $endBoundary = ConvertTo-TaskBoundary $endBoundaryValue
-                  if ($null -eq $endBoundary -or $endBoundary -lt $observationStart -or $endBoundary -lt $nextOccurrence) { return $false }
-                }
+                if ($null -ne $endBoundaryValue -and -not [string]::IsNullOrWhiteSpace([string] $endBoundaryValue)) { return $false }
                 $repeatCount++
                 continue
               }
               return $false
             }
-            return ($startupCount -eq 1 -and $repeatCount -eq 1)
+            if ($mode -ceq 'SYSTEM') { return ($startupCount -eq 1 -and $repeatCount -eq 1) }
+            return ($startupCount -eq 0 -and $repeatCount -eq 1)
+          }
+          $systemTaskName = 'BankrotAI Home WSS Relay'
+          $runnerTaskName = 'BankrotAI Home WSS Relay Runner'
+          $systemPrincipalSid = 'S-1-5-18'
+          $runnerPrincipalSid = $runnerSid
+          $selectedTaskName = $null
+          $selectedPrincipalSid = $null
+          $selectedMode = $null
+          function Get-TaskOrNull {
+            param([string] $name)
+            try { return Get-ScheduledTask -TaskName $name -ErrorAction Stop } catch {
+              if (@('NoMatchingMSFT_ScheduledTaskFound,Get-ScheduledTask','CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask') -contains $_.FullyQualifiedErrorId) { return $null }
+              throw
+            }
+          }
+          function Retire-RunnerWatchdog {
+            $runnerTask = Get-TaskOrNull $runnerTaskName
+            if ($null -eq $runnerTask) { return }
+            if (-not (Test-HomeRelayTask $runnerTask 'runner' $runnerPrincipalSid)) {
+              throw "Runner-owned watchdog '$runnerTaskName' exists but does not satisfy the required retirement invariants"
+            }
+            Disable-ScheduledTask -TaskName $runnerTaskName -ErrorAction Stop | Out-Null
+            $runnerTask = Get-TaskOrNull $runnerTaskName
+            if ($null -eq $runnerTask -or (Get-TaskProperty (Get-TaskProperty $runnerTask 'Settings') 'Enabled') -ne $false) { throw "Runner-owned watchdog '$runnerTaskName' did not become disabled during retirement" }
+            $stopDeadline = (Get-Date).AddSeconds(15)
+            do {
+              $runnerState = Get-TaskProperty $runnerTask 'State'
+              if ($null -eq $runnerState) { throw "Runner-owned watchdog '$runnerTaskName' has unreadable state during retirement" }
+              if ($runnerState -eq 'Running') { Stop-ScheduledTask -TaskName $runnerTaskName -ErrorAction Stop }
+              Start-Sleep -Seconds 1
+              $runnerTask = Get-TaskOrNull $runnerTaskName
+            } while ($runnerTask -and (Get-TaskProperty $runnerTask 'State') -eq 'Running' -and (Get-Date) -lt $stopDeadline)
+            $finalRunnerState = if ($runnerTask) { Get-TaskProperty $runnerTask 'State' } else { $null }
+            if ($null -eq $finalRunnerState -or $finalRunnerState -eq 'Running') { throw "Runner-owned watchdog '$runnerTaskName' did not quiesce before SYSTEM mode activation" }
+            Unregister-ScheduledTask -TaskName $runnerTaskName -Confirm:$false -ErrorAction Stop
+            if (Get-TaskOrNull $runnerTaskName) { throw "Runner-owned watchdog '$runnerTaskName' remains registered after retirement" }
           }
           try {
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+            Register-ScheduledTask -TaskName $systemTaskName -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
           } catch {
-            Write-Warning "Unable to update scheduled SYSTEM watchdog '$taskName'; validating the existing task instead: $($_.Exception.Message)"
+            Write-Warning "Unable to update SYSTEM watchdog '$systemTaskName'; checking the exact existing task: $($_.Exception.Message)"
           }
-          $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-          if (-not (Test-HomeRelayTask $task)) {
-            throw "Scheduled SYSTEM watchdog '$taskName' is missing or does not match the required action, identity, settings, and triggers"
+          $systemTask = Get-TaskOrNull $systemTaskName
+          if ($systemTask -and (Test-HomeRelayTask $systemTask 'SYSTEM' $systemPrincipalSid)) {
+            Retire-RunnerWatchdog
+            $selectedTaskName = $systemTaskName
+            $selectedPrincipalSid = $systemPrincipalSid
+            $selectedMode = 'SYSTEM'
+          } else {
+            if ($systemTask) {
+              throw "Existing SYSTEM watchdog '$systemTaskName' does not satisfy the required action, identity, settings, and trigger invariants"
+            }
+            $runnerPrincipal = New-ScheduledTaskPrincipal -UserId $runnerPrincipalSid -LogonType S4U -RunLevel Limited
+            $runnerSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable:$false
+            try {
+              Register-ScheduledTask -TaskName $runnerTaskName -Action $action -Trigger $repeat -Principal $runnerPrincipal -Settings $runnerSettings -Force | Out-Null
+            } catch {
+              throw "Unable to register runner-owned watchdog '$runnerTaskName' for current SID $runnerPrincipalSid after SYSTEM watchdog was unavailable: $($_.Exception.Message)"
+            }
+            $runnerTask = Get-TaskOrNull $runnerTaskName
+            if (-not (Test-HomeRelayTask $runnerTask 'runner' $runnerPrincipalSid)) {
+              throw "Runner-owned watchdog '$runnerTaskName' does not match the required action, current SID, settings, and trigger invariants"
+            }
+            $selectedTaskName = $runnerTaskName
+            $selectedPrincipalSid = $runnerPrincipalSid
+            $selectedMode = 'runner'
           }
-          $beforeDispatch = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+          $task = Get-ScheduledTask -TaskName $selectedTaskName -ErrorAction Stop
+          $beforeDispatch = Get-ScheduledTaskInfo -TaskName $selectedTaskName -ErrorAction Stop
           if ($null -eq $beforeDispatch.LastRunTime) {
-            throw "Scheduled SYSTEM watchdog '$taskName' has no readable LastRunTime"
+            throw "Scheduled $selectedMode watchdog '$selectedTaskName' has no readable LastRunTime"
           }
           $previousLastRun = $beforeDispatch.LastRunTime
           $waitStarted = Get-Date
           try {
-            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            Start-ScheduledTask -TaskName $selectedTaskName -ErrorAction Stop
           } catch {
-            Write-Warning "Unable to start scheduled SYSTEM watchdog '$taskName'; waiting for its validated minute trigger: $($_.Exception.Message)"
+            Write-Warning "Unable to start scheduled $selectedMode watchdog '$selectedTaskName'; waiting for its validated minute trigger: $($_.Exception.Message)"
           }
           $completionDeadline = $waitStarted.AddSeconds(130)
           $completed = $false
           do {
             Start-Sleep -Seconds 2
-            $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-            if (-not (Test-HomeRelayTask $task)) {
-              throw "Scheduled SYSTEM watchdog '$taskName' changed while waiting for execution"
+            $task = Get-ScheduledTask -TaskName $selectedTaskName -ErrorAction Stop
+            if (-not (Test-HomeRelayTask $task $selectedMode $selectedPrincipalSid)) {
+              throw "Scheduled $selectedMode watchdog '$selectedTaskName' changed while waiting for execution"
             }
-            $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+            $taskInfo = Get-ScheduledTaskInfo -TaskName $selectedTaskName -ErrorAction Stop
             $lastRunTime = $taskInfo.LastRunTime
             $lastTaskResult = Get-TaskProperty $taskInfo 'LastTaskResult'
             $state = Get-TaskProperty $task 'State'
             if ($null -eq $lastRunTime -or $null -eq $lastTaskResult -or $null -eq $state) {
-              throw "Scheduled SYSTEM watchdog '$taskName' has unreadable execution state"
+              throw "Scheduled $selectedMode watchdog '$selectedTaskName' has unreadable execution state"
             }
             $isCorrelatedRun = $lastRunTime -gt $previousLastRun -and $lastRunTime -ge $waitStarted.AddSeconds(-1) -and $lastRunTime -le $completionDeadline
             if ($isCorrelatedRun -and $state -ne 'Running') {
               if ($lastTaskResult -ne 0) {
-                throw "Scheduled SYSTEM watchdog '$taskName' failed after dispatch: result=$($taskInfo.LastTaskResult); lastRun=$($taskInfo.LastRunTime.ToString('o'))"
+                throw "Scheduled $selectedMode watchdog '$selectedTaskName' failed after dispatch: result=$($taskInfo.LastTaskResult); lastRun=$($taskInfo.LastRunTime.ToString('o'))"
               }
-              Write-Host "Scheduled SYSTEM watchdog '$taskName' completed successfully after the validated dispatch window at $($taskInfo.LastRunTime.ToString('o'))"
+              Write-Host "Scheduled $selectedMode watchdog '$selectedTaskName' completed successfully after the validated dispatch window at $($taskInfo.LastRunTime.ToString('o'))"
               $completed = $true
               break
             }
           } while ((Get-Date) -lt $completionDeadline)
           if (-not $completed) {
-            throw "Scheduled SYSTEM watchdog '$taskName' did not complete successfully after dispatch before $($completionDeadline.ToString('o'))"
+            throw "Scheduled $selectedMode watchdog '$selectedTaskName' did not complete successfully after dispatch before $($completionDeadline.ToString('o'))"
           }
       - name: Verify end-to-end relay health
         shell: powershell
