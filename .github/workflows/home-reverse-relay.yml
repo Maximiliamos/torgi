@@ -62,8 +62,9 @@ jobs:
             "RESTRICTION_B64='$restriction_b64' WSS_HOSTNAME='$WSS_HOSTNAME' WSTUNNEL_VERSION='$WSTUNNEL_VERSION' bash -s" <<'REMOTE'
           set -euo pipefail
           install -d -m 700 /opt/bankrotai/wstunnel
-          printf '%s' "$RESTRICTION_B64" | base64 -d > /opt/bankrotai/wstunnel/restrictions.yaml
-          chmod 600 /opt/bankrotai/wstunnel/restrictions.yaml
+          printf '%s' "$RESTRICTION_B64" | base64 -d > /opt/bankrotai/wstunnel/restrictions.yaml.next
+          chmod 600 /opt/bankrotai/wstunnel/restrictions.yaml.next
+          mv -f /opt/bankrotai/wstunnel/restrictions.yaml.next /opt/bankrotai/wstunnel/restrictions.yaml
           archive="/tmp/wstunnel_${WSTUNNEL_VERSION}_linux_amd64.tar.gz"
           curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
             "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_amd64.tar.gz" \
@@ -94,7 +95,8 @@ jobs:
           WantedBy=multi-user.target
           UNIT
           systemctl daemon-reload
-          systemctl enable --now bankrotai-wstunnel.service
+          systemctl enable bankrotai-wstunnel.service
+          systemctl restart bankrotai-wstunnel.service
           timeout 30 sh -c 'until systemctl is-active --quiet bankrotai-wstunnel.service; do sleep 1; done'
           listener_status="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "http://${docker_gateway}:18081/" || true)"
           if [ "$listener_status" = 000 ]; then
