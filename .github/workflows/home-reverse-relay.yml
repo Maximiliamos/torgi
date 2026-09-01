@@ -1,11 +1,10 @@
-name: Configure home API reverse relay
+name: Configure home API WSS relay
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/home-reverse-relay.yml"
+    paths: [".github/workflows/home-reverse-relay.yml"]
 
 permissions:
   contents: read
@@ -14,122 +13,163 @@ concurrency:
   group: home-reverse-relay-production
   cancel-in-progress: false
 
+env:
+  SSH_HOST: 194.226.126.233
+  SSH_PORT: "2222"
+  WSTUNNEL_VERSION: "10.7.0"
+  WSS_HOSTNAME: relay.194-226-126-233.sslip.io
+  PUBLIC_RELAY_HOSTNAME: home-relay.194-226-126-233.sslip.io
+
 jobs:
-  configure:
-    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+  configure-server:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+          SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY" && test -n "$SERVICE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_deploy"
+          chmod 600 "$HOME/.ssh/regru_deploy"
+          ssh-keyscan -T 15 -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts.relay"
+      - name: Install restricted WSS relay server
+        env:
+          SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+          relay_token="$(printf '%s' 'bankrotai-home-wss-relay-v1' | openssl dgst -sha256 -hmac "$SERVICE_KEY" -binary | base64 -w 0 | tr '+/' '-_' | tr -d '=')"
+          restriction="$(cat <<EOF
+          restrictions:
+          - name: bankrotai-home-api-only
+            match:
+            - !Authorization "^Bearer ${relay_token}$"
+            allow:
+            - !ReverseTunnel
+              protocol: [Tcp]
+              port: [18080]
+              cidr: [127.0.0.1/32]
+          EOF
+          )"
+          restriction_b64="$(printf '%s\n' "$restriction" | base64 -w 0)"
+          ssh -i "$HOME/.ssh/regru_deploy" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.relay" -p "$SSH_PORT" "root@$SSH_HOST" \
+            "RESTRICTION_B64='$restriction_b64' WSS_HOSTNAME='$WSS_HOSTNAME' WSTUNNEL_VERSION='$WSTUNNEL_VERSION' bash -s" <<'REMOTE'
+          set -euo pipefail
+          install -d -m 700 /opt/bankrotai/wstunnel
+          printf '%s' "$RESTRICTION_B64" | base64 -d > /opt/bankrotai/wstunnel/restrictions.yaml
+          chmod 600 /opt/bankrotai/wstunnel/restrictions.yaml
+          docker pull "ghcr.io/erebe/wstunnel:v${WSTUNNEL_VERSION}"
+          docker rm -f bankrotai-wstunnel >/dev/null 2>&1 || true
+          docker run -d --name bankrotai-wstunnel --restart unless-stopped --network host \
+            --entrypoint /home/app/wstunnel \
+            -v /opt/bankrotai/wstunnel/restrictions.yaml:/restrictions.yaml:ro \
+            --log-opt max-size=10m --log-opt max-file=3 \
+            "ghcr.io/erebe/wstunnel:v${WSTUNNEL_VERSION}" \
+            server --restrict-config /restrictions.yaml ws://127.0.0.1:18081
+          if ! grep -q "^${WSS_HOSTNAME} {" /opt/bankrotai/Caddyfile; then
+            cat >> /opt/bankrotai/Caddyfile <<CADDY
+
+          ${WSS_HOSTNAME} {
+            reverse_proxy host.docker.internal:18081
+            header Cache-Control "no-store"
+            log {
+              output stdout
+              format json
+            }
+          }
+          CADDY
+          fi
+          docker run --rm --env-file /opt/bankrotai/caddy.env \
+            -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker rm -f bankrotai-caddy >/dev/null 2>&1 || true
+          docker run -d --name bankrotai-caddy --restart unless-stopped --network bankrotai \
+            --add-host host.docker.internal:host-gateway --env-file /opt/bankrotai/caddy.env \
+            -p 80:80 -p 443:443 \
+            -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/bankrotai/web:/srv:ro \
+            -v bankrotai_caddy_data:/data -v bankrotai_caddy_config:/config caddy:2-alpine
+          REMOTE
+
+  configure-client:
+    needs: configure-server
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    environment: production
     env:
-      SSH_HOST: 194.226.126.233
-      SSH_PORT: "2222"
-      RELAY_PORT: "18080"
       CONFIG_ROOT: C:\ProgramData\BankrotAI\relay
     steps:
       - uses: actions/checkout@v7
-
-      - name: Require bootstrap credential
-        env:
-          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
-        shell: powershell
-        run: |
-          if (-not $env:DEPLOY_KEY) { throw 'REGRU_SSH_PRIVATE_KEY is unavailable' }
-
-      - name: Create restricted relay identity
+      - name: Install pinned wstunnel client
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
-          $relayKey = Join-Path $env:CONFIG_ROOT 'bankrotai_home_relay_ed25519'
-          if (-not (Test-Path -LiteralPath $relayKey)) {
-            & ssh-keygen.exe -q -t ed25519 -N '""' -C 'bankrotai-home-relay' -f $relayKey
-            if ($LASTEXITCODE -ne 0) { throw 'Could not generate relay identity' }
-          }
-          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          foreach ($path in @($relayKey, "$relayKey.pub")) {
-            & icacls.exe $path /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
-          }
-
-      - name: Authorize only the reverse relay on REG.RU
+          $archive = Join-Path $env:RUNNER_TEMP 'wstunnel.tar.gz'
+          $url = "https://github.com/erebe/wstunnel/releases/download/v$env:WSTUNNEL_VERSION/wstunnel_$($env:WSTUNNEL_VERSION)_windows_amd64.tar.gz"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          tar.exe -xzf $archive -C $env:CONFIG_ROOT
+          if (-not (Test-Path (Join-Path $env:CONFIG_ROOT 'wstunnel.exe'))) { throw 'wstunnel.exe was not installed' }
+      - name: Install persistent authenticated WSS relay
         env:
-          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+          SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $bootstrapKey = Join-Path $env:RUNNER_TEMP 'regru_relay_bootstrap'
-          [IO.File]::WriteAllText($bootstrapKey, $env:DEPLOY_KEY)
+          if (-not $env:SERVICE_KEY) { throw 'KOYEB_SERVICE_KEY is unavailable' }
+          $hmac = [Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($env:SERVICE_KEY))
+          try { $digest = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes('bankrotai-home-wss-relay-v1')) } finally { $hmac.Dispose() }
+          $token = [Convert]::ToBase64String($digest).TrimEnd('=').Replace('+','-').Replace('/','_')
+          $headers = Join-Path $env:CONFIG_ROOT 'relay-headers.txt'
+          [IO.File]::WriteAllText($headers, "Authorization: Bearer $token`r`n", [Text.Encoding]::ASCII)
           $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          & icacls.exe $bootstrapKey /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
-          $knownHosts = Join-Path $env:CONFIG_ROOT 'known_hosts'
-          & ssh-keyscan.exe -T 15 -p $env:SSH_PORT $env:SSH_HOST 2>$null | Set-Content -LiteralPath $knownHosts -Encoding ascii
-          if ($LASTEXITCODE -ne 0) { throw 'Could not pin REG.RU SSH host key' }
-          $relayKey = Join-Path $env:CONFIG_ROOT 'bankrotai_home_relay_ed25519'
-          $publicKey = [IO.File]::ReadAllText("$relayKey.pub").Trim()
-          $authorizedLine = 'restrict,port-forwarding,permitlisten="127.0.0.1:' + $env:RELAY_PORT + '" ' + $publicKey
-          try {
-            $authorizedLine | & ssh.exe -T -i $bootstrapKey -o BatchMode=yes -o IdentitiesOnly=yes `
-              -o "UserKnownHostsFile=$knownHosts" -p $env:SSH_PORT "root@$($env:SSH_HOST)" `
-              "umask 077; install -d -m 700 /root/.ssh; touch /root/.ssh/authorized_keys; grep -q 'bankrotai-home-relay$' /root/.ssh/authorized_keys || cat >> /root/.ssh/authorized_keys"
-            if ($LASTEXITCODE -ne 0) { throw 'Could not authorize restricted relay key' }
-          } finally {
-            Remove-Item -LiteralPath $bootstrapKey -Force -ErrorAction SilentlyContinue
-          }
-
-      - name: Install persistent reverse relay watchdog
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
+          & icacls.exe $headers /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
           $watchdog = Join-Path $env:CONFIG_ROOT 'ensure-home-relay.ps1'
           $script = @'
           $ErrorActionPreference = 'Stop'
-          $configRoot = 'C:\ProgramData\BankrotAI\relay'
-          $key = Join-Path $configRoot 'bankrotai_home_relay_ed25519'
-          $knownHosts = Join-Path $configRoot 'known_hosts'
-          $log = Join-Path $configRoot 'relay-ssh.log'
-          $existing = Get-CimInstance Win32_Process | Where-Object {
-            $_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*bankrotai_home_relay_ed25519*'
-          }
+          $root = 'C:\ProgramData\BankrotAI\relay'
+          $binary = Join-Path $root 'wstunnel.exe'
+          $headers = Join-Path $root 'relay-headers.txt'
+          $log = Join-Path $root 'relay-wss.log'
+          $existing = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*127.0.0.1:18080:127.0.0.1:18000*' }
           if ($existing) { exit 0 }
-          $args = @(
-            '-N','-T','-i',$key,'-o','BatchMode=yes','-o','IdentitiesOnly=yes',
-            '-o',"UserKnownHostsFile=$knownHosts",'-o','ExitOnForwardFailure=yes',
-            '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3',
-            '-o','ConnectTimeout=10','-o','TCPKeepAlive=yes','-E',$log,
-            '-R','127.0.0.1:18080:127.0.0.1:18000','-p','2222','root@194.226.126.233'
-          )
-          Start-Process -FilePath "$env:SystemRoot\System32\OpenSSH\ssh.exe" -ArgumentList $args -WindowStyle Hidden
+          $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://127.0.0.1:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
+          Start-Process -FilePath $binary -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
           '@
           [IO.File]::WriteAllText($watchdog, $script, [Text.Encoding]::ASCII)
-          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           & icacls.exe $watchdog /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
-          $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-            -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\BankrotAI\relay\ensure-home-relay.ps1"'
+          Get-ScheduledTask -TaskName 'BankrotAI Home Reverse Relay' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*bankrotai_home_relay_ed25519*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\BankrotAI\relay\ensure-home-relay.ps1"'
           $startup = New-ScheduledTaskTrigger -AtStartup
-          $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-            -RepetitionInterval (New-TimeSpan -Minutes 1)
+          $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
           $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-          Register-ScheduledTask -TaskName 'BankrotAI Home Reverse Relay' -Action $action `
-            -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+          Register-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
           & $watchdog
-          Start-Sleep -Seconds 8
-
-      - name: Verify relay from REG.RU loopback
-        env:
-          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+          Start-Sleep -Seconds 12
+      - name: Verify process and local API
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $bootstrapKey = Join-Path $env:RUNNER_TEMP 'regru_relay_verify'
-          [IO.File]::WriteAllText($bootstrapKey, $env:DEPLOY_KEY)
-          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          & icacls.exe $bootstrapKey /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
-          $knownHosts = Join-Path $env:CONFIG_ROOT 'known_hosts'
-          try {
-            $status = & ssh.exe -T -i $bootstrapKey -o BatchMode=yes -o IdentitiesOnly=yes `
-              -o "UserKnownHostsFile=$knownHosts" -p $env:SSH_PORT "root@$($env:SSH_HOST)" `
-              "curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:$($env:RELAY_PORT)/health/live"
-            if ($status -ne '200') { throw "Relay verification returned $status" }
-          } finally {
-            Remove-Item -LiteralPath $bootstrapKey -Force -ErrorAction SilentlyContinue
-          }
+          $process = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wstunnel.exe' -and $_.CommandLine -like '*127.0.0.1:18080:127.0.0.1:18000*' }
+          if (-not $process) { throw 'WSS relay process is not running' }
+          $status = & curl.exe -sS --max-time 10 -o NUL -w '%{http_code}' http://127.0.0.1:18000/health/live
+          if ($status -ne '200') { throw "Local API returned $status" }
+
+  verify-public-relay:
+    needs: configure-client
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require 20 consecutive public successes
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            test "$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_RELAY_HOSTNAME}/health/live")" = 200
+            sleep 1
+          done
