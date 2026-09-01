@@ -33,6 +33,8 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert 'reverse_proxy [^ ]+:18081#reverse_proxy ${docker_gateway}:18081' in workflow
     assert 'reverse_proxy [^ ]+:18080#reverse_proxy ${docker_gateway}:18080' in workflow
     assert 'wget -S -O /dev/null http://${docker_gateway}:18081/' in workflow
+    assert "journalctl -u bankrotai-wstunnel.service" in workflow
+    assert "listener_status" in workflow
     assert "$env:NO_COLOR = 'true'" in workflow
 
 
