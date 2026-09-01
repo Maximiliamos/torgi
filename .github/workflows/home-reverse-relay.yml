@@ -64,14 +64,36 @@ jobs:
           install -d -m 700 /opt/bankrotai/wstunnel
           printf '%s' "$RESTRICTION_B64" | base64 -d > /opt/bankrotai/wstunnel/restrictions.yaml
           chmod 600 /opt/bankrotai/wstunnel/restrictions.yaml
-          docker pull "ghcr.io/erebe/wstunnel:v${WSTUNNEL_VERSION}"
-          docker rm -f bankrotai-wstunnel >/dev/null 2>&1 || true
-          docker run -d --name bankrotai-wstunnel --restart unless-stopped --network host \
-            --entrypoint /home/app/wstunnel \
-            -v /opt/bankrotai/wstunnel/restrictions.yaml:/restrictions.yaml:ro \
-            --log-opt max-size=10m --log-opt max-file=3 \
-            "ghcr.io/erebe/wstunnel:v${WSTUNNEL_VERSION}" \
-            server --restrict-config /restrictions.yaml ws://127.0.0.1:18081
+          archive="/tmp/wstunnel_${WSTUNNEL_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_amd64.tar.gz" \
+            --output "$archive"
+          tar -xzf "$archive" -C /opt/bankrotai/wstunnel
+          install -m 755 /opt/bankrotai/wstunnel/wstunnel /usr/local/bin/bankrotai-wstunnel
+          rm -f "$archive"
+          cat > /etc/systemd/system/bankrotai-wstunnel.service <<'UNIT'
+          [Unit]
+          Description=BankrotAI authenticated home API WSS relay
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/bankrotai-wstunnel server --restrict-config /opt/bankrotai/wstunnel/restrictions.yaml ws://127.0.0.1:18081
+          Restart=always
+          RestartSec=3
+          User=root
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now bankrotai-wstunnel.service
+          timeout 30 sh -c 'until systemctl is-active --quiet bankrotai-wstunnel.service; do sleep 1; done'
           if ! grep -q "^${WSS_HOSTNAME} {" /opt/bankrotai/Caddyfile; then
             cat >> /opt/bankrotai/Caddyfile <<CADDY
 

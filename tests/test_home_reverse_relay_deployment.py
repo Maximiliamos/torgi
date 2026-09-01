@@ -26,6 +26,8 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "BankrotAI Home WSS Relay" in workflow
     assert "--websocket-ping-frequency','15s'" in workflow
     assert "Require 20 consecutive public successes" in workflow
+    assert "bankrotai-wstunnel.service" in workflow
+    assert "ghcr.io/erebe/wstunnel" not in workflow
 
 
 def test_regru_caddy_reaches_loopback_relay_through_host_gateway() -> None:
