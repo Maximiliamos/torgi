@@ -37,6 +37,7 @@ env:
   SSH_BOOTSTRAP_PORT: "2222"
   SSH_DEPLOY_PORT: "2222"
   API_HOSTNAME: 194-226-126-233.sslip.io
+  HOME_RELAY_HOSTNAME: home-relay.194-226-126-233.sslip.io
 
 jobs:
   diagnostics:
@@ -351,7 +352,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
-            "API_HOSTNAME='$API_HOSTNAME' bash -s" <<'REMOTE'
+            "API_HOSTNAME='$API_HOSTNAME' HOME_RELAY_HOSTNAME='$HOME_RELAY_HOSTNAME' bash -s" <<'REMOTE'
           set -euo pipefail
           rm -rf /opt/bankrotai/web.next
           install -d -m 755 /opt/bankrotai/web.next
@@ -392,6 +393,23 @@ jobs:
               X-Frame-Options DENY
               Referrer-Policy no-referrer
               Permissions-Policy "camera=(), microphone=(), geolocation=()"
+            }
+            log {
+              output stdout
+              format json
+            }
+          }
+
+          ${HOME_RELAY_HOSTNAME} {
+            encode zstd gzip
+            reverse_proxy host.docker.internal:18080 {
+              header_up X-Request-ID "{http.request.header.X-Request-ID}"
+            }
+            header {
+              Cache-Control "no-store"
+              X-Content-Type-Options nosniff
+              X-Frame-Options DENY
+              Referrer-Policy no-referrer
             }
             log {
               output stdout
@@ -500,6 +518,7 @@ jobs:
             --name bankrotai-caddy \
             --restart unless-stopped \
             --network bankrotai \
+            --add-host host.docker.internal:host-gateway \
             --env-file /opt/bankrotai/caddy.env \
             -p 80:80 \
             -p 443:443 \

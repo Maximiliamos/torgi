@@ -1,0 +1,135 @@
+name: Configure home API reverse relay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/home-reverse-relay.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-reverse-relay-production
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    environment: production
+    env:
+      SSH_HOST: 194.226.126.233
+      SSH_PORT: "2222"
+      RELAY_PORT: "18080"
+      CONFIG_ROOT: C:\ProgramData\BankrotAI\relay
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require bootstrap credential
+        env:
+          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        shell: powershell
+        run: |
+          if (-not $env:DEPLOY_KEY) { throw 'REGRU_SSH_PRIVATE_KEY is unavailable' }
+
+      - name: Create restricted relay identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
+          $relayKey = Join-Path $env:CONFIG_ROOT 'bankrotai_home_relay_ed25519'
+          if (-not (Test-Path -LiteralPath $relayKey)) {
+            & ssh-keygen.exe -q -t ed25519 -N '""' -C 'bankrotai-home-relay' -f $relayKey
+            if ($LASTEXITCODE -ne 0) { throw 'Could not generate relay identity' }
+          }
+          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          foreach ($path in @($relayKey, "$relayKey.pub")) {
+            & icacls.exe $path /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
+          }
+
+      - name: Authorize only the reverse relay on REG.RU
+        env:
+          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bootstrapKey = Join-Path $env:RUNNER_TEMP 'regru_relay_bootstrap'
+          [IO.File]::WriteAllText($bootstrapKey, $env:DEPLOY_KEY)
+          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $bootstrapKey /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
+          $knownHosts = Join-Path $env:CONFIG_ROOT 'known_hosts'
+          & ssh-keyscan.exe -T 15 -p $env:SSH_PORT $env:SSH_HOST 2>$null | Set-Content -LiteralPath $knownHosts -Encoding ascii
+          if ($LASTEXITCODE -ne 0) { throw 'Could not pin REG.RU SSH host key' }
+          $relayKey = Join-Path $env:CONFIG_ROOT 'bankrotai_home_relay_ed25519'
+          $publicKey = [IO.File]::ReadAllText("$relayKey.pub").Trim()
+          $authorizedLine = 'restrict,port-forwarding,permitlisten="127.0.0.1:' + $env:RELAY_PORT + '" ' + $publicKey
+          try {
+            $authorizedLine | & ssh.exe -T -i $bootstrapKey -o BatchMode=yes -o IdentitiesOnly=yes `
+              -o "UserKnownHostsFile=$knownHosts" -p $env:SSH_PORT "root@$($env:SSH_HOST)" `
+              "umask 077; install -d -m 700 /root/.ssh; touch /root/.ssh/authorized_keys; grep -q 'bankrotai-home-relay$' /root/.ssh/authorized_keys || cat >> /root/.ssh/authorized_keys"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not authorize restricted relay key' }
+          } finally {
+            Remove-Item -LiteralPath $bootstrapKey -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Install persistent reverse relay watchdog
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $watchdog = Join-Path $env:CONFIG_ROOT 'ensure-home-relay.ps1'
+          $script = @'
+          $ErrorActionPreference = 'Stop'
+          $configRoot = 'C:\ProgramData\BankrotAI\relay'
+          $key = Join-Path $configRoot 'bankrotai_home_relay_ed25519'
+          $knownHosts = Join-Path $configRoot 'known_hosts'
+          $log = Join-Path $configRoot 'relay-ssh.log'
+          $existing = Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*bankrotai_home_relay_ed25519*'
+          }
+          if ($existing) { exit 0 }
+          $args = @(
+            '-N','-T','-i',$key,'-o','BatchMode=yes','-o','IdentitiesOnly=yes',
+            '-o',"UserKnownHostsFile=$knownHosts",'-o','ExitOnForwardFailure=yes',
+            '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3',
+            '-o','ConnectTimeout=10','-o','TCPKeepAlive=yes','-E',$log,
+            '-R','127.0.0.1:18080:127.0.0.1:18000','-p','2222','root@194.226.126.233'
+          )
+          Start-Process -FilePath "$env:SystemRoot\System32\OpenSSH\ssh.exe" -ArgumentList $args -WindowStyle Hidden
+          '@
+          [IO.File]::WriteAllText($watchdog, $script, [Text.Encoding]::ASCII)
+          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $watchdog /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+            -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\BankrotAI\relay\ensure-home-relay.ps1"'
+          $startup = New-ScheduledTaskTrigger -AtStartup
+          $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes 1)
+          $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+          Register-ScheduledTask -TaskName 'BankrotAI Home Reverse Relay' -Action $action `
+            -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          & $watchdog
+          Start-Sleep -Seconds 8
+
+      - name: Verify relay from REG.RU loopback
+        env:
+          DEPLOY_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bootstrapKey = Join-Path $env:RUNNER_TEMP 'regru_relay_verify'
+          [IO.File]::WriteAllText($bootstrapKey, $env:DEPLOY_KEY)
+          $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $bootstrapKey /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
+          $knownHosts = Join-Path $env:CONFIG_ROOT 'known_hosts'
+          try {
+            $status = & ssh.exe -T -i $bootstrapKey -o BatchMode=yes -o IdentitiesOnly=yes `
+              -o "UserKnownHostsFile=$knownHosts" -p $env:SSH_PORT "root@$($env:SSH_HOST)" `
+              "curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:$($env:RELAY_PORT)/health/live"
+            if ($status -ne '200') { throw "Relay verification returned $status" }
+          } finally {
+            Remove-Item -LiteralPath $bootstrapKey -Force -ErrorAction SilentlyContinue
+          }
