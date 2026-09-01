@@ -176,8 +176,12 @@ jobs:
           $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
           $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-          if (-not (Get-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -ErrorAction SilentlyContinue)) {
-            Register-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+          try {
+            if (-not (Get-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -ErrorAction SilentlyContinue)) {
+              Register-ScheduledTask -TaskName 'BankrotAI Home WSS Relay' -Action $action -Trigger @($startup,$repeat) -Principal $principal -Settings $settings -Force | Out-Null
+            }
+          } catch {
+            Write-Warning "Scheduled task registration requires an elevated runner; continuing with the operational watchdog: $($_.Exception.Message)"
           }
           & $watchdog
           Start-Sleep -Seconds 12
