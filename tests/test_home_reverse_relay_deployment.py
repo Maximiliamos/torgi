@@ -28,6 +28,9 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "Require 20 consecutive public successes" in workflow
     assert "bankrotai-wstunnel.service" in workflow
     assert "ghcr.io/erebe/wstunnel" not in workflow
+    assert "docker network inspect bankrotai" in workflow
+    assert "ws://${docker_gateway}:18081" in workflow
+    assert "$env:NO_COLOR = 'true'" in workflow
 
 
 def test_regru_caddy_reaches_loopback_relay_through_host_gateway() -> None:
