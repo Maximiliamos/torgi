@@ -109,6 +109,8 @@ jobs:
           }
           CADDY
           fi
+          sed -i "s#host.docker.internal:18081#${docker_gateway}:18081#g" /opt/bankrotai/Caddyfile
+          sed -i "s#host.docker.internal:18080#${docker_gateway}:18080#g" /opt/bankrotai/Caddyfile
           docker run --rm --env-file /opt/bankrotai/caddy.env \
             -v /opt/bankrotai/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -134,11 +136,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
-          $archive = Join-Path $env:RUNNER_TEMP 'wstunnel.tar.gz'
-          $url = "https://github.com/erebe/wstunnel/releases/download/v$env:WSTUNNEL_VERSION/wstunnel_$($env:WSTUNNEL_VERSION)_windows_amd64.tar.gz"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          tar.exe -xzf $archive -C $env:CONFIG_ROOT
-          if (-not (Test-Path (Join-Path $env:CONFIG_ROOT 'wstunnel.exe'))) { throw 'wstunnel.exe was not installed' }
+          $binary = Join-Path $env:CONFIG_ROOT 'wstunnel.exe'
+          if (-not (Test-Path $binary)) {
+            $archive = Join-Path $env:RUNNER_TEMP 'wstunnel.tar.gz'
+            $url = "https://github.com/erebe/wstunnel/releases/download/v$env:WSTUNNEL_VERSION/wstunnel_$($env:WSTUNNEL_VERSION)_windows_amd64.tar.gz"
+            Invoke-WebRequest -Uri $url -OutFile $archive
+            tar.exe -xzf $archive -C $env:CONFIG_ROOT
+          }
+          if (-not (Test-Path $binary)) { throw 'wstunnel.exe was not installed' }
       - name: Install persistent authenticated WSS relay
         env:
           SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}

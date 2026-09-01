@@ -368,6 +368,9 @@ jobs:
           mv /opt/bankrotai/web.next /opt/bankrotai/web
           rm -f /opt/bankrotai/web-release.tgz
 
+          docker network inspect bankrotai >/dev/null 2>&1 || docker network create bankrotai
+          DOCKER_GATEWAY="$(docker network inspect bankrotai --format '{{(index .IPAM.Config 0).Gateway}}')"
+          test -n "$DOCKER_GATEWAY"
           cat > /opt/bankrotai/Caddyfile <<CADDY
           ${API_HOSTNAME} {
             encode zstd gzip
@@ -402,7 +405,7 @@ jobs:
 
           ${HOME_RELAY_HOSTNAME} {
             encode zstd gzip
-            reverse_proxy host.docker.internal:18080 {
+            reverse_proxy ${DOCKER_GATEWAY}:18080 {
               header_up X-Request-ID "{http.request.header.X-Request-ID}"
             }
             header {
