@@ -156,6 +156,70 @@ def _map_lot_payload(
     }
 
 
+def _map_base_filters(
+    *,
+    city_slug: str | None,
+    region_code: str | None,
+    min_start_price: float | None,
+    max_start_price: float | None,
+    include_archived: bool,
+    review_status: str | None,
+) -> list:
+    filters = [ProcessedLot.duplicate_of_id.is_(None)]
+    if city_slug:
+        filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
+    if region_code:
+        filters.append(ProcessedLot.region_code == region_code)
+    if min_start_price is not None:
+        filters.append(ProcessedLot.start_price >= min_start_price)
+    if max_start_price is not None:
+        filters.append(ProcessedLot.start_price <= max_start_price)
+    if not include_archived:
+        filters.append(ProcessedLot.is_archived.is_(False))
+    if review_status:
+        filters.append(ProcessedLot.review_status == review_status)
+    return filters
+
+
+def _latest_geo_subquery():
+    return (
+        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
+        .where(LotGeoSnapshot.centroid_lat.isnot(None), LotGeoSnapshot.centroid_lon.isnot(None))
+        .group_by(LotGeoSnapshot.lot_id)
+        .subquery()
+    )
+
+
+def build_map_lot_statistics(
+    session: Session,
+    *,
+    city_slug: str | None,
+    region_code: str | None = None,
+    min_start_price: float | None = None,
+    max_start_price: float | None = None,
+    include_archived: bool = False,
+    review_status: str | None = None,
+) -> dict:
+    filters = _map_base_filters(
+        city_slug=city_slug,
+        region_code=region_code,
+        min_start_price=min_start_price,
+        max_start_price=max_start_price,
+        include_archived=include_archived,
+        review_status=review_status,
+    )
+    latest_geo = _latest_geo_subquery()
+    total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
+    mapped_total = (
+        session.scalar(
+            select(func.count(ProcessedLot.id)).join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id).where(*filters)
+        )
+        or 0
+    )
+    updated_at = session.scalar(select(func.max(ProcessedLot.last_update)).where(*filters))
+    return {"total": total, "mapped_total": mapped_total, "updated_at": updated_at}
+
+
 def build_map_lots_response(
     session: Session,
     *,
@@ -170,28 +234,18 @@ def build_map_lots_response(
     east: float | None = None,
     north: float | None = None,
     review_status: str | None = None,
+    statistics: dict | None = None,
 ) -> dict:
     started = perf_counter()
-    filters = [ProcessedLot.duplicate_of_id.is_(None)]
-    if city_slug:
-        filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
-    if region_code:
-        filters.append(ProcessedLot.region_code == region_code)
-    if min_start_price is not None:
-        filters.append(ProcessedLot.start_price >= min_start_price)
-    if max_start_price is not None:
-        filters.append(ProcessedLot.start_price <= max_start_price)
-    if not include_archived:
-        filters.append(ProcessedLot.is_archived.is_(False))
-    if review_status:
-        filters.append(ProcessedLot.review_status == review_status)
-
-    latest_geo = (
-        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
-        .where(LotGeoSnapshot.centroid_lat.isnot(None), LotGeoSnapshot.centroid_lon.isnot(None))
-        .group_by(LotGeoSnapshot.lot_id)
-        .subquery()
+    filters = _map_base_filters(
+        city_slug=city_slug,
+        region_code=region_code,
+        min_start_price=min_start_price,
+        max_start_price=max_start_price,
+        include_archived=include_archived,
+        review_status=review_status,
     )
+    latest_geo = _latest_geo_subquery()
     map_filters = list(filters)
     if all(value is not None for value in (west, south, east, north)):
         assert west is not None and south is not None and east is not None and north is not None
@@ -240,14 +294,18 @@ def build_map_lots_response(
     truncated = len(rows) > limit
     rows = rows[:limit]
 
-    total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
-    mapped_total = (
-        session.scalar(
-            select(func.count(ProcessedLot.id)).join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id).where(*filters)
-        )
-        or 0
+    statistics = statistics or build_map_lot_statistics(
+        session,
+        city_slug=city_slug,
+        region_code=region_code,
+        min_start_price=min_start_price,
+        max_start_price=max_start_price,
+        include_archived=include_archived,
+        review_status=review_status,
     )
-    updated_at = session.scalar(select(func.max(ProcessedLot.last_update)).where(*filters))
+    total = statistics["total"]
+    mapped_total = statistics["mapped_total"]
+    updated_at = statistics["updated_at"]
 
     items = [
         {
