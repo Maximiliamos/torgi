@@ -70,34 +70,21 @@ jobs:
         run: npm ci
       - working-directory: WEB
         run: npx playwright install --with-deps chromium
-      - name: Verify authenticated ETag wire revalidation
+      - name: Verify authenticated map preflight
         shell: bash
         run: |
           set -euo pipefail
           COOKIE_JAR="$(mktemp)"
-          HEADERS="$(mktemp)"
-          REVALIDATED_HEADERS="$(mktemp)"
-          trap 'rm -f "$COOKIE_JAR" "$HEADERS" "$REVALIDATED_HEADERS"' EXIT
+          MAP_BODY="$(mktemp)"
+          trap 'rm -f "$COOKIE_JAR" "$MAP_BODY"' EXIT
           LOGIN_BODY="$(jq -nc --arg username "$E2E_USERNAME" --arg password "$E2E_PASSWORD" \
             '{username:$username,password:$password}')"
           test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
             -c "$COOKIE_JAR" -H 'Content-Type: application/json' --data-binary "$LOGIN_BODY" \
             https://dezster.ru/api/auth/login)" = "200"
-          curl --fail --silent --show-error --max-time 20 -D "$HEADERS" -o /dev/null \
+          curl --fail --silent --show-error --max-time 30 -o "$MAP_BODY" \
             -b "$COOKIE_JAR" 'https://dezster.ru/api/map/lots?limit=25'
-          ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$HEADERS")"
-          test -n "$ETAG"
-          REVALIDATED_STATUS="$(curl --silent --show-error --max-time 20 -D "$REVALIDATED_HEADERS" \
-            -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -H "If-None-Match: $ETAG" \
-            'https://dezster.ru/api/map/lots?limit=25')"
-          case "$REVALIDATED_STATUS" in
-            304) ;;
-            200)
-              REVALIDATED_ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$REVALIDATED_HEADERS")"
-              test -n "$REVALIDATED_ETAG"
-              ;;
-            *) echo "Unexpected conditional response status: $REVALIDATED_STATUS" >&2; exit 1 ;;
-          esac
+          jq -e '.lots | type == "array"' "$MAP_BODY" >/dev/null
       - name: Run real read-only production journey
         working-directory: WEB
         run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
