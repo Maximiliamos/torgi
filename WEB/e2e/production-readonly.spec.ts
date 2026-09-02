@@ -271,10 +271,11 @@ test("real production auth, registry, sources, GEO, images and source links", as
     status: secondMapResponse.status(),
   };
   expect(etagResult.etag).toBeTruthy();
-  // Playwright may expose a revalidated cached response as 200. The workflow's
-  // curl probe separately requires the raw wire response to be 304.
+  // Playwright may expose a revalidated cached response as 200, and an edge
+  // compressor may append `-gzip` to the otherwise identical entity tag.
   expect([200, 304]).toContain(etagResult.status);
-  expect(etagResult.secondEtag).toBe(etagResult.etag);
+  const normalizedEtag = (value: string | undefined) => value?.replace(/-gzip(?="?$)/, "");
+  expect(normalizedEtag(etagResult.secondEtag)).toBe(normalizedEtag(etagResult.etag));
 
   const cadastre = await browserJson<Record<string, unknown>>(
     page,
