@@ -91,11 +91,13 @@ jobs:
             -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -H "If-None-Match: $ETAG" \
             'https://dezster.ru/api/map/lots?limit=25')"
           case "$REVALIDATED_STATUS" in
-            200|304) ;;
+            304) ;;
+            200)
+              REVALIDATED_ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$REVALIDATED_HEADERS")"
+              test "$REVALIDATED_ETAG" = "$ETAG"
+              ;;
             *) echo "Unexpected revalidation status: $REVALIDATED_STATUS" >&2; exit 1 ;;
           esac
-          REVALIDATED_ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$REVALIDATED_HEADERS")"
-          test "$REVALIDATED_ETAG" = "$ETAG"
       - name: Run real read-only production journey
         working-directory: WEB
         run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
