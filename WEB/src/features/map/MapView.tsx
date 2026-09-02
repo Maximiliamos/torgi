@@ -30,9 +30,9 @@ import {
 export const MAP_REDUCED_LIMIT = 500;
 
 export function mapLimitForZoom(zoom: number) {
-  if (zoom <= 7) return 1000;
-  if (zoom <= 10) return 1500;
-  return 3000;
+  if (zoom <= 7) return 250;
+  if (zoom <= 10) return 750;
+  return 1500;
 }
 
 export function mapBoundsPrecision(zoom: number) {
@@ -528,7 +528,7 @@ export function MapView({
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
-  const [viewportLimit, setViewportLimit] = React.useState(1000);
+  const [viewportLimit, setViewportLimit] = React.useState(250);
   const requestRevision = React.useRef(0);
   const requestController = React.useRef<AbortController | null>(null);
   const reviewOverrides = React.useRef(new Map<number, string>());

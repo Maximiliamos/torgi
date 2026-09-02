@@ -22,11 +22,11 @@ describe("auction date display", () => {
 
 describe("wide viewport request budget", () => {
   it("uses bounded marker limits until the user zooms in", () => {
-    expect(mapLimitForZoom(5)).toBe(1000);
-    expect(mapLimitForZoom(7)).toBe(1000);
-    expect(mapLimitForZoom(8)).toBe(1500);
-    expect(mapLimitForZoom(10)).toBe(1500);
-    expect(mapLimitForZoom(11)).toBe(3000);
+    expect(mapLimitForZoom(5)).toBe(250);
+    expect(mapLimitForZoom(7)).toBe(250);
+    expect(mapLimitForZoom(8)).toBe(750);
+    expect(mapLimitForZoom(10)).toBe(750);
+    expect(mapLimitForZoom(11)).toBe(1500);
   });
 
   it("normalizes distant bounds onto a reusable cache grid", () => {

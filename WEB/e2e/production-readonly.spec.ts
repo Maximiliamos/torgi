@@ -211,7 +211,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
     for (const [west, south, east, north] of wideViewportSamples) {
       const startedAt = Date.now();
       const response = await page.context().request.get(
-        `/api/map/lots?limit=1000&west=${west}&south=${south}&east=${east}&north=${north}`,
+        `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
         { headers: { "Cache-Control": "no-cache" }, timeout: 30_000 },
       );
       const durationMs = Date.now() - startedAt;
@@ -219,8 +219,8 @@ test("real production auth, registry, sources, GEO, images and source links", as
       expect(response.status(), `wide viewport ${west},${south},${east},${north}`).toBe(200);
       expect(durationMs, `wide viewport ${west},${south},${east},${north}`).toBeLessThan(30_000);
       const payload = await response.json() as { items: unknown[]; limit: number };
-      expect(payload.limit).toBe(1000);
-      expect(payload.items.length).toBeLessThanOrEqual(1000);
+      expect(payload.limit).toBe(250);
+      expect(payload.items.length).toBeLessThanOrEqual(250);
     }
     await testInfo.attach("wide-viewport-timings.json", {
       body: Buffer.from(JSON.stringify(wideViewportTimings, null, 2)),
