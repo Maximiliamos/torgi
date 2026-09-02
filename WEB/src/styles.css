@@ -702,6 +702,8 @@ textarea, input { font: inherit; }
 .yandexDesktopFrame { border:0;height:100%;min-height:0;min-width:0;width:100%; }
 .mapBottomStatus { align-items:center;background:#fff;border-top:1px solid #d8dee4;color:#52606d;display:flex;font-size:11px;gap:16px;justify-content:space-between;min-width:0;padding:0 12px;white-space:nowrap; }
 .mapBottomStatus>span:first-child { overflow:hidden;text-overflow:ellipsis; }
+.mapBottomStatusEnd { align-items:center;display:flex;flex:0 0 auto;gap:16px; }
+.mapBottomStatus .globalClock { background:transparent;border:0;font-size:11px;margin:0;min-height:0;padding:0; }
 .mapViewportWarning { background:#fff4cc;border:1px solid #e7b94f;border-radius:5px;bottom:40px;color:#6f4c00;font-size:12px;left:50%;max-width:520px;padding:8px 12px;position:absolute;transform:translateX(-50%);z-index:4; }
 .mapAppState { align-items:center;color:#177d65;display:flex;flex:0 0 auto;gap:6px; }
 .mapAppState i { background:#20a36e;border-radius:50%;height:7px;width:7px; }

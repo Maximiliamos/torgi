@@ -161,7 +161,7 @@ function ServerClock() {
   const [tick, setTick] = React.useState(Date.now());
   React.useEffect(() => { let active = true; const sync = async () => { try { const value = await fetchServerTime(); if (active) setAnchor({ server: Date.parse(value.moscow), local: Date.now(), synchronized: value.synchronized }); } catch { /* retain the last verified value */ } }; void sync(); const syncTimer = window.setInterval(sync, 300_000); const tickTimer = window.setInterval(() => setTick(Date.now()), 1_000); return () => { active = false; clearInterval(syncTimer); clearInterval(tickTimer); }; }, []);
   const value = anchor ? new Date(anchor.server + tick - anchor.local).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "синхронизация…";
-  return <footer className="globalClock" aria-label="Текущее московское время"><span>Москва · {value}</span><i className={anchor?.synchronized ? "online" : "fallback"} title={anchor?.synchronized ? "Время проверено по онлайн-источнику" : "Используются системные часы"} /></footer>;
+  return <div className="globalClock" aria-label="Текущее московское время"><span>Москва · {value}</span><i className={anchor?.synchronized ? "online" : "fallback"} title={anchor?.synchronized ? "Время проверено по онлайн-источнику" : "Используются системные часы"} /></div>;
 }
 
 export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
@@ -179,8 +179,8 @@ export function App({ username = "Пользователь", onLogout = () => un
     <section className="appWorkspace">
       {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
       {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>}
-      <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} />}</div>
-      <ServerClock />
+      <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} statusContent={view === "map" ? <ServerClock /> : undefined} />}</div>
+      {view !== "map" && <ServerClock />}
     </section>
   </main>;
 }
