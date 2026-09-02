@@ -251,6 +251,20 @@ jobs:
           '@
           [IO.File]::WriteAllText($watchdog, $script, [Text.Encoding]::ASCII)
           & icacls.exe $watchdog /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$runnerSid`:F" | Out-Null
+          $runnerOwnedConnectors = @(Get-CimInstance Win32_Process -Filter "Name = 'wstunnel.exe'" | Where-Object {
+            $commandLine = [string] $_.CommandLine
+            $commandLine.Contains('tcp://0.0.0.0:18080:127.0.0.1:18000') -and
+              $commandLine.Contains('wss://relay.194-226-126-233.sslip.io')
+          })
+          $runnerOwnedConnectors | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+          $retirementDeadline = (Get-Date).AddSeconds(10)
+          do {
+            $remainingRunnerConnectors = @($runnerOwnedConnectors | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+            if ($remainingRunnerConnectors.Count -gt 0) { Start-Sleep -Seconds 1 }
+          } while ($remainingRunnerConnectors.Count -gt 0 -and (Get-Date) -lt $retirementDeadline)
+          if ($remainingRunnerConnectors.Count -gt 0) {
+            throw "Runner-owned relay connector(s) did not stop before watchdog activation: $($remainingRunnerConnectors.ProcessId -join ',')"
+          }
           Get-ScheduledTask -TaskName 'BankrotAI Home Reverse Relay' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
           Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*bankrotai_home_relay_ed25519*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\BankrotAI\relay\ensure-home-relay.ps1"'
@@ -515,7 +529,7 @@ jobs:
             $pids = $process.Id -join ','
             $lastDiagnostic = "attempt $attempt/10: wstunnel count=$($process.Count) pids=$pids; local status=$($local.Status) curlExit=$($local.ExitCode); public status=$($public.Status) curlExit=$($public.ExitCode)"
             Write-Host $lastDiagnostic
-            if ($process.Count -gt 0 -and $local.Status -eq '200' -and $local.ExitCode -eq 0 -and $public.Status -eq '200' -and $public.ExitCode -eq 0) {
+            if ($process.Count -eq 1 -and $local.Status -eq '200' -and $local.ExitCode -eq 0 -and $public.Status -eq '200' -and $public.ExitCode -eq 0) {
               Write-Host 'End-to-end relay health gate passed.'
               exit 0
             }
