@@ -76,7 +76,8 @@ jobs:
           set -euo pipefail
           COOKIE_JAR="$(mktemp)"
           HEADERS="$(mktemp)"
-          trap 'rm -f "$COOKIE_JAR" "$HEADERS"' EXIT
+          REVALIDATED_HEADERS="$(mktemp)"
+          trap 'rm -f "$COOKIE_JAR" "$HEADERS" "$REVALIDATED_HEADERS"' EXIT
           LOGIN_BODY="$(jq -nc --arg username "$E2E_USERNAME" --arg password "$E2E_PASSWORD" \
             '{username:$username,password:$password}')"
           test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
@@ -86,9 +87,15 @@ jobs:
             -b "$COOKIE_JAR" 'https://dezster.ru/api/map/lots?limit=25'
           ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$HEADERS")"
           test -n "$ETAG"
-          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-            -b "$COOKIE_JAR" -H "If-None-Match: $ETAG" \
-            'https://dezster.ru/api/map/lots?limit=25')" = "304"
+          REVALIDATED_STATUS="$(curl --silent --show-error --max-time 20 -D "$REVALIDATED_HEADERS" \
+            -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -H "If-None-Match: $ETAG" \
+            'https://dezster.ru/api/map/lots?limit=25')"
+          case "$REVALIDATED_STATUS" in
+            200|304) ;;
+            *) echo "Unexpected revalidation status: $REVALIDATED_STATUS" >&2; exit 1 ;;
+          esac
+          REVALIDATED_ETAG="$(awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$REVALIDATED_HEADERS")"
+          test "$REVALIDATED_ETAG" = "$ETAG"
       - name: Run real read-only production journey
         working-directory: WEB
         run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
