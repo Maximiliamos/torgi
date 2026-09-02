@@ -71,7 +71,7 @@ from bankrotai.services.operations import (
     toggle_watchlist,
 )
 from bankrotai.services.quality import data_quality_snapshot, list_source_health
-from bankrotai.services.map_view import build_map_lot_detail, build_map_lots_response
+from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.logic import log_action
 from bankrotai.tasks import (
     QueueUnavailableError,
@@ -98,8 +98,10 @@ settings = get_settings()
 app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
 _map_response_cache: dict[tuple, tuple[float, bytes, str]] = {}
+_map_statistics_cache: dict[tuple, tuple[float, dict]] = {}
 _map_response_cache_lock = threading.Lock()
 _MAP_RESPONSE_CACHE_SECONDS = 60
+_MAP_STATISTICS_CACHE_SECONDS = 300
 _CADASTRAL_GEOCODER = CadastralGeocoder()
 _CADASTRAL_CAPACITY = threading.BoundedSemaphore(1)
 _CADASTRAL_DEADLINE_SECONDS = 7.0
@@ -1182,6 +1184,7 @@ def update_lot_review_status(
         result = {"lot_id": lot_id, "review_status": request.status}
     with _map_response_cache_lock:
         _map_response_cache.clear()
+        _map_statistics_cache.clear()
     return result
 
 
@@ -1250,13 +1253,34 @@ def get_map_lots(
         city_slug, region_code, min_start_price, max_start_price,
         include_archived, limit, west, south, east, north, review_status,
     )
+    statistics_key = (
+        city_slug, region_code, min_start_price, max_start_price,
+        include_archived, review_status,
+    )
     now = time.monotonic()
     with _map_response_cache_lock:
         cached = _map_response_cache.get(cache_key)
     cache_state = "HIT"
     if cached is None or now - cached[0] >= _MAP_RESPONSE_CACHE_SECONDS:
         cache_state = "MISS"
+        with _map_response_cache_lock:
+            statistics_cached = _map_statistics_cache.get(statistics_key)
+        statistics = None
+        if statistics_cached is not None and now - statistics_cached[0] < _MAP_STATISTICS_CACHE_SECONDS:
+            statistics = statistics_cached[1]
         with read_session_scope() as session:
+            if statistics is None:
+                statistics = build_map_lot_statistics(
+                    session,
+                    city_slug=city_slug,
+                    region_code=region_code,
+                    min_start_price=min_start_price,
+                    max_start_price=max_start_price,
+                    include_archived=include_archived,
+                    review_status=review_status,
+                )
+                with _map_response_cache_lock:
+                    _map_statistics_cache[statistics_key] = (now, statistics)
             value = build_map_lots_response(
                 session,
                 city_slug=city_slug,
@@ -1270,6 +1294,7 @@ def get_map_lots(
                 east=east,
                 north=north,
                 review_status=review_status,
+                statistics=statistics,
             )
         encoded = jsonable_encoder(value)
         body = json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

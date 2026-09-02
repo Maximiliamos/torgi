@@ -199,6 +199,35 @@ test("real production auth, registry, sources, GEO, images and source links", as
   expect(mapResponse.body.items.length).toBeGreaterThan(0);
   expect(mapResponse.body.items.every((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon))).toBe(true);
 
+  if (testInfo.repeatEachIndex === 0) {
+    const wideViewportSamples = [
+      [20, 45, 60, 70],
+      [21, 45, 61, 70],
+      [22, 45, 62, 70],
+      [23, 45, 63, 70],
+      [24, 45, 64, 70],
+    ];
+    const wideViewportTimings: Array<{ bounds: number[]; status: number; durationMs: number }> = [];
+    for (const [west, south, east, north] of wideViewportSamples) {
+      const startedAt = Date.now();
+      const response = await page.context().request.get(
+        `/api/map/lots?limit=1000&west=${west}&south=${south}&east=${east}&north=${north}`,
+        { headers: { "Cache-Control": "no-cache" }, timeout: 30_000 },
+      );
+      const durationMs = Date.now() - startedAt;
+      wideViewportTimings.push({ bounds: [west, south, east, north], status: response.status(), durationMs });
+      expect(response.status(), `wide viewport ${west},${south},${east},${north}`).toBe(200);
+      expect(durationMs, `wide viewport ${west},${south},${east},${north}`).toBeLessThan(30_000);
+      const payload = await response.json() as { items: unknown[]; limit: number };
+      expect(payload.limit).toBe(1000);
+      expect(payload.items.length).toBeLessThanOrEqual(1000);
+    }
+    await testInfo.attach("wide-viewport-timings.json", {
+      body: Buffer.from(JSON.stringify(wideViewportTimings, null, 2)),
+      contentType: "application/json",
+    });
+  }
+
   const detailCandidates: Array<{ status: number; body: {
       id: number;
       source_url: string | null;

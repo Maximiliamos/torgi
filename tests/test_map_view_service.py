@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from bankrotai.db import Base, CanonicalLot, LotGeoSnapshot, ProcessedLot, SourceLot
 from bankrotai.services.map_view import (
     build_map_lot_detail,
+    build_map_lot_statistics,
     build_map_lots_response,
     extract_map_image_urls,
 )
@@ -204,3 +205,54 @@ def test_map_filters_by_subject_and_start_price_in_database() -> None:
     assert [item["title"] for item in response["items"]] == ["yaroslavl-low"]
     assert response["items"][0]["start_price"] == 500000.0
     assert response["items"][0]["region_code"] == "76"
+
+
+def test_map_response_reuses_precomputed_statistics_across_viewports() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            external_id="cached-statistics",
+            source="test",
+            source_system="test",
+            title="Лот",
+            description="",
+            category="land",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        session.add(LotGeoSnapshot(
+            lot_id=lot.id,
+            geo_source="test",
+            geo_method="fixture",
+            geo_confidence="high",
+            centroid_lat=57.6,
+            centroid_lon=39.8,
+        ))
+        session.commit()
+
+        statistics = build_map_lot_statistics(session, city_slug=None)
+        first = build_map_lots_response(
+            session,
+            city_slug=None,
+            west=39,
+            south=57,
+            east=40,
+            north=58,
+            statistics=statistics,
+        )
+        second = build_map_lots_response(
+            session,
+            city_slug=None,
+            west=38,
+            south=56,
+            east=41,
+            north=59,
+            statistics=statistics,
+        )
+
+    assert statistics["total"] == 1
+    assert first["total"] == second["total"] == 1
+    assert first["mapped_total"] == second["mapped_total"] == 1
+    assert first["items"][0]["id"] == second["items"][0]["id"]

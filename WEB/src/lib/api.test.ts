@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -75,5 +75,15 @@ describe("API client", () => {
     await expect(requestJson("/api/lots", undefined, { signal: controller.signal }))
       .rejects.toBe(abortError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the map replace an expensive request with a reduced-limit fallback", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("temporary", { status: 502 }));
+
+    await expect(fetchMapLotsSWR({ west: 20, south: 45, east: 60, north: 70, limit: 1000 }, undefined, undefined, 1))
+      .rejects.toMatchObject({ status: 502 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("limit")).toBe("1000");
   });
 });

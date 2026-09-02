@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import {
+  ApiError,
   clearMapCache,
   fetchCurrentUser,
   fetchMapLotDetail,
@@ -25,6 +26,25 @@ import {
   splitLot,
   startNationwideLotSync,
 } from "../../lib/api";
+
+export const MAP_REDUCED_LIMIT = 500;
+
+export function mapLimitForZoom(zoom: number) {
+  if (zoom <= 7) return 1000;
+  if (zoom <= 10) return 1500;
+  return 3000;
+}
+
+export function mapBoundsPrecision(zoom: number) {
+  if (zoom <= 7) return 1;
+  if (zoom < 10) return 2;
+  if (zoom < 16) return 3;
+  return 4;
+}
+
+function isTemporaryMapFailure(error: unknown) {
+  return error instanceof ApiError && (error.status == null || [502, 503, 504].includes(error.status));
+}
 
 export const MAP_SELECTION_SCRIPT = `
 function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{const lot=lots.find(item=>Number(item.id)===Number(id));if(manager&&lot)manager.objects.setObjectOptions(Number(id),opts(lot));});const selected=lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
@@ -508,9 +528,11 @@ export function MapView({
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
+  const [viewportLimit, setViewportLimit] = React.useState(1000);
   const requestRevision = React.useRef(0);
   const requestController = React.useRef<AbortController | null>(null);
   const reviewOverrides = React.useRef(new Map<number, string>());
+  const hasRenderedLots = React.useRef(false);
   const [statistics, setStatistics] = React.useState({
     total: 0,
     mapped: 0,
@@ -525,6 +547,7 @@ export function MapView({
   const [regions, setRegions] = React.useState<RegionOption[]>([]);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
+  const [mapNotice, setMapNotice] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [cadQuery, setCadQuery] = React.useState("");
@@ -541,6 +564,7 @@ export function MapView({
   const [syncing, setSyncing] = React.useState(false);
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
+    hasRenderedLots.current = true;
     setLots(
       response.items.map((lot) => ({
         ...lot,
@@ -577,6 +601,7 @@ export function MapView({
       requestController.current = controller;
       setLoading(true);
       setError("");
+      setMapNotice("");
       try {
         const query = favoritesOnly
           ? { region_code: applied.region || undefined, review_status: "approved" as const }
@@ -588,22 +613,40 @@ export function MapView({
               south: viewport?.[1],
               east: viewport?.[2],
               north: viewport?.[3],
+              limit: viewportLimit,
             };
-        const result = await fetchMapLotsSWR(query, (cached) => {
-          if (revision === requestRevision.current) applyResponse(cached, true);
-        }, controller.signal);
+        let usedReducedLimit = false;
+        let result: Awaited<ReturnType<typeof fetchMapLotsSWR>>;
+        try {
+          result = await fetchMapLotsSWR(query, (cached) => {
+            if (revision === requestRevision.current) applyResponse(cached, true);
+          }, controller.signal, 1);
+        } catch (firstError) {
+          if (favoritesOnly || !isTemporaryMapFailure(firstError)) throw firstError;
+          usedReducedLimit = true;
+          result = await fetchMapLotsSWR({ ...query, limit: MAP_REDUCED_LIMIT }, (cached) => {
+            if (revision === requestRevision.current) applyResponse(cached, true);
+          }, controller.signal, 1);
+        }
         if (revision === requestRevision.current) {
           applyResponse(result.data, result.fromCache, result.networkMs);
+          setMapNotice(usedReducedLimit
+            ? "Карта загружена в облегчённом режиме. Приблизьте область для показа дополнительных лотов."
+            : "");
         }
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError")) {
-          setError(err instanceof Error ? err.message : "Ошибка загрузки карты");
+          if (hasRenderedLots.current) {
+            setMapNotice("Не удалось обновить область. Показаны ранее загруженные лоты.");
+          } else {
+            setError(err instanceof Error ? err.message : "Ошибка загрузки карты");
+          }
         }
       } finally {
         if (revision === requestRevision.current) setLoading(false);
       }
     },
-    [appliedFilters, applyResponse, favoritesOnly, viewport],
+    [appliedFilters, applyResponse, favoritesOnly, viewport, viewportLimit],
   );
 
   React.useEffect(() => {
@@ -694,7 +737,7 @@ export function MapView({
       const [west, south, east, north] = bounds;
       const lonPadding = Math.max((east - west) * 0.15, 0.02);
       const latPadding = Math.max((north - south) * 0.15, 0.02);
-      const precision = zoom >= 16 ? 4 : zoom >= 10 ? 3 : 2;
+      const precision = mapBoundsPrecision(zoom);
       const next: [number, number, number, number] = [
         Math.max(-180, Number((west - lonPadding).toFixed(precision))),
         Math.max(-90, Number((south - latPadding).toFixed(precision))),
@@ -704,6 +747,7 @@ export function MapView({
       setViewport((current) =>
         current?.every((value, index) => value === next[index]) ? current : next,
       );
+      setViewportLimit(mapLimitForZoom(zoom));
     },
     [],
   );
@@ -869,6 +913,7 @@ export function MapView({
               </div>
             </fieldset>
             {loading && <MapState>Обновление меток…</MapState>}
+            {mapNotice && <MapState>{mapNotice}</MapState>}
             {message && <MapState>{message}</MapState>}
             {error && <MapState error>{error}</MapState>}
             <small className="mapLotCount">

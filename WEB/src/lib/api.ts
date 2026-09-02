@@ -222,9 +222,9 @@ async function waitForReadRetry(signal?: AbortSignal) {
   });
 }
 
-async function fetchWithReadRetry(input: RequestInfo | URL, init: RequestInit = {}) {
+async function fetchWithReadRetry(input: RequestInfo | URL, init: RequestInit = {}, maxAttempts?: number) {
   const method = (init.method || "GET").toUpperCase();
-  const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
+  const attempts = maxAttempts ?? (method === "GET" || method === "HEAD" ? 2 : 1);
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -358,6 +358,7 @@ export type MapViewportQuery = {
   east?: number;
   north?: number;
   review_status?: "approved" | "maybe" | "rejected";
+  limit?: number;
 };
 export type LotSyncStatus = {
   task_id: string;
@@ -402,6 +403,7 @@ export async function fetchMapLotsSWR(
   query: MapViewportQuery,
   onCached?: (value: MapLotsResponse) => void,
   signal?: AbortSignal,
+  networkAttempts = 2,
 ) {
   const url = makeUrl("/api/map/lots", query);
   const request = new Request(url, { credentials: "same-origin" });
@@ -436,7 +438,7 @@ export async function fetchMapLotsSWR(
       },
       cache: "no-cache",
       signal,
-    });
+    }, networkAttempts);
     if (response.status === 304 && cachedValue) {
       return { data: cachedValue, networkMs: performance.now() - started, fromCache: true };
     }
