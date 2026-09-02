@@ -84,7 +84,7 @@ jobs:
             https://dezster.ru/api/auth/login)" = "200"
           curl --fail --silent --show-error --max-time 30 -o "$MAP_BODY" \
             -b "$COOKIE_JAR" 'https://dezster.ru/api/map/lots?limit=25'
-          jq -e '.lots | type == "array"' "$MAP_BODY" >/dev/null
+          jq -e '.items | type == "array"' "$MAP_BODY" >/dev/null
       - name: Run real read-only production journey
         working-directory: WEB
         run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
