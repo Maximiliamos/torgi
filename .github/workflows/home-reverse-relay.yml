@@ -324,7 +324,7 @@ jobs:
             $principalSid = Resolve-TaskPrincipalSid (Get-TaskProperty $principalReadBack 'UserId')
             if ($principalSid -cne $expectedPrincipalSid) { return $false }
             if ($mode -ceq 'SYSTEM' -and ((Get-TaskProperty $principalReadBack 'LogonType') -cne 'ServiceAccount' -or (Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Highest')) { return $false }
-            if ($mode -ceq 'runner' -and ((Get-TaskProperty $principalReadBack 'LogonType') -cne 'S4U' -or (Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Limited')) { return $false }
+            if ($mode -ceq 'runner' -and ((Get-TaskProperty $principalReadBack 'LogonType') -cne 'ServiceAccount' -or (Get-TaskProperty $principalReadBack 'RunLevel') -cne 'Limited')) { return $false }
             $settingsReadBack = Get-TaskProperty $task 'Settings'
             if ((Get-TaskProperty $settingsReadBack 'Enabled') -ne $true) { return $false }
             if ($mode -ceq 'runner' -and (Get-TaskProperty $settingsReadBack 'StartWhenAvailable') -ne $false) { return $false }
@@ -368,6 +368,29 @@ jobs:
             }
             if ($mode -ceq 'SYSTEM') { return ($startupCount -eq 1 -and $repeatCount -eq 1) }
             return ($startupCount -eq 0 -and $repeatCount -eq 1)
+          }
+          function Write-RunnerTaskValidationDiagnostic {
+            param([object] $task)
+            $now = Get-Date
+            $actions = @(Get-TaskProperty $task 'Actions' | Where-Object { $null -ne $_ })
+            $triggers = @(Get-TaskProperty $task 'Triggers' | Where-Object { $null -ne $_ })
+            $principalReadBack = Get-TaskProperty $task 'Principal'
+            $settingsReadBack = Get-TaskProperty $task 'Settings'
+            $triggerDetails = @()
+            foreach ($trigger in $triggers) {
+              $repetition = Get-TaskProperty $trigger 'Repetition'
+              $interval = Get-TaskProperty $repetition 'Interval'
+              $startBoundary = ConvertTo-TaskBoundary (Get-TaskProperty $trigger 'StartBoundary')
+              $startClass = if ($interval -cne 'PT1M') { 'invalid-interval' } elseif ($null -eq $startBoundary) { 'missing-or-invalid' } elseif ((Get-NextTimeTriggerOccurrence $startBoundary $now) -le $now.AddSeconds(130)) { 'eligible-within-130s' } else { 'after-130s-window' }
+              $randomDelay = Get-TaskProperty $trigger 'RandomDelay'
+              $triggerDetails += [pscustomobject]@{
+                className = Get-TaskProperty (Get-TaskProperty $trigger 'CimClass') 'CimClassName'; enabled = Get-TaskProperty $trigger 'Enabled'; repetitionInterval = $interval; repetitionDuration = Get-TaskProperty $repetition 'Duration'; startBoundary = $startClass; endBoundaryEmpty = [string]::IsNullOrWhiteSpace([string] (Get-TaskProperty $trigger 'EndBoundary')); randomDelay = if ($null -eq $randomDelay -or [string]::IsNullOrWhiteSpace([string] $randomDelay)) { 'empty' } else { [string] $randomDelay }
+              }
+            }
+            $diagnostic = [pscustomobject]@{
+              code = 'runner-task-validation-failed'; principalSid = Resolve-TaskPrincipalSid (Get-TaskProperty $principalReadBack 'UserId'); logonType = Get-TaskProperty $principalReadBack 'LogonType'; runLevel = Get-TaskProperty $principalReadBack 'RunLevel'; enabled = Get-TaskProperty $settingsReadBack 'Enabled'; startWhenAvailable = Get-TaskProperty $settingsReadBack 'StartWhenAvailable'; executionTimeLimit = Get-TaskProperty $settingsReadBack 'ExecutionTimeLimit'; multipleInstances = Get-TaskProperty $settingsReadBack 'MultipleInstances'; actionCount = $actions.Count; executable = if ($actions.Count -eq 1) { Get-TaskProperty $actions[0] 'Execute' } else { $null }; argumentsMatch = ($actions.Count -eq 1 -and (Get-TaskProperty $actions[0] 'Arguments') -ceq $expectedArguments); triggerCount = $triggers.Count; triggers = $triggerDetails
+            }
+            Write-Warning (ConvertTo-Json $diagnostic -Compress -Depth 4)
           }
           $systemTaskName = 'BankrotAI Home WSS Relay'
           $runnerTaskName = 'BankrotAI Home WSS Relay Runner'
@@ -420,7 +443,7 @@ jobs:
             if ($systemTask) {
               throw "Existing SYSTEM watchdog '$systemTaskName' does not satisfy the required action, identity, settings, and trigger invariants"
             }
-            $runnerPrincipal = New-ScheduledTaskPrincipal -UserId $runnerPrincipalSid -LogonType S4U -RunLevel Limited
+            $runnerPrincipal = New-ScheduledTaskPrincipal -UserId $runnerPrincipalSid -LogonType ServiceAccount -RunLevel Limited
             $runnerSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable:$false
             try {
               Register-ScheduledTask -TaskName $runnerTaskName -Action $action -Trigger $repeat -Principal $runnerPrincipal -Settings $runnerSettings -Force | Out-Null
@@ -429,6 +452,7 @@ jobs:
             }
             $runnerTask = Get-TaskOrNull $runnerTaskName
             if (-not (Test-HomeRelayTask $runnerTask 'runner' $runnerPrincipalSid)) {
+              Write-RunnerTaskValidationDiagnostic $runnerTask
               throw "Runner-owned watchdog '$runnerTaskName' does not match the required action, current SID, settings, and trigger invariants"
             }
             $selectedTaskName = $runnerTaskName
