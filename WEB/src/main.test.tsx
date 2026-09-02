@@ -42,6 +42,7 @@ describe("App states", () => {
     render(<App />);
     expect(screen.getByRole("button", { name: "Карта" })).toHaveClass("active");
     expect(screen.getByText("Лоты недвижимости")).toBeInTheDocument();
+    expect(screen.getByLabelText("Текущее московское время").closest(".mapBottomStatus")).not.toBeNull();
   });
 });
 

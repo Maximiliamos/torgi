@@ -495,11 +495,13 @@ export function MapView({
   favoritesOnly = false,
   active = true,
   onFavoriteCount,
+  statusContent,
 }: {
   refreshToken: number;
   favoritesOnly?: boolean;
   active?: boolean;
   onFavoriteCount?: (count: number) => void;
+  statusContent?: React.ReactNode;
 }) {
   const [lots, setLots] = React.useState<MapMarkerLot[]>([]);
   const [selectedLot, setSelectedLot] = React.useState<MapLot | null>(null);
@@ -912,10 +914,13 @@ export function MapView({
               <> · API {Math.round(timings.api)} мс · карта {Math.round(timings.render)} мс{timings.cached ? " · кеш" : ""}</>
             )}
           </span>
-          <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
-            <i />
-            {loading ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
-          </span>
+          <div className="mapBottomStatusEnd">
+            {statusContent}
+            <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
+              <i />
+              {loading ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
+            </span>
+          </div>
         </footer>
         {statistics.truncated && (
           <div className="mapViewportWarning" role="status">
