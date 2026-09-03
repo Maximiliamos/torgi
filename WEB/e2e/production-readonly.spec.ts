@@ -36,6 +36,10 @@ function observeBrowserFailures(page: Page, failures: BrowserFailure[]) {
   page.on("response", (response) => {
     if (response.status() < 400) return;
     const url = new URL(response.url());
+    if (
+      [502, 503, 504].includes(response.status()) &&
+      response.request().headers()["x-production-retry-probe"] === "1"
+    ) return;
     const expectedNegativeResponse =
       (response.status() === 401 && url.pathname === "/api/auth/login" && response.request().method() === "POST") ||
       (response.status() === 401 && url.pathname === "/api/auth/me") ||
@@ -68,7 +72,16 @@ async function login(page: Page) {
 
 async function browserJson<T>(page: Page, path: string): Promise<{ status: number; body: T }> {
   return page.evaluate(async (url) => {
-    const response = await fetch(url, { credentials: "same-origin" });
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetch(url, {
+        credentials: "same-origin",
+        headers: { "X-Production-Retry-Probe": "1" },
+      });
+      if (![502, 503, 504].includes(response.status)) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+    if (!response) throw new Error("Production request was not attempted");
     return { status: response.status, body: await response.json() as T };
   }, path);
 }
