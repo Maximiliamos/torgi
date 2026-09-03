@@ -114,8 +114,9 @@ export default {
     headers.set("x-forwarded-host", incoming.host);
     headers.set("x-forwarded-proto", "https");
     headers.set("x-request-id", requestId);
-    const retrySafeRead = SAFE_METHODS.has(request.method);
     const mapRead = request.method === "GET" && incoming.pathname === "/api/map/lots";
+    const retrySafeRead = mapRead
+      || (SAFE_METHODS.has(request.method) && incoming.pathname.startsWith("/health/"));
 
     try {
       const primary = await completedResponse(
