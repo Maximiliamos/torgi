@@ -67,9 +67,9 @@ jobs:
         run: npm ci
       - working-directory: WEB
         run: npx playwright install --with-deps chromium
-      - name: Run real read-only production journey
+      - name: Run authenticated production map gate
         working-directory: WEB
-        run: npx playwright test e2e/production-readonly.spec.ts --workers=1
+        run: npx playwright test e2e/production-map-availability.spec.ts --workers=1
       - if: always()
         uses: actions/upload-artifact@v7
         with:
