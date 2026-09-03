@@ -53,11 +53,20 @@ jobs:
             sleep 15
           done
           for attempt in $(seq 1 6); do
-            curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/live >/dev/null
-            curl --fail --silent --show-error --max-time 20 https://api.dezster.ru/health/ready >/dev/null
-            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me)" = "401"
-            if [ "$attempt" -lt 6 ]; then sleep 10; fi
+            LIVE_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://api.dezster.ru/health/live || true)"
+            READY_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://api.dezster.ru/health/ready || true)"
+            AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://dezster.ru/api/auth/me || true)"
+            if [ "$LIVE_STATUS" = "200" ] && [ "$READY_STATUS" = "200" ] && [ "$AUTH_STATUS" = "401" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "Public health did not stabilize: live=$LIVE_STATUS ready=$READY_STATUS auth=$AUTH_STATUS" >&2
+              exit 1
+            fi
+            sleep 10
           done
           DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
             -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
