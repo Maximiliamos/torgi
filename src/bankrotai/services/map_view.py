@@ -235,6 +235,7 @@ def build_map_lots_response(
     north: float | None = None,
     review_status: str | None = None,
     statistics: dict | None = None,
+    defer_statistics: bool = False,
 ) -> dict:
     started = perf_counter()
     filters = _map_base_filters(
@@ -294,15 +295,27 @@ def build_map_lots_response(
     truncated = len(rows) > limit
     rows = rows[:limit]
 
-    statistics = statistics or build_map_lot_statistics(
-        session,
-        city_slug=city_slug,
-        region_code=region_code,
-        min_start_price=min_start_price,
-        max_start_price=max_start_price,
-        include_archived=include_archived,
-        review_status=review_status,
-    )
+    statistics_exact = not defer_statistics
+    if defer_statistics and statistics is None:
+        # A cold, wide viewport must not wait for full-dataset aggregate scans
+        # before it can render markers. Exact statistics can still be reused
+        # when another request has already populated the process cache.
+        visible_total = len(rows) + (1 if truncated else 0)
+        statistics = {
+            "total": visible_total,
+            "mapped_total": visible_total,
+            "updated_at": None,
+        }
+    if statistics is None:
+        statistics = build_map_lot_statistics(
+            session,
+            city_slug=city_slug,
+            region_code=region_code,
+            min_start_price=min_start_price,
+            max_start_price=max_start_price,
+            include_archived=include_archived,
+            review_status=review_status,
+        )
     total = statistics["total"]
     mapped_total = statistics["mapped_total"]
     updated_at = statistics["updated_at"]
@@ -332,6 +345,7 @@ def build_map_lots_response(
         "mapped_total": mapped_total,
         "without_coordinates": max(total - mapped_total, 0),
         "updated_at": updated_at,
+        "statistics_exact": statistics_exact,
         "timings": {"server_ms": round((perf_counter() - started) * 1000, 1)},
     }
 

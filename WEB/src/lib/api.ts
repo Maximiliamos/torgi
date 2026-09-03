@@ -345,6 +345,7 @@ export type MapLotsResponse = {
   mapped_total: number;
   without_coordinates: number;
   updated_at: string | null;
+  statistics_exact?: boolean;
   timings: { server_ms: number };
 };
 export type MapViewportQuery = {

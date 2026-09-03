@@ -102,6 +102,25 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
     return client, lot_id
 
 
+def test_cold_bounded_map_defers_full_statistics(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+    api._map_response_cache.clear()
+    api._map_statistics_cache.clear()
+
+    def unexpected_statistics(*_args, **_kwargs):
+        raise AssertionError("bounded viewport must not run cold global statistics")
+
+    monkeypatch.setattr(api, "build_map_lot_statistics", unexpected_statistics)
+    response = client.get(
+        "/api/map/lots",
+        params={"west": 20, "south": 45, "east": 60, "north": 70, "limit": 250},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["statistics_exact"] is False
+    assert response.json()["returned"] == 1
+
+
 def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -> None:
     client, lot_id = _authenticated_client(monkeypatch)
 

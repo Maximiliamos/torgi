@@ -256,3 +256,79 @@ def test_map_response_reuses_precomputed_statistics_across_viewports() -> None:
     assert first["total"] == second["total"] == 1
     assert first["mapped_total"] == second["mapped_total"] == 1
     assert first["items"][0]["id"] == second["items"][0]["id"]
+
+
+def test_map_response_can_defer_cold_full_dataset_statistics() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            external_id="deferred-statistics",
+            source="test",
+            source_system="test",
+            title="Visible lot",
+            description="",
+            category="land",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        session.add(LotGeoSnapshot(
+            lot_id=lot.id,
+            geo_source="test",
+            geo_method="fixture",
+            geo_confidence="high",
+            centroid_lat=57.6,
+            centroid_lon=39.8,
+        ))
+        second_lot = ProcessedLot(
+            external_id="deferred-statistics-2",
+            source="test",
+            source_system="test",
+            title="Second visible lot",
+            description="",
+            category="land",
+            auction_status="active",
+        )
+        session.add(second_lot)
+        session.flush()
+        session.add(LotGeoSnapshot(
+            lot_id=second_lot.id,
+            geo_source="test",
+            geo_method="fixture",
+            geo_confidence="high",
+            centroid_lat=57.7,
+            centroid_lon=39.9,
+        ))
+        session.commit()
+
+        response = build_map_lots_response(
+            session,
+            city_slug=None,
+            limit=250,
+            west=20,
+            south=45,
+            east=60,
+            north=70,
+            defer_statistics=True,
+        )
+
+    assert response["returned"] == 2
+    assert response["mapped_total"] == 2
+    assert response["statistics_exact"] is False
+
+    with Session(engine) as session:
+        truncated = build_map_lots_response(
+            session,
+            city_slug=None,
+            limit=1,
+            west=20,
+            south=45,
+            east=60,
+            north=70,
+            defer_statistics=True,
+        )
+    assert truncated["returned"] == 1
+    assert truncated["truncated"] is True
+    assert truncated["total"] == 2
+    assert truncated["without_coordinates"] == 0

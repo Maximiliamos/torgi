@@ -4,6 +4,7 @@ import {
   formatMoscowDate,
   mapBoundsPrecision,
   mapLimitForZoom,
+  mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
 } from "./MapView";
 
@@ -21,6 +22,11 @@ describe("auction date display", () => {
 });
 
 describe("wide viewport request budget", () => {
+  it("labels deferred statistics as a viewport lower bound", () => {
+    expect(mapObjectCountLabel(251, 250, false)).toBe("не менее 250 объектов в области");
+    expect(mapObjectCountLabel(29_130, 250, true)).toBe("29130 объектов");
+  });
+
   it("uses bounded marker limits until the user zooms in", () => {
     expect(mapLimitForZoom(5)).toBe(250);
     expect(mapLimitForZoom(7)).toBe(250);
