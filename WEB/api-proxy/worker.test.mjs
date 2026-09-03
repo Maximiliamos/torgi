@@ -94,6 +94,7 @@ describe("API origin failover proxy", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(new TypeError("primary reset"))
+      .mockRejectedValueOnce(new TypeError("primary reset again"))
       .mockResolvedValueOnce(Response.json({ status: "alive" }));
 
     const response = await worker.fetch(new Request("https://api.dezster.ru/health/live"), {
@@ -101,8 +102,9 @@ describe("API origin failover proxy", () => {
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1][0].url).toBe("https://secondary.example.test/health/live");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][0].url).toBe("https://194-226-126-233.sslip.io/health/live");
+    expect(fetchMock.mock.calls[2][0].url).toBe("https://secondary.example.test/health/live");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "alive" });
   });
@@ -112,6 +114,7 @@ describe("API origin failover proxy", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
+      .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
       .mockResolvedValueOnce(Response.json({ synchronized: true }));
 
     const response = await worker.fetch(new Request("https://api.dezster.ru/api/time"), {
@@ -119,8 +122,8 @@ describe("API origin failover proxy", () => {
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1][0].url).toBe("https://secondary.example.test/api/time");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2][0].url).toBe("https://secondary.example.test/api/time");
     expect(response.status).toBe(200);
   });
 
@@ -182,6 +185,7 @@ describe("API origin failover proxy", () => {
     }), { status: 200 });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(broken)
+      .mockRejectedValueOnce(new TypeError("primary retry reset"))
       .mockResolvedValueOnce(new Response("complete", { status: 200 }));
 
     const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots"), {
