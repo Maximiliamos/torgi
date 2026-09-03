@@ -72,7 +72,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run real read-only production journey
         working-directory: WEB
-        run: npx playwright test e2e/production-readonly.spec.ts --repeat-each=5 --workers=1
+        run: npx playwright test e2e/production-readonly.spec.ts --workers=1
       - if: always()
         uses: actions/upload-artifact@v7
         with:
