@@ -42,6 +42,10 @@ export function mapBoundsPrecision(zoom: number) {
   return 4;
 }
 
+export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
+  return exact ? `${total} объектов` : `не менее ${returned} объектов в области`;
+}
+
 function isTemporaryMapFailure(error: unknown) {
   return error instanceof ApiError && (error.status == null || [502, 503, 504].includes(error.status));
 }
@@ -541,6 +545,7 @@ export function MapView({
     limit: 0,
     truncated: false,
     updatedAt: null as string | null,
+    exact: true,
   });
   const [timings, setTimings] = React.useState({ api: 0, server: 0, render: 0, cached: false });
   const [clock, setClock] = React.useState(Date.now());
@@ -581,6 +586,7 @@ export function MapView({
       limit: response.limit ?? response.items.length,
       truncated: response.truncated ?? false,
       updatedAt: response.updated_at,
+      exact: response.statistics_exact !== false,
     });
     setTimings((value) => ({
       ...value,
@@ -718,8 +724,10 @@ export function MapView({
     (lot) => lot.review_status === "approved",
   );
   React.useEffect(() => {
-    onFavoriteCount?.(favoritesOnly ? statistics.total : favoriteLots.length);
-  }, [favoriteLots.length, favoritesOnly, onFavoriteCount, statistics.total]);
+    onFavoriteCount?.(
+      favoritesOnly && statistics.exact ? statistics.total : favoriteLots.length,
+    );
+  }, [favoriteLots.length, favoritesOnly, onFavoriteCount, statistics.exact, statistics.total]);
   const cadText = cad
     ? [
         cad.cadastral_number &&
@@ -952,9 +960,8 @@ export function MapView({
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты">
           <span>
-            {statistics.total} объектов · {visibleLots.length} на карте ·{" "}
-            {statistics.withoutCoordinates} без координат ·{" "}
-            {relativeUpdate(statistics.updatedAt, clock)}
+            {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleLots.length} на карте
+            {statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
             {timings.api > 0 && (
               <> · API {Math.round(timings.api)} мс · карта {Math.round(timings.render)} мс{timings.cached ? " · кеш" : ""}</>
             )}

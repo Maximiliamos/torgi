@@ -1269,7 +1269,8 @@ def get_map_lots(
         if statistics_cached is not None and now - statistics_cached[0] < _MAP_STATISTICS_CACHE_SECONDS:
             statistics = statistics_cached[1]
         with read_session_scope() as session:
-            if statistics is None:
+            bounded_viewport = all(value is not None for value in bounds)
+            if statistics is None and not bounded_viewport:
                 statistics = build_map_lot_statistics(
                     session,
                     city_slug=city_slug,
@@ -1295,6 +1296,7 @@ def get_map_lots(
                 north=north,
                 review_status=review_status,
                 statistics=statistics,
+                defer_statistics=bounded_viewport and statistics is None,
             )
         encoded = jsonable_encoder(value)
         body = json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
