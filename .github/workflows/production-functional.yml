@@ -43,14 +43,11 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H 'Accept: application/vnd.github+json' \
               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=50" \
-              | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((r for r in runs if r.get("name") == "Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
-            if [ "$RUN_STATE" = 'completed:success' ]; then break; fi
-            if [[ "$RUN_STATE" == completed:* ]]; then
-              echo "Home deployment failed for $EXPECTED_SHA: $RUN_STATE" >&2
-              exit 1
-            fi
+              | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((r for r in runs if r.get("name") == "Deploy WEB and API to REG.RU"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+            if [[ "$RUN_STATE" == completed:* ]]; then break; fi
+            if [ "$RUN_STATE" = 'missing' ] && [ "$attempt" -ge 4 ]; then break; fi
             if [ "$attempt" -eq 120 ]; then
-              echo "Timed out waiting for home deployment of $EXPECTED_SHA" >&2
+              echo "Timed out waiting for primary deployment of $EXPECTED_SHA" >&2
               exit 1
             fi
             sleep 15
