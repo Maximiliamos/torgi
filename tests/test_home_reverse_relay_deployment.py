@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -42,3 +43,15 @@ def test_regru_caddy_reaches_loopback_relay_through_host_gateway() -> None:
     assert "reverse_proxy bankrotai-wstunnel:18080" in workflow
     assert "docker network inspect bankrotai" in workflow
     assert "--add-host host.docker.internal:host-gateway" in workflow
+
+
+def test_regular_regru_deploy_preserves_wss_ingress() -> None:
+    workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    assert "WSS_HOSTNAME: relay.194-226-126-233.sslip.io" in workflow
+    assert "WSS_HOSTNAME='$WSS_HOSTNAME' bash -s" in workflow
+    assert len(re.findall(r"^\s*\$\{WSS_HOSTNAME\} \{", workflow, re.MULTILINE)) == 1
+    assert re.search(
+        r"\$\{WSS_HOSTNAME\} \{\s+reverse_proxy bankrotai-wstunnel:18081\s+"
+        r'header Cache-Control "no-store"',
+        workflow,
+    )

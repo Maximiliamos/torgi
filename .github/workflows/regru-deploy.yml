@@ -38,6 +38,7 @@ env:
   SSH_DEPLOY_PORT: "2222"
   API_HOSTNAME: 194-226-126-233.sslip.io
   HOME_RELAY_HOSTNAME: home-relay.194-226-126-233.sslip.io
+  WSS_HOSTNAME: relay.194-226-126-233.sslip.io
 
 jobs:
   diagnostics:
@@ -352,7 +353,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
-            "API_HOSTNAME='$API_HOSTNAME' HOME_RELAY_HOSTNAME='$HOME_RELAY_HOSTNAME' bash -s" <<'REMOTE'
+            "API_HOSTNAME='$API_HOSTNAME' HOME_RELAY_HOSTNAME='$HOME_RELAY_HOSTNAME' WSS_HOSTNAME='$WSS_HOSTNAME' bash -s" <<'REMOTE'
           set -euo pipefail
           rm -rf /opt/bankrotai/web.next
           install -d -m 755 /opt/bankrotai/web.next
@@ -414,6 +415,19 @@ jobs:
               X-Frame-Options DENY
               Referrer-Policy no-referrer
             }
+            log {
+              output stdout
+              format json
+            }
+          }
+
+          # The regular REG.RU deploy replaces this file atomically. Keep the
+          # WSS ingress installed by home-reverse-relay.yml, otherwise the next
+          # application deploy removes its TLS virtual host and strands the
+          # home connector behind a persistent public 502.
+          ${WSS_HOSTNAME} {
+            reverse_proxy bankrotai-wstunnel:18081
+            header Cache-Control "no-store"
             log {
               output stdout
               format json
