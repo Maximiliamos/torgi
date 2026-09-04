@@ -554,8 +554,8 @@ jobs:
             tunnel_ready=false
             for attempt in $(seq 1 15); do
               if test "$(docker inspect --format '{{.State.Running}}' bankrotai-cloudflared)" = true \
-                && docker exec bankrotai-cloudflared wget -qO- -T 1 http://127.0.0.1:20241/metrics \
-                  | awk '$1 == "cloudflared_tunnel_ha_connections" && $2 + 0 > 0 { ready = 1 } END { exit !ready }'; then
+                && timeout 5 docker run --rm --network container:bankrotai-cloudflared \
+                  --entrypoint wget caddy:2-alpine -qO- -T 2 http://127.0.0.1:20241/ready >/dev/null; then
                 tunnel_ready=true
                 break
               fi

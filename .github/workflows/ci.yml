@@ -77,8 +77,22 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - run: npm ci
-      - run: npm audit --audit-level=high
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Audit npm dependencies with bounded registry retries
+        run: |
+          set -euo pipefail
+          audit_with_retry() {
+            for attempt in 1 2 3; do
+              if timeout 180 npm audit "$@"; then
+                return 0
+              fi
+              if test "$attempt" -eq 3; then
+                return 1
+              fi
+              sleep "$((attempt * 10))"
+            done
+          }
+          audit_with_retry --audit-level=high
+          audit_with_retry --omit=dev --audit-level=high
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
