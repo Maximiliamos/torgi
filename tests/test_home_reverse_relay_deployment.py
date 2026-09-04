@@ -57,12 +57,12 @@ def test_regular_regru_deploy_preserves_wss_ingress() -> None:
     )
 
 
-def test_regru_deploy_waits_for_live_tunnel_metrics_after_restart() -> None:
+def test_regru_deploy_waits_for_cloudflared_ready_endpoint_after_restart() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
     assert "docker restart bankrotai-cloudflared" in workflow
-    assert "cloudflared_tunnel_ha_connections" in workflow
-    assert "wget -qO- -T 1 http://127.0.0.1:20241/metrics" in workflow
+    assert "--network container:bankrotai-cloudflared" in workflow
+    assert "--entrypoint wget caddy:2-alpine -qO- -T 2 http://127.0.0.1:20241/ready" in workflow
     assert "for attempt in $(seq 1 15)" in workflow
-    assert '$2 + 0 > 0 { ready = 1 }' in workflow
     assert 'test "$tunnel_ready" = true' in workflow
+    assert "docker exec bankrotai-cloudflared wget -qO- -T 1" not in workflow
     assert "docker logs --since" not in workflow
