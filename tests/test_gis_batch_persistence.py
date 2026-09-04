@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -41,6 +41,11 @@ def sessions():
 
 
 def add_run(session, run_id: str) -> None:
+    session.execute(
+        update(LotSyncRun)
+        .where(LotSyncRun.status.in_(("queued", "running")))
+        .values(status="success")
+    )
     session.add(LotSyncRun(id=run_id, status="running", trigger_type="benchmark", total_sources=1))
     session.flush()
 

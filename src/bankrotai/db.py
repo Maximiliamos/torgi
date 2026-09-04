@@ -28,6 +28,8 @@ from sqlalchemy import (
     Index,
     MetaData,
     UniqueConstraint,
+    literal_column,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 from sqlalchemy.engine import Engine, make_url
@@ -443,6 +445,15 @@ class BackgroundTaskState(Base):
 
 class LotSyncRun(Base):
     __tablename__ = "lot_sync_runs"
+    __table_args__ = (
+        Index(
+            "uq_lot_sync_runs_single_active",
+            literal_column("(1)"),
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
+    )
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     triggered_by: Mapped[str | None] = mapped_column(String(100), index=True)
     trigger_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
@@ -689,7 +700,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "d5e6f7a8b9c0"
+SCHEMA_REVISION = "e6f7a8b9c0d1"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
