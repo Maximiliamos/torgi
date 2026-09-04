@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import event, or_, select
+from sqlalchemy import event, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from bankrotai.connectors.base import AuctionConnector
@@ -215,6 +216,18 @@ class NationwideIngestionService:
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
         with self.session_factory() as session:
+            session.execute(
+                update(LotSyncRun)
+                .where(
+                    LotSyncRun.status.in_(("queued", "running")),
+                    (LotSyncRun.lease_expires_at.is_(None) | (LotSyncRun.lease_expires_at <= now)),
+                )
+                .values(
+                    status="failed",
+                    finished_at=now,
+                    error_message="Synchronization lease expired before a new run was created",
+                )
+            )
             active = session.scalar(
                 select(LotSyncRun)
                 .where(
@@ -238,7 +251,18 @@ class NationwideIngestionService:
                 lease_expires_at=now + timedelta(minutes=self.lease_minutes),
                 created_at=now,
             ))
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                active = session.scalar(
+                    select(LotSyncRun)
+                    .where(LotSyncRun.status.in_(("queued", "running")))
+                    .order_by(LotSyncRun.created_at.desc())
+                )
+                if active is not None:
+                    raise SyncAlreadyRunningError(active.id) from None
+                raise
             return run_id
 
     async def run(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:

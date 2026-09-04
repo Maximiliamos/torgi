@@ -152,6 +152,11 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
     }
     assert "uq_processed_lots_source_system_external_id" in unique_constraints
     assert {"region_directory", "lot_sync_runs", "lot_sync_source_runs"} <= set(schema.get_table_names())
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_lot_sync_runs_single_active'"
+        ).scalar() == 1
     source_columns = {column["name"] for column in schema.get_columns("source_lots")}
     assert {
         "region_code",
@@ -165,6 +170,30 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
     } <= source_columns
     with engine.connect() as connection:
         assert connection.exec_driver_sql("SELECT COUNT(*) FROM region_directory").scalar() == 89
+
+
+def test_single_active_sync_migration_reconciles_existing_duplicates(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-active-runs.db"
+    _upgrade_database(path, "d5e6f7a8b9c0")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO lot_sync_runs (id, trigger_type, status, total_sources, created_at) "
+            "VALUES ('older', 'manual', 'running', 1, '2026-09-03 00:00:00'), "
+            "('newer', 'manual', 'queued', 1, '2026-09-04 00:00:00')"
+        )
+    engine.dispose()
+
+    _upgrade_database(path)
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.connect() as connection:
+        statuses = dict(connection.exec_driver_sql("SELECT id, status FROM lot_sync_runs").all())
+    assert statuses == {"older": "failed", "newer": "queued"}
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_lot_sync_runs_single_active'"
+        ).scalar() == 1
 
 
 def test_frozen_initialization_runs_alembic_migrations(monkeypatch, tmp_path: Path) -> None:

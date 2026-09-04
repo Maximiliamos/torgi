@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -384,3 +385,55 @@ def test_active_database_lease_prevents_duplicate_full_sync(sessions) -> None:
     assert exc_info.value.run_id == first
     with sessions() as session:
         assert session.get(LotSyncRun, first).status == "queued"
+
+
+def test_database_constraint_prevents_two_active_sync_runs(sessions) -> None:
+    now = datetime.now()
+    with sessions() as session:
+        session.add(
+            LotSyncRun(
+                id="active-1",
+                trigger_type="manual",
+                status="queued",
+                total_sources=1,
+                lease_expires_at=now + timedelta(minutes=5),
+            )
+        )
+        session.commit()
+
+    with sessions() as session:
+        session.add(
+            LotSyncRun(
+                id="active-2",
+                trigger_type="scheduled",
+                status="running",
+                total_sources=1,
+                lease_expires_at=now + timedelta(minutes=5),
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_expired_sync_run_is_failed_before_replacement(sessions) -> None:
+    with sessions() as session:
+        session.add(
+            LotSyncRun(
+                id="expired",
+                trigger_type="manual",
+                status="running",
+                total_sources=1,
+                lease_expires_at=datetime(2000, 1, 1),
+            )
+        )
+        session.commit()
+
+    replacement = NationwideIngestionService(sessions).create_run(
+        triggered_by="admin", trigger_type="manual", total_sources=1
+    )
+
+    with sessions() as session:
+        expired = session.get(LotSyncRun, "expired")
+        assert expired.status == "failed"
+        assert expired.finished_at is not None
+        assert session.get(LotSyncRun, replacement).status == "queued"
