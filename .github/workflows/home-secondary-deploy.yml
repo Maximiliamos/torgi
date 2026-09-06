@@ -27,15 +27,13 @@ jobs:
       CONFIG_ROOT: C:\ProgramData\BankrotAI
       API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
-      BACKUP_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_ENCRYPTION_PASSWORD }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Require production secrets
         shell: powershell
         run: |
-          if (-not $env:API_KEY -or -not $env:SESSION_SECRET -or -not $env:BACKUP_ENCRYPTION_PASSWORD) {
+          if (-not $env:API_KEY -or -not $env:SESSION_SECRET) {
             throw "Required production secrets are unavailable"
           }
 
@@ -43,7 +41,7 @@ jobs:
         shell: powershell
         run: docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
 
-      - name: Restore latest encrypted Neon backup to local PostgreSQL
+      - name: Preserve and start local PostgreSQL
         shell: powershell
         run: |
           New-Item -ItemType Directory -Path $env:CONFIG_ROOT -Force | Out-Null
@@ -90,32 +88,6 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Local PostgreSQL did not become ready" }
 
-          $restoreMarker = Join-Path $env:CONFIG_ROOT 'restored-backup.txt'
-          if (-not (Test-Path -LiteralPath $restoreMarker)) {
-            $runs = gh run list --repo $env:GITHUB_REPOSITORY --workflow neon-sync.yml `
-              --limit 20 --json databaseId,conclusion,createdAt | ConvertFrom-Json
-            $run = $runs | Where-Object { $_.conclusion -eq 'success' } | Select-Object -First 1
-            if (-not $run) { throw "No successful Neon backup run is available" }
-            $artifactName = "neon-backup-$($run.databaseId)"
-            $restoreRoot = Join-Path $env:RUNNER_TEMP 'home-postgres-restore'
-            New-Item -ItemType Directory -Path $restoreRoot -Force | Out-Null
-            gh run download $run.databaseId --repo $env:GITHUB_REPOSITORY `
-              --name $artifactName --dir $restoreRoot
-            $encrypted = Get-ChildItem -LiteralPath $restoreRoot -Filter '*.dump.enc' | Select-Object -First 1
-            if (-not $encrypted) { throw "Encrypted recovery dump is missing" }
-            $dump = Join-Path $restoreRoot 'bankrotai.dump'
-            $gitRoot = Split-Path (Split-Path (Get-Command git.exe).Source -Parent) -Parent
-            $openssl = Join-Path $gitRoot 'usr\bin\openssl.exe'
-            & $openssl enc -d -aes-256-cbc -pbkdf2 `
-              -pass env:BACKUP_ENCRYPTION_PASSWORD -in $encrypted.FullName -out $dump
-            if ($LASTEXITCODE -ne 0) { throw "Backup decryption failed" }
-            docker cp $dump "${env:POSTGRES_CONTAINER}:/tmp/bankrotai.dump"
-            docker exec $env:POSTGRES_CONTAINER pg_restore --clean --if-exists `
-              --no-owner --no-acl -U bankrotai -d bankrotai /tmp/bankrotai.dump
-            if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore failed" }
-            docker exec $env:POSTGRES_CONTAINER rm -f /tmp/bankrotai.dump
-            [IO.File]::WriteAllText($restoreMarker, "$($run.databaseId) $($run.createdAt)")
-          }
 
       - name: Install protected runtime configuration
         shell: powershell
@@ -172,7 +144,7 @@ jobs:
             throw 'Protected TBankrot session is missing; run the local session capture first'
           }
 
-      - name: Apply database migrations before replacing production containers
+      - name: Verify existing database schema before replacing production containers
         shell: powershell
         run: |
           $photon = docker ps --filter 'name=^/bankrotai-photon$' --format '{{.Names}}'
@@ -188,9 +160,9 @@ jobs:
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            python -m bankrotai.cli init-db
+            python -m alembic current --check-heads
           if ($LASTEXITCODE -ne 0) {
-            throw "Database migration failed; existing production containers were left running"
+            throw "Database schema is not at the tested application head; existing production containers were left running"
           }
 
       - name: Start private queue and replace API and trusted ingestion worker
