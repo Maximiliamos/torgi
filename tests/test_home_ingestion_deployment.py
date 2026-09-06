@@ -27,3 +27,14 @@ def test_home_redis_is_authenticated_persistent_and_not_published() -> None:
     assert "redis-cli -a" not in workflow
     assert "--publish 127.0.0.1:6379:6379" not in workflow
     assert "--publish 0.0.0.0:6379:6379" not in workflow
+
+
+def test_home_deploy_preserves_local_database_and_only_checks_schema() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Restore latest encrypted Neon backup" not in workflow
+    assert "BACKUP_ENCRYPTION_PASSWORD" not in workflow
+    assert "gh run download" not in workflow
+    assert "pg_restore" not in workflow
+    assert "python -m bankrotai.cli init-db" not in workflow
+    assert "python -m alembic current --check-heads" in workflow
