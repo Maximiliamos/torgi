@@ -182,12 +182,20 @@ def _map_base_filters(
 
 
 def _latest_geo_subquery():
-    return (
-        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
-        .where(LotGeoSnapshot.centroid_lat.isnot(None), LotGeoSnapshot.centroid_lon.isnot(None))
-        .group_by(LotGeoSnapshot.lot_id)
-        .subquery()
-    )
+    ranked = select(
+        LotGeoSnapshot.id.label("geo_id"),
+        LotGeoSnapshot.lot_id,
+        func.row_number().over(
+            partition_by=LotGeoSnapshot.lot_id,
+            order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
+        ).label("geo_rank"),
+    ).where(
+        LotGeoSnapshot.centroid_lat.isnot(None),
+        LotGeoSnapshot.centroid_lon.isnot(None),
+    ).subquery()
+    return select(ranked.c.lot_id, ranked.c.geo_id).where(
+        ranked.c.geo_rank == 1
+    ).subquery()
 
 
 def build_map_lot_statistics(
@@ -358,7 +366,7 @@ def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
             LotGeoSnapshot.centroid_lat.isnot(None),
             LotGeoSnapshot.centroid_lon.isnot(None),
         )
-        .order_by(LotGeoSnapshot.id.desc())
+        .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
     )
     lot = session.get(ProcessedLot, lot_id)
     if lot is None or latest_geo is None:

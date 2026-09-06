@@ -43,6 +43,8 @@ from bankrotai.db import (
     LotDocumentChange,
     LotDocumentVersion,
     LotGeoSnapshot,
+    MapDataset,
+    MapTile,
     LotNote,
     SavedMaxBidScenario,
     SavedSearch,
@@ -354,6 +356,7 @@ async def log_requests(request: Request, call_next):
     logger.info("Incoming request: request_id=%s method=%s url=%s", request_id, request.method, request.url)
     try:
         response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
         process_time = (time.time() - start_time) * 1000
         response.headers["X-Request-ID"] = request_id
         logger.info(
@@ -424,6 +427,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path in {
             "/api/map/lots",
+            "/api/map/datasets/current",
             "/api/cadastre/search",
             "/api/quality",
             "/api/sources",
@@ -436,6 +440,9 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path.startswith("/api/map/lots/"):
             return path.rsplit("/", 1)[-1].isdigit()
+        if path.startswith("/api/map/tiles/"):
+            parts = path.split("/")
+            return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
         if path.startswith("/api/search/"):
             return True
         if path.startswith("/api/sync/lots/"):
@@ -1322,6 +1329,58 @@ def get_map_lots(
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(content=body, media_type="application/json", headers=headers)
+
+
+@app.get("/api/map/datasets/current")
+def get_current_map_dataset():
+    with read_session_scope() as session:
+        dataset = session.scalar(
+            select(MapDataset).where(
+                MapDataset.is_current.is_(True),
+                MapDataset.status == "ready",
+                MapDataset.published_at.is_not(None),
+            )
+        )
+        if dataset is None:
+            raise HTTPException(status_code=404, detail="Map dataset is not ready")
+        return JSONResponse(content=jsonable_encoder({
+            "version": dataset.version,
+            "point_count": dataset.point_count,
+            "tile_count": dataset.tile_count,
+            "max_zoom": 14,
+            "point_zoom": 12,
+            "published_at": dataset.published_at,
+        }), headers={"Cache-Control": "private, no-cache", "X-Map-Dataset": dataset.version})
+
+
+@app.get("/api/map/tiles/{version}/{z}/{x}/{y}")
+def get_map_tile(request: Request, version: str, z: int, x: int, y: int):
+    if not (0 <= z <= 14 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+        raise HTTPException(status_code=404, detail="Map tile not found")
+    with read_session_scope() as session:
+        dataset = session.scalar(
+            select(MapDataset).where(
+                MapDataset.version == version,
+                MapDataset.status == "ready",
+                MapDataset.published_at.is_not(None),
+            )
+        )
+        if dataset is None:
+            raise HTTPException(status_code=404, detail="Map dataset not found")
+        tile = session.scalar(
+            select(MapTile).where(
+                MapTile.dataset_id == dataset.id, MapTile.z == z, MapTile.x == x, MapTile.y == y,
+            )
+        )
+        etag = f'"{tile.etag}"' if tile is not None else f'"empty-{version}-{z}-{x}-{y}"'
+        headers = {
+            "Cache-Control": "private, max-age=86400, immutable",
+            "ETag": etag,
+            "X-Map-Dataset": version,
+        }
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(tile.payload_json if tile is not None else {"features": []}, headers=headers)
 
 
 @app.get("/api/map/lots/{lot_id}")

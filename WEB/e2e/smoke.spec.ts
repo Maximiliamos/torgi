@@ -49,6 +49,23 @@ test("authenticated list search detail and API failure smoke", async ({
   page,
 }) => {
   test.setTimeout(180_000);
+  if (!process.env.E2E_PASSWORD) {
+    await page.route("**/api/auth/me", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { Date: new Date().toUTCString() },
+      body: JSON.stringify({ id: 1, username: "reader", role: "reader" }),
+    }));
+    await page.route("**/api/regions", (route) => route.fulfill({ status: 200, json: [] }));
+    await page.route(/\/api\/lots\?/, (route) => route.fulfill({ status: 200, json: { items: [], total: 0 } }));
+    await page.route(/\/api\/stats\?/, (route) => route.fulfill({
+      status: 200,
+      json: { total_lots: 0, active_lots: 0, appraised_lots: 0, average_discount: null, region: "all" },
+    }));
+    await page.route("**/api/sources", (route) => route.fulfill({ status: 200, json: [] }));
+    await page.route("**/api/quality", (route) => route.fulfill({ status: 200, json: {} }));
+    await page.route("**/api/diagnostics", (route) => route.fulfill({ status: 200, json: {} }));
+  }
   await page.goto("/");
   await expect(page.locator("main")).toBeVisible();
   await ensureAuthenticated(page);
@@ -223,6 +240,11 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Стартовая цена от")).toBeVisible();
   await expect(page.getByText("Стартовая цена до")).toBeVisible();
   await expect(page.getByText("Субъект РФ")).toBeVisible();
+  // This broad smoke intentionally exercises the retained legacy filter path;
+  // the dedicated map-tile-integration spec proves zero bulk calls on startup.
+  const minimumPrice = page.getByText("Стартовая цена от").locator("..").locator("input");
+  await minimumPrice.fill("1");
+  await page.getByRole("button", { name: "Применить" }).click();
   await fixtureMapResponse;
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "10 объектов · 3 на карте · 7 без координат",

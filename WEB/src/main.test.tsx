@@ -43,6 +43,9 @@ describe("App states", () => {
     expect(screen.getByRole("button", { name: "Карта" })).toHaveClass("active");
     expect(screen.getByText("Лоты недвижимости")).toBeInTheDocument();
     expect(screen.getByLabelText("Текущее московское время").closest(".mapBottomStatus")).not.toBeNull();
+    const mapFrame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    expect(mapFrame.srcdoc).toContain("legacyManager=new ymaps.ObjectManager({clusterize:true");
+    expect(mapFrame.srcdoc).toContain("tileManager=new ymaps.ObjectManager({clusterize:false");
   });
 });
 

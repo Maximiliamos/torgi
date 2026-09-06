@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -9,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, select, text
-from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -19,11 +21,14 @@ from bankrotai.db import (
     CanonicalLot,
     LotGeoSnapshot,
     LotStatusHistory,
+    MapDataset,
+    MapTile,
     ProcessedLot,
     SourceLot,
 )
 from bankrotai.logic import apply_lot_status, build_lots_response, cleanup_closed_lots
 from bankrotai.services.map_view import build_map_lots_response
+from bankrotai.services.map_builder import _promote_map_dataset
 
 
 pytestmark = pytest.mark.postgres
@@ -105,6 +110,77 @@ def test_postgres_schema_head_indexes_and_constraints(engine) -> None:
     } <= processed_indexes
     assert "ix_lot_geo_snapshots_viewport" in geo_indexes
     assert "uq_processed_lots_source_system_external_id" in processed_unique
+    with engine.connect() as connection:
+        current_index = connection.scalar(text("""
+            SELECT indexdef FROM pg_indexes
+            WHERE schemaname = 'public' AND tablename = 'map_datasets'
+              AND indexname = 'uq_map_datasets_single_current'
+        """))
+    assert current_index is not None
+    assert "UNIQUE INDEX" in current_index
+    assert "WHERE is_current" in current_index
+
+
+def test_postgres_rejects_a_second_current_map_dataset(engine) -> None:
+    with Session(engine) as session:
+        session.add(MapDataset(version="pg-current-a", status="ready", is_current=True))
+        session.commit()
+        session.add(MapDataset(version="pg-current-b", status="ready", is_current=True))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+        assert session.query(MapDataset).filter_by(is_current=True).count() == 1
+        session.query(MapDataset).filter(MapDataset.version.in_(("pg-current-a", "pg-current-b"))).delete()
+        session.commit()
+
+
+def test_postgres_serializes_concurrent_map_promotions(engine) -> None:
+    with Session(engine) as session:
+        old = MapDataset(
+            version="pg-concurrent-old", status="ready", is_current=True,
+            point_count=10, tile_count=1,
+        )
+        first = MapDataset(
+            version="pg-concurrent-first", status="building", is_current=False,
+            point_count=10, tile_count=1,
+        )
+        second = MapDataset(
+            version="pg-concurrent-second", status="building", is_current=False,
+            point_count=10, tile_count=1,
+        )
+        session.add_all((old, first, second))
+        session.flush()
+        for dataset in (old, first, second):
+            session.add(MapTile(
+                dataset_id=dataset.id, z=0, x=0, y=0, feature_count=1,
+                etag=f"etag-{dataset.id}", payload_json={"features": [{"id": dataset.id}]},
+            ))
+        session.commit()
+        old_id, first_id, second_id = old.id, first.id, second.id
+
+    barrier = threading.Barrier(2)
+
+    def promote(dataset_id: int) -> dict:
+        barrier.wait(timeout=5)
+        return _promote_map_dataset(
+            lambda: Session(engine),
+            dataset_id=dataset_id,
+            expected_current_id=old_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(promote, (first_id, second_id)))
+
+    assert sorted(result["status"] for result in results) == ["published", "rejected"]
+    with Session(engine) as session:
+        current = session.scalars(select(MapDataset).where(MapDataset.is_current.is_(True))).all()
+        assert len(current) == 1
+        assert current[0].id in {first_id, second_id}
+        assert session.get(MapDataset, old_id) is not None
+        session.query(MapDataset).filter(
+            MapDataset.version.in_(("pg-concurrent-old", "pg-concurrent-first", "pg-concurrent-second"))
+        ).delete()
+        session.commit()
 
 
 def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
