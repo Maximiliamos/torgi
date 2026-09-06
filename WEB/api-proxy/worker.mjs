@@ -1,6 +1,6 @@
 /* global AbortSignal, Headers, Request, Response, URL, console, crypto, fetch */
 
-const DEFAULT_PRIMARY_ORIGIN = "https://194-226-126-233.sslip.io";
+const DEFAULT_PRIMARY_ORIGIN = "https://home-relay.194-226-126-233.sslip.io";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const TRANSPORT_STATUSES = new Set([502, 504]);
 const UPSTREAM_TIMEOUT_MS = 10_000;

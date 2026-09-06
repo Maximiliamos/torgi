@@ -38,11 +38,18 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "$env:NO_COLOR = 'true'" in workflow
 
 
-def test_regru_caddy_reaches_loopback_relay_through_host_gateway() -> None:
+def test_regru_caddy_routes_application_api_through_home_relay() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
-    assert "reverse_proxy bankrotai-wstunnel:18080" in workflow
+    assert len(re.findall(r"reverse_proxy bankrotai-wstunnel:18080", workflow)) == 2
     assert "docker network inspect bankrotai" in workflow
     assert "--add-host host.docker.internal:host-gateway" in workflow
+    assert "NEON_DATABASE_URL" not in workflow
+    assert "NEON_DATABASE_MIGRATION_URL" not in workflow
+    assert "python -m bankrotai.cli init-db" not in workflow
+    assert "docker rm -f bankrotai-api" not in workflow
+    assert "--name bankrotai-api" not in workflow
+    assert "Build and publish API image" not in workflow
+    assert "Keep the legacy bankrotai-api container and image untouched" in workflow
 
 
 def test_regular_regru_deploy_preserves_wss_ingress() -> None:
@@ -57,12 +64,23 @@ def test_regular_regru_deploy_preserves_wss_ingress() -> None:
     )
 
 
-def test_regru_deploy_waits_for_cloudflared_ready_endpoint_after_restart() -> None:
+def test_regru_deploy_gates_switch_on_staged_home_api_and_dataset() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
-    assert "docker restart bankrotai-cloudflared" in workflow
-    assert "--network container:bankrotai-cloudflared" in workflow
-    assert "--entrypoint wget caddy:2-alpine -qO- -T 2 http://127.0.0.1:20241/ready" in workflow
-    assert "for attempt in $(seq 1 15)" in workflow
-    assert 'test "$tunnel_ready" = true' in workflow
-    assert "docker exec bankrotai-cloudflared wget -qO- -T 1" not in workflow
-    assert "docker logs --since" not in workflow
+    assert "for stability_check in $(seq 1 20)" in workflow
+    assert '"https://$HOME_RELAY_HOSTNAME/health/live"' in workflow
+    assert '"https://$HOME_RELAY_HOSTNAME/health/ready"' in workflow
+    assert '"https://$HOME_RELAY_HOSTNAME/api/map/datasets/current"' in workflow
+    assert 'd["version"]' in workflow
+    assert 'd["point_count"] > 0' in workflow
+    assert 'd["tile_count"] > 0' in workflow
+    assert 'd["published_at"]' in workflow
+    assert "docker restart bankrotai-cloudflared" not in workflow
+
+
+def test_api_proxy_promotes_home_relay_and_keeps_legacy_read_fallback() -> None:
+    config = (ROOT / "WEB" / "api-proxy" / "wrangler.jsonc").read_text(encoding="utf-8")
+    worker = (ROOT / "WEB" / "api-proxy" / "worker.mjs").read_text(encoding="utf-8")
+    assert '"PRIMARY_API_ORIGIN": "https://home-relay.194-226-126-233.sslip.io"' in config
+    assert '"SECONDARY_API_ORIGIN": "https://194-226-126-233.sslip.io"' in config
+    assert 'DEFAULT_PRIMARY_ORIGIN = "https://home-relay.194-226-126-233.sslip.io"' in worker
+    assert "const fallbackOrigin = SAFE_METHODS.has(request.method)" in worker

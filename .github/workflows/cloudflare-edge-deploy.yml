@@ -192,6 +192,48 @@ jobs:
           set -euo pipefail
           npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
           npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
+      - name: Verify staged home API before changing canonical edge
+        env:
+          E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+          E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            STAGED_SHA="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Cache-Control: no-cache' \
+              https://194-226-126-233.sslip.io/deployment.json 2>/dev/null \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
+            if test "$STAGED_SHA" = "$GITHUB_SHA"; then
+              break
+            fi
+            if test "$attempt" = 60; then
+              echo "REG.RU staged release did not reach $GITHUB_SHA" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          for stability_check in $(seq 1 20); do
+            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              https://194-226-126-233.sslip.io/health/live || true)" = "200"
+            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              https://194-226-126-233.sslip.io/health/ready || true)" = "200"
+            if test "$stability_check" != 20; then
+              sleep 2
+            fi
+          done
+          LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
+          curl --fail --silent --show-error --max-time 30 \
+            -H "X-API-Key: $KOYEB_SERVICE_KEY" \
+            -H 'Content-Type: application/json' \
+            -c "$RUNNER_TEMP/home-primary.cookies" \
+            --data "$LOGIN_PAYLOAD" \
+            https://194-226-126-233.sslip.io/api/auth/login >/dev/null
+          DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
+            -H "X-API-Key: $KOYEB_SERVICE_KEY" \
+            -b "$RUNNER_TEMP/home-primary.cookies" \
+            https://194-226-126-233.sslip.io/api/map/datasets/current)"
+          printf '%s' "$DATASET_JSON" | python -c \
+            'import json,sys; d=json.load(sys.stdin); assert d["version"] and d["point_count"] > 0 and d["tile_count"] > 0 and d["published_at"]'
       - name: Deploy Pages release
         working-directory: WEB
         run: >-
