@@ -7,6 +7,7 @@ from typing import Any
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.utils import uuid
 
 from bankrotai.core import get_region_sync_slug, get_settings
 from bankrotai.db import (
@@ -243,9 +244,17 @@ def broker_is_available() -> bool:
 def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
-    result = bulk_torgi_gov_sync_task.apply_async(args=[filters_data, max_items])
-    _set_task_state(result.id, status="queued", progress=_progress())
-    return result.id
+    task_id = uuid()
+    # Persist the observable task row before publishing. A fast worker can start
+    # immediately after apply_async(), so writing it afterwards races with the
+    # worker's own running-state update and can fail the HTTP enqueue request.
+    _set_task_state(task_id, status="queued", progress=_progress())
+    try:
+        bulk_torgi_gov_sync_task.apply_async(args=[filters_data, max_items], task_id=task_id)
+    except Exception as exc:
+        _set_task_state(task_id, status="failed", progress=_progress(), error=str(exc))
+        raise QueueUnavailableError("Background task queue is unavailable") from exc
+    return task_id
 
 
 @celery_app.task(
