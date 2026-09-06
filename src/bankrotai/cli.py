@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("geocoding-stats", help="Show persisted geocoding quality statistics")
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
+    subparsers.add_parser("build-map-dataset", help="Build and atomically publish precomputed map tiles")
+    map_cleanup_p = subparsers.add_parser("cleanup-map-datasets", help="Inspect or remove old map datasets")
+    map_cleanup_p.add_argument("--retain-previous-ready", type=int, default=1)
+    map_cleanup_p.add_argument("--min-age-hours", type=int, default=168)
+    map_cleanup_p.add_argument("--apply", action="store_true", help="Delete listed candidates; default is dry-run")
     bidexpert_repair_p = subparsers.add_parser("repair-bidexpert-addresses", help="Repair truncated BidExpert addresses")
     bidexpert_repair_p.add_argument("--limit", type=int, default=20_000)
     bidexpert_repair_p.add_argument("--apply", action="store_true")
@@ -232,6 +237,25 @@ def main():
         init_db()
         with session_scope() as session:
             result = repair_missing_processed_links(session, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "build-map-dataset":
+        from bankrotai.db import SessionLocal
+        from bankrotai.services.map_builder import build_map_dataset
+
+        init_db()
+        result = build_map_dataset(SessionLocal)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "cleanup-map-datasets":
+        from bankrotai.db import SessionLocal
+        from bankrotai.services.map_builder import cleanup_map_datasets
+
+        init_db()
+        result = cleanup_map_datasets(
+            SessionLocal,
+            retain_previous_ready=max(1, args.retain_previous_ready),
+            min_age_hours=max(1, args.min_age_hours),
+            apply=args.apply,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "repair-bidexpert-addresses":
         from bankrotai.services.bidexpert_address_repair import repair_bidexpert_addresses

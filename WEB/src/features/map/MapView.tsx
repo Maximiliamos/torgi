@@ -13,13 +13,18 @@ import {
 import {
   ApiError,
   clearMapCache,
+  fetchCurrentMapDataset,
   fetchCurrentUser,
   fetchMapLotDetail,
   fetchMapLotsSWR,
+  fetchMapTile,
   fetchRegions,
   fetchNationwideLotSync,
   MapLot,
+  MapDataset,
   MapMarkerLot,
+  MapTileFeature,
+  MapTilePayload,
   RegionOption,
   searchCadastre,
   setReviewStatus,
@@ -28,6 +33,9 @@ import {
 } from "../../lib/api";
 
 export const MAP_REDUCED_LIMIT = 500;
+// The measured populated tile is small (163 B in the deterministic benchmark),
+// while 512 entries preserve useful pan-back history without unbounded growth.
+export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
 
 export function mapLimitForZoom(zoom: number) {
   if (zoom <= 7) return 250;
@@ -40,6 +48,74 @@ export function mapBoundsPrecision(zoom: number) {
   if (zoom < 10) return 2;
   if (zoom < 16) return 3;
   return 4;
+}
+
+export function visibleTileCoordinates(bounds: [number, number, number, number], zoom: number) {
+  const z = Math.min(14, Math.max(0, Math.floor(zoom)));
+  const scale = 2 ** z;
+  const tileX = (lon: number) => Math.max(0, Math.min(scale - 1, Math.floor((lon + 180) / 360 * scale)));
+  const tileY = (lat: number) => {
+    const bounded = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const rad = bounded * Math.PI / 180;
+    return Math.max(0, Math.min(scale - 1, Math.floor((1 - Math.asinh(Math.tan(rad)) / Math.PI) / 2 * scale)));
+  };
+  const [west, south, east, north] = bounds;
+  const y0 = tileY(north); const y1 = tileY(south);
+  const xRanges = west <= east ? [[tileX(west), tileX(east)]] : [[tileX(west), scale - 1], [0, tileX(east)]];
+  const result: Array<{ z: number; x: number; y: number; key: string }> = [];
+  for (const [x0, x1] of xRanges) for (let x = x0; x <= x1; x += 1) for (let y = y0; y <= y1; y += 1) {
+    result.push({ z, x, y, key: `${z}/${x}/${y}` });
+  }
+  return result;
+}
+
+type TileCoordinate = { z: number; x: number; y: number };
+
+export function mapTileCacheKey(version: string, tile: TileCoordinate) {
+  return `${version}:${tile.z}:${tile.x}:${tile.y}`;
+}
+
+export function applyMapTileReviewOverrides(
+  features: MapTileFeature[],
+  overrides: ReadonlyMap<number, string>,
+) {
+  return features.map((feature) => {
+    const status = feature.kind === "lot" ? overrides.get(Number(feature.id)) : undefined;
+    return status === undefined ? feature : { ...feature, review_status: status };
+  });
+}
+
+export function fetchCachedMapTile(
+  completed: Map<string, MapTilePayload>,
+  inflight: Map<string, Promise<MapTilePayload>>,
+  version: string,
+  tile: TileCoordinate,
+  maxEntries = MAX_MAP_TILE_CACHE_ENTRIES,
+) {
+  const key = mapTileCacheKey(version, tile);
+  const cached = completed.get(key);
+  if (cached) {
+    completed.delete(key);
+    completed.set(key, cached);
+    return Promise.resolve(cached);
+  }
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const request = fetchMapTile(version, tile.z, tile.x, tile.y).then((payload) => {
+    if (!payload || !Array.isArray(payload.features)) throw new Error(`Некорректный tile ${key}`);
+    completed.set(key, payload);
+    while (completed.size > maxEntries) {
+      const oldest = completed.keys().next().value;
+      if (oldest === undefined) break;
+      completed.delete(oldest);
+    }
+    return payload;
+  }).finally(() => {
+    if (inflight.get(key) === request) inflight.delete(key);
+  });
+  inflight.set(key, request);
+  return request;
 }
 
 export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
@@ -182,6 +258,8 @@ function CoincidentLotsPanel({
 
 function YandexDesktopMap({
   lots,
+  tileEntries,
+  reviewMarkerUpdate,
   selectedCadastre,
   showCadastre,
   selectedLotId,
@@ -193,6 +271,8 @@ function YandexDesktopMap({
   onRendered,
 }: {
   lots: MapMarkerLot[];
+  tileEntries: Array<{ key: string; features: MapTileFeature[] }>;
+  reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
   selectedCadastre: Record<string, unknown> | null;
   showCadastre: boolean;
   selectedLotId: number | null;
@@ -247,6 +327,12 @@ function YandexDesktopMap({
     if (readyRevision) postCommand("replace-lots", { lots });
   }, [lots, postCommand, readyRevision]);
   React.useEffect(() => {
+    if (readyRevision) postCommand("sync-tiles", { entries: tileEntries });
+  }, [postCommand, readyRevision, tileEntries]);
+  React.useEffect(() => {
+    if (readyRevision && reviewMarkerUpdate) postCommand("update-lot-review", reviewMarkerUpdate);
+  }, [postCommand, readyRevision, reviewMarkerUpdate]);
+  React.useEffect(() => {
     if (readyRevision) postCommand("select-lot", { lotId: selectedLotId });
   }, [postCommand, readyRevision, selectedLotId]);
   React.useEffect(() => {
@@ -269,7 +355,7 @@ function YandexDesktopMap({
     () => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1.77/?lang=ru_RU&amp;csp=true"></script><style>
 html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}
 </style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
-const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let lots=[];let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
+const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let legacyManager=null;let tileManager=null;let lots=[];let mode='legacy';const tileObjects=new Map();const tileLots=new Map();let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function ended(l){return l.is_archived||['closed','completed','cancelled','canceled','failed','annulled','archive','archived'].includes(String(l.status||'').toLowerCase());}
 function color(l){if(ended(l))return '#111111';return l.review_status==='approved'?'#24a269':l.review_status==='maybe'?'#e0aa16':l.review_status==='rejected'?'#d94b4b':'#7d8795';}
@@ -277,18 +363,21 @@ function icon(l){const c=color(l),selected=Number(l.id)===selectedId;return '<sv
 function opts(l){return{iconLayout:'default#image',iconImageHref:'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(icon(l)),iconImageSize:[42,52],iconImageOffset:[-21,-52]};}
 function send(type,payload={}){parent.postMessage({type,channel,...payload},'*');}
 function convert(coords){if(!Array.isArray(coords))return coords;if(coords.length===2&&typeof coords[0]==='number')return[coords[1],coords[0]];return coords.map(convert);}
-function feature(l){return{type:'Feature',id:Number(l.id),geometry:{type:'Point',coordinates:[l.lat,l.lon]},properties:{hintContent:esc(l.title),lotId:Number(l.id)},options:opts(l)};}
+function feature(l){const cluster=l.kind==='cluster';return{type:'Feature',id:cluster?String(l.id):Number(l.id),geometry:{type:'Point',coordinates:[l.lat,l.lon]},properties:{hintContent:cluster?esc(l.count+' лотов'):esc(l.title),iconContent:cluster?String(l.count):undefined,lotId:cluster?undefined:Number(l.id),kind:l.kind||'lot',bounds:l.bounds},options:cluster?{preset:'islands#blueCircleIcon'}:opts(l)};}
 function clusterSelection(clusterId,objects){const entries=Array.isArray(objects)?objects:[];const lotIds=entries.map(item=>Number(item.id??item.properties?.lotId)).filter(Number.isFinite);const coords=entries.map(item=>item.geometry?.coordinates).filter(value=>Array.isArray(value)&&value.length===2);const samePoint=coords.length>1&&coords.every(value=>Math.abs(Number(value[0])-Number(coords[0][0]))<1e-9&&Math.abs(Number(value[1])-Number(coords[0][1]))<1e-9);if(lotIds.length>1&&(samePoint||map.getZoom()>=18)){send('bankrotai-cluster-select',{clusterId,lotIds,zoom:map.getZoom()});return true;}return false;}
 function clearOverlays(){overlayObjects.forEach(item=>map.geoObjects.remove(item));overlayObjects=[];}
+function activateManager(next){if(manager===next)return;if(manager)map.geoObjects.remove(manager);manager=next;map.geoObjects.add(manager);}
 function addGeometry(value,style){if(!value||!value.type||!value.coordinates)return;const sets=value.type==='MultiPolygon'?value.coordinates:[value.coordinates];sets.forEach(coords=>{const polygon=new ymaps.Polygon(convert(coords),{},style);map.geoObjects.add(polygon);overlayObjects.push(polygon);});}
 function renderOverlays(focus=false){if(!map)return;clearOverlays();if(cad&&Number.isFinite(cad.lat)&&Number.isFinite(cad.lon)){const point=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(point);overlayObjects.push(point);if(showCad&&cad.geometry)addGeometry(cad.geometry,{strokeColor:'#7c3aed',strokeWidth:3,fillColor:'#7c3aed22'});if(focus)map.setCenter([cad.lat,cad.lon],Math.max(map.getZoom(),16));}if(showCad&&selectedGeometry)addGeometry(selectedGeometry,{strokeColor:'#2468d8',strokeWidth:3,fillColor:'#2468d822'});}
 ${MAP_SELECTION_SCRIPT}
-function renderLots(){if(!map||!manager)return;const started=performance.now();manager.removeAll();manager.add({type:'FeatureCollection',features:lots.filter(l=>Number.isFinite(l.lat)&&Number.isFinite(l.lon)).map(feature)});if(selectedId!=null)updateSelection(selectedId);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:lots.length}));}
+function renderLots(){if(!map||!legacyManager)return;const started=performance.now();activateManager(legacyManager);manager.removeAll();manager.add({type:'FeatureCollection',features:lots.filter(l=>Number.isFinite(l.lat)&&Number.isFinite(l.lon)).map(feature)});if(selectedId!=null)updateSelection(selectedId);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:lots.length}));}
+function syncTiles(entries){if(!map||!tileManager)return;const started=performance.now();if(!entries.length){if(mode==='tiles'){tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='legacy';renderLots();}return;}if(mode!=='tiles'){activateManager(tileManager);tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='tiles';}const wanted=new Set(entries.map(entry=>entry.key));for(const[key,ids]of tileObjects){if(!wanted.has(key)){tileManager.remove(ids);ids.forEach(id=>tileLots.delete(Number(id)));tileObjects.delete(key);}}for(const entry of entries){if(tileObjects.has(entry.key))continue;const raw=entry.features||[];const features=raw.map(feature);tileManager.add({type:'FeatureCollection',features});raw.forEach(item=>{if(item.kind==='lot')tileLots.set(Number(item.id),item);});tileObjects.set(entry.key,features.map(item=>item.id));}requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:[...tileObjects.values()].reduce((n,ids)=>n+ids.length,0)}));}
+function updateTileReview(lotId,status){if(!tileManager)return false;const id=Number(lotId),lot=tileLots.get(id);if(!lot)return false;const updated={...lot,review_status:status};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,opts(updated));return true;}
 function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankrotai-viewport',{bounds:[bounds[0][1],bounds[0][0],bounds[1][1],bounds[1][0]],zoom:map.getZoom()});}
 function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,250);}
-function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];renderLots();}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();}}
+function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles')renderLots();}else if(data.type==='sync-tiles'){syncTiles(Array.isArray(data.entries)?data.entries:[]);}else if(data.type==='update-lot-review'){updateTileReview(data.lotId,data.status);}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
-function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});manager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});manager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});manager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));manager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=manager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>lots.find(l=>Number(l.id)===Number(id))?.review_status||null,clickObject:id=>manager.objects.events.fire('click',{objectId:Number(id)}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
+function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});legacyManager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});legacyManager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});legacyManager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));legacyManager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=legacyManager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});tileManager=new ymaps.ObjectManager({clusterize:false});tileManager.objects.events.add('click',event=>{const id=event.get('objectId'),object=tileManager.objects.getById(id);if(object?.properties?.kind==='cluster'&&Array.isArray(object.properties.bounds)){const b=object.properties.bounds;map.setBounds([[b[1],b[0]],[b[3],b[2]]],{checkZoomRange:true,zoomMargin:24});return;}send('bankrotai-select',{lotId:Number(id)});});manager=legacyManager;map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>tileLots.get(Number(id))?.review_status??lots.find(l=>Number(l.id)===Number(id))?.review_status??null,clickObject:id=>manager.objects.events.fire('click',{objectId:id}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
 </script></body></html>`,
     [channel],
@@ -532,8 +621,18 @@ export function MapView({
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
+  const [viewportZoom, setViewportZoom] = React.useState(7);
+  const [mapDataset, setMapDataset] = React.useState<MapDataset | null>(null);
+  const [mapDatasetStatus, setMapDatasetStatus] = React.useState<"loading" | "ready" | "unavailable">("loading");
+  const [tileEntries, setTileEntries] = React.useState<Array<{ key: string; features: MapTileFeature[] }>>([]);
+  const [reviewMarkerUpdate, setReviewMarkerUpdate] = React.useState<{ lotId: number; status: string; revision: number } | null>(null);
   const [viewportLimit, setViewportLimit] = React.useState(250);
   const requestRevision = React.useRef(0);
+  const datasetRequestRevision = React.useRef(0);
+  const tileRequestRevision = React.useRef(0);
+  const completedTileCache = React.useRef(new Map<string, MapTilePayload>());
+  const inflightTileRequests = React.useRef(new Map<string, Promise<MapTilePayload>>());
+  const visibleTileSetSignature = React.useRef<string | null>(null);
   const requestController = React.useRef<AbortController | null>(null);
   const reviewOverrides = React.useRef(new Map<number, string>());
   const hasRenderedLots = React.useRef(false);
@@ -567,6 +666,10 @@ export function MapView({
   });
   const [appliedFilters, setAppliedFilters] = React.useState(filters);
   const [syncing, setSyncing] = React.useState(false);
+  const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
+  const visibleMapObjects = tileMode && mapDataset
+    ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
+    : lots.length;
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     hasRenderedLots.current = true;
@@ -600,6 +703,7 @@ export function MapView({
     async (
       applied = appliedFilters,
     ) => {
+      if (tileMode) return;
       if (!favoritesOnly && !viewport) return;
       const revision = ++requestRevision.current;
       requestController.current?.abort();
@@ -652,12 +756,35 @@ export function MapView({
         if (revision === requestRevision.current) setLoading(false);
       }
     },
-    [appliedFilters, applyResponse, favoritesOnly, viewport, viewportLimit],
+    [appliedFilters, applyResponse, favoritesOnly, tileMode, viewport, viewportLimit],
   );
+
+  const loadCurrentMapDataset = React.useCallback(async () => {
+    const revision = ++datasetRequestRevision.current;
+    setMapDatasetStatus("loading");
+    try {
+      const dataset = await fetchCurrentMapDataset();
+      if (revision !== datasetRequestRevision.current) return;
+      setMapDataset(dataset);
+      setMapDatasetStatus("ready");
+      setError("");
+    } catch {
+      if (revision !== datasetRequestRevision.current) return;
+      setMapDataset(null);
+      setMapDatasetStatus("unavailable");
+      setError("Актуальный набор данных карты пока недоступен");
+    }
+  }, []);
 
   React.useEffect(() => {
     if (active) void load();
   }, [active, load, refreshToken]);
+  React.useEffect(() => {
+    if (!tileMode) return;
+    requestRevision.current += 1;
+    requestController.current?.abort();
+    setLoading(false);
+  }, [tileMode]);
   React.useEffect(() => () => requestController.current?.abort(), []);
   React.useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
@@ -697,6 +824,52 @@ export function MapView({
       })
       .catch(() => setIsAdmin(false));
   }, []);
+  React.useEffect(() => {
+    void loadCurrentMapDataset();
+    return () => { datasetRequestRevision.current += 1; };
+  }, [loadCurrentMapDataset, refreshToken]);
+  React.useEffect(() => {
+    if (!active || !tileMode || !mapDataset || !viewport) {
+      tileRequestRevision.current += 1;
+      visibleTileSetSignature.current = null;
+      setTileEntries([]);
+      return;
+    }
+    const coordinates = visibleTileCoordinates(viewport, viewportZoom);
+    const signature = `${mapDataset.version}|${coordinates.map((tile) => tile.key).sort().join("|")}`;
+    if (visibleTileSetSignature.current === signature) return;
+    visibleTileSetSignature.current = signature;
+    const revision = ++tileRequestRevision.current;
+    setLoading(true);
+    Promise.all(coordinates.map(async (tile) => ({
+      key: `${mapDataset.version}/${tile.key}`,
+      features: applyMapTileReviewOverrides(
+        (await fetchCachedMapTile(
+          completedTileCache.current,
+          inflightTileRequests.current,
+          mapDataset.version,
+          tile,
+        )).features,
+        reviewOverrides.current,
+      ),
+    }))).then((entries) => {
+      if (revision !== tileRequestRevision.current) return;
+      setTileEntries(entries);
+      setStatistics((value) => ({
+        ...value, total: mapDataset.point_count, mapped: mapDataset.point_count,
+        returned: entries.reduce((count, entry) => count + entry.features.length, 0),
+        truncated: false, updatedAt: mapDataset.published_at, exact: true,
+      }));
+      setError("");
+    }).catch((err) => {
+      if (revision !== tileRequestRevision.current) return;
+      visibleTileSetSignature.current = null;
+      if (!(err instanceof DOMException && err.name === "AbortError")) setError("Не удалось загрузить тайлы карты");
+    }).finally(() => {
+      if (revision === tileRequestRevision.current) setLoading(false);
+    });
+  }, [active, mapDataset, tileMode, viewport, viewportZoom]);
+  React.useEffect(() => () => { tileRequestRevision.current += 1; }, []);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
@@ -711,6 +884,7 @@ export function MapView({
           lot.id === lotId ? { ...lot, review_status: status } : lot,
         ),
       );
+      setReviewMarkerUpdate((value) => ({ lotId, status, revision: (value?.revision ?? 0) + 1 }));
       setSelectedLot((lot) => lot?.id === lotId ? { ...lot, review_status: status } : lot);
     } catch (err) {
       setError(
@@ -756,6 +930,7 @@ export function MapView({
         current?.every((value, index) => value === next[index]) ? current : next,
       );
       setViewportLimit(mapLimitForZoom(zoom));
+      setViewportZoom(zoom);
     },
     [],
   );
@@ -921,11 +1096,12 @@ export function MapView({
               </div>
             </fieldset>
             {loading && <MapState>Обновление меток…</MapState>}
+            {tileMode && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
             {mapNotice && <MapState>{mapNotice}</MapState>}
             {message && <MapState>{message}</MapState>}
             {error && <MapState error>{error}</MapState>}
             <small className="mapLotCount">
-              На карте: {visibleLots.length} лотов
+              На карте: {visibleMapObjects} объектов слоя
             </small>
           </div>
         )}
@@ -938,11 +1114,13 @@ export function MapView({
             catch (err) { setError(String(err)); }
           }}><Search size={14} />Найти</button>
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
-          <button onClick={() => load()}><RefreshCcw size={14} />Обновить метки</button>
+          <button onClick={() => tileMode ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
           {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
         </div>
         <YandexDesktopMap
           lots={visibleLots}
+          tileEntries={tileEntries}
+          reviewMarkerUpdate={reviewMarkerUpdate}
           selectedCadastre={cad}
           showCadastre={showCadastre}
           selectedLotId={selectedLotId}
@@ -960,7 +1138,7 @@ export function MapView({
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты">
           <span>
-            {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleLots.length} на карте
+            {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте
             {statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
             {timings.api > 0 && (
               <> · API {Math.round(timings.api)} мс · карта {Math.round(timings.render)} мс{timings.cached ? " · кеш" : ""}</>
@@ -970,7 +1148,7 @@ export function MapView({
             {statusContent}
             <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
               <i />
-              {loading ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
+              {loading || (tileMode && mapDatasetStatus === "loading") ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
             </span>
           </div>
         </footer>

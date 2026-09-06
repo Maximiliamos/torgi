@@ -72,10 +72,43 @@ def expire_ended_lots_task() -> dict[str, int]:
 
 
 @celery_app.task(name="bankrotai.tasks.geocode_pending_lots_task")
-def geocode_pending_lots_task() -> dict[str, int]:
+def geocode_pending_lots_task() -> dict[str, Any]:
     from bankrotai.services.geo_backfill import geocode_pending_lots
 
-    return geocode_pending_lots(SessionLocal, limit=50)
+    result: dict[str, Any] = geocode_pending_lots(SessionLocal, limit=50)
+    if result.get("geocoded", 0):
+        result["map_dataset_build"] = _schedule_map_dataset_build()
+    return result
+
+
+@celery_app.task(name="bankrotai.tasks.build_map_dataset_task")
+def build_map_dataset_task() -> dict:
+    """Publish a new immutable map version after source or geo changes."""
+    from redis import Redis
+
+    from bankrotai.services.map_builder import build_map_dataset
+
+    client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    lock = client.lock("bankrotai:map-dataset-build", timeout=1800, blocking_timeout=0)
+    if not lock.acquire(blocking=False):
+        return {"status": "skipped", "reason": "build-already-running"}
+    try:
+        return {"status": "published", **build_map_dataset(SessionLocal)}
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            logger.warning("Map dataset lock expired before release")
+
+
+def _schedule_map_dataset_build() -> dict[str, str]:
+    """Best-effort scheduling must never turn a completed data job into a failure."""
+    try:
+        queued = build_map_dataset_task.delay()
+        return {"status": "queued", "task_id": str(queued.id)}
+    except Exception as exc:
+        logger.exception("Map dataset build scheduling failed; a later run or CLI build can recover it")
+        return {"status": "schedule_failed", "error": str(exc)[:500]}
 
 
 def _progress(**overrides: Any) -> dict[str, Any]:
@@ -240,7 +273,17 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
             specs = source_full_specs(mode.removeprefix("source:"))
         else:
             raise ValueError(f"Unsupported nationwide sync mode: {mode}")
-        return run_nationwide_sync(SessionLocal, run_id, specs)
+        result = run_nationwide_sync(SessionLocal, run_id, specs)
+        if result.get("status") in {"success", "partial"}:
+            result["map_dataset_build"] = _schedule_map_dataset_build()
+            try:
+                with session_scope() as session:
+                    run = session.get(LotSyncRun, run_id)
+                    if run is not None:
+                        run.result_json = result
+            except Exception:
+                logger.exception("Could not persist map build scheduling diagnostics for sync %s", run_id)
+        return result
     except Exception as exc:
         with session_scope() as session:
             error_message = str(exc) or exc.__class__.__name__

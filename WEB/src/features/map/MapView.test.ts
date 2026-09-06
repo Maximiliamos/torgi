@@ -6,6 +6,7 @@ import {
   mapLimitForZoom,
   mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
+  visibleTileCoordinates,
 } from "./MapView";
 
 describe("map lot selection", () => {
@@ -41,5 +42,23 @@ describe("wide viewport request budget", () => {
     expect(mapBoundsPrecision(9)).toBe(2);
     expect(mapBoundsPrecision(12)).toBe(3);
     expect(mapBoundsPrecision(16)).toBe(4);
+  });
+});
+
+describe("precomputed map tiles", () => {
+  it("requests only tiles intersecting the visible viewport", () => {
+    const tiles = visibleTileCoordinates([37.4, 55.6, 37.9, 55.9], 10);
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles.length).toBeLessThanOrEqual(9);
+    expect(new Set(tiles.map((tile) => tile.key)).size).toBe(tiles.length);
+    expect(tiles.every((tile) => tile.z === 10)).toBe(true);
+  });
+
+  it("splits a viewport crossing the date line without scanning the world", () => {
+    const tiles = visibleTileCoordinates([179, -10, -179, 10], 5);
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles.length).toBeLessThanOrEqual(8);
+    expect(tiles.some((tile) => tile.x === 0)).toBe(true);
+    expect(tiles.some((tile) => tile.x === 31)).toBe(true);
   });
 });

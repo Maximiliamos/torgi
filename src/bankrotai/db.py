@@ -588,6 +588,42 @@ class DiagnosticEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
 
 
+class MapDataset(Base):
+    __tablename__ = "map_datasets"
+    __table_args__ = (
+        Index(
+            "uq_map_datasets_single_current",
+            literal_column("(1)"),
+            unique=True,
+            postgresql_where=text("is_current"),
+            sqlite_where=text("is_current = 1"),
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="building", index=True)
+    is_current: Mapped[bool] = mapped_column(nullable=False, default=False, index=True)
+    point_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tile_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class MapTile(Base):
+    __tablename__ = "map_tiles"
+    __table_args__ = (UniqueConstraint("dataset_id", "z", "x", "y", name="uq_map_tile_coordinate"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("map_datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    z: Mapped[int] = mapped_column(Integer, nullable=False)
+    x: Mapped[int] = mapped_column(Integer, nullable=False)
+    y: Mapped[int] = mapped_column(Integer, nullable=False)
+    feature_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    etag: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class Watchlist(Base):
     __tablename__ = "watchlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -700,7 +736,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "e6f7a8b9c0d1"
+SCHEMA_REVISION = "f7a8b9c0d1e2"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False

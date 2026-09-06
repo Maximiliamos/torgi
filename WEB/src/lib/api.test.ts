@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -85,5 +85,26 @@ describe("API client", () => {
       .rejects.toMatchObject({ status: 502 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("limit")).toBe("1000");
+  });
+
+  it.each([
+    { features: null },
+    { features: [{}] },
+    { features: [{ kind: "lot", id: 1, lat: "55.7", lon: 37.6 }] },
+    { features: [{ kind: "lot", id: 1, lat: 95, lon: 37.6 }] },
+    { features: [{ kind: "cluster", id: "c", lat: 55.7, lon: 37.6, count: 0, bounds: [] }] },
+  ])("rejects a malformed map tile payload %#", async (payload) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+    await expect(fetchMapTile("v1", 10, 1, 1)).rejects.toThrow(/тайла карты/);
+  });
+
+  it("accepts valid tile features and ignores unknown extra fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ features: [
+      { kind: "lot", id: 1, lat: 55.7, lon: 37.6, title: "Лот", future_field: true },
+      { kind: "cluster", id: "c:1", lat: 55.8, lon: 37.7, count: 2, bounds: [37, 55, 38, 56] },
+    ] }), { status: 200 }));
+    await expect(fetchMapTile("v1", 10, 1, 1)).resolves.toMatchObject({ features: [{ id: 1 }, { id: "c:1" }] });
   });
 });

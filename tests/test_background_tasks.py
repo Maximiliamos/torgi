@@ -65,6 +65,21 @@ def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
     assert captured["specs"][0].reconcile_missing is True
 
 
+def test_completed_ingestion_survives_map_build_queue_failure(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "run_nationwide_sync", lambda *_args: {"status": "success"})
+    monkeypatch.setattr(
+        tasks.build_map_dataset_task,
+        "delay",
+        lambda: (_ for _ in ()).throw(ConnectionError("queue unavailable")),
+    )
+
+    result = tasks.nationwide_lot_sync_task.run("run-without-database-row", "source:bidexpert.ru")
+
+    assert result["status"] == "success"
+    assert result["map_dataset_build"]["status"] == "schedule_failed"
+    assert "queue unavailable" in result["map_dataset_build"]["error"]
+
+
 def test_source_only_schedule_uses_schema_safe_trigger_type(monkeypatch) -> None:
     class FakeService:
         def __init__(self, _session_factory):

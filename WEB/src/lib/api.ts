@@ -361,6 +361,61 @@ export type MapViewportQuery = {
   review_status?: "approved" | "maybe" | "rejected";
   limit?: number;
 };
+export type MapDataset = {
+  version: string;
+  point_count: number;
+  tile_count: number;
+  max_zoom: number;
+  point_zoom: number;
+  published_at: string;
+};
+export type MapTileFeature = {
+  kind: "cluster" | "lot";
+  id: string | number;
+  lat: number;
+  lon: number;
+  count?: number;
+  bounds?: [number, number, number, number];
+  title?: string;
+  current_price?: number | null;
+  start_price?: number | null;
+  status?: string;
+  review_status?: string | null;
+};
+export type MapTilePayload = { features: MapTileFeature[] };
+
+function isFiniteCoordinate(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+export function validateMapTilePayload(value: unknown): MapTilePayload {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { features?: unknown }).features)) {
+    throw new ApiError("Некорректный формат тайла карты");
+  }
+  const features = (value as { features: unknown[] }).features;
+  for (const feature of features) {
+    if (!feature || typeof feature !== "object") throw new ApiError("Некорректный объект тайла карты");
+    const item = feature as Record<string, unknown>;
+    if (item.kind !== "cluster" && item.kind !== "lot") throw new ApiError("Неизвестный тип объекта тайла карты");
+    if ((typeof item.id !== "string" && typeof item.id !== "number") || item.id === "") {
+      throw new ApiError("Некорректный ID объекта тайла карты");
+    }
+    if (!isFiniteCoordinate(item.lat, -85.05112878, 85.05112878) ||
+        !isFiniteCoordinate(item.lon, -180, 180)) {
+      throw new ApiError("Некорректные координаты объекта тайла карты");
+    }
+    if (item.kind === "cluster") {
+      if (!Number.isInteger(item.count) || (item.count as number) < 1 ||
+          !Array.isArray(item.bounds) || item.bounds.length !== 4 ||
+          !item.bounds.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))) {
+        throw new ApiError("Некорректный кластер тайла карты");
+      }
+    } else if (typeof item.id !== "number" || !Number.isInteger(item.id)) {
+      throw new ApiError("Некорректный ID лота тайла карты");
+    }
+  }
+  return value as MapTilePayload;
+}
 export type LotSyncStatus = {
   task_id: string;
   status: string;
@@ -377,6 +432,12 @@ export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>
   requestJson<MapLot>(`/api/map/lots/${lotId}`);
+export const fetchCurrentMapDataset = () =>
+  requestJson<MapDataset>("/api/map/datasets/current");
+export const fetchMapTile = async (version: string, z: number, x: number, y: number, signal?: AbortSignal) =>
+  validateMapTilePayload(await requestJson<unknown>(
+    `/api/map/tiles/${encodeURIComponent(version)}/${z}/${x}/${y}`, undefined, { signal },
+  ));
 
 const MAP_CACHE_NAME = "bankrotai-map-v3";
 const MAP_CACHE_MAX_ENTRIES = 50;
