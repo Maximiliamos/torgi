@@ -70,13 +70,15 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
   await page.getByRole("button", { name: "Карта", exact: true }).click();
   const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(frameElement).toBeVisible();
-  const frame = page.frames().find((candidate) => candidate !== page.mainFrame() && candidate.url() === "about:srcdoc");
-  expect(frame).toBeTruthy();
+  const currentMapFrame = () => page.frames().find(
+    (candidate) => candidate !== page.mainFrame() && candidate.url() === "about:srcdoc",
+  );
+  expect(currentMapFrame()).toBeTruthy();
   await expect(page.frameLocator('iframe[title="Яндекс.Карта лотов"]').locator("#hint")).toBeHidden({ timeout: 30_000 });
-  await expect.poll(() => frame!.evaluate(() => Boolean(
+  await expect.poll(() => currentMapFrame()!.evaluate(() => Boolean(
     (window as unknown as { bankrotaiDebug?: unknown }).bankrotaiDebug,
   )), { timeout: 30_000 }).toBe(true);
-  const setViewport = (center: number[], zoom: number) => frame!.evaluate(({ center, zoom }) =>
+  const setViewport = (center: number[], zoom: number) => currentMapFrame()!.evaluate(({ center, zoom }) =>
     (window as unknown as { bankrotaiDebug: { setViewport: (value: number[], level: number) => void } })
       .bankrotaiDebug.setViewport(center, zoom), { center, zoom });
 
@@ -107,7 +109,7 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
   expect(tilePaths.length).toBe(afterPan);
   const panBackRequests = tilePaths.length - afterPan;
 
-  await frame!.evaluate(() => parent.postMessage({
+  await currentMapFrame()!.evaluate(() => parent.postMessage({
     type: "bankrotai-select", channel: "bankrotai-map-v1", lotId: 7001,
   }, "*"));
   await expect(page.getByLabel("Карточка выбранного лота")).toContainText("Полная карточка");
