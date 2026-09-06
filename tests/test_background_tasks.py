@@ -49,6 +49,44 @@ def test_unavailable_queue_returns_503(monkeypatch) -> None:
     assert client.post("/api/online/torgi-gov/sync", json={}).status_code == 503
 
 
+def test_bulk_schedule_persists_queued_state_before_publish(monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(tasks, "uuid", lambda: "task-before-publish")
+    monkeypatch.setattr(tasks, "_set_task_state", lambda task_id, **values: events.append(("state", task_id, values)))
+    monkeypatch.setattr(
+        tasks.bulk_torgi_gov_sync_task,
+        "apply_async",
+        lambda **values: events.append(("publish", values)),
+    )
+
+    assert tasks.schedule_bulk_torgi_sync({"search_text": "smoke"}, 1) == "task-before-publish"
+    assert events[0][0:2] == ("state", "task-before-publish")
+    assert events[0][2]["status"] == "queued"
+    assert events[1] == (
+        "publish",
+        {"args": [{"search_text": "smoke"}, 1], "task_id": "task-before-publish"},
+    )
+
+
+def test_bulk_schedule_records_publish_failure(monkeypatch) -> None:
+    states = []
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(tasks, "uuid", lambda: "task-publish-failed")
+    monkeypatch.setattr(tasks, "_set_task_state", lambda task_id, **values: states.append((task_id, values)))
+    monkeypatch.setattr(
+        tasks.bulk_torgi_gov_sync_task,
+        "apply_async",
+        lambda **_values: (_ for _ in ()).throw(ConnectionError("redis unavailable")),
+    )
+
+    with pytest.raises(tasks.QueueUnavailableError):
+        tasks.schedule_bulk_torgi_sync({}, 1)
+
+    assert [values["status"] for _, values in states] == ["queued", "failed"]
+    assert states[-1][1]["error"] == "redis unavailable"
+
+
 def test_nationwide_sync_start_returns_queued_task(monkeypatch) -> None:
     monkeypatch.setattr(api, "schedule_nationwide_lot_sync", lambda **_kwargs: "sync-123")
     response = client.post("/api/sync/lots")

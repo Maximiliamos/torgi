@@ -34,7 +34,7 @@ describe("API origin failover proxy", () => {
     }), { KOYEB_SERVICE_KEY: "bound-secret" });
 
     const upstream = fetchMock.mock.calls[0][0];
-    expect(upstream.url).toBe("https://194-226-126-233.sslip.io/api/auth/me");
+    expect(upstream.url).toBe("https://home-relay.194-226-126-233.sslip.io/api/auth/me");
     expect(upstream.headers.get("authorization")).toBeNull();
     expect(upstream.headers.get("x-api-key")).toBe("bound-secret");
     expect(upstream.headers.get("cookie")).toBe("session=signed");
@@ -103,7 +103,7 @@ describe("API origin failover proxy", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[1][0].url).toBe("https://194-226-126-233.sslip.io/health/live");
+    expect(fetchMock.mock.calls[1][0].url).toBe("https://home-relay.194-226-126-233.sslip.io/health/live");
     expect(fetchMock.mock.calls[2][0].url).toBe("https://secondary.example.test/health/live");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "alive" });
