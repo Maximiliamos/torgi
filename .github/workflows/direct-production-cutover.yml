@@ -1,0 +1,81 @@
+name: Direct REG.RU production traffic
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Switch canonical DNS to REG.RU or restore the previous Cloudflare edge
+        required: true
+        type: choice
+        options: [switch, rollback]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: direct-regru-production-traffic
+  cancel-in-progress: false
+
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate requested immutable release
+        if: inputs.action == 'switch'
+        run: |
+          set -euo pipefail
+          test "$(curl --fail --silent --show-error --max-time 20 https://194-226-126-233.sslip.io/deployment.json | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')" = "$GITHUB_SHA"
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://194-226-126-233.sslip.io/health/ready || true)" = "200"
+      - name: Switch DNS and verify direct TLS or rollback automatically
+        if: inputs.action == 'switch'
+        run: |
+          set -euo pipefail
+          rollback() {
+            python scripts/cloudflare_direct_cutover.py --action rollback
+          }
+          trap rollback ERR
+          python scripts/cloudflare_direct_cutover.py --action switch --snapshot "$RUNNER_TEMP/dns-before.json"
+          ready=false
+          for attempt in $(seq 1 60); do
+            apex="$(dig +short A dezster.ru @1.1.1.1 | sort -u | tr '\n' ' ')"
+            www="$(dig +short A www.dezster.ru @1.1.1.1 | sort -u | tr '\n' ' ')"
+            api="$(dig +short A api.dezster.ru @1.1.1.1 | sort -u | tr '\n' ' ')"
+            if test "$apex" = "194.226.126.233 " \
+              && test "$www" = "194.226.126.233 " \
+              && test "$api" = "194.226.126.233 " \
+              && test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://dezster.ru/health/ready || true)" = "200" \
+              && test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://api.dezster.ru/health/ready || true)" = "200"; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          test "$(curl --fail --silent --show-error --max-time 20 https://dezster.ru/deployment.json | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')" = "$GITHUB_SHA"
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://dezster.ru/api/auth/me || true)" = "401"
+          trap - ERR
+      - name: Restore previous Cloudflare edge DNS
+        if: inputs.action == 'rollback'
+        run: python scripts/cloudflare_direct_cutover.py --action rollback --snapshot "$RUNNER_TEMP/dns-before.json"
+      - name: Verify rollback edge health
+        if: inputs.action == 'rollback'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://dezster.ru/health/live || true)" = "200"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: direct-regru-dns-${{ inputs.action }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/dns-before.json
+          if-no-files-found: ignore
+          retention-days: 30
