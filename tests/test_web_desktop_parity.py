@@ -121,6 +121,21 @@ def test_cold_bounded_map_defers_full_statistics(monkeypatch) -> None:
     assert response.json()["returned"] == 1
 
 
+def test_large_legacy_map_response_is_compressed_for_the_relay(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+    api._map_response_cache.clear()
+
+    response = client.get(
+        "/api/map/lots",
+        params={"west": 20, "south": 45, "east": 60, "north": 70, "limit": 250},
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    assert "Accept-Encoding" in response.headers["vary"]
+
+
 def test_read_only_production_allows_curated_desktop_parity_tools(monkeypatch) -> None:
     client, lot_id = _authenticated_client(monkeypatch)
 
