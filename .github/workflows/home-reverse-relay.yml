@@ -164,6 +164,7 @@ jobs:
           $relayProbe = 'https://home-relay.194-226-126-233.sslip.io/health/live'
           $reverseMapping = 'tcp://0.0.0.0:18080:127.0.0.1:18000'
           $relayUrl = 'wss://relay.194-226-126-233.sslip.io'
+          $connectionMinIdle = '5'
           $env:NO_COLOR = 'true'
           function ConvertTo-CommandLineArguments {
             param([string] $commandLine)
@@ -201,7 +202,12 @@ jobs:
           function Test-ConnectorCommandLine {
             param([string] $commandLine)
             $commandArgs = @(ConvertTo-CommandLineArguments $commandLine)
-            return ($commandArgs -ccontains $reverseMapping -and $commandArgs -ccontains $relayUrl)
+            return (
+              $commandArgs -ccontains $reverseMapping -and
+              $commandArgs -ccontains $relayUrl -and
+              $commandArgs -ccontains '--connection-min-idle' -and
+              $commandArgs -ccontains $connectionMinIdle
+            )
           }
           function Get-ConnectorProcesses {
             @(Get-CimInstance Win32_Process -Filter "Name = 'wstunnel.exe'" | Where-Object {
@@ -237,7 +243,7 @@ jobs:
           if ($remaining.Count -gt 0) {
             throw "Matching wstunnel connector(s) did not exit within the bounded restart window: $($remaining.ProcessId -join ',')"
           }
-          $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','-R','tcp://0.0.0.0:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
+          $args = @('client','--log-lvl','INFO','--http-headers-file',$headers,'--websocket-ping-frequency','15s','--connection-min-idle','5','-R','tcp://0.0.0.0:18080:127.0.0.1:18000','wss://relay.194-226-126-233.sslip.io')
           Start-Process -FilePath $binary -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
           $lastDiagnostic = 'new connector did not report a health sample'
           for ($attempt = 1; $attempt -le 4; $attempt++) {
