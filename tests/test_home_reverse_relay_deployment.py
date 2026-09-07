@@ -28,6 +28,9 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "--websocket-ping-frequency','15s'" in workflow
     assert "--connection-min-idle','5'" in workflow
     assert "$commandArgs -ccontains '--connection-min-idle'" in workflow
+    assert "function Get-RelayProcesses" in workflow
+    assert "$allRelayProcesses.Count -eq 1" in workflow
+    assert "$taskStillRunningResult = 267009" in workflow
     assert "Require 20 consecutive public successes" in workflow
     assert "--network bankrotai" in workflow
     assert "RUN chmod 755 /usr/local/bin/bankrotai-wstunnel" in workflow

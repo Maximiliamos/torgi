@@ -209,9 +209,19 @@ jobs:
               $commandArgs -ccontains $connectionMinIdle
             )
           }
+          function Test-RelayCommandLine {
+            param([string] $commandLine)
+            $commandArgs = @(ConvertTo-CommandLineArguments $commandLine)
+            return ($commandArgs -ccontains $reverseMapping -and $commandArgs -ccontains $relayUrl)
+          }
           function Get-ConnectorProcesses {
             @(Get-CimInstance Win32_Process -Filter "Name = 'wstunnel.exe'" | Where-Object {
               $_.CommandLine -and (Test-ConnectorCommandLine $_.CommandLine)
+            })
+          }
+          function Get-RelayProcesses {
+            @(Get-CimInstance Win32_Process -Filter "Name = 'wstunnel.exe'" | Where-Object {
+              $_.CommandLine -and (Test-RelayCommandLine $_.CommandLine)
             })
           }
           function Get-RelayHealth {
@@ -229,17 +239,18 @@ jobs:
               if ($sample -lt 2) { Start-Sleep -Seconds 2 }
             }
           }
-          if ($existing.Count -eq 1 -and $healthySamples -eq 2) { exit 0 }
+          $allRelayProcesses = @(Get-RelayProcesses)
+          if ($existing.Count -eq 1 -and $allRelayProcesses.Count -eq 1 -and $healthySamples -eq 2) { exit 0 }
 
           $stopDeadline = (Get-Date).AddSeconds(8)
           do {
-            $matching = @(Get-ConnectorProcesses)
+            $matching = @(Get-RelayProcesses)
             $matching | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             if ($matching.Count -gt 0) {
               Start-Sleep -Seconds 1
             }
-          } while ((Get-ConnectorProcesses).Count -gt 0 -and (Get-Date) -lt $stopDeadline)
-          $remaining = @(Get-ConnectorProcesses)
+          } while ((Get-RelayProcesses).Count -gt 0 -and (Get-Date) -lt $stopDeadline)
+          $remaining = @(Get-RelayProcesses)
           if ($remaining.Count -gt 0) {
             throw "Matching wstunnel connector(s) did not exit within the bounded restart window: $($remaining.ProcessId -join ',')"
           }
@@ -248,9 +259,10 @@ jobs:
           $lastDiagnostic = 'new connector did not report a health sample'
           for ($attempt = 1; $attempt -le 4; $attempt++) {
             $matching = @(Get-ConnectorProcesses)
+            $allRelayProcesses = @(Get-RelayProcesses)
             $probe = Get-RelayHealth
-            $lastDiagnostic = "attempt $attempt/4: matchingConnectorCount=$($matching.Count) pids=$($matching.ProcessId -join ','); publicStatus=$($probe.Status); curlExit=$($probe.ExitCode)"
-            if ($matching.Count -eq 1 -and $probe.ExitCode -eq 0 -and $probe.Status -eq '200') { exit 0 }
+            $lastDiagnostic = "attempt $attempt/4: configuredConnectorCount=$($matching.Count) allRelayConnectorCount=$($allRelayProcesses.Count) pids=$($allRelayProcesses.ProcessId -join ','); publicStatus=$($probe.Status); curlExit=$($probe.ExitCode)"
+            if ($matching.Count -eq 1 -and $allRelayProcesses.Count -eq 1 -and $probe.ExitCode -eq 0 -and $probe.Status -eq '200') { exit 0 }
             if ($attempt -lt 4) { Start-Sleep -Seconds 2 }
           }
           throw "New matching wstunnel connector did not converge: $lastDiagnostic"
@@ -493,6 +505,7 @@ jobs:
           }
           $completionDeadline = $waitStarted.AddSeconds(130)
           $completed = $false
+          $taskStillRunningResult = 267009
           do {
             Start-Sleep -Seconds 2
             $task = Get-ScheduledTask -TaskName $selectedTaskName -ErrorAction Stop
@@ -507,7 +520,7 @@ jobs:
               throw "Scheduled $selectedMode watchdog '$selectedTaskName' has unreadable execution state"
             }
             $isCorrelatedRun = $lastRunTime -gt $previousLastRun -and $lastRunTime -ge $waitStarted.AddSeconds(-1) -and $lastRunTime -le $completionDeadline
-            if ($isCorrelatedRun -and $state -ne 'Running') {
+            if ($isCorrelatedRun -and $state -ne 'Running' -and $lastTaskResult -ne $taskStillRunningResult) {
               if ($lastTaskResult -ne 0) {
                 throw "Scheduled $selectedMode watchdog '$selectedTaskName' failed after dispatch: result=$($taskInfo.LastTaskResult); lastRun=$($taskInfo.LastRunTime.ToString('o'))"
               }
