@@ -343,7 +343,7 @@ jobs:
           DOCKER_GATEWAY="$(docker network inspect bankrotai --format '{{(index .IPAM.Config 0).Gateway}}')"
           test -n "$DOCKER_GATEWAY"
           cat > /opt/bankrotai/Caddyfile.next <<CADDY
-          ${API_HOSTNAME} {
+          ${API_HOSTNAME}, dezster.ru, www.dezster.ru, api.dezster.ru {
             encode zstd gzip
 
             @backend path /api /api/* /health /health/*
