@@ -43,6 +43,18 @@ def test_home_relay_has_watchdog_and_public_stability_gate() -> None:
     assert "$env:NO_COLOR = 'true'" in workflow
 
 
+def test_home_relay_bypasses_the_workstation_vpn_for_regru_only() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "Pin REG.RU relay outside the workstation VPN" in workflow
+    assert "$destination = '194.226.126.233/32'" in workflow
+    assert "Get-NetAdapter -Physical" in workflow
+    assert "DestinationPrefix '0.0.0.0/0'" in workflow
+    assert "Get-CimInstance Win32_IP4PersistedRouteTable" in workflow
+    assert "route.exe -p add 194.226.126.233 mask 255.255.255.255" in workflow
+    assert "PolicyStore ActiveStore" in workflow
+    assert "REG.RU relay route did not converge on the physical uplink" in workflow
+
+
 def test_regru_caddy_routes_application_api_through_home_relay() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
     assert len(re.findall(r"reverse_proxy bankrotai-wstunnel:18080", workflow)) == 2

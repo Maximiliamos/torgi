@@ -127,6 +127,31 @@ jobs:
       CONFIG_ROOT: C:\ProgramData\BankrotAI\relay
     steps:
       - uses: actions/checkout@v7
+      - name: Pin REG.RU relay outside the workstation VPN
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = '194.226.126.233/32'
+          $physicalIndexes = @(Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty ifIndex)
+          $candidates = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore | Where-Object {
+            $_.NextHop -ne '0.0.0.0' -and $physicalIndexes -contains $_.InterfaceIndex
+          } | Sort-Object @{ Expression = {
+            $_.RouteMetric + (Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $_.InterfaceIndex).InterfaceMetric
+          }})
+          if ($candidates.Count -eq 0) { throw 'No active physical IPv4 default route is available for the REG.RU relay' }
+          $uplink = $candidates[0]
+          $persistent = @(Get-CimInstance Win32_IP4PersistedRouteTable | Where-Object {
+            $_.Destination -eq '194.226.126.233' -and $_.Mask -eq '255.255.255.255'
+          })
+          $matching = @($persistent | Where-Object { $_.NextHop -eq $uplink.NextHop })
+          if ($matching.Count -ne 1 -or $persistent.Count -ne 1) {
+            & route.exe delete 194.226.126.233 2>$null | Out-Null
+            & route.exe -p add 194.226.126.233 mask 255.255.255.255 $uplink.NextHop metric 1 if $uplink.InterfaceIndex | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install the persistent REG.RU relay route' }
+          }
+          $selected = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $destination -PolicyStore ActiveStore | Where-Object { $_.InterfaceIndex -eq $uplink.InterfaceIndex -and $_.NextHop -eq $uplink.NextHop }
+          if (-not $selected) { throw 'REG.RU relay route did not converge on the physical uplink' }
+          Write-Host "REG.RU relay route pinned persistently to physical interface index $($uplink.InterfaceIndex)"
       - name: Install pinned wstunnel client
         shell: powershell
         run: |
