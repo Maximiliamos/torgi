@@ -163,7 +163,10 @@ def _geocode_pending_lots_unlocked(
             if re_geocode_existing
             else or_(
                 ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
-                ProcessedLot.needs_geo_check.is_(True),
+                (
+                    ProcessedLot.needs_geo_check.is_(True)
+                    & ProcessedLot.geo_input_hash.is_(None)
+                ),
             )
         )
         lot_ids = list(

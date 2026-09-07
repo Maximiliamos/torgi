@@ -99,3 +99,65 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
         assert lot is not None
         assert lot.geo_input_hash is not None
         assert len(lot.geo_input_hash) == 64
+
+
+def test_low_confidence_result_is_not_retried_until_geo_input_changes(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="geo-backfill-low-confidence",
+            source="test",
+            source_system="test",
+            title="Участок с неточным адресом",
+            description="",
+            category="land",
+            address="Ярославская область",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+
+    calls = 0
+
+    def resolve(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return CadastralObjectResult(
+            query="Ярославская область",
+            lat=57.6261,
+            lon=39.8845,
+            source="fixture",
+            confidence="low",
+        )
+
+    monkeypatch.setattr(geo_backfill, "resolve_lot_geo", resolve)
+
+    first = geo_backfill.geocode_pending_lots(scope, limit=1)
+    second = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert first == {"queued": 1, "geocoded": 1, "failed": 0}
+    assert second == {"queued": 0, "geocoded": 0, "failed": 0}
+    assert calls == 1
+    with scope() as session:
+        lot = session.get(ProcessedLot, lot_id)
+        assert lot is not None
+        assert lot.needs_geo_check is True
+        assert lot.geo_input_hash is not None
+        assert len(session.scalars(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot_id)).all()) == 1
