@@ -2,6 +2,17 @@ name: Production functional reliability
 
 on:
   workflow_dispatch:
+    inputs:
+      web_base_url:
+        description: WEB origin to verify
+        required: false
+        default: "https://dezster.ru"
+        type: string
+      api_base_url:
+        description: API origin to verify
+        required: false
+        default: "https://api.dezster.ru"
+        type: string
   workflow_run:
     workflows: [Deploy Cloudflare edge proxy]
     types: [completed]
@@ -23,7 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      E2E_BASE_URL: https://dezster.ru
+      E2E_BASE_URL: ${{ inputs.web_base_url || 'https://dezster.ru' }}
+      E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.dezster.ru' }}
       E2E_PRODUCTION_AUDIT: "1"
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
@@ -54,11 +66,11 @@ jobs:
           done
           for attempt in $(seq 1 6); do
             LIVE_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.dezster.ru/health/live || true)"
+              "$E2E_API_BASE_URL/health/live" || true)"
             READY_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.dezster.ru/health/ready || true)"
+              "$E2E_API_BASE_URL/health/ready" || true)"
             AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)"
+              "$E2E_BASE_URL/api/auth/me" || true)"
             if [ "$LIVE_STATUS" = "200" ] && [ "$READY_STATUS" = "200" ] && [ "$AUTH_STATUS" = "401" ]; then
               break
             fi
@@ -69,7 +81,7 @@ jobs:
             sleep 10
           done
           DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
-            -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
+            -H 'Cache-Control: no-cache' "$E2E_BASE_URL/deployment.json" \
             | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
           test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
       - working-directory: WEB

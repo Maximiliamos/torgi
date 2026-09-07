@@ -69,6 +69,16 @@ def test_regru_caddy_routes_application_api_through_home_relay() -> None:
     assert "Keep the legacy bankrotai-api container and image untouched" in workflow
 
 
+def test_production_functional_gate_can_target_the_direct_regru_origin() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "production-functional.yml").read_text(encoding="utf-8")
+    assert "web_base_url:" in workflow
+    assert "api_base_url:" in workflow
+    assert "E2E_BASE_URL: ${{ inputs.web_base_url || 'https://dezster.ru' }}" in workflow
+    assert "E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.dezster.ru' }}" in workflow
+    assert '"$E2E_API_BASE_URL/health/live"' in workflow
+    assert '"$E2E_BASE_URL/deployment.json"' in workflow
+
+
 def test_regular_regru_deploy_preserves_wss_ingress() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
     assert "WSS_HOSTNAME: relay.194-226-126-233.sslip.io" in workflow
