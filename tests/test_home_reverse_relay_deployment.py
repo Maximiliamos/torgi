@@ -91,6 +91,11 @@ def test_regular_regru_deploy_preserves_wss_ingress() -> None:
     )
 
 
+def test_regru_deploy_serves_canonical_production_hostnames() -> None:
+    workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    assert "${API_HOSTNAME}, dezster.ru, www.dezster.ru, api.dezster.ru {" in workflow
+
+
 def test_regru_deploy_gates_switch_on_staged_home_api_and_dataset() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
     assert "for stability_check in $(seq 1 20)" in workflow
