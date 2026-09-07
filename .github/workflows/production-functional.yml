@@ -35,7 +35,7 @@ jobs:
           - name: canonical-cloudflare
             base_url: https://dezster.ru
           - name: direct-regru
-            base_url: https://194-226-126-126-233.sslip.io
+            base_url: https://194-226-126-233.sslip.io
     env:
       E2E_BASE_URL: ${{ matrix.base_url }}
     steps:
