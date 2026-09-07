@@ -17,59 +17,76 @@ concurrency:
   group: production-functional-reliability
   cancel-in-progress: true
 
+env:
+  E2E_PRODUCTION_AUDIT: "1"
+  E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+  E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
   production-functional:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: canonical-cloudflare
+            base_url: https://dezster.ru
+          - name: direct-regru
+            base_url: https://194-226-126-126-233.sslip.io
     env:
-      E2E_BASE_URL: https://dezster.ru
-      E2E_PRODUCTION_AUDIT: "1"
-      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
-      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
-      GH_TOKEN: ${{ github.token }}
+      E2E_BASE_URL: ${{ matrix.base_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
-        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
-      - name: Verify production provenance and public health
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: WEB/package-lock.json
+      - name: Verify public health and provenance
         shell: bash
         run: |
           set -euo pipefail
-          EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
-          test -n "$EXPECTED_SHA"
-          for attempt in $(seq 1 120); do
-            RUN_STATE="$(curl --fail --silent --show-error --max-time 20 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=50" \
-              | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((r for r in runs if r.get("name") == "Deploy WEB and API to REG.RU"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
-            if [[ "$RUN_STATE" == completed:* ]]; then break; fi
-            if [ "$RUN_STATE" = 'missing' ] && [ "$attempt" -ge 4 ]; then break; fi
-            if [ "$attempt" -eq 120 ]; then
-              echo "Timed out waiting for primary deployment of $EXPECTED_SHA" >&2
-              exit 1
-            fi
-            sleep 15
-          done
+          if [[ "$E2E_BASE_URL" == "https://dezster.ru" ]]; then
+            EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
+            test -n "$EXPECTED_SHA"
+            for attempt in $(seq 1 120); do
+              RUN_STATE="$(curl --fail --silent --show-error --max-time 20 \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=50" \
+                | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((r for r in runs if r.get("name") == "Deploy WEB and API to REG.RU"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+              if [[ "$RUN_STATE" == completed:* ]]; then break; fi
+              if [ "$RUN_STATE" = 'missing' ] && [ "$attempt" -ge 4 ]; then break; fi
+              if [ "$attempt" -eq 120 ]; then
+                echo "Timed out waiting for primary deployment of $EXPECTED_SHA" >&2
+                exit 1
+              fi
+              sleep 15
+            done
+          else
+            EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
+            test -n "$EXPECTED_SHA"
+          fi
+
           for attempt in $(seq 1 6); do
-            LIVE_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.dezster.ru/health/live || true)"
-            READY_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.dezster.ru/health/ready || true)"
-            AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)"
+            LIVE_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "$E2E_BASE_URL/api/health/live" || true)"
+            READY_STATUS="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "$E2E_BASE_URL/api/health/ready" || true)"
+            AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' "$E2E_BASE_URL/api/auth/me" || true)"
             if [ "$LIVE_STATUS" = "200" ] && [ "$READY_STATUS" = "200" ] && [ "$AUTH_STATUS" = "401" ]; then
               break
             fi
             if [ "$attempt" -eq 6 ]; then
-              echo "Public health did not stabilize: live=$LIVE_STATUS ready=$READY_STATUS auth=$AUTH_STATUS" >&2
+              echo "Public health did not stabilize for $E2E_BASE_URL: live=$LIVE_STATUS ready=$READY_STATUS auth=$AUTH_STATUS" >&2
               exit 1
             fi
             sleep 10
           done
+
           DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
-            -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
+            -H 'Cache-Control: no-cache' "$E2E_BASE_URL/deployment.json" \
             | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
           test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
       - working-directory: WEB
@@ -82,7 +99,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: production-functional-${{ github.run_id }}
+          name: production-functional-${{ matrix.name }}-${{ github.run_id }}
           path: WEB/test-results
           if-no-files-found: ignore
           retention-days: 7
