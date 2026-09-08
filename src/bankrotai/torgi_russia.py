@@ -96,6 +96,8 @@ class TorgiRussiaClient:
             "history_only": 1 if filters.history_only else 0,
             "page": max(1, int(filters.page)),
         }
+        if filters.region_id is not None:
+            payload["regions"] = [filters.region_id]
         response = self.session.post(f"{API_BASE_URL}/search", json=payload, timeout=self.timeout)
         response.raise_for_status()
         data = response.json()
@@ -111,7 +113,29 @@ class TorgiRussiaClient:
             "total_pages": last_page,
             "total": meta.get("total"),
             "raw_endpoint": response.url,
+            "region_id": filters.region_id,
         }
+
+    def list_region_ids(self) -> list[int]:
+        response = self.session.get(f"{API_BASE_URL}/regions/tree", timeout=self.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        roots = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(roots, list):
+            raise RuntimeError("Torgi Russia regions returned an invalid JSON payload")
+        region_ids: list[int] = []
+        for root in roots:
+            children = root.get("children") if isinstance(root, dict) else None
+            if not isinstance(children, list):
+                continue
+            region_ids.extend(
+                child["id"] for child in children
+                if isinstance(child, dict) and isinstance(child.get("id"), int)
+            )
+        result = list(dict.fromkeys(region_ids))
+        if not result:
+            raise RuntimeError("Torgi Russia regions returned no regions")
+        return result
 
     def fetch_lot_payload(self, external_id: str) -> dict:
         numeric_id = external_id.rsplit(":", 1)[-1]
