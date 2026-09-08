@@ -1,3 +1,7 @@
+import asyncio
+
+from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
+from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
 from bankrotai.torgi_russia import TorgiRussiaClient
 
 
@@ -137,3 +141,45 @@ def test_torgi_russia_parse_new_detail_api_payload() -> None:
     assert detail["cadastral_numbers"] == ["33:05:130102:857"]
     assert detail["image_urls"] == ["https://example.test/one.jpg"]
     assert "Начальная цена" in detail["description"]
+
+
+def test_torgi_russia_search_sends_region_segment() -> None:
+    class Response:
+        url = "https://example.test/api/search"
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {"data": [], "meta": {"last_page": 1, "total": 0}}
+
+    class Session:
+        headers = {}
+        payload = None
+        def post(self, _url, *, json, timeout):
+            self.payload = json
+            return Response()
+
+    session = Session()
+    client = TorgiRussiaClient(session=session)
+    client.search_lots(TorgiRussiaSearchFilters(region_id=33))
+    assert session.payload["regions"] == [33]
+
+
+def test_torgi_russia_connector_pages_each_region_without_crossing_api_cap() -> None:
+    connector = TorgiRussiaConnector()
+    connector.client.list_region_ids = lambda: [33, 76]
+    calls = []
+
+    def search(filters):
+        calls.append((filters.region_id, filters.page))
+        return [], {"has_more": filters.region_id == 33 and filters.page == 1}
+
+    connector.client.search_lots = search
+    first = asyncio.run(connector.search(TorgiRussiaSearchFilters()))
+    second = asyncio.run(connector.search(TorgiRussiaSearchFilters(), first.next_cursor))
+    third = asyncio.run(connector.search(TorgiRussiaSearchFilters(), second.next_cursor))
+
+    assert calls == [(33, 1), (33, 2), (76, 1)]
+    assert first.next_cursor == "region:0:2"
+    assert second.next_cursor == "region:1:1"
+    assert third.next_cursor is None
+    assert third.metadata["regions_total"] == 2

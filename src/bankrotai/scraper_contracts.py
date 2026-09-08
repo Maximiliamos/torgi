@@ -125,6 +125,7 @@ class TorgiRussiaSearchFilters:
     category_id: str = "6"
     history_only: bool = False
     page: int = 1
+    region_id: int | None = None
 
 
 @dataclass
