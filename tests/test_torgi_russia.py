@@ -119,3 +119,21 @@ def test_torgi_russia_new_payload_matches_cadastral_number() -> None:
         {"id": 2, "title": "Лот 76:02:071501:198"}]}
     result = TorgiRussiaClient._matching_lot_url_from_payload(payload, "76:02:071501:198")
     assert result == "https://xn----etbpba5admdlad.xn--p1ai/lot/2"
+
+
+def test_torgi_russia_parse_new_detail_api_payload() -> None:
+    detail = TorgiRussiaClient.parse_detail_payload({
+        "information": (
+            "Недвижимое имущество, расположенное по адресу: Владимирская область, "
+            "г. Суздаль, ул. Ленина, д. 1. К\\н: 33:05:130102:857<br>Начальная цена: 10 ₽"
+        ),
+        "cadastrals": ["33:05:130102:857"],
+        "pictures": [{"link": "https://example.test/one.jpg"}],
+        "trade_link": "https://example.test/trade/1",
+        "status": {"id": 1, "title": "Идёт приём заявок"},
+    })
+
+    assert detail["address"] == "Владимирская область, г. Суздаль, ул. Ленина, д. 1"
+    assert detail["cadastral_numbers"] == ["33:05:130102:857"]
+    assert detail["image_urls"] == ["https://example.test/one.jpg"]
+    assert "Начальная цена" in detail["description"]
