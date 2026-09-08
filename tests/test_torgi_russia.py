@@ -94,3 +94,28 @@ def test_torgi_russia_parse_search_page() -> None:
     assert lot.raw_data["image_urls"] == [
         "https://xn----etbpba5admdlad.xn--p1ai/pictures/one.png"
     ]
+
+
+def test_torgi_russia_parse_new_search_api_payload() -> None:
+    payload = {"data": [{"id": 7180653, "title": "Здание 33:01:000001:42",
+        "status": {"id": 1, "title": "Идёт приём заявок"},
+        "pictures": [{"link": "https://example.test/full.jpg", "thumb_link": "https://example.test/thumb.jpg"}],
+        "start_price": 5105700, "current_price": 4900000,
+        "region": {"id": 33, "title": "Владимирская область"},
+        "trade_link": "https://example.test/trade/1", "category_ids": [6, 343]}],
+        "meta": {"current_page": 1, "last_page": 2, "total": 25}}
+    lots = TorgiRussiaClient.parse_search_payload(payload)
+    assert len(lots) == 1
+    assert lots[0].external_id == "torgi-russia:7180653"
+    assert lots[0].region_slug == "33"
+    assert lots[0].cadastral_number == "33:01:000001:42"
+    assert lots[0].start_price == 5105700
+    assert lots[0].current_price == 4900000
+    assert lots[0].raw_data["image_urls"] == ["https://example.test/full.jpg"]
+
+
+def test_torgi_russia_new_payload_matches_cadastral_number() -> None:
+    payload = {"data": [{"id": 1, "title": "Лот 76:02:000000:1"},
+        {"id": 2, "title": "Лот 76:02:071501:198"}]}
+    result = TorgiRussiaClient._matching_lot_url_from_payload(payload, "76:02:071501:198")
+    assert result == "https://xn----etbpba5admdlad.xn--p1ai/lot/2"
