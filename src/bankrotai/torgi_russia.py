@@ -113,6 +113,48 @@ class TorgiRussiaClient:
             "raw_endpoint": response.url,
         }
 
+    def fetch_lot_payload(self, external_id: str) -> dict:
+        numeric_id = external_id.rsplit(":", 1)[-1]
+        response = self.session.get(f"{API_BASE_URL}/lots/{numeric_id}", timeout=self.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise RuntimeError("Torgi Russia detail returned an invalid JSON payload")
+        return data
+
+    @staticmethod
+    def parse_detail_payload(data: dict) -> dict:
+        information_html = str(data.get("information") or "")
+        description = BeautifulSoup(information_html, "html.parser").get_text("\n", strip=True)
+        raw_cadastrals = data.get("cadastrals")
+        cadastral_values: list = raw_cadastrals if isinstance(raw_cadastrals, list) else []
+        cadastres = [normalize_cadastral_number(str(value)) for value in cadastral_values if value]
+        if not cadastres:
+            cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(description)]
+        address_match = re.search(
+            r"(?:по адресу|адрес(?: местонахождения)?):\s*(.+?)"
+            r"(?=\s+(?:К[\\/]?н|Кадастров)|\n|$)",
+            description,
+            flags=re.IGNORECASE,
+        )
+        raw_pictures = data.get("pictures")
+        pictures: list = raw_pictures if isinstance(raw_pictures, list) else []
+        image_urls = [
+            str(item.get("link") or item.get("thumb_link"))
+            for item in pictures
+            if isinstance(item, dict) and (item.get("link") or item.get("thumb_link"))
+        ]
+        return {
+            "description": description,
+            "address": address_match.group(1).strip(" .;") if address_match else None,
+            "cadastral_numbers": list(dict.fromkeys(cadastres)),
+            "image_urls": list(dict.fromkeys(image_urls)),
+            "etp_url": data.get("trade_link"),
+            "source_status": data.get("status"),
+            "updated_at": data.get("updated_at"),
+        }
+
     @staticmethod
     def parse_search_payload(payload: object, *, history_only: bool = False) -> list[NormalizedLot]:
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
