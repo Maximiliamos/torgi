@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
 import json
+import time
 from typing import Any
 
 from redis import Redis
 from redis.exceptions import LockError
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 
 from bankrotai.core import get_settings, utc_now
-from bankrotai.db import GeoFailure, LotGeoSnapshot, ProcessedLot
-from bankrotai.geo import apply_lot_geo_result, resolve_lot_geo
+from bankrotai.db import BackgroundTaskState, GeoFailure, GeoQueryCache, LotGeoSnapshot, ProcessedLot
+from bankrotai.geo import (
+    CadastralObjectResult,
+    apply_lot_geo_result,
+    build_geocoding_address_candidates,
+    resolve_lot_geo,
+)
 from bankrotai.services.quality import record_geo_failure, resolve_geo_failure
 
 
@@ -22,10 +30,106 @@ _MAX_RETRY_SECONDS = 604_800
 _MAX_ATTEMPTS = 8
 _GEO_LOCK_NAME = "bankrotai:geocoding:batch"
 _GEO_LOCK_SECONDS = 3600
+_SUCCESS_CACHE_DAYS = 30
 
 
 class GeoBatchAlreadyRunning(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class GeoWorkItem:
+    lot_id: int
+    cadastral_number: str | None
+    address: str | None
+    title: str | None
+    description: str | None
+    region_name: str | None
+
+
+def _work_key(item: GeoWorkItem) -> str:
+    address_candidates = build_geocoding_address_candidates(
+        item.address,
+        title=item.title,
+        description=item.description,
+        region_name=item.region_name,
+    )
+    value = {
+        "cad": "".join((item.cadastral_number or "").casefold().split()),
+        "address": " ".join((address_candidates[0] if address_candidates else "").casefold().split()),
+        "region": " ".join((item.region_name or "").casefold().split()),
+    }
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _cache_payload(value: CadastralObjectResult) -> dict[str, Any]:
+    return {
+        "query": value.query,
+        "cadastral_number": value.cadastral_number,
+        "object_type": value.object_type,
+        "title": value.title,
+        "address": value.address,
+        "lat": value.lat,
+        "lon": value.lon,
+        "geometry_json": value.geometry_json,
+        "has_boundary": value.has_boundary,
+        "source": value.source,
+        "confidence": value.confidence,
+        "info": value.info,
+        "status": value.status,
+        "attempts": value.attempts,
+    }
+
+
+def _cached_result(payload: dict[str, Any]) -> CadastralObjectResult:
+    allowed = set(CadastralObjectResult.__dataclass_fields__) - {"raw", "error"}
+    return CadastralObjectResult(**{key: value for key, value in payload.items() if key in allowed})
+
+
+def _set_progress_state(
+    session_factory: Callable[[], Any],
+    task_id: str | None,
+    *,
+    status: str,
+    progress: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    if not task_id:
+        return
+    with session_factory() as session:
+        state = session.scalar(select(BackgroundTaskState).where(BackgroundTaskState.task_id == task_id))
+        if state is None:
+            state = BackgroundTaskState(task_id=task_id, task_type="geocoding", status=status)
+            session.add(state)
+        state.status = status
+        state.progress_json = progress
+        state.result_json = result
+        state.error_message = error
+        state.started_at = state.started_at or utc_now()
+        if status in {"completed", "failed"}:
+            state.finished_at = utc_now()
+        session.commit()
+
+
+def _mark_progress_failed(
+    session_factory: Callable[[], Any],
+    task_id: str | None,
+    error: Exception,
+) -> None:
+    if not task_id:
+        return
+    with session_factory() as session:
+        state = session.scalar(select(BackgroundTaskState).where(BackgroundTaskState.task_id == task_id))
+        if state is None:
+            state = BackgroundTaskState(task_id=task_id, task_type="geocoding", status="failed")
+            session.add(state)
+        state.status = "failed"
+        state.error_message = str(error)[:2000]
+        state.finished_at = utc_now()
+        session.commit()
 
 
 def geo_input_hash(lot: ProcessedLot) -> str:
@@ -92,9 +196,12 @@ def geocoding_statistics(session: Any) -> dict[str, int]:
     }
     for source, confidence, count in rows:
         key = (
-            "ik12" if source == "ik12_cadastral"
-            else "nspd" if source == "nspd"
-            else "address" if source in {"nominatim", "photon"}
+            "ik12"
+            if source == "ik12_cadastral"
+            else "nspd"
+            if source == "nspd"
+            else "address"
+            if source in {"nominatim", "photon"}
             else None
         )
         if key:
@@ -102,6 +209,63 @@ def geocoding_statistics(session: Any) -> dict[str, int]:
         if confidence in {"low", "none", "unknown"}:
             result["low_confidence"] += int(count)
     return result
+
+
+def geocoding_progress(session: Any) -> dict[str, Any]:
+    """Return user-facing, exact queue counters plus the latest durable batch progress."""
+    population = (
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+        or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
+    )
+    total = int(session.scalar(select(func.count()).select_from(ProcessedLot).where(*population)) or 0)
+    geocoded = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .where(
+                *population,
+                exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+            )
+        )
+        or 0
+    )
+    terminal = int(
+        session.scalar(
+            select(func.count())
+            .select_from(GeoFailure)
+            .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+            .where(
+                *population,
+                GeoFailure.status == "terminal",
+            )
+        )
+        or 0
+    )
+    latest = session.scalar(
+        select(BackgroundTaskState)
+        .where(BackgroundTaskState.task_type == "geocoding")
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(1)
+    )
+    return {
+        "total": total,
+        "geocoded": geocoded,
+        "remaining": max(0, total - geocoded),
+        "terminal_failures": terminal,
+        "percent": round((geocoded / total * 100) if total else 100.0, 1),
+        "task": None
+        if latest is None
+        else {
+            "task_id": latest.task_id,
+            "status": latest.status,
+            "progress": latest.progress_json,
+            "result": latest.result_json,
+            "error": latest.error_message,
+            "started_at": latest.started_at,
+            "finished_at": latest.finished_at,
+        },
+    }
 
 
 def _record_scheduled_failure(session: Any, lot_id: int, error: str) -> None:
@@ -137,8 +301,10 @@ def _geocode_pending_lots_unlocked(
     *,
     limit: int = 250,
     re_geocode_existing: bool = False,
-) -> dict[str, int]:
+    progress_task_id: str | None = None,
+) -> dict[str, Any]:
     """Geocode a bounded production batch without holding a DB transaction during the whole run."""
+    started_at = time.monotonic()
     batch_limit = max(1, min(limit, 1000))
     now = utc_now()
     with session_factory() as session:
@@ -163,71 +329,178 @@ def _geocode_pending_lots_unlocked(
             if re_geocode_existing
             else or_(
                 ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
-                (
-                    ProcessedLot.needs_geo_check.is_(True)
-                    & ProcessedLot.geo_input_hash.is_(None)
-                ),
+                (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
             )
         )
-        lot_ids = list(
-            session.scalars(
-                select(ProcessedLot.id)
-                .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
-                .where(
-                    ProcessedLot.duplicate_of_id.is_(None),
-                    ProcessedLot.is_archived.is_(False),
-                    or_(
-                        ProcessedLot.cadastral_number.isnot(None),
-                        ProcessedLot.address.isnot(None),
-                    ),
-                    pending_filter,
-                    or_(
-                        GeoFailure.id.is_(None),
-                        GeoFailure.next_retry_at.is_(None),
-                        GeoFailure.next_retry_at <= now,
-                    ),
-                    or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
-                )
-                .order_by(
-                    GeoFailure.id.is_(None).desc(),
-                    ProcessedLot.needs_geo_check.desc(),
-                    ProcessedLot.last_update.desc(),
-                )
-                .limit(batch_limit)
-            ).all()
-        )
+        rows = session.execute(
+            select(
+                ProcessedLot.id,
+                ProcessedLot.cadastral_number,
+                ProcessedLot.address,
+                ProcessedLot.title,
+                ProcessedLot.description,
+                ProcessedLot.region_name,
+            )
+            .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+                or_(
+                    ProcessedLot.cadastral_number.isnot(None),
+                    ProcessedLot.address.isnot(None),
+                ),
+                pending_filter,
+                or_(
+                    GeoFailure.id.is_(None),
+                    GeoFailure.next_retry_at.is_(None),
+                    GeoFailure.next_retry_at <= now,
+                ),
+                or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+            )
+            .order_by(
+                GeoFailure.id.is_(None).desc(),
+                ProcessedLot.needs_geo_check.desc(),
+                ProcessedLot.last_update.desc(),
+            )
+            .limit(batch_limit)
+        ).all()
+        items = [GeoWorkItem(*row) for row in rows]
 
-    result = {"queued": len(lot_ids), "geocoded": 0, "failed": 0}
-    for lot_id in lot_ids:
-        try:
-            with session_factory() as session:
-                lot = session.get(ProcessedLot, lot_id)
-                if lot is None:
-                    continue
-                value = resolve_lot_geo(
-                    lot.cadastral_number,
-                    lot.address,
-                    title=lot.title,
-                    description=lot.description,
-                    region_name=lot.region_name,
+    groups: dict[str, list[GeoWorkItem]] = {}
+    for item in items:
+        groups.setdefault(_work_key(item), []).append(item)
+    result: dict[str, Any] = {
+        "queued": len(items),
+        "processed": 0,
+        "geocoded": 0,
+        "failed": 0,
+        "unique_queries": len(groups),
+        "deduplicated": len(items) - len(groups),
+        "cache_hits": 0,
+        "resolved_queries": 0,
+        "provider_counts": {},
+        "phase": "resolving",
+    }
+    _set_progress_state(session_factory, progress_task_id, status="running", progress={**result, "percent": 0.0})
+
+    resolved: dict[str, Any] = {}
+    if groups:
+        with session_factory() as session:
+            session.execute(delete(GeoQueryCache).where(GeoQueryCache.expires_at <= utc_now()))
+            cached_rows = session.scalars(
+                select(GeoQueryCache).where(
+                    GeoQueryCache.cache_key.in_(list(groups)),
+                    GeoQueryCache.expires_at > utc_now(),
                 )
-                current_input_hash = geo_input_hash(lot)
-                if apply_lot_geo_result(session, lot, value):
-                    lot.geo_input_hash = current_input_hash
-                    resolve_geo_failure(session, lot_id)
-                    result["geocoded"] += 1
-                else:
-                    lot.geo_input_hash = current_input_hash
-                    _record_scheduled_failure(
-                        session,
-                        lot_id,
-                        _geocoding_failure_message(value),
-                    )
-                    result["failed"] += 1
-        except Exception as exc:
-            with session_factory() as session:
-                _record_scheduled_failure(session, lot_id, str(exc))
-            result["failed"] += 1
+            ).all()
+            for cached in cached_rows:
+                resolved[cached.cache_key] = _cached_result(cached.result_json)
+                cached.hit_count += len(groups[cached.cache_key])
+                result["cache_hits"] += len(groups[cached.cache_key])
+                result["resolved_queries"] += 1
+            session.commit()
+    missing_groups = {key: values for key, values in groups.items() if key not in resolved}
+    workers = min(get_settings().geo_max_workers, max(1, len(missing_groups)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="geo-bulk") as executor:
+        futures = {
+            executor.submit(
+                resolve_lot_geo,
+                values[0].cadastral_number,
+                values[0].address,
+                title=values[0].title,
+                description=values[0].description,
+                region_name=values[0].region_name,
+                bulk=True,
+            ): key
+            for key, values in missing_groups.items()
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                resolved[key] = future.result()
+            except Exception as exc:
+                resolved[key] = exc
+            result["resolved_queries"] += 1
+            if result["resolved_queries"] == result["unique_queries"] or result["resolved_queries"] % 5 == 0:
+                _set_progress_state(
+                    session_factory,
+                    progress_task_id,
+                    status="running",
+                    progress={
+                        **result,
+                        "percent": round(result["resolved_queries"] / result["unique_queries"] * 80, 1)
+                        if result["unique_queries"]
+                        else 80.0,
+                    },
+                )
+
+    with session_factory() as session:
+        for key in missing_groups:
+            value = resolved.get(key)
+            if not isinstance(value, CadastralObjectResult) or value.lat is None or value.lon is None:
+                continue
+            cached = session.get(GeoQueryCache, key)
+            if cached is None:
+                cached = GeoQueryCache(cache_key=key, provider=value.source, result_json={})
+                session.add(cached)
+            cached.provider = value.source
+            cached.result_json = _cache_payload(value)
+            cached.expires_at = utc_now() + timedelta(days=_SUCCESS_CACHE_DAYS)
+        session.commit()
+
+    result["phase"] = "saving"
+    for key, group in groups.items():
+        for item in group:
+            lot_id = item.lot_id
+            try:
+                value = resolved[key]
+                if isinstance(value, Exception):
+                    raise value
+                with session_factory() as session:
+                    lot = session.get(ProcessedLot, lot_id)
+                    if lot is None:
+                        continue
+                    current_input_hash = geo_input_hash(lot)
+                    if apply_lot_geo_result(session, lot, value):
+                        lot.geo_input_hash = current_input_hash
+                        resolve_geo_failure(session, lot_id)
+                        result["geocoded"] += 1
+                        provider = value.source or "unknown"
+                        result["provider_counts"][provider] = result["provider_counts"].get(provider, 0) + 1
+                    else:
+                        lot.geo_input_hash = current_input_hash
+                        _record_scheduled_failure(
+                            session,
+                            lot_id,
+                            _geocoding_failure_message(value),
+                        )
+                        result["failed"] += 1
+                    session.commit()
+            except Exception as exc:
+                with session_factory() as session:
+                    _record_scheduled_failure(session, lot_id, str(exc))
+                    session.commit()
+                result["failed"] += 1
+            result["processed"] += 1
+            if result["processed"] == result["queued"] or result["processed"] % 10 == 0:
+                percent = round(80 + result["processed"] / result["queued"] * 20, 1) if result["queued"] else 100.0
+                _set_progress_state(
+                    session_factory,
+                    progress_task_id,
+                    status="running",
+                    progress={**result, "percent": percent},
+                )
+    result["percent"] = 100.0
+    result["phase"] = "completed"
+    result["duration_seconds"] = round(time.monotonic() - started_at, 1)
+    result["lots_per_second"] = round(result["processed"] / max(result["duration_seconds"], 0.001), 3)
+    _set_progress_state(
+        session_factory,
+        progress_task_id,
+        status="completed",
+        progress=result,
+        result=result,
+    )
     return result
 
 
@@ -236,20 +509,27 @@ def geocode_pending_lots(
     *,
     limit: int = 250,
     re_geocode_existing: bool = False,
-) -> dict[str, int]:
+    progress_task_id: str | None = None,
+) -> dict[str, Any]:
     """Run one serialized batch; SQLite unit tests do not require the production Redis lock."""
     with session_factory() as session:
         bind = session.get_bind()
         dialect_name = bind.dialect.name if bind is not None else ""
-    if dialect_name == "sqlite":
-        return _geocode_pending_lots_unlocked(
-            session_factory,
-            limit=limit,
-            re_geocode_existing=re_geocode_existing,
-        )
-    with _distributed_geo_lock():
-        return _geocode_pending_lots_unlocked(
-            session_factory,
-            limit=limit,
-            re_geocode_existing=re_geocode_existing,
-        )
+    try:
+        if dialect_name == "sqlite":
+            return _geocode_pending_lots_unlocked(
+                session_factory,
+                limit=limit,
+                re_geocode_existing=re_geocode_existing,
+                progress_task_id=progress_task_id,
+            )
+        with _distributed_geo_lock():
+            return _geocode_pending_lots_unlocked(
+                session_factory,
+                limit=limit,
+                re_geocode_existing=re_geocode_existing,
+                progress_task_id=progress_task_id,
+            )
+    except Exception as exc:
+        _mark_progress_failed(session_factory, progress_task_id, exc)
+        raise

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
@@ -14,8 +14,10 @@ from datetime import datetime, timezone
 
 # --- Logger ---
 
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
@@ -31,6 +33,7 @@ def get_logger(name: str) -> logging.Logger:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
     return logger
+
 
 # --- Settings ---
 
@@ -57,6 +60,7 @@ def get_region_sync_slug(region: str | None) -> str:
     key = (region or DEFAULT_REGION).strip() or DEFAULT_REGION
     return REGION_SYNC_ALIASES.get(key, key)
 
+
 @dataclass
 class RegionalConfig:
     slug: str
@@ -64,6 +68,7 @@ class RegionalConfig:
     search_keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
     min_discount_threshold: float = 30.0
+
 
 @dataclass
 class AppSettings:
@@ -80,7 +85,9 @@ class AppSettings:
     online_source_cache_first: bool = False
 
     # AI Provider
-    ai_provider: str = "omniroute"  # "omniroute", "openai", "deepseek", "grok", "groq", "opencode", "nvidia", "gemini", "github"
+    ai_provider: str = (
+        "omniroute"  # "omniroute", "openai", "deepseek", "grok", "groq", "opencode", "nvidia", "gemini", "github"
+    )
     ai_allow_provider_fallback: bool = False
     deepseek_api_key: str | None = None
     grok_api_key: str | None = None
@@ -116,7 +123,7 @@ class AppSettings:
 
     # GUI settings
     gui_theme: str = "dark"
-    gui_refresh_interval: int = 300 # seconds
+    gui_refresh_interval: int = 300  # seconds
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
     public_api_key: str | None = None
     api_rate_limit_per_minute: int = 120
@@ -139,6 +146,9 @@ class AppSettings:
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
     geo_max_workers: int = 6
+    geo_nspd_concurrency: int = 2
+    geo_bulk_ik12_fallback: bool = False
+    geo_bulk_nominatim_fallback: bool = False
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -161,8 +171,7 @@ class AppSettings:
             trusted_local = (
                 self.api_read_only
                 and self.database_trusted_local
-                and (database.hostname or "").lower()
-                in {"bankrotai-home-postgres", "localhost", "127.0.0.1"}
+                and (database.hostname or "").lower() in {"bankrotai-home-postgres", "localhost", "127.0.0.1"}
             )
             if not database.password:
                 errors.append("DATABASE_URL must contain a PostgreSQL password")
@@ -181,6 +190,7 @@ class AppSettings:
             errors.append("REDIS_URL must contain a Redis password in production")
         return errors
 
+
 def load_settings() -> AppSettings:
     load_dotenv()
 
@@ -197,7 +207,6 @@ def load_settings() -> AppSettings:
         tbankrot_api_key=os.getenv("TBANKROT_API_KEY"),
         torgi_gov_base_url=os.getenv("TORGI_GOV_BASE_URL", "https://torgi.gov.ru").rstrip("/"),
         online_source_cache_first=os.getenv("ONLINE_SOURCE_CACHE_FIRST", "false").lower() in {"1", "true", "yes"},
-
         # AI Provider settings
         ai_provider=os.getenv("AI_PROVIDER", "omniroute"),
         ai_allow_provider_fallback=os.getenv("AI_ALLOW_PROVIDER_FALLBACK", "false").lower() in {"1", "true", "yes"},
@@ -232,15 +241,11 @@ def load_settings() -> AppSettings:
         database_max_overflow=max(0, min(10, int(os.getenv("DATABASE_MAX_OVERFLOW", "2")))),
         database_pool_timeout=max(1, min(60, int(os.getenv("DATABASE_POOL_TIMEOUT", "10")))),
         database_connect_timeout=max(1, min(30, int(os.getenv("DATABASE_CONNECT_TIMEOUT", "5")))),
-        database_tcp_user_timeout_ms=max(
-            1_000, min(120_000, int(os.getenv("DATABASE_TCP_USER_TIMEOUT_MS", "15000")))
-        ),
+        database_tcp_user_timeout_ms=max(1_000, min(120_000, int(os.getenv("DATABASE_TCP_USER_TIMEOUT_MS", "15000")))),
         database_statement_timeout_ms=max(
             1_000, min(300_000, int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "30000")))
         ),
-        database_auth_timeout_seconds=max(
-            1.0, min(60.0, float(os.getenv("DATABASE_AUTH_TIMEOUT_SECONDS", "20")))
-        ),
+        database_auth_timeout_seconds=max(1.0, min(60.0, float(os.getenv("DATABASE_AUTH_TIMEOUT_SECONDS", "20")))),
         allow_local_task_fallback=os.getenv("ALLOW_LOCAL_TASK_FALLBACK", "false").lower() in {"1", "true", "yes"},
         sync_retry_max_attempts=int(os.getenv("SYNC_RETRY_MAX_ATTEMPTS", "4")),
         sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),
@@ -249,6 +254,9 @@ def load_settings() -> AppSettings:
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
         geo_max_workers=max(1, min(16, int(os.getenv("GEO_MAX_WORKERS", "6")))),
+        geo_nspd_concurrency=max(1, min(4, int(os.getenv("GEO_NSPD_CONCURRENCY", "2")))),
+        geo_bulk_ik12_fallback=os.getenv("GEO_BULK_IK12_FALLBACK", "false").lower() in {"1", "true", "yes"},
+        geo_bulk_nominatim_fallback=os.getenv("GEO_BULK_NOMINATIM_FALLBACK", "false").lower() in {"1", "true", "yes"},
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )
@@ -267,7 +275,9 @@ def load_settings() -> AppSettings:
 
     return settings
 
+
 _settings_cache: AppSettings | None = None
+
 
 def get_settings() -> AppSettings:
     global _settings_cache
@@ -275,10 +285,12 @@ def get_settings() -> AppSettings:
         _settings_cache = load_settings()
     return _settings_cache
 
+
 def get_app_setting(key: str, default: str | None = None) -> str | None:
     if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
         return default
     from bankrotai.db import session_scope, AppSetting, select
+
     try:
         with session_scope() as s:
             setting = s.scalar(select(AppSetting).where(AppSetting.key == key))
@@ -288,10 +300,12 @@ def get_app_setting(key: str, default: str | None = None) -> str | None:
     except Exception:
         return default
 
+
 def set_app_setting(key: str, value: str):
     if key.endswith("_api_key") or key in {"telegram_bot_token", "public_api_key"}:
         raise ValueError(f"Secret setting {key!r} must be supplied through the environment or a secret manager")
     from bankrotai.db import session_scope, AppSetting, select
+
     with session_scope() as s:
         setting = s.scalar(select(AppSetting).where(AppSetting.key == key))
         if setting:

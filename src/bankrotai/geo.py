@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -129,7 +129,7 @@ class IK12Geocoder:
             logger.warning("IK12 request failed for %s: %s", cadastral_number, exc)
             return None
 
-        features = ((payload.get("object_data") or {}).get("features") or [])
+        features = (payload.get("object_data") or {}).get("features") or []
         expected = cadastral_number.replace(" ", "")
         feature = next(
             (item for item in features if str((item.get("attrs") or {}).get("cn") or "").replace(" ", "") == expected),
@@ -171,7 +171,7 @@ class CadastralGeocoder:
         self.last_request_time = 0.0
         self._rate_lock = threading.Lock()
         self._pkk_request_lock = threading.Lock()
-        self._nspd_request_lock = threading.Lock()
+        self._nspd_request_lock = threading.BoundedSemaphore(get_settings().geo_nspd_concurrency)
         self._pkk_disabled_until = 0.0
         self._nspd_disabled_until = 0.0
 
@@ -241,10 +241,10 @@ class CadastralGeocoder:
             error="Объект не найден в кадастровом API или API недоступен. Старый PKK часто отключен, НСПД может быть недоступен из текущей сети.",
         )
 
-    def search_by_address(self, address: str) -> CadastralObjectResult:
+    def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
         result = PHOTON_GEOCODER.geocode(address)
         source = "photon" if result else "nominatim"
-        if not result:
+        if not result and allow_nominatim:
             result = NOMINATIM_GEOCODER.geocode(address)
 
         if not result:
@@ -394,7 +394,7 @@ class CadastralGeocoder:
                 logger.warning("NSPD response failed for %s: %s", cadastral_number, e)
                 return None
 
-        features = ((data.get("data") or {}).get("features") or data.get("features") or [])
+        features = (data.get("data") or {}).get("features") or data.get("features") or []
         if not features:
             return None
 
@@ -439,7 +439,6 @@ class CadastralGeocoder:
             if cadastral_number in text:
                 return feature
         return features[0]
-
 
     def geocode(self, cadastral_number: str) -> dict | None:
         result = self.search_by_cadastral_number(cadastral_number)
@@ -524,7 +523,8 @@ def build_geocoding_address_candidates(
     )
     locality = next(
         (
-            part for part in parts
+            part
+            for part in parts
             if re.search(r"\b(?:город|село|поселок|деревня|рабочий поселок)\b", part, re.IGNORECASE)
         ),
         "",
@@ -618,8 +618,19 @@ class NominatimGeocoder:
             return dict(cached) if cached else None
 
         ignored_tokens = {
-            "россия", "область", "области", "муниципальный", "округ", "район",
-            "город", "село", "поселок", "деревня", "улица", "проспект", "дом",
+            "россия",
+            "область",
+            "области",
+            "муниципальный",
+            "округ",
+            "район",
+            "город",
+            "село",
+            "поселок",
+            "деревня",
+            "улица",
+            "проспект",
+            "дом",
         }
 
         def match_tokens(text: str) -> set[str]:
@@ -655,8 +666,7 @@ class NominatimGeocoder:
                 if not data:
                     continue
                 scored = [
-                    (len(expected_tokens & match_tokens(str(item.get("display_name") or ""))), item)
-                    for item in data
+                    (len(expected_tokens & match_tokens(str(item.get("display_name") or ""))), item) for item in data
                 ]
                 scored.sort(key=lambda item: (item[0], float(item[1].get("importance", 0))), reverse=True)
                 best_score, result = scored[0]
@@ -687,6 +697,8 @@ class NominatimGeocoder:
 
 
 NOMINATIM_GEOCODER = NominatimGeocoder()
+
+
 class PhotonGeocoder:
     def __init__(self, base_url: str | None = None):
         self.base_url = (base_url if base_url is not None else os.getenv("PHOTON_BASE_URL", "")).rstrip("/")
@@ -695,9 +707,7 @@ class PhotonGeocoder:
         if not self.base_url or len(address.strip()) < 5:
             return None
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
-        locality_match = re.search(
-            r"(?:^|[,;]\s*)(?:г\.|город)\s*([^,;]+)", address, re.IGNORECASE
-        )
+        locality_match = re.search(r"(?:^|[,;]\s*)(?:г\.|город)\s*([^,;]+)", address, re.IGNORECASE)
         expected_locality = locality_match.group(1).strip().casefold() if locality_match else ""
         street_match = re.search(
             r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок)\s*([^,;]+)",
@@ -706,9 +716,22 @@ class PhotonGeocoder:
         )
         expected_street = street_match.group(1).strip().casefold() if street_match else ""
         house_match = re.search(r"(?:д\.|дом)\s*([0-9]+[а-яa-z]?)", address, re.IGNORECASE)
+
         def normalize_house(value: str) -> str:
             confusables = str.maketrans(
-                {"а": "a", "в": "b", "с": "c", "е": "e", "х": "x", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "т": "t"}
+                {
+                    "а": "a",
+                    "в": "b",
+                    "с": "c",
+                    "е": "e",
+                    "х": "x",
+                    "к": "k",
+                    "м": "m",
+                    "н": "h",
+                    "о": "o",
+                    "р": "p",
+                    "т": "t",
+                }
             )
             return re.sub(r"\s+", "", value.casefold()).translate(confusables).split("/", 1)[0]
 
@@ -773,7 +796,9 @@ class PhotonGeocoder:
             str(value)
             for value in (
                 props.get("city") or props.get("town") or props.get("village"),
-                props.get("street"), props.get("housenumber"), props.get("state"),
+                props.get("street"),
+                props.get("housenumber"),
+                props.get("state"),
             )
             if value
         )
@@ -931,6 +956,7 @@ def resolve_lot_geo(
     title: str | None = None,
     description: str | None = None,
     region_name: str | None = None,
+    bulk: bool = False,
 ) -> CadastralObjectResult | None:
     attempts: list[dict[str, Any]] = []
     address_candidates = build_geocoding_address_candidates(
@@ -955,9 +981,6 @@ def resolve_lot_geo(
         return result if valid else None
 
     if cadastral_number:
-        ik12_result = accept(IK12_GEOCODER.search_by_cadastral_number(cadastral_number), "ik12_cadastral")
-        if ik12_result:
-            return ik12_result
         try:
             nspd_candidate = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral_number)
         except NSPDTLSVerificationError:
@@ -965,9 +988,16 @@ def resolve_lot_geo(
         nspd_result = accept(nspd_candidate, "nspd_cadastral")
         if nspd_result:
             return nspd_result
+        if not bulk or get_settings().geo_bulk_ik12_fallback:
+            ik12_result = accept(IK12_GEOCODER.search_by_cadastral_number(cadastral_number), "ik12_cadastral")
+            if ik12_result:
+                return ik12_result
 
     if address_candidates:
-        addr_result = CADASTRAL_GEOCODER.search_by_address(address_candidates[0])
+        addr_result = CADASTRAL_GEOCODER.search_by_address(
+            address_candidates[0],
+            allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
+        )
         accepted = accept(addr_result, "address_geocoder")
         if accepted:
             return accepted
@@ -1047,19 +1077,12 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
             "status": final_result.status,
             "attempts": final_result.attempts,
         },
-        trace_reason=(
-            f"{final_result.source}: "
-            f"{'границы получены' if final_result.has_boundary else 'без границ'}"
-        ),
+        trace_reason=(f"{final_result.source}: {'границы получены' if final_result.has_boundary else 'без границ'}"),
     )
 
     session.add(snapshot)
 
-    if final_result.address and (
-        not lot.address
-        or len(lot.address) < 15
-        or is_incomplete_address(lot.address)
-    ):
+    if final_result.address and (not lot.address or len(lot.address) < 15 or is_incomplete_address(lot.address)):
         lot.address = final_result.address
 
     lot.needs_geo_check = final_result.confidence not in {"high", "medium"}

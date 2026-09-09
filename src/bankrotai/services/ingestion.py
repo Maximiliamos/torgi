@@ -77,6 +77,8 @@ class SourceSyncResult:
     elapsed_seconds: float = 0.0
     current_category: str | None = None
     total_pages: int | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
     error: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
 
@@ -240,17 +242,19 @@ class NationwideIngestionService:
             if active is not None:
                 raise SyncAlreadyRunningError(active.id)
             run_id = str(uuid.uuid4())
-            session.add(LotSyncRun(
-                id=run_id,
-                triggered_by=triggered_by,
-                trigger_type=trigger_type,
-                status="queued",
-                total_sources=total_sources,
-                heartbeat_at=now,
-                lease_owner=socket.gethostname(),
-                lease_expires_at=now + timedelta(minutes=self.lease_minutes),
-                created_at=now,
-            ))
+            session.add(
+                LotSyncRun(
+                    id=run_id,
+                    triggered_by=triggered_by,
+                    trigger_type=trigger_type,
+                    status="queued",
+                    total_sources=total_sources,
+                    heartbeat_at=now,
+                    lease_owner=socket.gethostname(),
+                    lease_expires_at=now + timedelta(minutes=self.lease_minutes),
+                    created_at=now,
+                )
+            )
             try:
                 session.commit()
             except IntegrityError:
@@ -282,8 +286,10 @@ class NationwideIngestionService:
         canonical_dedupe_ms = round((time.perf_counter() - dedupe_started) * 1000, 3)
         if results:
             results[-1].duplicates_merged += merged
-        status = "success" if all(item.status == "success" for item in results) else (
-            "failed" if all(item.status == "failed" for item in results) else "partial"
+        status = (
+            "success"
+            if all(item.status == "success" for item in results)
+            else ("failed" if all(item.status == "failed" for item in results) else "partial")
         )
         payload = {
             "status": status,
@@ -307,12 +313,14 @@ class NationwideIngestionService:
         observed_at = now or trusted_utc_now().replace(tzinfo=None)
         cutoff = observed_at - timedelta(minutes=15)
         with self.session_factory() as session:
-            rows = session.scalars(select(SourceLot).where(
-                SourceLot.is_active.is_(True),
-                SourceLot.is_archived.is_(False),
-                SourceLot.auction_at.isnot(None),
-                SourceLot.auction_at < cutoff,
-            )).all()
+            rows = session.scalars(
+                select(SourceLot).where(
+                    SourceLot.is_active.is_(True),
+                    SourceLot.is_archived.is_(False),
+                    SourceLot.auction_at.isnot(None),
+                    SourceLot.auction_at < cutoff,
+                )
+            ).all()
             processed_ids: set[int] = set()
             for row in rows:
                 row.is_active = False
@@ -324,11 +332,18 @@ class NationwideIngestionService:
                     processed_ids.add(row.processed_lot_id)
             session.flush()
             for processed_id in processed_ids:
-                has_active_sibling = session.scalar(select(SourceLot.id).where(
-                    SourceLot.processed_lot_id == processed_id,
-                    SourceLot.is_active.is_(True),
-                    SourceLot.is_archived.is_(False),
-                ).limit(1)) is not None
+                has_active_sibling = (
+                    session.scalar(
+                        select(SourceLot.id)
+                        .where(
+                            SourceLot.processed_lot_id == processed_id,
+                            SourceLot.is_active.is_(True),
+                            SourceLot.is_archived.is_(False),
+                        )
+                        .limit(1)
+                    )
+                    is not None
+                )
                 if has_active_sibling:
                     continue
                 processed = session.get(ProcessedLot, processed_id)
@@ -362,6 +377,10 @@ class NationwideIngestionService:
                 )
                 if page.metadata.get("total_pages") is not None:
                     result.total_pages = int(page.metadata["total_pages"])
+                if page.metadata.get("progress_current") is not None:
+                    result.progress_current = int(page.metadata["progress_current"])
+                if page.metadata.get("progress_total") is not None:
+                    result.progress_total = int(page.metadata["progress_total"])
                 if self.profile_timings:
                     for key, value in page.metadata.get("timings", {}).items():
                         if isinstance(value, (int, float)):
@@ -451,10 +470,12 @@ class NationwideIngestionService:
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
                     row.external_id: row
-                    for row in lookup_session.scalars(select(SourceLot).where(
-                        SourceLot.source_system == result.source_system,
-                        SourceLot.external_id.in_([lot.external_id for lot in accepted]),
-                    )).all()
+                    for row in lookup_session.scalars(
+                        select(SourceLot).where(
+                            SourceLot.source_system == result.source_system,
+                            SourceLot.external_id.in_([lot.external_id for lot in accepted]),
+                        )
+                    ).all()
                 }
             enrichment_limit = asyncio.Semaphore(4)
 
@@ -476,7 +497,9 @@ class NationwideIngestionService:
                         enriched_raw["detail_enrichment_version"] = connector.detail_enrichment_version
                         lot.raw_data = enriched_raw
                     except Exception as exc:
-                        logger.warning("%s detail enrichment failed for %s: %s", result.source_system, lot.external_id, exc)
+                        logger.warning(
+                            "%s detail enrichment failed for %s: %s", result.source_system, lot.external_id, exc
+                        )
                         current_raw["detail_enrichment_status"] = "failed"
                         lot.raw_data = current_raw
                     return
@@ -510,13 +533,19 @@ class NationwideIngestionService:
                 return
             external_ids = [lot.external_id for lot in accepted]
             lookup_started = time.perf_counter()
-            existing_rows = {
-                row.external_id: row
-                for row in session.scalars(select(SourceLot).where(
-                    SourceLot.source_system == result.source_system,
-                    SourceLot.external_id.in_(external_ids),
-                )).all()
-            } if external_ids else {}
+            existing_rows = (
+                {
+                    row.external_id: row
+                    for row in session.scalars(
+                        select(SourceLot).where(
+                            SourceLot.source_system == result.source_system,
+                            SourceLot.external_id.in_(external_ids),
+                        )
+                    ).all()
+                }
+                if external_ids
+                else {}
+            )
             self._add_timing(result, "db_lookup_ms", lookup_started)
             changed_or_new: list[Any] = []
             for normalized in accepted:
@@ -566,17 +595,21 @@ class NationwideIngestionService:
         for normalized in lots:
             result.items_seen += 1
             result.seen_external_ids.add(normalized.external_id)
-            source_row = session.scalar(select(SourceLot).where(
-                SourceLot.source_system == normalized.source_system,
-                SourceLot.external_id == normalized.external_id,
-            ))
+            source_row = session.scalar(
+                select(SourceLot).where(
+                    SourceLot.source_system == normalized.source_system,
+                    SourceLot.external_id == normalized.external_id,
+                )
+            )
             existed = source_row is not None
             before = self._source_fingerprint(source_row) if source_row is not None else None
             persist_lot(session, normalized)
-            source_row = session.scalar(select(SourceLot).where(
-                SourceLot.source_system == normalized.source_system,
-                SourceLot.external_id == normalized.external_id,
-            ))
+            source_row = session.scalar(
+                select(SourceLot).where(
+                    SourceLot.source_system == normalized.source_system,
+                    SourceLot.external_id == normalized.external_id,
+                )
+            )
             if source_row is None:
                 result.items_failed += 1
                 continue
@@ -655,10 +688,12 @@ class NationwideIngestionService:
         finished_at: Any = None,
     ) -> None:
         with self.session_factory() as session:
-            row = session.scalar(select(LotSyncSourceRun).where(
-                LotSyncSourceRun.sync_run_id == run_id,
-                LotSyncSourceRun.source_system == result.source_system,
-            ))
+            row = session.scalar(
+                select(LotSyncSourceRun).where(
+                    LotSyncSourceRun.sync_run_id == run_id,
+                    LotSyncSourceRun.source_system == result.source_system,
+                )
+            )
             if row is None:
                 row = LotSyncSourceRun(sync_run_id=run_id, source_system=result.source_system)
                 session.add(row)
@@ -673,13 +708,20 @@ class NationwideIngestionService:
             row.items_failed = result.items_failed
             row.duplicates_merged = result.duplicates_merged
             row.error_message = result.error
-            row.checkpoint_json = {
-                "category_pages": result.category_pages,
-                "current_category": result.current_category,
-                "total_pages": result.total_pages,
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds else 0,
-            } if result.category_pages or result.current_category else None
+            row.checkpoint_json = (
+                {
+                    "category_pages": result.category_pages,
+                    "current_category": result.current_category,
+                    "total_pages": result.total_pages,
+                    "progress_current": result.progress_current,
+                    "progress_total": result.progress_total,
+                    "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+                    if result.elapsed_seconds
+                    else 0,
+                }
+                if result.category_pages or result.current_category or result.progress_total
+                else None
+            )
             row.started_at = row.started_at or started_at
             row.finished_at = finished_at
             session.commit()
@@ -717,7 +759,9 @@ class NationwideIngestionService:
             normalized.title,
             normalized.description,
             normalized.category,
-            normalize_region_code(str(raw.get("region_code") or normalized.region_name or normalized.region_slug or "")),
+            normalize_region_code(
+                str(raw.get("region_code") or normalized.region_name or normalized.region_slug or "")
+            ),
             normalized.address,
             normalized.cadastral_number,
             _to_decimal(normalized.start_price),
@@ -753,12 +797,17 @@ class NationwideIngestionService:
                 "http_requests": result.http_requests,
                 "response_bytes": result.response_bytes,
                 "sql_statements_per_100_lots": round(result.sql_statements * 100 / result.items_seen, 2)
-                if result.items_seen else 0,
+                if result.items_seen
+                else 0,
                 "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds else 0,
+                if result.elapsed_seconds
+                else 0,
                 "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
-                if result.elapsed_seconds else 0,
-            } if self.profile_timings else {},
+                if result.elapsed_seconds
+                else 0,
+            }
+            if self.profile_timings
+            else {},
             "error": result.error,
         }
 
