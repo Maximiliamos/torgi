@@ -82,6 +82,7 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
         )
 
     monkeypatch.setattr(api, "read_session_scope", scope)
+    monkeypatch.setattr(api.settings, "api_read_only", True)
     api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(id=1, username="reader", role="reader")
     try:
         response = TestClient(api.app).get("/api/operations/progress")
