@@ -111,7 +111,14 @@ _CADASTRAL_DEADLINE_SECONDS = 7.0
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
-_READ_ONLY_EXACT_PATHS = {"/api/lots", "/api/stats", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+_READ_ONLY_EXACT_PATHS = {
+    "/api/lots",
+    "/api/stats",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/operations/progress",
+}
 _EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
 _AUTH_EXECUTOR_WORKERS = max(2, settings.database_pool_size + settings.database_max_overflow)
 _AUTH_EXECUTOR = ThreadPoolExecutor(
