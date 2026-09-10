@@ -44,11 +44,16 @@ class TorgiRussiaConnector(AuctionConnector):
             next_cursor = f"region:{region_index + 1}:1"
         else:
             next_cursor = None
-        metadata.update({
-            "region_index": region_index,
-            "regions_total": len(self._region_ids),
-            "region_id": normalized.region_id,
-        })
+        metadata.update(
+            {
+                "region_index": region_index,
+                "regions_total": len(self._region_ids),
+                "region_id": normalized.region_id,
+                "current_category": f"Регион {region_index + 1} из {len(self._region_ids)}",
+                "progress_current": region_index + 1,
+                "progress_total": len(self._region_ids),
+            }
+        )
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata=metadata)
 
     async def enrich_lot(self, lot):

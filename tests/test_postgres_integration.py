@@ -55,10 +55,18 @@ def engine():
 
 def _lot(external_id: str, **overrides) -> ProcessedLot:
     values = dict(
-        external_id=external_id, source="test", source_system="test", title="Склад",
-        description="Площадка", object_name="Объект", address="Ярославль",
-        cadastral_numbers=["76:23:010101:1"], category="land", region_slug="76",
-        current_price=100, auction_status="active",
+        external_id=external_id,
+        source="test",
+        source_system="test",
+        title="Склад",
+        description="Площадка",
+        object_name="Объект",
+        address="Ярославль",
+        cadastral_numbers=["76:23:010101:1"],
+        category="land",
+        region_slug="76",
+        current_price=100,
+        auction_status="active",
     )
     values.update(overrides)
     return ProcessedLot(**values)
@@ -101,6 +109,7 @@ def test_postgres_schema_head_indexes_and_constraints(engine) -> None:
     schema = inspect(engine)
     processed_indexes = {item["name"] for item in schema.get_indexes("processed_lots")}
     geo_indexes = {item["name"] for item in schema.get_indexes("lot_geo_snapshots")}
+    cache_indexes = {item["name"] for item in schema.get_indexes("geo_query_cache")}
     processed_unique = {item["name"] for item in schema.get_unique_constraints("processed_lots")}
     assert {
         "ix_processed_lots_region_slug",
@@ -109,13 +118,16 @@ def test_postgres_schema_head_indexes_and_constraints(engine) -> None:
         "ix_processed_lots_map_feed",
     } <= processed_indexes
     assert "ix_lot_geo_snapshots_viewport" in geo_indexes
+    assert {"ix_geo_query_cache_provider", "ix_geo_query_cache_expires_at"} <= cache_indexes
     assert "uq_processed_lots_source_system_external_id" in processed_unique
     with engine.connect() as connection:
-        current_index = connection.scalar(text("""
+        current_index = connection.scalar(
+            text("""
             SELECT indexdef FROM pg_indexes
             WHERE schemaname = 'public' AND tablename = 'map_datasets'
               AND indexname = 'uq_map_datasets_single_current'
-        """))
+        """)
+        )
     assert current_index is not None
     assert "UNIQUE INDEX" in current_index
     assert "WHERE is_current" in current_index
@@ -137,24 +149,40 @@ def test_postgres_rejects_a_second_current_map_dataset(engine) -> None:
 def test_postgres_serializes_concurrent_map_promotions(engine) -> None:
     with Session(engine) as session:
         old = MapDataset(
-            version="pg-concurrent-old", status="ready", is_current=True,
-            point_count=10, tile_count=1,
+            version="pg-concurrent-old",
+            status="ready",
+            is_current=True,
+            point_count=10,
+            tile_count=1,
         )
         first = MapDataset(
-            version="pg-concurrent-first", status="building", is_current=False,
-            point_count=10, tile_count=1,
+            version="pg-concurrent-first",
+            status="building",
+            is_current=False,
+            point_count=10,
+            tile_count=1,
         )
         second = MapDataset(
-            version="pg-concurrent-second", status="building", is_current=False,
-            point_count=10, tile_count=1,
+            version="pg-concurrent-second",
+            status="building",
+            is_current=False,
+            point_count=10,
+            tile_count=1,
         )
         session.add_all((old, first, second))
         session.flush()
         for dataset in (old, first, second):
-            session.add(MapTile(
-                dataset_id=dataset.id, z=0, x=0, y=0, feature_count=1,
-                etag=f"etag-{dataset.id}", payload_json={"features": [{"id": dataset.id}]},
-            ))
+            session.add(
+                MapTile(
+                    dataset_id=dataset.id,
+                    z=0,
+                    x=0,
+                    y=0,
+                    feature_count=1,
+                    etag=f"etag-{dataset.id}",
+                    payload_json={"features": [{"id": dataset.id}]},
+                )
+            )
         session.commit()
         old_id, first_id, second_id = old.id, first.id, second.id
 
@@ -188,14 +216,16 @@ def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
         lot = _lot("pg-map-lot", title="Mapped PostgreSQL lot", region_slug="76")
         session.add(lot)
         session.flush()
-        session.add(LotGeoSnapshot(
-            lot_id=lot.id,
-            geo_source="ci",
-            geo_method="fixture",
-            geo_confidence="high",
-            centroid_lat=57.6261,
-            centroid_lon=39.8845,
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source="ci",
+                geo_method="fixture",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
         session.commit()
 
         response = build_map_lots_response(
@@ -209,7 +239,8 @@ def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
             north=58,
         )
         assert any(item["id"] == lot.id for item in response["items"])
-        plan = session.execute(text("""
+        plan = session.execute(
+            text("""
             EXPLAIN (ANALYZE, FORMAT JSON)
             SELECT p.id
             FROM processed_lots AS p
@@ -219,7 +250,8 @@ def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
               AND g.centroid_lon BETWEEN 39 AND 40
             ORDER BY p.last_update DESC
             LIMIT 25
-        """)).scalar_one()
+        """)
+        ).scalar_one()
         assert plan[0]["Plan"]["Actual Total Time"] >= 0
 
     @contextmanager
@@ -292,30 +324,39 @@ def test_postgres_canonical_source_consistency_duplicates_and_orphans(engine) ->
         session.add(source)
         session.commit()
 
-        assert session.scalar(
-            select(SourceLot)
-            .join(CanonicalLot, CanonicalLot.id == SourceLot.canonical_lot_id)
-            .join(ProcessedLot, ProcessedLot.id == SourceLot.processed_lot_id)
-            .where(SourceLot.id == source.id)
-        ) is not None
-        duplicate_groups = session.execute(text("""
+        assert (
+            session.scalar(
+                select(SourceLot)
+                .join(CanonicalLot, CanonicalLot.id == SourceLot.canonical_lot_id)
+                .join(ProcessedLot, ProcessedLot.id == SourceLot.processed_lot_id)
+                .where(SourceLot.id == source.id)
+            )
+            is not None
+        )
+        duplicate_groups = session.execute(
+            text("""
             SELECT source_system, external_id
             FROM processed_lots
             GROUP BY source_system, external_id
             HAVING count(*) > 1
-        """)).all()
-        orphan_sources = session.scalar(text("""
+        """)
+        ).all()
+        orphan_sources = session.scalar(
+            text("""
             SELECT count(*)
             FROM source_lots AS s
             LEFT JOIN canonical_lots AS c ON c.id = s.canonical_lot_id
             WHERE c.id IS NULL
-        """))
-        orphan_geo = session.scalar(text("""
+        """)
+        )
+        orphan_geo = session.scalar(
+            text("""
             SELECT count(*)
             FROM lot_geo_snapshots AS g
             LEFT JOIN processed_lots AS p ON p.id = g.lot_id
             WHERE p.id IS NULL
-        """))
+        """)
+        )
         assert duplicate_groups == []
         assert orphan_sources == 0
         assert orphan_geo == 0

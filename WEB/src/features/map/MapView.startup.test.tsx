@@ -10,6 +10,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapLotDetail: vi.fn(),
     fetchMapLotsSWR: vi.fn(),
     fetchMapTile: vi.fn(),
+    fetchOperationsProgress: vi.fn(),
     fetchRegions: vi.fn(),
     setReviewStatus: vi.fn(),
   };
@@ -21,6 +22,7 @@ import {
   fetchMapLotDetail,
   fetchMapLotsSWR,
   fetchMapTile,
+  fetchOperationsProgress,
   fetchRegions,
   setReviewStatus,
   type MapDataset,
@@ -116,6 +118,10 @@ describe("tile map startup", () => {
     vi.mocked(fetchCurrentUser).mockResolvedValue({ id: 1, username: "reader", role: "reader" });
     vi.mocked(fetchRegions).mockResolvedValue([]);
     vi.mocked(fetchMapTile).mockResolvedValue({ features: [] });
+    vi.mocked(fetchOperationsProgress).mockResolvedValue({
+      sync: null,
+      geocoding: { total: 100, geocoded: 25, remaining: 75, terminal_failures: 2, percent: 25, task: null },
+    });
     vi.mocked(setReviewStatus).mockResolvedValue({ lot_id: 1, status: "approved" });
   });
 
@@ -137,6 +143,34 @@ describe("tile map startup", () => {
 
     await waitFor(() => expect(fetchMapTile).toHaveBeenCalled());
     expect(fetchMapLotsSWR).not.toHaveBeenCalled();
+  });
+
+  it("shows exact geocoding completion and queue counters", async () => {
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-progress"));
+    vi.mocked(fetchOperationsProgress).mockResolvedValue({
+      sync: {
+        task_id: "sync-1", status: "running", sources: [{
+          source_system: "torgi-russia.ru", status: "running", items_seen: 420,
+          pages_scanned: 10, total_pages: 20, percent: 50, current_category: "Регион 4 из 8",
+        }],
+      },
+      geocoding: {
+        total: 1000, geocoded: 640, remaining: 360, terminal_failures: 7, percent: 64,
+        task: { task_id: "geo-1", status: "running", progress: {
+          queued: 250, processed: 125, geocoded: 110, failed: 15, percent: 90,
+          unique_queries: 230, resolved_queries: 230, cache_hits: 20, phase: "saving",
+        } },
+      },
+    });
+
+    render(<MapView refreshToken={0} />);
+
+    expect(await screen.findByText("Геокодирование — 64.0%")).toBeInTheDocument();
+    expect(screen.getByText("640 из 1000 с координатами")).toBeInTheDocument();
+    expect(screen.getByText(/В очереди: 360/)).toBeInTheDocument();
+    expect(screen.getByText(/Текущий пакет: 125 из 250/)).toBeInTheDocument();
+    expect(screen.getByText(/Запросы геокодера: 230 из 230 · из кеша 20/)).toBeInTheDocument();
+    expect(screen.getByText(/torgi-russia.ru: 420 лотов/)).toBeInTheDocument();
   });
 
   it("does not silently fall back to legacy lots when current dataset is unavailable", async () => {

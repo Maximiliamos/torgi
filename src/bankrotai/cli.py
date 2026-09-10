@@ -15,6 +15,7 @@ from bankrotai.ai import OpenAIAppraiser, apply_evaluation_to_lot
 
 logger = get_logger("cli")
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bankrotai")
     subparsers = parser.add_subparsers(dest="command")
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     geo_p = subparsers.add_parser("geocode-pending", help="Geocode a bounded batch of stored lots")
     geo_p.add_argument("--limit", type=int, default=250)
     geo_p.add_argument("--re-geocode-existing", action="store_true")
+    geo_p.add_argument("--progress-id", default=None)
     subparsers.add_parser("geocoding-stats", help="Show persisted geocoding quality statistics")
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
@@ -75,29 +77,40 @@ def build_parser() -> argparse.ArgumentParser:
     map_cleanup_p.add_argument("--retain-previous-ready", type=int, default=1)
     map_cleanup_p.add_argument("--min-age-hours", type=int, default=168)
     map_cleanup_p.add_argument("--apply", action="store_true", help="Delete listed candidates; default is dry-run")
-    bidexpert_repair_p = subparsers.add_parser("repair-bidexpert-addresses", help="Repair truncated BidExpert addresses")
+    bidexpert_repair_p = subparsers.add_parser(
+        "repair-bidexpert-addresses", help="Repair truncated BidExpert addresses"
+    )
     bidexpert_repair_p.add_argument("--limit", type=int, default=20_000)
     bidexpert_repair_p.add_argument("--apply", action="store_true")
     return parser
 
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "init-db": init_db()
+    if args.command == "init-db":
+        init_db()
     elif args.command == "run-desktop":
         if args.smoke_test and "--smoke-test" not in sys.argv:
             sys.argv.append("--smoke-test")
         from bankrotai.gui import main as run_gui
+
         return run_gui()
     elif args.command == "run-api":
-        from bankrotai.api import run_api; run_api(args.host, args.port)
+        from bankrotai.api import run_api
+
+        run_api(args.host, args.port)
     elif args.command == "ingest-manual":
-        with session_scope() as s: import_manual_html(s, args.file, args.city)
+        with session_scope() as s:
+            import_manual_html(s, args.file, args.city)
     elif args.command == "sync-region":
         from bankrotai.tasks import sync_public_region_task
+
         sync_public_region_task(args.region, args.force)
     elif args.command == "search-torgi-gov":
-        category_code = TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(args.category.lower(), args.category) if args.category else None
+        category_code = (
+            TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(args.category.lower(), args.category) if args.category else None
+        )
         filters = TorgiGovSearchFilters(
             search_text=args.search,
             subject_rf=args.region or None,
@@ -125,21 +138,28 @@ def main():
             with session_scope() as s:
                 for lot in lots:
                     persist_lot(s, lot)
-        print(json.dumps({
-            "meta": meta,
-            "items": [
+        print(
+            json.dumps(
                 {
-                    "external_id": lot.external_id,
-                    "title": lot.title,
-                    "category": lot.category,
-                    "region": lot.region_name or lot.region_slug,
-                    "price": lot.start_price or lot.current_price,
-                    "status": lot.auction_status,
-                    "url": lot.lot_url,
-                }
-                for lot in lots
-            ],
-        }, ensure_ascii=False, indent=2, default=str))
+                    "meta": meta,
+                    "items": [
+                        {
+                            "external_id": lot.external_id,
+                            "title": lot.title,
+                            "category": lot.category,
+                            "region": lot.region_name or lot.region_slug,
+                            "price": lot.start_price or lot.current_price,
+                            "status": lot.auction_status,
+                            "url": lot.lot_url,
+                        }
+                        for lot in lots
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
     elif args.command == "appraise-all-pending":
         init_db()
         with session_scope() as s:
@@ -188,13 +208,19 @@ def main():
             if not args.confirm:
                 parser.error("restore-db requires --confirm; a safety backup is created automatically")
             result = restore_sqlite_backup(args.file)
-        print(json.dumps({
-            "path": str(result.path),
-            "integrity": result.integrity,
-            "alembic_version": result.alembic_version,
-            "processed_lots": result.processed_lots,
-            "size_bytes": result.size_bytes,
-        }, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "path": str(result.path),
+                    "integrity": result.integrity,
+                    "alembic_version": result.alembic_version,
+                    "processed_lots": result.processed_lots,
+                    "size_bytes": result.size_bytes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.command == "create-user":
         from bankrotai.auth import upsert_user
 
@@ -222,6 +248,7 @@ def main():
             session_scope,
             limit=args.limit,
             re_geocode_existing=args.re_geocode_existing,
+            progress_task_id=args.progress_id,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "geocoding-stats":
@@ -264,7 +291,9 @@ def main():
         with session_scope() as session:
             result = repair_bidexpert_addresses(session, limit=args.limit, apply=args.apply)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    else: parser.print_help()
+    else:
+        parser.print_help()
+
 
 if __name__ == "__main__":
     sys.exit(main() or 0)

@@ -22,6 +22,21 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
     });
     if (path === "/api/auth/me") return json({ id: 1, username: "reader", role: "reader" }, { Date: new Date().toUTCString() });
     if (path === "/api/regions") return json([{ code: "76", name: "Ярославская область" }]);
+    if (path === "/api/operations/progress") return json({
+      sync: {
+        task_id: "sync-e2e", status: "running", sources: [{
+          source_system: "torgi-russia.ru", status: "running", items_seen: 420,
+          pages_scanned: 10, total_pages: 20, percent: 50, current_category: "Регион 4 из 8",
+        }],
+      },
+      geocoding: {
+        total: 1000, geocoded: 640, remaining: 360, terminal_failures: 7, percent: 64,
+        task: { task_id: "geo-e2e", status: "running", progress: {
+          queued: 250, processed: 125, geocoded: 110, failed: 15, percent: 90,
+          unique_queries: 230, resolved_queries: 230, cache_hits: 20, phase: "saving",
+        } },
+      },
+    });
     if (path === "/api/map/datasets/current") return json({
       version: "e2e-v1", point_count: 1, tile_count: 15, max_zoom: 14,
       point_zoom: 12, published_at: new Date().toISOString(),
@@ -68,6 +83,9 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator(".appShell")).toBeVisible();
   await page.getByRole("button", { name: "Карта", exact: true }).click();
+  await expect(page.getByLabel("Ход обработки данных")).toContainText("Геокодирование — 64.0%");
+  await expect(page.getByLabel("Ход обработки данных")).toContainText("В очереди: 360");
+  await expect(page.getByLabel("Ход обработки данных")).toContainText("Текущий пакет: 125 из 250");
   const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(frameElement).toBeVisible();
   const currentMapFrame = () => page.frames().find(

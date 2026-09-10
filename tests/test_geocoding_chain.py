@@ -29,7 +29,7 @@ def install(monkeypatch, *, ik12=None, nspd=None, address=None):
         calls.append("nspd")
         return nspd
 
-    def address_search(_query):
+    def address_search(_query, **_kwargs):
         calls.append("address")
         return address
 
@@ -39,36 +39,36 @@ def install(monkeypatch, *, ik12=None, nspd=None, address=None):
     return calls
 
 
-def test_ik12_success_stops_fallback(monkeypatch) -> None:
-    calls = install(monkeypatch, ik12=result("ik12_cadastral"))
+def test_nspd_success_stops_slow_fallback(monkeypatch) -> None:
+    calls = install(monkeypatch, nspd=result("nspd"), ik12=result("ik12_cadastral"))
     resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область")
-    assert resolved.source == "ik12_cadastral"
+    assert resolved.source == "nspd"
     assert "5а/17" in resolved.address
-    assert calls == ["ik12"]
+    assert calls == ["nspd"]
 
 
-def test_nspd_is_first_fallback(monkeypatch) -> None:
-    calls = install(monkeypatch, nspd=result("nspd"))
-    assert resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область").source == "nspd"
-    assert calls == ["ik12", "nspd"]
+def test_ik12_is_interactive_fallback_after_nspd(monkeypatch) -> None:
+    calls = install(monkeypatch, ik12=result("ik12_cadastral"))
+    assert resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область").source == "ik12_cadastral"
+    assert calls == ["nspd", "ik12"]
 
 
 def test_address_is_second_fallback(monkeypatch) -> None:
     calls = install(monkeypatch, address=result("nominatim", cad=None))
     assert resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область").source == "nominatim"
-    assert calls == ["ik12", "nspd", "address"]
+    assert calls == ["nspd", "ik12", "address"]
 
 
 def test_suspicious_ik12_coordinate_is_rejected(monkeypatch) -> None:
     calls = install(
         monkeypatch,
-        ik12=result("ik12_cadastral", lat=55.7558, lon=37.6176),
-        nspd=result("nspd"),
+        nspd=result("nspd", lat=55.7558, lon=37.6176),
+        ik12=result("ik12_cadastral"),
     )
     resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область")
-    assert resolved.source == "nspd"
+    assert resolved.source == "ik12_cadastral"
     assert resolved.attempts[0]["reason"] == "city_distance_mismatch"
-    assert calls == ["ik12", "nspd"]
+    assert calls == ["nspd", "ik12"]
 
 
 def test_all_providers_fail_with_explicit_status(monkeypatch) -> None:
@@ -76,7 +76,14 @@ def test_all_providers_fail_with_explicit_status(monkeypatch) -> None:
     resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область")
     assert resolved.status == "GEOCODING_FAILED"
     assert resolved.confidence == "none"
-    assert calls == ["ik12", "nspd", "address"]
+    assert calls == ["nspd", "ik12", "address"]
+
+
+def test_bulk_mode_skips_slow_fallbacks(monkeypatch) -> None:
+    calls = install(monkeypatch)
+    resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область", bulk=True)
+    assert resolved.status == "GEOCODING_FAILED"
+    assert calls == ["nspd", "address"]
 
 
 def test_yaroslavl_regression_rejects_other_region() -> None:

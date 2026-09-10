@@ -422,12 +422,36 @@ export type LotSyncStatus = {
   started_at?: string | null;
   finished_at?: string | null;
   result?: Record<string, unknown> | null;
-  sources?: Array<{ source_system: string; status: string; items_seen: number }>;
+  sources?: Array<{
+    source_system: string; status: string; items_seen: number; pages_scanned?: number;
+    checkpoint?: { total_pages?: number | null; current_category?: string | null } | null;
+  }>;
+};
+export type OperationsProgress = {
+  sync: null | {
+    task_id: string; status: string; started_at?: string | null; finished_at?: string | null;
+    sources: Array<{
+      source_system: string; status: string; items_seen: number; pages_scanned: number;
+      total_pages: number | null; percent: number | null; current_category: string | null;
+    }>;
+  };
+  geocoding: {
+    total: number; geocoded: number; remaining: number; terminal_failures: number; percent: number;
+    task: null | {
+      task_id: string; status: string; error?: string | null;
+      progress?: {
+        queued?: number; processed?: number; geocoded?: number; failed?: number; percent?: number;
+        unique_queries?: number; resolved_queries?: number; cache_hits?: number; phase?: string;
+      } | null;
+    };
+  };
 };
 export const startNationwideLotSync = () =>
   requestJson<{ task_id: string; status: string }>("/api/sync/lots", undefined, { method: "POST" });
 export const fetchNationwideLotSync = (taskId: string) =>
   requestJson<LotSyncStatus>(`/api/sync/lots/${encodeURIComponent(taskId)}`);
+export const fetchOperationsProgress = () =>
+  requestJson<OperationsProgress>("/api/operations/progress");
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>

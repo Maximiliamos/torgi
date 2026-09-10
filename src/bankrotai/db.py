@@ -535,6 +535,19 @@ class GeoFailure(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class GeoQueryCache(Base):
+    """Validated geocoder result shared by identical bulk queries across batches."""
+
+    __tablename__ = "geo_query_cache"
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class DuplicateReview(Base):
     __tablename__ = "duplicate_reviews"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -736,7 +749,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "f7a8b9c0d1e2"
+SCHEMA_REVISION = "09a1b2c3d4e5"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
@@ -785,9 +798,7 @@ def get_engine():
         def _configure_transaction_timeouts(connection) -> None:
             # Neon pooled connections reject statement_timeout in the startup
             # packet. SET LOCAL is transaction-scoped and pooler-safe.
-            connection.exec_driver_sql(
-                f"SET LOCAL statement_timeout={settings.database_statement_timeout_ms}"
-            )
+            connection.exec_driver_sql(f"SET LOCAL statement_timeout={settings.database_statement_timeout_ms}")
             connection.exec_driver_sql("SET LOCAL lock_timeout=5000")
 
         event.listen(engine, "begin", _configure_transaction_timeouts)

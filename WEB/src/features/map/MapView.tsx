@@ -20,11 +20,13 @@ import {
   fetchMapTile,
   fetchRegions,
   fetchNationwideLotSync,
+  fetchOperationsProgress,
   MapLot,
   MapDataset,
   MapMarkerLot,
   MapTileFeature,
   MapTilePayload,
+  OperationsProgress,
   RegionOption,
   searchCadastre,
   setReviewStatus,
@@ -209,6 +211,39 @@ function MapState({
     >
       {children}
     </div>
+  );
+}
+
+function OperationProgressCard({ value }: { value: OperationsProgress }) {
+  const activeSync = value.sync && ["queued", "running"].includes(value.sync.status);
+  const activeSources = value.sync?.sources.filter((source) => ["queued", "running"].includes(source.status)) ?? [];
+  const completedSources = value.sync?.sources.filter((source) => source.status === "success").length ?? 0;
+  const sourceTotal = value.sync?.sources.length ?? 0;
+  const batch = value.geocoding.task?.status === "running" ? value.geocoding.task.progress : null;
+  if (!activeSync && !batch && value.geocoding.remaining === 0) return null;
+  return (
+    <section className="mapOperationProgress" aria-label="Ход обработки данных">
+      {activeSync && (
+        <div>
+          <strong>Поиск лотов</strong>
+          <span>{completedSources} из {sourceTotal} площадок завершено</span>
+          {activeSources.slice(0, 2).map((source) => (
+            <React.Fragment key={source.source_system}>
+              <progress max={100} value={source.percent ?? 0} />
+              <small>{source.source_system}: {source.items_seen} лотов{source.current_category ? ` · ${source.current_category}` : ""}</small>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+      <div>
+        <strong>Геокодирование — {value.geocoding.percent.toFixed(1)}%</strong>
+        <progress max={100} value={value.geocoding.percent} />
+        <span>{value.geocoding.geocoded} из {value.geocoding.total} с координатами</span>
+        <small>В очереди: {value.geocoding.remaining} · окончательных ошибок: {value.geocoding.terminal_failures}</small>
+        {batch && <small>Запросы геокодера: {batch.resolved_queries ?? 0} из {batch.unique_queries ?? batch.queued ?? 0} · из кеша {batch.cache_hits ?? 0}</small>}
+        {batch && <small>Текущий пакет: {batch.processed ?? 0} из {batch.queued ?? 0} · успешно {batch.geocoded ?? 0} · ошибок {batch.failed ?? 0}</small>}
+      </div>
+    </section>
   );
 }
 
@@ -666,6 +701,7 @@ export function MapView({
   });
   const [appliedFilters, setAppliedFilters] = React.useState(filters);
   const [syncing, setSyncing] = React.useState(false);
+  const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
   const visibleMapObjects = tileMode && mapDataset
     ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
@@ -825,6 +861,16 @@ export function MapView({
       .catch(() => setIsAdmin(false));
   }, []);
   React.useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    const refresh = () => fetchOperationsProgress()
+      .then((value) => { if (!cancelled) setOperationProgress(value); })
+      .catch(() => undefined);
+    void refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [active]);
+  React.useEffect(() => {
     void loadCurrentMapDataset();
     return () => { datasetRequestRevision.current += 1; };
   }, [loadCurrentMapDataset, refreshToken]);
@@ -956,6 +1002,7 @@ export function MapView({
       for (;;) {
         await new Promise((resolve) => window.setTimeout(resolve, 3000));
         const status = await fetchNationwideLotSync(started.task_id);
+        void fetchOperationsProgress().then(setOperationProgress).catch(() => undefined);
         const sourceProgress = status.sources?.map((source) => `${source.source_system}: ${source.items_seen}`).join(" · ");
         setMessage(`Обновление лотов${sourceProgress ? ` · ${sourceProgress}` : "…"}`);
         if (["success", "failed", "partial"].includes(status.status)) {
@@ -1095,6 +1142,7 @@ export function MapView({
                 </button>
               </div>
             </fieldset>
+            {operationProgress && <OperationProgressCard value={operationProgress} />}
             {loading && <MapState>Обновление меток…</MapState>}
             {tileMode && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
             {mapNotice && <MapState>{mapNotice}</MapState>}

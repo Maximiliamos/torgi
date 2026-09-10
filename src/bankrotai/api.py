@@ -29,9 +29,9 @@ from redis.exceptions import RedisError
 from bankrotai.db import (
     session_scope,
     read_session_scope,
-    get_processed_lot, 
-    get_top_lots, 
-    ProcessedLot, 
+    get_processed_lot,
+    get_top_lots,
+    ProcessedLot,
     get_region_sync_state,
     upsert_region_sync_state,
     BackgroundTaskState,
@@ -146,12 +146,14 @@ async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
 
 def _persist_request_failure(method: str, path: str, error: str) -> None:
     with session_scope() as session:
-        session.add(DiagnosticEvent(
-            severity="error",
-            component="api",
-            message="Unhandled API request error",
-            context_json={"method": method, "path": path, "error": error[:2000]},
-        ))
+        session.add(
+            DiagnosticEvent(
+                severity="error",
+                component="api",
+                message="Unhandled API request error",
+                context_json={"method": method, "path": path, "error": error[:2000]},
+            )
+        )
 
 
 class BulkTorgiSyncRequest(BaseModel):
@@ -262,6 +264,7 @@ class OnlineLotImportRequest(BaseModel):
     source_url: str | None = Field(None, max_length=5000)
     published_at: datetime | None = None
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -270,6 +273,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=256, compresslevel=5)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -353,7 +357,7 @@ async def log_requests(request: Request, call_next):
     rate_limit_key = f"user:{actor.id}" if actor is not None else f"ip:{client_ip}"
     if not await asyncio.to_thread(_consume_rate_limit, rate_limit_key):
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
-    
+
     start_time = time.time()
     logger.info("Incoming request: request_id=%s method=%s url=%s", request_id, request.method, request.url)
     try:
@@ -377,10 +381,7 @@ async def log_requests(request: Request, call_next):
             )
         except Exception:
             logger.exception("Failed to persist API diagnostic event")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal Server Error"}
-        )
+        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
 def _consume_rate_limit(client_id: str) -> bool:
@@ -451,10 +452,14 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path.startswith("/api/lots/"):
             parts = path.split("/")
-            return len(parts) == 4 and parts[3].isdigit() or (
-                len(parts) == 5
+            return (
+                len(parts) == 4
                 and parts[3].isdigit()
-                and parts[4] in {"procedure", "participation", "notes", "documents", "max-bid-scenarios"}
+                or (
+                    len(parts) == 5
+                    and parts[3].isdigit()
+                    and parts[4] in {"procedure", "participation", "notes", "documents", "max-bid-scenarios"}
+                )
             )
         return False
     if method == "POST":
@@ -470,11 +475,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         return False
     if method == "PUT" and path.startswith("/api/lots/"):
         parts = path.split("/")
-        return (
-            len(parts) == 5
-            and parts[3].isdigit()
-            and parts[4] in {"participation", "review-status"}
-        )
+        return len(parts) == 5 and parts[3].isdigit() and parts[4] in {"participation", "review-status"}
     return False
 
 
@@ -490,6 +491,7 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
         raise HTTPException(status_code=403, detail="Administrator access required")
     return actor
 
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
@@ -498,6 +500,7 @@ def read_root():
 @app.get("/api/time")
 def current_time(_: AuthenticatedUser = Depends(require_user)):
     return trusted_time_status()
+
 
 @app.get("/health/live")
 async def liveness_check():
@@ -544,6 +547,7 @@ def readiness_check():
             return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks, "version": __version__}
 
+
 # --- Endpoints ---
 
 
@@ -578,6 +582,7 @@ def logout(response: Response):
 @app.get("/api/auth/me")
 def current_user(actor: AuthenticatedUser = Depends(require_user)):
     return {"id": actor.id, "username": actor.username, "role": actor.role}
+
 
 def _normalized_lot_to_dict(lot) -> dict:
     return {
@@ -650,27 +655,32 @@ def _cached_public_source_lots(
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all()
-    items = [{
-        "external_id": row.external_id,
-        "source": source_system,
-        "source_system": source_system,
-        "title": row.title or "Лот без названия",
-        "description": row.description or "",
-        "category": row.category or "real_estate",
-        "region_slug": row.region_code or ((row.raw_data or {}).get("region_code") if isinstance(row.raw_data, dict) else None),
-        "region_name": row.region_name or ((row.raw_data or {}).get("region_name") if isinstance(row.raw_data, dict) else None),
-        "address": row.address,
-        "cadastral_number": row.cadastral_number,
-        "area": None,
-        "start_price": row.start_price,
-        "current_price": row.current_price,
-        "auction_status": row.source_status or "active",
-        "lot_url": row.lot_url or row.source_url,
-        "source_url": row.source_url or row.lot_url,
-        "detail_level": "cached",
-        "published_at": row.published_at.isoformat() if row.published_at else None,
-        "raw_data": row.raw_data or {},
-    } for row in rows]
+    items = [
+        {
+            "external_id": row.external_id,
+            "source": source_system,
+            "source_system": source_system,
+            "title": row.title or "Лот без названия",
+            "description": row.description or "",
+            "category": row.category or "real_estate",
+            "region_slug": row.region_code
+            or ((row.raw_data or {}).get("region_code") if isinstance(row.raw_data, dict) else None),
+            "region_name": row.region_name
+            or ((row.raw_data or {}).get("region_name") if isinstance(row.raw_data, dict) else None),
+            "address": row.address,
+            "cadastral_number": row.cadastral_number,
+            "area": None,
+            "start_price": row.start_price,
+            "current_price": row.current_price,
+            "auction_status": row.source_status or "active",
+            "lot_url": row.lot_url or row.source_url,
+            "source_url": row.source_url or row.lot_url,
+            "detail_level": "cached",
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+            "raw_data": row.raw_data or {},
+        }
+        for row in rows
+    ]
     return items, total
 
 
@@ -857,7 +867,11 @@ def import_online_lot(
 def trigger_torgi_gov_bulk_sync(request: BulkTorgiSyncRequest):
     if request.price_min is not None and request.price_max is not None and request.price_min > request.price_max:
         raise HTTPException(status_code=422, detail="price_min must be <= price_max")
-    category_code = TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(request.category.lower(), request.category) if request.category else None
+    category_code = (
+        TorgiGovClient.CATEGORY_LABEL_TO_CODE.get(request.category.lower(), request.category)
+        if request.category
+        else None
+    )
     filters = TorgiGovSearchFilters(
         search_text=request.search.strip(),
         subject_rf=request.region or None,
@@ -939,11 +953,62 @@ def get_nationwide_lot_sync(task_id: str, actor: AuthenticatedUser = Depends(req
                     "items_failed": source.items_failed,
                     "geocoded": source.geocoded,
                     "duplicates_merged": source.duplicates_merged,
+                    "checkpoint": source.checkpoint_json,
                     "error": source.error_message,
                 }
                 for source in sources
             ],
         }
+
+
+@app.get("/api/operations/progress")
+def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
+    """Compact progress snapshot for the map UI; contains counters, never credentials or lot data."""
+    from bankrotai.services.geo_backfill import geocoding_progress
+
+    with read_session_scope() as session:
+        sync_run = session.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()).limit(1))
+        sources: list[dict[str, Any]] = []
+        if sync_run is not None:
+            source_rows = session.scalars(
+                select(LotSyncSourceRun)
+                .where(LotSyncSourceRun.sync_run_id == sync_run.id)
+                .order_by(LotSyncSourceRun.source_system)
+            ).all()
+            for source in source_rows:
+                checkpoint = source.checkpoint_json or {}
+                total_pages = checkpoint.get("total_pages")
+                progress_current = checkpoint.get("progress_current")
+                progress_total = checkpoint.get("progress_total")
+                percent = None
+                if isinstance(progress_current, int) and isinstance(progress_total, int) and progress_total > 0:
+                    percent = round(min(100.0, progress_current / progress_total * 100), 1)
+                elif isinstance(total_pages, int) and total_pages > 0:
+                    percent = round(min(100.0, source.pages_scanned / total_pages * 100), 1)
+                sources.append(
+                    {
+                        "source_system": source.source_system,
+                        "status": source.status,
+                        "items_seen": source.items_seen,
+                        "pages_scanned": source.pages_scanned,
+                        "total_pages": total_pages,
+                        "percent": percent,
+                        "current_category": checkpoint.get("current_category"),
+                    }
+                )
+        return {
+            "sync": None
+            if sync_run is None
+            else {
+                "task_id": sync_run.id,
+                "status": sync_run.status,
+                "started_at": sync_run.started_at,
+                "finished_at": sync_run.finished_at,
+                "sources": sources,
+            },
+            "geocoding": geocoding_progress(session),
+        }
+
 
 @app.get("/api/lots")
 def get_lots(
@@ -951,15 +1016,15 @@ def get_lots(
     page: int = Query(1, ge=1, le=10_000),
     per_page: int = Query(12, ge=1, le=100),
     search: str = Query("", max_length=200),
-    categories: str = "", # Comma separated
-    statuses: str = "", # Comma separated
+    categories: str = "",  # Comma separated
+    statuses: str = "",  # Comma separated
     min_price: float = Query(0, ge=0),
     max_price: float = Query(1e10, ge=0),
     min_discount: float = Query(0, ge=-100, le=100),
     max_discount: float = Query(100, ge=-100, le=100),
     min_risk: int | None = Query(None, ge=0, le=10),
     max_risk: int | None = Query(None, ge=0, le=10),
-    sort: str = Query("recommended", pattern="^(recommended|price_asc|price_desc|discount|newest)$")
+    sort: str = Query("recommended", pattern="^(recommended|price_asc|price_desc|discount|newest)$"),
 ):
     if min_price > max_price:
         raise HTTPException(status_code=422, detail="min_price must be <= max_price")
@@ -969,16 +1034,25 @@ def get_lots(
         raise HTTPException(status_code=422, detail="min_risk must be <= max_risk")
     cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
     stat_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
-    
+
     with read_session_scope() as session:
         return build_lots_response(
-            session, city_slug, 
-            page=page, per_page=per_page, search=search,
-            categories=cat_list, statuses=stat_list, 
-            min_price=min_price, max_price=max_price, 
-            min_discount=min_discount, max_discount=max_discount,
-            min_risk=min_risk, max_risk=max_risk, sort_mode=sort
+            session,
+            city_slug,
+            page=page,
+            per_page=per_page,
+            search=search,
+            categories=cat_list,
+            statuses=stat_list,
+            min_price=min_price,
+            max_price=max_price,
+            min_discount=min_discount,
+            max_discount=max_discount,
+            min_risk=min_risk,
+            max_risk=max_risk,
+            sort_mode=sort,
         )
+
 
 @app.get("/api/lots/{lot_id}")
 def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
@@ -1090,9 +1164,7 @@ def get_participation_checklist(lot_id: int, actor: AuthenticatedUser = Depends(
                 LotParticipationChecklist.user_id == str(actor.id),
             )
         )
-        values: dict[str, Any] = {
-            name: False for name in ParticipationChecklistRequest.model_fields if name != "notes"
-        }
+        values: dict[str, Any] = {name: False for name in ParticipationChecklistRequest.model_fields if name != "notes"}
         values["notes"] = None
         if checklist is not None:
             values = {name: getattr(checklist, name) for name in ParticipationChecklistRequest.model_fields}
@@ -1232,6 +1304,7 @@ def split_lot_duplicate(
         log_action(session, str(actor.id), "split_lot", "lot", str(lot_id), None)
         return {"review_id": review.id, "lot_id": lot_id}
 
+
 @app.get("/api/stats")
 def get_stats(city_slug: str = DEFAULT_REGION):
     with read_session_scope() as session:
@@ -1259,12 +1332,25 @@ def get_map_lots(
     if min_start_price is not None and max_start_price is not None and min_start_price > max_start_price:
         raise HTTPException(status_code=422, detail="min_start_price must not exceed max_start_price")
     cache_key = (
-        city_slug, region_code, min_start_price, max_start_price,
-        include_archived, limit, west, south, east, north, review_status,
+        city_slug,
+        region_code,
+        min_start_price,
+        max_start_price,
+        include_archived,
+        limit,
+        west,
+        south,
+        east,
+        north,
+        review_status,
     )
     statistics_key = (
-        city_slug, region_code, min_start_price, max_start_price,
-        include_archived, review_status,
+        city_slug,
+        region_code,
+        min_start_price,
+        max_start_price,
+        include_archived,
+        review_status,
     )
     now = time.monotonic()
     with _map_response_cache_lock:
@@ -1345,14 +1431,19 @@ def get_current_map_dataset():
         )
         if dataset is None:
             raise HTTPException(status_code=404, detail="Map dataset is not ready")
-        return JSONResponse(content=jsonable_encoder({
-            "version": dataset.version,
-            "point_count": dataset.point_count,
-            "tile_count": dataset.tile_count,
-            "max_zoom": 14,
-            "point_zoom": 12,
-            "published_at": dataset.published_at,
-        }), headers={"Cache-Control": "private, no-cache", "X-Map-Dataset": dataset.version})
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "version": dataset.version,
+                    "point_count": dataset.point_count,
+                    "tile_count": dataset.tile_count,
+                    "max_zoom": 14,
+                    "point_zoom": 12,
+                    "published_at": dataset.published_at,
+                }
+            ),
+            headers={"Cache-Control": "private, no-cache", "X-Map-Dataset": dataset.version},
+        )
 
 
 @app.get("/api/map/tiles/{version}/{z}/{x}/{y}")
@@ -1371,7 +1462,10 @@ def get_map_tile(request: Request, version: str, z: int, x: int, y: int):
             raise HTTPException(status_code=404, detail="Map dataset not found")
         tile = session.scalar(
             select(MapTile).where(
-                MapTile.dataset_id == dataset.id, MapTile.z == z, MapTile.x == x, MapTile.y == y,
+                MapTile.dataset_id == dataset.id,
+                MapTile.z == z,
+                MapTile.x == x,
+                MapTile.y == y,
             )
         )
         etag = f'"{tile.etag}"' if tile is not None else f'"empty-{version}-{z}-{x}-{y}"'
@@ -1407,39 +1501,45 @@ async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
                 )
             else:
                 database_query = database_query.where(ProcessedLot.address.ilike(f"%{normalized_query}%"))
-            stored_lot = session.scalar(database_query.order_by(ProcessedLot.is_archived, ProcessedLot.last_update.desc()))
+            stored_lot = session.scalar(
+                database_query.order_by(ProcessedLot.is_archived, ProcessedLot.last_update.desc())
+            )
             if stored_lot is not None:
                 snapshot = session.scalar(
                     select(LotGeoSnapshot)
                     .where(LotGeoSnapshot.lot_id == stored_lot.id)
                     .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
                 )
-                return asdict(CadastralObjectResult(
-                    query=normalized_query,
-                    cadastral_number=stored_lot.cadastral_number,
-                    object_type=stored_lot.category,
-                    title=stored_lot.title,
-                    address=stored_lot.address,
-                    lat=snapshot.centroid_lat if snapshot else None,
-                    lon=snapshot.centroid_lon if snapshot else None,
-                    geometry_json=snapshot.geometry_json if snapshot else None,
-                    has_boundary=bool(snapshot and snapshot.geometry_json),
-                    source="bankrotai_database",
-                    confidence=snapshot.geo_confidence if snapshot else "medium",
-                    info={"lot_id": stored_lot.id, "is_archived": stored_lot.is_archived},
-                ))
+                return asdict(
+                    CadastralObjectResult(
+                        query=normalized_query,
+                        cadastral_number=stored_lot.cadastral_number,
+                        object_type=stored_lot.category,
+                        title=stored_lot.title,
+                        address=stored_lot.address,
+                        lat=snapshot.centroid_lat if snapshot else None,
+                        lon=snapshot.centroid_lon if snapshot else None,
+                        geometry_json=snapshot.geometry_json if snapshot else None,
+                        has_boundary=bool(snapshot and snapshot.geometry_json),
+                        source="bankrotai_database",
+                        confidence=snapshot.geo_confidence if snapshot else "medium",
+                        info={"lot_id": stored_lot.id, "is_archived": stored_lot.is_archived},
+                    )
+                )
     except SQLAlchemyError as exc:
         logger.warning("Cadastre database-first lookup unavailable: %s", exc)
 
     def unavailable_result() -> dict[str, Any]:
         cadastral_number = query if ":" in query else None
-        return asdict(CadastralObjectResult(
-            query=query,
-            cadastral_number=cadastral_number,
-            source="pkk/nspd",
-            confidence="none",
-            error="Кадастровые API временно недоступны; повторите проверку позже.",
-        ))
+        return asdict(
+            CadastralObjectResult(
+                query=query,
+                cadastral_number=cadastral_number,
+                source="pkk/nspd",
+                confidence="none",
+                error="Кадастровые API временно недоступны; повторите проверку позже.",
+            )
+        )
 
     if not _CADASTRAL_CAPACITY.acquire(blocking=False):
         return unavailable_result()
@@ -1466,13 +1566,10 @@ async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
 def get_saved_searches(actor: AuthenticatedUser = Depends(require_user)):
     with read_session_scope() as session:
         rows = session.scalars(
-            select(SavedSearch)
-            .where(SavedSearch.user_id == str(actor.id))
-            .order_by(SavedSearch.created_at.desc())
+            select(SavedSearch).where(SavedSearch.user_id == str(actor.id)).order_by(SavedSearch.created_at.desc())
         ).all()
         return [
-            {"id": row.id, "name": row.name, "query": row.query_params, "created_at": row.created_at}
-            for row in rows
+            {"id": row.id, "name": row.name, "query": row.query_params, "created_at": row.created_at} for row in rows
         ]
 
 
@@ -1502,23 +1599,25 @@ def get_lot_documents(lot_id: int):
                 .where(LotDocumentVersion.document_id == document.id)
                 .order_by(LotDocumentVersion.fetched_at.desc())
             ).all()
-            result.append({
-                "id": document.id,
-                "filename": document.filename,
-                "source_url": document.source_url,
-                "document_kind": document.document_kind,
-                "versions": [
-                    {
-                        "id": version.id,
-                        "sha256": version.sha256,
-                        "mime_type": version.mime_type,
-                        "size_bytes": version.size_bytes,
-                        "metadata": version.metadata_json,
-                        "fetched_at": version.fetched_at,
-                    }
-                    for version in versions
-                ],
-            })
+            result.append(
+                {
+                    "id": document.id,
+                    "filename": document.filename,
+                    "source_url": document.source_url,
+                    "document_kind": document.document_kind,
+                    "versions": [
+                        {
+                            "id": version.id,
+                            "sha256": version.sha256,
+                            "mime_type": version.mime_type,
+                            "size_bytes": version.size_bytes,
+                            "metadata": version.metadata_json,
+                            "fetched_at": version.fetched_at,
+                        }
+                        for version in versions
+                    ],
+                }
+            )
         return result
 
 
@@ -1541,10 +1640,12 @@ def compare_lot_documents(
             raise HTTPException(status_code=422, detail="Document does not belong to this lot")
         if before.document_id != after.document_id or before.id == after.id:
             raise HTTPException(status_code=422, detail="Choose two versions of the same document")
-        existing = session.scalar(select(LotDocumentChange).where(
-            LotDocumentChange.from_version_id == before.id,
-            LotDocumentChange.to_version_id == after.id,
-        ))
+        existing = session.scalar(
+            select(LotDocumentChange).where(
+                LotDocumentChange.from_version_id == before.id,
+                LotDocumentChange.to_version_id == after.id,
+            )
+        )
         if existing is None:
             before_meta = before.metadata_json or {}
             after_meta = after.metadata_json or {}
@@ -1601,8 +1702,7 @@ def get_api_capabilities():
 
 def _public_regions() -> list[dict[str, str]]:
     return [
-        {"code": region.code, "name": region.name}
-        for region in sorted(REGION_DIRECTORY, key=lambda item: item.name)
+        {"code": region.code, "name": region.name} for region in sorted(REGION_DIRECTORY, key=lambda item: item.name)
     ]
 
 
@@ -1620,36 +1720,30 @@ def _normalize_public_region(value: str | None) -> str | None:
 def get_public_regions():
     return _public_regions()
 
+
 @app.post("/api/regions/{city_slug}/sync", dependencies=[Depends(require_admin)])
 def trigger_region_sync(city_slug: str, force: bool = False):
     try:
         dispatch_mode = schedule_region_sync(city_slug, force=force)
     except QueueUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {
-        "citySlug": city_slug,
-        "status": "queued",
-        "dispatchMode": dispatch_mode
-    }
+    return {"citySlug": city_slug, "status": "queued", "dispatchMode": dispatch_mode}
+
 
 @app.get("/api/regions/{city_slug}/sync-status", dependencies=[Depends(require_admin)])
 def get_sync_status(city_slug: str):
     with read_session_scope() as session:
         state = get_region_sync_state(session, city_slug)
         if not state:
-            return {
-                "citySlug": city_slug,
-                "status": "idle",
-                "hasData": False,
-                "readyLots": 0
-            }
+            return {"citySlug": city_slug, "status": "idle", "hasData": False, "readyLots": 0}
         return {
             "citySlug": city_slug,
             "status": state.status,
             "hasData": state.ready_lots > 0,
             "readyLots": state.ready_lots,
-            "error": state.error_message
+            "error": state.error_message,
         }
+
 
 def run_api(host: str = "0.0.0.0", port: int = 8000):
     uvicorn.run(app, host=host, port=port)
