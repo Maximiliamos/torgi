@@ -9,9 +9,35 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.core import utc_now
-from bankrotai.db import Base, GeoFailure, LotGeoSnapshot, ProcessedLot
+from bankrotai.db import AppSetting, BackgroundTaskState, Base, GeoFailure, LotGeoSnapshot, ProcessedLot
 from bankrotai.geo import CadastralObjectResult
 from bankrotai.services import geo_backfill
+
+
+def test_paused_geocoding_does_not_start_provider_work(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        session.add(AppSetting(key="geocoding_paused", value="true"))
+    def must_not_resolve(*_args, **_kwargs):
+        raise AssertionError("provider must not run while geocoding is paused")
+
+    monkeypatch.setattr(geo_backfill, "resolve_lot_geo", must_not_resolve)
+    result = geo_backfill.geocode_pending_lots(scope, progress_task_id="geo-paused")
+
+    assert result["status"] == "paused"
+    assert result["queued"] == 0
+    with scope() as session:
+        state = session.scalar(select(BackgroundTaskState).where(BackgroundTaskState.task_id == "geo-paused"))
+        assert state is not None
+        assert state.status == "paused"
 
 
 def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:

@@ -11,6 +11,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapLotsSWR: vi.fn(),
     fetchMapTile: vi.fn(),
     fetchOperationsProgress: vi.fn(),
+    pauseGeocoding: vi.fn(),
+    resumeGeocoding: vi.fn(),
     fetchRegions: vi.fn(),
     setReviewStatus: vi.fn(),
   };
@@ -23,6 +25,8 @@ import {
   fetchMapLotsSWR,
   fetchMapTile,
   fetchOperationsProgress,
+  pauseGeocoding,
+  resumeGeocoding,
   fetchRegions,
   setReviewStatus,
   type MapDataset,
@@ -123,6 +127,8 @@ describe("tile map startup", () => {
       geocoding: { total: 100, geocoded: 25, remaining: 75, terminal_failures: 2, percent: 25, task: null },
     });
     vi.mocked(setReviewStatus).mockResolvedValue({ lot_id: 1, status: "approved" });
+    vi.mocked(pauseGeocoding).mockResolvedValue({ status: "paused", effective: "after-current-batch" });
+    vi.mocked(resumeGeocoding).mockResolvedValue({ status: "running", effective: "next-runner-poll" });
   });
 
   it("waits for dataset metadata and never starts the legacy lots request", async () => {
@@ -156,6 +162,7 @@ describe("tile map startup", () => {
       },
       geocoding: {
         total: 1000, geocoded: 640, remaining: 360, terminal_failures: 7, percent: 64,
+        eta_seconds: 7200, elapsed_seconds: 28800, estimated_total_seconds: 36000, rate_per_second: 0.05,
         task: { task_id: "geo-1", status: "running", progress: {
           queued: 250, processed: 125, geocoded: 110, failed: 15, percent: 90,
           unique_queries: 230, resolved_queries: 230, cache_hits: 20, phase: "saving",
@@ -171,6 +178,23 @@ describe("tile map startup", () => {
     expect(screen.getByText(/Текущий пакет: 125 из 250/)).toBeInTheDocument();
     expect(screen.getByText(/Запросы геокодера: 230 из 230 · из кеша 20/)).toBeInTheDocument();
     expect(screen.getByText(/torgi-russia.ru: 420 лотов/)).toBeInTheDocument();
+    expect(screen.getByText(/Оценка: 10 ч 0 мин всего · осталось ≈ 2 ч 0 мин/)).toBeInTheDocument();
+  });
+
+  it("lets only an admin pause geocoding and refreshes durable state", async () => {
+    vi.mocked(fetchCurrentUser).mockResolvedValue({ id: 2, username: "admin", role: "admin" });
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-control"));
+    const running = {
+      sync: null,
+      geocoding: { total: 100, geocoded: 40, remaining: 60, terminal_failures: 0, percent: 40, paused: false, task: null },
+    };
+    const paused = { ...running, geocoding: { ...running.geocoding, paused: true } };
+    vi.mocked(fetchOperationsProgress).mockResolvedValueOnce(running).mockResolvedValueOnce(paused);
+
+    render(<MapView refreshToken={0} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Пауза" }));
+    await waitFor(() => expect(pauseGeocoding).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "Возобновить" })).toBeInTheDocument();
   });
 
   it("does not silently fall back to legacy lots when current dataset is unavailable", async () => {
