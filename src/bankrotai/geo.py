@@ -501,6 +501,10 @@ def build_geocoding_address_candidates(
         value,
         flags=re.IGNORECASE,
     )
+    value = re.sub(
+        r"\b\u0434\.\s*(?=[\u0410-\u042f\u0401A-Z])",
+        "\u0434\u0435\u0440\u0435\u0432\u043d\u044f ", value, flags=re.IGNORECASE,
+    )
     replacements = (
         (r"\bобл\.(?=\s|,|$)", "область"),
         (r"\bг\.(?=\s)", "город "),
@@ -521,14 +525,16 @@ def build_geocoding_address_candidates(
         (part for part in parts if "муниципальн" in part.casefold() or "район" in part.casefold()),
         "",
     )
-    locality = next(
-        (
-            part
-            for part in parts
-            if re.search(r"\b(?:город|село|поселок|деревня|рабочий поселок)\b", part, re.IGNORECASE)
-        ),
-        "",
-    )
+    localities = [
+        part
+        for part in parts
+        if re.search(
+            r"\b(?:город|село|поселок|деревня|рабочий поселок)\b",
+            part,
+            re.IGNORECASE,
+        )
+    ]
+    locality = localities[-1] if localities else ""
     locality_query = re.sub(
         r"^(?:город|село|поселок|деревня|рабочий поселок)\s+",
         "",
@@ -699,6 +705,24 @@ class NominatimGeocoder:
 NOMINATIM_GEOCODER = NominatimGeocoder()
 
 
+def expected_locality_name(address: str | None) -> str:
+    if not address:
+        return ""
+    matches = list(re.finditer(
+        r"(?:^|[,;]\s*)(?:\u0433\.|\u0433\u043e\u0440\u043e\u0434|\u0434\u0435\u0440\u0435\u0432\u043d\u044f|\u0441\u0435\u043b\u043e|\u043f\u043e\u0441\u0435\u043b\u043e\u043a)\s*([^,;]+)",
+        address, re.IGNORECASE,
+    ))
+    abbreviated = list(re.finditer(
+        r"(?:^|[,;]\s*)\u0434\.\s*([\u0410-\u042f\u0401A-Z][^,;]*)",
+        address, re.IGNORECASE,
+    ))
+    candidates = [*matches, *abbreviated]
+    if not candidates:
+        return ""
+    match = max(candidates, key=lambda item: item.start())
+    return match.group(1).strip().casefold()
+
+
 class PhotonGeocoder:
     def __init__(self, base_url: str | None = None):
         self.base_url = (base_url if base_url is not None else os.getenv("PHOTON_BASE_URL", "")).rstrip("/")
@@ -707,8 +731,6 @@ class PhotonGeocoder:
         if not self.base_url or len(address.strip()) < 5:
             return None
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
-        locality_match = re.search(r"(?:^|[,;]\s*)(?:г\.|город)\s*([^,;]+)", address, re.IGNORECASE)
-        expected_locality = locality_match.group(1).strip().casefold() if locality_match else ""
         street_match = re.search(
             r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок)\s*([^,;]+)",
             address,
@@ -739,6 +761,7 @@ class PhotonGeocoder:
         from bankrotai.regions import normalize_region_code
 
         expected_region = normalize_region_code(address)
+        expected_locality = expected_locality_name(address)
         scored: list[tuple[int, int, dict[str, Any]]] = []
         for query_index, candidate in enumerate(build_geocoding_address_candidates(address)):
             exact_candidate_found = False
@@ -755,11 +778,12 @@ class PhotonGeocoder:
                 continue
             for feature in features:
                 props = feature.get("properties") or {}
-                city = str(props.get("city") or props.get("town") or props.get("village") or "")
+                place_name = props.get("name") if props.get("osm_key") == "place" else None
+                city = str(props.get("city") or props.get("town") or props.get("village") or place_name or "")
                 state = str(props.get("state") or "")
                 street = str(props.get("street") or "")
                 house = normalize_house(str(props.get("housenumber") or ""))
-                if expected_locality and city and expected_locality not in city.casefold():
+                if expected_locality and expected_locality not in city.casefold():
                     continue
                 if expected_street and street and expected_street not in street.casefold():
                     continue
@@ -795,7 +819,7 @@ class PhotonGeocoder:
         matched_address = ", ".join(
             str(value)
             for value in (
-                props.get("city") or props.get("town") or props.get("village"),
+                props.get("city") or props.get("town") or props.get("village") or props.get("name"),
                 props.get("street"),
                 props.get("housenumber"),
                 props.get("state"),
@@ -1032,6 +1056,18 @@ def validate_geocoding_result(
         return False, "cadastral_number_mismatch"
 
     expected_region = expected_cad.split(":", 1)[0].zfill(2) if ":" in expected_cad else None
+    if expected_region and address:
+        from bankrotai.regions import region_code_from_text
+
+        address_region = region_code_from_text(address)
+        if address_region and expected_region != address_region:
+            return False, "address_cadastral_region_mismatch"
+    if expected_region and result.address:
+        from bankrotai.regions import region_code_from_text
+
+        observed_region = region_code_from_text(result.address)
+        if observed_region and expected_region != observed_region:
+            return False, "result_cadastral_region_mismatch"
     if region_name:
         from bankrotai.regions import normalize_region_code
 
@@ -1041,6 +1077,9 @@ def validate_geocoding_result(
 
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
+    expected_locality = expected_locality_name(address)
+    if expected_locality and observed_text and expected_locality not in observed_text:
+        return False, "locality_name_mismatch"
     for city_key, (city_lat, city_lon, max_distance) in CITY_SANITY_ANCHORS.items():
         if city_key in expected_text:
             if distance_between(result.lat, result.lon, city_lat, city_lon) > max_distance:

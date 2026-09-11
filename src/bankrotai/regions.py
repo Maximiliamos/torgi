@@ -137,6 +137,19 @@ def normalize_region_code(value: str | None) -> str | None:
     return _REGION_CODES_BY_ALIAS.get(_key(candidate))
 
 
+def region_code_from_text(value: str | None) -> str | None:
+    """Find an explicit subject name inside a longer address without guessing from streets."""
+    if not value:
+        return None
+    text = f" {_key(value)} "
+    aliases = sorted(
+        ((alias, code) for alias, code in _REGION_CODES_BY_ALIAS.items()),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    return next((code for alias, code in aliases if f" {alias} " in text), None)
+
+
 def region_label(code: str) -> str:
     region = REGIONS_BY_CODE[code]
     return f"{region.code} — {region.name}"

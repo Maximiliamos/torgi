@@ -95,3 +95,34 @@ def test_yaroslavl_regression_rejects_other_region() -> None:
     )
     assert valid is False
     assert reason == "city_distance_mismatch"
+
+
+def test_cadastral_region_rejects_conflicting_address_without_region_field() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="г Ярославль, ул 2-я Тверицкая, д 13",
+            lat=57.6385053, lon=39.9134741, source="photon", confidence="medium",
+            address="\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c, \u042f\u0440\u043e\u0441\u043b\u0430\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c",
+        ),
+        cadastral_number="50:16:0102015:1318",
+        address="г Ярославль, ул 2-я Тверицкая, д 13",
+        region_name=None,
+    )
+
+    assert valid is False
+    assert reason == "result_cadastral_region_mismatch"
+
+
+def test_village_lot_rejects_a_different_locality_in_same_region() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="x", lat=57.6396394, lon=39.9670375, source="photon", confidence="high",
+            address="\u041a\u0440\u0430\u0441\u043d\u044b\u0439 \u0411\u043e\u0440, \u042f\u0440\u043e\u0441\u043b\u0430\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c",
+        ),
+        cadastral_number="76:17:204401:372",
+        address="\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c, \u042f\u0440\u043e\u0441\u043b\u0430\u0432\u0441\u043a\u0438\u0439 \u0440\u0430\u0439\u043e\u043d, \u0434. \u0413\u0443\u0431\u0446\u0435\u0432\u043e",
+        region_name="\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c",
+    )
+
+    assert valid is False
+    assert reason == "locality_name_mismatch"

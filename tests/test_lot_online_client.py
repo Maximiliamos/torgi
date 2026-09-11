@@ -181,3 +181,34 @@ def test_fetch_detail_fields_reads_current_listing_date_rows() -> None:
     assert fields["application_start_at"] == datetime(2026, 8, 20, 17, 0)
     assert fields["application_deadline"] == datetime(2026, 9, 3, 17, 0)
     assert fields["auction_at"] == datetime(2026, 9, 3, 14, 0)
+
+
+def test_property_description_address_wins_over_unrelated_labelled_address() -> None:
+    class Response:
+        content = """
+        <html><body>
+          <dl><div><dt>Адрес</dt><dd>г Ярославль, ул 2-я Тверицкая, д 13</dd></div></dl>
+          <div class="ty-product__full-description">
+            Земельный участок, расположенный по адресу: Московская область,
+            г. Ногинск, д. Боково, кадастровый номер 50:16:0102015:1318
+          </div>
+        </body></html>
+        """.encode("utf-8")
+        url = "https://catalog.lot-online.ru/lot/1161450"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
+
+    assert "Ногинск" in fields["address"]
+    assert "Ярославль" not in fields["address"]
+    assert fields["cadastral_numbers"] == ["50:16:0102015:1318"]
