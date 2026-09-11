@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
 import json
+import math
+import re
 import time
 from typing import Any
 
@@ -15,7 +17,7 @@ from redis.exceptions import LockError
 from sqlalchemy import delete, exists, func, or_, select
 
 from bankrotai.core import get_settings, utc_now
-from bankrotai.db import BackgroundTaskState, GeoFailure, GeoQueryCache, LotGeoSnapshot, ProcessedLot
+from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, GeoQueryCache, LotGeoSnapshot, ProcessedLot
 from bankrotai.geo import (
     CadastralObjectResult,
     apply_lot_geo_result,
@@ -31,10 +33,29 @@ _MAX_ATTEMPTS = 8
 _GEO_LOCK_NAME = "bankrotai:geocoding:batch"
 _GEO_LOCK_SECONDS = 3600
 _SUCCESS_CACHE_DAYS = 30
+_GEOCODING_PAUSED_KEY = "geocoding_paused"
+_ETA_SAMPLE_BATCHES = 20
+_CAMPAIGN_TASK_ID = re.compile(r"^(geo-\d{8}-\d{6})-")
 
 
 class GeoBatchAlreadyRunning(RuntimeError):
     pass
+
+
+def is_geocoding_paused(session: Any) -> bool:
+    setting = session.scalar(select(AppSetting).where(AppSetting.key == _GEOCODING_PAUSED_KEY))
+    return setting is not None and setting.value.lower() in {"1", "true", "yes"}
+
+
+def set_geocoding_paused(session: Any, paused: bool) -> bool:
+    setting = session.scalar(select(AppSetting).where(AppSetting.key == _GEOCODING_PAUSED_KEY))
+    if setting is None:
+        setting = AppSetting(key=_GEOCODING_PAUSED_KEY, value="true" if paused else "false")
+        session.add(setting)
+    else:
+        setting.value = "true" if paused else "false"
+    session.flush()
+    return paused
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,12 +269,52 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
         .limit(1)
     )
+    recent = session.scalars(
+        select(BackgroundTaskState)
+        .where(
+            BackgroundTaskState.task_type == "geocoding",
+            BackgroundTaskState.status == "completed",
+        )
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(_ETA_SAMPLE_BATCHES)
+    ).all()
+    samples = [
+        (int((row.result_json or {}).get("processed") or 0), float((row.result_json or {}).get("duration_seconds") or 0))
+        for row in recent
+    ]
+    sample_lots = sum(processed for processed, seconds in samples if processed > 0 and seconds > 0)
+    sample_seconds = sum(seconds for processed, seconds in samples if processed > 0 and seconds > 0)
+    rate = sample_lots / sample_seconds if sample_lots and sample_seconds else None
+    actionable_remaining = max(0, total - geocoded - terminal)
+    eta_seconds = math.ceil(actionable_remaining / rate) if rate else None
+    elapsed_seconds = None
+    if latest is not None and latest.started_at is not None:
+        operation_started = latest.started_at
+        campaign = _CAMPAIGN_TASK_ID.match(latest.task_id)
+        if campaign:
+            first_started = session.scalar(
+                select(func.min(BackgroundTaskState.started_at)).where(
+                    BackgroundTaskState.task_type == "geocoding",
+                    BackgroundTaskState.task_id.like(f"{campaign.group(1)}-%"),
+                )
+            )
+            operation_started = first_started or operation_started
+        elapsed_seconds = max(0, round((utc_now() - operation_started).total_seconds()))
+    paused = is_geocoding_paused(session)
     return {
         "total": total,
         "geocoded": geocoded,
         "remaining": max(0, total - geocoded),
         "terminal_failures": terminal,
+        "actionable_remaining": actionable_remaining,
         "percent": round((geocoded / total * 100) if total else 100.0, 1),
+        "paused": paused,
+        "rate_per_second": round(rate, 3) if rate else None,
+        "eta_seconds": eta_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "estimated_total_seconds": (elapsed_seconds + eta_seconds)
+        if elapsed_seconds is not None and eta_seconds is not None
+        else None,
         "task": None
         if latest is None
         else {
@@ -305,6 +366,17 @@ def _geocode_pending_lots_unlocked(
 ) -> dict[str, Any]:
     """Geocode a bounded production batch without holding a DB transaction during the whole run."""
     started_at = time.monotonic()
+    with session_factory() as session:
+        if is_geocoding_paused(session):
+            paused_result = {
+                "status": "paused", "paused": True, "phase": "paused", "queued": 0,
+                "processed": 0, "geocoded": 0, "failed": 0, "percent": 0.0,
+            }
+            _set_progress_state(
+                session_factory, progress_task_id, status="paused",
+                progress=paused_result, result=paused_result,
+            )
+            return paused_result
     batch_limit = max(1, min(limit, 1000))
     now = utc_now()
     with session_factory() as session:

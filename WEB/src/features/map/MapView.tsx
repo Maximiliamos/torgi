@@ -21,6 +21,8 @@ import {
   fetchRegions,
   fetchNationwideLotSync,
   fetchOperationsProgress,
+  pauseGeocoding,
+  resumeGeocoding,
   MapLot,
   MapDataset,
   MapMarkerLot,
@@ -214,7 +216,21 @@ function MapState({
   );
 }
 
-function OperationProgressCard({ value }: { value: OperationsProgress }) {
+function durationLabel(seconds?: number | null) {
+  if (seconds == null || !Number.isFinite(seconds)) return null;
+  const minutes = Math.max(0, Math.round(seconds / 60));
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours) return `${hours} ч ${rest} мин`;
+  return `${rest} мин`;
+}
+
+function OperationProgressCard({
+  value, isAdmin, controlBusy, onPause, onResume,
+}: {
+  value: OperationsProgress; isAdmin: boolean; controlBusy: boolean;
+  onPause: () => void; onResume: () => void;
+}) {
   const activeSync = value.sync && ["queued", "running"].includes(value.sync.status);
   const activeSources = value.sync?.sources.filter((source) => ["queued", "running"].includes(source.status)) ?? [];
   const completedSources = value.sync?.sources.filter((source) => source.status === "success").length ?? 0;
@@ -240,8 +256,22 @@ function OperationProgressCard({ value }: { value: OperationsProgress }) {
         <progress max={100} value={value.geocoding.percent} />
         <span>{value.geocoding.geocoded} из {value.geocoding.total} с координатами</span>
         <small>В очереди: {value.geocoding.remaining} · окончательных ошибок: {value.geocoding.terminal_failures}</small>
+        {value.geocoding.eta_seconds != null && (
+          <small>
+            Оценка: {durationLabel(value.geocoding.estimated_total_seconds)} всего · осталось ≈ {durationLabel(value.geocoding.eta_seconds)}
+            {value.geocoding.rate_per_second ? ` · ${value.geocoding.rate_per_second.toFixed(2)} лота/с` : ""}
+          </small>
+        )}
+        {value.geocoding.paused && <small className="mapOperationProgressStatus">Приостановлено: текущий пакет безопасно завершается.</small>}
         {batch && <small>Запросы геокодера: {batch.resolved_queries ?? 0} из {batch.unique_queries ?? batch.queued ?? 0} · из кеша {batch.cache_hits ?? 0}</small>}
         {batch && <small>Текущий пакет: {batch.processed ?? 0} из {batch.queued ?? 0} · успешно {batch.geocoded ?? 0} · ошибок {batch.failed ?? 0}</small>}
+        {isAdmin && (
+          <div className="mapOperationProgressActions">
+            {value.geocoding.paused
+              ? <button type="button" disabled={controlBusy} onClick={onResume}>{controlBusy ? "Возобновляем…" : "Возобновить"}</button>
+              : <button type="button" disabled={controlBusy} onClick={onPause}>{controlBusy ? "Приостанавливаем…" : "Пауза"}</button>}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -702,6 +732,7 @@ export function MapView({
   const [appliedFilters, setAppliedFilters] = React.useState(filters);
   const [syncing, setSyncing] = React.useState(false);
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
+  const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
   const visibleMapObjects = tileMode && mapDataset
     ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
@@ -1020,6 +1051,23 @@ export function MapView({
     }
   }, [load]);
 
+  const controlGeocoding = React.useCallback(async (paused: boolean) => {
+    setGeocodingControlBusy(true);
+    setError("");
+    try {
+      await (paused ? pauseGeocoding() : resumeGeocoding());
+      const progress = await fetchOperationsProgress();
+      setOperationProgress(progress);
+      setMessage(paused
+        ? "Пауза запрошена. Текущий пакет завершится, новый не начнётся."
+        : "Геокодирование возобновлено.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось изменить состояние геокодирования");
+    } finally {
+      setGeocodingControlBusy(false);
+    }
+  }, []);
+
   return (
     <section className="mapDesktopShell">
       <div className="mapDesktopSidebar">
@@ -1142,7 +1190,13 @@ export function MapView({
                 </button>
               </div>
             </fieldset>
-            {operationProgress && <OperationProgressCard value={operationProgress} />}
+            {operationProgress && <OperationProgressCard
+              value={operationProgress}
+              isAdmin={isAdmin}
+              controlBusy={geocodingControlBusy}
+              onPause={() => void controlGeocoding(true)}
+              onResume={() => void controlGeocoding(false)}
+            />}
             {loading && <MapState>Обновление меток…</MapState>}
             {tileMode && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
             {mapNotice && <MapState>{mapNotice}</MapState>}
