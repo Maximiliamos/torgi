@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -79,6 +79,7 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
                 task_id="geo-1",
                 task_type="geocoding",
                 status="running",
+                started_at=datetime(2026, 9, 11, 8, 0, 0),
                 progress_json={"queued": 10, "processed": 4, "geocoded": 3, "failed": 1, "percent": 88},
             )
         )

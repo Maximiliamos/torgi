@@ -4,7 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -36,6 +36,12 @@ _SUCCESS_CACHE_DAYS = 30
 _GEOCODING_PAUSED_KEY = "geocoding_paused"
 _ETA_SAMPLE_BATCHES = 20
 _CAMPAIGN_TASK_ID = re.compile(r"^(geo-\d{8}-\d{6})-")
+
+
+def _elapsed_seconds_since(value: datetime) -> int:
+    """Treat persisted naive task timestamps as UTC on every SQL dialect."""
+    started_at = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return max(0, round((utc_now() - started_at).total_seconds()))
 
 
 class GeoBatchAlreadyRunning(RuntimeError):
@@ -299,7 +305,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
                 )
             )
             operation_started = first_started or operation_started
-        elapsed_seconds = max(0, round((utc_now() - operation_started).total_seconds()))
+        elapsed_seconds = _elapsed_seconds_since(operation_started)
     paused = is_geocoding_paused(session)
     return {
         "total": total,
