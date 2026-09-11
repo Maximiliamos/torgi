@@ -719,6 +719,10 @@ textarea, input { font: inherit; }
 .mapOperationProgress strong { color:#17683b;font-size:13px; }
 .mapOperationProgress span,.mapOperationProgress small { color:#3f4a44;line-height:1.3; }
 .mapOperationProgress progress { accent-color:#20a45b;height:9px;width:100%; }
+.mapOperationProgressStatus { color:#8a5b00!important;font-weight:600; }
+.mapOperationProgressActions { display:flex;justify-content:flex-end;margin-top:3px; }
+.mapOperationProgressActions button { background:#fff;border:1px solid #7aac8d;border-radius:4px;color:#17683b;cursor:pointer;padding:5px 10px; }
+.mapOperationProgressActions button:disabled { cursor:wait;opacity:.6; }
 .mapControlCheck { align-items:center;display:flex;font-size:12px;gap:6px;min-height:23px; }
 .mapFiltersBox { border:1px solid #b8bdc4;margin:0;padding:10px 9px 9px; }
 .mapFiltersBox legend { padding:0 5px; }

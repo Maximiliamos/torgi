@@ -436,7 +436,10 @@ export type OperationsProgress = {
     }>;
   };
   geocoding: {
-    total: number; geocoded: number; remaining: number; terminal_failures: number; percent: number;
+    total: number; geocoded: number; remaining: number; actionable_remaining?: number;
+    terminal_failures: number; percent: number; paused?: boolean;
+    rate_per_second?: number | null; eta_seconds?: number | null;
+    elapsed_seconds?: number | null; estimated_total_seconds?: number | null;
     task: null | {
       task_id: string; status: string; error?: string | null;
       progress?: {
@@ -452,6 +455,10 @@ export const fetchNationwideLotSync = (taskId: string) =>
   requestJson<LotSyncStatus>(`/api/sync/lots/${encodeURIComponent(taskId)}`);
 export const fetchOperationsProgress = () =>
   requestJson<OperationsProgress>("/api/operations/progress");
+export const pauseGeocoding = () =>
+  requestJson<{ status: string; effective: string }>("/api/operations/geocoding/pause", undefined, { method: "POST" });
+export const resumeGeocoding = () =>
+  requestJson<{ status: string; effective: string }>("/api/operations/geocoding/resume", undefined, { method: "POST" });
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>

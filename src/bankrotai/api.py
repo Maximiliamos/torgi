@@ -470,7 +470,10 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             )
         return False
     if method == "POST":
-        if path in {"/api/saved-searches", "/api/search/import", "/api/sync/lots"}:
+        if path in {
+            "/api/saved-searches", "/api/search/import", "/api/sync/lots",
+            "/api/operations/geocoding/pause", "/api/operations/geocoding/resume",
+        }:
             return True
         if path.startswith("/api/lots/"):
             parts = path.split("/")
@@ -1015,6 +1018,26 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             },
             "geocoding": geocoding_progress(session),
         }
+
+
+@app.post("/api/operations/geocoding/pause")
+def pause_geocoding(actor: AuthenticatedUser = Depends(require_admin)):
+    """Pause safely between bounded batches; never kill an active provider request."""
+    from bankrotai.services.geo_backfill import set_geocoding_paused
+
+    with session_scope() as session:
+        set_geocoding_paused(session, True)
+    return {"status": "paused", "effective": "after-current-batch"}
+
+
+@app.post("/api/operations/geocoding/resume")
+def resume_geocoding(actor: AuthenticatedUser = Depends(require_admin)):
+    """Allow the batch runner or scheduler to start the next batch."""
+    from bankrotai.services.geo_backfill import set_geocoding_paused
+
+    with session_scope() as session:
+        set_geocoding_paused(session, False)
+    return {"status": "running", "effective": "next-runner-poll"}
 
 
 @app.get("/api/lots")
