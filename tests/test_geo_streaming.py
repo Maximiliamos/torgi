@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates
+from bankrotai.geo import NominatimGeocoder, build_geocoding_address_candidates, expected_locality_name
 from bankrotai.gui import (
     GeoWorker,
     MainWindow,
@@ -52,6 +52,29 @@ def test_description_and_region_can_supply_address_for_geocoding() -> None:
     assert candidates
     assert "Рыбинск" in candidates[0]
     assert "Ярославская область" in candidates[0]
+
+
+def test_village_abbreviation_is_not_normalized_as_a_house() -> None:
+    candidates = build_geocoding_address_candidates(
+        "Ярославская область, Ярославский район, Бекреневский с/с, д. Губцево"
+    )
+
+    assert candidates
+    assert "деревня Губцево" in candidates[0]
+    assert "дом Губцево" not in candidates[0]
+
+
+def test_most_specific_locality_wins_over_parent_city() -> None:
+    assert expected_locality_name(
+        "\u041c\u043e\u0441\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c, \u0433\u043e\u0440\u043e\u0434 \u041d\u043e\u0433\u0438\u043d\u0441\u043a, \u0434\u0435\u0440\u0435\u0432\u043d\u044f \u0411\u043e\u043a\u043e\u0432\u043e"
+    ) == "\u0431\u043e\u043a\u043e\u0432\u043e"
+    assert expected_locality_name(
+        "\u041c\u043e\u0441\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c, \u0433. \u041d\u043e\u0433\u0438\u043d\u0441\u043a, \u0434. \u0411\u043e\u043a\u043e\u0432\u043e"
+    ) == "\u0431\u043e\u043a\u043e\u0432\u043e"
+    candidates = build_geocoding_address_candidates(
+        "\u041c\u043e\u0441\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c, \u0433. \u041d\u043e\u0433\u0438\u043d\u0441\u043a, \u0434. \u0411\u043e\u043a\u043e\u0432\u043e"
+    )
+    assert any(item.startswith("\u0411\u043e\u043a\u043e\u0432\u043e,") for item in candidates)
 
 
 def test_complete_description_address_wins_over_structured_garbage() -> None:

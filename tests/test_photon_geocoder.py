@@ -74,3 +74,26 @@ def test_photon_rejects_only_result_from_another_city() -> None:
         )
 
     assert result is None
+
+
+def test_photon_requires_matching_village_name() -> None:
+    wrong = {
+        "geometry": {"coordinates": [39.9670375, 57.6396394]},
+        "properties": {"name": "Красный Бор", "state": "Ярославская область"},
+    }
+    correct = {
+        "geometry": {"coordinates": [39.7156312, 57.7133455]},
+        "properties": {"name": "Губцево", "state": "Ярославская область", "osm_key": "place"},
+    }
+    response = Mock()
+    response.json.return_value = {"features": [wrong, correct]}
+    response.raise_for_status.return_value = None
+
+    with patch("bankrotai.geo.requests.get", return_value=response):
+        result = PhotonGeocoder("http://photon:2322").geocode(
+            "деревня Губцево, Ярославская область"
+        )
+
+    assert result is not None
+    assert result["centroid_lat"] == 57.7133455
+    assert result["matched_address"].startswith("Губцево")

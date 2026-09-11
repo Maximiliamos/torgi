@@ -3114,7 +3114,9 @@ class LotOnlineClient:
         ]
         description = max((value for value in descriptions if value), key=len, default="")
         page_text = " ".join((description, self._detail_text(soup.title)))
-        address = labelled.get("адрес") or extract_address(page_text)
+        # A generic detail-page "Адрес" may belong to the seller or
+        # auction venue. The full lot description identifies the property.
+        address = extract_address(description) or labelled.get("адрес") or extract_address(page_text)
         cadastral_numbers = extract_cadastral_numbers(page_text)
         if not cadastral_numbers:
             for group in soup.select(".ty-control-group"):
