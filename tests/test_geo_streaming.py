@@ -88,6 +88,21 @@ def test_auction_legal_prose_is_not_sent_to_geocoder() -> None:
     assert "\u0417\u043b\u0430\u0442\u043e\u0443\u0441\u0442" in candidates[0]
 
 
+def test_viewing_instructions_are_not_sent_to_photon() -> None:
+    candidates = build_geocoding_address_candidates(
+        "Белгородская область, Старооскольский муниципальный округ, "
+        "ст Соловьиная Роща-2, участок 79, отправив предварительно запрос "
+        "по e-mail: example@example.test. Осмотр имущества осуществляется по четвергам. "
+        + ("технический текст " * 100)
+    )
+
+    assert candidates
+    assert all("отправив предварительно" not in candidate.casefold() for candidate in candidates)
+    assert all("example@example.test" not in candidate for candidate in candidates)
+    assert all(len(candidate) <= 512 for candidate in candidates)
+    assert "Соловьиная Роща-2" in candidates[0]
+
+
 def test_complete_description_address_wins_over_structured_garbage() -> None:
     candidates = build_geocoding_address_candidates(
         "г. Ярославль, ул. Свердлова, д. помещения",
