@@ -109,6 +109,14 @@ def test_regru_deploy_gates_switch_on_staged_home_api_and_dataset() -> None:
     assert "docker restart bankrotai-cloudflared" not in workflow
 
 
+def test_regru_readiness_gate_retries_transient_home_startup() -> None:
+    workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    assert 'live_status="$(curl' in workflow
+    assert 'ready_status="$(curl' in workflow
+    assert 'if test "$live_status" = "200" && test "$ready_status" = "200"' in workflow
+    assert "home API did not become ready; REG.RU configuration was not changed" in workflow
+
+
 def test_api_proxy_promotes_home_relay_and_keeps_legacy_read_fallback() -> None:
     config = (ROOT / "WEB" / "api-proxy" / "wrangler.jsonc").read_text(encoding="utf-8")
     worker = (ROOT / "WEB" / "api-proxy" / "worker.mjs").read_text(encoding="utf-8")

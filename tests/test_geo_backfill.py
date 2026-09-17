@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import threading
 import time
+from datetime import datetime
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -311,3 +312,53 @@ def test_distinct_bulk_queries_run_with_bounded_parallelism(monkeypatch) -> None
 
     assert result["geocoded"] == 4
     assert maximum >= 2
+
+
+def test_quality_audit_uses_latest_snapshot_and_reports_suspicious_matches() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            external_id="quality-1",
+            source="test",
+            source_system="test",
+            title="Участок",
+            description="",
+            category="land",
+            address="Московская область, д. Боково",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+        session.add_all([
+            LotGeoSnapshot(
+                id=100,
+                lot_id=lot_id,
+                geo_source="photon",
+                geo_method="address",
+                geo_confidence="medium",
+                centroid_lat=55.98,
+                centroid_lon=38.26,
+                observed_at=datetime(2026, 9, 17, 10, 0, 0),
+                metadata_json={"address": "Боково, Московская область"},
+            ),
+            LotGeoSnapshot(
+                id=1,
+                lot_id=lot_id,
+                geo_source="photon",
+                geo_method="address",
+                geo_confidence="medium",
+                centroid_lat=57.7,
+                centroid_lon=39.8,
+                observed_at=datetime(2026, 9, 17, 11, 0, 0),
+                metadata_json={"address": "Ярославль"},
+            ),
+        ])
+        session.commit()
+
+        audit = geo_backfill.geocoding_quality_audit(session)
+
+    assert audit["audited_lots"] == 1
+    assert audit["locality_mismatch_count"] == 1
+    assert audit["locality_mismatch_sample_lot_ids"] == [lot_id]

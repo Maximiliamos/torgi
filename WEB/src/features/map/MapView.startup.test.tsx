@@ -163,6 +163,7 @@ describe("tile map startup", () => {
       geocoding: {
         total: 1000, geocoded: 640, remaining: 360, terminal_failures: 7, percent: 64,
         eta_seconds: 7200, elapsed_seconds: 28800, estimated_total_seconds: 36000, rate_per_second: 0.05,
+        expected_completion_at: "2026-09-17T18:30:00+03:00",
         task: { task_id: "geo-1", status: "running", progress: {
           queued: 250, processed: 125, geocoded: 110, failed: 15, percent: 90,
           unique_queries: 230, resolved_queries: 230, cache_hits: 20, phase: "saving",
@@ -179,6 +180,25 @@ describe("tile map startup", () => {
     expect(screen.getByText(/Запросы геокодера: 230 из 230 · из кеша 20/)).toBeInTheDocument();
     expect(screen.getByText(/torgi-russia.ru: 420 лотов/)).toBeInTheDocument();
     expect(screen.getByText(/Оценка: 10 ч 0 мин всего · осталось ≈ 2 ч 0 мин/)).toBeInTheDocument();
+    expect(screen.getByText(/завершение около/)).toBeInTheDocument();
+  });
+
+  it("shows incomplete sources from the latest finished search", async () => {
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-source-status"));
+    vi.mocked(fetchOperationsProgress).mockResolvedValue({
+      sync: {
+        task_id: "sync-finished", status: "failed", sources: [
+          { source_system: "torgi.gov.ru", status: "success", items_seen: 100, pages_scanned: 2, total_pages: 2, percent: 100, current_category: null },
+          { source_system: "tbankrot.ru", status: "failed", items_seen: 0, pages_scanned: 0, total_pages: null, percent: null, current_category: null },
+        ],
+      },
+      geocoding: { total: 100, geocoded: 50, remaining: 50, terminal_failures: 1, percent: 50, task: null },
+    });
+
+    render(<MapView refreshToken={0} />);
+
+    expect(await screen.findByText("1 из 2 площадок завершено")).toBeInTheDocument();
+    expect(screen.getByText("Не завершено: tbankrot.ru")).toBeInTheDocument();
   });
 
   it("lets only an admin pause geocoding and refreshes durable state", async () => {

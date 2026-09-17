@@ -234,8 +234,13 @@ function OperationProgressCard({
   const activeSync = value.sync && ["queued", "running"].includes(value.sync.status);
   const activeSources = value.sync?.sources.filter((source) => ["queued", "running"].includes(source.status)) ?? [];
   const completedSources = value.sync?.sources.filter((source) => source.status === "success").length ?? 0;
+  const failedSources = value.sync?.sources.filter((source) => source.status === "failed") ?? [];
   const sourceTotal = value.sync?.sources.length ?? 0;
   const batch = value.geocoding.task?.status === "running" ? value.geocoding.task.progress : null;
+  const completionTime = value.geocoding.expected_completion_at
+    ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+      .format(new Date(value.geocoding.expected_completion_at))
+    : null;
   if (!activeSync && !batch && value.geocoding.remaining === 0) return null;
   return (
     <section className="mapOperationProgress" aria-label="Ход обработки данных">
@@ -251,6 +256,17 @@ function OperationProgressCard({
           ))}
         </div>
       )}
+      {value.sync && !activeSync && (
+        <div>
+          <strong>Последний поиск лотов</strong>
+          <span>{completedSources} из {sourceTotal} площадок завершено</span>
+          {failedSources.length > 0 && (
+            <small className="mapOperationProgressStatus">
+              Не завершено: {failedSources.map((source) => source.source_system).join(", ")}
+            </small>
+          )}
+        </div>
+      )}
       <div>
         <strong>Геокодирование — {value.geocoding.percent.toFixed(1)}%</strong>
         <progress max={100} value={value.geocoding.percent} />
@@ -259,6 +275,7 @@ function OperationProgressCard({
         {value.geocoding.eta_seconds != null && (
           <small>
             Оценка: {durationLabel(value.geocoding.estimated_total_seconds)} всего · осталось ≈ {durationLabel(value.geocoding.eta_seconds)}
+            {completionTime ? ` · завершение около ${completionTime}` : ""}
             {value.geocoding.rate_per_second ? ` · ${value.geocoding.rate_per_second.toFixed(2)} лота/с` : ""}
           </small>
         )}

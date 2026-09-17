@@ -482,6 +482,16 @@ def build_geocoding_address_candidates(
         value,
         flags=re.IGNORECASE,
     )
+    # Source cards frequently append legal prose to the address. Large queries
+    # make every Photon miss consume the full timeout and reduce match quality.
+    value = re.split(
+        r"(?:[,.;]\s*|—\s*)(?:зарегистрированные\s+обременения|"
+        r"разрешенный\s+вид\s+использования|вид\s+разрешенного\s+использования|"
+        r"категория\s+земель|общей\s+площадью|территориальная\s+зона)\b",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     value = re.sub(r",\s*с\.\s*п\.\s*[^,]+", "", value, flags=re.IGNORECASE)
     value = re.sub(
         r"(?:м\.\s*)?р-н\s+([^,]+)",

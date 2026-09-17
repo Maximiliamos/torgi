@@ -276,13 +276,21 @@ jobs:
         run: |
           set -euo pipefail
           for stability_check in $(seq 1 20); do
-            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              "https://$HOME_RELAY_HOSTNAME/health/live" || true)" = "200"
-            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              "https://$HOME_RELAY_HOSTNAME/health/ready" || true)" = "200"
-            if test "$stability_check" != 20; then
-              sleep 2
+            live_status="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+              "https://$HOME_RELAY_HOSTNAME/health/live" || true)"
+            ready_status="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
+              "https://$HOME_RELAY_HOSTNAME/health/ready" || true)"
+            if test "$live_status" = "200" && test "$ready_status" = "200"; then
+              printf 'home API ready on attempt %s/20\n' "$stability_check"
+              break
             fi
+            printf 'home API not ready on attempt %s/20 (live=%s ready=%s)\n' \
+              "$stability_check" "$live_status" "$ready_status"
+            if test "$stability_check" = 20; then
+              printf 'home API did not become ready; REG.RU configuration was not changed\n' >&2
+              exit 1
+            fi
+            sleep 5
           done
           LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
           curl --fail --silent --show-error --max-time 30 \

@@ -195,13 +195,20 @@ def _distributed_geo_lock():
 
 
 def geocoding_statistics(session: Any) -> dict[str, int]:
-    latest_ids = (
-        select(LotGeoSnapshot.lot_id, func.max(LotGeoSnapshot.id).label("geo_id"))
+    ranked = (
+        select(
+            LotGeoSnapshot.id.label("geo_id"),
+            LotGeoSnapshot.lot_id,
+            func.row_number().over(
+                partition_by=LotGeoSnapshot.lot_id,
+                order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
+            ).label("position"),
+        )
         .join(ProcessedLot, ProcessedLot.id == LotGeoSnapshot.lot_id)
         .where(ProcessedLot.is_archived.is_(False))
-        .group_by(LotGeoSnapshot.lot_id)
         .subquery()
     )
+    latest_ids = select(ranked.c.lot_id, ranked.c.geo_id).where(ranked.c.position == 1).subquery()
     rows = session.execute(
         select(LotGeoSnapshot.geo_source, LotGeoSnapshot.geo_confidence, func.count())
         .join(latest_ids, LotGeoSnapshot.id == latest_ids.c.geo_id)
@@ -236,6 +243,60 @@ def geocoding_statistics(session: Any) -> dict[str, int]:
         if confidence in {"low", "none", "unknown"}:
             result["low_confidence"] += int(count)
     return result
+
+
+def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[str, Any]:
+    """Read-only diagnostics for suspicious latest coordinates and address matches."""
+    from collections import defaultdict
+
+    from bankrotai.geo import expected_locality_name
+
+    ranked = (
+        select(
+            LotGeoSnapshot.id.label("geo_id"),
+            func.row_number().over(
+                partition_by=LotGeoSnapshot.lot_id,
+                order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
+            ).label("position"),
+        ).subquery()
+    )
+    rows = session.execute(
+        select(ProcessedLot.id, ProcessedLot.address, LotGeoSnapshot)
+        .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
+        .join(ranked, ranked.c.geo_id == LotGeoSnapshot.id)
+        .where(
+            ranked.c.position == 1,
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.is_archived.is_(False),
+        )
+    ).all()
+    hotspots: dict[tuple[float, float], list[int]] = defaultdict(list)
+    invalid_ids: list[int] = []
+    locality_mismatch_ids: list[int] = []
+    for lot_id, address, snapshot in rows:
+        lat, lon = float(snapshot.centroid_lat), float(snapshot.centroid_lon)
+        if not (41.0 <= lat <= 82.0 and 19.0 <= lon <= 180.0):
+            invalid_ids.append(lot_id)
+        hotspots[(round(lat, 4), round(lon, 4))].append(lot_id)
+        expected = expected_locality_name(address)
+        observed = str((snapshot.metadata_json or {}).get("address") or "").casefold()
+        if expected and observed and expected not in observed:
+            locality_mismatch_ids.append(lot_id)
+    hotspot_rows: list[dict[str, Any]] = [
+        {"lat": key[0], "lon": key[1], "lot_count": len(ids), "sample_lot_ids": ids[:10]}
+        for key, ids in hotspots.items()
+        if len(ids) >= hotspot_min_lots
+    ]
+    hotspot_rows.sort(key=lambda item: int(item["lot_count"]), reverse=True)
+    return {
+        "audited_lots": len(rows),
+        "invalid_coordinate_count": len(invalid_ids),
+        "invalid_coordinate_sample_lot_ids": invalid_ids[:50],
+        "locality_mismatch_count": len(locality_mismatch_ids),
+        "locality_mismatch_sample_lot_ids": locality_mismatch_ids[:50],
+        "coordinate_hotspot_count": len(hotspot_rows),
+        "coordinate_hotspots": hotspot_rows[:50],
+    }
 
 
 def geocoding_progress(session: Any) -> dict[str, Any]:
@@ -295,17 +356,29 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
     eta_seconds = math.ceil(actionable_remaining / rate) if rate else None
     elapsed_seconds = None
     if latest is not None and latest.started_at is not None:
-        operation_started = latest.started_at
         campaign = _CAMPAIGN_TASK_ID.match(latest.task_id)
         if campaign:
-            first_started = session.scalar(
-                select(func.min(BackgroundTaskState.started_at)).where(
+            campaign_rows = session.scalars(
+                select(BackgroundTaskState).where(
                     BackgroundTaskState.task_type == "geocoding",
                     BackgroundTaskState.task_id.like(f"{campaign.group(1)}-%"),
                 )
+            ).all()
+            completed_seconds = sum(
+                float((row.result_json or {}).get("duration_seconds") or 0)
+                for row in campaign_rows
+                if row.status == "completed"
             )
-            operation_started = first_started or operation_started
-        elapsed_seconds = _elapsed_seconds_since(operation_started)
+            active_seconds = (
+                _elapsed_seconds_since(latest.started_at)
+                if latest.status == "running"
+                else 0
+            )
+            elapsed_seconds = math.ceil(completed_seconds + active_seconds)
+        elif latest.status == "running":
+            elapsed_seconds = _elapsed_seconds_since(latest.started_at)
+        else:
+            elapsed_seconds = math.ceil(float((latest.result_json or {}).get("duration_seconds") or 0))
     paused = is_geocoding_paused(session)
     return {
         "total": total,
@@ -317,6 +390,9 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "paused": paused,
         "rate_per_second": round(rate, 3) if rate else None,
         "eta_seconds": eta_seconds,
+        "expected_completion_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)
+        ).isoformat() if eta_seconds is not None and not paused else None,
         "elapsed_seconds": elapsed_seconds,
         "estimated_total_seconds": (elapsed_seconds + eta_seconds)
         if elapsed_seconds is not None and eta_seconds is not None
