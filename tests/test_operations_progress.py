@@ -107,6 +107,7 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
     assert payload["geocoding"]["task"]["progress"]["processed"] == 4
     assert payload["geocoding"]["rate_per_second"] == 2.0
     assert payload["geocoding"]["eta_seconds"] == 1
+    assert payload["geocoding"]["expected_completion_at"] is not None
     assert payload["geocoding"]["paused"] is False
 
 
@@ -141,3 +142,35 @@ def test_geocoding_pause_controls_require_admin_and_persist(monkeypatch) -> None
             assert session.scalar(select(AppSetting.value).where(AppSetting.key == "geocoding_paused")) == "false"
     finally:
         api.app.dependency_overrides.pop(api.require_user, None)
+
+
+def test_geocoding_campaign_elapsed_time_excludes_idle_gaps() -> None:
+    from bankrotai.services.geo_backfill import geocoding_progress
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    campaign = "geo-20260917-120000"
+    with Session(engine) as session:
+        session.add_all([
+            BackgroundTaskState(
+                task_id=f"{campaign}-001",
+                task_type="geocoding",
+                status="completed",
+                started_at=datetime(2026, 9, 17, 8, 0, 0),
+                finished_at=datetime(2026, 9, 17, 8, 2, 0),
+                result_json={"processed": 100, "duration_seconds": 120},
+            ),
+            BackgroundTaskState(
+                task_id=f"{campaign}-002",
+                task_type="geocoding",
+                status="completed",
+                started_at=datetime(2026, 9, 17, 12, 0, 0),
+                finished_at=datetime(2026, 9, 17, 12, 3, 0),
+                result_json={"processed": 100, "duration_seconds": 180},
+            ),
+        ])
+        session.commit()
+        progress = geocoding_progress(session)
+
+    assert progress["elapsed_seconds"] == 300
+    assert progress["estimated_total_seconds"] == 300

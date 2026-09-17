@@ -38,6 +38,7 @@ from bankrotai.scrapers import (
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
     task_track_started=True,
@@ -51,8 +52,18 @@ celery_app.conf.update(
         },
         "geocode-pending-lots": {
             "task": "bankrotai.tasks.geocode_pending_lots_task",
-            "schedule": 900.0,
-            "options": {"expires": 840},
+            "schedule": 300.0,
+            "options": {"expires": 240},
+        },
+        "publish-dirty-map-dataset": {
+            "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
+            "schedule": 1800.0,
+            "options": {"expires": 1740},
+        },
+        "cleanup-old-map-datasets": {
+            "task": "bankrotai.tasks.cleanup_old_map_datasets_task",
+            "schedule": 86400.0,
+            "options": {"expires": 3600},
         },
     },
 )
@@ -72,14 +83,58 @@ def expire_ended_lots_task() -> dict[str, int]:
     return {"archived": service._expire_elapsed_auctions()}
 
 
-@celery_app.task(name="bankrotai.tasks.geocode_pending_lots_task")
-def geocode_pending_lots_task() -> dict[str, Any]:
+@celery_app.task(bind=True, name="bankrotai.tasks.geocode_pending_lots_task")
+def geocode_pending_lots_task(self) -> dict[str, Any]:
     from bankrotai.services.geo_backfill import geocode_pending_lots
 
-    result: dict[str, Any] = geocode_pending_lots(SessionLocal, limit=50)
+    task_id = str(self.request.id or uuid())
+    result: dict[str, Any] = geocode_pending_lots(
+        SessionLocal,
+        limit=250,
+        progress_task_id=f"celery-{task_id}",
+    )
     if result.get("geocoded", 0):
-        result["map_dataset_build"] = _schedule_map_dataset_build()
+        try:
+            from redis import Redis
+
+            client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+            client.set(_MAP_DIRTY_KEY, "1")
+            client.close()
+            result["map_dataset_build"] = {"status": "deferred", "maximum_delay_seconds": 1800}
+        except Exception as exc:
+            logger.exception("Could not mark map dataset dirty")
+            result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
     return result
+
+
+@celery_app.task(name="bankrotai.tasks.publish_dirty_map_dataset_task")
+def publish_dirty_map_dataset_task() -> dict[str, Any]:
+    """Coalesce many geo batches into at most one map publication per interval."""
+    from redis import Redis
+
+    client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    dirty = client.getdel(_MAP_DIRTY_KEY)
+    if not dirty:
+        client.close()
+        return {"status": "skipped", "reason": "map-not-dirty"}
+    result = _schedule_map_dataset_build()
+    if result.get("status") != "queued":
+        client.set(_MAP_DIRTY_KEY, "1")
+    client.close()
+    return result
+
+
+@celery_app.task(name="bankrotai.tasks.cleanup_old_map_datasets_task")
+def cleanup_old_map_datasets_task() -> dict[str, Any]:
+    """Apply the tested retention policy while preserving current and rollback versions."""
+    from bankrotai.services.map_builder import cleanup_map_datasets
+
+    return cleanup_map_datasets(
+        SessionLocal,
+        retain_previous_ready=1,
+        min_age_hours=24,
+        apply=True,
+    )
 
 
 @celery_app.task(name="bankrotai.tasks.build_map_dataset_task")

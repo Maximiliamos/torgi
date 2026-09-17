@@ -70,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     geo_p.add_argument("--re-geocode-existing", action="store_true")
     geo_p.add_argument("--progress-id", default=None)
     subparsers.add_parser("geocoding-stats", help="Show persisted geocoding quality statistics")
+    geo_audit_p = subparsers.add_parser("audit-geocoding-quality", help="Read-only audit of suspicious coordinates")
+    geo_audit_p.add_argument("--hotspot-min-lots", type=int, default=5)
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
     subparsers.add_parser("build-map-dataset", help="Build and atomically publish precomputed map tiles")
@@ -257,6 +259,13 @@ def main():
         init_db()
         with session_scope() as session:
             result = geocoding_statistics(session)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "audit-geocoding-quality":
+        from bankrotai.services.geo_backfill import geocoding_quality_audit
+
+        init_db()
+        with session_scope() as session:
+            result = geocoding_quality_audit(session, hotspot_min_lots=max(2, args.hotspot_min_lots))
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "repair-map-read-model":
         from bankrotai.services.read_model_repair import repair_missing_processed_links

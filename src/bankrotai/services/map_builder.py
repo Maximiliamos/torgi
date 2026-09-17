@@ -104,9 +104,30 @@ def cleanup_map_datasets(
             "candidate_versions": [dataset.version for dataset in candidates],
         }
         if apply and candidate_ids:
-            session.execute(delete(MapTile).where(MapTile.dataset_id.in_(candidate_ids)))
-            session.execute(delete(MapDataset).where(MapDataset.id.in_(candidate_ids)))
-            session.commit()
+            # A single DELETE for millions of tile rows exceeds the production
+            # statement timeout. Small transactions keep the API responsive and
+            # remain restartable: already removed candidates simply disappear
+            # from the next dry-run.
+            deleted_dataset_count = 0
+            deleted_tile_count = 0
+            for offset in range(0, len(candidate_ids), 5):
+                batch_ids = candidate_ids[offset:offset + 5]
+                if session.get_bind().dialect.name == "postgresql":
+                    session.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                        {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
+                    )
+                deleted_tiles = session.execute(
+                    delete(MapTile).where(MapTile.dataset_id.in_(batch_ids))
+                ).rowcount or 0
+                deleted_datasets = session.execute(
+                    delete(MapDataset).where(MapDataset.id.in_(batch_ids))
+                ).rowcount or 0
+                session.commit()
+                deleted_tile_count += int(deleted_tiles)
+                deleted_dataset_count += int(deleted_datasets)
+            result["deleted_tile_count"] = deleted_tile_count
+            result["deleted_dataset_count"] = deleted_dataset_count
         else:
             session.rollback()
         return result

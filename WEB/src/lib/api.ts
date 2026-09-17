@@ -440,6 +440,7 @@ export type OperationsProgress = {
     terminal_failures: number; percent: number; paused?: boolean;
     rate_per_second?: number | null; eta_seconds?: number | null;
     elapsed_seconds?: number | null; estimated_total_seconds?: number | null;
+    expected_completion_at?: string | null;
     task: null | {
       task_id: string; status: string; error?: string | null;
       progress?: {
