@@ -22,10 +22,13 @@ $diskOk = $diskPercentFree -ge 10
 $result.checks += [ordered]@{ name = 'disk-c'; percent_free = $diskPercentFree; ok = $diskOk }
 if (!$diskOk) { $result.healthy = $false }
 
-$db = docker exec bankrotai-home-postgres sh -lc `
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) FILTER (WHERE is_current),count(*) FROM map_datasets"'
-$dbParts = $db.Trim().Split('|')
-$dbOk = $LASTEXITCODE -eq 0 -and $dbParts.Count -eq 2 -and $dbParts[0] -eq '1'
+$pgUser = docker exec bankrotai-home-postgres printenv POSTGRES_USER
+$pgDatabase = docker exec bankrotai-home-postgres printenv POSTGRES_DB
+$db = docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -Atc `
+    'SELECT count(*) FILTER (WHERE is_current),count(*) FROM map_datasets'
+$dbExitCode = $LASTEXITCODE
+$dbParts = if ($null -eq $db) { @() } else { ([string]$db).Trim().Split('|') }
+$dbOk = $dbExitCode -eq 0 -and $dbParts.Count -eq 2 -and $dbParts[0] -eq '1'
 $result.checks += [ordered]@{ name = 'map-current-invariant'; current = $dbParts[0]; datasets = $dbParts[1]; ok = $dbOk }
 if (!$dbOk) { $result.healthy = $false }
 
