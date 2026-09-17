@@ -39,7 +39,20 @@ jobs:
 
       - name: Build current-main API image
         shell: powershell
-        run: docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
+        run: |
+          $built = $false
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
+            if ($LASTEXITCODE -eq 0) {
+              $built = $true
+              break
+            }
+            if ($attempt -lt 4) {
+              Write-Warning "Docker registry request failed on attempt $attempt/4; retrying in 20 seconds"
+              Start-Sleep -Seconds 20
+            }
+          }
+          if (!$built) { throw 'Could not build the current-main API image after four attempts' }
 
       - name: Preserve and start local PostgreSQL
         shell: powershell
