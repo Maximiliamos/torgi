@@ -94,6 +94,9 @@ def test_regular_regru_deploy_preserves_wss_ingress() -> None:
 def test_regru_deploy_serves_canonical_production_hostnames() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
     assert "${API_HOSTNAME}, dezster.ru, www.dezster.ru, api.dezster.ru {" in workflow
+    assert "@deployment path /deployment.json" in workflow
+    assert 'header @deployment Cache-Control "no-store"' in workflow
+    assert 'Strict-Transport-Security "max-age=31536000; includeSubDomains"' in workflow
 
 
 def test_regru_deploy_gates_switch_on_staged_home_api_and_dataset() -> None:
