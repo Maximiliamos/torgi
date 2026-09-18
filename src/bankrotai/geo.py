@@ -487,11 +487,16 @@ def build_geocoding_address_candidates(
     value = re.split(
         r"(?:[,.;]\s*|—\s*)(?:зарегистрированные\s+обременения|"
         r"разрешенный\s+вид\s+использования|вид\s+разрешенного\s+использования|"
-        r"категория\s+земель|общей\s+площадью|территориальная\s+зона)\b",
+        r"категория\s+земель|общей\s+площадью|территориальная\s+зона|"
+        r"отправив\s+предварительно\s+запрос|направив\s+предварительно\s+запрос|"
+        r"осмотр\s+имущества|порядок\s+ознакомления)\b",
         value,
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
+    # Photon receives the query in the URL. Even malformed source records must
+    # never be able to produce a 414 response or multi-kilobyte log entry.
+    value = value[:512]
     value = re.sub(r",\s*с\.\s*п\.\s*[^,]+", "", value, flags=re.IGNORECASE)
     value = re.sub(
         r"(?:м\.\s*)?р-н\s+([^,]+)",
