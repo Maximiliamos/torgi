@@ -55,6 +55,11 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"expires": 240},
         },
+        "recalculate-public-offer-prices": {
+            "task": "bankrotai.tasks.recalculate_public_offer_prices_task",
+            "schedule": 300.0,
+            "options": {"expires": 240},
+        },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
             "schedule": 1800.0,
@@ -62,6 +67,11 @@ celery_app.conf.update(
         },
         "cleanup-old-map-datasets": {
             "task": "bankrotai.tasks.cleanup_old_map_datasets_task",
+            "schedule": 86400.0,
+            "options": {"expires": 3600},
+        },
+        "daily-operational-quality-report": {
+            "task": "bankrotai.tasks.daily_operational_quality_report_task",
             "schedule": 86400.0,
             "options": {"expires": 3600},
         },
@@ -81,6 +91,23 @@ def _utc_now() -> datetime:
 def expire_ended_lots_task() -> dict[str, int]:
     service = NationwideIngestionService(SessionLocal)
     return {"archived": service._expire_elapsed_auctions()}
+
+
+@celery_app.task(name="bankrotai.tasks.recalculate_public_offer_prices_task")
+def recalculate_public_offer_prices_task() -> dict[str, int]:
+    from bankrotai.services.price_schedule import recalculate_public_offer_prices
+
+    result = recalculate_public_offer_prices(SessionLocal)
+    if result["changed"]:
+        try:
+            from redis import Redis
+
+            client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+            client.set(_MAP_DIRTY_KEY, "1")
+            client.close()
+        except Exception:
+            logger.exception("Could not mark map dataset dirty after public-offer price update")
+    return result
 
 
 @celery_app.task(bind=True, name="bankrotai.tasks.geocode_pending_lots_task")
@@ -135,6 +162,23 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
         min_age_hours=24,
         apply=True,
     )
+
+
+@celery_app.task(name="bankrotai.tasks.daily_operational_quality_report_task")
+def daily_operational_quality_report_task() -> dict[str, Any]:
+    from bankrotai.services.quality import operational_quality_report, record_diagnostic
+
+    with SessionLocal() as session:
+        report = operational_quality_report(session)
+        record_diagnostic(
+            session,
+            severity="warning" if report["problems"]["stale_active_lots"] else "info",
+            component="daily-quality-report",
+            message="Daily source, geocoding, price and map quality report",
+            context=report,
+        )
+        session.commit()
+    return report
 
 
 @celery_app.task(name="bankrotai.tasks.build_map_dataset_task")

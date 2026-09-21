@@ -89,6 +89,23 @@ def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_pri
         assert copy.duplicate_of_id == first.id
 
 
+def test_exact_cadastral_identity_is_not_split_by_public_offer_price() -> None:
+    with Session(_engine()) as session:
+        first = persist_lot(session, _lot(
+            "tbankrot.ru", "tbankrot:public-offer", current_price=4_500_000,
+        ))
+        second = persist_lot(session, _lot(
+            "lot-online.ru", "lot-online:public-offer", current_price=2_700_000,
+        ))
+        session.flush()
+
+        copy = session.scalar(select(ProcessedLot).where(
+            ProcessedLot.external_id == "lot-online:public-offer"
+        ))
+        assert second.id == first.id
+        assert copy is not None and copy.duplicate_of_id == first.id
+
+
 def test_procedure_fields_are_queryable_and_not_only_raw_json() -> None:
     with Session(_engine()) as session:
         lot = _lot(

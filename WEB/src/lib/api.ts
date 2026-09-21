@@ -134,6 +134,10 @@ export type MapLot = {
   is_archived: boolean;
   review_status: string | null;
   current_price: number | null;
+  minimum_price: number | null;
+  price_observed_at: string | null;
+  next_interval_price: number | null;
+  next_price_reduction_at: string | null;
   lat: number;
   lon: number;
   geometry: GeoJSON.GeoJsonObject | null;

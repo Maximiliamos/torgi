@@ -86,6 +86,7 @@ def test_normalize_mock_lot():
         "subjectRFName": "\u041e\u043c\u0441\u043a\u0430\u044f \u043e\u0431\u043b\u0430\u0441\u0442\u044c",
         "initialPrice": 100000,
         "lotStatus": "APPLICATIONS_SUBMISSION",
+        "lotImages": ["image-a", "image-b", "image-a"],
         "firstVersionPublicationDate": "2026-01-01T10:00:00",
     })
 
@@ -96,3 +97,7 @@ def test_normalize_mock_lot():
     assert lot.auction_status == "active"
     assert lot.start_price == 100000
     assert lot.cadastral_number == "55:36:000000:123"
+    assert lot.raw_data["image_urls"] == [
+        "https://torgi.gov.ru/new/image-preview/v1/image-a?disposition=inline&resize=600x600!",
+        "https://torgi.gov.ru/new/image-preview/v1/image-b?disposition=inline&resize=600x600!",
+    ]

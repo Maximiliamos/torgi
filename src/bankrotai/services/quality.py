@@ -12,6 +12,10 @@ from bankrotai.db import (
     GeoFailure,
     LotDocumentVersion,
     LotGeoSnapshot,
+    LotPriceEvent,
+    LotSyncRun,
+    MapDataset,
+    MapTile,
     ProcessedLot,
     RawLot,
     SourceHealthState,
@@ -56,6 +60,131 @@ def data_quality_snapshot(session: Session) -> DataQualityDTO:
         or 0,
         document_versions=scalar(select(func.count()).select_from(LotDocumentVersion)) or 0,
     )
+
+
+def operational_quality_report(session: Session, *, stale_days: int = 7, problem_limit: int = 100) -> dict[str, Any]:
+    """Repeatable source/data/map health report with actionable lot identifiers."""
+    from bankrotai.services.map_view import extract_map_image_urls
+
+    now = utc_now()
+    cutoff = now.replace(tzinfo=None) - timedelta(days=max(1, stale_days))
+    source_rows = session.execute(
+        select(
+            SourceLot.source_system,
+            SourceLot.is_active,
+            SourceLot.is_archived,
+            SourceLot.source_status,
+            SourceLot.last_seen_at,
+            SourceLot.raw_data,
+        )
+    ).yield_per(1000)
+    sources: dict[str, dict[str, Any]] = {}
+    for source_system, is_active, is_archived, status, last_seen_at, raw_data in source_rows:
+        value = sources.setdefault(source_system, {
+            "total": 0, "active": 0, "archived": 0, "with_photos": 0,
+            "unknown_status": 0, "stale_active": 0, "last_seen_at": None,
+        })
+        value["total"] += 1
+        value["active"] += int(bool(is_active and not is_archived))
+        value["archived"] += int(bool(is_archived))
+        value["with_photos"] += int(bool(extract_map_image_urls(raw_data)))
+        value["unknown_status"] += int(not status or status == "unknown")
+        value["stale_active"] += int(bool(is_active and not is_archived and last_seen_at < cutoff))
+        if last_seen_at and (value["last_seen_at"] is None or last_seen_at > value["last_seen_at"]):
+            value["last_seen_at"] = last_seen_at
+
+    problem_query = (
+        select(SourceLot.id, SourceLot.source_system, SourceLot.external_id, SourceLot.last_seen_at)
+        .where(
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.last_seen_at < cutoff,
+        )
+        .order_by(SourceLot.last_seen_at, SourceLot.id)
+        .limit(max(1, min(problem_limit, 1000)))
+    )
+    stale_lots = [
+        {"source_lot_id": row.id, "source_system": row.source_system, "external_id": row.external_id,
+         "last_seen_at": row.last_seen_at}
+        for row in session.execute(problem_query)
+    ]
+    current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+    last_run = session.scalar(select(LotSyncRun).order_by(LotSyncRun.started_at.desc()).limit(1))
+    source_without_processed = session.scalar(
+        select(func.count()).select_from(SourceLot).where(SourceLot.processed_lot_id.is_(None))
+    ) or 0
+    recoverable_source_links = session.scalar(
+        select(func.count()).select_from(SourceLot).join(
+            ProcessedLot,
+            (ProcessedLot.source_system == SourceLot.source_system)
+            & (ProcessedLot.external_id == SourceLot.external_id),
+        ).where(SourceLot.processed_lot_id.is_(None))
+    ) or 0
+    processed_without_source = session.scalar(
+        select(func.count()).select_from(ProcessedLot).where(
+            ~select(SourceLot.id).where(SourceLot.processed_lot_id == ProcessedLot.id).exists()
+        )
+    ) or 0
+    current_dataset_count = session.scalar(
+        select(func.count()).select_from(MapDataset).where(MapDataset.is_current.is_(True))
+    ) or 0
+    tile_count_mismatches = session.scalar(
+        select(func.count()).select_from(MapDataset).where(
+            MapDataset.tile_count
+            != select(func.count()).select_from(MapTile).where(MapTile.dataset_id == MapDataset.id).scalar_subquery()
+        )
+    ) or 0
+    return {
+        "generated_at": now,
+        "stale_after_days": max(1, stale_days),
+        "sources": sources,
+        "geocoding": {
+            "with_coordinates": session.scalar(select(func.count(func.distinct(LotGeoSnapshot.lot_id)))) or 0,
+            "needs_attention": session.scalar(
+                select(func.count()).where(ProcessedLot.needs_geo_check.is_(True))
+            ) or 0,
+            "queued_failures": session.scalar(
+                select(func.count()).where(GeoFailure.status.not_in(("resolved", "terminal")))
+            ) or 0,
+        },
+        "price_changes_24h": session.scalar(
+            select(func.count()).where(LotPriceEvent.observed_at >= now.replace(tzinfo=None) - timedelta(hours=24))
+        ) or 0,
+        "unknown_status_lots": session.scalar(
+            select(func.count()).where(ProcessedLot.auction_status == "unknown")
+        ) or 0,
+        "integrity": {
+            "source_without_processed": source_without_processed,
+            "recoverable_source_links": recoverable_source_links,
+            "processed_without_source": processed_without_source,
+            "active_and_archived_source_lots": session.scalar(
+                select(func.count()).select_from(SourceLot).where(
+                    SourceLot.is_active.is_(True), SourceLot.is_archived.is_(True)
+                )
+            ) or 0,
+            "archived_processed_without_timestamp": session.scalar(
+                select(func.count()).select_from(ProcessedLot).where(
+                    ProcessedLot.is_archived.is_(True), ProcessedLot.archived_at.is_(None)
+                )
+            ) or 0,
+            "current_dataset_count": current_dataset_count,
+            "tile_count_mismatches": tile_count_mismatches,
+        },
+        "current_map_dataset": ({
+            "version": current.version,
+            "status": current.status,
+            "point_count": current.point_count,
+            "tile_count": current.tile_count,
+            "published_at": current.published_at,
+        } if current else None),
+        "last_sync": ({
+            "id": last_run.id,
+            "status": last_run.status,
+            "started_at": last_run.started_at,
+            "finished_at": last_run.finished_at,
+        } if last_run else None),
+        "problems": {"stale_active_lots": stale_lots},
+    }
 
 
 def list_source_health(session: Session) -> list[SourceHealthDTO]:

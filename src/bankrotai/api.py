@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Cookie, FastAPI, Depends, HTTPException, Query, Request, Response
@@ -73,7 +74,7 @@ from bankrotai.services.operations import (
     save_search,
     toggle_watchlist,
 )
-from bankrotai.services.quality import data_quality_snapshot, list_source_health
+from bankrotai.services.quality import data_quality_snapshot, list_source_health, operational_quality_report
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.logic import log_action
 from bankrotai.tasks import (
@@ -853,12 +854,32 @@ def import_online_lot(
     actor: AuthenticatedUser = Depends(require_user),
 ):
     value = request.model_dump()
+    raw_data: dict[str, Any] = {"imported_from": "web_search"}
+    detail_url = request.lot_url or request.source_url
+    if request.source_system == "tbankrot.ru" and detail_url:
+        parsed = urlparse(detail_url)
+        if parsed.scheme in {"http", "https"} and parsed.hostname in {"tbankrot.ru", "www.tbankrot.ru"}:
+            try:
+                detail = TBankrotClient(timeout=settings.external_read_timeout).fetch_detail_fields(detail_url)
+                value["start_price"] = detail.get("start_price") or value.get("start_price")
+                value["current_price"] = detail.get("current_price") or value.get("current_price")
+                if detail.get("auction_status") != "unknown":
+                    value["auction_status"] = detail["auction_status"]
+                raw_data.update({
+                    "detail_enrichment_status": "success",
+                    "detail_url": detail.get("detail_url"),
+                    "minimum_price": detail.get("minimum_price"),
+                    "image_urls": detail.get("image_urls") or [],
+                })
+            except Exception as exc:
+                logger.warning("TBankrot detail enrichment failed for explicit import %s: %s", request.external_id, exc)
+                raw_data["detail_enrichment_status"] = "failed"
     normalized = NormalizedLot(
         **value,
         vin=None,
         area=None,
         detail_level="search",
-        raw_data={"imported_from": "web_search"},
+        raw_data=raw_data,
     )
     with session_scope() as session:
         lot = persist_lot(session, normalized)
@@ -1705,6 +1726,12 @@ def compare_lot_documents(
 def get_data_quality():
     with read_session_scope() as session:
         return data_quality_snapshot(session).model_dump(mode="json")
+
+
+@app.get("/api/quality/operational", dependencies=[Depends(require_admin)])
+def get_operational_quality_report(stale_days: int = Query(7, ge=1, le=90)):
+    with read_session_scope() as session:
+        return operational_quality_report(session, stale_days=stale_days)
 
 
 @app.get("/api/sources")

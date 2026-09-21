@@ -14,6 +14,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.db import (
     LotGeoSnapshot,
+    LotPriceEvent,
     LotStatusHistory,
     LotStatusEvent,
     CanonicalLot,
@@ -185,10 +186,10 @@ def _same_cross_source_lot(existing: ProcessedLot, normalized: NormalizedLot) ->
         return False
     shared_cadastral = _processed_lot_cadastral_numbers(existing) & _normalized_lot_cadastral_numbers(normalized)
     if shared_cadastral:
-        if existing.current_price is not None and normalized.current_price is not None:
-            left, right = float(existing.current_price), float(normalized.current_price)
-            if max(abs(left), abs(right), 1.0) and abs(left - right) / max(abs(left), abs(right), 1.0) > 0.05:
-                return False
+        # Price is mutable auction state (especially for public offers), not
+        # physical identity.  A shared exact cadastral number is stronger
+        # evidence than a temporary price difference between an aggregator
+        # and the primary trading platform.
         return True
     if not _prices_match(existing.current_price or existing.start_price, normalized.current_price or normalized.start_price):
         return False
@@ -623,6 +624,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         SourceLot.external_id == normalized.external_id,
     ))
     processed = session.get(ProcessedLot, source_link.processed_lot_id) if source_link else None
+    old_current_price = processed.current_price if processed is not None else None
     if processed is None:
         processed = session.scalar(
             select(ProcessedLot).where(
@@ -734,13 +736,25 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
                 processed.needs_geo_check = True
                 processed.geo_input_hash = None
         
-        processed.current_price = _to_decimal(normalized.current_price)
+        if normalized.start_price is not None:
+            processed.start_price = _to_decimal(normalized.start_price)
+        if normalized.current_price is not None:
+            processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
         if new_status and not (new_status == "unknown" and processed.auction_status not in {None, "", "unknown"}):
             apply_lot_status(session, processed, new_status, normalized.source or "sync")
         processed.last_update = utc_now()
         
         logger.info(f"Updated lot {normalized.external_id}")
+
+    if processed.current_price is not None and processed.current_price != old_current_price:
+        session.add(LotPriceEvent(
+            lot_id=processed.id,
+            source=normalized.source or "sync",
+            price_kind="current",
+            amount=processed.current_price,
+            metadata_json={"external_id": normalized.external_id},
+        ))
                 
     session.flush()
     canonical_hint = None
@@ -756,10 +770,6 @@ def _same_processed_cross_source_lot(left: ProcessedLot, right: ProcessedLot) ->
         return False
     shared_cadastral = _processed_lot_cadastral_numbers(left) & _processed_lot_cadastral_numbers(right)
     if shared_cadastral:
-        if left.current_price is not None and right.current_price is not None:
-            left_price, right_price = float(left.current_price), float(right.current_price)
-            if abs(left_price - right_price) / max(abs(left_price), abs(right_price), 1.0) > 0.05:
-                return False
         return True
     if not _prices_match(left.current_price or left.start_price, right.current_price or right.start_price):
         return False

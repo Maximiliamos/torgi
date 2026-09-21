@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe_value
-from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotPriceEvent, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.ingestion import (
@@ -124,9 +124,24 @@ def test_changed_geo_input_resets_hash_and_requeues_lot(sessions) -> None:
         assert processed.geo_input_hash is None
 
 
-@pytest.mark.parametrize("source_id", ["lot-online.ru", "torgi-russia.ru"])
+def test_legacy_persistence_records_only_actual_current_price_changes(sessions) -> None:
+    with sessions.begin() as session:
+        persist_lot(session, lot(price=500_000))
+        persist_lot(session, lot(price=500_000))
+        persist_lot(session, lot(price=475_000))
+
+    with sessions() as session:
+        events = session.scalars(select(LotPriceEvent).order_by(LotPriceEvent.id)).all()
+        assert [(event.price_kind, float(event.amount)) for event in events] == [
+            ("current", 500_000),
+            ("current", 475_000),
+        ]
+
+
+@pytest.mark.parametrize("source_id", ["lot-online.ru", "torgi-russia.ru", "future-detail-source"])
 def test_detail_sources_enrich_only_new_or_changed_listings(sessions, source_id: str) -> None:
     class LotOnlineConnector(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
         def __init__(self) -> None:
             super().__init__()
             self.source_id = source_id
@@ -205,7 +220,7 @@ def test_missing_lot_archives_only_after_two_complete_successful_runs(sessions) 
         assert row.archive_reason == "missing_after_two_complete_syncs"
 
 
-def test_auction_expiration_waits_15_minutes_and_preserves_active_sibling(sessions) -> None:
+def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sessions) -> None:
     now = datetime(2026, 8, 24, 12, 0)
     with sessions() as session:
         old_processed = ProcessedLot(
@@ -218,6 +233,10 @@ def test_auction_expiration_waits_15_minutes_and_preserves_active_sibling(sessio
         )
         session.add_all([old_processed, current_processed])
         session.flush()
+        # The active cross-source card was previously deduplicated under the
+        # older primary.  Closing that primary must promote this sibling or
+        # MapDataset would filter both rows out.
+        current_processed.duplicate_of_id = old_processed.id
         canonical = CanonicalLot(
             canonical_key="expiration-test", legacy_processed_lot_id=old_processed.id,
             title="Лот", category="land",
@@ -228,7 +247,7 @@ def test_auction_expiration_waits_15_minutes_and_preserves_active_sibling(sessio
             SourceLot(
                 canonical_lot_id=canonical.id, processed_lot_id=old_processed.id,
                 source_system="old-source", external_id="old",
-                title="Лот", category="land", source_status="active",
+                title="Лот", category="land", source_status="closed",
                 auction_at=now - timedelta(minutes=16),
             ),
             SourceLot(
@@ -245,15 +264,119 @@ def test_auction_expiration_waits_15_minutes_and_preserves_active_sibling(sessio
     with sessions() as session:
         rows = {row.external_id: row for row in session.scalars(select(SourceLot)).all()}
         processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "current"))
-        assert rows["old"].archive_reason == "auction_elapsed_15_minutes"
+        expired = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "expiring"))
+        assert rows["old"].archive_reason == "explicit_source_status_closed"
         assert rows["current"].is_active is True
-        assert processed is not None and processed.is_archived is False
+        assert processed is not None and processed.is_archived is False and processed.duplicate_of_id is None
+        assert expired is not None and expired.is_archived is True and expired.duplicate_of_id == processed.id
 
-    assert service._expire_elapsed_auctions(now=now + timedelta(minutes=2)) == 1
+    assert service._expire_elapsed_auctions(now=now + timedelta(minutes=2)) == 0
     with sessions() as session:
         processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "current"))
-        assert processed is not None and processed.is_archived is True
-        assert processed.auction_status == "expired"
+        assert processed is not None and processed.is_archived is False
+        current = session.scalar(select(SourceLot).where(SourceLot.external_id == "current"))
+        assert current is not None and current.is_active is True
+
+
+def test_public_offer_is_not_archived_at_intermediate_stage_boundary(sessions) -> None:
+    now = datetime(2026, 9, 21, 12, 0)
+    with sessions() as session:
+        processed = ProcessedLot(
+            external_id="public-offer", source="test", source_system="test", title="Лот",
+            description="", category="land", auction_status="active",
+        )
+        session.add(processed)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="public-offer-test", legacy_processed_lot_id=processed.id,
+            title="Лот", category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id,
+            processed_lot_id=processed.id,
+            source_system="tbankrot.ru",
+            external_id="tbankrot:7991236",
+            title="Лот",
+            category="land",
+            source_status="active",
+            auction_type="public_offer",
+            next_price_reduction_at=now - timedelta(days=7),
+            public_offer_schedule=[
+                {"starts_at": "2026-09-08T10:00:00", "ends_at": "2026-09-14T10:00:00", "price": 4_500_000},
+                {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 4_275_000},
+                {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 4_050_000},
+            ],
+        ))
+        session.commit()
+
+    service = NationwideIngestionService(sessions)
+
+    assert service._expire_elapsed_auctions(now=now) == 0
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        assert row is not None and row.is_active is True and row.is_archived is False
+
+
+def test_public_offer_archives_only_after_final_schedule_period(sessions) -> None:
+    now = datetime(2026, 9, 29, 12, 0)
+    with sessions() as session:
+        processed = ProcessedLot(
+            external_id="ended-public-offer", source="test", source_system="test", title="Лот",
+            description="", category="land", auction_status="active",
+        )
+        session.add(processed)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="ended-public-offer-test", legacy_processed_lot_id=processed.id,
+            title="Лот", category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id,
+            processed_lot_id=processed.id,
+            source_system="test",
+            external_id="ended",
+            title="Лот",
+            category="land",
+            source_status="active",
+            auction_type="public_offer",
+            public_offer_schedule=[
+                {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 100},
+                {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 90},
+            ],
+        ))
+        session.commit()
+
+    service = NationwideIngestionService(sessions)
+
+    assert service._expire_elapsed_auctions(now=now) == 1
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        assert row is not None and row.is_archived is True
+        assert row.archive_reason == "public_offer_schedule_ended"
+
+
+def test_source_fingerprint_detects_schedule_and_gallery_changes() -> None:
+    row = SourceLot(
+        canonical_lot_id=1,
+        source_system="test-source",
+        external_id="one",
+        title="Лот",
+        public_offer_schedule=[{"price": 100}],
+        next_interval_price=90,
+        raw_data={"image_urls": ["https://example.test/one.jpg"]},
+    )
+    original = NationwideIngestionService._source_fingerprint(row)
+
+    row.public_offer_schedule = [{"price": 90}]
+    assert NationwideIngestionService._source_fingerprint(row) != original
+
+    row.public_offer_schedule = [{"price": 100}]
+    row.raw_data = {"image_urls": ["https://example.test/two.jpg"]}
+    assert NationwideIngestionService._source_fingerprint(row) != original
 
 
 def test_failed_source_never_increments_missing_or_archives(sessions) -> None:

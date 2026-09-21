@@ -1281,6 +1281,13 @@ class TorgiGovClient:
         else:
             lot_url = urljoin(self.BASE_URL, lot_url)
 
+        image_ids = payload.get("lotImages") if isinstance(payload.get("lotImages"), list) else []
+        image_urls = [
+            f"{self.BASE_URL}/new/image-preview/v1/{image_id}?disposition=inline&resize=600x600!"
+            for image_id in dict.fromkeys(self._clean_text(value) for value in image_ids)
+            if image_id
+        ]
+
         raw_data = {
             "source": "torgi_gov_json",
             "status": raw_status,
@@ -1294,6 +1301,12 @@ class TorgiGovClient:
             "category_code": category_code,
             "category_display": category_name or self.CATEGORY_CODE_LABELS.get(str(category_code), ""),
             "cadastral_numbers": cadastral_numbers,
+            # The public search API already exposes immutable image IDs.  Use
+            # the same public preview endpoint as the official lot page so a
+            # nationwide sync does not need one expensive detail request per
+            # lot merely to populate the gallery.
+            "image_url": image_urls[0] if image_urls else None,
+            "image_urls": image_urls,
             "bidd_end_time": self._clean_text(bidd_end_text),
             "auction_start_date": self._clean_text(auction_start_text),
             "raw": payload,
@@ -2512,6 +2525,66 @@ class TBankrotClient:
         if not loaded:
             raise RuntimeError("TBankrot session cookie file contains no TBankrot cookies")
 
+    def fetch_detail_fields(self, lot_url: str) -> dict[str, Any]:
+        """Fetch one explicitly requested public detail page.
+
+        This method is deliberately not enabled as nationwide bulk enrichment: the
+        source may require a paid/authenticated export for complete automated access.
+        """
+        response = self.session.get(lot_url, timeout=self.timeout)
+        response.raise_for_status()
+        return self.parse_detail_html(response.text, response.url or lot_url)
+
+    @staticmethod
+    def parse_detail_html(html: str, page_url: str) -> dict[str, Any]:
+        soup = BeautifulSoup(html, "html.parser")
+        page_text = soup.get_text(" ", strip=True).casefold()
+        auction_status = (
+            "closed"
+            if any(token in page_text for token in ("торги завершены", "торги завершены", "лот снят с торгов"))
+            else "active"
+            if any(token in page_text for token in ("текущая цена", "идут торги", "прием заявок", "приём заявок"))
+            else "unknown"
+        )
+
+        def labelled_price(selector: str, *labels: str) -> float | None:
+            node = soup.select_one(selector)
+            if node is not None:
+                value = parse_money(node.get_text(" ", strip=True))
+                if value is not None:
+                    return value
+            for block in soup.select(".price_info > div, .price_info .price, .lot_prices > div"):
+                text = block.get_text(" ", strip=True)
+                lowered = text.casefold()
+                if any(label in lowered for label in labels):
+                    return parse_money(text)
+            return None
+
+        image_urls: list[str] = []
+        for node in soup.select("img, [style*='background-image']"):
+            candidates = [node.get(key) for key in ("data-src", "data-lazy-src", "src")]
+            style = str(node.get("style") or "")
+            candidates.extend(re.findall(r"url\(['\"]?([^)'\"]+)", style, flags=re.IGNORECASE))
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                url = urljoin(page_url, str(candidate).strip())
+                lowered = url.casefold()
+                classes = " ".join(node.get("class") or []).casefold()
+                if "/img/blur/" in lowered or "only_biz" in classes or not lowered.startswith(("http://", "https://")):
+                    continue
+                if url not in image_urls:
+                    image_urls.append(url)
+
+        return {
+            "start_price": labelled_price(".price_info .start_price .sum", "начальная цена", "стартовая цена"),
+            "current_price": labelled_price(".price_info .cur_price .green, .price_info .cur_price .semibold", "текущая цена"),
+            "minimum_price": labelled_price(".price_info .min_price .semibold", "минимальная цена"),
+            "image_urls": image_urls,
+            "auction_status": auction_status,
+            "detail_url": page_url,
+        }
+
     def search_lots(
         self,
         filters_or_city: TBankrotSearchFilters | str,
@@ -2906,6 +2979,7 @@ class TBankrotClient:
         raw_payload["region_code"] = official_region_code
         raw_payload["region_name"] = region_name
         description = item.description or ""
+        application_deadline, auction_at, stage_ends_at = self._parse_listing_dates(raw_payload)
         return NormalizedLot(
             external_id=f"tbankrot:{item.external_id}",
             source="tbankrot",
@@ -2927,11 +3001,46 @@ class TBankrotClient:
             detail_level="search",
             raw_data=raw_payload,
             published_at=None,
+            application_deadline=application_deadline,
+            auction_at=auction_at,
+            auction_timezone="Europe/Moscow" if application_deadline or auction_at or stage_ends_at else None,
+            next_price_reduction_at=stage_ends_at,
             total_area_gba=item.building_area or item.room_area,
             land_area=item.land_area,
             floors=item.floors,
             year_built=item.year_built,
         )
+
+    @staticmethod
+    def _parse_listing_dates(raw_payload: dict[str, Any]) -> tuple[datetime | None, datetime | None, datetime | None]:
+        """Extract named Moscow timestamps without confusing a price-stage end with the sale end."""
+        application_deadline: datetime | None = None
+        auction_at: datetime | None = None
+        stage_ends_at: datetime | None = None
+        for item in raw_payload.get("dates") or []:
+            if not isinstance(item, dict):
+                continue
+            value = " ".join(str(item.get(key) or "") for key in ("title", "text")).strip()
+            match = re.search(r"\b(\d{1,2}\.\d{1,2}\.\d{2,4})\s+(\d{1,2}:\d{2})\b", value)
+            if not match:
+                continue
+            parsed: datetime | None = None
+            for fmt in ("%d.%m.%y %H:%M", "%d.%m.%Y %H:%M"):
+                try:
+                    parsed = datetime.strptime(f"{match.group(1)} {match.group(2)}", fmt)
+                    break
+                except ValueError:
+                    continue
+            if parsed is None:
+                continue
+            lowered = value.casefold()
+            if "окончание этапа" in lowered:
+                stage_ends_at = parsed
+            elif "начало торг" in lowered:
+                auction_at = parsed
+            elif any(token in lowered for token in ("прием заявок до", "приём заявок до", "окончание приема", "окончание приёма")):
+                application_deadline = parsed
+        return application_deadline, auction_at, stage_ends_at
 
     def _search_lots_legacy(self, city_slug: str, search_query: str | None = None, max_pages: int = 2) -> list[dict]:
         region_id = self.REGION_SLUGS.get(city_slug)

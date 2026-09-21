@@ -309,48 +309,47 @@ class NationwideIngestionService:
         return payload
 
     def _expire_elapsed_auctions(self, *, now: datetime | None = None) -> int:
-        """Archive publications 15 minutes after auction start, preserving active siblings."""
+        """Archive only from explicit source truth or a fully elapsed public-offer schedule.
+
+        ``auction_at`` is the auction *start*, not an end timestamp.  Treating it as
+        an expiry used to archive live auctions shortly after they began.
+        """
         observed_at = now or trusted_utc_now().replace(tzinfo=None)
-        cutoff = observed_at - timedelta(minutes=15)
         with self.session_factory() as session:
-            rows = session.scalars(
+            candidates = session.scalars(
                 select(SourceLot).where(
                     SourceLot.is_active.is_(True),
                     SourceLot.is_archived.is_(False),
-                    SourceLot.auction_at.isnot(None),
-                    SourceLot.auction_at < cutoff,
+                    or_(
+                        SourceLot.source_status.in_(("closed", "completed", "finished", "cancelled", "failed", "expired")),
+                        SourceLot.public_offer_schedule.isnot(None),
+                    ),
                 )
             ).all()
-            processed_ids: set[int] = set()
-            for row in rows:
+            rows: list[tuple[SourceLot, str]] = []
+            for row in candidates:
+                if normalize_status(row.source_status or "") == "closed":
+                    rows.append((row, "explicit_source_status_closed"))
+                    continue
+                schedule = row.public_offer_schedule if isinstance(row.public_offer_schedule, list) else []
+                ends = [
+                    parsed
+                    for period in schedule
+                    if isinstance(period, dict)
+                    for parsed in [_to_datetime(period.get("ends_at") or period.get("end_at") or period.get("end"))]
+                    if parsed is not None
+                ]
+                if ends and max(ends) < observed_at:
+                    rows.append((row, "public_offer_schedule_ended"))
+            for row, reason in rows:
                 row.is_active = False
                 row.is_archived = True
                 row.archived_at = observed_at
-                row.archive_reason = "auction_elapsed_15_minutes"
+                row.archive_reason = reason
                 row.source_status = "expired"
-                if row.processed_lot_id is not None:
-                    processed_ids.add(row.processed_lot_id)
             session.flush()
-            for processed_id in processed_ids:
-                has_active_sibling = (
-                    session.scalar(
-                        select(SourceLot.id)
-                        .where(
-                            SourceLot.processed_lot_id == processed_id,
-                            SourceLot.is_active.is_(True),
-                            SourceLot.is_archived.is_(False),
-                        )
-                        .limit(1)
-                    )
-                    is not None
-                )
-                if has_active_sibling:
-                    continue
-                processed = session.get(ProcessedLot, processed_id)
-                if processed is not None:
-                    processed.auction_status = "expired"
-                    processed.is_archived = True
-                    processed.archived_at = processed.archived_at or observed_at
+            for row, _reason in rows:
+                self._reconcile_processed_after_source_archive(session, row, observed_at)
             session.commit()
             return len(rows)
 
@@ -466,7 +465,11 @@ class NationwideIngestionService:
                 continue
             page_ids.add(lot.external_id)
             accepted.append(lot)
-        if result.source_system in {"lot-online.ru", "torgi-russia.ru"} and accepted and connector is not None:
+        if (
+            accepted
+            and connector is not None
+            and "detail_enrichment" in connector.capabilities
+        ):
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
                     row.external_id: row
@@ -652,14 +655,65 @@ class NationwideIngestionService:
                 row.is_archived = True
                 row.archived_at = utc_now()
                 row.archive_reason = "missing_after_two_complete_syncs"
-                if row.processed_lot_id:
-                    processed = session.get(ProcessedLot, row.processed_lot_id)
-                    if processed is not None:
-                        processed.is_archived = True
-                        processed.archived_at = processed.archived_at or utc_now()
+                self._reconcile_processed_after_source_archive(session, row, row.archived_at)
                 archived += 1
             session.commit()
         return archived
+
+    @staticmethod
+    def _reconcile_processed_after_source_archive(
+        session: Session,
+        archived_source: SourceLot,
+        observed_at: datetime,
+    ) -> None:
+        """Archive one source projection without hiding an active canonical sibling.
+
+        ``SourceLot.processed_lot_id`` is unique, so looking for another active
+        row with the same processed id cannot protect a cross-source duplicate.
+        CanonicalLot is the identity boundary: when the old primary closes,
+        promote one active sibling and repoint other active projections to it.
+        """
+        archived_processed = (
+            session.get(ProcessedLot, archived_source.processed_lot_id)
+            if archived_source.processed_lot_id is not None
+            else None
+        )
+        if archived_processed is not None:
+            archived_processed.auction_status = "expired"
+            archived_processed.is_archived = True
+            archived_processed.archived_at = archived_processed.archived_at or observed_at
+
+        active_source_rows = session.scalars(
+            select(SourceLot)
+            .where(
+                SourceLot.canonical_lot_id == archived_source.canonical_lot_id,
+                SourceLot.is_active.is_(True),
+                SourceLot.is_archived.is_(False),
+                SourceLot.processed_lot_id.isnot(None),
+            )
+            .order_by(SourceLot.id)
+        ).all()
+        active_processed = [
+            processed
+            for source in active_source_rows
+            for processed in [session.get(ProcessedLot, source.processed_lot_id)]
+            if processed is not None
+        ]
+        if not active_processed:
+            return
+
+        replacement = next(
+            (lot for lot in active_processed if lot.duplicate_of_id is None and not lot.is_archived),
+            active_processed[0],
+        )
+        replacement.duplicate_of_id = None
+        replacement.is_archived = False
+        replacement.archived_at = None
+        for lot in active_processed:
+            if lot.id != replacement.id:
+                lot.duplicate_of_id = replacement.id
+        if archived_processed is not None and archived_processed.id != replacement.id:
+            archived_processed.duplicate_of_id = replacement.id
 
     def _mark_run_running(self, run_id: str) -> None:
         with self.session_factory() as session:
@@ -728,6 +782,7 @@ class NationwideIngestionService:
 
     @staticmethod
     def _source_fingerprint(row: SourceLot) -> tuple[Any, ...]:
+        raw = row.raw_data if isinstance(row.raw_data, dict) else {}
         return (
             row.title,
             row.description,
@@ -740,6 +795,10 @@ class NationwideIngestionService:
             row.source_status,
             row.application_deadline,
             row.auction_at,
+            row.public_offer_schedule,
+            row.next_interval_price,
+            row.next_price_reduction_at,
+            NationwideIngestionService._mutable_raw_evidence(raw),
             row.source_updated_at,
             row.is_active,
             row.is_archived,
@@ -769,10 +828,29 @@ class NationwideIngestionService:
             normalized.auction_status,
             normalized.application_deadline or _to_datetime(_raw_value(raw, "bidd_end_time", "application_deadline")),
             normalized.auction_at or _to_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
+            normalized.public_offer_schedule or _raw_value(raw, "public_offer_schedule"),
+            _to_decimal(
+                normalized.next_interval_price
+                if normalized.next_interval_price is not None
+                else _raw_value(raw, "next_interval_price")
+            ),
+            normalized.next_price_reduction_at or _to_datetime(_raw_value(raw, "next_price_reduction_at")),
+            NationwideIngestionService._mutable_raw_evidence(raw),
             _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update")),
             is_active,
             is_archived,
         )
+
+    @staticmethod
+    def _mutable_raw_evidence(raw: dict[str, Any]) -> tuple[Any, ...]:
+        """Stable evidence for mutable fields that live in heterogeneous source payloads."""
+        keys = (
+            "image_url", "photo_url", "thumbnail_url", "main_image", "image", "photo",
+            "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
+            "public_offer_schedule", "next_interval_price", "next_price_reduction_at",
+            "minimal_blocks", "dates",
+        )
+        return tuple((key, raw.get(key)) for key in keys if key in raw)
 
     def _result_payload(self, result: SourceSyncResult) -> dict[str, Any]:
         return {

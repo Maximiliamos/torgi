@@ -12,6 +12,7 @@ from typing import Callable
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
+from bankrotai.core import get_settings
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
 
 MAX_DATASET_ZOOM = 14
@@ -200,17 +201,33 @@ def _promote_map_dataset(
                 f"Map dataset {dataset.version} is incomplete: "
                 f"status={dataset.status}, expected_tiles={dataset.tile_count}, actual_tiles={actual_tile_count}"
             )
-        if current is not None and current.point_count > 0 and dataset.point_count == 0:
+        settings = get_settings()
+        minimum_points = 0
+        if current is not None and current.point_count > 0:
+            minimum_points = max(
+                settings.min_map_points,
+                math.ceil(current.point_count * settings.min_map_coverage_ratio),
+            )
+        if current is not None and current.point_count > 0 and dataset.point_count < minimum_points:
             dataset.status = "rejected"
             session.commit()
             logger.warning(
-                "Map dataset %s promotion rejected by coverage guard: previous_points=%s, new_points=0",
-                dataset.version, current.point_count,
+                "Map dataset %s promotion rejected by coverage guard: "
+                "previous_points=%s new_points=%s required_points=%s ratio=%s",
+                dataset.version, current.point_count, dataset.point_count,
+                minimum_points, settings.min_map_coverage_ratio,
             )
             return {
                 "status": "rejected",
-                "reason": "empty_dataset_would_replace_nonempty_current",
+                "reason": (
+                    "empty_dataset_would_replace_nonempty_current"
+                    if dataset.point_count == 0
+                    else "dataset_coverage_below_threshold"
+                ),
                 "current_dataset_id": current.id,
+                "previous_point_count": current.point_count,
+                "new_point_count": dataset.point_count,
+                "minimum_point_count": minimum_points,
             }
 
         session.execute(
