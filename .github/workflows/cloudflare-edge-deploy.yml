@@ -90,6 +90,12 @@ jobs:
           get("token_verify", f"/accounts/{account_id}/tokens/verify")
           get("account", f"/accounts/{account_id}")
           zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
+          get(
+              "sterdez_zone",
+              "/zones?" + urllib.parse.urlencode(
+                  {"name": "sterdez.online", "account.id": account_id}
+              ),
+          )
           zone_results = zones.get("result", []) if zones else []
           if len(zone_results) != 1 or zone_results[0].get("id") != expected_zone_id:
               failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
