@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      rollback_sterdez_edge_only:
+        description: Remove only the isolated STERDEZ bootstrap DNS records and routes
+        required: false
+        default: false
+        type: boolean
       configure_direct_origin_only:
         description: Point the Pages API proxy at the stable REG.RU HTTPS origin
         required: false
@@ -609,8 +614,68 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  rollback-sterdez-edge:
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback_sterdez_edge_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
+    steps:
+      - name: Roll back isolated STERDEZ edge records and routes
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          api="https://api.cloudflare.com/client/v4"; account=os.environ["CLOUDFLARE_ACCOUNT_ID"]; zone=os.environ["EXPECTED_ZONE_ID"]
+          headers={"Authorization":f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}","Accept":"application/json","Content-Type":"application/json"}
+          def request(method,path):
+              req=urllib.request.Request(api+path,method=method,headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response: payload=json.load(response)
+              if not payload.get("success"): raise RuntimeError(payload.get("errors"))
+              return payload["result"]
+          zones=request("GET","/zones?"+urllib.parse.urlencode({"name":"sterdez.online","account.id":account}))
+          if len(zones)!=1 or zones[0].get("id")!=zone: raise SystemExit("STERDEZ zone identity mismatch")
+          names={"sterdez.online","www.sterdez.online","api.sterdez.online"}
+          patterns={f"{name}/*" for name in names}
+          records=request("GET",f"/zones/{zone}/dns_records?per_page=100")
+          routes=request("GET",f"/zones/{zone}/workers/routes")
+          selected_records=[r for r in records if r.get("name") in names]
+          selected_routes=[r for r in routes if r.get("pattern") in patterns]
+          for record in selected_records:
+              if record.get("comment") != "STERDEZ isolated edge bootstrap" or record.get("content") != "bankrotai.pages.dev":
+                  raise SystemExit(f"Refusing to remove non-bootstrap DNS record: {record.get('name')}")
+          expected_scripts={"bankrotai-sterdez-domain-proxy","bankrotai-sterdez-api-proxy"}
+          for route in selected_routes:
+              if route.get("script") not in expected_scripts:
+                  raise SystemExit(f"Refusing to remove non-bootstrap Worker route: {route.get('pattern')}")
+          before={"dns_records":[{k:r.get(k) for k in ("id","type","name","content","ttl","proxied","comment")} for r in selected_records],"worker_routes":[{k:r.get(k) for k in ("id","pattern","script")} for r in selected_routes]}
+          with open("sterdez-rollback-before.json","w",encoding="utf-8") as f: json.dump(before,f,ensure_ascii=False,indent=2)
+          for route in selected_routes: request("DELETE",f"/zones/{zone}/workers/routes/{route['id']}")
+          for record in selected_records: request("DELETE",f"/zones/{zone}/dns_records/{record['id']}")
+          remaining_records=request("GET",f"/zones/{zone}/dns_records?per_page=100")
+          remaining_routes=request("GET",f"/zones/{zone}/workers/routes")
+          if any(r.get("name") in names for r in remaining_records) or any(r.get("pattern") in patterns for r in remaining_routes):
+              raise SystemExit("STERDEZ rollback verification failed")
+          after={"removed_dns_records":len(selected_records),"removed_worker_routes":len(selected_routes),"verified_empty":True}
+          with open("sterdez-rollback-after.json","w",encoding="utf-8") as f: json.dump(after,f,ensure_ascii=False,indent=2)
+          print(json.dumps(after))
+          PY
+      - name: Preserve sanitized rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-edge-rollback-${{ github.run_id }}
+          path: sterdez-rollback-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.bootstrap_sterdez_edge_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.bootstrap_sterdez_edge_only && !inputs.rollback_sterdez_edge_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
