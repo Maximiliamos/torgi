@@ -1,0 +1,100 @@
+name: STERDEZ domain preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Inspect registrar delegation and Cloudflare zone
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+          EXPECTED_ZONE_NAME: sterdez.online
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          zone_name = os.environ["EXPECTED_ZONE_NAME"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+          def request_json(url, *, headers_override=None):
+              request = urllib.request.Request(url, headers=headers_override or headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              return payload
+
+          zones = request_json(
+              api + "/zones?" + urllib.parse.urlencode(
+                  {"name": zone_name, "account.id": account_id}
+              )
+          )
+          results = zones.get("result", [])
+          sanitized = [
+              {
+                  "id": item.get("id"),
+                  "name": item.get("name"),
+                  "status": item.get("status"),
+                  "name_servers": item.get("name_servers", []),
+                  "original_name_servers": item.get("original_name_servers", []),
+              }
+              for item in results
+          ]
+
+          public_ns = {}
+          for resolver in ("cloudflare-dns.com", "dns.google"):
+              payload = request_json(
+                  f"https://{resolver}/resolve?"
+                  + urllib.parse.urlencode({"name": zone_name, "type": "NS"}),
+                  headers_override={"Accept": "application/dns-json", "User-Agent": "DEZSTER-Preflight/1.0"},
+              )
+              public_ns[resolver] = sorted(
+                  str(item.get("data", "")).rstrip(".").lower()
+                  for item in payload.get("Answer", [])
+                  if item.get("type") == 2
+              )
+
+          evidence = {"zones": sanitized, "public_ns": public_ns}
+          print(json.dumps(evidence, ensure_ascii=False))
+          with open("sterdez-domain-preflight.json", "w", encoding="utf-8") as output:
+              json.dump(evidence, output, ensure_ascii=False, indent=2)
+
+          if len(sanitized) != 1:
+              raise SystemExit(
+                  "Expected exactly one accessible Cloudflare zone for sterdez.online; "
+                  f"found {len(sanitized)}"
+              )
+          expected_ns = sorted(
+              str(value).rstrip(".").lower() for value in sanitized[0]["name_servers"]
+          )
+          if sanitized[0]["status"] != "active":
+              raise SystemExit(f"Cloudflare zone is not active: {sanitized[0]['status']}")
+          if any(values != expected_ns for values in public_ns.values()):
+              raise SystemExit(
+                  f"Public delegation mismatch: expected={expected_ns}, actual={public_ns}"
+              )
+          PY
+      - name: Preserve sanitized preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-domain-preflight-${{ github.run_id }}
+          path: sterdez-domain-preflight.json
+          if-no-files-found: warn
+          retention-days: 30
