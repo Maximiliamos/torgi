@@ -28,7 +28,7 @@ class BidExpertClient:
     def __init__(self, *, timeout: tuple[float, float] | float = (10, 45), session: requests.Session | None = None) -> None:
         self.timeout = timeout
         self.session = session or requests.Session()
-        self.session.headers.update({"User-Agent": "BankrotAI/1.0 (+https://dezster.ru)", "Accept-Language": "ru-RU,ru;q=0.9"})
+        self.session.headers.update({"User-Agent": "BankrotAI/1.0 (+https://sterdez.online)", "Accept-Language": "ru-RU,ru;q=0.9"})
 
     def _params(self, filters: BidExpertSearchFilters) -> dict[str, str]:
         category = filters.category.strip().lower()

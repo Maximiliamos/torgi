@@ -6,12 +6,12 @@ on:
       web_base_url:
         description: WEB origin to verify
         required: false
-        default: "https://dezster.ru"
+        default: "https://sterdez.online"
         type: string
       api_base_url:
         description: API origin to verify
         required: false
-        default: "https://api.dezster.ru"
+        default: "https://api.sterdez.online"
         type: string
   workflow_run:
     workflows: [Deploy Cloudflare edge proxy]
@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      E2E_BASE_URL: ${{ inputs.web_base_url || 'https://dezster.ru' }}
-      E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.dezster.ru' }}
+      E2E_BASE_URL: ${{ inputs.web_base_url || 'https://sterdez.online' }}
+      E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.sterdez.online' }}
       E2E_PRODUCTION_AUDIT: "1"
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}

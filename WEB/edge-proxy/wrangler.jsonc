@@ -12,12 +12,12 @@
   ],
   "routes": [
     {
-      "pattern": "dezster.ru/*",
-      "zone_name": "dezster.ru"
+      "pattern": "sterdez.online/*",
+      "zone_name": "sterdez.online"
     },
     {
-      "pattern": "www.dezster.ru/*",
-      "zone_name": "dezster.ru"
+      "pattern": "www.sterdez.online/*",
+      "zone_name": "sterdez.online"
     }
   ],
   "observability": {

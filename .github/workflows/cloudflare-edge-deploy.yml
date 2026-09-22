@@ -44,11 +44,12 @@ jobs:
       - name: Inspect Cloudflare control plane safely
         env:
           EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
-          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
+          EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$EXPECTED_ZONE_ID"
           python - <<'PY'
           import json
           import os
@@ -89,13 +90,7 @@ jobs:
 
           get("token_verify", f"/accounts/{account_id}/tokens/verify")
           get("account", f"/accounts/{account_id}")
-          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
-          get(
-              "sterdez_zone",
-              "/zones?" + urllib.parse.urlencode(
-                  {"name": "sterdez.online", "account.id": account_id}
-              ),
-          )
+          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "sterdez.online", "account.id": account_id}))
           zone_results = zones.get("result", []) if zones else []
           if len(zone_results) != 1 or zone_results[0].get("id") != expected_zone_id:
               failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
@@ -134,11 +129,12 @@ jobs:
       - name: Enable canonical Cloudflare proxy with automatic rollback
         env:
           EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
-          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
+          EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          test -n "$EXPECTED_ZONE_ID"
           python - <<'PY'
           import json
           import os
@@ -153,7 +149,7 @@ jobs:
           account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
           zone_id = os.environ["EXPECTED_ZONE_ID"]
           expected_account_id = os.environ["EXPECTED_ACCOUNT_ID"]
-          names = ("dezster.ru", "www.dezster.ru", "api.dezster.ru")
+          names = ("sterdez.online", "www.sterdez.online", "api.sterdez.online")
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/json",
@@ -174,7 +170,7 @@ jobs:
 
           zones = cf_request(
               "GET",
-              "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}),
+              "/zones?" + urllib.parse.urlencode({"name": "sterdez.online", "account.id": account_id}),
           )["result"]
           if len(zones) != 1 or zones[0].get("id") != zone_id:
               raise SystemExit("Cloudflare zone identity mismatch")
@@ -184,7 +180,7 @@ jobs:
           }
           dns_request = urllib.request.Request(
               "https://cloudflare-dns.com/dns-query?"
-              + urllib.parse.urlencode({"name": "dezster.ru", "type": "NS"}),
+              + urllib.parse.urlencode({"name": "sterdez.online", "type": "NS"}),
               headers={"Accept": "application/dns-json", "User-Agent": "DEZSTER-DNS-Gate/1.0"},
           )
           with urllib.request.urlopen(dns_request, timeout=30) as response:
@@ -218,9 +214,9 @@ jobs:
               for item in cf_request("GET", f"/accounts/{account_id}/workers/scripts")["result"]
           }
           expected_routes = {
-              "dezster.ru/*": "bankrotai-domain-proxy",
-              "www.dezster.ru/*": "bankrotai-domain-proxy",
-              "api.dezster.ru/*": "bankrotai-api-proxy",
+              "sterdez.online/*": "bankrotai-domain-proxy",
+              "www.sterdez.online/*": "bankrotai-domain-proxy",
+              "api.sterdez.online/*": "bankrotai-api-proxy",
           }
           route_map = {item.get("pattern"): item.get("script") for item in routes}
           if any(route_map.get(pattern) != script for pattern, script in expected_routes.items()):
@@ -288,12 +284,12 @@ jobs:
 
               checks = None
               for _attempt in range(12):
-                  deployment_status, deployment_body = status("https://dezster.ru/deployment.json")
-                  web_live, _ = status("https://dezster.ru/health/live")
-                  web_ready, _ = status("https://dezster.ru/health/ready")
-                  api_live, _ = status("https://api.dezster.ru/health/live")
-                  api_ready, _ = status("https://api.dezster.ru/health/ready")
-                  auth_status, _ = status("https://dezster.ru/api/auth/me")
+                  deployment_status, deployment_body = status("https://sterdez.online/deployment.json")
+                  web_live, _ = status("https://sterdez.online/health/live")
+                  web_ready, _ = status("https://sterdez.online/health/ready")
+                  api_live, _ = status("https://api.sterdez.online/health/live")
+                  api_ready, _ = status("https://api.sterdez.online/health/ready")
+                  auth_status, _ = status("https://sterdez.online/api/auth/me")
                   direct_ready, _ = status("https://194-226-126-233.sslip.io/health/ready")
                   try:
                       deployed_commit = json.loads(deployment_body).get("commit", "")
@@ -488,10 +484,10 @@ jobs:
               -H 'Cache-Control: no-cache' https://bankrotai.pages.dev/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
             CANONICAL_SHA="$(curl --ipv4 --fail --silent --show-error --max-time 20 \
-              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              -H 'Cache-Control: no-cache' https://sterdez.online/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
             AUTH_STATUS="$(curl --ipv4 --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)"
+              https://sterdez.online/api/auth/me || true)"
             if test "$PAGES_SHA" = "$GITHUB_SHA" \
               && test "$CANONICAL_SHA" = "$GITHUB_SHA" \
               && test "$AUTH_STATUS" = "401"; then
@@ -503,7 +499,7 @@ jobs:
             fi
             sleep 5
           done
-          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/deployment.json \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://sterdez.online/deployment.json \
             | grep -qi '^cache-control: no-store'
-          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/ \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://sterdez.online/ \
             | grep -qi '^strict-transport-security:'

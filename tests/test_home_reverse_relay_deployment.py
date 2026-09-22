@@ -73,8 +73,8 @@ def test_production_functional_gate_can_target_the_direct_regru_origin() -> None
     workflow = (ROOT / ".github" / "workflows" / "production-functional.yml").read_text(encoding="utf-8")
     assert "web_base_url:" in workflow
     assert "api_base_url:" in workflow
-    assert "E2E_BASE_URL: ${{ inputs.web_base_url || 'https://dezster.ru' }}" in workflow
-    assert "E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.dezster.ru' }}" in workflow
+    assert "E2E_BASE_URL: ${{ inputs.web_base_url || 'https://sterdez.online' }}" in workflow
+    assert "E2E_API_BASE_URL: ${{ inputs.api_base_url || 'https://api.sterdez.online' }}" in workflow
     assert '"$E2E_API_BASE_URL/health/live"' in workflow
     assert '"$E2E_BASE_URL/deployment.json"' in workflow
 
@@ -93,7 +93,7 @@ def test_regular_regru_deploy_preserves_wss_ingress() -> None:
 
 def test_regru_deploy_serves_canonical_production_hostnames() -> None:
     workflow = REGRU_WORKFLOW.read_text(encoding="utf-8")
-    assert "${API_HOSTNAME}, dezster.ru, www.dezster.ru, api.dezster.ru {" in workflow
+    assert "${API_HOSTNAME}, sterdez.online, www.sterdez.online, api.sterdez.online {" in workflow
     assert "@deployment path /deployment.json" in workflow
     assert 'header @deployment Cache-Control "no-store"' in workflow
     assert 'Strict-Transport-Security "max-age=31536000; includeSubDomains"' in workflow

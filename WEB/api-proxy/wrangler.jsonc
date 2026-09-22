@@ -10,8 +10,8 @@
   },
   "routes": [
     {
-      "pattern": "api.dezster.ru/*",
-      "zone_name": "dezster.ru"
+      "pattern": "api.sterdez.online/*",
+      "zone_name": "sterdez.online"
     }
   ],
   "observability": {

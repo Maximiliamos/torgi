@@ -322,7 +322,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await context.addCookies([{
     name: "bankrotai_session",
     value: "invalid.audit.session",
-    domain: "dezster.ru",
+    domain: "sterdez.online",
     path: "/",
     secure: true,
     httpOnly: true,
@@ -339,8 +339,8 @@ test("real production auth, registry, sources, GEO, images and source links", as
   const apiHealthSamples: Array<{ target: string; cycle: number; status: number; duration_ms: number }> = [];
   for (let cycle = 1; cycle <= 30; cycle += 1) {
     const cycleSamples = await Promise.all([
-      ["live", "https://api.dezster.ru/health/live"] as const,
-      ["ready", "https://api.dezster.ru/health/ready"] as const,
+      ["live", "https://api.sterdez.online/health/live"] as const,
+      ["ready", "https://api.sterdez.online/health/ready"] as const,
     ].map(async ([target, url]) => {
       const started = performance.now();
       const response = await request.get(url, { failOnStatusCode: false });

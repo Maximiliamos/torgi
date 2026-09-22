@@ -122,7 +122,7 @@ jobs:
             'APP_ENV=production'
             'API_READ_ONLY=true'
             'DATABASE_TRUSTED_LOCAL=true'
-            'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
+            'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'ONLINE_SOURCE_CACHE_FIRST=true'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
             'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
@@ -134,14 +134,14 @@ jobs:
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
             "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
-            'CORS_ORIGINS=https://dezster.ru,https://bankrotai.pages.dev'
+            'CORS_ORIGINS=https://sterdez.online,https://bankrotai.pages.dev'
           ))
           $workerConfigPath = Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'
           [System.IO.File]::WriteAllLines($workerConfigPath, @(
             'APP_ENV=production'
             'API_READ_ONLY=false'
             'DATABASE_TRUSTED_LOCAL=true'
-            'TORGI_GOV_BASE_URL=https://api.dezster.ru/__public-source/torgi'
+            'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
             'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"

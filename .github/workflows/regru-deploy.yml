@@ -351,7 +351,7 @@ jobs:
           DOCKER_GATEWAY="$(docker network inspect bankrotai --format '{{(index .IPAM.Config 0).Gateway}}')"
           test -n "$DOCKER_GATEWAY"
           cat > /opt/bankrotai/Caddyfile.next <<CADDY
-          ${API_HOSTNAME}, dezster.ru, www.dezster.ru, api.dezster.ru {
+          ${API_HOSTNAME}, sterdez.online, www.sterdez.online, api.sterdez.online {
             encode zstd gzip
 
             @backend path /api /api/* /health /health/*
@@ -523,13 +523,13 @@ jobs:
           curl --fail --silent --show-error \
             --connect-timeout 3 --max-time 15 \
             --retry 18 --retry-delay 5 --retry-all-errors \
-            "https://api.dezster.ru/health/ready"
+            "https://api.sterdez.online/health/ready"
           printf '\n'
           for stability_check in $(seq 1 6); do
             test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.dezster.ru/health/live || true)" = "200"
+              https://api.sterdez.online/health/live || true)" = "200"
             test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)" = "401"
+              https://sterdez.online/api/auth/me || true)" = "401"
             if test "$stability_check" != 6; then
               sleep 5
             fi
@@ -554,9 +554,9 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 36); do
             AUTH_STATUS="$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)"
+              https://sterdez.online/api/auth/me || true)"
             DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
-              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              -H 'Cache-Control: no-cache' https://sterdez.online/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
             if test "$AUTH_STATUS" = "401" && test "$DEPLOYED_SHA" = "$GITHUB_SHA"; then
               exit 0
@@ -573,7 +573,7 @@ jobs:
       - name: Run public WEB smoke
         working-directory: WEB
         env:
-          E2E_BASE_URL: https://dezster.ru
+          E2E_BASE_URL: https://sterdez.online
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         run: npm run test:e2e
