@@ -173,6 +173,28 @@ jobs:
           if len(zones) != 1 or zones[0].get("id") != zone_id:
               raise SystemExit("Cloudflare zone identity mismatch")
 
+          expected_nameservers = {
+              str(value).rstrip(".").lower() for value in zones[0].get("name_servers", [])
+          }
+          dns_request = urllib.request.Request(
+              "https://cloudflare-dns.com/dns-query?"
+              + urllib.parse.urlencode({"name": "dezster.ru", "type": "NS"}),
+              headers={"Accept": "application/dns-json", "User-Agent": "DEZSTER-DNS-Gate/1.0"},
+          )
+          with urllib.request.urlopen(dns_request, timeout=30) as response:
+              dns_answer = json.load(response)
+          authoritative_nameservers = {
+              str(item.get("data", "")).rstrip(".").lower()
+              for item in dns_answer.get("Answer", [])
+              if item.get("type") == 2
+          }
+          if not expected_nameservers or authoritative_nameservers != expected_nameservers:
+              raise SystemExit(
+                  "Public authoritative nameservers do not match the Cloudflare zone; "
+                  f"expected={sorted(expected_nameservers)}, "
+                  f"actual={sorted(authoritative_nameservers)}"
+              )
+
           all_records = cf_request("GET", f"/zones/{zone_id}/dns_records?per_page=100")["result"]
           selected = []
           for name in names:
