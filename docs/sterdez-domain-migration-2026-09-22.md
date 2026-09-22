@@ -9,13 +9,23 @@ Date: 2026-09-22
 - Target WWW behavior: permanent `308` redirect to the apex while preserving path and query.
 - Two independent public resolvers return `SERVFAIL` for NS, SOA, A and AAAA.
 - Cloudflare diagnostics run `35767459859` used the configured project account and token.
-- The Cloudflare API returned no accessible zone named `sterdez.online` (`result: []`).
+- The first read returned no accessible zone named `sterdez.online` (`result: []`).
+- Controlled bootstrap run `35769013654` created zone `2d8fea3305ff3d74777d7fa0a1d9bdb0`.
+- Zone status after creation: `pending`.
+- Cloudflare assigned `jaime.ns.cloudflare.com` and `raquel.ns.cloudflare.com`.
+- Registrar delegation still points to the previous `titan.ns.cloudflare.com` and
+  `veda.ns.cloudflare.com`; public DNS therefore remains unavailable.
+- Repository variable `CLOUDFLARE_CANONICAL_ZONE_ID` now contains the verified new zone ID.
 - No new-domain DNS, Worker route, Pages domain or traffic mutation has been performed.
 
-The external cutover is blocked until the owner confirms the exact domain/ownership and adds the
-zone to the project Cloudflare account. If Cloudflare assigns nameservers other than
-`titan.ns.cloudflare.com` and `veda.ns.cloudflare.com`, the registrar delegation must be updated
-before any traffic switch.
+The external cutover is blocked until the owner changes the `sterdez.online` nameservers in REG.RU
+to `jaime.ns.cloudflare.com` and `raquel.ns.cloudflare.com`. No DNS records or routes may be
+created until the zone becomes active and two public resolvers return that exact pair.
+
+The bootstrap workflow initially also selected the normal deploy job because its exclusion list did
+not yet include the new input. The run was cancelled while it was still verifying the staged origin;
+all Pages/Worker deployment steps were skipped. The workflow condition was then corrected so the
+zone-only input cannot select the deploy job.
 
 ## Active configuration mapping
 
@@ -55,11 +65,9 @@ own exact snapshot and automatic rollback behavior.
 
 ## External actions still required
 
-1. Owner confirms spelling `sterdez.online`, ownership and desired DEZSTER/STERDEZ branding.
-2. Owner adds or opens the `sterdez.online` zone in the correct Cloudflare account.
-3. Cloudflare access token receives the required access to that exact zone.
-4. Repository variable `CLOUDFLARE_CANONICAL_ZONE_ID` is set to the verified new zone ID.
-5. Mail and old-domain redirect decisions are recorded before changing related records.
+1. Owner changes REG.RU nameservers to `jaime.ns.cloudflare.com` and `raquel.ns.cloudflare.com`.
+2. Owner confirms desired DEZSTER/STERDEZ branding.
+3. Mail and old-domain redirect decisions are recorded before changing related records.
 
 No PR, merge, deployment or traffic switch is allowed until the pre-flight and production gates
 defined in `10_DEZSTER_переезд_на_sterdez.online_план_и_ТЗ.txt` pass.

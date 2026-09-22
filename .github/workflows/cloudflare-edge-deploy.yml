@@ -470,7 +470,7 @@ jobs:
         run: npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
 
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
