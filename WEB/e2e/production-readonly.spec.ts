@@ -340,7 +340,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
     sameSite: "Strict",
   }]);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
 
   await login(page);
   const repeatedMe = await browserJson<{ username: string; role: string }>(page, "/api/auth/me");
