@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      create_sterdez_zone_only:
+        description: Create or inspect the sterdez.online zone without DNS records or traffic changes
+        required: false
+        default: false
+        type: boolean
       configure_direct_origin_only:
         description: Point the Pages API proxy at the stable REG.RU HTTPS origin
         required: false
@@ -33,6 +38,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  create-sterdez-zone:
+    if: github.event_name == 'workflow_dispatch' && inputs.create_sterdez_zone_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Create or inspect STERDEZ zone without routing traffic
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          zone_name = "sterdez.online"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+          }
+
+          def request(method, path, payload=None):
+              body = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(api + path, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(result.get("errors"))
+              return result
+
+          query = urllib.parse.urlencode({"name": zone_name, "account.id": account_id})
+          zones = request("GET", f"/zones?{query}")["result"]
+          created = False
+          if not zones:
+              zone = request(
+                  "POST",
+                  "/zones",
+                  {"name": zone_name, "account": {"id": account_id}, "type": "full"},
+              )["result"]
+              created = True
+          elif len(zones) == 1:
+              zone = zones[0]
+          else:
+              raise SystemExit(f"Expected at most one {zone_name} zone; found {len(zones)}")
+
+          evidence = {
+              "created": created,
+              "zone": {
+                  "id": zone.get("id"),
+                  "name": zone.get("name"),
+                  "status": zone.get("status"),
+                  "name_servers": zone.get("name_servers", []),
+                  "original_name_servers": zone.get("original_name_servers", []),
+              },
+          }
+          print(json.dumps(evidence, ensure_ascii=False))
+          with open("sterdez-zone.json", "w", encoding="utf-8") as output:
+              json.dump(evidence, output, ensure_ascii=False, indent=2)
+          PY
+      - name: Preserve sanitized zone evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-zone-${{ github.run_id }}
+          path: sterdez-zone.json
+          if-no-files-found: warn
+          retention-days: 30
+
   diagnostics:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.diagnostics_only)
     runs-on: ubuntu-latest
