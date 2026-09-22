@@ -252,6 +252,8 @@ jobs:
                           return response.status, response.read(4096)
                   except urllib.error.HTTPError as error:
                       return error.code, error.read(4096)
+                  except (urllib.error.URLError, TimeoutError, OSError):
+                      return 0, b""
 
               checks = None
               for _attempt in range(24):
