@@ -122,54 +122,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
-      - name: Restore canonical DNS records to captured BEFORE state
-        env:
-          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
-          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
-        run: |
-          set -euo pipefail
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
-          python - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          api = "https://api.cloudflare.com/client/v4"
-          token = os.environ["CLOUDFLARE_API_TOKEN"]
-          zone_id = os.environ["EXPECTED_ZONE_ID"]
-          before = [
-              {"id": "24f2e9b3f7473a6de9823e508ccd9513", "name": "dezster.ru", "type": "A", "content": "194.226.126.233", "ttl": 300, "proxied": False, "comment": None, "tags": []},
-              {"id": "fd97cd149b4176329c039f949e7b8a9f", "name": "www.dezster.ru", "type": "A", "content": "194.226.126.233", "ttl": 300, "proxied": False, "comment": None, "tags": []},
-              {"id": "9e8e98e68ace6e9b756d87a54d03f656", "name": "api.dezster.ru", "type": "A", "content": "194.226.126.233", "ttl": 300, "proxied": False, "comment": None, "tags": []},
-          ]
-          headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
-
-          def request(method, path, payload=None):
-              body = None if payload is None else json.dumps(payload).encode()
-              req = urllib.request.Request(api + path, data=body, headers=headers, method=method)
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  result = json.load(response)
-              if not result.get("success"):
-                  raise RuntimeError(result.get("errors"))
-              return result["result"]
-
-          restored = []
-          for expected in before:
-              current = request("GET", f"/zones/{zone_id}/dns_records/{expected['id']}")
-              identity = (current.get("name"), current.get("type"), current.get("content"))
-              wanted = (expected["name"], expected["type"], expected["content"])
-              if identity != wanted:
-                  raise SystemExit(f"DNS record identity mismatch for {expected['id']}")
-              payload = {key: expected[key] for key in ("name", "type", "content", "ttl", "proxied", "comment", "tags")}
-              result = request("PUT", f"/zones/{zone_id}/dns_records/{expected['id']}", payload)
-              restored.append({"id": result["id"], "name": result["name"], "type": result["type"], "content": result["content"], "ttl": result["ttl"], "proxied": result["proxied"]})
-          with open("cloudflare-dns-rollback.json", "w", encoding="utf-8") as output:
-              json.dump(restored, output, ensure_ascii=False, indent=2)
-          print(json.dumps({"rollback_after": restored}, ensure_ascii=False))
-          PY
       - name: Enable canonical Cloudflare proxy with automatic rollback
-        if: ${{ false }}
         env:
           EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
           EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
