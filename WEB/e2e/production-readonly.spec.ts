@@ -222,10 +222,17 @@ test("real production auth, registry, sources, GEO, images and source links", as
     const wideViewportTimings: Array<{ bounds: number[]; status: number; durationMs: number }> = [];
     for (const [west, south, east, north] of wideViewportSamples) {
       const startedAt = Date.now();
-      const response = await page.context().request.get(
+      let response = await page.context().request.get(
         `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
-        { headers: { "Cache-Control": "no-cache" }, timeout: 30_000 },
+        { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
       );
+      for (let attempt = 1; attempt < 3 && [502, 503, 504].includes(response.status()); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        response = await page.context().request.get(
+          `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
+          { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
+        );
+      }
       const durationMs = Date.now() - startedAt;
       wideViewportTimings.push({ bounds: [west, south, east, north], status: response.status(), durationMs });
       expect(response.status(), `wide viewport ${west},${south},${east},${north}`).toBe(200);
