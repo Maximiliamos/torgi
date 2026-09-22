@@ -317,8 +317,13 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
   await expect(page.getByText("Состояние источников")).toBeVisible({ timeout: 30_000 });
 
+  const logoutResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/auth/logout") && response.request().method() === "POST",
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: new RegExp(`Выйти: ${process.env.E2E_USERNAME || "reader"}`) }).click();
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  expect((await logoutResponse).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
   await context.addCookies([{
     name: "bankrotai_session",
     value: "invalid.audit.session",
