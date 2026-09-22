@@ -8,6 +8,11 @@ on:
         required: true
         default: "50"
         type: string
+      request_path:
+        description: Authenticated safe GET path to compare
+        required: true
+        default: "/api/lots?city_slug=yaroslavl&page=1&per_page=1"
+        type: string
 
 permissions:
   contents: read
@@ -19,6 +24,7 @@ jobs:
     environment: production
     env:
       AB_COUNT: ${{ inputs.request_count }}
+      AB_PATH: ${{ inputs.request_path }}
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'admin' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
