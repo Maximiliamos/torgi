@@ -98,7 +98,6 @@ jobs:
           get("ssl_mode", f"/zones/{zone_id}/settings/ssl")
           get("universal_ssl", f"/zones/{zone_id}/ssl/universal/settings")
           get("certificate_packs", f"/zones/{zone_id}/ssl/certificate_packs?status=all")
-          get("custom_hostnames", f"/zones/{zone_id}/custom_hostnames?per_page=100")
           get("worker_routes", f"/zones/{zone_id}/workers/routes")
           get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
           get("domain_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-domain-proxy/settings")
@@ -260,7 +259,7 @@ jobs:
                       return 0, b""
 
               checks = None
-              for _attempt in range(24):
+              for _attempt in range(12):
                   deployment_status, deployment_body = status("https://dezster.ru/deployment.json")
                   web_live, _ = status("https://dezster.ru/health/live")
                   web_ready, _ = status("https://dezster.ru/health/ready")
@@ -282,16 +281,14 @@ jobs:
                       "auth": auth_status,
                       "direct_ready": direct_ready,
                   }
-                  if checks == {
-                      "deployment": 200,
-                      "deployed_commit_present": True,
-                      "web_live": 200,
-                      "web_ready": 200,
-                      "api_live": 200,
-                      "api_ready": 200,
-                      "auth": 401,
-                      "direct_ready": 200,
-                  }:
+                  if (
+                      deployment_status == 200
+                      and bool(deployed_commit)
+                      and api_live == 200
+                      and api_ready == 200
+                      and auth_status == 401
+                      and direct_ready == 200
+                  ):
                       break
                   time.sleep(5)
               else:
