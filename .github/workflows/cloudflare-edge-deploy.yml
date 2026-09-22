@@ -95,6 +95,10 @@ jobs:
               failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
           zone_id = zone_results[0]["id"] if len(zone_results) == 1 else expected_zone_id
           get("dns_records", f"/zones/{zone_id}/dns_records?per_page=100")
+          get("ssl_mode", f"/zones/{zone_id}/settings/ssl")
+          get("universal_ssl", f"/zones/{zone_id}/ssl/universal/settings")
+          get("certificate_packs", f"/zones/{zone_id}/ssl/certificate_packs?status=all")
+          get("custom_hostnames", f"/zones/{zone_id}/custom_hostnames?per_page=100")
           get("worker_routes", f"/zones/{zone_id}/workers/routes")
           get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
           get("domain_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-domain-proxy/settings")
