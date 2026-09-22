@@ -11,7 +11,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe_value
-from bankrotai.db import Base, CanonicalLot, LotPriceEvent, LotSyncRun, ProcessedLot, SourceLot
+from bankrotai.db import (
+    Base,
+    CanonicalLot,
+    LotNote,
+    LotPriceEvent,
+    LotSyncRun,
+    ProcessedLot,
+    SourceLot,
+    Watchlist,
+)
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.ingestion import (
@@ -233,6 +242,11 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
         )
         session.add_all([old_processed, current_processed])
         session.flush()
+        old_processed.review_status = "approved"
+        session.add_all([
+            LotNote(lot_id=old_processed.id, user_id="operator", content="keep"),
+            Watchlist(lot_id=old_processed.id, user_id="operator"),
+        ])
         # The active cross-source card was previously deduplicated under the
         # older primary.  Closing that primary must promote this sibling or
         # MapDataset would filter both rows out.
@@ -268,7 +282,10 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
         assert rows["old"].archive_reason == "explicit_source_status_closed"
         assert rows["current"].is_active is True
         assert processed is not None and processed.is_archived is False and processed.duplicate_of_id is None
+        assert processed.review_status == "approved"
         assert expired is not None and expired.is_archived is True and expired.duplicate_of_id == processed.id
+        assert session.scalar(select(LotNote.lot_id)) == processed.id
+        assert session.scalar(select(Watchlist.lot_id)) == processed.id
 
     assert service._expire_elapsed_auctions(now=now + timedelta(minutes=2)) == 0
     with sessions() as session:

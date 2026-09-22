@@ -7,7 +7,7 @@ import os
 from decimal import Decimal
 
 from bankrotai.core import get_logger, get_settings
-from bankrotai.db import init_db, session_scope, get_processed_lot, find_unappraised_lots
+from bankrotai.db import init_db, read_session_scope, session_scope, get_processed_lot, find_unappraised_lots
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.scrapers import import_manual_html, GorodTorgiClient, TorgiGovClient, TorgiGovSearchFilters
@@ -74,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     geo_audit_p.add_argument("--hotspot-min-lots", type=int, default=5)
     repair_p = subparsers.add_parser("repair-map-read-model", help="Repair missing SourceLot map links")
     repair_p.add_argument("--limit", type=int, default=1000)
+    audit_links_p = subparsers.add_parser("audit-read-model-links", help="Read-only SourceLot/read-model audit")
+    audit_links_p.add_argument("--limit", type=int, default=10_000)
+    audit_links_p.add_argument("--output", default=None)
     subparsers.add_parser("build-map-dataset", help="Build and atomically publish precomputed map tiles")
     map_cleanup_p = subparsers.add_parser("cleanup-map-datasets", help="Inspect or remove old map datasets")
     map_cleanup_p.add_argument("--retain-previous-ready", type=int, default=1)
@@ -274,6 +277,19 @@ def main():
         with session_scope() as session:
             result = repair_missing_processed_links(session, limit=args.limit)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "audit-read-model-links":
+        from pathlib import Path
+
+        from bankrotai.services.read_model_repair import audit_read_model_links
+
+        with read_session_scope() as session:
+            result = audit_read_model_links(session, limit=args.limit)
+        rendered = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(rendered, encoding="utf-8")
+            print(json.dumps({key: value for key, value in result.items() if key not in {"records", "processed_without_source"}}, ensure_ascii=False, indent=2))
+        else:
+            print(rendered)
     elif args.command == "build-map-dataset":
         from bankrotai.db import SessionLocal
         from bankrotai.services.map_builder import build_map_dataset

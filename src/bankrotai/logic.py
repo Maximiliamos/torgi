@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import String, asc, cast, desc, func, or_, select
+from sqlalchemy import String, asc, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
@@ -17,9 +17,15 @@ from bankrotai.db import (
     LotPriceEvent,
     LotStatusHistory,
     LotStatusEvent,
+    LotEventSubscription,
+    LotNote,
+    LotWorkflowState,
     CanonicalLot,
     ProcessedLot,
     SourceLot,
+    Watchlist,
+    WatchlistLot,
+    WorkflowTask,
 )
 from bankrotai.geo import enrich_lot_geo
 from bankrotai.core import get_region_query_values, utc_now # Assuming utc_now exists or I should use datetime.now(timezone.utc)
@@ -228,6 +234,73 @@ def _find_cross_source_processed_lot(session: Session, normalized: NormalizedLot
         if _same_cross_source_lot(candidate, normalized):
             return candidate
     return None
+
+
+def _promote_active_projection(
+    session: Session,
+    *,
+    archived_primary: ProcessedLot,
+    active_projection: ProcessedLot,
+) -> ProcessedLot:
+    """Promote a newly active source projection without losing user state."""
+    active_projection.duplicate_of_id = None
+    active_projection.is_archived = False
+    active_projection.archived_at = None
+    active_projection.review_status = active_projection.review_status or archived_primary.review_status
+    archived_primary.duplicate_of_id = active_projection.id
+
+    session.execute(
+        update(ProcessedLot)
+        .where(ProcessedLot.duplicate_of_id == archived_primary.id, ProcessedLot.id != active_projection.id)
+        .values(duplicate_of_id=active_projection.id)
+    )
+    for model in (Watchlist, WatchlistLot, LotNote, WorkflowTask, LotWorkflowState, LotEventSubscription):
+        session.execute(update(model).where(model.lot_id == archived_primary.id).values(lot_id=active_projection.id))
+
+    def latest_geo(lot_id: int) -> LotGeoSnapshot | None:
+        return session.scalar(
+            select(LotGeoSnapshot)
+            .where(LotGeoSnapshot.lot_id == lot_id)
+            .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
+            .limit(1)
+        )
+    active_geo = latest_geo(active_projection.id)
+    previous_manual_geo = session.scalar(
+        select(LotGeoSnapshot)
+        .where(
+            LotGeoSnapshot.lot_id == archived_primary.id,
+            or_(LotGeoSnapshot.geo_source == "manual", LotGeoSnapshot.geo_method == "manual_override"),
+        )
+        .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
+        .limit(1)
+    )
+    active_has_manual_geo = active_geo is not None and (
+        active_geo.geo_source == "manual" or active_geo.geo_method == "manual_override"
+    )
+    previous_geo = (
+        previous_manual_geo if previous_manual_geo is not None and not active_has_manual_geo
+        else latest_geo(archived_primary.id) if active_geo is None
+        else None
+    )
+    if previous_geo is not None:
+        session.add(LotGeoSnapshot(
+            lot_id=active_projection.id,
+            geo_source=previous_geo.geo_source,
+            geo_method=previous_geo.geo_method,
+            geo_confidence=previous_geo.geo_confidence,
+            centroid_lat=previous_geo.centroid_lat,
+            centroid_lon=previous_geo.centroid_lon,
+            geometry_json=previous_geo.geometry_json,
+            trace_reason=f"Promoted canonical sibling; inherited from lot {archived_primary.id}",
+            source_checked_at=previous_geo.source_checked_at,
+            metadata_json={**(previous_geo.metadata_json or {}), "inherited_from_lot_id": archived_primary.id},
+        ))
+    primary_link = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == archived_primary.id))
+    if primary_link is not None:
+        canonical = session.get(CanonicalLot, primary_link.canonical_lot_id)
+        if canonical is not None:
+            canonical.legacy_processed_lot_id = active_projection.id
+    return active_projection
 
 
 def _sync_source_lot(
@@ -762,6 +835,16 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         primary_link = _ensure_processed_source_lot(session, duplicate_primary)
         canonical_hint = session.get(CanonicalLot, primary_link.canonical_lot_id)
     _sync_source_lot(session, processed, normalized, canonical_hint=canonical_hint)
+    if (
+        duplicate_primary is not None
+        and duplicate_primary.is_archived
+        and normalize_status(normalized.auction_status) in {"active", "scheduled"}
+    ):
+        return _promote_active_projection(
+            session,
+            archived_primary=duplicate_primary,
+            active_projection=processed,
+        )
     return duplicate_primary or processed
 
 

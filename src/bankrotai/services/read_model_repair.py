@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from bankrotai.db import CanonicalLot, ProcessedLot, SourceLot
+from bankrotai.db import CanonicalLot, MapDataset, MapTile, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.services.batch_persistence import _processed_values
 
@@ -112,3 +112,107 @@ def repair_missing_processed_links(
             canonical.legacy_processed_lot_id = processed_id
     session.commit()
     return {"selected": len(rows), "repaired": len(rows)}
+
+
+def audit_read_model_links(session: Session, *, limit: int = 10_000) -> dict[str, Any]:
+    """Classify missing read-model links without changing application data.
+
+    A matching source identity alone is not enough to authorize repair.  The
+    candidate must also be unused by another SourceLot and compatible with the
+    source's canonical record.  The returned records are intentionally verbose
+    so an operator can retain the report as rollout evidence.
+    """
+    current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+    visible_ids: set[int] = set()
+    if current is not None:
+        for payload in session.scalars(select(MapTile.payload_json).where(
+            MapTile.dataset_id == current.id,
+            MapTile.z == 12,
+        )):
+            for feature in (payload or {}).get("features", []):
+                if feature.get("kind") == "lot" and isinstance(feature.get("id"), int):
+                    visible_ids.add(feature["id"])
+
+    sources = list(session.scalars(
+        select(SourceLot)
+        .where(SourceLot.processed_lot_id.is_(None))
+        .order_by(SourceLot.id)
+        .limit(max(1, min(limit, 100_000)))
+    ).all())
+    records: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for source in sources:
+        candidates = list(session.scalars(select(ProcessedLot).where(
+            ProcessedLot.source_system == source.source_system,
+            ProcessedLot.external_id == source.external_id,
+        )).all())
+        candidate = candidates[0] if len(candidates) == 1 else None
+        used_elsewhere = bool(candidate and session.scalar(select(exists().where(
+            SourceLot.processed_lot_id == candidate.id,
+        ))))
+        canonical = session.get(CanonicalLot, source.canonical_lot_id)
+        canonical_conflict = bool(
+            candidate
+            and canonical
+            and canonical.legacy_processed_lot_id not in {None, candidate.id}
+        )
+        if len(candidates) > 1:
+            category, reason, severity = "identity_conflict", "multiple_processed_identity_matches", "critical"
+        elif candidate and used_elsewhere:
+            category, reason, severity = "identity_conflict", "processed_candidate_already_linked", "high"
+        elif candidate and canonical_conflict:
+            category, reason, severity = "canonical_conflict", "canonical_points_to_other_processed_lot", "high"
+        elif candidate:
+            category, reason, severity = "recoverable_legacy_link", "unique_conflict_free_identity_match", "medium"
+        elif source.is_active and not source.is_archived:
+            category, reason, severity = "active_missing_read_model", "no_processed_identity_match", "critical"
+        else:
+            category, reason, severity = "archived_legacy_orphan", "archived_source_without_read_model", "low"
+        counts[category] = counts.get(category, 0) + 1
+        records.append({
+            "record_type": "source_without_processed_link",
+            "source_system": source.source_system,
+            "external_id": source.external_id,
+            "source_lot_id": source.id,
+            "status": source.source_status,
+            "is_active": source.is_active,
+            "is_archived": source.is_archived,
+            "first_seen_at": source.first_seen_at.isoformat() if source.first_seen_at else None,
+            "last_seen_at": source.last_seen_at.isoformat() if source.last_seen_at else None,
+            "canonical_lot_id": source.canonical_lot_id,
+            "processed_lot_id": None,
+            "candidate_processed_lot_id": candidate.id if candidate else None,
+            "reason": reason,
+            "category": category,
+            "repairable": category == "recoverable_legacy_link",
+            "in_current_map_dataset": bool(candidate and candidate.id in visible_ids),
+            "severity": severity,
+        })
+
+    processed_without_source = list(session.scalars(
+        select(ProcessedLot)
+        .where(~exists().where(SourceLot.processed_lot_id == ProcessedLot.id))
+        .order_by(ProcessedLot.id)
+        .limit(max(1, min(limit, 100_000)))
+    ).all())
+    return {
+        "dry_run": True,
+        "current_dataset_version": current.version if current else None,
+        "source_without_processed_link": len(sources),
+        "processed_without_source_link": len(processed_without_source),
+        "counts_by_category": counts,
+        "records": records,
+        "processed_without_source": [
+            {
+                "record_type": "processed_without_source_link",
+                "source_system": row.source_system,
+                "external_id": row.external_id,
+                "processed_lot_id": row.id,
+                "is_archived": row.is_archived,
+                "status": row.auction_status,
+                "in_current_map_dataset": row.id in visible_ids,
+                "severity": "high" if not row.is_archived else "medium",
+            }
+            for row in processed_without_source
+        ],
+    }

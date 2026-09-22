@@ -18,6 +18,7 @@ from bankrotai.connectors.base import AuctionConnector
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.db import LotSyncRun, LotSyncSourceRun, ProcessedLot, SourceLot, utc_now
 from bankrotai.logic import (
+    _promote_active_projection,
     _raw_value,
     _to_datetime,
     _to_decimal,
@@ -706,9 +707,16 @@ class NationwideIngestionService:
             (lot for lot in active_processed if lot.duplicate_of_id is None and not lot.is_archived),
             active_processed[0],
         )
-        replacement.duplicate_of_id = None
-        replacement.is_archived = False
-        replacement.archived_at = None
+        if archived_processed is not None and archived_processed.id != replacement.id:
+            _promote_active_projection(
+                session,
+                archived_primary=archived_processed,
+                active_projection=replacement,
+            )
+        else:
+            replacement.duplicate_of_id = None
+            replacement.is_archived = False
+            replacement.archived_at = None
         for lot in active_processed:
             if lot.id != replacement.id:
                 lot.duplicate_of_id = replacement.id

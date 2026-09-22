@@ -20,6 +20,7 @@ POINT_ZOOM = 12
 MAX_WEB_MERCATOR_LAT = 85.05112878
 _PROMOTION_ADVISORY_LOCK_KEY = 4_367_936_669_506_901_092
 logger = logging.getLogger(__name__)
+MIN_DIMENSION_COVERAGE_BASELINE = 20
 
 
 def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
@@ -158,11 +159,64 @@ def _encoded_tile(features: list[dict]) -> tuple[dict, str]:
     return payload, hashlib.sha256(encoded).hexdigest()
 
 
+def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
+    lot_ids: set[int] = set()
+    for payload in session.scalars(select(MapTile.payload_json).where(
+        MapTile.dataset_id == dataset_id,
+        MapTile.z == POINT_ZOOM,
+    )):
+        for feature in (payload or {}).get("features", []):
+            if feature.get("kind") == "lot" and isinstance(feature.get("id"), int):
+                lot_ids.add(feature["id"])
+    return lot_ids
+
+
+def _dimension_coverage_failures(
+    session: Session,
+    *,
+    current_dataset_id: int,
+    new_dataset_id: int,
+    minimum_ratio: float,
+) -> list[dict[str, object]]:
+    old_ids = _dataset_lot_ids(session, current_dataset_id)
+    new_ids = _dataset_lot_ids(session, new_dataset_id)
+    if not old_ids:
+        return []
+    old_counts: dict[tuple[str, str], int] = defaultdict(int)
+    new_counts: dict[tuple[str, str], int] = defaultdict(int)
+    for lot_id, source_system, region_code in session.execute(
+        select(ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.region_code)
+    ):
+        dimensions = (("source", source_system or "unknown"), ("region", region_code or "unknown"))
+        if lot_id in old_ids:
+            for dimension in dimensions:
+                old_counts[dimension] += 1
+        if lot_id in new_ids:
+            for dimension in dimensions:
+                new_counts[dimension] += 1
+    failures = []
+    for (kind, value), previous in sorted(old_counts.items()):
+        if previous < MIN_DIMENSION_COVERAGE_BASELINE:
+            continue
+        current_count = new_counts.get((kind, value), 0)
+        required = math.ceil(previous * minimum_ratio)
+        if current_count < required:
+            failures.append({
+                "dimension": kind,
+                "value": value,
+                "previous": previous,
+                "current": current_count,
+                "required": required,
+            })
+    return failures
+
+
 def _promote_map_dataset(
     session_factory: Callable[[], Session],
     *,
     dataset_id: int,
     expected_current_id: int | None,
+    dimension_failures: list[dict[str, object]] | None = None,
 ) -> dict:
     """Serialize and atomically promote one completely built dataset."""
     with session_factory() as session:
@@ -228,6 +282,21 @@ def _promote_map_dataset(
                 "previous_point_count": current.point_count,
                 "new_point_count": dataset.point_count,
                 "minimum_point_count": minimum_points,
+            }
+
+        if dimension_failures:
+            dataset.status = "rejected"
+            session.commit()
+            logger.warning(
+                "Map dataset %s promotion rejected by dimensional coverage guard: %s",
+                dataset.version,
+                dimension_failures,
+            )
+            return {
+                "status": "rejected",
+                "reason": "dataset_dimension_coverage_below_threshold",
+                "current_dataset_id": current.id if current else None,
+                "coverage_failures": dimension_failures,
             }
 
         session.execute(
@@ -340,10 +409,20 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             version, source_lot_count, len(points), tile_count, build_duration_ms,
         )
         build_completed = True
+        dimension_failures: list[dict[str, object]] = []
+        if expected_current_id is not None:
+            with session_factory() as session:
+                dimension_failures = _dimension_coverage_failures(
+                    session,
+                    current_dataset_id=expected_current_id,
+                    new_dataset_id=dataset_id,
+                    minimum_ratio=get_settings().min_map_coverage_ratio,
+                )
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
             expected_current_id=expected_current_id,
+            dimension_failures=dimension_failures,
         )
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])
