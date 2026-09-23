@@ -233,7 +233,9 @@ async function fetchWithReadRetry(input: RequestInfo | URL, init: RequestInit = 
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(input, init);
+      const headers = new Headers(init.headers);
+      if (attempt < attempts - 1) headers.set("X-Production-Retry-Probe", "1");
+      const response = await fetch(input, { ...init, headers });
       if (!RETRYABLE_READ_STATUSES.has(response.status) || attempt === attempts - 1) {
         return response;
       }
