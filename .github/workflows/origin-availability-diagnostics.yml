@@ -23,6 +23,15 @@ permissions:
   contents: read
 
 jobs:
+  inspect-home:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inspect home origin and relay without changes
+        shell: powershell
+        run: .\scripts\home-origin-diagnostics.ps1
+
   compare-paths:
     runs-on: ubuntu-latest
     timeout-minutes: 25
