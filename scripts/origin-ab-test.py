@@ -12,7 +12,7 @@ from urllib.request import Request, build_opener
 
 
 BASE_URL = os.environ["AB_BASE_URL"].rstrip("/")
-PATH = os.getenv("AB_PATH", "/api/lots?city_slug=yaroslavl&page=1&per_page=1")
+PATHS = os.getenv("AB_PATH", "/api/lots?city_slug=yaroslavl&page=1&per_page=1").split("|")
 COUNT = int(os.getenv("AB_COUNT", "50"))
 CONCURRENCY = int(os.getenv("AB_CONCURRENCY", "1"))
 TIMEOUT = float(os.getenv("AB_TIMEOUT", "20"))
@@ -52,6 +52,7 @@ def main() -> int:
         raise RuntimeError(f"{LABEL}: login did not return a session cookie")
 
     def sample(index: int) -> dict[str, object]:
+        path = PATHS[(index - 1) % len(PATHS)]
         request_id = f"ab-{LABEL}-{uuid.uuid4()}"
         headers = {
             "Accept": "application/json",
@@ -61,7 +62,7 @@ def main() -> int:
         }
         if API_KEY:
             headers["X-API-Key"] = API_KEY
-        request = Request(f"{BASE_URL}{PATH}", headers=headers)
+        request = Request(f"{BASE_URL}{path}", headers=headers)
         started = time.perf_counter()
         status = 0
         returned_id = ""
@@ -80,6 +81,7 @@ def main() -> int:
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         result = {
             "index": index,
+            "path": path,
             "request_id": request_id,
             "returned_request_id": returned_id,
             "status": status,
