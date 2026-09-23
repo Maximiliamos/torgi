@@ -308,21 +308,15 @@ def _promote_map_dataset(
         # advisory-locked transaction. Mixing a bulk UPDATE with later ORM
         # attribute flushing can let a stale loaded ``current`` instance write
         # ``is_current=True`` back during a concurrent promotion.
+        published_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.execute(text("UPDATE map_datasets SET is_current = false WHERE is_current"))
         session.execute(
-            update(MapDataset)
-            .where(MapDataset.is_current.is_(True))
-            .values(is_current=False)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            update(MapDataset)
-            .where(MapDataset.id == dataset.id)
-            .values(
-                is_current=True,
-                status="ready",
-                published_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            )
-            .execution_options(synchronize_session=False)
+            text(
+                "UPDATE map_datasets "
+                "SET is_current = true, status = 'ready', published_at = :published_at "
+                "WHERE id = :dataset_id"
+            ),
+            {"dataset_id": dataset.id, "published_at": published_at},
         )
         session.commit()
         logger.info(
