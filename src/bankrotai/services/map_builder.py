@@ -225,6 +225,11 @@ def _promote_map_dataset(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
                 {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
             )
+            # The partial unique index is the final invariant, but concurrent
+            # publishers must not race between clearing the old row and marking
+            # the new row current. This transaction-level table lock conflicts
+            # with another publisher while continuing to allow ordinary SELECTs.
+            session.execute(text("LOCK TABLE map_datasets IN SHARE ROW EXCLUSIVE MODE"))
         current = session.scalar(
             select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update()
         )
