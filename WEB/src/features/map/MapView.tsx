@@ -733,6 +733,34 @@ function LotPreview({
   );
 }
 
+function LotPreviewLoading({
+  marker,
+  error,
+  onClose,
+}: {
+  marker: MapTileFeature | null;
+  error: string;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="mapLotPreview" aria-label="Карточка выбранного лота">
+      <button className="mapPreviewClose" title="Закрыть" onClick={onClose}>
+        <X size={21} />
+      </button>
+      <div className="mapPreviewBody">
+        <span className="mapPreviewSource">Выбранный лот</span>
+        <h2>{marker?.title || "Загрузка карточки…"}</h2>
+        {marker?.current_price != null && (
+          <strong className="mapPreviewPrice">{money(marker.current_price)}</strong>
+        )}
+        <MapState error={Boolean(error)}>
+          {error || "Загрузка описания и действий с лотом…"}
+        </MapState>
+      </div>
+    </aside>
+  );
+}
+
 function relativeUpdate(value: string | null, now: number) {
   if (!value) return "время обновления неизвестно";
   const elapsed = Math.max(0, now - new Date(value).getTime());
@@ -1106,6 +1134,11 @@ export function MapView({
   const coincidentLots = coincidentLotIds
     .map((id) => lots.find((lot) => lot.id === id))
     .filter((lot): lot is MapMarkerLot => Boolean(lot));
+  const selectedTileMarker = selectedLotId == null
+    ? null
+    : tileEntries
+      .flatMap((entry) => entry.features)
+      .find((feature) => feature.kind === "lot" && Number(feature.id) === selectedLotId) ?? null;
 
   const refreshCatalogue = React.useCallback(async () => {
     setSyncing(true);
@@ -1185,6 +1218,12 @@ export function MapView({
             }}
           />
           </>
+        ) : selectedLotId != null && (detailLoading || detailError) ? (
+          <LotPreviewLoading
+            marker={selectedTileMarker}
+            error={detailError}
+            onClose={() => setSelectedLotId(null)}
+          />
         ) : coincidentLots.length > 1 ? (
           <CoincidentLotsPanel
             lots={coincidentLots}
