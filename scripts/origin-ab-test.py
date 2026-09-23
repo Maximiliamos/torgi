@@ -34,6 +34,7 @@ def main() -> int:
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": user_agent,
+        "X-Request-ID": f"ab-{LABEL}-login-{uuid.uuid4()}",
     }
     if API_KEY:
         login_headers["X-API-Key"] = API_KEY
