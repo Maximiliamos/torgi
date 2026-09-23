@@ -13,6 +13,11 @@ on:
         required: true
         default: "/api/lots?city_slug=yaroslavl&page=1&per_page=1"
         type: string
+      request_concurrency:
+        description: Parallel requests per compared origin
+        required: true
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ jobs:
     env:
       AB_COUNT: ${{ inputs.request_count }}
       AB_PATH: ${{ inputs.request_path }}
+      AB_CONCURRENCY: ${{ inputs.request_concurrency }}
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'admin' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
