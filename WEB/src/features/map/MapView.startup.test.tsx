@@ -701,6 +701,28 @@ describe("visible tile resilience", () => {
     expect(attempts.get(1)).toBe(2);
   });
 
+  it("opens a visible loading card immediately while full details are pending", async () => {
+    let resolveDetail!: (value: MapLot) => void;
+    vi.mocked(fetchMapLotDetail).mockReturnValue(new Promise((resolve) => {
+      resolveDetail = resolve;
+    }));
+    vi.mocked(fetchMapTile).mockResolvedValue({ features: [
+      { kind: "lot", id: 1, lat: 55.6, lon: 37.4, title: "Быстрый предпросмотр", current_price: 900_000 },
+    ] });
+    render(<MapView refreshToken={0} />);
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    act(() => sendMapMessage(frame, "bankrotai-ready"));
+    act(() => sendViewport(frame, [37.4, 55.6, 37.41, 55.61], 10));
+    await waitFor(() => expect(fetchMapTile).toHaveBeenCalled());
+
+    act(() => sendMapMessage(frame, "bankrotai-select", { lotId: 1 }));
+    expect(await screen.findByText("Быстрый предпросмотр")).toBeVisible();
+    expect(screen.getByText("Загрузка описания и действий с лотом…")).toBeVisible();
+
+    resolveDetail(mapLot(1));
+    expect(await screen.findByText("Лот 1")).toBeVisible();
+  });
+
   it("returns healthy tiles when one tile fails twice", async () => {
     const result = await fetchVisibleMapTiles(
       [{ z: 10, x: 1, y: 2 }, { z: 10, x: 2, y: 2 }],

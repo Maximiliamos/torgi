@@ -39,6 +39,25 @@ select task_id, status, created_at, started_at, finished_at,
 from background_task_states where task_type='geocoding'
 order by created_at desc, id desc limit 12;
 '@ 2>&1
+    Write-Host '=== map marker detail sample ==='
+    $sampleLotId = docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -Atc @'
+select feature->>'id'
+from map_datasets d
+join map_tiles t on t.dataset_id=d.id
+cross join lateral jsonb_array_elements(t.payload_json->'features') feature
+where d.is_current and feature->>'kind'='lot'
+limit 1;
+'@
+    $apiKey = docker exec bankrotai-home-secondary printenv BANKROTAI_API_KEY
+    if ($LASTEXITCODE -eq 0 -and $sampleLotId -and $apiKey) {
+        Write-Output "::add-mask::$($apiKey.Trim())"
+        Write-Host "sample_lot_id=$($sampleLotId.Trim())"
+        & curl.exe -sS --connect-timeout 3 --max-time 30 -o NUL `
+            -w 'detail_status=%{http_code} bytes=%{size_download} duration=%{time_total}' `
+            -H "x-api-key: $($apiKey.Trim())" `
+            "http://127.0.0.1:18000/api/map/lots/$($sampleLotId.Trim())"
+        Write-Host " curlExit=$LASTEXITCODE"
+    }
 }
 
 Write-Host '=== queue and workers ==='
