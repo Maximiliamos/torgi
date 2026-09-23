@@ -134,6 +134,10 @@ export type MapLot = {
   is_archived: boolean;
   review_status: string | null;
   current_price: number | null;
+  minimum_price: number | null;
+  price_observed_at: string | null;
+  next_interval_price: number | null;
+  next_price_reduction_at: string | null;
   lat: number;
   lon: number;
   geometry: GeoJSON.GeoJsonObject | null;
@@ -229,7 +233,9 @@ async function fetchWithReadRetry(input: RequestInfo | URL, init: RequestInit = 
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(input, init);
+      const headers = new Headers(init.headers);
+      if (attempt < attempts - 1) headers.set("X-Production-Retry-Probe", "1");
+      const response = await fetch(input, { ...init, headers });
       if (!RETRYABLE_READ_STATUSES.has(response.status) || attempt === attempts - 1) {
         return response;
       }

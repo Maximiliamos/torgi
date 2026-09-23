@@ -37,6 +37,8 @@ describe("API client", () => {
 
     await expect(requestJson<{ ok: boolean }>("/api/lots")).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("X-Production-Retry-Probe")).toBe("1");
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).has("X-Production-Retry-Probe")).toBe(false);
   });
 
   it("never retries a mutation", async () => {

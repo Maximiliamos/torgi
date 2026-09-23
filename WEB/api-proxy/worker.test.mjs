@@ -11,14 +11,14 @@ describe("API origin failover proxy", () => {
       Response.json({ content: [] }),
     );
     const response = await worker.fetch(new Request(
-      "https://api.dezster.ru/__public-source/torgi/new/api/public/lotcards/search?page=0&size=1",
+      "https://api.sterdez.online/__public-source/torgi/new/api/public/lotcards/search?page=0&size=1",
     ), {});
     expect(fetchMock.mock.calls[0][0].url)
       .toBe("https://torgi.gov.ru/new/api/public/lotcards/search?page=0&size=1");
     expect(response.status).toBe(200);
 
     const denied = await worker.fetch(new Request(
-      "https://api.dezster.ru/__public-source/torgi/admin/private",
+      "https://api.sterdez.online/__public-source/torgi/admin/private",
     ), {});
     expect(denied.status).toBe(404);
   });
@@ -29,7 +29,7 @@ describe("API origin failover proxy", () => {
       Response.json({ status: "ok" }),
     );
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/auth/me", {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/auth/me", {
       headers: { authorization: "caller", "x-api-key": "caller-key", cookie: "session=signed" },
     }), { KOYEB_SERVICE_KEY: "bound-secret" });
 
@@ -38,7 +38,7 @@ describe("API origin failover proxy", () => {
     expect(upstream.headers.get("authorization")).toBeNull();
     expect(upstream.headers.get("x-api-key")).toBe("bound-secret");
     expect(upstream.headers.get("cookie")).toBe("session=signed");
-    expect(upstream.headers.get("x-forwarded-host")).toBe("api.dezster.ru");
+    expect(upstream.headers.get("x-forwarded-host")).toBe("api.sterdez.online");
     expect(upstream.headers.get("x-request-id")).toBeTruthy();
     expect(response.status).toBe(200);
     expect(response.headers.get("x-request-id")).toBeTruthy();
@@ -51,7 +51,7 @@ describe("API origin failover proxy", () => {
       Response.json({ status: "ok" }),
     );
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/auth/login", {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/auth/login", {
       method: "POST",
       body: "{}",
     }), {
@@ -68,7 +68,7 @@ describe("API origin failover proxy", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network down"));
     const response = await worker.fetch(
-      new Request("https://api.dezster.ru/health/live"),
+      new Request("https://api.sterdez.online/health/live"),
       { KOYEB_SERVICE_KEY: "bound-secret" },
     );
     expect(response.status).toBe(502);
@@ -80,7 +80,7 @@ describe("API origin failover proxy", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/health/live", {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/health/live", {
       headers: { "x-request-id": "availability-sample-42" },
     }), { KOYEB_SERVICE_KEY: "bound-secret" });
 
@@ -97,7 +97,7 @@ describe("API origin failover proxy", () => {
       .mockRejectedValueOnce(new TypeError("primary reset again"))
       .mockResolvedValueOnce(Response.json({ status: "alive" }));
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/health/live"), {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/health/live"), {
       KOYEB_SERVICE_KEY: "bound-secret",
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
@@ -116,7 +116,7 @@ describe("API origin failover proxy", () => {
       .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
       .mockResolvedValueOnce(Response.json({ synchronized: true }));
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/time"), {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/time"), {
       KOYEB_SERVICE_KEY: "bound-secret",
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
@@ -132,7 +132,7 @@ describe("API origin failover proxy", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots/999999999"), {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/lots/999999999"), {
       KOYEB_SERVICE_KEY: "bound-secret",
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
@@ -148,7 +148,7 @@ describe("API origin failover proxy", () => {
       .mockResolvedValueOnce(Response.json({ items: [{ id: 1 }] }));
 
     const response = await worker.fetch(new Request(
-      "https://api.dezster.ru/api/map/lots?west=33&south=55&east=46&north=60",
+      "https://api.sterdez.online/api/map/lots?west=33&south=55&east=46&north=60",
     ), {
       KOYEB_SERVICE_KEY: "bound-secret",
       PRIMARY_API_ORIGIN: "https://home.example.test",
@@ -165,7 +165,7 @@ describe("API origin failover proxy", () => {
   it.each(["POST", "PUT", "PATCH", "DELETE"])("never retries %s mutations", async (method) => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("primary reset"));
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/auth/login", {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/auth/login", {
       method,
       body: "{}",
     }), {
@@ -186,7 +186,7 @@ describe("API origin failover proxy", () => {
       .mockResolvedValueOnce(broken)
       .mockResolvedValueOnce(new Response("complete", { status: 200 }));
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/lots"), {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/lots"), {
       KOYEB_SERVICE_KEY: "bound-secret",
       SECONDARY_API_ORIGIN: "https://secondary.example.test",
     });
@@ -199,7 +199,7 @@ describe("API origin failover proxy", () => {
       new Response(null, { status: 304, headers: { etag: '"map-v1"' } }),
     );
 
-    const response = await worker.fetch(new Request("https://api.dezster.ru/api/map/lots", {
+    const response = await worker.fetch(new Request("https://api.sterdez.online/api/map/lots", {
       headers: { "if-none-match": '"map-v1"' },
     }), { KOYEB_SERVICE_KEY: "bound-secret" });
 

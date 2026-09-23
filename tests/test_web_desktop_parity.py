@@ -262,6 +262,43 @@ def test_gis_outage_returns_an_explicit_controlled_empty_state(monkeypatch) -> N
     assert response.json()["meta"]["warnings"]
 
 
+def test_explicit_tbankrot_import_enriches_current_price_and_status(monkeypatch) -> None:
+    client, _ = _authenticated_client(monkeypatch)
+    monkeypatch.setattr(
+        api.TBankrotClient,
+        "fetch_detail_fields",
+        lambda _self, url: {
+            "start_price": 4_500_000,
+            "current_price": 4_275_000,
+            "minimum_price": 450_000,
+            "auction_status": "active",
+            "image_urls": ["https://tbankrot.ru/uploads/7991236/real.jpg"],
+            "detail_url": url,
+        },
+    )
+
+    response = client.post(
+        "/api/search/import",
+        json={
+            "external_id": "tbankrot:7991236",
+            "source": "tbankrot",
+            "source_system": "tbankrot.ru",
+            "title": "Здание",
+            "description": "",
+            "category": "land",
+            "region_slug": "76",
+            "current_price": 4_500_000,
+            "auction_status": "unknown",
+            "lot_url": "https://tbankrot.ru/item?id=7991236",
+        },
+    )
+
+    assert response.status_code == 201
+    detail = client.get(f"/api/lots/{response.json()['id']}").json()
+    assert detail["current_price"] == 4_275_000
+    assert detail["auction_status"] == "active"
+
+
 def test_browser_gis_search_bounds_both_fallback_attempts(monkeypatch) -> None:
     client, _ = _authenticated_client(monkeypatch)
     captured: dict[str, object] = {}

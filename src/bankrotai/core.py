@@ -149,6 +149,8 @@ class AppSettings:
     geo_nspd_concurrency: int = 2
     geo_bulk_ik12_fallback: bool = False
     geo_bulk_nominatim_fallback: bool = False
+    min_map_points: int = 1
+    min_map_coverage_ratio: float = 0.5
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -257,6 +259,8 @@ def load_settings() -> AppSettings:
         geo_nspd_concurrency=max(1, min(4, int(os.getenv("GEO_NSPD_CONCURRENCY", "2")))),
         geo_bulk_ik12_fallback=os.getenv("GEO_BULK_IK12_FALLBACK", "false").lower() in {"1", "true", "yes"},
         geo_bulk_nominatim_fallback=os.getenv("GEO_BULK_NOMINATIM_FALLBACK", "false").lower() in {"1", "true", "yes"},
+        min_map_points=max(0, int(os.getenv("MIN_MAP_POINTS", "1"))),
+        min_map_coverage_ratio=max(0.0, min(1.0, float(os.getenv("MIN_MAP_COVERAGE_RATIO", "0.5")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )

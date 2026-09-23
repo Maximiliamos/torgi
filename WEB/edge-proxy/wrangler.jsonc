@@ -1,23 +1,23 @@
 {
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
-  "name": "bankrotai-domain-proxy",
+  "name": "bankrotai-sterdez-domain-proxy",
   "main": "worker.mjs",
   "compatibility_date": "2026-08-14",
   "workers_dev": false,
   "services": [
     {
       "binding": "API_PROXY",
-      "service": "bankrotai-api-proxy"
+      "service": "bankrotai-sterdez-api-proxy"
     }
   ],
   "routes": [
     {
-      "pattern": "dezster.ru/*",
-      "zone_name": "dezster.ru"
+      "pattern": "sterdez.online/*",
+      "zone_name": "sterdez.online"
     },
     {
-      "pattern": "www.dezster.ru/*",
-      "zone_name": "dezster.ru"
+      "pattern": "www.sterdez.online/*",
+      "zone_name": "sterdez.online"
     }
   ],
   "observability": {

@@ -338,6 +338,99 @@ def test_empty_dataset_is_allowed_for_initial_bootstrap():
         assert dataset is not None and dataset.status == "ready"
 
 
+def test_relative_coverage_drop_is_rejected_without_losing_current():
+    factory = _database()
+    with factory() as session:
+        old = MapDataset(
+            version="old-coverage", status="ready", is_current=True,
+            point_count=100, tile_count=0,
+        )
+        new = MapDataset(
+            version="new-coverage", status="building", is_current=False,
+            point_count=49, tile_count=0,
+        )
+        session.add_all([old, new])
+        session.commit()
+        old_id, new_id = old.id, new.id
+
+    with factory() as session:
+        failures = map_builder._dimension_coverage_failures(
+            session,
+            current_dataset_id=old_id,
+            new_dataset_id=new_id,
+            minimum_ratio=0.5,
+        )
+    result = _promote_map_dataset(
+        factory,
+        dataset_id=new_id,
+        expected_current_id=old_id,
+        dimension_failures=failures,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "dataset_coverage_below_threshold"
+    assert result["minimum_point_count"] == 50
+    with factory() as session:
+        assert session.get(MapDataset, old_id).is_current is True
+        rejected = session.get(MapDataset, new_id)
+        assert rejected.is_current is False and rejected.status == "rejected"
+
+
+def test_dimension_coverage_guard_rejects_disappearing_source():
+    factory = _database()
+    with factory() as session:
+        old = MapDataset(version="old-dim", status="ready", is_current=True, point_count=40, tile_count=1)
+        new = MapDataset(version="new-dim", status="building", is_current=False, point_count=20, tile_count=1)
+        session.add_all([old, new])
+        session.flush()
+        lots = [
+            ProcessedLot(
+                source_system="lost-source" if index < 20 else "kept-source",
+                source="test", external_id=f"dim-{index}", title="Lot", description="",
+                category="land", auction_status="active", region_code="76",
+            )
+            for index in range(40)
+        ]
+        session.add_all(lots)
+        session.flush()
+        session.add_all([
+            MapTile(
+                dataset_id=old.id, z=12, x=1, y=1, feature_count=40, etag="old-dim",
+                payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots]},
+            ),
+            MapTile(
+                dataset_id=new.id, z=12, x=1, y=1, feature_count=20, etag="new-dim",
+                payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots[20:]]},
+            ),
+        ])
+        session.commit()
+        old_id, new_id = old.id, new.id
+
+    with factory() as session:
+        failures = map_builder._dimension_coverage_failures(
+            session,
+            current_dataset_id=old_id,
+            new_dataset_id=new_id,
+            minimum_ratio=0.5,
+        )
+    result = _promote_map_dataset(
+        factory,
+        dataset_id=new_id,
+        expected_current_id=old_id,
+        dimension_failures=failures,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "dataset_dimension_coverage_below_threshold"
+    assert any(
+        failure["dimension"] == "source" and failure["value"] == "lost-source"
+        for failure in result["coverage_failures"]
+    )
+    with factory() as session:
+        assert session.get(MapDataset, old_id).is_current is True
+        assert session.get(MapDataset, new_id).is_current is False
+
+
 def test_promotion_refuses_incomplete_tile_metadata():
     factory = _database()
     old_result = build_map_dataset(factory)

@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.fedresurs import FedresursConnector
-from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotGeoSnapshot, LotNote, ProcessedLot, SourceLot, Watchlist
 from bankrotai.documents import record_document_version
 from bankrotai.domain import NormalizedLot
 from bankrotai.finance import MaxBidInputs, calculate_max_bid
-from bankrotai.logic import persist_lot
+from bankrotai.logic import _promote_active_projection, persist_lot
 
 
 def _engine():
@@ -87,6 +87,93 @@ def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_pri
         assert second.id == first.id
         assert copy is not None
         assert copy.duplicate_of_id == first.id
+
+
+def test_exact_cadastral_identity_is_not_split_by_public_offer_price() -> None:
+    with Session(_engine()) as session:
+        first = persist_lot(session, _lot(
+            "tbankrot.ru", "tbankrot:public-offer", current_price=4_500_000,
+        ))
+        second = persist_lot(session, _lot(
+            "lot-online.ru", "lot-online:public-offer", current_price=2_700_000,
+        ))
+        session.flush()
+
+        copy = session.scalar(select(ProcessedLot).where(
+            ProcessedLot.external_id == "lot-online:public-offer"
+        ))
+        assert second.id == first.id
+        assert copy is not None and copy.duplicate_of_id == first.id
+
+
+def test_active_source_appearing_after_archived_primary_becomes_visible_primary() -> None:
+    with Session(_engine()) as session:
+        old = persist_lot(session, _lot("old-source", "old", auction_status="closed"))
+        old.is_archived = True
+        old.review_status = "approved"
+        session.add_all([
+            LotNote(lot_id=old.id, user_id="operator", content="keep"),
+            Watchlist(lot_id=old.id, user_id="operator"),
+            LotGeoSnapshot(
+                lot_id=old.id, geo_source="manual", geo_method="manual_override", geo_confidence="high",
+                centroid_lat=57.6, centroid_lon=39.8,
+            ),
+        ])
+        session.flush()
+
+        visible = persist_lot(session, _lot("new-source", "new", auction_status="active"))
+        session.flush()
+
+        old_projection = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "old"))
+        new_projection = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "new"))
+        assert visible.id == new_projection.id
+        assert new_projection is not None and new_projection.is_archived is False
+        assert new_projection.duplicate_of_id is None
+        assert new_projection.review_status == "approved"
+        assert old_projection is not None and old_projection.duplicate_of_id == new_projection.id
+        assert session.scalar(select(LotNote.lot_id)) == new_projection.id
+        assert session.scalar(select(Watchlist.lot_id)) == new_projection.id
+        inherited_geo = session.scalar(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == new_projection.id))
+        assert inherited_geo is not None and inherited_geo.geo_method == "manual_override"
+
+
+def test_promotion_preserves_manual_geo_when_active_projection_has_automatic_geo() -> None:
+    with Session(_engine()) as session:
+        old = ProcessedLot(
+            source_system="old", source="old", external_id="old", title="Asset",
+            description="", category="land", auction_status="closed", is_archived=True,
+        )
+        session.add(old)
+        session.flush()
+        active = ProcessedLot(
+            source_system="new", source="new", external_id="new", title="Asset",
+            description="", category="land", auction_status="active", duplicate_of_id=old.id,
+        )
+        session.add(active)
+        session.flush()
+        session.add_all([
+            LotGeoSnapshot(
+                lot_id=old.id, geo_source="manual", geo_method="manual_override",
+                geo_confidence="high", centroid_lat=57.6, centroid_lon=39.8,
+            ),
+            LotGeoSnapshot(
+                lot_id=active.id, geo_source="photon", geo_method="address",
+                geo_confidence="medium", centroid_lat=55.0, centroid_lon=37.0,
+            ),
+        ])
+        session.flush()
+
+        _promote_active_projection(session, archived_primary=old, active_projection=active)
+        session.flush()
+
+        latest = session.scalar(
+            select(LotGeoSnapshot)
+            .where(LotGeoSnapshot.lot_id == active.id)
+            .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
+            .limit(1)
+        )
+        assert latest is not None and latest.geo_method == "manual_override"
+        assert (latest.centroid_lat, latest.centroid_lon) == (57.6, 39.8)
 
 
 def test_procedure_fields_are_queryable_and_not_only_raw_json() -> None:

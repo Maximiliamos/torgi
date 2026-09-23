@@ -6,13 +6,15 @@ import sys
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
 
 BASE_URL = os.environ["AB_BASE_URL"].rstrip("/")
-PATH = os.getenv("AB_PATH", "/api/lots?city_slug=yaroslavl&page=1&per_page=1")
+PATHS = os.getenv("AB_PATH", "/api/lots?city_slug=yaroslavl&page=1&per_page=1").split("|")
 COUNT = int(os.getenv("AB_COUNT", "50"))
+CONCURRENCY = int(os.getenv("AB_CONCURRENCY", "1"))
 TIMEOUT = float(os.getenv("AB_TIMEOUT", "20"))
 USERNAME = os.getenv("E2E_USERNAME", "admin")
 PASSWORD = os.environ["E2E_PASSWORD"]
@@ -32,6 +34,7 @@ def main() -> int:
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": user_agent,
+        "X-Request-ID": f"ab-{LABEL}-login-{uuid.uuid4()}",
     }
     if API_KEY:
         login_headers["X-API-Key"] = API_KEY
@@ -49,8 +52,8 @@ def main() -> int:
     if not cookie:
         raise RuntimeError(f"{LABEL}: login did not return a session cookie")
 
-    samples: list[dict[str, object]] = []
-    for index in range(1, COUNT + 1):
+    def sample(index: int) -> dict[str, object]:
+        path = PATHS[(index - 1) % len(PATHS)]
         request_id = f"ab-{LABEL}-{uuid.uuid4()}"
         headers = {
             "Accept": "application/json",
@@ -60,7 +63,7 @@ def main() -> int:
         }
         if API_KEY:
             headers["X-API-Key"] = API_KEY
-        request = Request(f"{BASE_URL}{PATH}", headers=headers)
+        request = Request(f"{BASE_URL}{path}", headers=headers)
         started = time.perf_counter()
         status = 0
         returned_id = ""
@@ -77,23 +80,28 @@ def main() -> int:
         except (TimeoutError, URLError) as exc:
             error = type(exc).__name__
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
-        sample = {
+        result = {
             "index": index,
+            "path": path,
             "request_id": request_id,
             "returned_request_id": returned_id,
             "status": status,
             "duration_ms": duration_ms,
             "error": error,
         }
-        samples.append(sample)
         if status != 200 or returned_id != request_id:
-            print(json.dumps({"label": LABEL, "failure": sample}, separators=(",", ":")))
+            print(json.dumps({"label": LABEL, "failure": result}, separators=(",", ":")))
+        return result
+
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+        samples = list(executor.map(sample, range(1, COUNT + 1)))
 
     durations = [float(sample["duration_ms"]) for sample in samples]
     statuses = Counter(str(sample["status"]) for sample in samples)
     summary = {
         "label": LABEL,
         "requests": COUNT,
+        "concurrency": CONCURRENCY,
         "success": statuses["200"],
         "timeouts_or_transport": statuses["0"],
         "statuses": dict(sorted(statuses.items())),

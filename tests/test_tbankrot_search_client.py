@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from bankrotai.scrapers import ParsedLotData, TBankrotClient, TBankrotSearchFilters
 import json
 
@@ -181,6 +183,86 @@ def test_tbankrot_listing_html_normalizes_to_lot():
     assert lot.current_price == 1824000.0
     assert lot.lot_url == "https://tbankrot.ru/item?id=7523707"
     assert lot.raw_data["raw_endpoint"].startswith("https://tbankrot.ru/")
+
+
+def test_tbankrot_listing_normalizes_application_and_auction_dates():
+    html = """
+    <div class="lot_container">
+      <div class="lot" data-id="7842289"></div>
+      <p class="lot_title"><a href="/item?id=7842289">Нежилое помещение</a></p>
+      <div class="lot_description"><div class="text">Ярославль, ул. Бахвалова, 3а</div></div>
+      <div class="inline_dates">
+        <div class="date" title="Приём заявок до: 18.08.26 15:00">Приём заявок</div>
+        <div class="date" title="Начало торгов: 21.08.26 10:00">Торги</div>
+      </div>
+    </div>
+    """
+
+    lot = TBankrotClient()._parse_listing_html(html)[0]
+
+    assert lot.application_deadline == datetime(2026, 8, 18, 15, 0)
+    assert lot.auction_at == datetime(2026, 8, 21, 10, 0)
+    assert lot.auction_timezone == "Europe/Moscow"
+
+
+def test_tbankrot_stage_end_is_not_treated_as_whole_public_offer_end():
+    html = """
+    <div class="lot_container">
+      <div class="lot" data-id="7991236"></div>
+      <p class="lot_title"><a href="/item?id=7991236">Земельный участок</a></p>
+      <div class="lot_description"><div class="text">Ярославская область</div></div>
+      <div class="inline_dates">
+        <div class="date">Идут торги</div>
+        <div class="date" title="Окончание этапа: 14.09.26 10:00">1/19 Осталось 6 дней</div>
+      </div>
+    </div>
+    """
+
+    lot = TBankrotClient()._parse_listing_html(html)[0]
+
+    assert lot.application_deadline is None
+    assert lot.auction_at is None
+    assert lot.next_price_reduction_at == datetime(2026, 9, 14, 10, 0)
+
+
+def test_tbankrot_detail_extracts_distinct_current_start_and_minimum_prices():
+    html = """
+    <div class="price_info">
+      <div class="start_price"><p class="h6">начальная цена</p><p class="sum ajax">4 500 000 ₽</p></div>
+      <div class="cur_price"><p class="h6">текущая цена</p><p class="green semibold">4 275 000 ₽</p></div>
+      <div class="min_price"><p class="h6">минимальная цена</p><p class="semibold">450 000 ₽</p></div>
+    </div>
+    <div class="lot_photo only_biz" style="background-image:url('/img/blur/blur_7991236.jpg')"></div>
+    <img class="lot-image" data-src="/uploads/7991236/real.jpg">
+    """
+
+    fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=7991236")
+
+    assert fields["start_price"] == 4_500_000
+    assert fields["current_price"] == 4_275_000
+    assert fields["minimum_price"] == 450_000
+    assert fields["image_urls"] == ["https://tbankrot.ru/uploads/7991236/real.jpg"]
+
+
+def test_tbankrot_detail_does_not_publish_paid_blurred_placeholder_as_photo():
+    html = """
+    <div class="lot_photo only_biz" style="background-image:url('/img/blur/blur_7991236.jpg')"></div>
+    """
+
+    fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=7991236")
+
+    assert fields["image_urls"] == []
+
+
+def test_tbankrot_detail_recognizes_explicit_completed_status():
+    html = """
+    <h1>Торги №7842289 - Нежилое помещение</h1>
+    <div class="lot_status">Торги завершены</div>
+    """
+
+    fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=7842289")
+
+    assert fields["auction_status"] == "closed"
 
 
 def test_tbankrot_regional_card_without_title_link_is_parsed():

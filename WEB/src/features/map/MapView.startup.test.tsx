@@ -75,6 +75,10 @@ const mapLot = (id: number, reviewStatus: string | null = null): MapLot => ({
   is_archived: false,
   review_status: reviewStatus,
   current_price: 1_000_000,
+  minimum_price: null,
+  price_observed_at: null,
+  next_interval_price: null,
+  next_price_reduction_at: null,
   lat: 55.6,
   lon: 37.4,
   geometry: null,
@@ -338,6 +342,13 @@ describe("tile marker review updates", () => {
   });
 
   it("targets only the affected visible marker without refetching its tile", async () => {
+    vi.mocked(fetchMapLotDetail).mockImplementation(async (id) => ({
+      ...mapLot(id),
+      minimum_price: 500_000,
+      price_observed_at: "2026-09-21T12:00:00Z",
+      next_interval_price: 900_000,
+      next_price_reduction_at: "2026-09-28T10:00:00Z",
+    }));
     vi.mocked(fetchMapTile).mockResolvedValue({ features: [
       { kind: "lot", id: 1, lat: 55.6, lon: 37.4, review_status: null },
       { kind: "lot", id: 2, lat: 55.61, lon: 37.41, review_status: "rejected" },
@@ -352,6 +363,9 @@ describe("tile marker review updates", () => {
     await waitFor(() => expect(fetchMapTile).toHaveBeenCalledTimes(1));
     act(() => sendMapMessage(frame, "bankrotai-select", { lotId: 1 }));
     await screen.findByText("Лот 1");
+    expect(screen.getByText(/Цена актуальна на/)).toBeInTheDocument();
+    expect(screen.getByText("Минимальная цена:")).toBeInTheDocument();
+    expect(screen.getByText("Следующая цена:")).toBeInTheDocument();
     expect(fetchMapLotDetail).toHaveBeenCalledWith(1);
     const tileCalls = vi.mocked(fetchMapTile).mock.calls.length;
 

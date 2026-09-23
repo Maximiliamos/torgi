@@ -95,6 +95,9 @@ def _map_lot_payload(
         russia_url = russia_url or raw.get("torgi_russia_url")
 
     auction_at = max((item.auction_at for item in sources if item.auction_at), default=None)
+    price_observed_at = primary.last_seen_at if primary and primary.last_seen_at else lot.last_update
+    primary_raw = primary.raw_data if primary and isinstance(primary.raw_data, dict) else {}
+    minimum_price = primary_raw.get("minimum_price")
     publications = [
         {
             "processed_lot_id": processed.id,
@@ -132,6 +135,12 @@ def _map_lot_payload(
         "is_archived": lot.is_archived,
         "review_status": lot.review_status,
         "current_price": float(lot.current_price) if lot.current_price is not None else None,
+        "minimum_price": float(minimum_price) if minimum_price is not None else None,
+        "price_observed_at": _display_datetime(price_observed_at),
+        "next_interval_price": float(primary.next_interval_price)
+        if primary and primary.next_interval_price is not None
+        else None,
+        "next_price_reduction_at": _display_datetime(primary.next_price_reduction_at if primary else None),
         "lat": geo.centroid_lat,
         "lon": geo.centroid_lon,
         "geometry": geo.geometry_json,

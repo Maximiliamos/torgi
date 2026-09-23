@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      E2E_BASE_URL: https://dezster.ru
+      E2E_BASE_URL: https://sterdez.online
       # Keep this workflow on the critical path only. The scheduled/manual
       # production-functional workflow owns the deep real-data journey.
       E2E_PRODUCTION_AUDIT: ${{ inputs.functional_audit && '1' || '0' }}
@@ -48,17 +48,17 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 20 \
-            https://api.dezster.ru/health/live >/dev/null
+            https://api.sterdez.online/health/live >/dev/null
           curl --fail --silent --show-error --max-time 20 \
-            https://api.dezster.ru/health/ready >/dev/null
+            https://api.sterdez.online/health/ready >/dev/null
           test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-            https://dezster.ru/api/auth/me)" = "401"
+            https://sterdez.online/api/auth/me)" = "401"
           EXPECTED_SHA="$GITHUB_SHA"
           if test "$GITHUB_REF" != "refs/heads/main"; then
             EXPECTED_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
           fi
           DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
-            -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json \
+            -H 'Cache-Control: no-cache' https://sterdez.online/deployment.json \
             | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
           test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
       - name: Run fast critical-path smoke

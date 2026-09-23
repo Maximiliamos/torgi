@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.db import Base, CanonicalLot, LotStatusHistory, LotSyncRun, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotPriceEvent, LotStatusHistory, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
@@ -98,6 +98,8 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
 
         changed = make_lot("gis-1")
         changed.title = "Новое название источника"
+        changed.current_price = 450_000
+        changed.auction_status = "closed"
         add_run(session, "run-2")
         persist_changed_lots_batch(session, [changed], "run-2")
         session.commit()
@@ -105,7 +107,14 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
         session.refresh(processed)
         source = session.scalar(select(SourceLot))
         assert processed.title == "Проверенное название"
+        assert float(processed.current_price or 0) == 450_000
+        assert processed.auction_status == "closed"
         assert source is not None and source.title == "Новое название источника"
+        price_events = session.scalars(select(LotPriceEvent).order_by(LotPriceEvent.id)).all()
+        assert [(event.price_kind, float(event.amount)) for event in price_events] == [
+            ("current", 500_000),
+            ("current", 450_000),
+        ]
 
 
 def test_unknown_update_preserves_last_known_status_and_source_state() -> None:

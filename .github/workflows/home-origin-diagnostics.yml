@@ -1,0 +1,17 @@
+name: Home origin diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inspect home origin and relay without changes
+        shell: powershell
+        run: .\scripts\home-origin-diagnostics.ps1

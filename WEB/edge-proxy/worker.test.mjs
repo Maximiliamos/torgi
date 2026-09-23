@@ -7,10 +7,10 @@ describe("canonical Cloudflare edge proxy", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it("redirects www to the canonical HTTPS host without a loop", async () => {
-    const response = await worker.fetch(new Request("https://www.dezster.ru/path?q=1"));
+    const response = await worker.fetch(new Request("https://www.sterdez.online/path?q=1"));
 
     expect(response.status).toBe(308);
-    expect(response.headers.get("location")).toBe("https://dezster.ru/path?q=1");
+    expect(response.headers.get("location")).toBe("https://sterdez.online/path?q=1");
     expect(response.headers.get("strict-transport-security")).toContain("max-age=31536000");
   });
 
@@ -19,7 +19,7 @@ describe("canonical Cloudflare edge proxy", () => {
       Response.json({ commit: "a".repeat(40) }),
     );
 
-    const response = await worker.fetch(new Request("https://dezster.ru/deployment.json"));
+    const response = await worker.fetch(new Request("https://sterdez.online/deployment.json"));
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1]).toEqual({ cache: "no-store" });
@@ -32,12 +32,12 @@ describe("canonical Cloudflare edge proxy", () => {
       Response.json({ detail: "Not authenticated" }, { status: 401 }),
     );
 
-    const response = await worker.fetch(new Request("https://dezster.ru/api/auth/me", {
+    const response = await worker.fetch(new Request("https://sterdez.online/api/auth/me", {
       headers: { cookie: "session=signed" },
     }), { API_PROXY: { fetch: apiFetch } });
 
     const upstream = apiFetch.mock.calls[0][0];
-    expect(upstream.url).toBe("https://api.dezster.ru/api/auth/me");
+    expect(upstream.url).toBe("https://api.sterdez.online/api/auth/me");
     expect(upstream.headers.get("cookie")).toBe("session=signed");
     expect(response.status).toBe(401);
     expect(pagesFetch).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe("canonical Cloudflare edge proxy", () => {
   it("returns a controlled error when Pages is unreachable", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network down"));
 
-    const response = await worker.fetch(new Request("https://dezster.ru/"));
+    const response = await worker.fetch(new Request("https://sterdez.online/"));
 
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");

@@ -40,10 +40,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def engine():
     if not DATABASE_URL:
         pytest.skip("TEST_DATABASE_URL is not configured")
-    engine = create_engine(DATABASE_URL, isolation_level="AUTOCOMMIT")
-    with engine.connect() as connection:
+    admin_engine = create_engine(DATABASE_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    with admin_engine.connect() as connection:
         connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
         connection.execute(text("CREATE SCHEMA public"))
+    admin_engine.dispose()
+    engine = create_engine(DATABASE_URL)
     core._settings_cache = core.AppSettings(database_url=DATABASE_URL)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))

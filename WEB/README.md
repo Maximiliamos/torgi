@@ -46,7 +46,7 @@ rate limit и возвращает `503`, если production-конфигура
 
 ## Публичное развёртывание
 
-Основной адрес — [https://dezster.ru](https://dezster.ru). Статический frontend и Pages
+Основной адрес — [https://sterdez.online](https://sterdez.online). Статический frontend и Pages
 Function публикуются в проект `bankrotai`:
 
 ```powershell
@@ -58,7 +58,7 @@ npm run build
 npx wrangler pages deploy dist --project-name bankrotai --branch main
 ```
 
-Маршруты `dezster.ru/*` и `www.dezster.ru/*` управляются Worker-конфигурацией
+Маршруты `sterdez.online/*` и `www.sterdez.online/*` управляются Worker-конфигурацией
 `edge-proxy/wrangler.jsonc`. Worker не содержит секретов, перенаправляет `www` на корневой
 домен и потоково проксирует остальные запросы в Pages:
 

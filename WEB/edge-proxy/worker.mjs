@@ -1,8 +1,8 @@
 /* global URL, Response, fetch, Request, Headers */
 
 const PAGES_ORIGIN = "https://bankrotai.pages.dev";
-const API_ORIGIN = "https://api.dezster.ru";
-const PRIMARY_HOST = "dezster.ru";
+const API_ORIGIN = "https://api.sterdez.online";
+const PRIMARY_HOST = "sterdez.online";
 const SECURITY_HEADERS = {
   "strict-transport-security": "max-age=31536000; includeSubDomains",
   "x-content-type-options": "nosniff",
@@ -77,7 +77,7 @@ export default {
 
     if (location) {
       const redirect = new URL(location, upstream);
-      if (redirect.hostname === "bankrotai.pages.dev" || redirect.hostname === "api.dezster.ru") {
+      if (redirect.hostname === "bankrotai.pages.dev" || redirect.hostname === new URL(API_ORIGIN).hostname) {
         redirect.hostname = PRIMARY_HOST;
         headers.set("location", redirect.toString());
       }

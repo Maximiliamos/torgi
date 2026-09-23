@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import case, insert, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from bankrotai.db import CanonicalLot, LotStatusHistory, ProcessedLot, SourceLot, utc_now
+from bankrotai.db import CanonicalLot, LotPriceEvent, LotStatusHistory, ProcessedLot, SourceLot, utc_now
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import (
     _canonical_key,
@@ -245,6 +245,10 @@ def _persist_changed_lots_chunk(
         external_id: row.auction_status
         for external_id, row in existing_processed.items()
     }
+    old_price_by_id = {
+        external_id: row.current_price
+        for external_id, row in existing_processed.items()
+    }
     protected_ids = {
         external_id
         for external_id, row in existing_processed.items()
@@ -254,14 +258,27 @@ def _persist_changed_lots_chunk(
     processed_statement = insert_factory(ProcessedLot).values(processed_values)
     processed_excluded = processed_statement.excluded
     immutable_processed = {"source_system", "external_id", "id", "created_at", "review_status"}
+    reviewed_fields = {
+        "title", "description", "category", "region_slug", "region_name", "address",
+        "cadastral_number", "cadastral_numbers", "area", "object_name", "property_type",
+        "total_area_gba", "gla", "land_area", "floors", "year_built", "legal_status",
+        "encumbrances", "technical_condition",
+    }
+    processed_updates = {
+        column.name: (
+            case(
+                (ProcessedLot.review_status.isnot(None), getattr(ProcessedLot, column.name)),
+                else_=getattr(processed_excluded, column.name),
+            )
+            if column.name in reviewed_fields
+            else getattr(processed_excluded, column.name)
+        )
+        for column in ProcessedLot.__table__.columns
+        if column.name not in immutable_processed and column.name in processed_values[0]
+    }
     session.execute(processed_statement.on_conflict_do_update(
         index_elements=["source_system", "external_id"],
-        set_={
-            column.name: getattr(processed_excluded, column.name)
-            for column in ProcessedLot.__table__.columns
-            if column.name not in immutable_processed and column.name in processed_values[0]
-        },
-        where=ProcessedLot.review_status.is_(None),
+        set_=processed_updates,
     ))
     processed = {
         row.external_id: row
@@ -283,6 +300,21 @@ def _persist_changed_lots_chunk(
             })
     if history_values:
         session.execute(insert(LotStatusHistory), history_values)
+
+    price_history_values = []
+    for lot in lots:
+        new_price = _to_decimal(lot.current_price)
+        if new_price is None or new_price == old_price_by_id.get(lot.external_id):
+            continue
+        price_history_values.append({
+            "lot_id": processed[lot.external_id].id,
+            "source": lot.source or "sync",
+            "price_kind": "current",
+            "amount": new_price,
+            "metadata_json": {"sync_run_id": run_id},
+        })
+    if price_history_values:
+        session.execute(insert(LotPriceEvent), price_history_values)
 
     values = [
         _source_values(

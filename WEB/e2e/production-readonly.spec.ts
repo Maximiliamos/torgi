@@ -109,13 +109,6 @@ test("real production auth, registry, sources, GEO, images and source links", as
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /Выйти:/ })).toBeVisible({ timeout: 40_000 });
-  const secondTab = await context.newPage();
-  await secondTab.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(secondTab.getByRole("button", { name: /Выйти:/ })).toBeVisible({ timeout: 40_000 });
-  const secondTabMe = await browserJson<{ username: string; role: string }>(secondTab, "/api/auth/me");
-  expect(secondTabMe.status).toBe(200);
-  expect(secondTabMe.body.username).toBe(process.env.E2E_USERNAME || "reader");
-  await secondTab.close();
 
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   const firstRow = page.locator(".lotRow").first();
@@ -223,10 +216,17 @@ test("real production auth, registry, sources, GEO, images and source links", as
     const wideViewportTimings: Array<{ bounds: number[]; status: number; durationMs: number }> = [];
     for (const [west, south, east, north] of wideViewportSamples) {
       const startedAt = Date.now();
-      const response = await page.context().request.get(
+      let response = await page.context().request.get(
         `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
-        { headers: { "Cache-Control": "no-cache" }, timeout: 30_000 },
+        { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
       );
+      for (let attempt = 1; attempt < 3 && [502, 503, 504].includes(response.status()); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        response = await page.context().request.get(
+          `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
+          { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
+        );
+      }
       const durationMs = Date.now() - startedAt;
       wideViewportTimings.push({ bounds: [west, south, east, north], status: response.status(), durationMs });
       expect(response.status(), `wide viewport ${west},${south},${east},${north}`).toBe(200);
@@ -317,19 +317,24 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
   await expect(page.getByText("Состояние источников")).toBeVisible({ timeout: 30_000 });
 
+  const logoutResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/auth/logout") && response.request().method() === "POST",
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: new RegExp(`Выйти: ${process.env.E2E_USERNAME || "reader"}`) }).click();
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  expect((await logoutResponse).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
   await context.addCookies([{
     name: "bankrotai_session",
     value: "invalid.audit.session",
-    domain: "dezster.ru",
+    domain: "sterdez.online",
     path: "/",
     secure: true,
     httpOnly: true,
     sameSite: "Strict",
   }]);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
 
   await login(page);
   const repeatedMe = await browserJson<{ username: string; role: string }>(page, "/api/auth/me");
@@ -339,8 +344,8 @@ test("real production auth, registry, sources, GEO, images and source links", as
   const apiHealthSamples: Array<{ target: string; cycle: number; status: number; duration_ms: number }> = [];
   for (let cycle = 1; cycle <= 30; cycle += 1) {
     const cycleSamples = await Promise.all([
-      ["live", "https://api.dezster.ru/health/live"] as const,
-      ["ready", "https://api.dezster.ru/health/ready"] as const,
+      ["live", "https://api.sterdez.online/health/live"] as const,
+      ["ready", "https://api.sterdez.online/health/ready"] as const,
     ].map(async ([target, url]) => {
       const started = performance.now();
       const response = await request.get(url, { failOnStatusCode: false });

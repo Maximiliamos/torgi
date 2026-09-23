@@ -74,6 +74,11 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     external_id="primary",
                     source_url="https://example.test/tbankrot",
                     application_deadline=datetime(2026, 8, 23, 19, 30),
+                    current_price=Decimal("1000000"),
+                    next_interval_price=Decimal("950000"),
+                    next_price_reduction_at=datetime(2026, 8, 24, 10, 0),
+                    raw_data={"minimum_price": 500000},
+                    last_seen_at=datetime(2026, 8, 22, 12, 0),
                 ),
                 SourceLot(
                     canonical_lot_id=canonical.id,
@@ -109,6 +114,10 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
         "https://example.test/gis",
     ]
     assert detail["application_deadline"] == "2026-08-23T19:30:00Z"
+    assert detail["minimum_price"] == 500000
+    assert detail["price_observed_at"] == "2026-08-22T12:00:00Z"
+    assert detail["next_interval_price"] == 950000
+    assert detail["next_price_reduction_at"] == "2026-08-24T10:00:00Z"
 
 
 @pytest.mark.parametrize(

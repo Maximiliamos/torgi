@@ -8,6 +8,21 @@ on:
         required: false
         default: false
         type: boolean
+      create_sterdez_zone_only:
+        description: Create or inspect the sterdez.online zone without DNS records or traffic changes
+        required: false
+        default: false
+        type: boolean
+      bootstrap_sterdez_edge_only:
+        description: Bootstrap isolated STERDEZ DNS and Worker routes with automatic rollback
+        required: false
+        default: false
+        type: boolean
+      rollback_sterdez_edge_only:
+        description: Remove only the isolated STERDEZ bootstrap DNS records and routes
+        required: false
+        default: false
+        type: boolean
       configure_direct_origin_only:
         description: Point the Pages API proxy at the stable REG.RU HTTPS origin
         required: false
@@ -33,6 +48,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  create-sterdez-zone:
+    if: github.event_name == 'workflow_dispatch' && inputs.create_sterdez_zone_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Create or inspect STERDEZ zone without routing traffic
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          zone_name = "sterdez.online"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+          }
+
+          def request(method, path, payload=None):
+              body = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(api + path, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(result.get("errors"))
+              return result
+
+          query = urllib.parse.urlencode({"name": zone_name, "account.id": account_id})
+          zones = request("GET", f"/zones?{query}")["result"]
+          created = False
+          if not zones:
+              zone = request(
+                  "POST",
+                  "/zones",
+                  {"name": zone_name, "account": {"id": account_id}, "type": "full"},
+              )["result"]
+              created = True
+          elif len(zones) == 1:
+              zone = zones[0]
+          else:
+              raise SystemExit(f"Expected at most one {zone_name} zone; found {len(zones)}")
+
+          evidence = {
+              "created": created,
+              "zone": {
+                  "id": zone.get("id"),
+                  "name": zone.get("name"),
+                  "status": zone.get("status"),
+                  "name_servers": zone.get("name_servers", []),
+                  "original_name_servers": zone.get("original_name_servers", []),
+              },
+          }
+          print(json.dumps(evidence, ensure_ascii=False))
+          with open("sterdez-zone.json", "w", encoding="utf-8") as output:
+              json.dump(evidence, output, ensure_ascii=False, indent=2)
+          PY
+      - name: Preserve sanitized zone evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-zone-${{ github.run_id }}
+          path: sterdez-zone.json
+          if-no-files-found: warn
+          retention-days: 30
+
   diagnostics:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.diagnostics_only)
     runs-on: ubuntu-latest
@@ -44,11 +137,12 @@ jobs:
       - name: Inspect Cloudflare control plane safely
         env:
           EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
-          EXPECTED_ZONE_ID: 579174730e5da8c0d9e653d8e45e6900
+          EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$EXPECTED_ZONE_ID"
           python - <<'PY'
           import json
           import os
@@ -89,12 +183,15 @@ jobs:
 
           get("token_verify", f"/accounts/{account_id}/tokens/verify")
           get("account", f"/accounts/{account_id}")
-          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "dezster.ru", "account.id": account_id}))
+          zones = get("zone", "/zones?" + urllib.parse.urlencode({"name": "sterdez.online", "account.id": account_id}))
           zone_results = zones.get("result", []) if zones else []
           if len(zone_results) != 1 or zone_results[0].get("id") != expected_zone_id:
               failures.append({"label": "zone_identity", "message": "Expected exactly the owner-provided zone ID"})
           zone_id = zone_results[0]["id"] if len(zone_results) == 1 else expected_zone_id
           get("dns_records", f"/zones/{zone_id}/dns_records?per_page=100")
+          get("ssl_mode", f"/zones/{zone_id}/settings/ssl")
+          get("universal_ssl", f"/zones/{zone_id}/ssl/universal/settings")
+          get("certificate_packs", f"/zones/{zone_id}/ssl/certificate_packs?status=all")
           get("worker_routes", f"/zones/{zone_id}/workers/routes")
           get("worker_scripts", f"/accounts/{account_id}/workers/scripts")
           get("domain_worker_settings", f"/accounts/{account_id}/workers/scripts/bankrotai-domain-proxy/settings")
@@ -122,6 +219,219 @@ jobs:
     steps:
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
+      - name: Enable canonical Cloudflare proxy with automatic rollback
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+          EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          test -n "$EXPECTED_ZONE_ID"
+          python - <<'PY'
+          import json
+          import os
+          import ssl
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          zone_id = os.environ["EXPECTED_ZONE_ID"]
+          expected_account_id = os.environ["EXPECTED_ACCOUNT_ID"]
+          names = ("sterdez.online", "www.sterdez.online", "api.sterdez.online")
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+          }
+
+          if account_id != expected_account_id:
+              raise SystemExit("Cloudflare account identity mismatch")
+
+          def cf_request(method, path, payload=None):
+              body = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request(api + path, data=body, headers=headers, method=method)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(f"Cloudflare API rejected {method} {path}: {result.get('errors')}")
+              return result
+
+          zones = cf_request(
+              "GET",
+              "/zones?" + urllib.parse.urlencode({"name": "sterdez.online", "account.id": account_id}),
+          )["result"]
+          if len(zones) != 1 or zones[0].get("id") != zone_id:
+              raise SystemExit("Cloudflare zone identity mismatch")
+
+          expected_nameservers = {
+              str(value).rstrip(".").lower() for value in zones[0].get("name_servers", [])
+          }
+          dns_request = urllib.request.Request(
+              "https://cloudflare-dns.com/dns-query?"
+              + urllib.parse.urlencode({"name": "sterdez.online", "type": "NS"}),
+              headers={"Accept": "application/dns-json", "User-Agent": "DEZSTER-DNS-Gate/1.0"},
+          )
+          with urllib.request.urlopen(dns_request, timeout=30) as response:
+              dns_answer = json.load(response)
+          authoritative_nameservers = {
+              str(item.get("data", "")).rstrip(".").lower()
+              for item in dns_answer.get("Answer", [])
+              if item.get("type") == 2
+          }
+          if not expected_nameservers or authoritative_nameservers != expected_nameservers:
+              raise SystemExit(
+                  "Public authoritative nameservers do not match the Cloudflare zone; "
+                  f"expected={sorted(expected_nameservers)}, "
+                  f"actual={sorted(authoritative_nameservers)}"
+              )
+
+          all_records = cf_request("GET", f"/zones/{zone_id}/dns_records?per_page=100")["result"]
+          selected = []
+          for name in names:
+              matches = [record for record in all_records if record.get("name") == name]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected exactly one DNS record for {name}; found {len(matches)}")
+              record = matches[0]
+              if not record.get("proxiable"):
+                  raise SystemExit(f"DNS record is not proxiable: {name}")
+              selected.append(record)
+
+          routes = cf_request("GET", f"/zones/{zone_id}/workers/routes")["result"]
+          scripts = {
+              item.get("id")
+              for item in cf_request("GET", f"/accounts/{account_id}/workers/scripts")["result"]
+          }
+          expected_routes = {
+              "sterdez.online/*": "bankrotai-sterdez-domain-proxy",
+              "www.sterdez.online/*": "bankrotai-sterdez-domain-proxy",
+              "api.sterdez.online/*": "bankrotai-sterdez-api-proxy",
+          }
+          route_map = {item.get("pattern"): item.get("script") for item in routes}
+          if any(route_map.get(pattern) != script for pattern, script in expected_routes.items()):
+              raise SystemExit("Canonical Worker route identity mismatch")
+          if not set(expected_routes.values()).issubset(scripts):
+              raise SystemExit("Canonical Worker script is missing")
+
+          def snapshot(record):
+              return {
+                  "id": record["id"],
+                  "name": record["name"],
+                  "type": record["type"],
+                  "content": record["content"],
+                  "ttl": record["ttl"],
+                  "proxied": bool(record.get("proxied")),
+                  "comment": record.get("comment"),
+                  "tags": record.get("tags", []),
+              }
+
+          before = [snapshot(record) for record in selected]
+          with open("cloudflare-dns-before.json", "w", encoding="utf-8") as output:
+              json.dump(before, output, ensure_ascii=False, indent=2)
+          print(json.dumps({"dns_before": before}, ensure_ascii=False))
+
+          def record_payload(record, proxied):
+              payload = {
+                  "type": record["type"],
+                  "name": record["name"],
+                  "content": record["content"],
+                  "ttl": record["ttl"],
+                  "proxied": proxied,
+              }
+              if record.get("comment") is not None:
+                  payload["comment"] = record["comment"]
+              if record.get("tags") is not None:
+                  payload["tags"] = record.get("tags", [])
+              return payload
+
+          changed = []
+          try:
+              for record in selected:
+                  if record.get("proxied"):
+                      continue
+                  cf_request(
+                      "PUT",
+                      f"/zones/{zone_id}/dns_records/{record['id']}",
+                      record_payload(record, True),
+                  )
+                  changed.append(record)
+
+              context = ssl.create_default_context()
+
+              def status(url):
+                  request = urllib.request.Request(
+                      url,
+                      headers={"Cache-Control": "no-cache", "User-Agent": "DEZSTER-DNS-Gate/1.0"},
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=20, context=context) as response:
+                          return response.status, response.read(4096)
+                  except urllib.error.HTTPError as error:
+                      return error.code, error.read(4096)
+                  except (urllib.error.URLError, TimeoutError, OSError):
+                      return 0, b""
+
+              checks = None
+              for _attempt in range(12):
+                  deployment_status, deployment_body = status("https://sterdez.online/deployment.json")
+                  web_live, _ = status("https://sterdez.online/health/live")
+                  web_ready, _ = status("https://sterdez.online/health/ready")
+                  api_live, _ = status("https://api.sterdez.online/health/live")
+                  api_ready, _ = status("https://api.sterdez.online/health/ready")
+                  auth_status, _ = status("https://sterdez.online/api/auth/me")
+                  direct_ready, _ = status("https://194-226-126-233.sslip.io/health/ready")
+                  try:
+                      deployed_commit = json.loads(deployment_body).get("commit", "")
+                  except (json.JSONDecodeError, AttributeError):
+                      deployed_commit = ""
+                  checks = {
+                      "deployment": deployment_status,
+                      "deployed_commit_present": bool(deployed_commit),
+                      "web_live": web_live,
+                      "web_ready": web_ready,
+                      "api_live": api_live,
+                      "api_ready": api_ready,
+                      "auth": auth_status,
+                      "direct_ready": direct_ready,
+                  }
+                  if (
+                      deployment_status == 200
+                      and bool(deployed_commit)
+                      and api_live == 200
+                      and api_ready == 200
+                      and auth_status == 401
+                      and direct_ready == 200
+                  ):
+                      break
+                  time.sleep(5)
+              else:
+                  raise RuntimeError(f"Canonical route did not stabilize: {checks}")
+
+              after_records = cf_request("GET", f"/zones/{zone_id}/dns_records?per_page=100")["result"]
+              after = [snapshot(record) for record in after_records if record.get("name") in names]
+              with open("cloudflare-dns-after.json", "w", encoding="utf-8") as output:
+                  json.dump(after, output, ensure_ascii=False, indent=2)
+              print(json.dumps({"canonical_checks": checks, "dns_after": after}, ensure_ascii=False))
+          except BaseException:
+              rollback_errors = []
+              for record in reversed(changed):
+                  try:
+                      cf_request(
+                          "PUT",
+                          f"/zones/{zone_id}/dns_records/{record['id']}",
+                          record_payload(record, bool(record.get("proxied"))),
+                      )
+                  except Exception as error:
+                      rollback_errors.append({"name": record["name"], "error": str(error)})
+              print(json.dumps({"rollback_restored": [record["name"] for record in changed], "rollback_errors": rollback_errors}, ensure_ascii=False))
+              if rollback_errors:
+                  raise RuntimeError(f"DNS rollback was incomplete: {rollback_errors}")
+              raise
+          PY
       - name: Configure encrypted Pages API origin
         run: |
           set -euo pipefail
@@ -129,6 +439,14 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           printf '%s' 'https://194-226-126-233.sslip.io' \
             | npx wrangler@4 pages secret put KOYEB_API_ORIGIN --project-name bankrotai
+      - name: Preserve sanitized DNS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cloudflare-dns-switch-${{ github.run_id }}
+          path: cloudflare-dns-*.json
+          if-no-files-found: warn
+          retention-days: 30
 
   configure-api-proxy:
     if: github.event_name == 'workflow_dispatch' && inputs.configure_api_proxy_only
@@ -161,8 +479,203 @@ jobs:
         working-directory: WEB
         run: npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
 
+  bootstrap-sterdez-edge:
+    if: github.event_name == 'workflow_dispatch' && inputs.bootstrap_sterdez_edge_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
+      EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - working-directory: WEB
+        run: npm ci
+      - name: Validate isolated Worker bundles
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          npm test -- edge-proxy/worker.test.mjs api-proxy/worker.test.mjs
+          npx wrangler@4 deploy --dry-run --config api-proxy/wrangler.jsonc
+          npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
+      - name: Capture BEFORE and prepare DNS records
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          api = "https://api.cloudflare.com/client/v4"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          zone_id = os.environ["EXPECTED_ZONE_ID"]
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
+          def request(method, path, payload=None):
+              req = urllib.request.Request(api + path, data=None if payload is None else json.dumps(payload).encode(), method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response: result = json.load(response)
+              if not result.get("success"): raise RuntimeError(result.get("errors"))
+              return result["result"]
+          zones = request("GET", "/zones?" + urllib.parse.urlencode({"name":"sterdez.online","account.id":account}))
+          if len(zones) != 1 or zones[0].get("id") != zone_id or zones[0].get("status") != "active":
+              raise SystemExit("STERDEZ zone identity/status mismatch")
+          records = request("GET", f"/zones/{zone_id}/dns_records?per_page=100")
+          routes = request("GET", f"/zones/{zone_id}/workers/routes")
+          names = {"sterdez.online", "www.sterdez.online", "api.sterdez.online"}
+          before = {
+              "zone": {"id": zone_id, "name": zones[0]["name"], "status": zones[0]["status"], "name_servers": zones[0].get("name_servers", [])},
+              "dns_records": [{k:r.get(k) for k in ("id","type","name","content","ttl","proxied","comment","tags")} for r in records if r.get("name") in names],
+              "worker_routes": [{k:r.get(k) for k in ("id","pattern","script")} for r in routes],
+          }
+          with open("sterdez-edge-before.json","w",encoding="utf-8") as f: json.dump(before,f,ensure_ascii=False,indent=2)
+          if before["dns_records"] or any(r.get("pattern") in {f"{n}/*" for n in names} for r in routes):
+              raise SystemExit("STERDEZ edge is not empty; refusing non-bootstrap mutation")
+          created=[]
+          try:
+              for name in sorted(names):
+                  result=request("POST",f"/zones/{zone_id}/dns_records",{"type":"CNAME","name":name,"content":"bankrotai.pages.dev","ttl":1,"proxied":True,"comment":"STERDEZ isolated edge bootstrap"})
+                  created.append(result["id"])
+              with open("sterdez-created-records.json","w",encoding="utf-8") as f: json.dump(created,f)
+          except BaseException:
+              for record_id in reversed(created):
+                  try: request("DELETE",f"/zones/{zone_id}/dns_records/{record_id}")
+                  except Exception: pass
+              raise
+          print(json.dumps({"before":before,"created_record_count":len(created)},ensure_ascii=False))
+          PY
+      - name: Deploy isolated API Worker
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          printf '%s' "$KOYEB_SERVICE_KEY" | npx wrangler@4 secret put KOYEB_SERVICE_KEY --config api-proxy/wrangler.jsonc
+          npx wrangler@4 deploy --config api-proxy/wrangler.jsonc --keep-vars
+      - name: Deploy isolated WEB Worker
+        working-directory: WEB
+        run: npx wrangler@4 deploy --config edge-proxy/wrangler.jsonc
+      - name: Verify new domain or rollback DNS and routes
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          if python - <<'PY'
+          import json, ssl, time, urllib.error, urllib.request
+          expected={
+            "https://sterdez.online/":200,
+            "https://sterdez.online/deployment.json":200,
+            "https://sterdez.online/health/live":200,
+            "https://sterdez.online/health/ready":200,
+            "https://api.sterdez.online/health/live":200,
+            "https://api.sterdez.online/health/ready":200,
+            "https://sterdez.online/api/auth/me":401,
+          }
+          observed={}
+          for attempt in range(24):
+              observed={}
+              for url,want in expected.items():
+                  req=urllib.request.Request(url,headers={"Cache-Control":"no-cache","User-Agent":"STERDEZ-Edge-Gate/1.0"})
+                  try:
+                      with urllib.request.urlopen(req,timeout=20,context=ssl.create_default_context()) as response: observed[url]=response.status
+                  except urllib.error.HTTPError as error: observed[url]=error.code
+                  except Exception: observed[url]=0
+              if all(observed.get(url)==want for url,want in expected.items()): break
+              time.sleep(5)
+          else: raise SystemExit(f"STERDEZ edge did not stabilize: {observed}")
+          with open("sterdez-edge-after.json","w",encoding="utf-8") as f: json.dump({"checks":observed},f,indent=2)
+          print(json.dumps({"checks":observed}))
+          PY
+          then
+            exit 0
+          fi
+          python - <<'PY'
+          import json, os, urllib.request
+          api="https://api.cloudflare.com/client/v4"; zone=os.environ["EXPECTED_ZONE_ID"]
+          headers={"Authorization":f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}","Accept":"application/json","Content-Type":"application/json"}
+          def request(method,path):
+              req=urllib.request.Request(api+path,method=method,headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response: return json.load(response)
+          routes=request("GET",f"/zones/{zone}/workers/routes")["result"]
+          patterns={"sterdez.online/*","www.sterdez.online/*","api.sterdez.online/*"}
+          for route in routes:
+              if route.get("pattern") in patterns: request("DELETE",f"/zones/{zone}/workers/routes/{route['id']}")
+          for record_id in reversed(json.load(open("sterdez-created-records.json"))):
+              request("DELETE",f"/zones/{zone}/dns_records/{record_id}")
+          print(json.dumps({"rollback":"dns_and_routes_removed"}))
+          PY
+          exit 1
+      - name: Preserve sanitized bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-edge-bootstrap-${{ github.run_id }}
+          path: sterdez-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  rollback-sterdez-edge:
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback_sterdez_edge_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      EXPECTED_ZONE_ID: ${{ vars.CLOUDFLARE_CANONICAL_ZONE_ID }}
+    steps:
+      - name: Roll back isolated STERDEZ edge records and routes
+        env:
+          EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+        run: |
+          set -euo pipefail
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          api="https://api.cloudflare.com/client/v4"; account=os.environ["CLOUDFLARE_ACCOUNT_ID"]; zone=os.environ["EXPECTED_ZONE_ID"]
+          headers={"Authorization":f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}","Accept":"application/json","Content-Type":"application/json"}
+          def request(method,path):
+              req=urllib.request.Request(api+path,method=method,headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response: payload=json.load(response)
+              if not payload.get("success"): raise RuntimeError(payload.get("errors"))
+              return payload["result"]
+          zones=request("GET","/zones?"+urllib.parse.urlencode({"name":"sterdez.online","account.id":account}))
+          if len(zones)!=1 or zones[0].get("id")!=zone: raise SystemExit("STERDEZ zone identity mismatch")
+          names={"sterdez.online","www.sterdez.online","api.sterdez.online"}
+          patterns={f"{name}/*" for name in names}
+          records=request("GET",f"/zones/{zone}/dns_records?per_page=100")
+          routes=request("GET",f"/zones/{zone}/workers/routes")
+          selected_records=[r for r in records if r.get("name") in names]
+          selected_routes=[r for r in routes if r.get("pattern") in patterns]
+          for record in selected_records:
+              if record.get("comment") != "STERDEZ isolated edge bootstrap" or record.get("content") != "bankrotai.pages.dev":
+                  raise SystemExit(f"Refusing to remove non-bootstrap DNS record: {record.get('name')}")
+          expected_scripts={"bankrotai-sterdez-domain-proxy","bankrotai-sterdez-api-proxy"}
+          for route in selected_routes:
+              if route.get("script") not in expected_scripts:
+                  raise SystemExit(f"Refusing to remove non-bootstrap Worker route: {route.get('pattern')}")
+          before={"dns_records":[{k:r.get(k) for k in ("id","type","name","content","ttl","proxied","comment")} for r in selected_records],"worker_routes":[{k:r.get(k) for k in ("id","pattern","script")} for r in selected_routes]}
+          with open("sterdez-rollback-before.json","w",encoding="utf-8") as f: json.dump(before,f,ensure_ascii=False,indent=2)
+          for route in selected_routes: request("DELETE",f"/zones/{zone}/workers/routes/{route['id']}")
+          for record in selected_records: request("DELETE",f"/zones/{zone}/dns_records/{record['id']}")
+          remaining_records=request("GET",f"/zones/{zone}/dns_records?per_page=100")
+          remaining_routes=request("GET",f"/zones/{zone}/workers/routes")
+          if any(r.get("name") in names for r in remaining_records) or any(r.get("pattern") in patterns for r in remaining_routes):
+              raise SystemExit("STERDEZ rollback verification failed")
+          after={"removed_dns_records":len(selected_records),"removed_worker_routes":len(selected_routes),"verified_empty":True}
+          with open("sterdez-rollback-after.json","w",encoding="utf-8") as f: json.dump(after,f,ensure_ascii=False,indent=2)
+          print(json.dumps(after))
+          PY
+      - name: Preserve sanitized rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sterdez-edge-rollback-${{ github.run_id }}
+          path: sterdez-rollback-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.bootstrap_sterdez_edge_only && !inputs.rollback_sterdez_edge_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -259,10 +772,10 @@ jobs:
               -H 'Cache-Control: no-cache' https://bankrotai.pages.dev/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
             CANONICAL_SHA="$(curl --ipv4 --fail --silent --show-error --max-time 20 \
-              -H 'Cache-Control: no-cache' https://dezster.ru/deployment.json 2>/dev/null \
+              -H 'Cache-Control: no-cache' https://sterdez.online/deployment.json 2>/dev/null \
               | python -c 'import json,sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null || true)"
             AUTH_STATUS="$(curl --ipv4 --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://dezster.ru/api/auth/me || true)"
+              https://sterdez.online/api/auth/me || true)"
             if test "$PAGES_SHA" = "$GITHUB_SHA" \
               && test "$CANONICAL_SHA" = "$GITHUB_SHA" \
               && test "$AUTH_STATUS" = "401"; then
@@ -274,7 +787,7 @@ jobs:
             fi
             sleep 5
           done
-          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/deployment.json \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://sterdez.online/deployment.json \
             | grep -qi '^cache-control: no-store'
-          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://dezster.ru/ \
+          curl --ipv4 --fail --silent --show-error --max-time 20 -I https://sterdez.online/ \
             | grep -qi '^strict-transport-security:'

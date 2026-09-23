@@ -8,17 +8,38 @@ on:
         required: true
         default: "50"
         type: string
+      request_path:
+        description: Authenticated safe GET path, or pipe-separated paths, to compare
+        required: true
+        default: "/api/lots?city_slug=yaroslavl&page=1&per_page=1"
+        type: string
+      request_concurrency:
+        description: Parallel requests per compared origin
+        required: true
+        default: "1"
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  inspect-home:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inspect home origin and relay without changes
+        shell: powershell
+        run: .\scripts\home-origin-diagnostics.ps1
+
   compare-paths:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: production
     env:
       AB_COUNT: ${{ inputs.request_count }}
+      AB_PATH: ${{ inputs.request_path }}
+      AB_CONCURRENCY: ${{ inputs.request_concurrency }}
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'admin' }}
       E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -60,12 +81,34 @@ jobs:
           test -n "$API_KEY"
           echo "::add-mask::$API_KEY"
           echo "api_key=$API_KEY" >> "$GITHUB_OUTPUT"
+      - name: Capture read-only health and container state
+        run: |
+          set +e
+          for base in https://home-relay.194-226-126-233.sslip.io https://194-226-126-233.sslip.io http://127.0.0.1:18000; do
+            for path in /health/live /health/ready; do
+              printf 'probe base=%s path=%s status=' "$base" "$path"
+              curl --silent --show-error --connect-timeout 3 --max-time 20 \
+                --output /dev/null --write-out '%{http_code} duration=%{time_total}\n' "$base$path"
+            done
+          done
+          ssh -i "$HOME/.ssh/regru_availability" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p 2222 root@194.226.126.233 'bash -s' <<'REMOTE'
+          set -u
+          docker inspect --format 'container={{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} restarts={{.RestartCount}} started={{.State.StartedAt}}' \
+            bankrotai-api bankrotai-caddy bankrotai-postgres bankrotai-redis 2>&1 || true
+          docker stats --no-stream --format 'container={{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}} pids={{.PIDs}}' \
+            bankrotai-api bankrotai-caddy bankrotai-postgres bankrotai-redis 2>&1 || true
+          docker exec bankrotai-postgres psql -U bankrotai -d bankrotai -Atc \
+            "select 'db_activity total='||count(*)||' active='||count(*) filter (where state='active')||' waiting='||count(*) filter (where wait_event is not null) from pg_stat_activity;" \
+            2>&1 || true
+          REMOTE
+          exit 0
       - name: Compare authenticated safe GET paths
         env:
           AB_API_KEY: ${{ steps.service-key.outputs.api_key }}
         run: |
           set +e
-          AB_API_KEY= AB_LABEL=worker AB_BASE_URL=https://api.dezster.ru python scripts/origin-ab-test.py
+          AB_API_KEY= AB_LABEL=worker AB_BASE_URL=https://api.sterdez.online python scripts/origin-ab-test.py
           worker_exit=$?
           AB_LABEL=direct AB_BASE_URL=https://194-226-126-233.sslip.io python scripts/origin-ab-test.py
           direct_exit=$?
@@ -88,7 +131,9 @@ jobs:
           ssh -i "$HOME/.ssh/regru_availability" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -p 2222 root@194.226.126.233 'bash -s' <<'REMOTE'
           set -u
-          docker logs --timestamps --since 30m bankrotai-api 2>&1 | grep -E 'ab-(worker|direct|localhost)-' | tail -n 1000 || true
+          docker logs --timestamps --since 30m bankrotai-api 2>&1 | \
+            grep -E -B 8 -A 30 'ab-(worker|direct|localhost)-|Error processing request|Traceback|Session verification|Readiness database check failed' | \
+            tail -n 2000 || true
           docker logs --timestamps --since 30m bankrotai-caddy 2>&1 | tail -n 500 || true
           ss -s
           netstat -s | grep -Ei 'reset|retransmit|failed|timeout' | head -n 100 || true

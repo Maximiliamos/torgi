@@ -162,6 +162,7 @@ def test_operator_and_diagnostics_endpoints_require_admin(monkeypatch) -> None:
         ("get", "/api/tasks/unowned-task"),
         ("post", "/api/regions/yaroslavl/sync"),
         ("get", "/api/regions/yaroslavl/sync-status"),
+        ("get", "/api/quality/operational"),
     ):
         assert getattr(client, method)(path, headers=headers).status_code == 403
 

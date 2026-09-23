@@ -12,6 +12,7 @@ from typing import Callable
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
+from bankrotai.core import get_settings
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
 
 MAX_DATASET_ZOOM = 14
@@ -19,6 +20,7 @@ POINT_ZOOM = 12
 MAX_WEB_MERCATOR_LAT = 85.05112878
 _PROMOTION_ADVISORY_LOCK_KEY = 4_367_936_669_506_901_092
 logger = logging.getLogger(__name__)
+MIN_DIMENSION_COVERAGE_BASELINE = 20
 
 
 def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
@@ -157,11 +159,64 @@ def _encoded_tile(features: list[dict]) -> tuple[dict, str]:
     return payload, hashlib.sha256(encoded).hexdigest()
 
 
+def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
+    lot_ids: set[int] = set()
+    for payload in session.scalars(select(MapTile.payload_json).where(
+        MapTile.dataset_id == dataset_id,
+        MapTile.z == POINT_ZOOM,
+    )):
+        for feature in (payload or {}).get("features", []):
+            if feature.get("kind") == "lot" and isinstance(feature.get("id"), int):
+                lot_ids.add(feature["id"])
+    return lot_ids
+
+
+def _dimension_coverage_failures(
+    session: Session,
+    *,
+    current_dataset_id: int,
+    new_dataset_id: int,
+    minimum_ratio: float,
+) -> list[dict[str, object]]:
+    old_ids = _dataset_lot_ids(session, current_dataset_id)
+    new_ids = _dataset_lot_ids(session, new_dataset_id)
+    if not old_ids:
+        return []
+    old_counts: dict[tuple[str, str], int] = defaultdict(int)
+    new_counts: dict[tuple[str, str], int] = defaultdict(int)
+    for lot_id, source_system, region_code in session.execute(
+        select(ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.region_code)
+    ):
+        dimensions = (("source", source_system or "unknown"), ("region", region_code or "unknown"))
+        if lot_id in old_ids:
+            for dimension in dimensions:
+                old_counts[dimension] += 1
+        if lot_id in new_ids:
+            for dimension in dimensions:
+                new_counts[dimension] += 1
+    failures = []
+    for (kind, value), previous in sorted(old_counts.items()):
+        if previous < MIN_DIMENSION_COVERAGE_BASELINE:
+            continue
+        current_count = new_counts.get((kind, value), 0)
+        required = math.ceil(previous * minimum_ratio)
+        if current_count < required:
+            failures.append({
+                "dimension": kind,
+                "value": value,
+                "previous": previous,
+                "current": current_count,
+                "required": required,
+            })
+    return failures
+
+
 def _promote_map_dataset(
     session_factory: Callable[[], Session],
     *,
     dataset_id: int,
     expected_current_id: int | None,
+    dimension_failures: list[dict[str, object]] | None = None,
 ) -> dict:
     """Serialize and atomically promote one completely built dataset."""
     with session_factory() as session:
@@ -170,6 +225,11 @@ def _promote_map_dataset(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
                 {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
             )
+            # The partial unique index is the final invariant, but concurrent
+            # publishers must not race between clearing the old row and marking
+            # the new row current. This transaction-level table lock conflicts
+            # with another publisher while continuing to allow ordinary SELECTs.
+            session.execute(text("LOCK TABLE map_datasets IN SHARE ROW EXCLUSIVE MODE"))
         current = session.scalar(
             select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update()
         )
@@ -200,26 +260,64 @@ def _promote_map_dataset(
                 f"Map dataset {dataset.version} is incomplete: "
                 f"status={dataset.status}, expected_tiles={dataset.tile_count}, actual_tiles={actual_tile_count}"
             )
-        if current is not None and current.point_count > 0 and dataset.point_count == 0:
+        settings = get_settings()
+        minimum_points = 0
+        if current is not None and current.point_count > 0:
+            minimum_points = max(
+                settings.min_map_points,
+                math.ceil(current.point_count * settings.min_map_coverage_ratio),
+            )
+        if current is not None and current.point_count > 0 and dataset.point_count < minimum_points:
             dataset.status = "rejected"
             session.commit()
             logger.warning(
-                "Map dataset %s promotion rejected by coverage guard: previous_points=%s, new_points=0",
-                dataset.version, current.point_count,
+                "Map dataset %s promotion rejected by coverage guard: "
+                "previous_points=%s new_points=%s required_points=%s ratio=%s",
+                dataset.version, current.point_count, dataset.point_count,
+                minimum_points, settings.min_map_coverage_ratio,
             )
             return {
                 "status": "rejected",
-                "reason": "empty_dataset_would_replace_nonempty_current",
+                "reason": (
+                    "empty_dataset_would_replace_nonempty_current"
+                    if dataset.point_count == 0
+                    else "dataset_coverage_below_threshold"
+                ),
                 "current_dataset_id": current.id,
+                "previous_point_count": current.point_count,
+                "new_point_count": dataset.point_count,
+                "minimum_point_count": minimum_points,
             }
 
+        if dimension_failures:
+            dataset.status = "rejected"
+            session.commit()
+            logger.warning(
+                "Map dataset %s promotion rejected by dimensional coverage guard: %s",
+                dataset.version,
+                dimension_failures,
+            )
+            return {
+                "status": "rejected",
+                "reason": "dataset_dimension_coverage_below_threshold",
+                "current_dataset_id": current.id if current else None,
+                "coverage_failures": dimension_failures,
+            }
+
+        # Keep both sides of the current-dataset switch as explicit SQL in the
+        # advisory-locked transaction. Mixing a bulk UPDATE with later ORM
+        # attribute flushing can let a stale loaded ``current`` instance write
+        # ``is_current=True`` back during a concurrent promotion.
+        published_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.execute(text("UPDATE map_datasets SET is_current = false WHERE is_current"))
         session.execute(
-            update(MapDataset).where(MapDataset.is_current.is_(True)).values(is_current=False)
+            text(
+                "UPDATE map_datasets "
+                "SET is_current = true, status = 'ready', published_at = :published_at "
+                "WHERE id = :dataset_id"
+            ),
+            {"dataset_id": dataset.id, "published_at": published_at},
         )
-        session.flush()
-        dataset.is_current = True
-        dataset.status = "ready"
-        dataset.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
         session.commit()
         logger.info(
             "Map dataset promotion succeeded: version=%s dataset_id=%s previous_dataset_id=%s",
@@ -323,10 +421,20 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             version, source_lot_count, len(points), tile_count, build_duration_ms,
         )
         build_completed = True
+        dimension_failures: list[dict[str, object]] = []
+        if expected_current_id is not None:
+            with session_factory() as session:
+                dimension_failures = _dimension_coverage_failures(
+                    session,
+                    current_dataset_id=expected_current_id,
+                    new_dataset_id=dataset_id,
+                    minimum_ratio=get_settings().min_map_coverage_ratio,
+                )
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
             expected_current_id=expected_current_id,
+            dimension_failures=dimension_failures,
         )
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])

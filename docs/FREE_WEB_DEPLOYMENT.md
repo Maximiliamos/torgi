@@ -2,10 +2,10 @@
 
 ## Схема
 
-`dezster.ru` → Cloudflare edge Worker → Pages Function `/api/*` → REG.RU FastAPI → Neon PostgreSQL.
+`sterdez.online` → Cloudflare edge Worker → Pages Function `/api/*` → home FastAPI → PostgreSQL.
 
 `bankrotai.pages.dev` остаётся техническим адресом Pages. Edge Worker из `WEB/edge-proxy/`
-обслуживает корневой домен и перенаправляет `www.dezster.ru` на `dezster.ru`. Доступ к REG.RU
+обслуживает корневой домен и перенаправляет `www.sterdez.online` на `sterdez.online`. Доступ к origin
 должен выполняться через Cloudflare Tunnel; прямой `sslip.io` используется только для диагностики.
 
 Браузер не получает межсервисный ключ. Function добавляет `KOYEB_SERVICE_KEY`, а FastAPI
@@ -76,7 +76,7 @@ REG.RU Free Tier имеет ограниченные CPU, память и дис
 
 Pages Function находится в `WEB/functions/api/[[path]].ts`. В настройках Runtime выберите
 fail closed, поскольку Function является частью границы авторизации. Основной публичный адрес —
-`https://dezster.ru`; `*.pages.dev` используется для диагностики и аварийного доступа.
+`https://sterdez.online`; `*.pages.dev` используется для диагностики и аварийного доступа.
 
 ## GitHub Actions
 
@@ -99,7 +99,7 @@ Variable: `AUTH_BOOTSTRAP_USERNAME`.
 Workflow имеет единый concurrency lock, timeout 50 минут и создаёт GitHub Issue при ошибке.
 Каждый успешный запуск сохраняет зашифрованный dump на три дня.
 
-`Public WEB smoke` каждые шесть часов быстро проверяет канонический `https://dezster.ru`.
+`Public WEB smoke` каждые шесть часов быстро проверяет канонический `https://sterdez.online`.
 `Production functional reliability` ежедневно выполняет отдельный реальный read-only journey
 через Cloudflare: auth, реестр, три внешних источника, GEO, изображения, ссылки ЭТП и карту.
 REG.RU deploy устанавливает минутный liveness-watchdog; после трёх последовательных зависаний

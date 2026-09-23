@@ -190,6 +190,10 @@ function markerPreview(lot: MapMarkerLot): MapLot {
     image_url: null,
     image_urls: [],
     procedure_number: null,
+    minimum_price: null,
+    price_observed_at: null,
+    next_interval_price: null,
+    next_price_reduction_at: null,
     application_deadline: null,
     auction_at: null,
     sources: [],
@@ -572,7 +576,29 @@ function LotPreview({
           {lot.description || lot.address || "Описание отсутствует"}
         </p>
         <strong className="mapPreviewPrice">{money(lot.current_price)}</strong>
+        {lot.price_observed_at && (
+          <small className="mapPreviewPriceObserved">
+            Цена актуальна на {formatMoscowDate(lot.price_observed_at)} МСК
+          </small>
+        )}
         <dl className="mapPreviewDetails">
+          {lot.minimum_price !== null && (
+            <>
+              <dt>Минимальная цена:</dt>
+              <dd>{money(lot.minimum_price)}</dd>
+            </>
+          )}
+          {lot.next_interval_price !== null && (
+            <>
+              <dt>Следующая цена:</dt>
+              <dd>
+                {money(lot.next_interval_price)}
+                {lot.next_price_reduction_at
+                  ? ` с ${formatMoscowDate(lot.next_price_reduction_at)} МСК`
+                  : ""}
+              </dd>
+            </>
+          )}
           {lot.address && (
             <>
               <dt>Адрес:</dt>
