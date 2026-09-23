@@ -33,7 +33,7 @@ import {
   type MapLot,
   type MapTilePayload,
 } from "../../lib/api";
-import { applyMapTileReviewOverrides, fetchCachedMapTile, MapView } from "./MapView";
+import { applyMapTileReviewOverrides, fetchCachedMapTile, fetchVisibleMapTiles, MapView } from "./MapView";
 
 function sendViewport(
   frame: HTMLIFrameElement,
@@ -680,5 +680,37 @@ describe("tile request cache", () => {
     const features = applyMapTileReviewOverrides(reloaded.features, new Map([[7, "approved"]]));
     expect(features[0].review_status).toBe("approved");
     expect(fetchMapTile).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("visible tile resilience", () => {
+  it("retries a transient tile failure and keeps every tile", async () => {
+    const attempts = new Map<number, number>();
+    const result = await fetchVisibleMapTiles(
+      [{ z: 10, x: 1, y: 2 }, { z: 10, x: 2, y: 2 }],
+      async (tile) => {
+        const count = (attempts.get(tile.x) ?? 0) + 1;
+        attempts.set(tile.x, count);
+        if (tile.x === 1 && count === 1) throw new Error("temporary");
+        return { features: [] };
+      },
+      1,
+    );
+    expect(result.entries).toHaveLength(2);
+    expect(result.failed).toBe(0);
+    expect(attempts.get(1)).toBe(2);
+  });
+
+  it("returns healthy tiles when one tile fails twice", async () => {
+    const result = await fetchVisibleMapTiles(
+      [{ z: 10, x: 1, y: 2 }, { z: 10, x: 2, y: 2 }],
+      async (tile) => {
+        if (tile.x === 1) throw new Error("unavailable");
+        return { features: [] };
+      },
+      2,
+    );
+    expect(result.entries.map(({ tile }) => tile.x)).toEqual([2]);
+    expect(result.failed).toBe(1);
   });
 });
