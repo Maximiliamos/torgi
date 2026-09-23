@@ -299,13 +299,26 @@ def _promote_map_dataset(
                 "coverage_failures": dimension_failures,
             }
 
+        # Keep both sides of the current-dataset switch as explicit SQL in the
+        # advisory-locked transaction. Mixing a bulk UPDATE with later ORM
+        # attribute flushing can let a stale loaded ``current`` instance write
+        # ``is_current=True`` back during a concurrent promotion.
         session.execute(
-            update(MapDataset).where(MapDataset.is_current.is_(True)).values(is_current=False)
+            update(MapDataset)
+            .where(MapDataset.is_current.is_(True))
+            .values(is_current=False)
+            .execution_options(synchronize_session=False)
         )
-        session.flush()
-        dataset.is_current = True
-        dataset.status = "ready"
-        dataset.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.execute(
+            update(MapDataset)
+            .where(MapDataset.id == dataset.id)
+            .values(
+                is_current=True,
+                status="ready",
+                published_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            .execution_options(synchronize_session=False)
+        )
         session.commit()
         logger.info(
             "Map dataset promotion succeeded: version=%s dataset_id=%s previous_dataset_id=%s",
