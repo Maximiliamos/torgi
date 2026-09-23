@@ -122,6 +122,39 @@ export function fetchCachedMapTile(
   return request;
 }
 
+export async function fetchVisibleMapTiles(
+  coordinates: TileCoordinate[],
+  load: (tile: TileCoordinate) => Promise<MapTilePayload>,
+  concurrency = 6,
+) {
+  const results: Array<{ tile: TileCoordinate; payload: MapTilePayload } | null> =
+    new Array(coordinates.length).fill(null);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < coordinates.length) {
+      const index = cursor++;
+      const tile = coordinates[index];
+      try {
+        results[index] = { tile, payload: await load(tile) };
+      } catch {
+        try {
+          results[index] = { tile, payload: await load(tile) };
+        } catch {
+          results[index] = null;
+        }
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(Math.max(1, concurrency), coordinates.length) },
+    worker,
+  ));
+  return {
+    entries: results.filter((value): value is NonNullable<typeof value> => value !== null),
+    failed: results.filter((value) => value === null).length,
+  };
+}
+
 export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
   return exact ? `${total} объектов` : `не менее ${returned} объектов в области`;
 }
@@ -961,19 +994,23 @@ export function MapView({
     visibleTileSetSignature.current = signature;
     const revision = ++tileRequestRevision.current;
     setLoading(true);
-    Promise.all(coordinates.map(async (tile) => ({
-      key: `${mapDataset.version}/${tile.key}`,
-      features: applyMapTileReviewOverrides(
-        (await fetchCachedMapTile(
+    fetchVisibleMapTiles(coordinates, async (tile) =>
+      fetchCachedMapTile(
           completedTileCache.current,
           inflightTileRequests.current,
           mapDataset.version,
           tile,
-        )).features,
+        ),
+    ).then(({ entries: loaded, failed }) => {
+      const entries = loaded.map(({ tile, payload }) => ({
+        key: `${mapDataset.version}/${tile.z}/${tile.x}/${tile.y}`,
+        features: applyMapTileReviewOverrides(
+        payload.features,
         reviewOverrides.current,
       ),
-    }))).then((entries) => {
+      }));
       if (revision !== tileRequestRevision.current) return;
+      if (!entries.length && failed) throw new Error("No visible map tiles could be loaded");
       setTileEntries(entries);
       setStatistics((value) => ({
         ...value, total: mapDataset.point_count, mapped: mapDataset.point_count,
@@ -981,6 +1018,9 @@ export function MapView({
         truncated: false, updatedAt: mapDataset.published_at, exact: true,
       }));
       setError("");
+      setMapNotice(failed
+        ? `Часть тайлов временно недоступна (${failed}). Остальные объекты показаны.`
+        : "");
     }).catch((err) => {
       if (revision !== tileRequestRevision.current) return;
       visibleTileSetSignature.current = null;
