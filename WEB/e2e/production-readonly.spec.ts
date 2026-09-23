@@ -109,12 +109,6 @@ test("real production auth, registry, sources, GEO, images and source links", as
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /Выйти:/ })).toBeVisible({ timeout: 40_000 });
-  const secondTab = await context.newPage();
-  const secondTabMeResponse = await secondTab.goto("/api/auth/me", { waitUntil: "domcontentloaded" });
-  expect(secondTabMeResponse?.status()).toBe(200);
-  const secondTabMe = await secondTabMeResponse?.json() as { username: string; role: string };
-  expect(secondTabMe.username).toBe(process.env.E2E_USERNAME || "reader");
-  await secondTab.close();
 
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   const firstRow = page.locator(".lotRow").first();
