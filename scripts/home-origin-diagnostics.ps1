@@ -21,7 +21,41 @@ $pgDatabase = docker exec bankrotai-home-postgres printenv POSTGRES_DB
 if ($LASTEXITCODE -eq 0 -and $pgUser -and $pgDatabase) {
     docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -Atc `
         "select 'db_activity total='||count(*)||' active='||count(*) filter (where state='active')||' waiting='||count(*) filter (where wait_event is not null) from pg_stat_activity;" 2>&1
+    docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -P pager=off -c @'
+select id, version, status, is_current, point_count, tile_count, published_at, created_at
+from map_datasets order by created_at desc limit 8;
+'@ 2>&1
+    docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -P pager=off -c @'
+select d.version, d.tile_count as declared_tiles, count(t.id) as actual_tiles,
+       coalesce(sum(octet_length(t.payload_json::text)),0) as payload_bytes,
+       coalesce(max(octet_length(t.payload_json::text)),0) as largest_tile_bytes
+from map_datasets d left join map_tiles t on t.dataset_id=d.id
+where d.is_current group by d.id, d.version, d.tile_count;
+'@ 2>&1
+    docker exec bankrotai-home-postgres psql -U $pgUser.Trim() -d $pgDatabase.Trim() -P pager=off -c @'
+select task_id, status, created_at, started_at, finished_at,
+       left(coalesce(progress_json::text,''),500) as progress,
+       left(coalesce(error_message,''),300) as error
+from background_task_states where task_type='geocoding'
+order by created_at desc, id desc limit 12;
+'@ 2>&1
 }
+
+Write-Host '=== queue and workers ==='
+$redisPasswordPath = 'C:\ProgramData\BankrotAI\redis-password.txt'
+if (Test-Path -LiteralPath $redisPasswordPath) {
+    $redisPassword = [IO.File]::ReadAllText($redisPasswordPath).Trim()
+    Write-Output "::add-mask::$redisPassword"
+    docker exec --env "REDISCLI_AUTH=$redisPassword" bankrotai-home-redis redis-cli LLEN celery 2>&1 |
+        ForEach-Object { Write-Host "celery_queue_length=$_" }
+}
+docker exec bankrotai-home-ingestion-worker celery -A bankrotai.tasks:celery_app inspect ping --timeout 10 2>&1
+docker exec bankrotai-home-ingestion-worker celery -A bankrotai.tasks:celery_app inspect active --timeout 10 2>&1
+docker exec bankrotai-home-ingestion-worker celery -A bankrotai.tasks:celery_app inspect scheduled --timeout 10 2>&1
+
+Write-Host '=== recent application logs ==='
+docker logs --timestamps --since 2h bankrotai-home-ingestion-worker 2>&1 | Select-Object -Last 500
+docker logs --timestamps --since 30m bankrotai-home-secondary 2>&1 | Select-Object -Last 300
 
 Write-Host '=== relay process and watchdog ==='
 Get-CimInstance Win32_Process -Filter "Name = 'wstunnel.exe'" | ForEach-Object {
