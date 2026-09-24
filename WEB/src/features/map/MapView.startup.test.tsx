@@ -389,7 +389,7 @@ describe("tile marker review updates", () => {
       frame.srcdoc.indexOf("function updateTileReview"),
       frame.srcdoc.indexOf("function emitViewport"),
     );
-    expect(updateSource).toContain("tileManager.objects.setObjectOptions(id,mode==='direct'?{preset:directPreset(status)}:opts(updated))");
+    expect(updateSource).toContain("tileManager.objects.setObjectOptions(id,mode==='direct'?{preset:directPreset(status,updated.status)}:opts(updated))");
     expect(updateSource).not.toContain("removeAll");
     expect(updateSource).not.toContain("tileManager.add");
   });
