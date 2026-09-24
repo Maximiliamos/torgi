@@ -98,6 +98,7 @@ async function authorizeMapEdge({ cache, r2, fetchMock, serviceKey = "bound-secr
   expect(setCookie).toContain("HttpOnly");
   expect(setCookie).toContain("Secure");
   expect(setCookie).toContain("SameSite=Strict");
+  expect(setCookie).toContain("Max-Age=120");
   return setCookie.split(";")[0];
 }
 
