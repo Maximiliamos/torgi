@@ -16,6 +16,7 @@ import {
   fetchCurrentMapDataset,
   fetchCurrentUser,
   fetchMapLotDetail,
+  fetchMapReviewStatuses,
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
@@ -611,6 +612,7 @@ function YandexDesktopMap({
     const prefetch = normalize(data.prefetch);
     const runPool = async (items: TileCoordinate[], concurrency: number, publish: boolean) => {
       let cursor = 0;
+      const reviewIds = new Set<number>();
       const worker = async () => {
         while (cursor < items.length) {
           const tile = items[cursor++];
@@ -622,6 +624,13 @@ function YandexDesktopMap({
                 key: `${version}/${tile.z}/${tile.x}/${tile.y}`,
                 payload,
               });
+              if (!requestedFilterKey && mapDataset.tile_source === "regru-s3") {
+                for (const feature of payload.features) {
+                  if (feature.properties.kind === "lot" && typeof feature.id === "number") {
+                    reviewIds.add(feature.id);
+                  }
+                }
+              }
             }
           } catch (error) {
             if (publish) {
@@ -638,9 +647,21 @@ function YandexDesktopMap({
         { length: Math.min(Math.max(1, concurrency), items.length) },
         worker,
       ));
+      return reviewIds;
     };
 
-    await runPool(visible, 12, true);
+    const reviewIds = await runPool(visible, 12, true);
+    if (reviewIds.size) {
+      const ids = [...reviewIds];
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        try {
+          const overlay = await fetchMapReviewStatuses(ids.slice(offset, offset + 500));
+          postCommand("apply-review-statuses", { items: overlay.items });
+        } catch {
+          // The public map is already visible; review coloring is a non-blocking overlay.
+        }
+      }
+    }
     void runPool(prefetch, 4, false);
   }, [directFilterKey, directTileMode, loadDirectTile, mapDataset, postCommand]);
   React.useEffect(() => {
@@ -743,9 +764,10 @@ function requestDirectTiles(){if(!directEnabled||!directDataset||!map)return;con
 function scheduleDirectTiles(){if(!directEnabled)return;clearTimeout(directTimer);directTimer=setTimeout(requestDirectTiles,70);}
 function setDirectDataset(enabled,dataset,filterKey=''){directEnabled=Boolean(enabled&&dataset?.version);directDataset=directEnabled?dataset:null;directFilterKey=String(filterKey||'');directGeneration++;directWanted=new Set();tileManager?.removeAll();tileObjects.clear();tileLots.clear();if(!directEnabled){if(mode==='direct'){mode='legacy';renderLots();}return;}activateManager(tileManager);mode='direct';const bootstrap=!directFilterKey&&Array.isArray(dataset.bootstrap_tiles)?dataset.bootstrap_tiles:[];for(const entry of bootstrap){if(entry?.payload)installDirectPayload(dataset.version+'/'+entry.z+'/'+entry.x+'/'+entry.y,entry.payload,directGeneration);}requestDirectTiles();}
 function updateTileReview(lotId,status){if(!tileManager)return false;const id=Number(lotId),lot=tileLots.get(id);if(!lot)return false;const updated={...lot,review_status:status};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,mode==='direct'&&id!==selectedId?{preset:directPreset(status,updated.status)}:opts(updated));return true;}
+function applyReviewStatuses(items){if(!tileManager||!Array.isArray(items))return;for(const item of items){const id=Number(item?.id),lot=tileLots.get(id);if(!lot)continue;const updated={...lot,review_status:item.review_status??null};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,mode==='direct'&&id!==selectedId?{preset:directPreset(updated.review_status,updated.status)}:opts(updated));}}
 function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankrotai-viewport',{bounds:[bounds[0][1],bounds[0][0],bounds[1][1],bounds[1][0]],zoom:map.getZoom()});}
 function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,180);}
-function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles'&&mode!=='direct')renderLots();}else if(data.type==='sync-tiles'&&!directEnabled){syncTiles(Array.isArray(data.entries)?data.entries:[]);}else if(data.type==='set-direct-dataset'){setDirectDataset(data.enabled,data.dataset||null,data.filterKey||'');}else if(data.type==='install-direct-tile'){if(directWanted.has(data.key))installDirectPayload(data.key,data.payload,Number(data.generation));}else if(data.type==='direct-tile-failed'){if(Number(data.generation)===directGeneration)send('bankrotai-direct-tile-error',{key:data.key,message:data.message});}else if(data.type==='update-lot-review'){updateTileReview(data.lotId,data.status);}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();scheduleDirectTiles();}}
+function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles'&&mode!=='direct')renderLots();}else if(data.type==='sync-tiles'&&!directEnabled){syncTiles(Array.isArray(data.entries)?data.entries:[]);}else if(data.type==='set-direct-dataset'){setDirectDataset(data.enabled,data.dataset||null,data.filterKey||'');}else if(data.type==='install-direct-tile'){if(directWanted.has(data.key))installDirectPayload(data.key,data.payload,Number(data.generation));}else if(data.type==='direct-tile-failed'){if(Number(data.generation)===directGeneration)send('bankrotai-direct-tile-error',{key:data.key,message:data.message});}else if(data.type==='update-lot-review'){updateTileReview(data.lotId,data.status);}else if(data.type==='apply-review-statuses'){applyReviewStatuses(data.items);}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();scheduleDirectTiles();}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
 function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});legacyManager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});legacyManager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});legacyManager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));legacyManager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=legacyManager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});tileManager=new ymaps.ObjectManager({clusterize:false});tileManager.objects.events.add('click',event=>{const id=event.get('objectId'),object=tileManager.objects.getById(id);if(object?.properties?.kind==='cluster'&&Array.isArray(object.properties.bounds)){const b=object.properties.bounds;map.setBounds([[b[1],b[0]],[b[3],b[2]]],{checkZoomRange:true,zoomMargin:24});return;}send('bankrotai-select',{lotId:Number(id),preview:directPreview(object)});});manager=legacyManager;map.geoObjects.add(manager);map.events.add('boundschange',()=>{scheduleViewport();scheduleDirectTiles();});window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>tileLots.get(Number(id))?.review_status??lots.find(l=>Number(l.id)===Number(id))?.review_status??null,clickObject:id=>manager.objects.events.fire('click',{objectId:id}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
