@@ -285,8 +285,7 @@ describe("API origin failover proxy", () => {
       "https://home-relay.194-226-126-233.sslip.io/api/map/yandex-tiles/dataset-v1/7/77/38",
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control"))
-      .toBe("private, max-age=31536000, immutable");
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-map-cache")).toBeNull();
   });
 
