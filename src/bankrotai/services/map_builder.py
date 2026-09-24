@@ -19,6 +19,7 @@ from bankrotai.services.map_payload import (
     yandex_feature_collection,
     yandex_lot_feature,
 )
+from bankrotai.services.map_object_store import publish_dataset_to_object_store
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -504,6 +505,11 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
+        object_store = publish_dataset_to_object_store(
+            session_factory,
+            dataset_id=dataset_id,
+            version=version,
+        )
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
@@ -530,6 +536,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             "build_duration_ms": build_duration_ms,
             "duration_ms": total_duration_ms,
             "storage": storage,
+            "object_store": object_store,
             **promotion,
         }
     except Exception:
