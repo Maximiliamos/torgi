@@ -917,6 +917,7 @@ export function MapView({
   const [mapDataset, setMapDataset] = React.useState<MapDataset | null>(null);
   const [mapDatasetStatus, setMapDatasetStatus] = React.useState<"loading" | "ready" | "unavailable">("loading");
   const [tileEntries, setTileEntries] = React.useState<Array<{ key: string; features: MapTileFeature[] }>>([]);
+  const [directRenderedCount, setDirectRenderedCount] = React.useState(0);
   const [reviewMarkerUpdate, setReviewMarkerUpdate] = React.useState<{ lotId: number; status: string; revision: number } | null>(null);
   const [viewportLimit, setViewportLimit] = React.useState(250);
   const requestRevision = React.useRef(0);
@@ -962,9 +963,12 @@ export function MapView({
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
-  const visibleMapObjects = tileMode && mapDataset
-    ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
-    : lots.length;
+  const directTileMode = DIRECT_MAP_TILES && tileMode && Boolean(mapDataset?.map_token);
+  const visibleMapObjects = directTileMode
+    ? directRenderedCount
+    : tileMode && mapDataset
+      ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
+      : lots.length;
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     hasRenderedLots.current = true;
@@ -1134,7 +1138,16 @@ export function MapView({
     return () => { datasetRequestRevision.current += 1; };
   }, [loadCurrentMapDataset, refreshToken]);
   React.useEffect(() => {
-    if (!active || !tileMode || !mapDataset || !viewport) {
+    if (!DIRECT_MAP_TILES || !active || !mapDataset?.map_token_expires_at) return;
+    const expiresAtMs = mapDataset.map_token_expires_at * 1000;
+    const refreshInMs = Math.max(15_000, expiresAtMs - Date.now() - 30_000);
+    const timer = window.setTimeout(() => {
+      void loadCurrentMapDataset();
+    }, refreshInMs);
+    return () => window.clearTimeout(timer);
+  }, [active, loadCurrentMapDataset, mapDataset?.map_token_expires_at]);
+  React.useEffect(() => {
+    if (directTileMode || !active || !tileMode || !mapDataset || !viewport) {
       tileRequestRevision.current += 1;
       tileRequestController.current?.abort();
       visibleTileSetSignature.current = null;
@@ -1206,7 +1219,7 @@ export function MapView({
     }).finally(() => {
       if (revision === tileRequestRevision.current) setLoading(false);
     });
-  }, [active, mapDataset, tileMode, viewport, viewportZoom]);
+  }, [active, directTileMode, mapDataset, tileMode, viewport, viewportZoom]);
   React.useEffect(() => () => {
     tileRequestRevision.current += 1;
     tileRequestController.current?.abort();
@@ -1497,6 +1510,8 @@ export function MapView({
         <YandexDesktopMap
           lots={visibleLots}
           tileEntries={tileEntries}
+          mapDataset={mapDataset}
+          directTileMode={directTileMode}
           reviewMarkerUpdate={reviewMarkerUpdate}
           selectedCadastre={cad}
           showCadastre={showCadastre}
@@ -1509,9 +1524,13 @@ export function MapView({
             setSelectedLotId(null);
           }}
           onViewport={handleViewport}
-          onRendered={(durationMs) =>
-            setTimings((value) => ({ ...value, render: durationMs }))
-          }
+          onRendered={(durationMs, count) => {
+            setTimings((value) => ({ ...value, render: durationMs }));
+            if (directTileMode) setDirectRenderedCount(count);
+          }}
+          onMapTokenExpired={() => {
+            void loadCurrentMapDataset();
+          }}
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты">
           <span>
