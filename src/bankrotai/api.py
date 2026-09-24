@@ -1539,7 +1539,7 @@ def get_current_map_dataset(request: Request):
 
         etag = f'"dataset-{dataset.version}"'
         headers = {
-            "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=30",
+            "Cache-Control": "private, max-age=5, stale-while-revalidate=30",
             "ETag": etag,
             "X-Map-Dataset": dataset.version,
         }
@@ -1622,7 +1622,7 @@ def get_yandex_map_tile(request: Request, version: str, z: int, x: int, y: int):
         etag_value = tile.etag if tile is not None else f"empty-{version}-{z}-{x}-{y}"
         etag = f'"yandex-{etag_value}"'
         headers = {
-            "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+            "Cache-Control": "private, max-age=31536000, immutable",
             "ETag": etag,
             "X-Map-Dataset": version,
             "Vary": "Accept-Encoding",
