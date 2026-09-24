@@ -35,6 +35,17 @@ on:
         type: boolean
   push:
     branches: [main]
+    paths:
+      - "Dockerfile"
+      - "requirements.lock"
+      - "pyproject.toml"
+      - "alembic/**"
+      - "src/**"
+      - "WEB/**"
+      - "edge-proxy/**"
+      - "api-proxy/**"
+      - ".github/workflows/regru-deploy.yml"
+      - ".github/workflows/cloudflare-edge-deploy.yml"
   pull_request:
     branches: [main]
     paths:
