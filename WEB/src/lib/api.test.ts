@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -136,6 +136,69 @@ describe("API client", () => {
       new Response(JSON.stringify(payload), { status: 200 }),
     );
     await expect(fetchYandexMapTile("v1", 10, 1, 1)).rejects.toThrow(/Yandex-тайла/);
+  });
+
+  it("loads immutable public tiles directly from REG.RU-compatible HTTPS storage", async () => {
+    const payload = {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 42,
+        geometry: { type: "Point", coordinates: [55.7, 37.6] },
+        properties: { kind: "lot", lotId: 42, title: "Public lot" },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await expect(fetchPublicYandexMapTile(
+      "https://storage.example.test/public/datasets/v1/tiles",
+      12,
+      2345,
+      1234,
+    )).resolves.toEqual(payload);
+
+    expect(String(fetchMock.mock.calls[0][0]))
+      .toBe("https://storage.example.test/public/datasets/v1/tiles/12/2345/1234.json");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "force-cache",
+    });
+  });
+
+  it("rejects insecure or missing public object-store tiles so the map can use API fallback", async () => {
+    await expect(fetchPublicYandexMapTile(
+      "http://storage.example.test/public/datasets/v1/tiles",
+      12,
+      1,
+      1,
+    )).rejects.toThrow(/HTTPS/);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("missing", { status: 404 }),
+    );
+    await expect(fetchPublicYandexMapTile(
+      "https://storage.example.test/public/datasets/v1/tiles",
+      12,
+      1,
+      1,
+    )).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("keeps review marker state behind the authenticated API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ items: [{ id: 1, review_status: "approved" }] }),
+    );
+    await expect(fetchMapReviewStatuses([1, 2])).resolves.toEqual({
+      items: [{ id: 1, review_status: "approved" }],
+    });
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.pathname).toBe("/api/map/review-statuses");
+    expect(url.searchParams.get("ids")).toBe("1,2");
   });
 
   it("accepts a server-ready Yandex FeatureCollection without client conversion", async () => {
