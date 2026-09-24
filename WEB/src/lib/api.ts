@@ -619,7 +619,6 @@ type RegionalBundleManifest = {
 
 type RegionalBundleIndex = {
   layout: "regional-bundles-v1";
-  version: string;
   shard: string;
   tiles: Record<string, { bundle: string; region: string }>;
 };
@@ -689,12 +688,11 @@ function validateRegionalBundleManifest(value: unknown, version: string): Region
   return value as RegionalBundleManifest;
 }
 
-function validateRegionalBundleIndex(value: unknown, version: string, shard: string): RegionalBundleIndex {
+function validateRegionalBundleIndex(value: unknown, shard: string): RegionalBundleIndex {
   if (!value || typeof value !== "object") throw new ApiError("Некорректный индекс bundle-карты");
   const payload = value as Record<string, unknown>;
   if (
     payload.layout !== "regional-bundles-v1"
-    || payload.version !== version
     || payload.shard !== shard
     || !payload.tiles
     || typeof payload.tiles !== "object"
@@ -777,7 +775,7 @@ export async function fetchPublicYandexMapBundleTile(
   const index = await cacheSharedRequest(
     PUBLIC_MAP_BUNDLE_INDEX_CACHE,
     indexUrl.toString(),
-    async () => validateRegionalBundleIndex(await fetchPublicJson(indexUrl), version, shard),
+    async () => validateRegionalBundleIndex(await fetchPublicJson(indexUrl), shard),
     128,
   );
   signal?.throwIfAborted();
