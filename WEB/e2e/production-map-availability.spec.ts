@@ -97,7 +97,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
     tile_base_url?: string | null;
     object_store_layout?: string;
     bundle_root_url?: string | null;
-    bundle_index_base_url?: string | null;
+    bundle_manifest_url?: string | null;
     priority_regions?: string[];
   };
   expect(dataset.version).toMatch(/-s3$/);
@@ -116,21 +116,56 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
 
   if (bundled) {
     expect(dataset.bundle_root_url).toBe("https://s3.regru.cloud/sterdez-map");
-    expect(dataset.bundle_index_base_url)
-      .toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\/.*\/indexes$/);
+    expect(dataset.bundle_manifest_url)
+      .toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\/.*\/manifest\.json$/);
     expect(dataset.priority_regions).toContain("76");
 
+    const manifestResponse = await page.context().request.get(String(dataset.bundle_manifest_url), {
+      headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+      timeout: 30_000,
+    });
+    expect(manifestResponse.status()).toBe(200);
+    const manifestHeaders = await manifestResponse.allHeaders();
+    expect(["*", "https://sterdez.online"]).toContain(manifestHeaders["access-control-allow-origin"]);
+    const manifest = await manifestResponse.json() as {
+      version?: string;
+      layout?: string;
+      detail_parent_zoom?: number;
+      overview_parent_zoom?: number;
+      index_shards?: Record<string, string>;
+    };
+    expect(manifest.version).toBe(dataset.version);
+    expect(manifest.layout).toBe("regional-bundles-v1");
+    expect(manifest.detail_parent_zoom).toBe(8);
+    expect(manifest.overview_parent_zoom).toBe(6);
+
     for (const tile of dataset.bootstrap_tiles || []) {
-      const indexUrl = `${String(dataset.bundle_index_base_url).replace(/\/$/, "")}/${tile.z}.json`;
+      const overviewZoom = Number(manifest.overview_parent_zoom);
+      const detailZoom = Number(manifest.detail_parent_zoom);
+      const shard = tile.z <= overviewZoom
+        ? "overview/root"
+        : tile.z < 12
+          ? `overview/${overviewZoom}/${tile.x >> (tile.z - overviewZoom)}/${tile.y >> (tile.z - overviewZoom)}`
+          : `detail/${detailZoom}/${tile.x >> (tile.z - detailZoom)}/${tile.y >> (tile.z - detailZoom)}`;
+      const indexKey = manifest.index_shards?.[shard];
+      if (!indexKey) continue;
+      const indexUrl = new URL(
+        indexKey,
+        `${String(dataset.bundle_root_url).replace(/\/$/, "")}/`,
+      ).toString();
       const indexResponse = await page.context().request.get(indexUrl, {
         headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
         timeout: 30_000,
       });
       if (indexResponse.status() !== 200) continue;
       const indexPayload = await indexResponse.json() as {
+        version?: string;
+        shard?: string;
         tiles?: Record<string, { bundle?: string; region?: string }>;
       };
-      const entry = indexPayload.tiles?.[`${tile.x}/${tile.y}`];
+      expect(indexPayload.version).toBe(dataset.version);
+      expect(indexPayload.shard).toBe(shard);
+      const entry = indexPayload.tiles?.[`${tile.z}/${tile.x}/${tile.y}`];
       if (!entry?.bundle) continue;
       const bundleUrl = new URL(
         entry.bundle,
@@ -210,6 +245,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       objectStoreLayout: dataset.object_store_layout || "tiles",
       tileBaseUrl: dataset.tile_base_url || null,
       bundleRootUrl: dataset.bundle_root_url || null,
+      bundleManifestUrl: dataset.bundle_manifest_url || null,
       directObjectUrl,
       tileHost: new URL(directObjectUrl).host,
       directReadMs,
