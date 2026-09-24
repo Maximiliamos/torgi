@@ -1,4 +1,4 @@
-/* global Request, Response, console, btoa, TextEncoder, crypto, globalThis */
+/* global Request, Response, console, btoa, TextEncoder, crypto */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "./worker.mjs";
