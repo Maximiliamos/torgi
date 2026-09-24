@@ -3,8 +3,52 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "./worker.mjs";
 
+async function makeMapToken(secret, version, { expiresIn = 120, sub = 1 } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    sub,
+    v: version,
+    iat: now,
+    exp: now + expiresIn,
+  };
+  const base64Url = (bytes) => {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  };
+  const encoded = base64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(encoded),
+  ));
+  return `${encoded}.${base64Url(signature)}`;
+}
+
+function installEdgeCache({ hit = null } = {}) {
+  const cache = {
+    match: vi.fn().mockResolvedValue(hit),
+    put: vi.fn().mockResolvedValue(undefined),
+  };
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  return cache;
+}
+
 describe("API origin failover proxy", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete globalThis.caches;
+  });
 
   it("proxies only allowlisted public GIS GET paths", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -222,6 +266,137 @@ describe("API origin failover proxy", () => {
 
     expect(response.headers.get("cache-control"))
       .toBe("private, max-age=86400, immutable");
+  });
+
+  it("serves authenticated prepared tiles from the edge cache without origin access", async () => {
+    const secret = "map-edge-secret-for-tests";
+    const version = "dataset-edge";
+    const token = await makeMapToken(secret, version);
+    const edgeCache = installEdgeCache({
+      hit: new Response('{"type":"FeatureCollection","features":[]}', {
+        headers: { etag: '"edge-etag"', "content-type": "application/json" },
+      }),
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await worker.fetch(new Request(
+      `https://api.sterdez.online/api/map/yandex-tiles/${version}/7/10/20`,
+      { headers: { "x-map-token": token } },
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      MAP_EDGE_TOKEN_SECRET: secret,
+    }, { waitUntil: vi.fn() });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-map-cache")).toBe("EDGE-HIT");
+    expect(response.headers.get("cache-control")).toBe("private, max-age=86400, immutable");
+    expect(edgeCache.match).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("serves authenticated prepared tiles from R2 and warms the local edge cache", async () => {
+    const secret = "map-edge-secret-for-tests";
+    const version = "dataset-r2";
+    const token = await makeMapToken(secret, version);
+    const edgeCache = installEdgeCache();
+    const body = new TextEncoder().encode('{"type":"FeatureCollection","features":[]}');
+    const object = {
+      httpEtag: '"r2-etag"',
+      arrayBuffer: vi.fn().mockResolvedValue(body.buffer),
+      writeHttpMetadata: vi.fn(),
+    };
+    const r2 = {
+      get: vi.fn().mockResolvedValue(object),
+      put: vi.fn(),
+    };
+    const waitUntil = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await worker.fetch(new Request(
+      `https://api.sterdez.online/api/map/yandex-tiles/${version}/7/10/20`,
+      { headers: { "x-map-token": token } },
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      MAP_EDGE_TOKEN_SECRET: secret,
+      MAP_ASSETS: r2,
+    }, { waitUntil });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-map-cache")).toBe("R2-HIT");
+    expect(r2.get).toHaveBeenCalledWith(`tiles/${version}/7/10/20.json`);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(edgeCache.put).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills R2 and the edge cache after an authenticated origin miss", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const secret = "map-edge-secret-for-tests";
+    const version = "dataset-origin";
+    const token = await makeMapToken(secret, version);
+    const edgeCache = installEdgeCache();
+    const r2 = {
+      get: vi.fn().mockResolvedValue(null),
+      put: vi.fn().mockResolvedValue(undefined),
+    };
+    const waitUntil = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"type":"FeatureCollection","features":[]}', {
+        status: 200,
+        headers: { etag: '"origin-etag"', "content-type": "application/json" },
+      }),
+    );
+
+    const response = await worker.fetch(new Request(
+      `https://api.sterdez.online/api/map/yandex-tiles/${version}/7/10/20`,
+      {
+        headers: {
+          "x-map-token": token,
+          cookie: "bankrotai_session=signed",
+        },
+      },
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      MAP_EDGE_TOKEN_SECRET: secret,
+      MAP_ASSETS: r2,
+      PRIMARY_API_ORIGIN: "https://home.example.test",
+    }, { waitUntil });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-map-cache")).toBe("ORIGIN-MISS");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const upstream = fetchMock.mock.calls[0][0];
+    expect(upstream.url).toContain(
+      `home.example.test/api/map/yandex-tiles/${version}/7/10/20`,
+    );
+    expect(upstream.headers.get("x-map-token")).toBeNull();
+    expect(upstream.headers.get("cookie")).toBe("bankrotai_session=signed");
+    expect(r2.put).toHaveBeenCalledTimes(1);
+    expect(edgeCache.put).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid prepared-tile token before consulting caches or origin", async () => {
+    const secret = "map-edge-secret-for-tests";
+    const version = "dataset-denied";
+    const edgeCache = installEdgeCache();
+    const r2 = { get: vi.fn(), put: vi.fn() };
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await worker.fetch(new Request(
+      `https://api.sterdez.online/api/map/yandex-tiles/${version}/7/10/20`,
+      { headers: { "x-map-token": "invalid.token" } },
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      MAP_EDGE_TOKEN_SECRET: secret,
+      MAP_ASSETS: r2,
+    }, { waitUntil: vi.fn() });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(edgeCache.match).not.toHaveBeenCalled();
+    expect(r2.get).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("keeps authentication and mutation responses non-cacheable", async () => {
