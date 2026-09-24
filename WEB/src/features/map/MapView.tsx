@@ -1076,13 +1076,18 @@ export function MapView({
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
-  const directTileMode = DIRECT_MAP_TILES && tileMode;
+  const directTileMode = DIRECT_MAP_TILES && !favoritesOnly;
+  const directFilters = React.useMemo<DirectMapFilterQuery>(() => ({
+    region_code: appliedFilters.region || undefined,
+    min_start_price: appliedFilters.minPrice ? Number(appliedFilters.minPrice) : undefined,
+    max_start_price: appliedFilters.maxPrice ? Number(appliedFilters.maxPrice) : undefined,
+  }), [appliedFilters.maxPrice, appliedFilters.minPrice, appliedFilters.region]);
+  const directFilterKey = directMapFilterSignature(directFilters);
   const visibleMapObjects = directTileMode
     ? directRenderedCount
     : tileMode && mapDataset
       ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
       : lots.length;
-
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     hasRenderedLots.current = true;
     setLots(
@@ -1115,7 +1120,7 @@ export function MapView({
     async (
       applied = appliedFilters,
     ) => {
-      if (tileMode) return;
+      if (tileMode || directTileMode) return;
       if (!favoritesOnly && !viewport) return;
       const revision = ++requestRevision.current;
       requestController.current?.abort();
@@ -1168,7 +1173,7 @@ export function MapView({
         if (revision === requestRevision.current) setLoading(false);
       }
     },
-    [appliedFilters, applyResponse, favoritesOnly, tileMode, viewport, viewportLimit],
+    [appliedFilters, applyResponse, directTileMode, favoritesOnly, tileMode, viewport, viewportLimit],
   );
 
   const acceptMapDataset = React.useCallback((dataset: MapDataset) => {
@@ -1196,11 +1201,11 @@ export function MapView({
     if (active) void load();
   }, [active, load, refreshToken]);
   React.useEffect(() => {
-    if (!tileMode) return;
+    if (!tileMode && !directTileMode) return;
     requestRevision.current += 1;
     requestController.current?.abort();
     setLoading(false);
-  }, [tileMode]);
+  }, [directTileMode, tileMode]);
   React.useEffect(() => () => requestController.current?.abort(), []);
   React.useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
@@ -1341,14 +1346,14 @@ export function MapView({
     }
     setStatistics((value) => ({
       ...value,
-      total: mapDataset.point_count,
-      mapped: mapDataset.point_count,
+      total: directFilterKey ? directRenderedCount : mapDataset.point_count,
+      mapped: directFilterKey ? directRenderedCount : mapDataset.point_count,
       returned: directRenderedCount,
       truncated: false,
       updatedAt: mapDataset.published_at,
-      exact: true,
+      exact: !directFilterKey,
     }));
-  }, [directRenderedCount, directTileMode, mapDataset]);
+  }, [directFilterKey, directRenderedCount, directTileMode, mapDataset]);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
@@ -1618,7 +1623,7 @@ export function MapView({
               onResume={() => void controlGeocoding(false)}
             />}
             {loading && <MapState>Обновление меток…</MapState>}
-            {tileMode && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
+            {(tileMode || directTileMode) && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
             {mapNotice && <MapState>{mapNotice}</MapState>}
             {message && <MapState>{message}</MapState>}
             {error && <MapState error>{error}</MapState>}
@@ -1636,7 +1641,7 @@ export function MapView({
             catch (err) { setError(String(err)); }
           }}><Search size={14} />Найти</button>
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
-          <button onClick={() => tileMode ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
+          <button onClick={() => (tileMode || directTileMode) ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
           {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
         </div>
         <YandexDesktopMap
@@ -1644,6 +1649,7 @@ export function MapView({
           tileEntries={tileEntries}
           mapDataset={mapDataset}
           directTileMode={directTileMode}
+          directFilters={directFilters}
           reviewMarkerUpdate={reviewMarkerUpdate}
           selectedCadastre={cad}
           showCadastre={showCadastre}
@@ -1674,7 +1680,7 @@ export function MapView({
             {statusContent}
             <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
               <i />
-              {loading || (tileMode && mapDatasetStatus === "loading") ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
+              {loading || ((tileMode || directTileMode) && mapDatasetStatus === "loading") ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
             </span>
           </div>
         </footer>
