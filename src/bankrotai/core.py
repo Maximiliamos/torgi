@@ -152,6 +152,15 @@ class AppSettings:
     geo_bulk_nominatim_fallback: bool = False
     min_map_points: int = 1
     min_map_coverage_ratio: float = 0.5
+    map_object_store_enabled: bool = False
+    map_object_store_endpoint: str = "https://s3.regru.cloud"
+    map_object_store_bucket: str = "sterdez-map"
+    map_object_store_public_base_url: str | None = None
+    map_object_store_access_key: str | None = None
+    map_object_store_secret_key: str | None = None
+    map_object_store_region: str = "us-east-1"
+    map_object_store_workers: int = 8
+    map_object_store_timeout_seconds: float = 20.0
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -263,6 +272,15 @@ def load_settings() -> AppSettings:
         geo_bulk_nominatim_fallback=os.getenv("GEO_BULK_NOMINATIM_FALLBACK", "false").lower() in {"1", "true", "yes"},
         min_map_points=max(0, int(os.getenv("MIN_MAP_POINTS", "1"))),
         min_map_coverage_ratio=max(0.0, min(1.0, float(os.getenv("MIN_MAP_COVERAGE_RATIO", "0.5")))),
+        map_object_store_enabled=os.getenv("MAP_OBJECT_STORE_ENABLED", "false").lower() in {"1", "true", "yes"},
+        map_object_store_endpoint=os.getenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud").rstrip("/"),
+        map_object_store_bucket=os.getenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map").strip(),
+        map_object_store_public_base_url=(os.getenv("MAP_OBJECT_STORE_PUBLIC_BASE_URL") or "").rstrip("/") or None,
+        map_object_store_access_key=os.getenv("MAP_OBJECT_STORE_ACCESS_KEY") or None,
+        map_object_store_secret_key=os.getenv("MAP_OBJECT_STORE_SECRET_KEY") or None,
+        map_object_store_region=os.getenv("MAP_OBJECT_STORE_REGION", "us-east-1").strip() or "us-east-1",
+        map_object_store_workers=max(1, min(32, int(os.getenv("MAP_OBJECT_STORE_WORKERS", "8")))),
+        map_object_store_timeout_seconds=max(3.0, min(120.0, float(os.getenv("MAP_OBJECT_STORE_TIMEOUT_SECONDS", "20")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )
