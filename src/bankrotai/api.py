@@ -78,6 +78,7 @@ from bankrotai.services.quality import data_quality_snapshot, list_source_health
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
+from bankrotai.services.map_object_store import dataset_public_tile_base_url
 from bankrotai.services.map_runtime import (
     build_filtered_tile,
     get_runtime_index,
@@ -1567,6 +1568,10 @@ def get_current_map_dataset(request: Request):
                     "bootstrap_zoom": _MAP_BOOTSTRAP_ZOOM,
                     "bootstrap_center": [_MAP_BOOTSTRAP_LAT, _MAP_BOOTSTRAP_LON],
                     "bootstrap_tiles": bootstrap_tiles,
+                    "tile_base_url": dataset_public_tile_base_url(dataset.version),
+                    "tile_source": (
+                        "regru-s3" if dataset_public_tile_base_url(dataset.version) else "api"
+                    ),
                 }
             ),
             headers=headers,
