@@ -598,6 +598,8 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     monkeypatch.setattr(api.settings, "api_read_only", True)
     monkeypatch.setattr(api.settings, "public_api_key", "service-key-that-is-long-enough")
     monkeypatch.setattr(api.settings, "auth_session_secret", "session-secret-" * 4)
+    monkeypatch.setattr(api.settings, "map_edge_token_secret", "edge-secret-" * 4)
+    monkeypatch.setattr(api.settings, "map_edge_token_ttl_seconds", 120)
     monkeypatch.setattr(api, "_consume_rate_limit", lambda _client_id: True)
     unauthorized = TestClient(api.app, base_url="https://testserver")
     assert unauthorized.get("/api/map/datasets/current").status_code == 401
@@ -622,6 +624,9 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     assert current.json()["bootstrap_zoom"] == 7
     assert current.json()["bootstrap_center"] == pytest.approx([57.6261, 39.8845])
     assert len(current.json()["bootstrap_tiles"]) == 9
+    assert isinstance(current.json()["map_token"], str)
+    assert current.json()["map_token"].count(".") == 1
+    assert isinstance(current.json()["map_token_expires_at"], int)
     for bootstrap in current.json()["bootstrap_tiles"]:
         assert bootstrap["payload"]["type"] == "FeatureCollection"
         assert isinstance(bootstrap["payload"]["features"], list)
