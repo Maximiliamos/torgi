@@ -411,6 +411,8 @@ export type MapDataset = {
   bootstrap_zoom?: number;
   bootstrap_center?: [number, number];
   bootstrap_tiles?: MapBootstrapTile[];
+  tile_base_url?: string | null;
+  tile_source?: "regru-s3" | "api";
 };
 export type MapTileFeature = {
   kind: "cluster" | "lot";
@@ -564,6 +566,31 @@ export const fetchYandexMapTile = async (
   undefined,
   { signal },
 ));
+
+export const fetchPublicYandexMapTile = async (
+  tileBaseUrl: string,
+  z: number,
+  x: number,
+  y: number,
+  signal?: AbortSignal,
+): Promise<YandexMapTilePayload> => {
+  const base = new URL(tileBaseUrl);
+  if (base.protocol !== "https:") throw new ApiError("Публичные тайлы карты должны загружаться по HTTPS");
+  const url = new URL(`${z}/${x}/${y}.json`, `${base.toString().replace(/\/$/, "")}/`);
+  const response = await fetch(url, {
+    method: "GET",
+    mode: "cors",
+    credentials: "omit",
+    cache: "force-cache",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (response.status === 404) return { type: "FeatureCollection", features: [] };
+  if (!response.ok) {
+    throw new ApiError(`REG.RU S3 map tile HTTP ${response.status}`, response.status);
+  }
+  return validateYandexMapTilePayload(await response.json());
+};
 
 export type DirectMapFilterQuery = {
   region_code?: string;
