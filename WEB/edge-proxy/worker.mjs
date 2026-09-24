@@ -10,6 +10,8 @@ const SECURITY_HEADERS = {
   "referrer-policy": "same-origin",
 };
 
+const IMMUTABLE_ASSET = /^\/assets\/[^/]+-[A-Za-z0-9_-]{6,}\.(?:css|js|mjs|woff2?|png|jpe?g|svg|webp|avif)$/i;
+
 function withSecurityHeaders(headers = new Headers()) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
@@ -61,14 +63,16 @@ export default {
       body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
       redirect: "manual",
     });
+    const immutableAsset = IMMUTABLE_ASSET.test(incoming.pathname);
     let response;
     try {
       response = incoming.pathname.startsWith("/api/")
         ? await env.API_PROXY.fetch(upstreamRequest)
-        : await fetch(
-          upstreamRequest,
-          incoming.pathname === "/deployment.json" ? { cache: "no-store" } : undefined,
-        );
+        : await fetch(upstreamRequest, incoming.pathname === "/deployment.json"
+          ? { cache: "no-store" }
+          : immutableAsset
+            ? { cf: { cacheEverything: true, cacheTtl: 31_536_000 } }
+            : undefined);
     } catch {
       return unavailableResponse(incoming);
     }
@@ -85,6 +89,8 @@ export default {
 
     if (incoming.pathname === "/deployment.json") {
       headers.set("cache-control", "no-store");
+    } else if (immutableAsset && response.ok) {
+      headers.set("cache-control", "public, max-age=31536000, immutable");
     }
     return new Response(response.body, {
       status: response.status,

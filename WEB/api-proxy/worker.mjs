@@ -82,9 +82,26 @@ async function completedResponse(request, incoming, origin, headers, timeoutMs =
   return { response, body };
 }
 
-function proxyResponse(result, requestId) {
+function browserPrivateCachePolicy(request, incoming, response) {
+  if (!SAFE_METHODS.has(request.method) || ![200, 304].includes(response.status)) return null;
+  if (/^\/api\/map\/tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)) {
+    return "private, max-age=86400, immutable";
+  }
+  if (incoming.pathname === "/api/map/datasets/current") {
+    return "private, max-age=15, stale-while-revalidate=60";
+  }
+  if (incoming.pathname === "/api/map/lots") {
+    return response.headers.get("cache-control") || "private, max-age=60, stale-while-revalidate=300";
+  }
+  return null;
+}
+
+function proxyResponse(result, requestId, request, incoming) {
   const outgoing = new Headers(result.response.headers);
-  outgoing.set("cache-control", "no-store");
+  outgoing.set(
+    "cache-control",
+    browserPrivateCachePolicy(request, incoming, result.response) || "no-store",
+  );
   outgoing.set("x-content-type-options", "nosniff");
   outgoing.set("referrer-policy", "same-origin");
   outgoing.set("x-request-id", result.response.headers.get("x-request-id") || requestId);
@@ -130,7 +147,7 @@ export default {
         event: "primary_success", request_id: requestId, method: request.method,
         path: incoming.pathname, status: primary.response.status, duration_ms: Date.now() - startedAt,
       }));
-      return proxyResponse(primary, requestId);
+      return proxyResponse(primary, requestId, request, incoming);
     } catch (primaryError) {
       console.error(JSON.stringify({
         event: "primary_failure", request_id: requestId, method: request.method,
@@ -148,7 +165,7 @@ export default {
             event: "primary_retry_success", request_id: requestId, method: request.method,
             path: incoming.pathname, status: retry.response.status, duration_ms: Date.now() - startedAt,
           }));
-          return proxyResponse(retry, requestId);
+          return proxyResponse(retry, requestId, request, incoming);
         } catch (retryError) {
           console.error(JSON.stringify({
             event: "primary_retry_failure", request_id: requestId, method: request.method,
@@ -171,7 +188,7 @@ export default {
             event: "secondary_success", request_id: requestId, method: request.method,
             path: incoming.pathname, status: secondary.response.status, duration_ms: Date.now() - startedAt,
           }));
-          return proxyResponse(secondary, requestId);
+          return proxyResponse(secondary, requestId, request, incoming);
         } catch (secondaryError) {
           console.error(JSON.stringify({
             event: "secondary_failure", request_id: requestId, method: request.method,

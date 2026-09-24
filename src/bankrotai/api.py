@@ -472,8 +472,11 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         return False
     if method == "POST":
         if path in {
-            "/api/saved-searches", "/api/search/import", "/api/sync/lots",
-            "/api/operations/geocoding/pause", "/api/operations/geocoding/resume",
+            "/api/saved-searches",
+            "/api/search/import",
+            "/api/sync/lots",
+            "/api/operations/geocoding/pause",
+            "/api/operations/geocoding/resume",
         }:
             return True
         if path.startswith("/api/lots/"):
@@ -865,12 +868,14 @@ def import_online_lot(
                 value["current_price"] = detail.get("current_price") or value.get("current_price")
                 if detail.get("auction_status") != "unknown":
                     value["auction_status"] = detail["auction_status"]
-                raw_data.update({
-                    "detail_enrichment_status": "success",
-                    "detail_url": detail.get("detail_url"),
-                    "minimum_price": detail.get("minimum_price"),
-                    "image_urls": detail.get("image_urls") or [],
-                })
+                raw_data.update(
+                    {
+                        "detail_enrichment_status": "success",
+                        "detail_url": detail.get("detail_url"),
+                        "minimum_price": detail.get("minimum_price"),
+                        "image_urls": detail.get("image_urls") or [],
+                    }
+                )
             except Exception as exc:
                 logger.warning("TBankrot detail enrichment failed for explicit import %s: %s", request.external_id, exc)
                 raw_data["detail_enrichment_status"] = "failed"
@@ -1471,7 +1476,7 @@ def get_map_lots(
 
 
 @app.get("/api/map/datasets/current")
-def get_current_map_dataset():
+def get_current_map_dataset(request: Request):
     with read_session_scope() as session:
         dataset = session.scalar(
             select(MapDataset).where(
@@ -1482,6 +1487,14 @@ def get_current_map_dataset():
         )
         if dataset is None:
             raise HTTPException(status_code=404, detail="Map dataset is not ready")
+        etag = f'"dataset-{dataset.version}"'
+        headers = {
+            "Cache-Control": "private, max-age=15, stale-while-revalidate=60",
+            "ETag": etag,
+            "X-Map-Dataset": dataset.version,
+        }
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
         return JSONResponse(
             content=jsonable_encoder(
                 {
@@ -1493,7 +1506,7 @@ def get_current_map_dataset():
                     "published_at": dataset.published_at,
                 }
             ),
-            headers={"Cache-Control": "private, no-cache", "X-Map-Dataset": dataset.version},
+            headers=headers,
         )
 
 

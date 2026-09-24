@@ -208,4 +208,30 @@ describe("API origin failover proxy", () => {
     expect(response.status).toBe(304);
     expect(response.headers.get("etag")).toBe('"map-v1"');
   });
+
+  it("preserves private browser caching for authenticated immutable map tiles", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{"features":[]}', {
+      headers: { "cache-control": "private, max-age=86400, immutable" },
+    }));
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/map/tiles/version-1/12/2345/1234",
+      { headers: { cookie: "bankrotai_session=signed" } },
+    ), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    expect(response.headers.get("cache-control"))
+      .toBe("private, max-age=86400, immutable");
+  });
+
+  it("keeps authentication and mutation responses non-cacheable", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ id: 1 }));
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/auth/me",
+    ), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
 });

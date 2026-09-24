@@ -26,6 +26,32 @@ describe("canonical Cloudflare edge proxy", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("caches content-addressed assets immutably at the edge", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("export default 1", { headers: { "cache-control": "max-age=0" } }),
+    );
+
+    const response = await worker.fetch(new Request(
+      "https://sterdez.online/assets/index-D0C3FuAH.js",
+    ));
+
+    expect(fetchMock.mock.calls[0][1]).toEqual({
+      cf: { cacheEverything: true, cacheTtl: 31_536_000 },
+    });
+    expect(response.headers.get("cache-control"))
+      .toBe("public, max-age=31536000, immutable");
+  });
+
+  it("does not give unhashed frontend paths an immutable lifetime", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("html", { headers: { "cache-control": "max-age=0" } }),
+    );
+
+    const response = await worker.fetch(new Request("https://sterdez.online/"));
+
+    expect(response.headers.get("cache-control")).toBe("max-age=0");
+  });
+
   it("routes API requests directly to the dedicated API Worker", async () => {
     const pagesFetch = vi.spyOn(globalThis, "fetch");
     const apiFetch = vi.fn().mockResolvedValue(

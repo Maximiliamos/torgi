@@ -1,0 +1,73 @@
+name: Home performance diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Collect read-only storage and container facts
+        shell: powershell
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'home-performance-diagnostics.txt'
+          $lines = [System.Collections.Generic.List[string]]::new()
+          $lines.Add("captured_utc=$([DateTime]::UtcNow.ToString('o'))")
+          $lines.Add("commit=$env:GITHUB_SHA")
+          $lines.Add('')
+          $lines.Add('[docker-info]')
+          $lines.Add((docker info --format 'docker_root={{.DockerRootDir}};driver={{.Driver}};cpus={{.NCPU}};memory={{.MemTotal}}'))
+          $lines.Add('')
+          $lines.Add('[physical-disks]')
+          $lines.Add((Get-PhysicalDisk | Select-Object FriendlyName, MediaType, BusType, Size, HealthStatus |
+            Format-Table -AutoSize | Out-String).TrimEnd())
+          $lines.Add('')
+          $lines.Add('[volumes]')
+          $lines.Add((Get-Volume | Select-Object DriveLetter, FileSystemLabel, FileSystem, Size, SizeRemaining, HealthStatus |
+            Sort-Object DriveLetter | Format-Table -AutoSize | Out-String).TrimEnd())
+          $lines.Add('')
+          $lines.Add('[docker-desktop-storage]')
+          $dockerStorageCandidates = @(
+            (Join-Path $env:LOCALAPPDATA 'Docker\wsl\data\ext4.vhdx'),
+            (Join-Path $env:LOCALAPPDATA 'Docker\wsl\disk\docker_data.vhdx')
+          )
+          foreach ($candidate in $dockerStorageCandidates) {
+            if (Test-Path -LiteralPath $candidate) {
+              $item = Get-Item -LiteralPath $candidate
+              $lines.Add("path=$($item.FullName);bytes=$($item.Length)")
+            }
+          }
+          $lines.Add('')
+          $lines.Add('[production-volume-mountpoints]')
+          foreach ($volume in @('bankrotai-home-postgres', 'bankrotai-home-redis')) {
+            $lines.Add((docker volume inspect $volume --format 'name={{.Name}};mountpoint={{.Mountpoint}}'))
+          }
+          $lines.Add('')
+          $lines.Add('[container-mounts]')
+          foreach ($container in @(
+            'bankrotai-home-postgres', 'bankrotai-photon', 'bankrotai-home-redis',
+            'bankrotai-home-secondary', 'bankrotai-home-ingestion-worker',
+            'bankrotai-home-geocoding-worker', 'bankrotai-home-map-worker'
+          )) {
+            $present = docker ps -a --filter "name=^/$container$" --format '{{.Names}}'
+            if ($present -eq $container) {
+              $lines.Add((docker inspect $container --format 'container={{.Name}};mounts={{json .Mounts}}'))
+            }
+          }
+          $lines.Add('')
+          $lines.Add('[container-resources]')
+          $lines.Add((docker stats --no-stream --format 'container={{.Name}};cpu={{.CPUPerc}};memory={{.MemUsage}};block_io={{.BlockIO}}'))
+          [IO.File]::WriteAllLines($report, $lines)
+          Get-Content -LiteralPath $report | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v6
+        with:
+          name: home-performance-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/home-performance-diagnostics.txt
+          if-no-files-found: error
+          retention-days: 14

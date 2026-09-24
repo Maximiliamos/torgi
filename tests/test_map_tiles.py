@@ -27,24 +27,38 @@ from bankrotai.services.map_builder import (
 
 def _database():
     engine = create_engine(
-        "sqlite:///:memory:", future=True,
-        connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     with factory() as session:
         upsert_user(session, "reader", "a sufficiently secure password", role="reader")
         lot = ProcessedLot(
-            external_id="tile-lot", source="test", source_system="test", title="Тайловый лот",
-            description="", category="land", start_price=Decimal("1000000"), current_price=Decimal("900000"),
+            external_id="tile-lot",
+            source="test",
+            source_system="test",
+            title="Тайловый лот",
+            description="",
+            category="land",
+            start_price=Decimal("1000000"),
+            current_price=Decimal("900000"),
             auction_status="active",
         )
         session.add(lot)
         session.flush()
-        session.add(LotGeoSnapshot(
-            lot_id=lot.id, geo_source="test", geo_method="fixture", geo_confidence="high",
-            centroid_lat=57.6261, centroid_lon=39.8845,
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source="test",
+                geo_method="fixture",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
         session.commit()
     return factory
 
@@ -97,31 +111,54 @@ def test_builder_dataset_membership_business_matrix():
         assert primary is not None
         for index, (name, overrides, has_geo, confidence, _included) in enumerate(cases):
             lot = ProcessedLot(
-                external_id=name, source="test", source_system="test", title=name,
-                description="", category="land", **{"auction_status": "active", **overrides},
+                external_id=name,
+                source="test",
+                source_system="test",
+                title=name,
+                description="",
+                category="land",
+                **{"auction_status": "active", **overrides},
             )
             session.add(lot)
             session.flush()
             ids[name] = lot.id
             if has_geo:
                 invalid = name == "invalid-geo-hidden"
-                session.add(LotGeoSnapshot(
-                    lot_id=lot.id, geo_source="test", geo_method="fixture", geo_confidence=confidence,
-                    centroid_lat=95.0 if invalid else 55.7 + index / 100,
-                    centroid_lon=200.0 if invalid else 37.6 + index / 100,
-                    observed_at=now + timedelta(minutes=index),
-                ))
+                session.add(
+                    LotGeoSnapshot(
+                        lot_id=lot.id,
+                        geo_source="test",
+                        geo_method="fixture",
+                        geo_confidence=confidence,
+                        centroid_lat=95.0 if invalid else 55.7 + index / 100,
+                        centroid_lon=200.0 if invalid else 37.6 + index / 100,
+                        observed_at=now + timedelta(minutes=index),
+                    )
+                )
         duplicate = ProcessedLot(
-            external_id="duplicate-hidden", source="test", source_system="test", title="duplicate-hidden",
-            description="", category="land", auction_status="active", duplicate_of_id=primary.id,
+            external_id="duplicate-hidden",
+            source="test",
+            source_system="test",
+            title="duplicate-hidden",
+            description="",
+            category="land",
+            auction_status="active",
+            duplicate_of_id=primary.id,
         )
         session.add(duplicate)
         session.flush()
         ids["duplicate-hidden"] = duplicate.id
-        session.add(LotGeoSnapshot(
-            lot_id=duplicate.id, geo_source="test", geo_method="fixture", geo_confidence="high",
-            centroid_lat=55.8, centroid_lon=37.8, observed_at=now,
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=duplicate.id,
+                geo_source="test",
+                geo_method="fixture",
+                geo_confidence="high",
+                centroid_lat=55.8,
+                centroid_lon=37.8,
+                observed_at=now,
+            )
+        )
         session.commit()
 
     build_map_dataset(factory)
@@ -154,17 +191,29 @@ def test_builder_uses_latest_geo_by_observed_at_then_id():
         assert original is not None
         original.observed_at = datetime(2026, 9, 6, 12, 0, 0)
         # Inserted later means a larger id, but observed_at makes this snapshot older.
-        session.add(LotGeoSnapshot(
-            lot_id=lot.id, geo_source="older-import", geo_method="fixture", geo_confidence="low",
-            centroid_lat=10.0, centroid_lon=20.0,
-            observed_at=datetime(2026, 9, 5, 12, 0, 0),
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source="older-import",
+                geo_method="fixture",
+                geo_confidence="low",
+                centroid_lat=10.0,
+                centroid_lon=20.0,
+                observed_at=datetime(2026, 9, 5, 12, 0, 0),
+            )
+        )
         # Equal observed_at is deterministically resolved by the larger id.
-        session.add(LotGeoSnapshot(
-            lot_id=lot.id, geo_source="same-time-later-id", geo_method="fixture", geo_confidence="medium",
-            centroid_lat=58.0, centroid_lon=40.0,
-            observed_at=datetime(2026, 9, 6, 12, 0, 0),
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source="same-time-later-id",
+                geo_method="fixture",
+                geo_confidence="medium",
+                centroid_lat=58.0,
+                centroid_lon=40.0,
+                observed_at=datetime(2026, 9, 6, 12, 0, 0),
+            )
+        )
         session.commit()
 
     build_map_dataset(factory)
@@ -191,15 +240,26 @@ def test_builder_keeps_distinct_lots_at_same_coordinates_without_duplicate_ids()
     factory = _database()
     with factory() as session:
         second = ProcessedLot(
-            external_id="coincident-lot", source="test", source_system="test",
-            title="Совпадающая точка", description="", category="land", auction_status="active",
+            external_id="coincident-lot",
+            source="test",
+            source_system="test",
+            title="Совпадающая точка",
+            description="",
+            category="land",
+            auction_status="active",
         )
         session.add(second)
         session.flush()
-        session.add(LotGeoSnapshot(
-            lot_id=second.id, geo_source="test", geo_method="fixture", geo_confidence="high",
-            centroid_lat=57.6261, centroid_lon=39.8845,
-        ))
+        session.add(
+            LotGeoSnapshot(
+                lot_id=second.id,
+                geo_source="test",
+                geo_method="fixture",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
         session.commit()
         second_id = second.id
 
@@ -323,8 +383,10 @@ def test_empty_dataset_cannot_replace_nonempty_current(monkeypatch):
 
 def test_empty_dataset_is_allowed_for_initial_bootstrap():
     engine = create_engine(
-        "sqlite:///:memory:", future=True,
-        connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -342,12 +404,18 @@ def test_relative_coverage_drop_is_rejected_without_losing_current():
     factory = _database()
     with factory() as session:
         old = MapDataset(
-            version="old-coverage", status="ready", is_current=True,
-            point_count=100, tile_count=0,
+            version="old-coverage",
+            status="ready",
+            is_current=True,
+            point_count=100,
+            tile_count=0,
         )
         new = MapDataset(
-            version="new-coverage", status="building", is_current=False,
-            point_count=49, tile_count=0,
+            version="new-coverage",
+            status="building",
+            is_current=False,
+            point_count=49,
+            tile_count=0,
         )
         session.add_all([old, new])
         session.commit()
@@ -386,23 +454,40 @@ def test_dimension_coverage_guard_rejects_disappearing_source():
         lots = [
             ProcessedLot(
                 source_system="lost-source" if index < 20 else "kept-source",
-                source="test", external_id=f"dim-{index}", title="Lot", description="",
-                category="land", auction_status="active", region_code="76",
+                source="test",
+                external_id=f"dim-{index}",
+                title="Lot",
+                description="",
+                category="land",
+                auction_status="active",
+                region_code="76",
             )
             for index in range(40)
         ]
         session.add_all(lots)
         session.flush()
-        session.add_all([
-            MapTile(
-                dataset_id=old.id, z=12, x=1, y=1, feature_count=40, etag="old-dim",
-                payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots]},
-            ),
-            MapTile(
-                dataset_id=new.id, z=12, x=1, y=1, feature_count=20, etag="new-dim",
-                payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots[20:]]},
-            ),
-        ])
+        session.add_all(
+            [
+                MapTile(
+                    dataset_id=old.id,
+                    z=12,
+                    x=1,
+                    y=1,
+                    feature_count=40,
+                    etag="old-dim",
+                    payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots]},
+                ),
+                MapTile(
+                    dataset_id=new.id,
+                    z=12,
+                    x=1,
+                    y=1,
+                    feature_count=20,
+                    etag="new-dim",
+                    payload_json={"features": [{"kind": "lot", "id": lot.id} for lot in lots[20:]]},
+                ),
+            ]
+        )
         session.commit()
         old_id, new_id = old.id, new.id
 
@@ -435,12 +520,13 @@ def test_promotion_refuses_incomplete_tile_metadata():
     factory = _database()
     old_result = build_map_dataset(factory)
     with factory() as session:
-        old_id = session.scalar(
-            select(MapDataset.id).where(MapDataset.version == old_result["version"])
-        )
+        old_id = session.scalar(select(MapDataset.id).where(MapDataset.version == old_result["version"]))
         incomplete = MapDataset(
-            version="incomplete", status="building", is_current=False,
-            point_count=1, tile_count=1,
+            version="incomplete",
+            status="building",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
         )
         session.add(incomplete)
         session.commit()
@@ -448,7 +534,9 @@ def test_promotion_refuses_incomplete_tile_metadata():
 
     with pytest.raises(RuntimeError, match="actual_tiles=0"):
         _promote_map_dataset(
-            factory, dataset_id=incomplete_id, expected_current_id=old_id,
+            factory,
+            dataset_id=incomplete_id,
+            expected_current_id=old_id,
         )
 
     with factory() as session:
@@ -470,15 +558,22 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
     factory = _database()
     result = build_map_dataset(factory)
     with factory() as session:
-        session.add(MapDataset(
-            version="partial-building-version", status="building", is_current=False,
-            point_count=999, tile_count=999,
-        ))
-        session.add_all([
-            MapDataset(version="failed-version", status="failed", is_current=False),
-            MapDataset(version="rejected-version", status="rejected", is_current=False),
-            MapDataset(version="unpublished-ready-version", status="ready", is_current=False),
-        ])
+        session.add(
+            MapDataset(
+                version="partial-building-version",
+                status="building",
+                is_current=False,
+                point_count=999,
+                tile_count=999,
+            )
+        )
+        session.add_all(
+            [
+                MapDataset(version="failed-version", status="failed", is_current=False),
+                MapDataset(version="rejected-version", status="rejected", is_current=False),
+                MapDataset(version="unpublished-ready-version", status="ready", is_current=False),
+            ]
+        )
         session.commit()
 
     @contextmanager
@@ -497,17 +592,34 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
     assert unauthorized.get("/api/map/datasets/current").status_code == 401
     assert unauthorized.get(f"/api/map/tiles/{result['version']}/0/0/0").status_code == 401
     client = TestClient(api.app, base_url="https://testserver", headers={"X-API-Key": api.settings.public_api_key})
-    assert client.post("/api/auth/login", json={
-        "username": "reader", "password": "a sufficiently secure password",
-    }).status_code == 200
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={
+                "username": "reader",
+                "password": "a sufficiently secure password",
+            },
+        ).status_code
+        == 200
+    )
     current = client.get("/api/map/datasets/current")
     assert current.status_code == 200
     assert current.json()["version"] == result["version"]
-    assert current.headers["cache-control"] == "private, no-cache"
+    assert current.headers["cache-control"] == "private, max-age=15, stale-while-revalidate=60"
+    assert current.headers["etag"] == f'"dataset-{result["version"]}"'
     assert current.headers["x-map-dataset"] == result["version"]
+    current_not_modified = client.get(
+        "/api/map/datasets/current",
+        headers={"If-None-Match": current.headers["etag"]},
+    )
+    assert current_not_modified.status_code == 304
+    assert current_not_modified.headers["x-map-dataset"] == result["version"]
     for hidden_version in (
-        "partial-building-version", "failed-version", "rejected-version",
-        "unpublished-ready-version", "missing-version",
+        "partial-building-version",
+        "failed-version",
+        "rejected-version",
+        "unpublished-ready-version",
+        "missing-version",
     ):
         assert client.get(f"/api/map/tiles/{hidden_version}/0/0/0").status_code == 404
     with factory() as session:
@@ -523,8 +635,15 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
     assert response.json()["features"]
     allowed_cluster = {"kind", "id", "lat", "lon", "count", "bounds"}
     allowed_lot = {
-        "kind", "id", "lat", "lon", "title", "current_price", "start_price",
-        "status", "review_status",
+        "kind",
+        "id",
+        "lat",
+        "lon",
+        "title",
+        "current_price",
+        "start_price",
+        "status",
+        "review_status",
     }
     forbidden = {"password", "password_hash", "notes", "user_id", "raw_data", "filesystem_path", "debug"}
     for feature in response.json()["features"]:
@@ -570,24 +689,44 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
         assert current is not None
         current.created_at = now
         previous = MapDataset(
-            version="previous-ready", status="ready", is_current=False,
-            point_count=1, tile_count=1, created_at=old, published_at=old,
+            version="previous-ready",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=old,
+            published_at=old,
         )
         older = MapDataset(
-            version="older-ready", status="ready", is_current=False,
-            point_count=1, tile_count=1, created_at=old - timedelta(days=1), published_at=old - timedelta(days=1),
+            version="older-ready",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=old - timedelta(days=1),
+            published_at=old - timedelta(days=1),
         )
         failed = MapDataset(version="old-failed", status="failed", is_current=False, created_at=old)
         recent_failed = MapDataset(
-            version="recent-failed", status="failed", is_current=False, created_at=now - timedelta(hours=1),
+            version="recent-failed",
+            status="failed",
+            is_current=False,
+            created_at=now - timedelta(hours=1),
         )
         session.add_all([previous, older, failed, recent_failed])
         session.flush()
         for dataset in (previous, older, failed):
-            session.add(MapTile(
-                dataset_id=dataset.id, z=0, x=0, y=0, feature_count=0,
-                etag=f"etag-{dataset.id}", payload_json={"features": []},
-            ))
+            session.add(
+                MapTile(
+                    dataset_id=dataset.id,
+                    z=0,
+                    x=0,
+                    y=0,
+                    feature_count=0,
+                    etag=f"etag-{dataset.id}",
+                    payload_json={"features": []},
+                )
+            )
         session.commit()
 
     dry_run = cleanup_map_datasets(factory, now=now)
@@ -610,9 +749,9 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
         assert "recent-failed" in versions
         assert "older-ready" not in versions
         assert "old-failed" not in versions
-        assert session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.not_in(
-            select(MapDataset.id)
-        ))) == 0
+        assert (
+            session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.not_in(select(MapDataset.id)))) == 0
+        )
 
     @contextmanager
     def scope():

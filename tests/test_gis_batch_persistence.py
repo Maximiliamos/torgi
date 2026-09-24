@@ -41,11 +41,7 @@ def sessions():
 
 
 def add_run(session, run_id: str) -> None:
-    session.execute(
-        update(LotSyncRun)
-        .where(LotSyncRun.status.in_(("queued", "running")))
-        .values(status="success")
-    )
+    session.execute(update(LotSyncRun).where(LotSyncRun.status.in_(("queued", "running"))).values(status="success"))
     session.add(LotSyncRun(id=run_id, status="running", trigger_type="benchmark", total_sources=1))
     session.flush()
 
@@ -172,3 +168,25 @@ def test_status_history_records_only_real_status_changes() -> None:
         source = session.scalar(select(SourceLot))
         session.refresh(source)
         assert source is not None and source.is_active is False and source.is_archived is True
+
+
+def test_batch_update_requeues_geocoding_when_geo_input_changes() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-1")
+        persist_changed_lots_batch(session, [make_lot("gis-1")], "run-1")
+        processed = session.scalar(select(ProcessedLot))
+        assert processed is not None
+        processed.geo_input_hash = "a" * 64
+        processed.needs_geo_check = False
+        session.commit()
+
+        changed = make_lot("gis-1")
+        changed.address = "Ярославль, улица Свободы, 1"
+        add_run(session, "run-2")
+        persist_changed_lots_batch(session, [changed], "run-2")
+        session.commit()
+
+        session.refresh(processed)
+        assert processed.needs_geo_check is True
+        assert processed.geo_input_hash is None

@@ -27,6 +27,7 @@ def test_paused_geocoding_does_not_start_provider_work(monkeypatch) -> None:
 
     with scope() as session:
         session.add(AppSetting(key="geocoding_paused", value="true"))
+
     def must_not_resolve(*_args, **_kwargs):
         raise AssertionError("provider must not run while geocoding is paused")
 
@@ -260,6 +261,51 @@ def test_identical_inputs_share_one_bulk_provider_call(monkeypatch) -> None:
         assert task.progress_json["percent"] == 100.0
 
 
+def test_failed_batch_reports_aggregate_reason_without_address(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    secret_address = "Москва, секретная улица, дом 77"
+    with scope() as session:
+        session.add(
+            ProcessedLot(
+                external_id="failed-reason",
+                source="test",
+                source_system="test",
+                title="Склад",
+                description="",
+                category="commercial",
+                address=secret_address,
+                auction_status="active",
+            )
+        )
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "resolve_lot_geo",
+        lambda *_args, **_kwargs: CadastralObjectResult(
+            query=secret_address,
+            source="geocoding_chain",
+            confidence="none",
+            status="GEOCODING_FAILED",
+            attempts=[{"source": "photon", "valid": False, "reason": "locality_name_mismatch"}],
+            error="No validated geocoding result",
+        ),
+    )
+
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert result["failed"] == 1
+    assert result["failure_reasons"] == {"photon:locality_name_mismatch": 1}
+    assert secret_address not in str(result["failure_reasons"])
+
+
 def test_distinct_bulk_queries_run_with_bounded_parallelism(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -331,30 +377,32 @@ def test_quality_audit_uses_latest_snapshot_and_reports_suspicious_matches() -> 
         session.add(lot)
         session.flush()
         lot_id = lot.id
-        session.add_all([
-            LotGeoSnapshot(
-                id=100,
-                lot_id=lot_id,
-                geo_source="photon",
-                geo_method="address",
-                geo_confidence="medium",
-                centroid_lat=55.98,
-                centroid_lon=38.26,
-                observed_at=datetime(2026, 9, 17, 10, 0, 0),
-                metadata_json={"address": "Боково, Московская область"},
-            ),
-            LotGeoSnapshot(
-                id=1,
-                lot_id=lot_id,
-                geo_source="photon",
-                geo_method="address",
-                geo_confidence="medium",
-                centroid_lat=57.7,
-                centroid_lon=39.8,
-                observed_at=datetime(2026, 9, 17, 11, 0, 0),
-                metadata_json={"address": "Ярославль"},
-            ),
-        ])
+        session.add_all(
+            [
+                LotGeoSnapshot(
+                    id=100,
+                    lot_id=lot_id,
+                    geo_source="photon",
+                    geo_method="address",
+                    geo_confidence="medium",
+                    centroid_lat=55.98,
+                    centroid_lon=38.26,
+                    observed_at=datetime(2026, 9, 17, 10, 0, 0),
+                    metadata_json={"address": "Боково, Московская область"},
+                ),
+                LotGeoSnapshot(
+                    id=1,
+                    lot_id=lot_id,
+                    geo_source="photon",
+                    geo_method="address",
+                    geo_confidence="medium",
+                    centroid_lat=57.7,
+                    centroid_lon=39.8,
+                    observed_at=datetime(2026, 9, 17, 11, 0, 0),
+                    metadata_json={"address": "Ярославль"},
+                ),
+            ]
+        )
         session.commit()
 
         audit = geo_backfill.geocoding_quality_audit(session)

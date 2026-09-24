@@ -276,10 +276,14 @@ describe("tile map startup", () => {
     const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
     act(() => sendMapMessage(frame, "bankrotai-ready", { instanceId: "dataset-race" }));
     act(() => sendViewport(frame, [37.4, 55.6, 37.41, 55.61], 10));
-    await waitFor(() => expect(fetchMapTile).toHaveBeenCalledWith("v1", expect.anything(), expect.anything(), expect.anything()));
+    await waitFor(() => expect(fetchMapTile).toHaveBeenCalledWith(
+      "v1", expect.anything(), expect.anything(), expect.anything(), expect.any(AbortSignal),
+    ));
 
     view.rerender(<MapView refreshToken={1} />);
-    await waitFor(() => expect(fetchMapTile).toHaveBeenCalledWith("v2", expect.anything(), expect.anything(), expect.anything()));
+    await waitFor(() => expect(fetchMapTile).toHaveBeenCalledWith(
+      "v2", expect.anything(), expect.anything(), expect.anything(), expect.any(AbortSignal),
+    ));
     await act(async () => v2.resolve({
       features: [{ kind: "lot", id: 2, lat: 55.6, lon: 37.4 }],
     }));
@@ -734,5 +738,21 @@ describe("visible tile resilience", () => {
     );
     expect(result.entries.map(({ tile }) => tile.x)).toEqual([2]);
     expect(result.failed).toBe(1);
+  });
+
+  it("publishes a fast tile before a slower tile completes", async () => {
+    const slow = deferredTile();
+    const published: number[] = [];
+    const completed = fetchVisibleMapTiles(
+      [{ z: 10, x: 1, y: 2 }, { z: 10, x: 2, y: 2 }],
+      (tile) => tile.x === 2 ? slow.promise : Promise.resolve({ features: [] }),
+      2,
+      ({ tile }) => published.push(tile.x),
+    );
+
+    await vi.waitFor(() => expect(published).toEqual([1]));
+    slow.resolve({ features: [] });
+    await completed;
+    expect(published).toEqual([1, 2]);
   });
 });

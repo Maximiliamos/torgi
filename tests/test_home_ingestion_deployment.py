@@ -17,8 +17,14 @@ def test_home_deploy_keeps_public_api_read_only_and_runs_private_worker() -> Non
     assert "'API_READ_ONLY=true'" in workflow
     assert "'API_READ_ONLY=false'" in workflow
     assert "WORKER_CONTAINER: bankrotai-home-ingestion-worker" in workflow
+    assert "GEO_WORKER_CONTAINER: bankrotai-home-geocoding-worker" in workflow
+    assert "MAP_WORKER_CONTAINER: bankrotai-home-map-worker" in workflow
     assert "REDIS_CONTAINER: bankrotai-home-redis" in workflow
-    assert "celery -A bankrotai.tasks:celery_app worker" in workflow
+    assert "'celery', '-A', 'bankrotai.tasks:celery_app', 'worker'" in workflow
+    assert "Queue = 'ingestion,maintenance'" in workflow
+    assert "Queue = 'geocoding'" in workflow
+    assert "Queue = 'map'" in workflow
+    assert "--concurrency=1" in workflow
     assert "--no-healthcheck" in workflow
     assert "--network $env:DOCKER_NETWORK" in workflow
 

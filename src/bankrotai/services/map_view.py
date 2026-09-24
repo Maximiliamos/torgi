@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from time import perf_counter
 from urllib.parse import urlparse
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
@@ -190,21 +190,18 @@ def _map_base_filters(
     return filters
 
 
-def _latest_geo_subquery():
-    ranked = select(
-        LotGeoSnapshot.id.label("geo_id"),
-        LotGeoSnapshot.lot_id,
-        func.row_number().over(
-            partition_by=LotGeoSnapshot.lot_id,
-            order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
-        ).label("geo_rank"),
-    ).where(
-        LotGeoSnapshot.centroid_lat.isnot(None),
-        LotGeoSnapshot.centroid_lon.isnot(None),
-    ).subquery()
-    return select(ranked.c.lot_id, ranked.c.geo_id).where(
-        ranked.c.geo_rank == 1
-    ).subquery()
+def _latest_geo_predicate():
+    """Select the latest row per lot without ranking the whole snapshot table."""
+    newer = aliased(LotGeoSnapshot)
+    return ~exists(
+        select(newer.id).where(
+            newer.lot_id == LotGeoSnapshot.lot_id,
+            or_(
+                newer.observed_at > LotGeoSnapshot.observed_at,
+                and_(newer.observed_at == LotGeoSnapshot.observed_at, newer.id > LotGeoSnapshot.id),
+            ),
+        )
+    ).correlate(LotGeoSnapshot)
 
 
 def build_map_lot_statistics(
@@ -225,11 +222,12 @@ def build_map_lot_statistics(
         include_archived=include_archived,
         review_status=review_status,
     )
-    latest_geo = _latest_geo_subquery()
     total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
     mapped_total = (
         session.scalar(
-            select(func.count(ProcessedLot.id)).join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id).where(*filters)
+            select(func.count(ProcessedLot.id))
+            .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
+            .where(*filters, _latest_geo_predicate())
         )
         or 0
     )
@@ -263,7 +261,6 @@ def build_map_lots_response(
         include_archived=include_archived,
         review_status=review_status,
     )
-    latest_geo = _latest_geo_subquery()
     map_filters = list(filters)
     if all(value is not None for value in (west, south, east, north)):
         assert west is not None and south is not None and east is not None and north is not None
@@ -302,9 +299,8 @@ def build_map_lots_response(
             LotGeoSnapshot.centroid_lat,
             LotGeoSnapshot.centroid_lon,
         )
-        .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-        .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-        .where(*map_filters)
+        .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
+        .where(*map_filters, _latest_geo_predicate())
         .order_by(ProcessedLot.last_update.desc())
         .limit(limit + 1)
     )

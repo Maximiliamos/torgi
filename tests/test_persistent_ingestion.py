@@ -119,6 +119,17 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_non_gis_source_uses_bounded_set_based_persistence(sessions) -> None:
+    service = NationwideIngestionService(sessions, profile_timings=True)
+    items = [lot(f"lot-{index}") for index in range(25)]
+
+    _, result = run_with(service, FakeConnector([items]))
+
+    source = result["sources"][0]
+    assert source["items_inserted"] == 25
+    assert source["profile"]["sql_statements"] < 20
+
+
 def test_changed_geo_input_resets_hash_and_requeues_lot(sessions) -> None:
     with sessions.begin() as session:
         processed = persist_lot(session, lot())
@@ -151,6 +162,7 @@ def test_legacy_persistence_records_only_actual_current_price_changes(sessions) 
 def test_detail_sources_enrich_only_new_or_changed_listings(sessions, source_id: str) -> None:
     class LotOnlineConnector(FakeConnector):
         capabilities = frozenset({"search", "detail_enrichment"})
+
         def __init__(self) -> None:
             super().__init__()
             self.source_id = source_id
@@ -233,44 +245,68 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
     now = datetime(2026, 8, 24, 12, 0)
     with sessions() as session:
         old_processed = ProcessedLot(
-            external_id="expiring", source="test", source_system="test", title="Лот",
-            description="", category="land", auction_status="active",
+            external_id="expiring",
+            source="test",
+            source_system="test",
+            title="Лот",
+            description="",
+            category="land",
+            auction_status="active",
         )
         current_processed = ProcessedLot(
-            external_id="current", source="test", source_system="test", title="Лот",
-            description="", category="land", auction_status="active",
+            external_id="current",
+            source="test",
+            source_system="test",
+            title="Лот",
+            description="",
+            category="land",
+            auction_status="active",
         )
         session.add_all([old_processed, current_processed])
         session.flush()
         old_processed.review_status = "approved"
-        session.add_all([
-            LotNote(lot_id=old_processed.id, user_id="operator", content="keep"),
-            Watchlist(lot_id=old_processed.id, user_id="operator"),
-        ])
+        session.add_all(
+            [
+                LotNote(lot_id=old_processed.id, user_id="operator", content="keep"),
+                Watchlist(lot_id=old_processed.id, user_id="operator"),
+            ]
+        )
         # The active cross-source card was previously deduplicated under the
         # older primary.  Closing that primary must promote this sibling or
         # MapDataset would filter both rows out.
         current_processed.duplicate_of_id = old_processed.id
         canonical = CanonicalLot(
-            canonical_key="expiration-test", legacy_processed_lot_id=old_processed.id,
-            title="Лот", category="land",
+            canonical_key="expiration-test",
+            legacy_processed_lot_id=old_processed.id,
+            title="Лот",
+            category="land",
         )
         session.add(canonical)
         session.flush()
-        session.add_all([
-            SourceLot(
-                canonical_lot_id=canonical.id, processed_lot_id=old_processed.id,
-                source_system="old-source", external_id="old",
-                title="Лот", category="land", source_status="closed",
-                auction_at=now - timedelta(minutes=16),
-            ),
-            SourceLot(
-                canonical_lot_id=canonical.id, processed_lot_id=current_processed.id,
-                source_system="current-source", external_id="current",
-                title="Лот", category="land", source_status="active",
-                auction_at=now - timedelta(minutes=14),
-            ),
-        ])
+        session.add_all(
+            [
+                SourceLot(
+                    canonical_lot_id=canonical.id,
+                    processed_lot_id=old_processed.id,
+                    source_system="old-source",
+                    external_id="old",
+                    title="Лот",
+                    category="land",
+                    source_status="closed",
+                    auction_at=now - timedelta(minutes=16),
+                ),
+                SourceLot(
+                    canonical_lot_id=canonical.id,
+                    processed_lot_id=current_processed.id,
+                    source_system="current-source",
+                    external_id="current",
+                    title="Лот",
+                    category="land",
+                    source_status="active",
+                    auction_at=now - timedelta(minutes=14),
+                ),
+            ]
+        )
         session.commit()
 
     service = NationwideIngestionService(sessions)
@@ -299,33 +335,42 @@ def test_public_offer_is_not_archived_at_intermediate_stage_boundary(sessions) -
     now = datetime(2026, 9, 21, 12, 0)
     with sessions() as session:
         processed = ProcessedLot(
-            external_id="public-offer", source="test", source_system="test", title="Лот",
-            description="", category="land", auction_status="active",
+            external_id="public-offer",
+            source="test",
+            source_system="test",
+            title="Лот",
+            description="",
+            category="land",
+            auction_status="active",
         )
         session.add(processed)
         session.flush()
         canonical = CanonicalLot(
-            canonical_key="public-offer-test", legacy_processed_lot_id=processed.id,
-            title="Лот", category="land",
+            canonical_key="public-offer-test",
+            legacy_processed_lot_id=processed.id,
+            title="Лот",
+            category="land",
         )
         session.add(canonical)
         session.flush()
-        session.add(SourceLot(
-            canonical_lot_id=canonical.id,
-            processed_lot_id=processed.id,
-            source_system="tbankrot.ru",
-            external_id="tbankrot:7991236",
-            title="Лот",
-            category="land",
-            source_status="active",
-            auction_type="public_offer",
-            next_price_reduction_at=now - timedelta(days=7),
-            public_offer_schedule=[
-                {"starts_at": "2026-09-08T10:00:00", "ends_at": "2026-09-14T10:00:00", "price": 4_500_000},
-                {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 4_275_000},
-                {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 4_050_000},
-            ],
-        ))
+        session.add(
+            SourceLot(
+                canonical_lot_id=canonical.id,
+                processed_lot_id=processed.id,
+                source_system="tbankrot.ru",
+                external_id="tbankrot:7991236",
+                title="Лот",
+                category="land",
+                source_status="active",
+                auction_type="public_offer",
+                next_price_reduction_at=now - timedelta(days=7),
+                public_offer_schedule=[
+                    {"starts_at": "2026-09-08T10:00:00", "ends_at": "2026-09-14T10:00:00", "price": 4_500_000},
+                    {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 4_275_000},
+                    {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 4_050_000},
+                ],
+            )
+        )
         session.commit()
 
     service = NationwideIngestionService(sessions)
@@ -340,31 +385,40 @@ def test_public_offer_archives_only_after_final_schedule_period(sessions) -> Non
     now = datetime(2026, 9, 29, 12, 0)
     with sessions() as session:
         processed = ProcessedLot(
-            external_id="ended-public-offer", source="test", source_system="test", title="Лот",
-            description="", category="land", auction_status="active",
+            external_id="ended-public-offer",
+            source="test",
+            source_system="test",
+            title="Лот",
+            description="",
+            category="land",
+            auction_status="active",
         )
         session.add(processed)
         session.flush()
         canonical = CanonicalLot(
-            canonical_key="ended-public-offer-test", legacy_processed_lot_id=processed.id,
-            title="Лот", category="land",
+            canonical_key="ended-public-offer-test",
+            legacy_processed_lot_id=processed.id,
+            title="Лот",
+            category="land",
         )
         session.add(canonical)
         session.flush()
-        session.add(SourceLot(
-            canonical_lot_id=canonical.id,
-            processed_lot_id=processed.id,
-            source_system="test",
-            external_id="ended",
-            title="Лот",
-            category="land",
-            source_status="active",
-            auction_type="public_offer",
-            public_offer_schedule=[
-                {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 100},
-                {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 90},
-            ],
-        ))
+        session.add(
+            SourceLot(
+                canonical_lot_id=canonical.id,
+                processed_lot_id=processed.id,
+                source_system="test",
+                external_id="ended",
+                title="Лот",
+                category="land",
+                source_status="active",
+                auction_type="public_offer",
+                public_offer_schedule=[
+                    {"starts_at": "2026-09-14T10:00:00", "ends_at": "2026-09-21T10:00:00", "price": 100},
+                    {"starts_at": "2026-09-21T10:00:00", "ends_at": "2026-09-28T10:00:00", "price": 90},
+                ],
+            )
+        )
         session.commit()
 
     service = NationwideIngestionService(sessions)
@@ -414,10 +468,12 @@ def test_fast_discovery_never_reconciles_missing_rows(sessions) -> None:
     run_with(service, FakeConnector([[lot("existing")]]))
     service.connector_factory = lambda _source: FakeConnector([[]])
     run_id = service.create_run(triggered_by="admin", trigger_type="manual_fast", total_sources=1)
-    result = asyncio.run(service.run(
-        run_id,
-        (SourceSyncSpec("test-source", {}, reconcile_missing=False, max_batches=1),),
-    ))
+    result = asyncio.run(
+        service.run(
+            run_id,
+            (SourceSyncSpec("test-source", {}, reconcile_missing=False, max_batches=1),),
+        )
+    )
 
     assert result["sources"][0]["status"] == "success"
     assert result["sources"][0]["complete_source_run"] is False
@@ -474,10 +530,12 @@ def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> Non
     service.connector_factory = lambda _source: FakeConnector([[]])
     for _ in range(2):
         run_id = service.create_run(triggered_by="admin", trigger_type="pilot", total_sources=1)
-        asyncio.run(service.run(
-            run_id,
-            (SourceSyncSpec("test-source", {}, archive_region_code="76"),),
-        ))
+        asyncio.run(
+            service.run(
+                run_id,
+                (SourceSyncSpec("test-source", {}, archive_region_code="76"),),
+            )
+        )
 
     with sessions() as session:
         rows = {row.external_id: row for row in session.scalars(select(SourceLot)).all()}

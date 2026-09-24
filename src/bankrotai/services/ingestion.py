@@ -322,7 +322,9 @@ class NationwideIngestionService:
                     SourceLot.is_active.is_(True),
                     SourceLot.is_archived.is_(False),
                     or_(
-                        SourceLot.source_status.in_(("closed", "completed", "finished", "cancelled", "failed", "expired")),
+                        SourceLot.source_status.in_(
+                            ("closed", "completed", "finished", "cancelled", "failed", "expired")
+                        ),
                         SourceLot.public_offer_schedule.isnot(None),
                     ),
                 )
@@ -466,11 +468,7 @@ class NationwideIngestionService:
                 continue
             page_ids.add(lot.external_id)
             accepted.append(lot)
-        if (
-            accepted
-            and connector is not None
-            and "detail_enrichment" in connector.capabilities
-        ):
+        if accepted and connector is not None and "detail_enrichment" in connector.capabilities:
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
                     row.external_id: row
@@ -526,7 +524,7 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
-            if result.source_system != "torgi.gov.ru" or not self.use_gis_batch_persistence:
+            if not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
                 commit_started = time.perf_counter()
                 session.commit()
@@ -853,10 +851,23 @@ class NationwideIngestionService:
     def _mutable_raw_evidence(raw: dict[str, Any]) -> tuple[Any, ...]:
         """Stable evidence for mutable fields that live in heterogeneous source payloads."""
         keys = (
-            "image_url", "photo_url", "thumbnail_url", "main_image", "image", "photo",
-            "thumbnail", "image_urls", "photo_urls", "images", "photos", "gallery",
-            "public_offer_schedule", "next_interval_price", "next_price_reduction_at",
-            "minimal_blocks", "dates",
+            "image_url",
+            "photo_url",
+            "thumbnail_url",
+            "main_image",
+            "image",
+            "photo",
+            "thumbnail",
+            "image_urls",
+            "photo_urls",
+            "images",
+            "photos",
+            "gallery",
+            "public_offer_schedule",
+            "next_interval_price",
+            "next_price_reduction_at",
+            "minimal_blocks",
+            "dates",
         )
         return tuple((key, raw.get(key)) for key in keys if key in raw)
 
