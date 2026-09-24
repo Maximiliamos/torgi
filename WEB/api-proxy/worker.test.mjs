@@ -334,6 +334,26 @@ describe("API origin failover proxy", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("clears the short-lived map edge cookie on logout", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ status: "logged_out" }, { status: 200 }),
+    );
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/auth/logout",
+      { method: "POST" },
+    ), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    const setCookie = response.headers.get("set-cookie");
+    expect(setCookie).toContain("bankrotai_map_edge=");
+    expect(setCookie).toContain("Max-Age=0");
+    expect(setCookie).toContain("Path=/api/map/");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("SameSite=Strict");
+  });
+
   it("requires an authenticated map edge session before reading shared tile caches", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     const r2 = memoryR2(new Map([
