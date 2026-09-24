@@ -603,6 +603,7 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     assert unauthorized.get("/api/map/datasets/current").status_code == 401
     assert unauthorized.get(f"/api/map/tiles/{result['version']}/0/0/0").status_code == 401
     assert unauthorized.get(f"/api/map/yandex-tiles/{result['version']}/0/0/0").status_code == 401
+    assert unauthorized.get("/api/map/review-statuses?ids=1").status_code == 401
     client = TestClient(api.app, base_url="https://testserver", headers={"X-API-Key": api.settings.public_api_key})
     assert (
         client.post(
@@ -614,11 +615,18 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
         ).status_code
         == 200
     )
+    review_overlay = client.get("/api/map/review-statuses?ids=1")
+    assert review_overlay.status_code == 200
+    assert review_overlay.headers["cache-control"] == "private, max-age=5"
+    assert review_overlay.json() == {"items": [{"id": 1, "review_status": None}]}
+
     current = client.get("/api/map/datasets/current")
     assert current.status_code == 200
     assert current.json()["version"] == result["version"]
     assert current.headers["cache-control"] == "private, max-age=5, stale-while-revalidate=30"
-    assert current.headers["etag"] == f'"dataset-{result["version"]}"'
+    assert current.headers["etag"].startswith(f'"dataset-{result["version"]}-')
+    assert current.json()["tile_source"] == "api"
+    assert current.json()["tile_base_url"] is None
     assert current.json()["bootstrap_zoom"] == 7
     assert current.json()["bootstrap_center"] == pytest.approx([57.6261, 39.8845])
     assert len(current.json()["bootstrap_tiles"]) == 9
@@ -632,6 +640,19 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     )
     assert current_not_modified.status_code == 304
     assert current_not_modified.headers["x-map-dataset"] == result["version"]
+
+    monkeypatch.setattr(api.settings, "map_object_store_enabled", True)
+    monkeypatch.setattr(api.settings, "map_object_store_public_base_url", "https://map.example.test/public")
+    s3_current = client.get(
+        "/api/map/datasets/current",
+        headers={"If-None-Match": current.headers["etag"]},
+    )
+    assert s3_current.status_code == 200
+    assert s3_current.headers["etag"] != current.headers["etag"]
+    assert s3_current.json()["tile_source"] == "regru-s3"
+    assert s3_current.json()["tile_base_url"] == (
+        f"https://map.example.test/public/datasets/{result['version']}/tiles"
+    )
     for hidden_version in (
         "partial-building-version",
         "failed-version",
