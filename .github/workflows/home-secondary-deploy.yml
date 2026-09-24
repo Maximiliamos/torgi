@@ -33,7 +33,7 @@ jobs:
       MAP_S3_ENDPOINT: ${{ vars.REGRU_S3_ENDPOINT || 'https://s3.regru.cloud' }}
       MAP_S3_BUCKET: ${{ vars.REGRU_S3_BUCKET || 'sterdez-map' }}
       MAP_S3_PUBLIC_BASE_URL: ${{ vars.REGRU_S3_PUBLIC_BASE_URL }}
-      MAP_S3_REGION: ${{ vars.REGRU_S3_REGION || 'us-east-1' }}
+      MAP_S3_REGION: ${{ vars.REGRU_S3_REGION || 'ru-1' }}
       MAP_S3_ACCESS_KEY: ${{ secrets.REGRU_S3_ACCESS_KEY }}
       MAP_S3_SECRET_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
     steps:
