@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -21,6 +22,19 @@ from bankrotai.services.map_payload import public_yandex_tile_payload
 logger = logging.getLogger(__name__)
 _UPLOAD_PAGE_SIZE = 250
 _SERVICE = "s3"
+_UPLOAD_HTTP = threading.local()
+
+
+def _pooled_put(url: str, **kwargs):
+    """Reuse one requests.Session per upload worker to avoid a TLS handshake per tile."""
+    session = getattr(_UPLOAD_HTTP, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _UPLOAD_HTTP.session = session
+    return session.put(url, **kwargs)
 
 
 def object_store_public_enabled(settings: AppSettings | None = None) -> bool:
@@ -130,7 +144,14 @@ def _signed_headers(
     return url, {name.title(): value for name, value in headers.items()}
 
 
-def _put_object(settings: AppSettings, key: str, body: bytes, *, cache_control: str) -> None:
+def _put_object(
+    settings: AppSettings,
+    key: str,
+    body: bytes,
+    *,
+    cache_control: str,
+    put: Callable[..., requests.Response] | None = None,
+) -> None:
     assert settings.map_object_store_access_key is not None
     assert settings.map_object_store_secret_key is not None
     max_attempts = 4
@@ -148,7 +169,8 @@ def _put_object(settings: AppSettings, key: str, body: bytes, *, cache_control: 
             region=settings.map_object_store_region,
         )
         try:
-            response = requests.put(
+            request_put = put or requests.put
+            response = request_put(
                 url,
                 data=body,
                 headers=headers,
@@ -282,7 +304,14 @@ def publish_dataset_to_object_store(
 
         with ThreadPoolExecutor(max_workers=settings.map_object_store_workers) as pool:
             futures = {
-                pool.submit(_put_object, settings, key, body, cache_control=immutable_cache): (key, len(body))
+                pool.submit(
+                    _put_object,
+                    settings,
+                    key,
+                    body,
+                    cache_control=immutable_cache,
+                    put=_pooled_put,
+                ): (key, len(body))
                 for key, body in objects
             }
             for future in as_completed(futures):
@@ -294,6 +323,14 @@ def publish_dataset_to_object_store(
                     raise
                 uploaded += 1
                 uploaded_bytes += size
+                if uploaded % 1000 == 0 or uploaded == expected_tile_count:
+                    logger.info(
+                        "REG.RU S3 map upload progress: version=%s uploaded=%s/%s bytes=%s",
+                        version,
+                        uploaded,
+                        expected_tile_count,
+                        uploaded_bytes,
+                    )
 
     if uploaded != expected_tile_count:
         raise RuntimeError(

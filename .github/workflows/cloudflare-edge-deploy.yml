@@ -35,6 +35,17 @@ on:
         type: boolean
   push:
     branches: [main]
+    paths:
+      - "Dockerfile"
+      - "requirements.lock"
+      - "pyproject.toml"
+      - "alembic/**"
+      - "src/**"
+      - "WEB/**"
+      - "edge-proxy/**"
+      - "api-proxy/**"
+      - ".github/workflows/regru-deploy.yml"
+      - ".github/workflows/cloudflare-edge-deploy.yml"
   pull_request:
     branches: [main]
     paths:
@@ -689,7 +700,7 @@ jobs:
   deploy:
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.bootstrap_sterdez_edge_only && !inputs.rollback_sterdez_edge_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -725,7 +736,7 @@ jobs:
           MAP_S3_ENABLED: ${{ vars.MAP_OBJECT_STORE_ENABLED || 'false' }}
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 60); do
+          for attempt in $(seq 1 360); do
             STAGED_SHA="$(curl --fail --silent --show-error --max-time 20 \
               -H 'Cache-Control: no-cache' \
               https://194-226-126-233.sslip.io/deployment.json 2>/dev/null \
@@ -733,7 +744,7 @@ jobs:
             if test "$STAGED_SHA" = "$GITHUB_SHA"; then
               break
             fi
-            if test "$attempt" = 60; then
+            if test "$attempt" = 360; then
               echo "REG.RU staged release did not reach $GITHUB_SHA" >&2
               exit 1
             fi
