@@ -295,20 +295,30 @@ jobs:
             return (($output | Select-Object -Last 1) -as [string]).Trim()
           }
 
+          $desiredLayout = (docker exec $env:MAP_WORKER_CONTAINER python -c "from bankrotai.core import get_settings; print(get_settings().map_object_store_layout)" | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Could not inspect desired map object-store layout" }
+
+          function Test-CurrentLayout([string]$version, [string]$layout) {
+            if ($layout -eq 'regional-bundles-v1') {
+              return $version -like '*-bundle-s3'
+            }
+            return ($version -like '*-s3') -and ($version -notlike '*-bundle-s3')
+          }
+
           $current = Get-CurrentMapVersion
-          if ($current -notlike '*-s3') {
-            Write-Output "Building first REG.RU S3 map dataset."
+          if (-not (Test-CurrentLayout $current $desiredLayout)) {
+            Write-Output "Building REG.RU S3 map dataset for layout=$desiredLayout current=$current"
             docker exec $env:MAP_WORKER_CONTAINER python -c "import json; from bankrotai.tasks import build_map_dataset_task; print(json.dumps(build_map_dataset_task.run(), default=str))"
             if ($LASTEXITCODE -ne 0) {
               docker logs --tail 200 $env:MAP_WORKER_CONTAINER
-              throw "Initial REG.RU S3 map dataset build failed"
+              throw "REG.RU S3 map dataset build failed for requested layout"
             }
           }
 
           $published = $false
           foreach ($attempt in 1..180) {
             $current = Get-CurrentMapVersion
-            if ($current -like '*-s3') {
+            if (Test-CurrentLayout $current $desiredLayout) {
               $published = $true
               break
             }
@@ -316,7 +326,7 @@ jobs:
           }
           if (-not $published) {
             docker logs --tail 200 $env:MAP_WORKER_CONTAINER
-            throw "REG.RU S3 map dataset was not promoted within 15 minutes"
+            throw "REG.RU S3 map dataset for layout=$desiredLayout was not promoted within 15 minutes"
           }
 
           docker exec $env:MAP_WORKER_CONTAINER python -c "import json,sys; from bankrotai.core import get_settings; from bankrotai.services.map_object_store import _verify_public_manifest; print(json.dumps(_verify_public_manifest(get_settings(), sys.argv[1]), default=str))" $current
