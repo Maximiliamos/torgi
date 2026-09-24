@@ -1,0 +1,180 @@
+name: REG.RU S3 diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: regru-s3-diagnostics-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: vars.MAP_OBJECT_STORE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MAP_OBJECT_STORE_ENABLED: "true"
+      MAP_OBJECT_STORE_ENDPOINT: ${{ vars.REGRU_S3_ENDPOINT }}
+      MAP_OBJECT_STORE_BUCKET: ${{ vars.REGRU_S3_BUCKET }}
+      MAP_OBJECT_STORE_PUBLIC_BASE_URL: ${{ vars.REGRU_S3_PUBLIC_BASE_URL }}
+      MAP_OBJECT_STORE_REGION: ${{ vars.REGRU_S3_REGION || 'us-east-1' }}
+      MAP_OBJECT_STORE_ACCESS_KEY: ${{ secrets.REGRU_S3_ACCESS_KEY }}
+      MAP_OBJECT_STORE_SECRET_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.REGRU_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.REGRU_S3_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Validate S3 configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$MAP_OBJECT_STORE_ENDPOINT" = "https://s3.regru.cloud"
+          test "$MAP_OBJECT_STORE_BUCKET" = "sterdez-map"
+          test "$MAP_OBJECT_STORE_PUBLIC_BASE_URL" = "https://sterdez-map.website.regru.cloud"
+          test -n "$MAP_OBJECT_STORE_ACCESS_KEY"
+          test -n "$MAP_OBJECT_STORE_SECRET_KEY"
+          printf 'REG.RU S3 variables and secrets are present\n'
+
+      - name: Ensure AWS CLI is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            python -m pip install --disable-pip-version-check awscli
+          fi
+          aws --version
+
+      - name: Configure browser CORS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/cors.json" <<'JSON'
+          {
+            "CORSRules": [
+              {
+                "AllowedHeaders": ["*"],
+                "AllowedMethods": ["GET", "HEAD"],
+                "AllowedOrigins": [
+                  "https://sterdez.online",
+                  "https://www.sterdez.online"
+                ],
+                "ExposeHeaders": [
+                  "ETag",
+                  "Cache-Control",
+                  "Content-Length",
+                  "Content-Type"
+                ],
+                "MaxAgeSeconds": 86400
+              }
+            ]
+          }
+          JSON
+          aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+            --region "$MAP_OBJECT_STORE_REGION" \
+            s3api put-bucket-cors \
+            --bucket "$MAP_OBJECT_STORE_BUCKET" \
+            --cors-configuration "file://$RUNNER_TEMP/cors.json"
+          aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+            --region "$MAP_OBJECT_STORE_REGION" \
+            s3api get-bucket-cors \
+            --bucket "$MAP_OBJECT_STORE_BUCKET"
+
+      - name: Install application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -e .
+
+      - name: Upload probe with production signer
+        shell: bash
+        env:
+          PROBE_KEY: diagnostics/${{ github.sha }}.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          from bankrotai.core import get_settings
+          from bankrotai.services.map_object_store import _put_object
+
+          body = json.dumps(
+              {
+                  "ok": True,
+                  "sha": os.environ["GITHUB_SHA"],
+                  "purpose": "regru-s3-diagnostic",
+              },
+              separators=(",", ":"),
+              sort_keys=True,
+          ).encode("utf-8")
+          _put_object(
+              get_settings(),
+              os.environ["PROBE_KEY"],
+              body,
+              cache_control="no-store",
+          )
+          PY
+
+      - name: Verify public read and CORS
+        shell: bash
+        env:
+          PROBE_KEY: diagnostics/${{ github.sha }}.json
+        run: |
+          set -euo pipefail
+          PROBE_URL="${MAP_OBJECT_STORE_PUBLIC_BASE_URL%/}/$PROBE_KEY"
+          for attempt in $(seq 1 12); do
+            curl --silent --show-error --max-time 20 \
+              -D "$RUNNER_TEMP/probe.headers" \
+              -H 'Origin: https://sterdez.online' \
+              -H 'Cache-Control: no-cache' \
+              -o "$RUNNER_TEMP/probe.json" \
+              "$PROBE_URL" || true
+            if python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "probe.json"
+          try:
+              payload = json.loads(path.read_text(encoding="utf-8"))
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if payload.get("ok") is True and payload.get("sha") == os.environ["GITHUB_SHA"] else 1)
+          PY
+            then
+              break
+            fi
+            if [ "$attempt" = 12 ]; then
+              printf 'REG.RU S3 public probe did not become readable\n' >&2
+              cat "$RUNNER_TEMP/probe.headers" >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          tr -d '\r' < "$RUNNER_TEMP/probe.headers" > "$RUNNER_TEMP/probe.headers.normalized"
+          grep -Eiq '^access-control-allow-origin: (\*|https://sterdez\.online)$' "$RUNNER_TEMP/probe.headers.normalized"
+          printf 'Public S3 read and CORS verified: %s\n' "$PROBE_URL"
+
+      - name: Delete probe
+        if: always()
+        shell: bash
+        env:
+          PROBE_KEY: diagnostics/${{ github.sha }}.json
+        run: |
+          set -euo pipefail
+          if test -n "${MAP_OBJECT_STORE_ACCESS_KEY:-}" && test -n "${MAP_OBJECT_STORE_SECRET_KEY:-}"; then
+            aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+              --region "$MAP_OBJECT_STORE_REGION" \
+              s3api delete-object \
+              --bucket "$MAP_OBJECT_STORE_BUCKET" \
+              --key "$PROBE_KEY" >/dev/null || true
+          fi
