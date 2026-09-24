@@ -172,14 +172,14 @@ jobs:
         shell: bash
         env:
           VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
-          VITE_DIRECT_MAP_TILES: ${{ vars.VITE_DIRECT_MAP_TILES || 'true' }}
+          DIRECT_MAP_TILES: ${{ vars.VITE_DIRECT_MAP_TILES || 'true' }}
         run: |
           set -euo pipefail
           npm ci
           npm run typecheck
           npm run lint
           npm test
-          npm run build
+          VITE_DIRECT_MAP_TILES="$DIRECT_MAP_TILES" npm run build
           printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/deployment.json
           tar -C dist -czf "$RUNNER_TEMP/bankrotai-web.tgz" .
 
