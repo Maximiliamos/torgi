@@ -460,6 +460,9 @@ function browserPrivateCachePolicy(request, incoming, response) {
   if (incoming.pathname === "/api/map/datasets/current") {
     return MAP_DATASET_BROWSER_CACHE;
   }
+  if (/^\/api\/map\/filtered-tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)) {
+    return response.headers.get("cache-control") || "private, max-age=30, stale-while-revalidate=60";
+  }
   if (incoming.pathname === "/api/map/lots") {
     return response.headers.get("cache-control") || "private, max-age=60, stale-while-revalidate=300";
   }
