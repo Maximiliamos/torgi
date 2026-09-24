@@ -1625,7 +1625,6 @@ def get_yandex_map_tile(request: Request, version: str, z: int, x: int, y: int):
             "Cache-Control": "private, max-age=31536000, immutable",
             "ETag": etag,
             "X-Map-Dataset": version,
-            "Vary": "Accept-Encoding",
         }
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
