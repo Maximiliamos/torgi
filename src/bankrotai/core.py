@@ -131,6 +131,8 @@ class AppSettings:
     database_trusted_local: bool = False
     auth_session_secret: str | None = None
     auth_session_ttl_seconds: int = 28_800
+    map_edge_token_secret: str | None = None
+    map_edge_token_ttl_seconds: int = 120
     database_pool_size: int = 3
     database_max_overflow: int = 2
     database_pool_timeout: int = 10
@@ -239,6 +241,8 @@ def load_settings() -> AppSettings:
         database_trusted_local=os.getenv("DATABASE_TRUSTED_LOCAL", "false").lower() in {"1", "true", "yes"},
         auth_session_secret=os.getenv("AUTH_SESSION_SECRET") or None,
         auth_session_ttl_seconds=max(300, int(os.getenv("AUTH_SESSION_TTL_SECONDS", "28800"))),
+        map_edge_token_secret=os.getenv("MAP_EDGE_TOKEN_SECRET") or None,
+        map_edge_token_ttl_seconds=max(30, min(600, int(os.getenv("MAP_EDGE_TOKEN_TTL_SECONDS", "120")))),
         database_pool_size=max(1, min(10, int(os.getenv("DATABASE_POOL_SIZE", "3")))),
         database_max_overflow=max(0, min(10, int(os.getenv("DATABASE_MAX_OVERFLOW", "2")))),
         database_pool_timeout=max(1, min(60, int(os.getenv("DATABASE_POOL_TIMEOUT", "10")))),
