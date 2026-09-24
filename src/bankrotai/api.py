@@ -1548,7 +1548,12 @@ def get_current_map_dataset(request: Request):
                 }
             )
 
-        etag = f'"dataset-{dataset.version}"'
+        tile_base_url = dataset_public_tile_base_url(dataset.version)
+        tile_source = "regru-s3" if tile_base_url else "api"
+        descriptor_identity = hashlib.sha256(
+            f"{dataset.version}|{tile_source}|{tile_base_url or ''}".encode("utf-8")
+        ).hexdigest()[:16]
+        etag = f'"dataset-{dataset.version}-{descriptor_identity}"'
         headers = {
             "Cache-Control": "private, max-age=5, stale-while-revalidate=30",
             "ETag": etag,
@@ -1569,10 +1574,8 @@ def get_current_map_dataset(request: Request):
                     "bootstrap_zoom": _MAP_BOOTSTRAP_ZOOM,
                     "bootstrap_center": [_MAP_BOOTSTRAP_LAT, _MAP_BOOTSTRAP_LON],
                     "bootstrap_tiles": bootstrap_tiles,
-                    "tile_base_url": dataset_public_tile_base_url(dataset.version),
-                    "tile_source": (
-                        "regru-s3" if dataset_public_tile_base_url(dataset.version) else "api"
-                    ),
+                    "tile_base_url": tile_base_url,
+                    "tile_source": tile_source,
                 }
             ),
             headers=headers,
