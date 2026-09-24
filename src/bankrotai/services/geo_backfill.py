@@ -35,6 +35,7 @@ _GEO_LOCK_SECONDS = 3600
 _SUCCESS_CACHE_DAYS = 30
 _GEOCODING_PAUSED_KEY = "geocoding_paused"
 _ETA_SAMPLE_BATCHES = 20
+_SAVE_CHUNK_SIZE = 100
 _CAMPAIGN_TASK_ID = re.compile(r"^(geo-\d{8}-\d{6})-")
 
 
@@ -199,10 +200,12 @@ def geocoding_statistics(session: Any) -> dict[str, int]:
         select(
             LotGeoSnapshot.id.label("geo_id"),
             LotGeoSnapshot.lot_id,
-            func.row_number().over(
+            func.row_number()
+            .over(
                 partition_by=LotGeoSnapshot.lot_id,
                 order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
-            ).label("position"),
+            )
+            .label("position"),
         )
         .join(ProcessedLot, ProcessedLot.id == LotGeoSnapshot.lot_id)
         .where(ProcessedLot.is_archived.is_(False))
@@ -251,15 +254,15 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
 
     from bankrotai.geo import expected_locality_name
 
-    ranked = (
-        select(
-            LotGeoSnapshot.id.label("geo_id"),
-            func.row_number().over(
-                partition_by=LotGeoSnapshot.lot_id,
-                order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
-            ).label("position"),
-        ).subquery()
-    )
+    ranked = select(
+        LotGeoSnapshot.id.label("geo_id"),
+        func.row_number()
+        .over(
+            partition_by=LotGeoSnapshot.lot_id,
+            order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
+        )
+        .label("position"),
+    ).subquery()
     rows = session.execute(
         select(ProcessedLot.id, ProcessedLot.address, LotGeoSnapshot)
         .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -346,7 +349,10 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         .limit(_ETA_SAMPLE_BATCHES)
     ).all()
     samples = [
-        (int((row.result_json or {}).get("processed") or 0), float((row.result_json or {}).get("duration_seconds") or 0))
+        (
+            int((row.result_json or {}).get("processed") or 0),
+            float((row.result_json or {}).get("duration_seconds") or 0),
+        )
         for row in recent
     ]
     sample_lots = sum(processed for processed, seconds in samples if processed > 0 and seconds > 0)
@@ -369,11 +375,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
                 for row in campaign_rows
                 if row.status == "completed"
             )
-            active_seconds = (
-                _elapsed_seconds_since(latest.started_at)
-                if latest.status == "running"
-                else 0
-            )
+            active_seconds = _elapsed_seconds_since(latest.started_at) if latest.status == "running" else 0
             elapsed_seconds = math.ceil(completed_seconds + active_seconds)
         elif latest.status == "running":
             elapsed_seconds = _elapsed_seconds_since(latest.started_at)
@@ -390,9 +392,9 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "paused": paused,
         "rate_per_second": round(rate, 3) if rate else None,
         "eta_seconds": eta_seconds,
-        "expected_completion_at": (
-            datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)
-        ).isoformat() if eta_seconds is not None and not paused else None,
+        "expected_completion_at": (datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)).isoformat()
+        if eta_seconds is not None and not paused
+        else None,
         "elapsed_seconds": elapsed_seconds,
         "estimated_total_seconds": (elapsed_seconds + eta_seconds)
         if elapsed_seconds is not None and eta_seconds is not None
@@ -439,6 +441,81 @@ def _geocoding_failure_message(value: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
 
 
+def _geocoding_failure_reason(value: Any) -> str:
+    """Return a bounded aggregate label without leaking an address or query."""
+    if isinstance(value, Exception):
+        return f"exception:{value.__class__.__name__}"
+    attempts = getattr(value, "attempts", None) or []
+    for attempt in reversed(attempts):
+        reason = attempt.get("reason") if isinstance(attempt, dict) else None
+        source = attempt.get("source") if isinstance(attempt, dict) else None
+        if reason:
+            return f"{source or 'provider'}:{reason}"[:160]
+    status = getattr(value, "status", None)
+    if status:
+        return str(status)[:160]
+    return "no_validated_coordinates"
+
+
+def _save_geo_item(session: Any, lot: ProcessedLot, value: Any) -> tuple[bool, str]:
+    lot_id = lot.id
+    current_input_hash = geo_input_hash(lot)
+    if isinstance(value, Exception):
+        _record_scheduled_failure(session, lot_id, str(value))
+        return False, _geocoding_failure_reason(value)
+    if apply_lot_geo_result(session, lot, value):
+        lot.geo_input_hash = current_input_hash
+        resolve_geo_failure(session, lot_id)
+        return True, (value.source or "unknown")
+    lot.geo_input_hash = current_input_hash
+    _record_scheduled_failure(session, lot_id, _geocoding_failure_message(value))
+    return False, _geocoding_failure_reason(value)
+
+
+def _save_geo_chunk(
+    session_factory: Callable[[], Any],
+    chunk: list[tuple[str, GeoWorkItem]],
+    resolved: dict[str, Any],
+) -> list[tuple[bool, str]]:
+    """Persist a chunk in one transaction; callers may retry item-by-item on failure."""
+    with session_factory() as session:
+        lots = {
+            lot.id: lot
+            for lot in session.scalars(
+                select(ProcessedLot).where(ProcessedLot.id.in_([item.lot_id for _, item in chunk]))
+            ).all()
+        }
+        outcomes = [
+            _save_geo_item(session, lot, resolved.get(key))
+            for key, item in chunk
+            if (lot := lots.get(item.lot_id)) is not None
+        ]
+        session.commit()
+        return outcomes
+
+
+def _save_geo_item_isolated(
+    session_factory: Callable[[], Any],
+    key: str,
+    item: GeoWorkItem,
+    resolved: dict[str, Any],
+) -> tuple[bool, str] | None:
+    """Preserve per-lot fault isolation when the fast chunk transaction fails."""
+    try:
+        with session_factory() as session:
+            lot = session.get(ProcessedLot, item.lot_id)
+            if lot is None:
+                return None
+            outcome = _save_geo_item(session, lot, resolved.get(key))
+            session.commit()
+            return outcome
+    except Exception as exc:
+        with session_factory() as session:
+            _record_scheduled_failure(session, item.lot_id, str(exc))
+            session.commit()
+        return False, f"persistence:{exc.__class__.__name__}"[:160]
+
+
 def _geocode_pending_lots_unlocked(
     session_factory: Callable[[], Any],
     *,
@@ -451,12 +528,21 @@ def _geocode_pending_lots_unlocked(
     with session_factory() as session:
         if is_geocoding_paused(session):
             paused_result = {
-                "status": "paused", "paused": True, "phase": "paused", "queued": 0,
-                "processed": 0, "geocoded": 0, "failed": 0, "percent": 0.0,
+                "status": "paused",
+                "paused": True,
+                "phase": "paused",
+                "queued": 0,
+                "processed": 0,
+                "geocoded": 0,
+                "failed": 0,
+                "percent": 0.0,
             }
             _set_progress_state(
-                session_factory, progress_task_id, status="paused",
-                progress=paused_result, result=paused_result,
+                session_factory,
+                progress_task_id,
+                status="paused",
+                progress=paused_result,
+                result=paused_result,
             )
             return paused_result
     batch_limit = max(1, min(limit, 1000))
@@ -533,6 +619,7 @@ def _geocode_pending_lots_unlocked(
         "cache_hits": 0,
         "resolved_queries": 0,
         "provider_counts": {},
+        "failure_reasons": {},
         "phase": "resolving",
     }
     _set_progress_state(session_factory, progress_task_id, status="running", progress={**result, "percent": 0.0})
@@ -603,47 +690,42 @@ def _geocode_pending_lots_unlocked(
         session.commit()
 
     result["phase"] = "saving"
-    for key, group in groups.items():
-        for item in group:
-            lot_id = item.lot_id
-            try:
-                value = resolved[key]
-                if isinstance(value, Exception):
-                    raise value
-                with session_factory() as session:
-                    lot = session.get(ProcessedLot, lot_id)
-                    if lot is None:
-                        continue
-                    current_input_hash = geo_input_hash(lot)
-                    if apply_lot_geo_result(session, lot, value):
-                        lot.geo_input_hash = current_input_hash
-                        resolve_geo_failure(session, lot_id)
-                        result["geocoded"] += 1
-                        provider = value.source or "unknown"
-                        result["provider_counts"][provider] = result["provider_counts"].get(provider, 0) + 1
-                    else:
-                        lot.geo_input_hash = current_input_hash
-                        _record_scheduled_failure(
-                            session,
-                            lot_id,
-                            _geocoding_failure_message(value),
-                        )
-                        result["failed"] += 1
-                    session.commit()
-            except Exception as exc:
-                with session_factory() as session:
-                    _record_scheduled_failure(session, lot_id, str(exc))
-                    session.commit()
-                result["failed"] += 1
-            result["processed"] += 1
-            if result["processed"] == result["queued"] or result["processed"] % 10 == 0:
-                percent = round(80 + result["processed"] / result["queued"] * 20, 1) if result["queued"] else 100.0
-                _set_progress_state(
-                    session_factory,
-                    progress_task_id,
-                    status="running",
-                    progress={**result, "percent": percent},
-                )
+    save_items = [(key, item) for key, group in groups.items() for item in group]
+    for chunk_start in range(0, len(save_items), _SAVE_CHUNK_SIZE):
+        chunk = save_items[chunk_start : chunk_start + _SAVE_CHUNK_SIZE]
+        try:
+            outcomes = _save_geo_chunk(session_factory, chunk, resolved)
+        except Exception:
+            outcomes = [
+                outcome
+                for key, item in chunk
+                if (outcome := _save_geo_item_isolated(session_factory, key, item, resolved)) is not None
+            ]
+
+        geocoded = 0
+        provider_counts: dict[str, int] = {}
+        failure_reasons: dict[str, int] = {}
+        for success, label in outcomes:
+            if success:
+                geocoded += 1
+                provider_counts[label] = provider_counts.get(label, 0) + 1
+            else:
+                failure_reasons[label] = failure_reasons.get(label, 0) + 1
+        failed = len(outcomes) - geocoded
+        result["geocoded"] += geocoded
+        result["failed"] += failed
+        result["processed"] += geocoded + failed
+        for provider, count in provider_counts.items():
+            result["provider_counts"][provider] = result["provider_counts"].get(provider, 0) + count
+        for reason, count in failure_reasons.items():
+            result["failure_reasons"][reason] = result["failure_reasons"].get(reason, 0) + count
+        percent = round(80 + result["processed"] / result["queued"] * 20, 1) if result["queued"] else 100.0
+        _set_progress_state(
+            session_factory,
+            progress_task_id,
+            status="running",
+            progress={**result, "percent": percent},
+        )
     result["percent"] = 100.0
     result["phase"] = "completed"
     result["duration_seconds"] = round(time.monotonic() - started_at, 1)

@@ -9,8 +9,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Callable
 
-from sqlalchemy import delete, func, select, text, update
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
+from sqlalchemy.orm import Session, aliased
 
 from bankrotai.core import get_settings
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
@@ -23,15 +23,25 @@ logger = logging.getLogger(__name__)
 MIN_DIMENSION_COVERAGE_BASELINE = 20
 
 
+def _latest_geo_predicate():
+    """Avoid a full-table window sort while preserving observed_at/id ordering."""
+    newer = aliased(LotGeoSnapshot)
+    return ~exists(
+        select(newer.id).where(
+            newer.lot_id == LotGeoSnapshot.lot_id,
+            or_(
+                newer.observed_at > LotGeoSnapshot.observed_at,
+                and_(newer.observed_at == LotGeoSnapshot.observed_at, newer.id > LotGeoSnapshot.id),
+            ),
+        )
+    ).correlate(LotGeoSnapshot)
+
+
 def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
     """Return retention diagnostics without deleting historical datasets."""
-    datasets = session.execute(
-        select(MapDataset.id, MapDataset.status, MapDataset.is_current)
-    ).all()
+    datasets = session.execute(select(MapDataset.id, MapDataset.status, MapDataset.is_current)).all()
     non_current_ids = [row.id for row in datasets if not row.is_current]
-    failed_or_rejected_ids = [
-        row.id for row in datasets if row.status in {"failed", "rejected"}
-    ]
+    failed_or_rejected_ids = [row.id for row in datasets if row.status in {"failed", "rejected"}]
 
     def tile_count(dataset_ids: list[int] | None = None) -> int:
         statement = select(func.count(MapTile.id))
@@ -83,21 +93,23 @@ def cleanup_map_datasets(
         ).all()
         rollback_ids = {
             dataset.id
-            for dataset in [
-                item for item in datasets
-                if item.status == "ready" and item.published_at is not None
-            ][:retain_previous_ready]
+            for dataset in [item for item in datasets if item.status == "ready" and item.published_at is not None][
+                :retain_previous_ready
+            ]
         }
         candidates = [
-            dataset for dataset in datasets
+            dataset
+            for dataset in datasets
             if dataset.id not in rollback_ids
             and dataset.created_at.timestamp() <= cutoff
             and dataset.status in {"ready", "failed", "rejected", "building"}
         ]
         candidate_ids = [dataset.id for dataset in candidates]
-        candidate_tiles = int(session.scalar(
-            select(func.count(MapTile.id)).where(MapTile.dataset_id.in_(candidate_ids))
-        ) or 0) if candidate_ids else 0
+        candidate_tiles = (
+            int(session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.in_(candidate_ids))) or 0)
+            if candidate_ids
+            else 0
+        )
         result = {
             "dry_run": not apply,
             "retained_previous_ready": len(rollback_ids),
@@ -113,18 +125,14 @@ def cleanup_map_datasets(
             deleted_dataset_count = 0
             deleted_tile_count = 0
             for offset in range(0, len(candidate_ids), 5):
-                batch_ids = candidate_ids[offset:offset + 5]
+                batch_ids = candidate_ids[offset : offset + 5]
                 if session.get_bind().dialect.name == "postgresql":
                     session.execute(
                         text("SELECT pg_advisory_xact_lock(:lock_key)"),
                         {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
                     )
-                deleted_tiles = session.execute(
-                    delete(MapTile).where(MapTile.dataset_id.in_(batch_ids))
-                ).rowcount or 0
-                deleted_datasets = session.execute(
-                    delete(MapDataset).where(MapDataset.id.in_(batch_ids))
-                ).rowcount or 0
+                deleted_tiles = session.execute(delete(MapTile).where(MapTile.dataset_id.in_(batch_ids))).rowcount or 0
+                deleted_datasets = session.execute(delete(MapDataset).where(MapDataset.id.in_(batch_ids))).rowcount or 0
                 session.commit()
                 deleted_tile_count += int(deleted_tiles)
                 deleted_dataset_count += int(deleted_datasets)
@@ -161,10 +169,12 @@ def _encoded_tile(features: list[dict]) -> tuple[dict, str]:
 
 def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
     lot_ids: set[int] = set()
-    for payload in session.scalars(select(MapTile.payload_json).where(
-        MapTile.dataset_id == dataset_id,
-        MapTile.z == POINT_ZOOM,
-    )):
+    for payload in session.scalars(
+        select(MapTile.payload_json).where(
+            MapTile.dataset_id == dataset_id,
+            MapTile.z == POINT_ZOOM,
+        )
+    ):
         for feature in (payload or {}).get("features", []):
             if feature.get("kind") == "lot" and isinstance(feature.get("id"), int):
                 lot_ids.add(feature["id"])
@@ -201,13 +211,15 @@ def _dimension_coverage_failures(
         current_count = new_counts.get((kind, value), 0)
         required = math.ceil(previous * minimum_ratio)
         if current_count < required:
-            failures.append({
-                "dimension": kind,
-                "value": value,
-                "previous": previous,
-                "current": current_count,
-                "required": required,
-            })
+            failures.append(
+                {
+                    "dimension": kind,
+                    "value": value,
+                    "previous": previous,
+                    "current": current_count,
+                    "required": required,
+                }
+            )
     return failures
 
 
@@ -230,12 +242,8 @@ def _promote_map_dataset(
             # the new row current. This transaction-level table lock conflicts
             # with another publisher while continuing to allow ordinary SELECTs.
             session.execute(text("LOCK TABLE map_datasets IN SHARE ROW EXCLUSIVE MODE"))
-        current = session.scalar(
-            select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update()
-        )
-        dataset = session.scalar(
-            select(MapDataset).where(MapDataset.id == dataset_id).with_for_update()
-        )
+        current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update())
+        dataset = session.scalar(select(MapDataset).where(MapDataset.id == dataset_id).with_for_update())
         if dataset is None:
             raise RuntimeError(f"Map dataset {dataset_id} disappeared before promotion")
         current_id = current.id if current is not None else None
@@ -244,7 +252,9 @@ def _promote_map_dataset(
             session.commit()
             logger.warning(
                 "Map dataset %s promotion rejected: current changed from %s to %s",
-                dataset.version, expected_current_id, current_id,
+                dataset.version,
+                expected_current_id,
+                current_id,
             )
             return {
                 "status": "rejected",
@@ -252,9 +262,7 @@ def _promote_map_dataset(
                 "current_dataset_id": current_id,
             }
 
-        actual_tile_count = session.scalar(
-            select(func.count(MapTile.id)).where(MapTile.dataset_id == dataset.id)
-        ) or 0
+        actual_tile_count = session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id == dataset.id)) or 0
         if dataset.status != "building" or dataset.tile_count != actual_tile_count:
             raise RuntimeError(
                 f"Map dataset {dataset.version} is incomplete: "
@@ -273,8 +281,11 @@ def _promote_map_dataset(
             logger.warning(
                 "Map dataset %s promotion rejected by coverage guard: "
                 "previous_points=%s new_points=%s required_points=%s ratio=%s",
-                dataset.version, current.point_count, dataset.point_count,
-                minimum_points, settings.min_map_coverage_ratio,
+                dataset.version,
+                current.point_count,
+                dataset.point_count,
+                minimum_points,
+                settings.min_map_coverage_ratio,
             )
             return {
                 "status": "rejected",
@@ -321,7 +332,9 @@ def _promote_map_dataset(
         session.commit()
         logger.info(
             "Map dataset promotion succeeded: version=%s dataset_id=%s previous_dataset_id=%s",
-            dataset.version, dataset.id, current_id,
+            dataset.version,
+            dataset.id,
+            current_id,
         )
         return {"status": "published", "current_dataset_id": dataset.id}
 
@@ -332,42 +345,35 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     build_completed = False
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     with session_factory() as session:
-        expected_current_id = session.scalar(
-            select(MapDataset.id).where(MapDataset.is_current.is_(True))
-        )
+        expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
         session.add(dataset)
         session.commit()
         dataset_id = dataset.id
     logger.info(
         "Map dataset build started: version=%s dataset_id=%s expected_current_id=%s",
-        version, dataset_id, expected_current_id,
+        version,
+        dataset_id,
+        expected_current_id,
     )
 
     try:
         with session_factory() as session:
             source_lot_count = int(session.scalar(select(func.count(ProcessedLot.id))) or 0)
-            ranked_geo = (
-                select(
-                    LotGeoSnapshot.id.label("geo_id"),
-                    LotGeoSnapshot.lot_id,
-                    func.row_number().over(
-                        partition_by=LotGeoSnapshot.lot_id,
-                        order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
-                    ).label("geo_rank"),
-                )
-                .subquery()
-            )
             rows = session.execute(
                 select(
-                    ProcessedLot.id, ProcessedLot.title, ProcessedLot.current_price,
-                    ProcessedLot.start_price, ProcessedLot.auction_status,
-                    ProcessedLot.review_status, LotGeoSnapshot.centroid_lat, LotGeoSnapshot.centroid_lon,
+                    ProcessedLot.id,
+                    ProcessedLot.title,
+                    ProcessedLot.current_price,
+                    ProcessedLot.start_price,
+                    ProcessedLot.auction_status,
+                    ProcessedLot.review_status,
+                    LotGeoSnapshot.centroid_lat,
+                    LotGeoSnapshot.centroid_lon,
                 )
-                .join(ranked_geo, ranked_geo.c.lot_id == ProcessedLot.id)
-                .join(LotGeoSnapshot, LotGeoSnapshot.id == ranked_geo.c.geo_id)
+                .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
                 .where(
-                    ranked_geo.c.geo_rank == 1,
+                    _latest_geo_predicate(),
                     ProcessedLot.duplicate_of_id.is_(None),
                     ProcessedLot.is_archived.is_(False),
                     LotGeoSnapshot.centroid_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
@@ -376,10 +382,15 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             ).all()
         points = [
             {
-                "kind": "lot", "id": row.id, "lat": row.centroid_lat, "lon": row.centroid_lon,
-                "title": row.title, "current_price": float(row.current_price) if row.current_price is not None else None,
+                "kind": "lot",
+                "id": row.id,
+                "lat": row.centroid_lat,
+                "lon": row.centroid_lon,
+                "title": row.title,
+                "current_price": float(row.current_price) if row.current_price is not None else None,
                 "start_price": float(row.start_price) if row.start_price is not None else None,
-                "status": row.auction_status, "review_status": row.review_status,
+                "status": row.auction_status,
+                "review_status": row.review_status,
             }
             for row in rows
         ]
@@ -391,19 +402,30 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     buckets[_tile_xy(point["lat"], point["lon"], zoom)].append(point)
                 for (x, y), members in buckets.items():
                     if zoom < POINT_ZOOM:
-                        features = [{
-                            "kind": "cluster", "id": f"c:{zoom}:{x}:{y}",
-                            "lat": sum(item["lat"] for item in members) / len(members),
-                            "lon": sum(item["lon"] for item in members) / len(members),
-                            "count": len(members), "bounds": _tile_bounds(zoom, x, y),
-                        }]
+                        features = [
+                            {
+                                "kind": "cluster",
+                                "id": f"c:{zoom}:{x}:{y}",
+                                "lat": sum(item["lat"] for item in members) / len(members),
+                                "lon": sum(item["lon"] for item in members) / len(members),
+                                "count": len(members),
+                                "bounds": _tile_bounds(zoom, x, y),
+                            }
+                        ]
                     else:
                         features = members
                     payload, etag = _encoded_tile(features)
-                    session.add(MapTile(
-                        dataset_id=dataset_id, z=zoom, x=x, y=y,
-                        feature_count=len(features), etag=etag, payload_json=payload,
-                    ))
+                    session.add(
+                        MapTile(
+                            dataset_id=dataset_id,
+                            z=zoom,
+                            x=x,
+                            y=y,
+                            feature_count=len(features),
+                            etag=etag,
+                            payload_json=payload,
+                        )
+                    )
                     tile_count += 1
                     if tile_count % 500 == 0:
                         session.commit()
@@ -418,7 +440,11 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         logger.info(
             "Map dataset build succeeded: version=%s source_lot_count=%s included_point_count=%s "
             "tile_count=%s duration_ms=%s",
-            version, source_lot_count, len(points), tile_count, build_duration_ms,
+            version,
+            source_lot_count,
+            len(points),
+            tile_count,
+            build_duration_ms,
         )
         build_completed = True
         dimension_failures: list[dict[str, object]] = []
@@ -439,9 +465,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])
         logger.info(
-            "Map dataset promotion finished: version=%s build_status=success promotion_status=%s "
-            "duration_ms=%s",
-            version, promotion_status, total_duration_ms,
+            "Map dataset promotion finished: version=%s build_status=success promotion_status=%s duration_ms=%s",
+            version,
+            promotion_status,
+            total_duration_ms,
         )
         with session_factory() as session:
             storage = map_dataset_storage_statistics(session)
@@ -466,11 +493,15 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         if build_completed:
             logger.exception(
                 "Map dataset promotion failed after successful build: version=%s dataset_id=%s duration_ms=%s",
-                version, dataset_id, round((time.monotonic() - started) * 1000),
+                version,
+                dataset_id,
+                round((time.monotonic() - started) * 1000),
             )
         else:
             logger.exception(
                 "Map dataset build failed: version=%s dataset_id=%s duration_ms=%s",
-                version, dataset_id, round((time.monotonic() - started) * 1000),
+                version,
+                dataset_id,
+                round((time.monotonic() - started) * 1000),
             )
         raise

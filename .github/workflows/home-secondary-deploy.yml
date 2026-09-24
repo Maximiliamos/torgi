@@ -21,6 +21,8 @@ jobs:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
       WORKER_CONTAINER: bankrotai-home-ingestion-worker
+      GEO_WORKER_CONTAINER: bankrotai-home-geocoding-worker
+      MAP_WORKER_CONTAINER: bankrotai-home-map-worker
       REDIS_CONTAINER: bankrotai-home-redis
       POSTGRES_CONTAINER: bankrotai-home-postgres
       DOCKER_NETWORK: bankrotai-home
@@ -216,20 +218,35 @@ jobs:
             --tmpfs /tmp:rw,noexec,nosuid,size=64m `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" | Out-Null
 
-          $existingWorker = docker ps -a --filter "name=^/${env:WORKER_CONTAINER}$" --format '{{.Names}}'
-          if ($existingWorker -eq $env:WORKER_CONTAINER) {
-            docker rm --force $env:WORKER_CONTAINER | Out-Null
+          $workerSpecs = @(
+            @{ Name = $env:WORKER_CONTAINER; Queue = 'ingestion,maintenance'; Node = 'ingestion@bankrotai-home'; Beat = $true },
+            @{ Name = $env:GEO_WORKER_CONTAINER; Queue = 'geocoding'; Node = 'geocoding@bankrotai-home'; Beat = $false },
+            @{ Name = $env:MAP_WORKER_CONTAINER; Queue = 'map'; Node = 'map@bankrotai-home'; Beat = $false }
+          )
+          foreach ($spec in $workerSpecs) {
+            $existingWorker = docker ps -a --filter "name=^/$($spec.Name)$" --format '{{.Names}}'
+            if ($existingWorker -eq $spec.Name) {
+              docker rm --force $spec.Name | Out-Null
+            }
+            $workerArgs = @(
+              'celery', '-A', 'bankrotai.tasks:celery_app', 'worker',
+              "--hostname=$($spec.Node)", "--queues=$($spec.Queue)",
+              '--loglevel=INFO', '--concurrency=1'
+            )
+            if ($spec.Beat) {
+              $workerArgs += @('--beat', '--schedule', '/tmp/celerybeat-schedule')
+            }
+            docker run --detach --restart unless-stopped `
+              --name $spec.Name `
+              --network $env:DOCKER_NETWORK `
+              --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
+              --no-healthcheck `
+              --read-only `
+              --tmpfs /tmp:rw,noexec,nosuid,size=128m `
+              "${env:IMAGE_NAME}:${env:GITHUB_SHA}" @workerArgs | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not start $($spec.Name)" }
           }
-          docker run --detach --restart unless-stopped `
-            --name $env:WORKER_CONTAINER `
-            --network $env:DOCKER_NETWORK `
-            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
-            --no-healthcheck `
-            --read-only `
-            --tmpfs /tmp:rw,noexec,nosuid,size=128m `
-            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            celery -A bankrotai.tasks:celery_app worker --beat --schedule /tmp/celerybeat-schedule --loglevel=INFO --concurrency=2 | Out-Null
 
       - name: Verify local API stability
         shell: powershell
@@ -260,11 +277,18 @@ jobs:
           if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
             throw "Local secondary stability gate failed"
           }
-          docker exec $env:WORKER_CONTAINER `
-            celery -A bankrotai.tasks:celery_app inspect ping --timeout 10 *> $null
-          if ($LASTEXITCODE -ne 0) {
-            docker logs --tail 100 $env:WORKER_CONTAINER
-            throw "Trusted ingestion worker did not answer Celery ping"
+          $workerGates = @(
+            @{ Container = $env:WORKER_CONTAINER; Node = 'ingestion@bankrotai-home' },
+            @{ Container = $env:GEO_WORKER_CONTAINER; Node = 'geocoding@bankrotai-home' },
+            @{ Container = $env:MAP_WORKER_CONTAINER; Node = 'map@bankrotai-home' }
+          )
+          foreach ($gate in $workerGates) {
+            docker exec $gate.Container celery -A bankrotai.tasks:celery_app inspect ping `
+              --destination $gate.Node --timeout 10 *> $null
+            if ($LASTEXITCODE -ne 0) {
+              docker logs --tail 100 $gate.Container
+              throw "$($gate.Node) did not answer Celery ping"
+            }
           }
           docker exec $env:WORKER_CONTAINER python -c `
             "import urllib.request; response = urllib.request.urlopen('http://bankrotai-photon:2322/api?q=Yaroslavl&limit=1', timeout=15); assert response.status == 200"
@@ -272,5 +296,5 @@ jobs:
             throw "Trusted ingestion worker cannot reach local Photon"
           }
           "Local secondary stability gate: 30/30 PASS"
-          "Trusted ingestion worker gate: PASS"
+          "Isolated ingestion/geocoding/map worker gates: PASS"
           "Local Photon connectivity gate: PASS"

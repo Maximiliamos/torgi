@@ -39,12 +39,29 @@ from bankrotai.scrapers import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 _MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
+_GEO_BATCH_LIMIT = 250
+_GEO_CONTINUATION_DELAY_SECONDS = 2
+_MAP_PUBLICATION_DEBOUNCE_SECONDS = 60
+_QUEUE_INGESTION = "ingestion"
+_QUEUE_GEOCODING = "geocoding"
+_QUEUE_MAP = "map"
+_QUEUE_MAINTENANCE = "maintenance"
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
     task_track_started=True,
     task_soft_time_limit=settings.celery_soft_time_limit,
     task_time_limit=settings.celery_hard_time_limit,
     broker_connection_retry_on_startup=True,
+    task_default_queue=_QUEUE_MAINTENANCE,
+    task_routes={
+        "bankrotai.tasks.bulk_torgi_gov_sync_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
+        "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
+        "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
+    },
     beat_schedule={
         "expire-ended-lots": {
             "task": "bankrotai.tasks.expire_ended_lots_task",
@@ -62,8 +79,8 @@ celery_app.conf.update(
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
-            "schedule": 1800.0,
-            "options": {"expires": 1740},
+            "schedule": 300.0,
+            "options": {"expires": 240},
         },
         "cleanup-old-map-datasets": {
             "task": "bankrotai.tasks.cleanup_old_map_datasets_task",
@@ -117,7 +134,7 @@ def geocode_pending_lots_task(self) -> dict[str, Any]:
     task_id = str(self.request.id or uuid())
     result: dict[str, Any] = geocode_pending_lots(
         SessionLocal,
-        limit=250,
+        limit=_GEO_BATCH_LIMIT,
         progress_task_id=f"celery-{task_id}",
     )
     if result.get("geocoded", 0):
@@ -127,11 +144,47 @@ def geocode_pending_lots_task(self) -> dict[str, Any]:
             client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
             client.set(_MAP_DIRTY_KEY, "1")
             client.close()
-            result["map_dataset_build"] = {"status": "deferred", "maximum_delay_seconds": 1800}
+            result["map_dataset_build"] = _schedule_dirty_map_publication()
         except Exception as exc:
             logger.exception("Could not mark map dataset dirty")
             result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
+    if result.get("queued", 0) >= _GEO_BATCH_LIMIT and result.get("processed", 0) >= _GEO_BATCH_LIMIT:
+        result["continuation"] = _schedule_geocode_continuation()
     return result
+
+
+def _schedule_geocode_continuation() -> dict[str, str | int]:
+    """Drain a backlog promptly while beat remains a recovery watchdog."""
+    try:
+        queued = geocode_pending_lots_task.apply_async(countdown=_GEO_CONTINUATION_DELAY_SECONDS)
+        return {
+            "status": "queued",
+            "task_id": str(queued.id),
+            "countdown_seconds": _GEO_CONTINUATION_DELAY_SECONDS,
+        }
+    except Exception as exc:
+        logger.exception("Could not schedule the next geocoding batch")
+        return {"status": "schedule_failed", "error": str(exc)[:500]}
+
+
+def _schedule_dirty_map_publication() -> dict[str, str | int]:
+    """Debounce publication without making completed geocoding fail."""
+    try:
+        queued = publish_dirty_map_dataset_task.apply_async(
+            countdown=_MAP_PUBLICATION_DEBOUNCE_SECONDS,
+        )
+        return {
+            "status": "deferred",
+            "task_id": str(queued.id),
+            "maximum_delay_seconds": _MAP_PUBLICATION_DEBOUNCE_SECONDS,
+        }
+    except Exception as exc:
+        logger.exception("Could not schedule debounced map publication")
+        return {
+            "status": "deferred_to_watchdog",
+            "maximum_delay_seconds": 300,
+            "error": str(exc)[:500],
+        }
 
 
 @celery_app.task(name="bankrotai.tasks.publish_dirty_map_dataset_task")
@@ -225,8 +278,9 @@ def _progress(**overrides: Any) -> dict[str, Any]:
     return value
 
 
-def _set_task_state(task_id: str, *, status: str, progress: dict | None = None,
-                    result: dict | None = None, error: str | None = None) -> None:
+def _set_task_state(
+    task_id: str, *, status: str, progress: dict | None = None, result: dict | None = None, error: str | None = None
+) -> None:
     init_db()
     with session_scope() as session:
         state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
@@ -274,14 +328,20 @@ def bulk_torgi_gov_sync_task(self, filters_data: dict, max_items: int = 10_000) 
         progress["processed_items"] = len(lots)
 
         for offset in range(0, len(lots), 100):
-            chunk = lots[offset:offset + 100]
+            chunk = lots[offset : offset + 100]
             with session_scope() as session:
                 for normalized in chunk:
                     from bankrotai.db import ProcessedLot
-                    was_present = session.query(ProcessedLot.id).filter_by(
-                        source_system=normalized.source_system,
-                        external_id=normalized.external_id,
-                    ).first() is not None
+
+                    was_present = (
+                        session.query(ProcessedLot.id)
+                        .filter_by(
+                            source_system=normalized.source_system,
+                            external_id=normalized.external_id,
+                        )
+                        .first()
+                        is not None
+                    )
                     persist_lot(session, normalized)
                     progress["updated_items" if was_present else "saved_items"] += 1
             self.update_state(state="PROGRESS", meta=progress)
@@ -300,7 +360,7 @@ def bulk_torgi_gov_sync_task(self, filters_data: dict, max_items: int = 10_000) 
         progress["errors"] += 1
         if _is_transient_sync_error(exc) and self.request.retries < settings.sync_retry_max_attempts:
             _set_task_state(task_id, status="retrying", progress=progress, error=str(exc))
-            countdown = settings.sync_retry_backoff_seconds * (2 ** self.request.retries)
+            countdown = settings.sync_retry_backoff_seconds * (2**self.request.retries)
             logger.warning("Retrying bulk sync %s in %ss after transient error: %s", task_id, countdown, exc)
             raise self.retry(exc=exc, countdown=countdown, max_retries=settings.sync_retry_max_attempts)
         _set_task_state(task_id, status="failed", progress=progress, error=str(exc))
@@ -321,9 +381,7 @@ def sync_public_region_task(city_slug: str = "yaroslavl", force: bool = False, s
             imported_tb = ingest_recent_tbankrot(session, sync_slug)
             cleanup_closed_lots(session)
             total = len(imported_gt) + len(imported_tb)
-            upsert_region_sync_state(
-                session, city_slug, status="ready", lots_discovered=total, finished_at=_utc_now()
-            )
+            upsert_region_sync_state(session, city_slug, status="ready", lots_discovered=total, finished_at=_utc_now())
             return total
     except Exception as exc:
         logger.exception("Sync failed for %s", city_slug)
@@ -335,6 +393,7 @@ def sync_public_region_task(city_slug: str = "yaroslavl", force: bool = False, s
 def broker_is_available() -> bool:
     try:
         from redis import Redis
+
         return bool(Redis.from_url(settings.redis_url, socket_connect_timeout=2).ping())
     except Exception:
         return False
@@ -366,11 +425,16 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
         if mode == "fast":
             with session_scope() as session:
-                latest_gis = session.query(LotSyncSourceRun).filter_by(
-                    source_system="torgi.gov.ru",
-                    status="success",
-                    complete_source_run=True,
-                ).order_by(LotSyncSourceRun.finished_at.desc()).first()
+                latest_gis = (
+                    session.query(LotSyncSourceRun)
+                    .filter_by(
+                        source_system="torgi.gov.ru",
+                        status="success",
+                        complete_source_run=True,
+                    )
+                    .order_by(LotSyncSourceRun.finished_at.desc())
+                    .first()
+                )
                 overlap_start = (
                     latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
                 ) - timedelta(days=1)
@@ -402,10 +466,14 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
                 run.heartbeat_at = _utc_now()
                 run.lease_expires_at = None
                 run.error_message = error_message
-            source_runs = session.query(LotSyncSourceRun).filter_by(
-                sync_run_id=run_id,
-                status="running",
-            ).all()
+            source_runs = (
+                session.query(LotSyncSourceRun)
+                .filter_by(
+                    sync_run_id=run_id,
+                    status="running",
+                )
+                .all()
+            )
             for source_run in source_runs:
                 source_run.status = "failed"
                 source_run.complete_source_run = False
@@ -451,6 +519,7 @@ def schedule_region_sync(city_slug: str, force: bool = False, search: str | None
         state = get_region_sync_state(session, city_slug)
         if state and state.status in {"queued", "running"} and not force:
             from bankrotai.db import _region_sync_is_stuck
+
             if not _region_sync_is_stuck(state):
                 return "skipped-already-running"
 

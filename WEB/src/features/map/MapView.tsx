@@ -95,6 +95,7 @@ export function fetchCachedMapTile(
   version: string,
   tile: TileCoordinate,
   maxEntries = MAX_MAP_TILE_CACHE_ENTRIES,
+  signal?: AbortSignal,
 ) {
   const key = mapTileCacheKey(version, tile);
   const cached = completed.get(key);
@@ -106,7 +107,7 @@ export function fetchCachedMapTile(
   const pending = inflight.get(key);
   if (pending) return pending;
 
-  const request = fetchMapTile(version, tile.z, tile.x, tile.y).then((payload) => {
+  const request = fetchMapTile(version, tile.z, tile.x, tile.y, signal).then((payload) => {
     if (!payload || !Array.isArray(payload.features)) throw new Error(`Некорректный tile ${key}`);
     completed.set(key, payload);
     while (completed.size > maxEntries) {
@@ -126,23 +127,28 @@ export async function fetchVisibleMapTiles(
   coordinates: TileCoordinate[],
   load: (tile: TileCoordinate) => Promise<MapTilePayload>,
   concurrency = 6,
+  onEntry?: (entry: { tile: TileCoordinate; payload: MapTilePayload }) => void,
+  signal?: AbortSignal,
 ) {
   const results: Array<{ tile: TileCoordinate; payload: MapTilePayload } | null> =
     new Array(coordinates.length).fill(null);
   let cursor = 0;
   const worker = async () => {
     while (cursor < coordinates.length) {
+      signal?.throwIfAborted();
       const index = cursor++;
       const tile = coordinates[index];
       try {
         results[index] = { tile, payload: await load(tile) };
       } catch {
+        signal?.throwIfAborted();
         try {
           results[index] = { tile, payload: await load(tile) };
         } catch {
           results[index] = null;
         }
       }
+      if (results[index]) onEntry?.(results[index]);
     }
   };
   await Promise.all(Array.from(
@@ -801,6 +807,7 @@ export function MapView({
   const tileRequestRevision = React.useRef(0);
   const completedTileCache = React.useRef(new Map<string, MapTilePayload>());
   const inflightTileRequests = React.useRef(new Map<string, Promise<MapTilePayload>>());
+  const tileRequestController = React.useRef<AbortController | null>(null);
   const visibleTileSetSignature = React.useRef<string | null>(null);
   const requestController = React.useRef<AbortController | null>(null);
   const reviewOverrides = React.useRef(new Map<number, string>());
@@ -1012,6 +1019,7 @@ export function MapView({
   React.useEffect(() => {
     if (!active || !tileMode || !mapDataset || !viewport) {
       tileRequestRevision.current += 1;
+      tileRequestController.current?.abort();
       visibleTileSetSignature.current = null;
       setTileEntries([]);
       return;
@@ -1021,6 +1029,20 @@ export function MapView({
     if (visibleTileSetSignature.current === signature) return;
     visibleTileSetSignature.current = signature;
     const revision = ++tileRequestRevision.current;
+    tileRequestController.current?.abort();
+    const controller = new AbortController();
+    tileRequestController.current = controller;
+    const progressiveEntries = new Map<string, { key: string; features: MapTileFeature[] }>();
+    const publishProgress = () => {
+      if (revision !== tileRequestRevision.current) return;
+      const entries = [...progressiveEntries.values()];
+      setTileEntries(entries);
+      setStatistics((value) => ({
+        ...value, total: mapDataset.point_count, mapped: mapDataset.point_count,
+        returned: entries.reduce((count, entry) => count + entry.features.length, 0),
+        truncated: false, updatedAt: mapDataset.published_at, exact: true,
+      }));
+    };
     setLoading(true);
     fetchVisibleMapTiles(coordinates, async (tile) =>
       fetchCachedMapTile(
@@ -1028,7 +1050,18 @@ export function MapView({
           inflightTileRequests.current,
           mapDataset.version,
           tile,
+          MAX_MAP_TILE_CACHE_ENTRIES,
+          controller.signal,
         ),
+      6,
+      ({ tile, payload }) => {
+        progressiveEntries.set(`${tile.z}/${tile.x}/${tile.y}`, {
+          key: `${mapDataset.version}/${tile.z}/${tile.x}/${tile.y}`,
+          features: applyMapTileReviewOverrides(payload.features, reviewOverrides.current),
+        });
+        publishProgress();
+      },
+      controller.signal,
     ).then(({ entries: loaded, failed }) => {
       const entries = loaded.map(({ tile, payload }) => ({
         key: `${mapDataset.version}/${tile.z}/${tile.x}/${tile.y}`,
@@ -1057,7 +1090,10 @@ export function MapView({
       if (revision === tileRequestRevision.current) setLoading(false);
     });
   }, [active, mapDataset, tileMode, viewport, viewportZoom]);
-  React.useEffect(() => () => { tileRequestRevision.current += 1; }, []);
+  React.useEffect(() => () => {
+    tileRequestRevision.current += 1;
+    tileRequestController.current?.abort();
+  }, []);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
