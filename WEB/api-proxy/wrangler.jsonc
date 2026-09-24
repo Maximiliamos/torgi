@@ -8,6 +8,12 @@
     "PRIMARY_API_ORIGIN": "https://home-relay.194-226-126-233.sslip.io",
     "SECONDARY_API_ORIGIN": "https://194-226-126-233.sslip.io"
   },
+  "r2_buckets": [
+    {
+      "binding": "MAP_ASSETS",
+      "bucket_name": "sterdez-map-cache"
+    }
+  ],
   "routes": [
     {
       "pattern": "api.sterdez.online/*",
