@@ -219,7 +219,14 @@ export function fetchCachedYandexMapTile(
   bundleSource: PublicMapBundleSource = {},
 ) {
   const filterKey = directMapFilterSignature(filters);
-  const key = `${mapTileCacheKey(version, tile)}:${filterKey}`;
+  const sourceKey = filterKey
+    ? "filtered-api"
+    : bundleSource.layout === "regional-bundles-v1"
+      ? `bundle:${bundleSource.rootUrl || ""}:${bundleSource.indexBaseUrl || ""}`
+      : tileBaseUrl
+        ? `public-tiles:${tileBaseUrl}`
+        : "authenticated-api";
+  const key = `${mapTileCacheKey(version, tile)}:${filterKey}:${sourceKey}`;
   const cached = completed.get(key);
   if (cached) {
     completed.delete(key);
