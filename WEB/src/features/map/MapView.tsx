@@ -461,6 +461,7 @@ function YandexDesktopMap({
   tileEntries,
   mapDataset,
   directTileMode,
+  directFilters,
   reviewMarkerUpdate,
   selectedCadastre,
   showCadastre,
@@ -477,6 +478,7 @@ function YandexDesktopMap({
   tileEntries: Array<{ key: string; features: MapTileFeature[] }>;
   mapDataset: MapDataset | null;
   directTileMode: boolean;
+  directFilters: DirectMapFilterQuery;
   reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
   selectedCadastre: Record<string, unknown> | null;
   showCadastre: boolean;
@@ -523,6 +525,8 @@ function YandexDesktopMap({
     return refreshed?.version === expectedVersion;
   }, [onDatasetRefresh]);
 
+  const directFilterKey = directMapFilterSignature(directFilters);
+
   const loadDirectTile = React.useCallback(async (
     version: string,
     tile: TileCoordinate,
@@ -533,31 +537,39 @@ function YandexDesktopMap({
         directInflight.current,
         version,
         tile,
+        directFilters,
       );
     } catch (error) {
       if (
-        error instanceof ApiError
+        !directFilterKey
+        && error instanceof ApiError
         && error.status === 401
         && await refreshMapEdgeSession(version)
       ) {
-        directInflight.current.delete(mapTileCacheKey(version, tile));
+        directInflight.current.delete(
+          `${mapTileCacheKey(version, tile)}:${directFilterKey}`,
+        );
         return fetchCachedYandexMapTile(
           directCompleted.current,
           directInflight.current,
           version,
           tile,
+          directFilters,
         );
       }
       throw error;
     }
-  }, [refreshMapEdgeSession]);
-
+  }, [directFilterKey, directFilters, refreshMapEdgeSession]);
   const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
     if (!directTileMode || !mapDataset) return;
     const version = String(data.version || "");
     const generation = Number(data.generation);
-    if (version !== mapDataset.version || !Number.isFinite(generation)) return;
-
+    const requestedFilterKey = String(data.filterKey || "");
+    if (
+      version !== mapDataset.version
+      || requestedFilterKey !== directFilterKey
+      || !Number.isFinite(generation)
+    ) return;
     const normalize = (value: unknown): TileCoordinate[] =>
       (Array.isArray(value) ? value : [])
         .map((item) => {
@@ -614,7 +626,7 @@ function YandexDesktopMap({
 
     await runPool(visible, 12, true);
     void runPool(prefetch, 4, false);
-  }, [directTileMode, loadDirectTile, mapDataset, postCommand]);
+  }, [directFilterKey, directTileMode, loadDirectTile, mapDataset, postCommand]);
   React.useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (
@@ -658,8 +670,9 @@ function YandexDesktopMap({
     postCommand("set-direct-dataset", {
       enabled: directTileMode,
       dataset: directTileMode ? mapDataset : null,
+      filterKey: directFilterKey,
     });
-  }, [directTileMode, mapDataset, postCommand, readyRevision]);
+  }, [directFilterKey, directTileMode, mapDataset, postCommand, readyRevision]);
   React.useEffect(() => {
     if (readyRevision && reviewMarkerUpdate) postCommand("update-lot-review", reviewMarkerUpdate);
   }, [postCommand, readyRevision, reviewMarkerUpdate]);
