@@ -16,7 +16,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
@@ -178,8 +178,8 @@ jobs:
             "MAP_OBJECT_STORE_ACCESS_KEY=$env:MAP_S3_ACCESS_KEY"
             "MAP_OBJECT_STORE_SECRET_KEY=$env:MAP_S3_SECRET_KEY"
             "MAP_OBJECT_STORE_REGION=$env:MAP_S3_REGION"
-            'MAP_OBJECT_STORE_WORKERS=8'
-            'MAP_OBJECT_STORE_TIMEOUT_SECONDS=20'
+            'MAP_OBJECT_STORE_WORKERS=4'
+            'MAP_OBJECT_STORE_TIMEOUT_SECONDS=60'
           ))
           foreach ($protectedPath in @($redisConfigPath, $configPath, $workerConfigPath)) {
             & icacls.exe $protectedPath /inheritance:r /grant:r `
