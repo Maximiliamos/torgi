@@ -45,7 +45,15 @@ jobs:
           if (-not $env:API_KEY -or -not $env:SESSION_SECRET) {
             throw "Required production secrets are unavailable"
           }
-          if ($env:MAP_S3_ENABLED -match '^(?i:true|1|yes)
+          $mapS3Enabled = @('true', '1', 'yes') -contains $env:MAP_S3_ENABLED.ToLowerInvariant()
+          if ($mapS3Enabled) {
+            if (-not $env:MAP_S3_PUBLIC_BASE_URL -or -not $env:MAP_S3_ACCESS_KEY -or -not $env:MAP_S3_SECRET_KEY) {
+              throw "REG.RU S3 is enabled but public base URL or write credentials are unavailable"
+            }
+            Write-Output "::add-mask::$env:MAP_S3_ACCESS_KEY"
+            Write-Output "::add-mask::$env:MAP_S3_SECRET_KEY"
+          }
+
       - name: Build current-main API image
         shell: powershell
         run: |
