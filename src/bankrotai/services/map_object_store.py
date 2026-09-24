@@ -22,13 +22,17 @@ _UPLOAD_PAGE_SIZE = 250
 _SERVICE = "s3"
 
 
+def object_store_public_enabled(settings: Settings | None = None) -> bool:
+    value = settings or get_settings()
+    return bool(value.map_object_store_enabled and value.map_object_store_public_base_url)
+
+
 def object_store_configured(settings: Settings | None = None) -> bool:
     value = settings or get_settings()
     return bool(
-        value.map_object_store_enabled
+        object_store_public_enabled(value)
         and value.map_object_store_endpoint
         and value.map_object_store_bucket
-        and value.map_object_store_public_base_url
         and value.map_object_store_access_key
         and value.map_object_store_secret_key
     )
@@ -36,7 +40,7 @@ def object_store_configured(settings: Settings | None = None) -> bool:
 
 def dataset_public_tile_base_url(version: str, settings: Settings | None = None) -> str | None:
     value = settings or get_settings()
-    if not object_store_configured(value):
+    if not object_store_public_enabled(value):
         return None
     root = str(value.map_object_store_public_base_url).rstrip("/")
     return f"{root}/datasets/{quote(version, safe='-_.~')}/tiles"
