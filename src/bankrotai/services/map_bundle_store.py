@@ -18,7 +18,7 @@ from bankrotai.services.map_object_store import (
     _verify_public_manifest,
     object_store_configured,
 )
-from bankrotai.services.map_payload import public_yandex_tile_payload
+from bankrotai.services.map_payload import legacy_tile_to_yandex, public_yandex_tile_payload
 
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,9 @@ def _tile_region_code(z: int, payload: dict[str, Any]) -> str:
         properties = feature.get("properties")
         if not isinstance(properties, dict) or properties.get("kind") != "lot":
             continue
-        normalized = normalize_map_region_code(properties.get("region_code"))
+        normalized = normalize_map_region_code(
+            properties.get("bundle_region_code") or properties.get("region_code")
+        )
         if normalized:
             region_codes.add(normalized)
 
@@ -238,8 +240,9 @@ def publish_dataset_to_regional_bundles(
         last_id = int(rows[-1].id)
 
         for row in rows:
+            prepared_payload = legacy_tile_to_yandex(row.payload_json)
+            region_code = _tile_region_code(int(row.z), prepared_payload)
             public_payload = public_yandex_tile_payload(row.payload_json)
-            region_code = _tile_region_code(int(row.z), public_payload)
             bucket = _bundle_bucket(int(row.z), int(row.x), int(row.y), region_code)
             tile_key = f"{int(row.z)}/{int(row.x)}/{int(row.y)}"
             groups[bucket][tile_key] = public_payload
