@@ -166,7 +166,11 @@ def public_yandex_tile_payload(payload: dict[str, Any] | None) -> dict[str, Any]
             "properties": dict(raw.get("properties") or {}),
             "options": dict(raw.get("options") or {}),
         }
-        properties = feature["properties"]
+        properties_raw = feature.get("properties")
+        properties: dict[str, Any] = (
+            properties_raw if isinstance(properties_raw, dict) else {}
+        )
+        feature["properties"] = properties
         if properties.get("kind") == "lot":
             properties.pop("review_status", None)
             status = str(properties.get("status") or "").casefold()
