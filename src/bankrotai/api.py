@@ -457,9 +457,20 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path.startswith("/api/map/lots/"):
             return path.rsplit("/", 1)[-1].isdigit()
-        if path.startswith("/api/map/tiles/") or path.startswith("/api/map/yandex-tiles/"):
-            parts = path.split("/")
-            return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
+        if path.startswith("/api/map/tiles/"):
+            parts = path.strip("/").split("/")
+            return (
+                len(parts) == 7
+                and parts[:3] == ["api", "map", "tiles"]
+                and all(part.isdigit() for part in parts[-3:])
+            )
+        if path.startswith("/api/map/yandex-tiles/"):
+            parts = path.strip("/").split("/")
+            return (
+                len(parts) == 7
+                and parts[:3] == ["api", "map", "yandex-tiles"]
+                and all(part.isdigit() for part in parts[-3:])
+            )
         if path.startswith("/api/search/"):
             return True
         if path.startswith("/api/sync/lots/"):
