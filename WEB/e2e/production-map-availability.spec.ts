@@ -65,7 +65,7 @@ test("authenticated map survives five wide viewport movements", async ({ page },
 });
 
 
-test("direct prepared tiles render and become edge cached", async ({ page }, testInfo) => {
+test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   const username = process.env.E2E_USERNAME || "reader";
   const password = process.env.E2E_PASSWORD;
@@ -107,14 +107,18 @@ test("direct prepared tiles render and become edge cached", async ({ page }, tes
     version: string;
     point_count: number;
     bootstrap_tiles?: unknown[];
+    tile_source?: string;
+    tile_base_url?: string | null;
   };
   expect(dataset.version).toBeTruthy();
   expect(dataset.point_count).toBeGreaterThan(0);
   expect(dataset.bootstrap_tiles?.length).toBe(9);
+  expect(dataset.tile_source).toBe("regru-s3");
+  expect(dataset.tile_base_url).toMatch(/^https:\/\//);
 
+  const tileBaseUrl = String(dataset.tile_base_url).replace(/\/$/, "");
   const tileResponsePromise = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname.startsWith(`/api/map/yandex-tiles/${dataset.version}/12/`)
+    return response.url().startsWith(`${tileBaseUrl}/12/`)
       && response.status() === 200;
   }, { timeout: 40_000 });
 
@@ -128,45 +132,39 @@ test("direct prepared tiles render and become edge cached", async ({ page }, tes
 
   const firstTileResponse = await tileResponsePromise;
   const firstHeaders = await firstTileResponse.allHeaders();
-  expect(["ORIGIN-MISS", "R2-HIT", "EDGE-HIT"]).toContain(firstHeaders["x-map-cache"]);
-  expect(firstHeaders["cache-control"]).toContain("private");
+  expect(firstTileResponse.url()).not.toContain("api.sterdez.online/api/map/yandex-tiles/");
+  expect(firstHeaders["cache-control"]).toContain("public");
   expect(firstHeaders["cache-control"]).toContain("immutable");
-  expect(firstHeaders["x-map-dataset"]).toBe(dataset.version);
+  expect(["*", "https://sterdez.online"]).toContain(firstHeaders["access-control-allow-origin"]);
 
   const firstPayload = await firstTileResponse.json() as {
     type?: string;
-    features?: unknown[];
+    features?: Array<{ properties?: Record<string, unknown> }>;
   };
   expect(firstPayload.type).toBe("FeatureCollection");
   expect(Array.isArray(firstPayload.features)).toBe(true);
-
-  const tileUrl = firstTileResponse.url();
-  let warmStatus = "";
-  let warmDurationMs = 0;
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
-    if (attempt > 1) await page.waitForTimeout(300);
-    const started = Date.now();
-    const warm = await page.context().request.get(tileUrl, { timeout: 30_000 });
-    warmDurationMs = Date.now() - started;
-    expect(warm.status()).toBe(200);
-    warmStatus = (await warm.allHeaders())["x-map-cache"] || "";
-    if (warmStatus === "EDGE-HIT" || warmStatus === "R2-HIT") break;
+  for (const feature of firstPayload.features || []) {
+    expect(feature.properties).not.toHaveProperty("review_status");
   }
 
-  expect(["EDGE-HIT", "R2-HIT"]).toContain(warmStatus);
+  const started = Date.now();
+  const directRead = await page.context().request.get(firstTileResponse.url(), { timeout: 30_000 });
+  const directReadMs = Date.now() - started;
+  expect(directRead.status()).toBe(200);
   expect(legacyBulkCalls).toBe(0);
   await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
 
-  await testInfo.attach("direct-map-cache-evidence.json", {
+  await testInfo.attach("direct-map-regru-s3-evidence.json", {
     body: Buffer.from(JSON.stringify({
       dataset: dataset.version,
       pointCount: dataset.point_count,
-      firstCacheState: firstHeaders["x-map-cache"],
-      warmCacheState: warmStatus,
-      warmDurationMs,
-      tileUrl: new URL(tileUrl).pathname,
+      tileSource: dataset.tile_source,
+      tileBaseUrl,
+      tileHost: new URL(firstTileResponse.url()).host,
+      directReadMs,
       legacyBulkCalls,
     }, null, 2)),
     contentType: "application/json",
   });
 });
+
