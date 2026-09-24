@@ -14,7 +14,7 @@ const YANDEX_MAP_TILE_RE = /^\/api\/map\/yandex-tiles\/([A-Za-z0-9._:-]{1,80})\/
 const CURRENT_MAP_DATASET_PATH = "/api/map/datasets/current";
 const MAP_EDGE_COOKIE = "bankrotai_map_edge";
 const MAP_EDGE_TOKEN_VERSION = "v1";
-const MAP_EDGE_TOKEN_TTL_SECONDS = 300;
+const MAP_EDGE_TOKEN_TTL_SECONDS = 120;
 const MAP_TILE_BROWSER_CACHE = "private, max-age=31536000, immutable";
 const MAP_TILE_EDGE_CACHE = "public, max-age=31536000, immutable";
 const MAP_DATASET_BROWSER_CACHE = "private, max-age=5, stale-while-revalidate=30";
