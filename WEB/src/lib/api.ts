@@ -549,6 +549,11 @@ export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>
   requestJson<MapLot>(`/api/map/lots/${lotId}`);
+export const fetchMapReviewStatuses = (ids: number[]) =>
+  requestJson<{ items: Array<{ id: number; review_status: string | null }> }>(
+    "/api/map/review-statuses",
+    { ids: ids.join(",") },
+  );
 export const fetchCurrentMapDataset = () =>
   requestJson<MapDataset>("/api/map/datasets/current");
 export const fetchMapTile = async (version: string, z: number, x: number, y: number, signal?: AbortSignal) =>
