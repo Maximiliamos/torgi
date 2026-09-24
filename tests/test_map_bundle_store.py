@@ -78,10 +78,10 @@ def _cluster_payload():
     }
 
 
-def _seed_bundle_dataset(factory):
+def _seed_bundle_dataset(factory, version: str = "bundle-v1-bundle-s3"):
     with factory() as session:
         dataset = MapDataset(
-            version="bundle-v1-s3",
+            version=version,
             status="building",
             is_current=False,
             point_count=2,
@@ -179,57 +179,73 @@ def test_bundle_and_index_keys_are_content_addressed():
 
 def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(monkeypatch):
     factory = _factory()
-    dataset_id = _seed_bundle_dataset(factory)
+    first_version = "bundle-v1-bundle-s3"
+    first_id = _seed_bundle_dataset(factory, first_version)
     settings = _settings()
     puts: list[tuple[str, bytes]] = []
 
     monkeypatch.setattr(map_bundle_store, "get_settings", lambda: settings)
-    monkeypatch.setattr(map_bundle_store, "_public_object_exists", lambda _settings, _key: False)
     monkeypatch.setattr(
         map_bundle_store,
         "_put_object",
         lambda _settings, key, body, **_kwargs: puts.append((key, body)),
     )
-    monkeypatch.setattr(
-        map_bundle_store,
-        "_verify_public_manifest",
-        lambda _settings, version: {"version": version, "layout": REGIONAL_BUNDLE_LAYOUT},
-    )
 
-    result = publish_dataset_to_regional_bundles(
+    verified_manifests: dict[str, dict] = {}
+
+    def verify(_settings, version):
+        return verified_manifests.get(
+            version,
+            {"version": version, "layout": REGIONAL_BUNDLE_LAYOUT},
+        )
+
+    monkeypatch.setattr(map_bundle_store, "_verify_public_manifest", verify)
+
+    first = publish_dataset_to_regional_bundles(
         factory,
-        dataset_id=dataset_id,
-        version="bundle-v1-s3",
+        dataset_id=first_id,
+        version=first_version,
     )
 
-    assert result["bundle_count"] == 2
-    assert result["uploaded_bundle_count"] == 2
-    assert result["reused_bundle_count"] == 0
-    assert result["index_shard_count"] == 2
-    assert result["uploaded_index_count"] == 2
-    assert result["reused_index_count"] == 0
+    assert first["bundle_count"] == 2
+    assert first["uploaded_bundle_count"] == 2
+    assert first["reused_bundle_count"] == 0
+    assert first["index_shard_count"] == 2
+    assert first["uploaded_index_count"] == 2
+    assert first["reused_index_count"] == 0
     bundle_keys = [key for key, _body in puts if key.startswith("bundles/v1/")]
     index_keys = [key for key, _body in puts if key.startswith("indexes/v1/")]
     assert len(bundle_keys) == 2
     assert len(index_keys) == 2
-    assert puts[-1][0] == "datasets/bundle-v1-s3/manifest.json"
-    assert result["regions"]["76"]["point_count"] == 2
-    assert result["regions"]["76"]["priority"] is True
+    assert puts[-1][0] == f"datasets/{first_version}/manifest.json"
+    first_manifest = __import__("json").loads(puts[-1][1])
+    assert set(first_manifest["bundle_objects"]) == set(bundle_keys)
+    assert set(first_manifest["index_shards"].values()) == set(index_keys)
+    assert first["regions"]["76"]["point_count"] == 2
+    assert first["regions"]["76"]["priority"] is True
 
+    verified_manifests[first_version] = first_manifest
+    with factory() as session:
+        previous = session.get(MapDataset, first_id)
+        assert previous is not None
+        previous.status = "ready"
+        previous.is_current = True
+        session.commit()
+
+    second_version = "bundle-v2-bundle-s3"
+    second_id = _seed_bundle_dataset(factory, second_version)
     puts.clear()
-    monkeypatch.setattr(map_bundle_store, "_public_object_exists", lambda _settings, _key: True)
-    reused = publish_dataset_to_regional_bundles(
+
+    second = publish_dataset_to_regional_bundles(
         factory,
-        dataset_id=dataset_id,
-        version="bundle-v1-s3",
+        dataset_id=second_id,
+        version=second_version,
     )
 
-    assert reused["bundle_count"] == 2
-    assert reused["uploaded_bundle_count"] == 0
-    assert reused["reused_bundle_count"] == 2
-    assert reused["uploaded_index_count"] == 0
-    assert reused["reused_index_count"] == 2
-    assert not any(key.startswith("bundles/v1/") for key, _body in puts)
-    assert not any(key.startswith("indexes/v1/") for key, _body in puts)
+    assert second["bundle_count"] == 2
+    assert second["uploaded_bundle_count"] == 0
+    assert second["reused_bundle_count"] == 2
+    assert second["uploaded_index_count"] == 0
+    assert second["reused_index_count"] == 2
     assert len(puts) == 1
-    assert puts[0][0] == "datasets/bundle-v1-s3/manifest.json"
+    assert puts[0][0] == f"datasets/{second_version}/manifest.json"
