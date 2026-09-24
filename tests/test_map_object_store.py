@@ -33,6 +33,7 @@ def test_public_map_payload_strips_internal_review_state():
                         "title": "Lot",
                         "status": "active",
                         "review_status": "approved",
+                        "bundle_region_code": "76",
                     },
                     "options": {"preset": "islands#greenDotIcon"},
                 },
@@ -57,6 +58,7 @@ def test_public_map_payload_strips_internal_review_state():
 
     assert public["type"] == "FeatureCollection"
     assert public["features"][0]["properties"].get("review_status") is None
+    assert public["features"][0]["properties"].get("bundle_region_code") is None
     assert public["features"][0]["options"]["preset"] == "islands#grayDotIcon"
     assert public["features"][1]["properties"].get("review_status") is None
     assert public["features"][1]["options"]["preset"] == "islands#blackDotIcon"
