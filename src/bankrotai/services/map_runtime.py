@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 from bankrotai.db import MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_builder import MAX_DATASET_ZOOM, POINT_ZOOM, tile_bounds, tile_xy
 from bankrotai.services.map_payload import (
-    legacy_tile_to_yandex,
     yandex_cluster_feature,
     yandex_feature_collection,
     yandex_lot_feature,
@@ -227,7 +226,7 @@ def build_runtime_index(session: Session, dataset: MapDataset) -> RuntimeMapInde
 
 
 def get_runtime_index(
-    session_factory: Callable[[], Session],
+    session_factory: Callable[[], Any],
     version: str,
 ) -> RuntimeMapIndex:
     global _runtime_index
@@ -257,7 +256,7 @@ def get_runtime_index(
 
 
 def schedule_runtime_index_warmup(
-    session_factory: Callable[[], Session],
+    session_factory: Callable[[], Any],
     version: str,
 ) -> bool:
     with _runtime_lock:
