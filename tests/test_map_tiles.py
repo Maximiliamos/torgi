@@ -660,19 +660,6 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     )
     assert current_not_modified.status_code == 304
     assert current_not_modified.headers["x-map-dataset"] == result["version"]
-
-    monkeypatch.setattr(api.settings, "map_object_store_enabled", True)
-    monkeypatch.setattr(api.settings, "map_object_store_public_base_url", "https://map.example.test/public")
-    s3_current = client.get(
-        "/api/map/datasets/current",
-        headers={"If-None-Match": current.headers["etag"]},
-    )
-    assert s3_current.status_code == 200
-    assert s3_current.headers["etag"] != current.headers["etag"]
-    assert s3_current.json()["tile_source"] == "regru-s3"
-    assert s3_current.json()["tile_base_url"] == (
-        f"https://map.example.test/public/datasets/{result['version']}/tiles"
-    )
     for hidden_version in (
         "partial-building-version",
         "failed-version",
@@ -751,6 +738,25 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     assert client.get(f"/api/map/tiles/{result['version']}/0/0/0").status_code == 200
     assert client.get(f"/api/map/tiles/{result['version']}/14/16383/16383").status_code == 200
     assert unauthorized.get("/api/map/lots/1").status_code == 401
+
+    monkeypatch.setattr(api.settings, "map_object_store_enabled", True)
+    monkeypatch.setattr(api.settings, "map_object_store_public_base_url", "https://map.example.test/public")
+    s3_version = f"{result['version']}-s3"
+    with factory() as session:
+        current_dataset = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current_dataset is not None
+        current_dataset.version = s3_version
+        session.commit()
+    s3_current = client.get(
+        "/api/map/datasets/current",
+        headers={"If-None-Match": current.headers["etag"]},
+    )
+    assert s3_current.status_code == 200
+    assert s3_current.headers["etag"] != current.headers["etag"]
+    assert s3_current.json()["tile_source"] == "regru-s3"
+    assert s3_current.json()["tile_base_url"] == (
+        f"https://map.example.test/public/datasets/{s3_version}/tiles"
+    )
 
 
 def test_current_dataset_api_hides_unpublished_states(monkeypatch):
