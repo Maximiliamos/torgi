@@ -585,7 +585,6 @@ export const fetchPublicYandexMapTile = async (
     headers: { Accept: "application/json" },
     signal,
   });
-  if (response.status === 404) return { type: "FeatureCollection", features: [] };
   if (!response.ok) {
     throw new ApiError(`REG.RU S3 map tile HTTP ${response.status}`, response.status);
   }
