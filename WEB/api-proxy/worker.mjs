@@ -511,7 +511,14 @@ export default {
       }
     }
 
+    const tilePath = incoming.pathname.startsWith("/api/map/yandex-tiles/");
     const tileParts = yandexTileParts(incoming.pathname);
+    if (tilePath && !tileParts) {
+      return Response.json(
+        { detail: "Map tile not found" },
+        { status: 404, headers: { "cache-control": "no-store", "x-request-id": requestId } },
+      );
+    }
     if (tileParts) {
       try {
         return await yandexMapTileResponse(request, incoming, env, ctx, requestId, tileParts);
