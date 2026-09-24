@@ -170,6 +170,8 @@ jobs:
       - name: Build production WEB bundle
         working-directory: WEB
         shell: bash
+        env:
+          VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
         run: |
           set -euo pipefail
           npm ci

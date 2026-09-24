@@ -41,6 +41,13 @@ export const MAP_REDUCED_LIMIT = 500;
 // while 512 entries preserve useful pan-back history without unbounded growth.
 export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
 
+export function yandexMapsApiUrl(apiKey?: string) {
+  const params = new URLSearchParams({ lang: "ru_RU", csp: "true" });
+  const normalizedKey = apiKey?.trim();
+  if (normalizedKey) params.set("apikey", normalizedKey);
+  return `https://api-maps.yandex.ru/2.1.77/?${params.toString()}`;
+}
+
 export function mapLimitForZoom(zoom: number) {
   if (zoom <= 7) return 250;
   if (zoom <= 10) return 750;
@@ -476,8 +483,9 @@ function YandexDesktopMap({
     if (readyRevision && active) postCommand("resume");
   }, [active, postCommand, readyRevision]);
 
+  const yandexMapsUrl = yandexMapsApiUrl(import.meta.env.VITE_YANDEX_MAPS_API_KEY);
   const html = React.useMemo(
-    () => `<!doctype html><html><head><meta charset="utf-8"><script src="https://api-maps.yandex.ru/2.1.77/?lang=ru_RU&amp;csp=true"></script><style>
+    () => `<!doctype html><html><head><meta charset="utf-8"><script src="${yandexMapsUrl}"></script><style>
 html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}
 </style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
 const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let legacyManager=null;let tileManager=null;let lots=[];let mode='legacy';const tileObjects=new Map();const tileLots=new Map();let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
@@ -505,7 +513,7 @@ window.addEventListener('message',event=>{if(event.source!==parent||event.data?.
 function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});legacyManager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});legacyManager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});legacyManager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));legacyManager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=legacyManager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});tileManager=new ymaps.ObjectManager({clusterize:false});tileManager.objects.events.add('click',event=>{const id=event.get('objectId'),object=tileManager.objects.getById(id);if(object?.properties?.kind==='cluster'&&Array.isArray(object.properties.bounds)){const b=object.properties.bounds;map.setBounds([[b[1],b[0]],[b[3],b[2]]],{checkZoomRange:true,zoomMargin:24});return;}send('bankrotai-select',{lotId:Number(id)});});manager=legacyManager;map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>tileLots.get(Number(id))?.review_status??lots.find(l=>Number(l.id)===Number(id))?.review_status??null,clickObject:id=>manager.objects.events.fire('click',{objectId:id}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
 </script></body></html>`,
-    [channel],
+    [channel, yandexMapsUrl],
   );
 
   return (
