@@ -190,7 +190,6 @@ def test_s3_put_does_not_retry_4xx(monkeypatch):
     sleep.assert_not_called()
 
 
-
 def test_s3_upload_transport_reuses_session_per_worker(monkeypatch):
     if hasattr(_UPLOAD_HTTP, "session"):
         delattr(_UPLOAD_HTTP, "session")
