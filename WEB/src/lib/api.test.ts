@@ -186,7 +186,7 @@ describe("API client", () => {
       12,
       1,
       1,
-    )).rejects.toMatchObject({ status: 404 });
+    )).resolves.toEqual({ type: "FeatureCollection", features: [] });
   });
 
   it("keeps review marker state behind the authenticated API", async () => {
