@@ -98,7 +98,7 @@ def _seed_bundle_dataset(factory):
                     etag="a",
                     payload_json=_lot_payload(1, "76", 57.6, 39.8),
                 ),
-                # Same z9 parent + same region: must share one physical bundle.
+                # Same z8 parent + same region: must share one physical bundle.
                 MapTile(
                     dataset_id=dataset.id,
                     z=12,
