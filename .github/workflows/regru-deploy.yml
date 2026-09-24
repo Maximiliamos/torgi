@@ -277,6 +277,7 @@ jobs:
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+          MAP_S3_ENABLED: ${{ vars.MAP_OBJECT_STORE_ENABLED || 'false' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -304,12 +305,21 @@ jobs:
             -c "$RUNNER_TEMP/home-primary.cookies" \
             --data "$LOGIN_PAYLOAD" \
             "https://$HOME_RELAY_HOSTNAME/api/auth/login" >/dev/null
-          DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
-            -H "X-API-Key: $API_KEY" \
-            -b "$RUNNER_TEMP/home-primary.cookies" \
-            "https://$HOME_RELAY_HOSTNAME/api/map/datasets/current")"
-          printf '%s' "$DATASET_JSON" | python -c \
-            'import json,sys; d=json.load(sys.stdin); assert d["version"] and d["point_count"] > 0 and d["tile_count"] > 0 and d["published_at"]'
+          for dataset_attempt in $(seq 1 180); do
+            DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
+              -H "X-API-Key: $API_KEY" \
+              -b "$RUNNER_TEMP/home-primary.cookies" \
+              "https://$HOME_RELAY_HOSTNAME/api/map/datasets/current")"
+            DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and d.get("tile_base_url") else "no")')"
+            if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
+              break
+            fi
+            if test "$dataset_attempt" = 180; then
+              echo "Staged home map dataset did not become REG.RU S3-ready" >&2
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Install production configuration
         env:
@@ -593,6 +603,8 @@ jobs:
         working-directory: WEB
         env:
           E2E_BASE_URL: https://sterdez.online
+          E2E_API_BASE_URL: https://api.sterdez.online
+          E2E_PRODUCTION_AUDIT: "1"
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
-        run: npm run test:e2e
+        run: npx playwright test e2e/production-map-availability.spec.ts
