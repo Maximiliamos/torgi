@@ -446,6 +446,8 @@ function CoincidentLotsPanel({
 function YandexDesktopMap({
   lots,
   tileEntries,
+  mapDataset,
+  directTileMode,
   reviewMarkerUpdate,
   selectedCadastre,
   showCadastre,
@@ -453,19 +455,23 @@ function YandexDesktopMap({
   selectedLotGeometry,
   active,
   onSelect,
+  onDatasetRefresh,
   onClusterSelect,
   onViewport,
   onRendered,
 }: {
   lots: MapMarkerLot[];
   tileEntries: Array<{ key: string; features: MapTileFeature[] }>;
+  mapDataset: MapDataset | null;
+  directTileMode: boolean;
   reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
   selectedCadastre: Record<string, unknown> | null;
   showCadastre: boolean;
   selectedLotId: number | null;
   selectedLotGeometry: GeoJSON.GeoJsonObject | null;
   active: boolean;
-  onSelect: (id: number) => void;
+  onSelect: (id: number, preview?: MapTileFeature | null) => void;
+  onDatasetRefresh: (dataset: MapDataset) => void;
   onClusterSelect: (ids: number[]) => void;
   onViewport: (bounds: [number, number, number, number], zoom: number) => void;
   onRendered: (durationMs: number, count: number) => void;
@@ -473,6 +479,9 @@ function YandexDesktopMap({
   const frame = React.useRef<HTMLIFrameElement>(null);
   const channel = "bankrotai-map-v1";
   const [readyRevision, setReadyRevision] = React.useState(0);
+  const directCompleted = React.useRef(new Map<string, YandexMapTilePayload>());
+  const directInflight = React.useRef(new Map<string, Promise<YandexMapTilePayload>>());
+  const edgeRefresh = React.useRef<Promise<MapDataset | null> | null>(null);
 
   const postCommand = React.useCallback(
     (type: string, payload: Record<string, unknown> = {}) => {
@@ -484,6 +493,115 @@ function YandexDesktopMap({
     [channel],
   );
 
+  const refreshMapEdgeSession = React.useCallback(async (expectedVersion: string) => {
+    if (!edgeRefresh.current) {
+      const refresh = fetchCurrentMapDataset()
+        .then((dataset) => {
+          onDatasetRefresh(dataset);
+          return dataset;
+        })
+        .catch(() => null)
+        .finally(() => {
+          if (edgeRefresh.current === refresh) edgeRefresh.current = null;
+        });
+      edgeRefresh.current = refresh;
+    }
+    const refreshed = await edgeRefresh.current;
+    return refreshed?.version === expectedVersion;
+  }, [onDatasetRefresh]);
+
+  const loadDirectTile = React.useCallback(async (
+    version: string,
+    tile: TileCoordinate,
+  ): Promise<YandexMapTilePayload> => {
+    try {
+      return await fetchCachedYandexMapTile(
+        directCompleted.current,
+        directInflight.current,
+        version,
+        tile,
+      );
+    } catch (error) {
+      if (
+        error instanceof ApiError
+        && error.status === 401
+        && await refreshMapEdgeSession(version)
+      ) {
+        directInflight.current.delete(mapTileCacheKey(version, tile));
+        return fetchCachedYandexMapTile(
+          directCompleted.current,
+          directInflight.current,
+          version,
+          tile,
+        );
+      }
+      throw error;
+    }
+  }, [refreshMapEdgeSession]);
+
+  const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
+    if (!directTileMode || !mapDataset) return;
+    const version = String(data.version || "");
+    const generation = Number(data.generation);
+    if (version !== mapDataset.version || !Number.isFinite(generation)) return;
+
+    const normalize = (value: unknown): TileCoordinate[] =>
+      (Array.isArray(value) ? value : [])
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const source = item as Record<string, unknown>;
+          const z = Number(source.z);
+          const x = Number(source.x);
+          const y = Number(source.y);
+          if (
+            ![z, x, y].every(Number.isInteger)
+            || z < 0
+            || z > 14
+            || x < 0
+            || y < 0
+            || x >= 2 ** z
+            || y >= 2 ** z
+          ) return null;
+          return { z, x, y };
+        })
+        .filter((item): item is TileCoordinate => item !== null);
+
+    const visible = normalize(data.visible);
+    const prefetch = normalize(data.prefetch);
+    const runPool = async (items: TileCoordinate[], concurrency: number, publish: boolean) => {
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < items.length) {
+          const tile = items[cursor++];
+          try {
+            const payload = await loadDirectTile(version, tile);
+            if (publish) {
+              postCommand("install-direct-tile", {
+                generation,
+                key: `${version}/${tile.z}/${tile.x}/${tile.y}`,
+                payload,
+              });
+            }
+          } catch (error) {
+            if (publish) {
+              postCommand("direct-tile-failed", {
+                generation,
+                key: `${version}/${tile.z}/${tile.x}/${tile.y}`,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+      };
+      await Promise.all(Array.from(
+        { length: Math.min(Math.max(1, concurrency), items.length) },
+        worker,
+      ));
+    };
+
+    await runPool(visible, 12, true);
+    void runPool(prefetch, 4, false);
+  }, [directTileMode, loadDirectTile, mapDataset, postCommand]);
   React.useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (
@@ -491,8 +609,14 @@ function YandexDesktopMap({
         event.data?.channel !== channel
       )
         return;
-      if (event.data?.type === "bankrotai-select")
-        onSelect(Number(event.data.lotId));
+      if (event.data?.type === "bankrotai-select") {
+        const preview = event.data.preview && typeof event.data.preview === "object"
+          ? event.data.preview as MapTileFeature
+          : null;
+        onSelect(Number(event.data.lotId), preview);
+      }
+      if (event.data?.type === "bankrotai-request-tiles")
+        void fulfillDirectTileRequest(event.data as Record<string, unknown>);
       if (event.data?.type === "bankrotai-cluster-select")
         onClusterSelect(
           Array.isArray(event.data.lotIds)
@@ -508,14 +632,21 @@ function YandexDesktopMap({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [channel, onClusterSelect, onRendered, onSelect, onViewport]);
+  }, [channel, fulfillDirectTileRequest, onClusterSelect, onRendered, onSelect, onViewport]);
 
   React.useEffect(() => {
     if (readyRevision) postCommand("replace-lots", { lots });
   }, [lots, postCommand, readyRevision]);
   React.useEffect(() => {
-    if (readyRevision) postCommand("sync-tiles", { entries: tileEntries });
-  }, [postCommand, readyRevision, tileEntries]);
+    if (readyRevision && !directTileMode) postCommand("sync-tiles", { entries: tileEntries });
+  }, [directTileMode, postCommand, readyRevision, tileEntries]);
+  React.useEffect(() => {
+    if (!readyRevision) return;
+    postCommand("set-direct-dataset", {
+      enabled: directTileMode,
+      dataset: directTileMode ? mapDataset : null,
+    });
+  }, [directTileMode, mapDataset, postCommand, readyRevision]);
   React.useEffect(() => {
     if (readyRevision && reviewMarkerUpdate) postCommand("update-lot-review", reviewMarkerUpdate);
   }, [postCommand, readyRevision, reviewMarkerUpdate]);
