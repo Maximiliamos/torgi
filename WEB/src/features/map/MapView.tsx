@@ -1186,6 +1186,7 @@ export function MapView({
   React.useEffect(() => {
     if (selectedLotId == null) {
       setSelectedLot(null);
+      setSelectedTilePreview(null);
       setDetailLoading(false);
       setDetailError("");
       return;
@@ -1194,7 +1195,7 @@ export function MapView({
     setDetailError("");
     let cancelled = false;
     fetchMapLotDetail(selectedLotId)
-      .then((value) => { if (!cancelled) setSelectedLot(value); })
+      .then((value) => { if (!cancelled) { setSelectedLot(value); setSelectedTilePreview(null); } })
       .catch((err) => {
         if (!cancelled)
           setDetailError(
@@ -1229,7 +1230,7 @@ export function MapView({
     return () => { datasetRequestRevision.current += 1; };
   }, [loadCurrentMapDataset, refreshToken]);
   React.useEffect(() => {
-    if (!active || !tileMode || !mapDataset || !viewport) {
+    if (!active || !tileMode || directTileMode || !mapDataset || !viewport) {
       tileRequestRevision.current += 1;
       tileRequestController.current?.abort();
       visibleTileSetSignature.current = null;
@@ -1301,11 +1302,27 @@ export function MapView({
     }).finally(() => {
       if (revision === tileRequestRevision.current) setLoading(false);
     });
-  }, [active, mapDataset, tileMode, viewport, viewportZoom]);
+  }, [active, directTileMode, mapDataset, tileMode, viewport, viewportZoom]);
   React.useEffect(() => () => {
     tileRequestRevision.current += 1;
     tileRequestController.current?.abort();
   }, []);
+
+  React.useEffect(() => {
+    if (!directTileMode || !mapDataset) {
+      setDirectRenderedCount(0);
+      return;
+    }
+    setStatistics((value) => ({
+      ...value,
+      total: mapDataset.point_count,
+      mapped: mapDataset.point_count,
+      returned: directRenderedCount,
+      truncated: false,
+      updatedAt: mapDataset.published_at,
+      exact: true,
+    }));
+  }, [directRenderedCount, directTileMode, mapDataset]);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
@@ -1372,9 +1389,14 @@ export function MapView({
   );
 
   const selectLot = React.useCallback(
-    (lotId: number) => {
+    (lotId: number, preview?: MapTileFeature | null) => {
       const marker = lots.find((lot) => lot.id === lotId);
-      if (marker) setSelectedLot(markerPreview(marker));
+      if (marker) {
+        setSelectedLot(markerPreview(marker));
+        setSelectedTilePreview(null);
+      } else {
+        setSelectedTilePreview(preview ?? null);
+      }
       setSelectedLotId(lotId);
     },
     [lots],
@@ -1382,11 +1404,13 @@ export function MapView({
   const coincidentLots = coincidentLotIds
     .map((id) => lots.find((lot) => lot.id === id))
     .filter((lot): lot is MapMarkerLot => Boolean(lot));
-  const selectedTileMarker = selectedLotId == null
-    ? null
-    : tileEntries
-      .flatMap((entry) => entry.features)
-      .find((feature) => feature.kind === "lot" && Number(feature.id) === selectedLotId) ?? null;
+  const selectedTileMarker = directTileMode
+    ? selectedTilePreview
+    : selectedLotId == null
+      ? null
+      : tileEntries
+        .flatMap((entry) => entry.features)
+        .find((feature) => feature.kind === "lot" && Number(feature.id) === selectedLotId) ?? null;
 
   const refreshCatalogue = React.useCallback(async () => {
     setSyncing(true);
