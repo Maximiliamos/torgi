@@ -249,7 +249,7 @@ function isTemporaryMapFailure(error: unknown) {
 }
 
 export const MAP_SELECTION_SCRIPT = `
-function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{const lot=lots.find(item=>Number(item.id)===Number(id));if(manager&&lot)manager.objects.setObjectOptions(Number(id),opts(lot));});const selected=lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
+function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{if(id==null)return;const numericId=Number(id),legacyLot=lots.find(item=>Number(item.id)===numericId),tileLot=tileLots.get(numericId);if((mode==='direct'||mode==='tiles')&&tileLot&&tileManager){if(numericId===selectedId)tileManager.objects.setObjectOptions(numericId,opts(tileLot));else if(mode==='direct')tileManager.objects.setObjectOptions(numericId,{preset:directPreset(tileLot.review_status,tileLot.status)});else tileManager.objects.setObjectOptions(numericId,opts(tileLot));}else if(manager&&legacyLot)manager.objects.setObjectOptions(numericId,opts(legacyLot));});const selected=(mode==='direct'||mode==='tiles')?tileLots.get(Number(selectedId)):lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
 `;
 
 export const formatMoscowDate = (value: string) => {
