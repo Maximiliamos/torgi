@@ -32,3 +32,11 @@ def test_public_production_deploys_share_the_same_push_scope() -> None:
     # home workflow has its own production job and S3 publication gate.
     assert '".github/workflows/home-secondary-deploy.yml"' not in regru
     assert '".github/workflows/home-secondary-deploy.yml"' not in cloudflare
+
+
+
+def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
+    cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
+    assert "timeout-minutes: 45" in cloudflare
+    assert "for attempt in $(seq 1 360); do" in cloudflare
+    assert 'if test "$attempt" = 360; then' in cloudflare
