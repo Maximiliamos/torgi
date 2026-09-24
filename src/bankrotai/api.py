@@ -76,6 +76,8 @@ from bankrotai.services.operations import (
 )
 from bankrotai.services.quality import data_quality_snapshot, list_source_health, operational_quality_report
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
+from bankrotai.services.map_builder import tile_xy
+from bankrotai.services.map_payload import legacy_tile_to_yandex
 from bankrotai.logic import log_action
 from bankrotai.tasks import (
     QueueUnavailableError,
@@ -106,6 +108,10 @@ _map_statistics_cache: dict[tuple, tuple[float, dict]] = {}
 _map_response_cache_lock = threading.Lock()
 _MAP_RESPONSE_CACHE_SECONDS = 60
 _MAP_STATISTICS_CACHE_SECONDS = 300
+_MAP_BOOTSTRAP_LAT = 57.6261
+_MAP_BOOTSTRAP_LON = 39.8845
+_MAP_BOOTSTRAP_ZOOM = 7
+_MAP_BOOTSTRAP_RADIUS = 1
 _CADASTRAL_GEOCODER = CadastralGeocoder()
 _CADASTRAL_CAPACITY = threading.BoundedSemaphore(1)
 _CADASTRAL_DEADLINE_SECONDS = 7.0
@@ -1475,6 +1481,24 @@ def get_map_lots(
     return Response(content=body, media_type="application/json", headers=headers)
 
 
+def _bootstrap_tile_coordinates() -> list[tuple[int, int, int]]:
+    z = _MAP_BOOTSTRAP_ZOOM
+    cx, cy = tile_xy(_MAP_BOOTSTRAP_LAT, _MAP_BOOTSTRAP_LON, z)
+    scale = 1 << z
+    max_index = scale - 1
+    result: list[tuple[int, int, int]] = []
+    for dx in range(-_MAP_BOOTSTRAP_RADIUS, _MAP_BOOTSTRAP_RADIUS + 1):
+        for dy in range(-_MAP_BOOTSTRAP_RADIUS, _MAP_BOOTSTRAP_RADIUS + 1):
+            x = (cx + dx) % scale
+            y = max(0, min(max_index, cy + dy))
+            result.append((z, x, y))
+    return result
+
+
+def _yandex_tile_payload(tile: MapTile | None) -> dict[str, Any]:
+    return legacy_tile_to_yandex(tile.payload_json if tile is not None else None)
+
+
 @app.get("/api/map/datasets/current")
 def get_current_map_dataset(request: Request):
     with read_session_scope() as session:
@@ -1487,9 +1511,35 @@ def get_current_map_dataset(request: Request):
         )
         if dataset is None:
             raise HTTPException(status_code=404, detail="Map dataset is not ready")
+
+        bootstrap_coordinates = _bootstrap_tile_coordinates()
+        bootstrap_x = sorted({x for _z, x, _y in bootstrap_coordinates})
+        bootstrap_y = sorted({y for _z, _x, y in bootstrap_coordinates})
+        bootstrap_rows = session.scalars(
+            select(MapTile).where(
+                MapTile.dataset_id == dataset.id,
+                MapTile.z == _MAP_BOOTSTRAP_ZOOM,
+                MapTile.x.in_(bootstrap_x),
+                MapTile.y.in_(bootstrap_y),
+            )
+        ).all()
+        bootstrap_by_key = {(tile.z, tile.x, tile.y): tile for tile in bootstrap_rows}
+        bootstrap_tiles = []
+        for z, x, y in bootstrap_coordinates:
+            tile = bootstrap_by_key.get((z, x, y))
+            bootstrap_tiles.append(
+                {
+                    "z": z,
+                    "x": x,
+                    "y": y,
+                    "etag": tile.etag if tile is not None else f"empty-{dataset.version}-{z}-{x}-{y}",
+                    "payload": _yandex_tile_payload(tile),
+                }
+            )
+
         etag = f'"dataset-{dataset.version}"'
         headers = {
-            "Cache-Control": "private, max-age=15, stale-while-revalidate=60",
+            "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=30",
             "ETag": etag,
             "X-Map-Dataset": dataset.version,
         }
@@ -1504,6 +1554,9 @@ def get_current_map_dataset(request: Request):
                     "max_zoom": 14,
                     "point_zoom": 12,
                     "published_at": dataset.published_at,
+                    "bootstrap_zoom": _MAP_BOOTSTRAP_ZOOM,
+                    "bootstrap_center": [_MAP_BOOTSTRAP_LAT, _MAP_BOOTSTRAP_LON],
+                    "bootstrap_tiles": bootstrap_tiles,
                 }
             ),
             headers=headers,
@@ -1534,6 +1587,7 @@ def get_map_tile(request: Request, version: str, z: int, x: int, y: int):
         )
         etag = f'"{tile.etag}"' if tile is not None else f'"empty-{version}-{z}-{x}-{y}"'
         headers = {
+            # Kept private for the legacy endpoint until the Cloudflare cache PR.
             "Cache-Control": "private, max-age=86400, immutable",
             "ETag": etag,
             "X-Map-Dataset": version,
@@ -1541,6 +1595,41 @@ def get_map_tile(request: Request, version: str, z: int, x: int, y: int):
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         return JSONResponse(tile.payload_json if tile is not None else {"features": []}, headers=headers)
+
+
+@app.get("/api/map/yandex-tiles/{version}/{z}/{x}/{y}")
+def get_yandex_map_tile(request: Request, version: str, z: int, x: int, y: int):
+    if not (0 <= z <= 14 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+        raise HTTPException(status_code=404, detail="Map tile not found")
+    with read_session_scope() as session:
+        dataset = session.scalar(
+            select(MapDataset).where(
+                MapDataset.version == version,
+                MapDataset.status == "ready",
+                MapDataset.published_at.is_not(None),
+            )
+        )
+        if dataset is None:
+            raise HTTPException(status_code=404, detail="Map dataset not found")
+        tile = session.scalar(
+            select(MapTile).where(
+                MapTile.dataset_id == dataset.id,
+                MapTile.z == z,
+                MapTile.x == x,
+                MapTile.y == y,
+            )
+        )
+        etag_value = tile.etag if tile is not None else f"empty-{version}-{z}-{x}-{y}"
+        etag = f'"yandex-{etag_value}"'
+        headers = {
+            "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+            "ETag": etag,
+            "X-Map-Dataset": version,
+            "Vary": "Accept-Encoding",
+        }
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(_yandex_tile_payload(tile), headers=headers)
 
 
 @app.get("/api/map/lots/{lot_id}")
