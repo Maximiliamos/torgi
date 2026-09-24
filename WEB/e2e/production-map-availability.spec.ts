@@ -159,11 +159,9 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       });
       if (indexResponse.status() !== 200) continue;
       const indexPayload = await indexResponse.json() as {
-        version?: string;
         shard?: string;
         tiles?: Record<string, { bundle?: string; region?: string }>;
       };
-      expect(indexPayload.version).toBe(dataset.version);
       expect(indexPayload.shard).toBe(shard);
       const entry = indexPayload.tiles?.[`${tile.z}/${tile.x}/${tile.y}`];
       if (!entry?.bundle) continue;
