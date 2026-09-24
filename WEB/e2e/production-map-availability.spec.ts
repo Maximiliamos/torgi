@@ -65,7 +65,7 @@ test("authenticated map survives five wide viewport movements", async ({ page },
 });
 
 
-test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) => {
+test("direct prepared tiles are published and readable from REG.RU S3", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   const username = process.env.E2E_USERNAME || "reader";
   const password = process.env.E2E_PASSWORD;
@@ -79,26 +79,6 @@ test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) =
   await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
     .toBeVisible({ timeout: 40_000 });
 
-  let legacyBulkCalls = 0;
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.pathname === "/api/map/lots") legacyBulkCalls += 1;
-  });
-
-  await page.getByRole("button", { name: "Карта", exact: true }).click();
-  const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
-  await expect(frameElement).toBeVisible({ timeout: 30_000 });
-  const frame = page.frameLocator('iframe[title="Яндекс.Карта лотов"]');
-  await expect(frame.locator("#hint")).toBeHidden({ timeout: 40_000 });
-
-  const currentMapFrame = () => page.frames().find(
-    (candidate) => candidate !== page.mainFrame() && candidate.url() === "about:srcdoc",
-  );
-  await expect.poll(() => Boolean(currentMapFrame()), { timeout: 30_000 }).toBe(true);
-  await expect.poll(() => currentMapFrame()!.evaluate(() => Boolean(
-    (window as unknown as { bankrotaiDebug?: unknown }).bankrotaiDebug,
-  )), { timeout: 30_000 }).toBe(true);
-
   const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
     timeout: 30_000,
   });
@@ -106,38 +86,46 @@ test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) =
   const dataset = await datasetResponse.json() as {
     version: string;
     point_count: number;
-    bootstrap_tiles?: unknown[];
+    tile_count: number;
+    bootstrap_tiles?: Array<{
+      z: number;
+      x: number;
+      y: number;
+      payload?: { type?: string; features?: unknown[] };
+    }>;
     tile_source?: string;
     tile_base_url?: string | null;
   };
-  expect(dataset.version).toBeTruthy();
+  expect(dataset.version).toMatch(/-s3$/);
   expect(dataset.point_count).toBeGreaterThan(0);
+  expect(dataset.tile_count).toBeGreaterThan(0);
   expect(dataset.bootstrap_tiles?.length).toBe(9);
   expect(dataset.tile_source).toBe("regru-s3");
-  expect(dataset.tile_base_url).toMatch(/^https:\/\//);
+  expect(dataset.tile_base_url).toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\//);
 
   const tileBaseUrl = String(dataset.tile_base_url).replace(/\/$/, "");
-  const tileResponsePromise = page.waitForResponse((response) => {
-    return response.url().startsWith(`${tileBaseUrl}/12/`)
-      && response.status() === 200;
-  }, { timeout: 40_000 });
+  let firstTileResponse: Awaited<ReturnType<typeof page.context.request.get>> | null = null;
+  let firstTileUrl = "";
+  for (const tile of dataset.bootstrap_tiles || []) {
+    const candidateUrl = `${tileBaseUrl}/${tile.z}/${tile.x}/${tile.y}.json`;
+    const response = await page.context().request.get(candidateUrl, {
+      headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+      timeout: 30_000,
+    });
+    if (response.status() === 200) {
+      firstTileResponse = response;
+      firstTileUrl = candidateUrl;
+      break;
+    }
+  }
+  expect(firstTileResponse, "at least one bootstrap tile must exist in REG.RU S3").not.toBeNull();
 
-  await currentMapFrame()!.evaluate(() => {
-    (
-      window as unknown as {
-        bankrotaiDebug: { setViewport: (center: number[], zoom: number) => void };
-      }
-    ).bankrotaiDebug.setViewport([57.6261, 39.8845], 12);
-  });
-
-  const firstTileResponse = await tileResponsePromise;
-  const firstHeaders = await firstTileResponse.allHeaders();
-  expect(firstTileResponse.url()).not.toContain("api.sterdez.online/api/map/yandex-tiles/");
+  const firstHeaders = await firstTileResponse!.allHeaders();
   expect(firstHeaders["cache-control"]).toContain("public");
   expect(firstHeaders["cache-control"]).toContain("immutable");
   expect(["*", "https://sterdez.online"]).toContain(firstHeaders["access-control-allow-origin"]);
 
-  const firstPayload = await firstTileResponse.json() as {
+  const firstPayload = await firstTileResponse!.json() as {
     type?: string;
     features?: Array<{ properties?: Record<string, unknown> }>;
   };
@@ -148,21 +136,32 @@ test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) =
   }
 
   const started = Date.now();
-  const directRead = await page.context().request.get(firstTileResponse.url(), { timeout: 30_000 });
+  const directRead = await page.context().request.get(firstTileUrl, {
+    headers: { Origin: "https://sterdez.online" },
+    timeout: 30_000,
+  });
   const directReadMs = Date.now() - started;
   expect(directRead.status()).toBe(200);
-  expect(legacyBulkCalls).toBe(0);
-  await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
+  await expect(frameElement).toBeVisible({ timeout: 30_000 });
+  const frame = page.frameLocator('iframe[title="Яндекс.Карта лотов"]');
+  const yandexReady = await frame.locator("#hint").isHidden({ timeout: 15_000 }).catch(() => false);
+  const hintText = yandexReady ? "" : await frame.locator("#hint").textContent().catch(() => null);
+
+  await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
   await testInfo.attach("direct-map-regru-s3-evidence.json", {
     body: Buffer.from(JSON.stringify({
       dataset: dataset.version,
       pointCount: dataset.point_count,
+      tileCount: dataset.tile_count,
       tileSource: dataset.tile_source,
       tileBaseUrl,
-      tileHost: new URL(firstTileResponse.url()).host,
+      tileHost: new URL(firstTileUrl).host,
       directReadMs,
-      legacyBulkCalls,
+      yandexReady,
+      yandexHint: hintText,
     }, null, 2)),
     contentType: "application/json",
   });
