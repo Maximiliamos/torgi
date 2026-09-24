@@ -1549,20 +1549,17 @@ def get_current_map_dataset(request: Request):
                 }
             )
 
-        object_store_layout = (
-            settings.map_object_store_layout
-            if dataset.version.endswith("-s3") and settings.map_object_store_enabled
-            else "tiles"
-        )
-        regional_bundle_mode = object_store_layout == REGIONAL_BUNDLE_LAYOUT
+        object_store_dataset = dataset.version.endswith("-s3") and settings.map_object_store_enabled
+        regional_bundle_mode = dataset.version.endswith("-bundle-s3") and object_store_dataset
+        object_store_layout = REGIONAL_BUNDLE_LAYOUT if regional_bundle_mode else "tiles"
         tile_base_url = (
             dataset_public_tile_base_url(dataset.version, settings)
-            if dataset.version.endswith("-s3") and not regional_bundle_mode
+            if object_store_dataset and not regional_bundle_mode
             else None
         )
         bundle_root_url = (
             settings.map_object_store_public_base_url
-            if dataset.version.endswith("-s3") and regional_bundle_mode
+            if object_store_dataset and regional_bundle_mode
             else None
         )
         bundle_index_base_url = (
