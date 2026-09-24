@@ -228,6 +228,10 @@ export function fetchCachedYandexMapTile(
     ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
     : tileBaseUrl
       ? fetchPublicYandexMapTile(tileBaseUrl, tile.z, tile.x, tile.y)
+          .catch((error) => {
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
+            return fetchYandexMapTile(version, tile.z, tile.x, tile.y);
+          })
       : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
     .then((payload) => {
       completed.set(key, payload);
