@@ -219,6 +219,76 @@ jobs:
           raise SystemExit("REG.RU S3 public probe failed for all documented URL styles")
           PY
 
+      - name: Inventory map datasets read-only
+        if: ${{ env.MAP_OBJECT_STORE_ENABLED == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          inventory="$RUNNER_TEMP/s3-dataset-inventory.tsv"
+          aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+            --region "$MAP_OBJECT_STORE_REGION" \
+            s3api list-objects-v2 \
+            --bucket "$MAP_OBJECT_STORE_BUCKET" \
+            --prefix datasets/ \
+            --query 'Contents[].[Key,Size,LastModified]' \
+            --output text > "$inventory"
+          python - "$inventory" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import sys
+          from collections import defaultdict
+          from datetime import datetime
+
+          path = sys.argv[1]
+          datasets: dict[str, dict[str, object]] = defaultdict(
+              lambda: {"objects": 0, "bytes": 0, "first": None, "last": None}
+          )
+          with open(path, encoding="utf-8") as handle:
+              for raw in handle:
+                  parts = raw.rstrip("\n").split("\t")
+                  if len(parts) < 3:
+                      continue
+                  key, size_text, modified_text = parts[0], parts[1], parts[2]
+                  pieces = key.split("/", 2)
+                  if len(pieces) < 3 or pieces[0] != "datasets":
+                      continue
+                  version = pieces[1]
+                  try:
+                      size = int(size_text)
+                      modified = datetime.fromisoformat(modified_text.replace("Z", "+00:00"))
+                  except (ValueError, TypeError):
+                      continue
+                  row = datasets[version]
+                  row["objects"] = int(row["objects"]) + 1
+                  row["bytes"] = int(row["bytes"]) + size
+                  first = row["first"]
+                  last = row["last"]
+                  row["first"] = modified if first is None or modified < first else first
+                  row["last"] = modified if last is None or modified > last else last
+
+          rows = []
+          for version, row in datasets.items():
+              objects = int(row["objects"])
+              total_bytes = int(row["bytes"])
+              first = row["first"]
+              last = row["last"]
+              duration = max((last - first).total_seconds(), 0.0) if first and last else 0.0
+              rows.append({
+                  "version": version,
+                  "objects": objects,
+                  "bytes": total_bytes,
+                  "average_bytes": round(total_bytes / objects, 1) if objects else 0.0,
+                  "first_object_at": first.isoformat() if first else None,
+                  "last_object_at": last.isoformat() if last else None,
+                  "observed_upload_span_seconds": round(duration, 1),
+                  "observed_mbps": round((total_bytes * 8 / 1_000_000) / duration, 4) if duration > 0 else None,
+                  "objects_per_second": round(objects / duration, 3) if duration > 0 else None,
+              })
+          rows.sort(key=lambda item: item["last_object_at"] or "", reverse=True)
+          print(json.dumps({"datasets": rows[:10]}, ensure_ascii=False, indent=2))
+          PY
+
       - name: Delete probe
         if: always()
         shell: bash
