@@ -515,48 +515,6 @@ export default {
       return publicSourceResponse(request, incoming);
     }
 
-    if (incoming.pathname === CURRENT_MAP_DATASET_PATH) {
-      try {
-        return await currentDatasetResponse(request, incoming, env, ctx, requestId);
-      } catch (error) {
-        console.error(JSON.stringify({
-          event: "map_dataset_edge_failure",
-          request_id: requestId,
-          path: incoming.pathname,
-          error: error instanceof Error ? error.name : "UnknownError",
-        }));
-        return Response.json(
-          { detail: "Map dataset temporarily unavailable" },
-          { status: 502, headers: { "cache-control": "no-store", "x-request-id": requestId } },
-        );
-      }
-    }
-
-    const tilePath = incoming.pathname.startsWith("/api/map/yandex-tiles/");
-    const tileParts = yandexTileParts(incoming.pathname);
-    if (tilePath && !tileParts) {
-      return Response.json(
-        { detail: "Map tile not found" },
-        { status: 404, headers: { "cache-control": "no-store", "x-request-id": requestId } },
-      );
-    }
-    if (tileParts) {
-      try {
-        return await yandexMapTileResponse(request, incoming, env, ctx, requestId, tileParts);
-      } catch (error) {
-        console.error(JSON.stringify({
-          event: "map_tile_edge_failure",
-          request_id: requestId,
-          path: incoming.pathname,
-          error: error instanceof Error ? error.name : "UnknownError",
-        }));
-        return Response.json(
-          { detail: "Map tile temporarily unavailable" },
-          { status: 502, headers: { "cache-control": "no-store", "x-request-id": requestId } },
-        );
-      }
-    }
-
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("x-api-key");
