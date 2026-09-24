@@ -13,7 +13,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from bankrotai.core import Settings, get_settings
+from bankrotai.core import AppSettings, get_settings
 from bankrotai.db import MapDataset, MapTile
 from bankrotai.services.map_payload import public_yandex_tile_payload
 
@@ -22,12 +22,12 @@ _UPLOAD_PAGE_SIZE = 250
 _SERVICE = "s3"
 
 
-def object_store_public_enabled(settings: Settings | None = None) -> bool:
+def object_store_public_enabled(settings: AppSettings | None = None) -> bool:
     value = settings or get_settings()
     return bool(value.map_object_store_enabled and value.map_object_store_public_base_url)
 
 
-def object_store_configured(settings: Settings | None = None) -> bool:
+def object_store_configured(settings: AppSettings | None = None) -> bool:
     value = settings or get_settings()
     return bool(
         object_store_public_enabled(value)
@@ -38,7 +38,7 @@ def object_store_configured(settings: Settings | None = None) -> bool:
     )
 
 
-def dataset_public_tile_base_url(version: str, settings: Settings | None = None) -> str | None:
+def dataset_public_tile_base_url(version: str, settings: AppSettings | None = None) -> str | None:
     value = settings or get_settings()
     if not object_store_public_enabled(value):
         return None
@@ -129,7 +129,7 @@ def _signed_headers(
     return url, {name.title(): value for name, value in headers.items()}
 
 
-def _put_object(settings: Settings, key: str, body: bytes, *, cache_control: str) -> None:
+def _put_object(settings: AppSettings, key: str, body: bytes, *, cache_control: str) -> None:
     assert settings.map_object_store_access_key is not None
     assert settings.map_object_store_secret_key is not None
     url, headers = _signed_headers(
@@ -155,7 +155,7 @@ def _put_object(settings: Settings, key: str, body: bytes, *, cache_control: str
         raise RuntimeError(f"REG.RU S3 PUT failed for {key}: HTTP {response.status_code} {detail}")
 
 
-def _verify_public_manifest(settings: Settings, version: str) -> dict[str, Any]:
+def _verify_public_manifest(settings: AppSettings, version: str) -> dict[str, Any]:
     assert settings.map_object_store_public_base_url is not None
     url = (
         f"{settings.map_object_store_public_base_url.rstrip('/')}"
