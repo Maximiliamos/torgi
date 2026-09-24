@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from bankrotai.core import AppSettings
+from bankrotai.core import AppSettings, load_settings
 from bankrotai.services.map_object_store import (
     _signed_headers,
     dataset_public_tile_base_url,
@@ -80,7 +80,7 @@ def test_s3_signature_uses_configured_endpoint_bucket_and_region():
         cache_control="public, max-age=31536000, immutable",
         access_key="ACCESS",
         secret_key="SECRET",
-        region="us-east-1",
+        region="ru-1",
         now=datetime(2026, 9, 24, 18, 0, 0, tzinfo=timezone.utc),
     )
 
@@ -88,5 +88,30 @@ def test_s3_signature_uses_configured_endpoint_bucket_and_region():
     assert headers["Host"] == "s3.regru.cloud"
     assert headers["X-Amz-Date"] == "20260924T180000Z"
     assert headers["X-Amz-Content-Sha256"]
-    assert "Credential=ACCESS/20260924/us-east-1/s3/aws4_request" in headers["Authorization"]
+    assert "Credential=ACCESS/20260924/ru-1/s3/aws4_request" in headers["Authorization"]
     assert "SignedHeaders=cache-control;content-type;host;x-amz-content-sha256;x-amz-date" in headers["Authorization"]
+
+
+def test_regru_settings_replace_unusable_website_public_url(monkeypatch):
+    monkeypatch.setenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud")
+    monkeypatch.setenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map")
+    monkeypatch.setenv(
+        "MAP_OBJECT_STORE_PUBLIC_BASE_URL",
+        "https://sterdez-map.website.regru.cloud",
+    )
+    monkeypatch.setenv("MAP_OBJECT_STORE_REGION", "ru-1")
+
+    settings = load_settings()
+
+    assert settings.map_object_store_public_base_url == "https://s3.regru.cloud/sterdez-map"
+    assert settings.map_object_store_region == "ru-1"
+
+
+def test_regru_settings_preserve_explicit_custom_public_domain(monkeypatch):
+    monkeypatch.setenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud")
+    monkeypatch.setenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map")
+    monkeypatch.setenv("MAP_OBJECT_STORE_PUBLIC_BASE_URL", "https://maps.example.test")
+
+    settings = load_settings()
+
+    assert settings.map_object_store_public_base_url == "https://maps.example.test"
