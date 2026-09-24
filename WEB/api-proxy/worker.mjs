@@ -84,21 +84,6 @@ async function completedResponse(request, incoming, origin, headers, timeoutMs =
 }
 
 
-function originHeadersFor(request, incoming, env, requestId, { stripConditionals = false } = {}) {
-  const headers = new Headers(request.headers);
-  headers.delete("authorization");
-  headers.delete("x-api-key");
-  headers.delete("host");
-  if (stripConditionals) {
-    headers.delete("if-none-match");
-    headers.delete("if-modified-since");
-  }
-  headers.set("x-api-key", env.KOYEB_SERVICE_KEY);
-  headers.set("x-forwarded-host", incoming.host);
-  headers.set("x-forwarded-proto", "https");
-  headers.set("x-request-id", requestId);
-  return headers;
-}
 
 function browserPrivateCachePolicy(request, incoming, response) {
   if (!SAFE_METHODS.has(request.method) || ![200, 304].includes(response.status)) return null;
