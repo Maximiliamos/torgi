@@ -19,6 +19,7 @@ import {
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
+  fetchPublicYandexMapTile,
   fetchFilteredYandexMapTile,
   fetchRegions,
   fetchNationwideLotSync,
@@ -211,6 +212,7 @@ export function fetchCachedYandexMapTile(
   tile: TileCoordinate,
   filters: DirectMapFilterQuery = {},
   maxEntries = MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+  tileBaseUrl: string | null = null,
 ) {
   const filterKey = directMapFilterSignature(filters);
   const key = `${mapTileCacheKey(version, tile)}:${filterKey}`;
@@ -224,7 +226,9 @@ export function fetchCachedYandexMapTile(
   if (pending) return pending;
   const request = (filterKey
     ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
-    : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
+    : tileBaseUrl
+      ? fetchPublicYandexMapTile(tileBaseUrl, tile.z, tile.x, tile.y)
+      : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
     .then((payload) => {
       completed.set(key, payload);
       while (completed.size > maxEntries) {
@@ -542,6 +546,8 @@ function YandexDesktopMap({
         version,
         tile,
         directFilters,
+        MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+        mapDataset?.tile_base_url || null,
       );
     } catch (error) {
       if (
@@ -559,11 +565,13 @@ function YandexDesktopMap({
           version,
           tile,
           directFilters,
+          MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+          mapDataset?.tile_base_url || null,
         );
       }
       throw error;
     }
-  }, [directFilterKey, directFilters, refreshMapEdgeSession]);
+  }, [directFilterKey, directFilters, mapDataset?.tile_base_url, refreshMapEdgeSession]);
   const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
     if (!directTileMode || !mapDataset) return;
     const version = String(data.version || "");
