@@ -11,7 +11,9 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapLotsSWR: vi.fn(),
     fetchMapTile: vi.fn(),
     fetchYandexMapTile: vi.fn(),
+    fetchPublicYandexMapTile: vi.fn(),
     fetchFilteredYandexMapTile: vi.fn(),
+    fetchMapReviewStatuses: vi.fn(),
     fetchOperationsProgress: vi.fn(),
     fetchRegions: vi.fn(),
     setReviewStatus: vi.fn(),
@@ -19,12 +21,15 @@ vi.mock("../../lib/api", async (importOriginal) => {
 });
 
 import {
+  ApiError,
   fetchCurrentMapDataset,
   fetchCurrentUser,
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
+  fetchPublicYandexMapTile,
   fetchFilteredYandexMapTile,
+  fetchMapReviewStatuses,
   fetchOperationsProgress,
   fetchRegions,
   type MapDataset,
@@ -65,6 +70,8 @@ const dataset: MapDataset = {
     etag: "bootstrap",
     payload: emptyPayload,
   }],
+  tile_source: "regru-s3",
+  tile_base_url: "https://storage.example.test/public/datasets/direct-v1/tiles",
 };
 
 describe("direct Yandex tile transport", () => {
@@ -100,10 +107,27 @@ describe("direct Yandex tile transport", () => {
           lotId: 77,
           title: "Direct lot",
           current_price: 1_000_000,
-          review_status: null,
         },
         options: { preset: "islands#grayDotIcon" },
       }],
+    });
+    vi.mocked(fetchPublicYandexMapTile).mockResolvedValue({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 77,
+        geometry: { type: "Point", coordinates: [55.7, 37.6] },
+        properties: {
+          kind: "lot",
+          lotId: 77,
+          title: "Direct lot",
+          current_price: 1_000_000,
+        },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    });
+    vi.mocked(fetchMapReviewStatuses).mockResolvedValue({
+      items: [{ id: 77, review_status: "approved" }],
     });
     vi.mocked(fetchFilteredYandexMapTile).mockResolvedValue({
       type: "FeatureCollection",
@@ -158,12 +182,13 @@ describe("direct Yandex tile transport", () => {
       prefetch: [],
     }));
 
-    await waitFor(() => expect(fetchYandexMapTile).toHaveBeenCalledWith(
-      "direct-v1",
+    await waitFor(() => expect(fetchPublicYandexMapTile).toHaveBeenCalledWith(
+      "https://storage.example.test/public/datasets/direct-v1/tiles",
       12,
       2475,
       1280,
     ));
+    expect(fetchYandexMapTile).not.toHaveBeenCalled();
     await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "install-direct-tile",
@@ -174,8 +199,50 @@ describe("direct Yandex tile transport", () => {
       "*",
     ));
 
+    await waitFor(() => expect(fetchMapReviewStatuses).toHaveBeenCalledWith([77]));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "apply-review-statuses",
+        items: [{ id: 77, review_status: "approved" }],
+      }),
+      "*",
+    ));
+
     expect(fetchMapTile).not.toHaveBeenCalled();
     expect(fetchMapLotsSWR).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the authenticated Yandex tile API when REG.RU storage is unavailable", async () => {
+    vi.mocked(fetchPublicYandexMapTile).mockRejectedValueOnce(new ApiError("storage unavailable", 503));
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await waitFor(() => expect(fetchCurrentMapDataset).toHaveBeenCalled());
+
+    act(() => send(frame, "bankrotai-ready"));
+    act(() => send(frame, "bankrotai-request-tiles", {
+      version: "direct-v1",
+      generation: 6,
+      visible: [{ z: 12, x: 2476, y: 1281 }],
+      prefetch: [],
+    }));
+
+    await waitFor(() => expect(fetchYandexMapTile).toHaveBeenCalledWith(
+      "direct-v1",
+      12,
+      2476,
+      1281,
+    ));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "install-direct-tile",
+        generation: 6,
+        key: "direct-v1/12/2476/1281",
+      }),
+      "*",
+    ));
   });
 
   it("keeps region and price filters on runtime-filtered direct tiles", async () => {
