@@ -29,6 +29,13 @@ describe("map lot selection", () => {
     expect(MAP_SELECTION_SCRIPT).toContain("map.setCenter([selected.lat,selected.lon]");
     expect(MAP_SELECTION_SCRIPT).toContain("Math.max(map.getZoom(),16)");
   });
+
+  it("uses tile metadata for selected direct markers instead of requiring legacy lots", () => {
+    expect(MAP_SELECTION_SCRIPT).toContain("tileLots.get(numericId)");
+    expect(MAP_SELECTION_SCRIPT).toContain("mode==='direct'||mode==='tiles'");
+    expect(MAP_SELECTION_SCRIPT).toContain("tileManager.objects.setObjectOptions(numericId,opts(tileLot))");
+    expect(MAP_SELECTION_SCRIPT).toContain("directPreset(tileLot.review_status,tileLot.status)");
+  });
 });
 
 describe("auction date display", () => {
