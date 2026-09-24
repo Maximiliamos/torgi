@@ -134,7 +134,7 @@ function proxyResponse(result, requestId, request, incoming) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const suppliedRequestId = request.headers.get("x-request-id")?.trim();
     const requestId = suppliedRequestId && suppliedRequestId.length <= 128
       ? suppliedRequestId
