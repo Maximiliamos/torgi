@@ -11,7 +11,10 @@ permissions:
 
 concurrency:
   group: home-secondary-production
-  cancel-in-progress: false
+  # A newer main release supersedes a long first-publication attempt. Dataset
+  # promotion is fail-closed, so cancelling an obsolete uploader cannot expose
+  # a partial S3 dataset.
+  cancel-in-progress: true
 
 jobs:
   deploy:
