@@ -145,6 +145,7 @@ class AppSettings:
     celery_hard_time_limit: int = 1800
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
+    geo_batch_limit: int = 500
     geo_max_workers: int = 6
     geo_nspd_concurrency: int = 2
     geo_bulk_ik12_fallback: bool = False
@@ -255,6 +256,7 @@ def load_settings() -> AppSettings:
         celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
+        geo_batch_limit=max(100, min(1000, int(os.getenv("GEO_BATCH_LIMIT", "500")))),
         geo_max_workers=max(1, min(16, int(os.getenv("GEO_MAX_WORKERS", "6")))),
         geo_nspd_concurrency=max(1, min(4, int(os.getenv("GEO_NSPD_CONCURRENCY", "2")))),
         geo_bulk_ik12_fallback=os.getenv("GEO_BULK_IK12_FALLBACK", "false").lower() in {"1", "true", "yes"},
