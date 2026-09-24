@@ -630,14 +630,24 @@ function cacheSharedRequest<T>(
   cache: Map<string, Promise<T>>,
   key: string,
   load: () => Promise<T>,
+  maxEntries: number,
 ): Promise<T> {
   const existing = cache.get(key);
-  if (existing) return existing;
+  if (existing) {
+    cache.delete(key);
+    cache.set(key, existing);
+    return existing;
+  }
   const request = load().catch((error) => {
     if (cache.get(key) === request) cache.delete(key);
     throw error;
   });
   cache.set(key, request);
+  while (cache.size > maxEntries) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
   return request;
 }
 
@@ -712,6 +722,7 @@ export async function fetchPublicYandexMapBundleTile(
     PUBLIC_MAP_BUNDLE_INDEX_CACHE,
     indexUrl.toString(),
     async () => validateRegionalBundleIndex(await fetchPublicJson(indexUrl), z),
+    20,
   );
   signal?.throwIfAborted();
 
@@ -732,6 +743,7 @@ export async function fetchPublicYandexMapBundleTile(
     PUBLIC_MAP_BUNDLE_CACHE,
     bundleUrl.toString(),
     async () => validateRegionalBundlePayload(await fetchPublicJson(bundleUrl)),
+    128,
   );
   signal?.throwIfAborted();
 
