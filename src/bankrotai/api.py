@@ -451,6 +451,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         if path in {
             "/api/map/lots",
             "/api/map/datasets/current",
+            "/api/map/review-statuses",
             "/api/cadastre/search",
             "/api/quality",
             "/api/sources",
@@ -1576,6 +1577,43 @@ def get_current_map_dataset(request: Request):
             ),
             headers=headers,
         )
+
+
+@app.get("/api/map/review-statuses")
+def get_map_review_statuses(ids: str = Query(..., min_length=1, max_length=6000)):
+    parsed: list[int] = []
+    seen: set[int] = set()
+    for raw in ids.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if not raw.isdigit():
+            raise HTTPException(status_code=422, detail="Invalid lot id")
+        lot_id = int(raw)
+        if lot_id <= 0 or lot_id in seen:
+            continue
+        seen.add(lot_id)
+        parsed.append(lot_id)
+        if len(parsed) > 500:
+            raise HTTPException(status_code=422, detail="Too many lot ids")
+    if not parsed:
+        return JSONResponse({"items": []}, headers={"Cache-Control": "private, max-age=5"})
+    with read_session_scope() as session:
+        rows = session.execute(
+            select(ProcessedLot.id, ProcessedLot.review_status)
+            .where(ProcessedLot.id.in_(parsed))
+        ).all()
+    by_id = {int(row.id): row.review_status for row in rows}
+    return JSONResponse(
+        {
+            "items": [
+                {"id": lot_id, "review_status": by_id.get(lot_id)}
+                for lot_id in parsed
+                if lot_id in by_id
+            ]
+        },
+        headers={"Cache-Control": "private, max-age=5"},
+    )
 
 
 @app.get("/api/map/tiles/{version}/{z}/{x}/{y}")
