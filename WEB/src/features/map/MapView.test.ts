@@ -7,6 +7,7 @@ import {
   mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
   visibleTileCoordinates,
+  yandexFeaturePreview,
   yandexMapsApiUrl,
 } from "./MapView";
 
@@ -76,3 +77,43 @@ describe("precomputed map tiles", () => {
     expect(tiles.some((tile) => tile.x === 31)).toBe(true);
   });
 });
+
+describe("server-ready Yandex markers", () => {
+  it("builds a lightweight card preview without regenerating marker graphics", () => {
+    expect(yandexFeaturePreview({
+      type: "Feature",
+      id: 17,
+      geometry: { type: "Point", coordinates: [55.7, 37.6] },
+      properties: {
+        kind: "lot",
+        lotId: 17,
+        title: "Лот 17",
+        current_price: 1250000,
+        review_status: "approved",
+      },
+      options: { preset: "islands#greenDotIcon" },
+    })).toEqual(expect.objectContaining({
+      kind: "lot",
+      id: 17,
+      lat: 55.7,
+      lon: 37.6,
+      title: "Лот 17",
+      current_price: 1250000,
+      review_status: "approved",
+    }));
+  });
+
+  it("does not expose a lot preview for a server cluster", () => {
+    expect(yandexFeaturePreview({
+      type: "Feature",
+      id: "c:7:77:38",
+      geometry: { type: "Point", coordinates: [55.7, 37.6] },
+      properties: {
+        kind: "cluster",
+        count: 10,
+        bounds: [37, 55, 38, 56],
+      },
+    })).toBeNull();
+  });
+});
+
