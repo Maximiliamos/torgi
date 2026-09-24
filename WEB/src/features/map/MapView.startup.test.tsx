@@ -515,7 +515,7 @@ describe("tile and legacy rendering isolation", () => {
       expect(nonEmptyTileSyncs.length).toBeGreaterThanOrEqual(2);
     });
     expect(fetchMapTile).toHaveBeenCalledTimes(tileCallsBeforeReset);
-    expect(frame.srcdoc).toContain("lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles')renderLots()");
+    expect(frame.srcdoc).toContain("lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles'&&mode!=='direct')renderLots()");
   });
 
   it("ignores a late legacy filter response after the filter is cleared", async () => {
