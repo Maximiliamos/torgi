@@ -172,6 +172,7 @@ jobs:
         shell: bash
         env:
           VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
+          VITE_DIRECT_MAP_TILES: ${{ vars.VITE_DIRECT_MAP_TILES || 'true' }}
         run: |
           set -euo pipefail
           npm ci
