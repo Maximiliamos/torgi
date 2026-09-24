@@ -245,7 +245,13 @@ jobs:
           rows = defaultdict(lambda: {
               "objects": 0,
               "bytes": 0,
-              "groups": set(),
+              "overview_groups": set(),
+              "detail_groups_by_parent": {
+                  7: set(),
+                  8: set(),
+                  9: set(),
+                  10: set(),
+              },
               "zoom_counts": defaultdict(int),
               "last_modified": "",
           })
@@ -270,33 +276,40 @@ jobs:
                   row["zoom_counts"][z] += 1
                   row["last_modified"] = max(str(row["last_modified"]), modified)
                   if z < 7:
-                      group = ("overview", z)
+                      row["overview_groups"].add(("overview", z))
+                  elif z < 12:
+                      shift = max(0, z - 6)
+                      row["overview_groups"].add(("overview", 6, x >> shift, y >> shift))
                   else:
-                      parent_zoom = 6 if z < 12 else 9
-                      shift = max(0, z - parent_zoom)
-                      group = (
-                          "overview" if z < 12 else "detail",
-                          parent_zoom,
-                          x >> shift,
-                          y >> shift,
-                      )
-                  row["groups"].add(group)
+                      for parent_zoom, groups in row["detail_groups_by_parent"].items():
+                          shift = max(0, z - parent_zoom)
+                          groups.add(("detail", parent_zoom, x >> shift, y >> shift))
 
           output = []
           for version, row in rows.items():
               objects = int(row["objects"])
-              spatial_groups = len(row["groups"])
+              overview_count = len(row["overview_groups"])
+              candidates = {}
+              for parent_zoom, detail_groups in sorted(row["detail_groups_by_parent"].items()):
+                  spatial_groups = overview_count + len(detail_groups)
+                  candidates[str(parent_zoom)] = {
+                      "spatial_bundle_lower_bound": spatial_groups,
+                      "micro_to_bundle_reduction_lower_bound": (
+                          round(objects / spatial_groups, 1) if spatial_groups else None
+                      ),
+                      "estimated_average_bundle_bytes": (
+                          round(int(row["bytes"]) / spatial_groups, 1) if spatial_groups else None
+                      ),
+                  }
               output.append({
                   "version": version,
                   "micro_objects": objects,
                   "bytes": int(row["bytes"]),
                   "average_bytes": round(int(row["bytes"]) / objects, 1) if objects else 0,
-                  # Detail groups may split by region at borders, so this is a
-                  # conservative lower bound for the final region-aware count.
-                  "spatial_bundle_lower_bound": spatial_groups,
-                  "micro_to_bundle_reduction_lower_bound": (
-                      round(objects / spatial_groups, 1) if spatial_groups else None
-                  ),
+                  # Detail groups can split again by region at borders, so all
+                  # candidate counts are conservative lower bounds.
+                  "overview_bundle_lower_bound": overview_count,
+                  "detail_parent_candidates": candidates,
                   "zoom_counts": {
                       str(z): count for z, count in sorted(row["zoom_counts"].items())
                   },
