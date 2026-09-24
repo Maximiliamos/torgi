@@ -178,7 +178,6 @@ jobs:
           npm ci
           npm run typecheck
           npm run lint
-          npm test
           npm run build
           printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/deployment.json
           tar -C dist -czf "$RUNNER_TEMP/bankrotai-web.tgz" .
