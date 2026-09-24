@@ -473,6 +473,13 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - working-directory: WEB
         run: npm ci
+      - name: Ensure private R2 map cache bucket
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          if ! npx wrangler@4 r2 bucket list | grep -Fq 'sterdez-map-cache'; then
+            npx wrangler@4 r2 bucket create sterdez-map-cache
+          fi
       - name: Test and validate API proxy
         working-directory: WEB
         run: |
@@ -505,6 +512,13 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - working-directory: WEB
         run: npm ci
+      - name: Ensure private R2 map cache bucket
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          if ! npx wrangler@4 r2 bucket list | grep -Fq 'sterdez-map-cache'; then
+            npx wrangler@4 r2 bucket create sterdez-map-cache
+          fi
       - name: Validate isolated Worker bundles
         working-directory: WEB
         run: |
@@ -702,6 +716,13 @@ jobs:
         run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID" && test -n "$KOYEB_SERVICE_KEY" && test -n "$VITE_YANDEX_MAPS_API_KEY"
       - working-directory: WEB
         run: npm ci
+      - name: Ensure private R2 map cache bucket
+        working-directory: WEB
+        run: |
+          set -euo pipefail
+          if ! npx wrangler@4 r2 bucket list | grep -Fq 'sterdez-map-cache'; then
+            npx wrangler@4 r2 bucket create sterdez-map-cache
+          fi
       - name: Validate and build Pages release
         working-directory: WEB
         run: |
