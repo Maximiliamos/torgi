@@ -273,7 +273,10 @@ async function completedResponse(request, incoming, origin, headers, timeoutMs =
 
 function browserPrivateCachePolicy(request, incoming, response) {
   if (!SAFE_METHODS.has(request.method) || ![200, 304].includes(response.status)) return null;
-  if (/^\/api\/map\/tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)) {
+  if (
+    /^\/api\/map\/tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)
+    || /^\/api\/map\/yandex-tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)
+  ) {
     return "private, max-age=86400, immutable";
   }
   if (incoming.pathname === "/api/map/datasets/current") {
