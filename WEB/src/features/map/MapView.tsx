@@ -509,8 +509,6 @@ function YandexDesktopMap({
   const [readyRevision, setReadyRevision] = React.useState(0);
   const directCompleted = React.useRef(new Map<string, YandexMapTilePayload>());
   const directInflight = React.useRef(new Map<string, Promise<YandexMapTilePayload>>());
-  const edgeRefresh = React.useRef<Promise<MapDataset | null> | null>(null);
-
   const postCommand = React.useCallback(
     (type: string, payload: Record<string, unknown> = {}) => {
       frame.current?.contentWindow?.postMessage(
@@ -521,62 +519,20 @@ function YandexDesktopMap({
     [channel],
   );
 
-  const refreshMapEdgeSession = React.useCallback(async (expectedVersion: string) => {
-    if (!edgeRefresh.current) {
-      const refresh = fetchCurrentMapDataset()
-        .then((dataset) => {
-          onDatasetRefresh(dataset);
-          return dataset;
-        })
-        .catch(() => null)
-        .finally(() => {
-          if (edgeRefresh.current === refresh) edgeRefresh.current = null;
-        });
-      edgeRefresh.current = refresh;
-    }
-    const refreshed = await edgeRefresh.current;
-    return refreshed?.version === expectedVersion;
-  }, [onDatasetRefresh]);
-
   const directFilterKey = directMapFilterSignature(directFilters);
 
-  const loadDirectTile = React.useCallback(async (
+  const loadDirectTile = React.useCallback((
     version: string,
     tile: TileCoordinate,
-  ): Promise<YandexMapTilePayload> => {
-    try {
-      return await fetchCachedYandexMapTile(
-        directCompleted.current,
-        directInflight.current,
-        version,
-        tile,
-        directFilters,
-        MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
-        mapDataset?.tile_base_url || null,
-      );
-    } catch (error) {
-      if (
-        !directFilterKey
-        && error instanceof ApiError
-        && error.status === 401
-        && await refreshMapEdgeSession(version)
-      ) {
-        directInflight.current.delete(
-          `${mapTileCacheKey(version, tile)}:${directFilterKey}`,
-        );
-        return fetchCachedYandexMapTile(
-          directCompleted.current,
-          directInflight.current,
-          version,
-          tile,
-          directFilters,
-          MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
-          mapDataset?.tile_base_url || null,
-        );
-      }
-      throw error;
-    }
-  }, [directFilterKey, directFilters, mapDataset?.tile_base_url, refreshMapEdgeSession]);
+  ): Promise<YandexMapTilePayload> => fetchCachedYandexMapTile(
+    directCompleted.current,
+    directInflight.current,
+    version,
+    tile,
+    directFilters,
+    MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+    mapDataset?.tile_base_url || null,
+  ), [directFilters, mapDataset?.tile_base_url]);
   const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
     if (!directTileMode || !mapDataset) return;
     const version = String(data.version || "");
