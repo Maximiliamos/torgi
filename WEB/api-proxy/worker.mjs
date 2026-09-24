@@ -10,7 +10,7 @@ const PUBLIC_SOURCE_TIMEOUT_MS = 4_000;
 const TORGI_PROXY_PREFIX = "/__public-source/torgi";
 const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
 
-const YANDEX_MAP_TILE_RE = /^\/api\/map\/yandex-tiles\/([^/]+)\/(\d+)\/(\d+)\/(\d+)$/;
+const YANDEX_MAP_TILE_RE = /^\/api\/map\/yandex-tiles\/([A-Za-z0-9._:-]{1,80})\/(\d+)\/(\d+)\/(\d+)$/;
 const CURRENT_MAP_DATASET_PATH = "/api/map/datasets/current";
 const MAP_EDGE_COOKIE = "bankrotai_map_edge";
 const MAP_EDGE_TOKEN_VERSION = "v1";
@@ -98,12 +98,23 @@ async function completedResponse(request, incoming, origin, headers, timeoutMs =
 function yandexTileParts(pathname) {
   const match = YANDEX_MAP_TILE_RE.exec(pathname);
   if (!match) return null;
-  return {
+  const parts = {
     version: match[1],
     z: Number(match[2]),
     x: Number(match[3]),
     y: Number(match[4]),
   };
+  if (
+    parts.z < 0
+    || parts.z > 14
+    || parts.x < 0
+    || parts.y < 0
+    || parts.x >= 2 ** parts.z
+    || parts.y >= 2 ** parts.z
+  ) {
+    return null;
+  }
+  return parts;
 }
 
 function mapTileR2Key(parts) {
