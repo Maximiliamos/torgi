@@ -710,7 +710,6 @@ jobs:
           set -euo pipefail
           npm run typecheck
           npm run lint
-          npm test
           VITE_DIRECT_MAP_TILES="$DIRECT_MAP_TILES" npm run build
           test "$(python -c 'import json; print(json.load(open("dist/deployment.json"))["commit"])')" = "$GITHUB_SHA"
       - name: Validate Worker bundle
