@@ -7,7 +7,21 @@ import {
   mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
   visibleTileCoordinates,
+  yandexMapsApiUrl,
 } from "./MapView";
+
+describe("Yandex Maps bootstrap", () => {
+  it("uses the configured JavaScript API key without exposing whitespace", () => {
+    const url = new URL(yandexMapsApiUrl("  public-browser-key  "));
+    expect(url.searchParams.get("lang")).toBe("ru_RU");
+    expect(url.searchParams.get("csp")).toBe("true");
+    expect(url.searchParams.get("apikey")).toBe("public-browser-key");
+  });
+
+  it("keeps local and CI builds usable before the production key is configured", () => {
+    expect(new URL(yandexMapsApiUrl()).searchParams.has("apikey")).toBe(false);
+  });
+});
 
 describe("map lot selection", () => {
   it("centers a selected favorite on its coordinates at a useful zoom", () => {
