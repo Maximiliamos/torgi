@@ -100,7 +100,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
-      - run: npm run build
+      - name: Build production WEB bundle with direct map tiles
+        env:
+          VITE_DIRECT_MAP_TILES: "true"
+        run: npm run build
       - run: npx wrangler@4 deploy --dry-run --config edge-proxy/wrangler.jsonc
 
   desktop-source-smoke:
