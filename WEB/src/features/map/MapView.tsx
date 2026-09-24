@@ -996,6 +996,7 @@ export function MapView({
 }) {
   const [lots, setLots] = React.useState<MapMarkerLot[]>([]);
   const [selectedLot, setSelectedLot] = React.useState<MapLot | null>(null);
+  const [selectedTilePreview, setSelectedTilePreview] = React.useState<MapTileFeature | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
@@ -1003,6 +1004,7 @@ export function MapView({
   const [mapDataset, setMapDataset] = React.useState<MapDataset | null>(null);
   const [mapDatasetStatus, setMapDatasetStatus] = React.useState<"loading" | "ready" | "unavailable">("loading");
   const [tileEntries, setTileEntries] = React.useState<Array<{ key: string; features: MapTileFeature[] }>>([]);
+  const [directRenderedCount, setDirectRenderedCount] = React.useState(0);
   const [reviewMarkerUpdate, setReviewMarkerUpdate] = React.useState<{ lotId: number; status: string; revision: number } | null>(null);
   const [viewportLimit, setViewportLimit] = React.useState(250);
   const requestRevision = React.useRef(0);
@@ -1048,9 +1050,12 @@ export function MapView({
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
-  const visibleMapObjects = tileMode && mapDataset
-    ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
-    : lots.length;
+  const directTileMode = DIRECT_MAP_TILES && tileMode;
+  const visibleMapObjects = directTileMode
+    ? directRenderedCount
+    : tileMode && mapDataset
+      ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
+      : lots.length;
 
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     hasRenderedLots.current = true;
