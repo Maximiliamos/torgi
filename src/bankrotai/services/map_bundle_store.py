@@ -121,6 +121,23 @@ def _bundle_object_key(body: bytes) -> str:
     return f"bundles/v1/{digest[:2]}/{digest}.json"
 
 
+def _index_object_key(body: bytes) -> str:
+    digest = hashlib.sha256(body).hexdigest()
+    return f"indexes/v1/{digest[:2]}/{digest}.json"
+
+
+def _index_shard(z: int, x: int, y: int) -> str:
+    """Return the small spatial routing shard needed to resolve one logical tile."""
+
+    if z <= OVERVIEW_PARENT_ZOOM:
+        return "overview/root"
+    if z < POINT_ZOOM:
+        shift = z - OVERVIEW_PARENT_ZOOM
+        return f"overview/{OVERVIEW_PARENT_ZOOM}/{x >> shift}/{y >> shift}"
+    shift = z - DETAIL_PARENT_ZOOM
+    return f"detail/{DETAIL_PARENT_ZOOM}/{x >> shift}/{y >> shift}"
+
+
 def _public_object_url(settings: AppSettings, key: str) -> str:
     assert settings.map_object_store_public_base_url is not None
     return f"{settings.map_object_store_public_base_url.rstrip('/')}/{key.lstrip('/')}"
@@ -213,7 +230,7 @@ def publish_dataset_to_regional_bundles(
         point_count = int(dataset.point_count)
 
     groups: dict[str, dict[str, Any]] = defaultdict(dict)
-    index_entries: dict[int, dict[str, dict[str, str]]] = defaultdict(dict)
+    index_entries: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
     group_regions: dict[str, str] = {}
     group_feature_counts: dict[str, int] = defaultdict(int)
     region_point_counts: dict[str, int] = defaultdict(int)
@@ -248,7 +265,7 @@ def publish_dataset_to_regional_bundles(
             groups[bucket][tile_key] = public_payload
             group_regions[bucket] = region_code
             group_feature_counts[bucket] += len(public_payload.get("features", []))
-            index_entries[int(row.z)][f"{int(row.x)}/{int(row.y)}"] = {
+            index_entries[_index_shard(int(row.z), int(row.x), int(row.y))][tile_key] = {
                 "group": bucket,
                 "region": region_code,
             }
@@ -304,47 +321,10 @@ def publish_dataset_to_regional_bundles(
         bundle_specs[group_key] = (object_key, body, region_code)
         group_to_object[group_key] = object_key
 
-    uploaded_bundles = 0
-    reused_bundles = 0
-    uploaded_bytes = 0
-
-    def ensure_bundle(spec: tuple[str, bytes, str]) -> tuple[bool, int]:
-        key, body, _region = spec
-        if _public_object_exists(settings, key):
-            return True, len(body)
-        _put_object(settings, key, body, cache_control=immutable_cache)
-        return False, len(body)
-
-    with ThreadPoolExecutor(max_workers=settings.map_object_store_workers) as pool:
-        futures = {pool.submit(ensure_bundle, spec): group for group, spec in bundle_specs.items()}
-        completed = 0
-        for future in as_completed(futures):
-            group = futures[future]
-            try:
-                reused, size = future.result()
-            except Exception:
-                logger.exception("REG.RU S3 regional bundle upload failed: version=%s group=%s", version, group)
-                raise
-            completed += 1
-            if reused:
-                reused_bundles += 1
-            else:
-                uploaded_bundles += 1
-                uploaded_bytes += size
-            if completed % 25 == 0 or completed == len(bundle_specs):
-                logger.info(
-                    "REG.RU S3 bundle progress: version=%s completed=%s/%s uploaded=%s reused=%s bytes=%s",
-                    version,
-                    completed,
-                    len(bundle_specs),
-                    uploaded_bundles,
-                    reused_bundles,
-                    uploaded_bytes,
-                )
-
-    dataset_root = f"datasets/{version}"
-    index_bytes = 0
-    for zoom, entries in sorted(index_entries.items()):
+    index_specs: dict[str, tuple[str, bytes]] = {}
+    shard_to_object: dict[str, str] = {}
+    for shard_key in sorted(index_entries):
+        entries = index_entries[shard_key]
         resolved_tiles = {
             coordinate: {
                 "bundle": group_to_object[value["group"]],
@@ -352,17 +332,91 @@ def publish_dataset_to_regional_bundles(
             }
             for coordinate, value in sorted(entries.items())
         }
-        index_bytes += _write_json_object(
-            settings,
-            f"{dataset_root}/indexes/{zoom}.json",
-            {
-                "layout": REGIONAL_BUNDLE_LAYOUT,
-                "version": version,
-                "zoom": zoom,
-                "tiles": resolved_tiles,
-            },
-            cache_control=immutable_cache,
-        )
+        value = {
+            "layout": REGIONAL_BUNDLE_LAYOUT,
+            "version": version,
+            "shard": shard_key,
+            "tiles": resolved_tiles,
+        }
+        body = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        object_key = _index_object_key(body)
+        index_specs[shard_key] = (object_key, body)
+        shard_to_object[shard_key] = object_key
+
+    uploaded_bundles = 0
+    reused_bundles = 0
+    uploaded_indexes = 0
+    reused_indexes = 0
+    uploaded_bytes = 0
+    reused_bytes = 0
+
+    def ensure_immutable(key: str, body: bytes) -> tuple[bool, int]:
+        if _public_object_exists(settings, key):
+            return True, len(body)
+        _put_object(settings, key, body, cache_control=immutable_cache)
+        return False, len(body)
+
+    work: list[tuple[str, str, bytes]] = [
+        ("bundle", key, body)
+        for key, body, _region in bundle_specs.values()
+    ] + [
+        ("index", key, body)
+        for key, body in index_specs.values()
+    ]
+
+    with ThreadPoolExecutor(max_workers=settings.map_object_store_workers) as pool:
+        futures = {
+            pool.submit(ensure_immutable, key, body): (kind, key)
+            for kind, key, body in work
+        }
+        completed = 0
+        for future in as_completed(futures):
+            kind, key = futures[future]
+            try:
+                reused, size = future.result()
+            except Exception:
+                logger.exception(
+                    "REG.RU S3 immutable map object upload failed: version=%s kind=%s key=%s",
+                    version,
+                    kind,
+                    key,
+                )
+                raise
+            completed += 1
+            if reused:
+                reused_bytes += size
+                if kind == "bundle":
+                    reused_bundles += 1
+                else:
+                    reused_indexes += 1
+            else:
+                uploaded_bytes += size
+                if kind == "bundle":
+                    uploaded_bundles += 1
+                else:
+                    uploaded_indexes += 1
+            if completed % 25 == 0 or completed == len(work):
+                logger.info(
+                    "REG.RU S3 bundle publication progress: version=%s completed=%s/%s "
+                    "bundles_uploaded=%s bundles_reused=%s indexes_uploaded=%s indexes_reused=%s "
+                    "uploaded_bytes=%s reused_bytes=%s",
+                    version,
+                    completed,
+                    len(work),
+                    uploaded_bundles,
+                    reused_bundles,
+                    uploaded_indexes,
+                    reused_indexes,
+                    uploaded_bytes,
+                    reused_bytes,
+                )
+
+    dataset_root = f"datasets/{version}"
 
     regions = {
         region_code: {
@@ -387,18 +441,19 @@ def publish_dataset_to_regional_bundles(
         "point_count": point_count,
         "tile_count": expected_tile_count,
         "bundle_count": len(bundle_specs),
+        "index_shard_count": len(index_specs),
         "uploaded_bundle_count": uploaded_bundles,
         "reused_bundle_count": reused_bundles,
+        "uploaded_index_count": uploaded_indexes,
+        "reused_index_count": reused_indexes,
         "uploaded_bytes": uploaded_bytes,
-        "index_bytes": index_bytes,
+        "reused_bytes": reused_bytes,
         "point_zoom": POINT_ZOOM,
+        "detail_parent_zoom": DETAIL_PARENT_ZOOM,
+        "overview_parent_zoom": OVERVIEW_PARENT_ZOOM,
         "priority_regions": sorted(CFO_REGION_CODES),
         "regions": regions,
-        "index_base_url": (
-            f"{settings.map_object_store_public_base_url.rstrip('/')}/{dataset_root}/indexes"
-            if settings.map_object_store_public_base_url
-            else None
-        ),
+        "index_shards": shard_to_object,
         "bundle_root_url": settings.map_object_store_public_base_url,
     }
     manifest_bytes = _write_json_object(
@@ -421,8 +476,11 @@ def publish_dataset_to_regional_bundles(
         "bundle_count": len(bundle_specs),
         "uploaded_bundle_count": uploaded_bundles,
         "reused_bundle_count": reused_bundles,
+        "uploaded_index_count": uploaded_indexes,
+        "reused_index_count": reused_indexes,
         "uploaded_bytes": uploaded_bytes,
-        "index_bytes": index_bytes,
+        "reused_bytes": reused_bytes,
+        "index_shard_count": len(index_specs),
         "manifest_bytes": manifest_bytes,
         "regions": regions,
     }
