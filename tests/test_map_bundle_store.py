@@ -14,6 +14,8 @@ from bankrotai.services.map_bundle_store import (
     REGIONAL_BUNDLE_LAYOUT,
     _bundle_bucket,
     _bundle_object_key,
+    _index_object_key,
+    _index_shard,
     _tile_region_code,
     normalize_map_region_code,
     publish_dataset_to_regional_bundles,
@@ -159,13 +161,20 @@ def test_detail_tiles_are_grouped_by_region_and_stable_parent_cell():
     assert _tile_region_code(7, _cluster_payload()["yandex"]) == "_overview"
 
 
-def test_bundle_object_key_is_content_addressed():
+def test_bundle_and_index_keys_are_content_addressed():
     first = _bundle_object_key(b'{"tiles":{"12/1/1":{}}}')
     second = _bundle_object_key(b'{"tiles":{"12/1/1":{}}}')
     changed = _bundle_object_key(b'{"tiles":{"12/1/2":{}}}')
     assert first == second
     assert first != changed
     assert first.startswith("bundles/v1/")
+    index_first = _index_object_key(b'{"tiles":{"12/1/1":{"bundle":"a"}}}')
+    index_second = _index_object_key(b'{"tiles":{"12/1/1":{"bundle":"a"}}}')
+    assert index_first == index_second
+    assert index_first.startswith("indexes/v1/")
+    assert _index_shard(5, 1, 1) == "overview/root"
+    assert _index_shard(7, 78, 39) == "overview/6/39/19"
+    assert _index_shard(12, 2500, 1200) == "detail/8/156/75"
 
 
 def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(monkeypatch):
@@ -196,9 +205,13 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     assert result["bundle_count"] == 2
     assert result["uploaded_bundle_count"] == 2
     assert result["reused_bundle_count"] == 0
+    assert result["index_shard_count"] == 2
+    assert result["uploaded_index_count"] == 2
+    assert result["reused_index_count"] == 0
     bundle_keys = [key for key, _body in puts if key.startswith("bundles/v1/")]
+    index_keys = [key for key, _body in puts if key.startswith("indexes/v1/")]
     assert len(bundle_keys) == 2
-    assert any(key.endswith("/indexes/12.json") for key, _body in puts)
+    assert len(index_keys) == 2
     assert puts[-1][0] == "datasets/bundle-v1-s3/manifest.json"
     assert result["regions"]["76"]["point_count"] == 2
     assert result["regions"]["76"]["priority"] is True
@@ -214,6 +227,8 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     assert reused["bundle_count"] == 2
     assert reused["uploaded_bundle_count"] == 0
     assert reused["reused_bundle_count"] == 2
+    assert reused["uploaded_index_count"] == 0
+    assert reused["reused_index_count"] == 2
     assert not any(key.startswith("bundles/v1/") for key, _body in puts)
-    assert any(key.endswith("/indexes/12.json") for key, _body in puts)
-    assert puts[-1][0] == "datasets/bundle-v1-s3/manifest.json"
+    assert not any(key.startswith("indexes/v1/") for key, _body in puts)
+    assert puts == [("datasets/bundle-v1-s3/manifest.json", puts[0][1])]
