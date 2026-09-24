@@ -63,3 +63,110 @@ test("authenticated map survives five wide viewport movements", async ({ page },
     contentType: "application/json",
   });
 });
+
+
+test("direct prepared tiles render and become edge cached", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  const username = process.env.E2E_USERNAME || "reader";
+  const password = process.env.E2E_PASSWORD;
+  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
+  await page.getByLabel("Логин").fill(username);
+  await page.getByLabel("Пароль").fill(password);
+  await page.getByRole("button", { name: "Войти" }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
+    .toBeVisible({ timeout: 40_000 });
+
+  let legacyBulkCalls = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/map/lots") legacyBulkCalls += 1;
+  });
+
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
+  await expect(frameElement).toBeVisible({ timeout: 30_000 });
+  const frame = page.frameLocator('iframe[title="Яндекс.Карта лотов"]');
+  await expect(frame.locator("#hint")).toBeHidden({ timeout: 40_000 });
+
+  const currentMapFrame = () => page.frames().find(
+    (candidate) => candidate !== page.mainFrame() && candidate.url() === "about:srcdoc",
+  );
+  await expect.poll(() => Boolean(currentMapFrame()), { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => currentMapFrame()!.evaluate(() => Boolean(
+    (window as unknown as { bankrotaiDebug?: unknown }).bankrotaiDebug,
+  )), { timeout: 30_000 }).toBe(true);
+
+  const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
+    timeout: 30_000,
+  });
+  expect(datasetResponse.status()).toBe(200);
+  const dataset = await datasetResponse.json() as {
+    version: string;
+    point_count: number;
+    bootstrap_tiles?: unknown[];
+  };
+  expect(dataset.version).toBeTruthy();
+  expect(dataset.point_count).toBeGreaterThan(0);
+  expect(dataset.bootstrap_tiles?.length).toBe(9);
+
+  const tileResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.startsWith(`/api/map/yandex-tiles/${dataset.version}/12/`)
+      && response.status() === 200;
+  }, { timeout: 40_000 });
+
+  await currentMapFrame()!.evaluate(() => {
+    (
+      window as unknown as {
+        bankrotaiDebug: { setViewport: (center: number[], zoom: number) => void };
+      }
+    ).bankrotaiDebug.setViewport([57.6261, 39.8845], 12);
+  });
+
+  const firstTileResponse = await tileResponsePromise;
+  const firstHeaders = await firstTileResponse.allHeaders();
+  expect(["ORIGIN-MISS", "R2-HIT", "EDGE-HIT"]).toContain(firstHeaders["x-map-cache"]);
+  expect(firstHeaders["cache-control"]).toContain("private");
+  expect(firstHeaders["cache-control"]).toContain("immutable");
+  expect(firstHeaders["x-map-dataset"]).toBe(dataset.version);
+
+  const firstPayload = await firstTileResponse.json() as {
+    type?: string;
+    features?: unknown[];
+  };
+  expect(firstPayload.type).toBe("FeatureCollection");
+  expect(Array.isArray(firstPayload.features)).toBe(true);
+
+  const tileUrl = firstTileResponse.url();
+  let warmStatus = "";
+  let warmDurationMs = 0;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    if (attempt > 1) await page.waitForTimeout(300);
+    const started = Date.now();
+    const warm = await page.context().request.get(tileUrl, { timeout: 30_000 });
+    warmDurationMs = Date.now() - started;
+    expect(warm.status()).toBe(200);
+    warmStatus = (await warm.allHeaders())["x-map-cache"] || "";
+    if (warmStatus === "EDGE-HIT" || warmStatus === "R2-HIT") break;
+  }
+
+  expect(["EDGE-HIT", "R2-HIT"]).toContain(warmStatus);
+  expect(legacyBulkCalls).toBe(0);
+  await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
+
+  await testInfo.attach("direct-map-cache-evidence.json", {
+    body: Buffer.from(JSON.stringify({
+      dataset: dataset.version,
+      pointCount: dataset.point_count,
+      firstCacheState: firstHeaders["x-map-cache"],
+      warmCacheState: warmStatus,
+      warmDurationMs,
+      tileUrl: new URL(tileUrl).pathname,
+      legacyBulkCalls,
+    }, null, 2)),
+    contentType: "application/json",
+  });
+});
