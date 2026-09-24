@@ -334,7 +334,6 @@ def publish_dataset_to_regional_bundles(
         }
         value = {
             "layout": REGIONAL_BUNDLE_LAYOUT,
-            "version": version,
             "shard": shard_key,
             "tiles": resolved_tiles,
         }
