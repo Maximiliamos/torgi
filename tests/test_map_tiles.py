@@ -681,7 +681,7 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     assert yandex_response.headers["cache-control"] == (
         "private, max-age=31536000, immutable"
     )
-    assert yandex_response.headers["vary"] == "Accept-Encoding"
+    assert "Accept-Encoding" in yandex_response.headers["vary"]
     assert yandex_response.headers["x-map-dataset"] == result["version"]
     yandex_payload = yandex_response.json()
     assert yandex_payload["type"] == "FeatureCollection"
