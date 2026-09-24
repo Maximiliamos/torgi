@@ -369,8 +369,9 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     started = time.monotonic()
     build_completed = False
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    if get_settings().map_object_store_enabled:
-        version += "-s3"
+    settings = get_settings()
+    if settings.map_object_store_enabled:
+        version += "-bundle-s3" if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT else "-s3"
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
@@ -521,7 +522,6 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
-        settings = get_settings()
         if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT:
             object_store = publish_dataset_to_regional_bundles(
                 session_factory,
