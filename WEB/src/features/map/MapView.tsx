@@ -222,7 +222,7 @@ export function fetchCachedYandexMapTile(
   const sourceKey = filterKey
     ? "filtered-api"
     : bundleSource.layout === "regional-bundles-v1"
-      ? `bundle:${bundleSource.rootUrl || ""}:${bundleSource.indexBaseUrl || ""}`
+      ? `bundle:${bundleSource.rootUrl || ""}:${bundleSource.manifestUrl || ""}`
       : tileBaseUrl
         ? `public-tiles:${tileBaseUrl}`
         : "authenticated-api";
@@ -238,7 +238,7 @@ export function fetchCachedYandexMapTile(
   const publicRequest = (
     bundleSource.layout === "regional-bundles-v1"
     && bundleSource.rootUrl
-    && bundleSource.indexBaseUrl
+    && bundleSource.manifestUrl
   )
     ? fetchPublicYandexMapBundleTile(bundleSource, version, tile.z, tile.x, tile.y)
     : tileBaseUrl
@@ -551,14 +551,14 @@ function YandexDesktopMap({
     {
       layout: mapDataset?.object_store_layout,
       rootUrl: mapDataset?.bundle_root_url,
-      indexBaseUrl: mapDataset?.bundle_index_base_url,
+      manifestUrl: mapDataset?.bundle_manifest_url,
     },
   ), [
     directFilters,
     mapDataset?.tile_base_url,
     mapDataset?.object_store_layout,
     mapDataset?.bundle_root_url,
-    mapDataset?.bundle_index_base_url,
+    mapDataset?.bundle_manifest_url,
   ]);
   const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
     if (!directTileMode || !mapDataset) return;
