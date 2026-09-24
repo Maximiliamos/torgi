@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/api", async (importOriginal) => {
@@ -11,6 +11,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapLotsSWR: vi.fn(),
     fetchMapTile: vi.fn(),
     fetchYandexMapTile: vi.fn(),
+    fetchFilteredYandexMapTile: vi.fn(),
     fetchOperationsProgress: vi.fn(),
     fetchRegions: vi.fn(),
     setReviewStatus: vi.fn(),
@@ -23,6 +24,7 @@ import {
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
+  fetchFilteredYandexMapTile,
   fetchOperationsProgress,
   fetchRegions,
   type MapDataset,
@@ -75,7 +77,7 @@ describe("direct Yandex tile transport", () => {
       username: "reader",
       role: "reader",
     });
-    vi.mocked(fetchRegions).mockResolvedValue([]);
+    vi.mocked(fetchRegions).mockResolvedValue([{ code: "76", name: "Ярославская область" }]);
     vi.mocked(fetchOperationsProgress).mockResolvedValue({
       sync: null,
       geocoding: {
@@ -99,6 +101,22 @@ describe("direct Yandex tile transport", () => {
           title: "Direct lot",
           current_price: 1_000_000,
           review_status: null,
+        },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    });
+    vi.mocked(fetchFilteredYandexMapTile).mockResolvedValue({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 88,
+        geometry: { type: "Point", coordinates: [57.62, 39.88] },
+        properties: {
+          kind: "lot",
+          lotId: 88,
+          title: "Filtered lot",
+          start_price: 2_000_000,
+          region_code: "76",
         },
         options: { preset: "islands#grayDotIcon" },
       }],
@@ -159,4 +177,57 @@ describe("direct Yandex tile transport", () => {
     expect(fetchMapTile).not.toHaveBeenCalled();
     expect(fetchMapLotsSWR).not.toHaveBeenCalled();
   });
+
+  it("keeps region and price filters on runtime-filtered direct tiles", async () => {
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    await waitFor(() => expect(fetchRegions).toHaveBeenCalled());
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+    const regionLabel = screen.getByText("Субъект РФ").closest("label");
+    const regionSelect = regionLabel?.querySelector("select");
+    const minLabel = screen.getByText("Стартовая цена от").closest("label");
+    const minInput = minLabel?.querySelector("input");
+    expect(regionSelect).not.toBeNull();
+    expect(minInput).not.toBeNull();
+
+    fireEvent.change(regionSelect!, { target: { value: "76" } });
+    fireEvent.change(minInput!, { target: { value: "1500000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Применить" }));
+
+    act(() => send(frame, "bankrotai-ready"));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "set-direct-dataset",
+        enabled: true,
+        filterKey: "76|1500000|",
+      }),
+      "*",
+    ));
+
+    act(() => send(frame, "bankrotai-request-tiles", {
+      version: "direct-v1",
+      filterKey: "76|1500000|",
+      generation: 9,
+      visible: [{ z: 12, x: 2501, y: 1301 }],
+      prefetch: [],
+    }));
+
+    await waitFor(() => expect(fetchFilteredYandexMapTile).toHaveBeenCalledWith(
+      "direct-v1",
+      12,
+      2501,
+      1301,
+      {
+        region_code: "76",
+        min_start_price: 1_500_000,
+        max_start_price: undefined,
+      },
+    ));
+    expect(fetchMapLotsSWR).not.toHaveBeenCalled();
+    expect(fetchMapTile).not.toHaveBeenCalled();
+  });
+
 });
