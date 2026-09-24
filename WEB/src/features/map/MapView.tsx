@@ -482,7 +482,6 @@ function YandexDesktopMap({
   selectedLotGeometry,
   active,
   onSelect,
-  onDatasetRefresh,
   onClusterSelect,
   onViewport,
   onRendered,
@@ -499,7 +498,6 @@ function YandexDesktopMap({
   selectedLotGeometry: GeoJSON.GeoJsonObject | null;
   active: boolean;
   onSelect: (id: number, preview?: MapTileFeature | null) => void;
-  onDatasetRefresh: (dataset: MapDataset) => void;
   onClusterSelect: (ids: number[]) => void;
   onViewport: (bounds: [number, number, number, number], zoom: number) => void;
   onRendered: (durationMs: number, count: number) => void;
