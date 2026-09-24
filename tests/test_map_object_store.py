@@ -7,6 +7,8 @@ import requests
 
 from bankrotai.core import AppSettings, load_settings
 from bankrotai.services.map_object_store import (
+    _UPLOAD_HTTP,
+    _pooled_put,
     _put_object,
     _signed_headers,
     dataset_public_tile_base_url,
@@ -186,3 +188,24 @@ def test_s3_put_does_not_retry_4xx(monkeypatch):
 
     assert put.call_count == 1
     sleep.assert_not_called()
+
+
+
+def test_s3_upload_transport_reuses_session_per_worker(monkeypatch):
+    if hasattr(_UPLOAD_HTTP, "session"):
+        delattr(_UPLOAD_HTTP, "session")
+
+    response = Mock(status_code=200, text="")
+    session = Mock()
+    session.put.return_value = response
+    session_factory = Mock(return_value=session)
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.Session", session_factory)
+
+    assert _pooled_put("https://s3.regru.cloud/sterdez-map/a", data=b"a") is response
+    assert _pooled_put("https://s3.regru.cloud/sterdez-map/b", data=b"b") is response
+
+    session_factory.assert_called_once_with()
+    assert session.put.call_count == 2
+    assert session.mount.call_count == 2
+
+    delattr(_UPLOAD_HTTP, "session")
