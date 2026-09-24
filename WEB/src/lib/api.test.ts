@@ -261,7 +261,6 @@ describe("API client", () => {
       if (url.endsWith("/indexes/v1/bb/index.json")) {
         return new Response(JSON.stringify({
           layout: "regional-bundles-v1",
-          version: "bundle-test",
           shard: "detail/8/156/75",
           tiles: {
             "12/2500/1200": { bundle: "bundles/v1/aa/hash.json", region: "76" },
@@ -315,7 +314,6 @@ describe("API client", () => {
       }
       return new Response(JSON.stringify({
         layout: "regional-bundles-v1",
-        version: "bundle-escape",
         shard: "detail/8/0/0",
         tiles: {
           "12/1/1": { bundle: "https://evil.example.test/bundle.json", region: "76" },
