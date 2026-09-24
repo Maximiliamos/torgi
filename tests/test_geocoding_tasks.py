@@ -28,7 +28,11 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
 
     def geocode(_factory, **kwargs):
         captured.update(kwargs)
-        return {"queued": 250, "processed": 250, "geocoded": 100}
+        return {
+            "queued": tasks._GEO_BATCH_LIMIT,
+            "processed": tasks._GEO_BATCH_LIMIT,
+            "geocoded": 100,
+        }
 
     FakeRedis.values = {}
     monkeypatch.setattr(geo_backfill, "geocode_pending_lots", geocode)
@@ -46,7 +50,7 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
 
     result = tasks.geocode_pending_lots_task.run()
 
-    assert captured["limit"] == 250
+    assert captured["limit"] == tasks._GEO_BATCH_LIMIT == 500
     assert captured["progress_task_id"].startswith("celery-")
     assert result["map_dataset_build"]["status"] == "deferred"
     assert result["map_dataset_build"]["maximum_delay_seconds"] == 60
