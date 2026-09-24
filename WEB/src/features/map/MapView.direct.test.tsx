@@ -237,7 +237,7 @@ describe("direct Yandex tile transport", () => {
       tile_base_url: null,
       object_store_layout: "regional-bundles-v1",
       bundle_root_url: "https://storage.example.test/sterdez-map",
-      bundle_index_base_url: "https://storage.example.test/sterdez-map/datasets/bundle-v1/indexes",
+      bundle_manifest_url: "https://storage.example.test/sterdez-map/datasets/bundle-v1/manifest.json",
       priority_regions: ["31", "50", "76", "77"],
     });
     const { MapView } = await import("./MapView");
@@ -259,7 +259,7 @@ describe("direct Yandex tile transport", () => {
       {
         layout: "regional-bundles-v1",
         rootUrl: "https://storage.example.test/sterdez-map",
-        indexBaseUrl: "https://storage.example.test/sterdez-map/datasets/bundle-v1/indexes",
+        manifestUrl: "https://storage.example.test/sterdez-map/datasets/bundle-v1/manifest.json",
       },
       "bundle-v1",
       12,
