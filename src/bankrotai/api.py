@@ -1562,8 +1562,8 @@ def get_current_map_dataset(request: Request):
             if object_store_dataset and regional_bundle_mode
             else None
         )
-        bundle_index_base_url = (
-            f"{settings.map_object_store_public_base_url.rstrip('/')}/datasets/{dataset.version}/indexes"
+        bundle_manifest_url = (
+            f"{settings.map_object_store_public_base_url.rstrip('/')}/datasets/{dataset.version}/manifest.json"
             if bundle_root_url and settings.map_object_store_public_base_url
             else None
         )
@@ -1571,7 +1571,7 @@ def get_current_map_dataset(request: Request):
         descriptor_identity = hashlib.sha256(
             (
                 f"{dataset.version}|{tile_source}|{object_store_layout}|"
-                f"{tile_base_url or ''}|{bundle_root_url or ''}|{bundle_index_base_url or ''}"
+                f"{tile_base_url or ''}|{bundle_root_url or ''}|{bundle_manifest_url or ''}"
             ).encode("utf-8")
         ).hexdigest()[:16]
         etag = f'"dataset-{dataset.version}-{descriptor_identity}"'
@@ -1599,7 +1599,7 @@ def get_current_map_dataset(request: Request):
                     "tile_source": tile_source,
                     "object_store_layout": object_store_layout,
                     "bundle_root_url": bundle_root_url,
-                    "bundle_index_base_url": bundle_index_base_url,
+                    "bundle_manifest_url": bundle_manifest_url,
                     "priority_regions": sorted(CFO_REGION_CODES) if regional_bundle_mode else [],
                 }
             ),
