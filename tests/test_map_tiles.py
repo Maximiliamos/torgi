@@ -617,7 +617,7 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     current = client.get("/api/map/datasets/current")
     assert current.status_code == 200
     assert current.json()["version"] == result["version"]
-    assert current.headers["cache-control"] == "public, max-age=5, s-maxage=5, stale-while-revalidate=30"
+    assert current.headers["cache-control"] == "private, max-age=5, stale-while-revalidate=30"
     assert current.headers["etag"] == f'"dataset-{result["version"]}"'
     assert current.json()["bootstrap_zoom"] == 7
     assert current.json()["bootstrap_center"] == pytest.approx([57.6261, 39.8845])
@@ -679,7 +679,7 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     )
     assert yandex_response.status_code == 200
     assert yandex_response.headers["cache-control"] == (
-        "public, max-age=31536000, s-maxage=31536000, immutable"
+        "private, max-age=31536000, immutable"
     )
     assert yandex_response.headers["vary"] == "Accept-Encoding"
     assert yandex_response.headers["x-map-dataset"] == result["version"]
