@@ -18,7 +18,10 @@ on:
       - "alembic/**"
       - "src/**"
       - "WEB/**"
+      - "edge-proxy/**"
+      - "api-proxy/**"
       - ".github/workflows/regru-deploy.yml"
+      - ".github/workflows/cloudflare-edge-deploy.yml"
 
 permissions:
   contents: read
