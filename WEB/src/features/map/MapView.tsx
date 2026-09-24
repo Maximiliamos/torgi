@@ -394,6 +394,8 @@ function CoincidentLotsPanel({
 function YandexDesktopMap({
   lots,
   tileEntries,
+  mapDataset,
+  directTileMode,
   reviewMarkerUpdate,
   selectedCadastre,
   showCadastre,
@@ -404,9 +406,12 @@ function YandexDesktopMap({
   onClusterSelect,
   onViewport,
   onRendered,
+  onMapTokenExpired,
 }: {
   lots: MapMarkerLot[];
   tileEntries: Array<{ key: string; features: MapTileFeature[] }>;
+  mapDataset: MapDataset | null;
+  directTileMode: boolean;
   reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
   selectedCadastre: Record<string, unknown> | null;
   showCadastre: boolean;
@@ -417,10 +422,48 @@ function YandexDesktopMap({
   onClusterSelect: (ids: number[]) => void;
   onViewport: (bounds: [number, number, number, number], zoom: number) => void;
   onRendered: (durationMs: number, count: number) => void;
+  onMapTokenExpired: () => void;
 }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const channel = "bankrotai-map-v1";
   const [readyRevision, setReadyRevision] = React.useState(0);
+  const preparedTileCache = React.useRef(new Map<string, YandexMapTilePayload>());
+  const preparedTileInflight = React.useRef(new Map<string, Promise<YandexMapTilePayload>>());
+
+  const fetchPreparedTile = React.useCallback((
+    version: string,
+    z: number,
+    x: number,
+    y: number,
+    mapToken: string,
+  ) => {
+    const key = `${version}:${z}:${x}:${y}`;
+    const cached = preparedTileCache.current.get(key);
+    if (cached) {
+      preparedTileCache.current.delete(key);
+      preparedTileCache.current.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    const pending = preparedTileInflight.current.get(key);
+    if (pending) return pending;
+    const request = fetchYandexMapTile(version, z, x, y, mapToken)
+      .then((payload) => {
+        preparedTileCache.current.set(key, payload);
+        while (preparedTileCache.current.size > MAX_PREPARED_TILE_CACHE_ENTRIES) {
+          const oldest = preparedTileCache.current.keys().next().value;
+          if (oldest === undefined) break;
+          preparedTileCache.current.delete(oldest);
+        }
+        return payload;
+      })
+      .finally(() => {
+        if (preparedTileInflight.current.get(key) === request) {
+          preparedTileInflight.current.delete(key);
+        }
+      });
+    preparedTileInflight.current.set(key, request);
+    return request;
+  }, []);
 
   const postCommand = React.useCallback(
     (type: string, payload: Record<string, unknown> = {}) => {
@@ -453,17 +496,66 @@ function YandexDesktopMap({
         onViewport(event.data.bounds, Number(event.data.zoom));
       if (event.data?.type === "bankrotai-rendered")
         onRendered(Number(event.data.durationMs), Number(event.data.count));
+      if (event.data?.type === "bankrotai-tile-request" && directTileMode) {
+        const version = String(event.data.version || "");
+        const requestId = String(event.data.requestId || "");
+        const z = Number(event.data.z);
+        const x = Number(event.data.x);
+        const y = Number(event.data.y);
+        const currentToken = mapDataset?.map_token || "";
+        const validCoordinate =
+          Number.isInteger(z) && Number.isInteger(x) && Number.isInteger(y)
+          && z >= 0 && z <= 14
+          && x >= 0 && x < 2 ** z
+          && y >= 0 && y < 2 ** z;
+        if (!requestId || version !== mapDataset?.version || !currentToken || !validCoordinate) {
+          postCommand("tile-response", { requestId, error: "invalid-request" });
+        } else {
+          void fetchPreparedTile(version, z, x, y, currentToken)
+            .then((payload) => {
+              postCommand("tile-response", { requestId, version, z, x, y, payload });
+            })
+            .catch((error) => {
+              if (error instanceof ApiError && error.status === 401) onMapTokenExpired();
+              postCommand("tile-response", {
+                requestId,
+                version,
+                z,
+                x,
+                y,
+                error: error instanceof Error ? error.message : "tile-fetch-failed",
+              });
+            });
+        }
+      }
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [channel, onClusterSelect, onRendered, onSelect, onViewport]);
+  }, [
+    channel,
+    directTileMode,
+    fetchPreparedTile,
+    mapDataset,
+    onClusterSelect,
+    onMapTokenExpired,
+    onRendered,
+    onSelect,
+    onViewport,
+    postCommand,
+  ]);
 
   React.useEffect(() => {
     if (readyRevision) postCommand("replace-lots", { lots });
   }, [lots, postCommand, readyRevision]);
   React.useEffect(() => {
-    if (readyRevision) postCommand("sync-tiles", { entries: tileEntries });
-  }, [postCommand, readyRevision, tileEntries]);
+    if (!readyRevision) return;
+    if (directTileMode && mapDataset?.map_token) {
+      postCommand("set-dataset", { dataset: mapDataset });
+    } else {
+      postCommand("disable-direct-tiles");
+      postCommand("sync-tiles", { entries: tileEntries });
+    }
+  }, [directTileMode, mapDataset, postCommand, readyRevision, tileEntries]);
   React.useEffect(() => {
     if (readyRevision && reviewMarkerUpdate) postCommand("update-lot-review", reviewMarkerUpdate);
   }, [postCommand, readyRevision, reviewMarkerUpdate]);
