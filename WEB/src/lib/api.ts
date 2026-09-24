@@ -565,6 +565,25 @@ export const fetchYandexMapTile = async (
   { signal },
 ));
 
+export type DirectMapFilterQuery = {
+  region_code?: string;
+  min_start_price?: number;
+  max_start_price?: number;
+};
+
+export const fetchFilteredYandexMapTile = async (
+  version: string,
+  z: number,
+  x: number,
+  y: number,
+  query: DirectMapFilterQuery,
+  signal?: AbortSignal,
+) => validateYandexMapTilePayload(await requestJson<unknown>(
+  `/api/map/filtered-tiles/${encodeURIComponent(version)}/${z}/${x}/${y}`,
+  query,
+  { signal },
+));
+
 const MAP_CACHE_NAME = "bankrotai-map-v3";
 const MAP_CACHE_MAX_ENTRIES = 50;
 const MAP_CACHE_TTL_MS = 10 * 60 * 1000;
