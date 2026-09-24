@@ -193,13 +193,17 @@ export function yandexFeaturePreview(feature: YandexMapFeature): MapTileFeature 
 }
 
 export function directMapFilterSignature(filters: DirectMapFilterQuery) {
+  if (
+    filters.region_code == null
+    && filters.min_start_price == null
+    && filters.max_start_price == null
+  ) return "";
   return [
     filters.region_code ?? "",
     filters.min_start_price ?? "",
     filters.max_start_price ?? "",
   ].join("|");
 }
-
 export function fetchCachedYandexMapTile(
   completed: Map<string, YandexMapTilePayload>,
   inflight: Map<string, Promise<YandexMapTilePayload>>,
@@ -725,7 +729,7 @@ function directPreview(raw){const p=raw?.properties||{},coords=raw?.geometry?.co
 function installDirectPayload(key,payload,generation=directGeneration){if(!directEnabled||generation!==directGeneration||!payload||payload.type!=='FeatureCollection'||!Array.isArray(payload.features)||tileObjects.has(key))return;const started=performance.now();activateManager(tileManager);mode='direct';tileManager.add(payload);const ids=[];for(const item of payload.features){ids.push(item.id);const preview=directPreview(item);if(preview)tileLots.set(Number(item.id),preview);}tileObjects.set(key,ids);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:[...tileObjects.values()].reduce((n,v)=>n+v.length,0)}));}
 function requestDirectTiles(){if(!directEnabled||!directDataset||!map)return;const visible=directVisibleTiles(),version=directDataset.version,generation=++directGeneration;directWanted=new Set(visible.map(t=>version+'/'+t.key));for(const[key,ids]of tileObjects){if(!directWanted.has(key)){tileManager.remove(ids);ids.forEach(id=>tileLots.delete(Number(id)));tileObjects.delete(key);}}const missing=visible.filter(t=>!tileObjects.has(version+'/'+t.key));send('bankrotai-request-tiles',{version,filterKey:directFilterKey,generation,visible:missing.map(({z,x,y})=>({z,x,y})),prefetch:directNeighborTiles(visible).map(({z,x,y})=>({z,x,y}))});if(!missing.length)requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:0,count:[...tileObjects.values()].reduce((n,v)=>n+v.length,0)}));}
 function scheduleDirectTiles(){if(!directEnabled)return;clearTimeout(directTimer);directTimer=setTimeout(requestDirectTiles,70);}
-function setDirectDataset(enabled,dataset,filterKey=''){directEnabled=Boolean(enabled&&dataset?.version);directDataset=directEnabled?dataset:null;directFilterKey=String(filterKey||'');directGeneration++;directWanted=new Set();tileManager?.removeAll();tileObjects.clear();tileLots.clear();if(!directEnabled){if(mode==='direct'){mode='legacy';renderLots();}return;}activateManager(tileManager);mode='direct';const bootstrap=Array.isArray(dataset.bootstrap_tiles)?dataset.bootstrap_tiles:[];for(const entry of bootstrap){if(entry?.payload)installDirectPayload(dataset.version+'/'+entry.z+'/'+entry.x+'/'+entry.y,entry.payload,directGeneration);}requestDirectTiles();}
+function setDirectDataset(enabled,dataset,filterKey=''){directEnabled=Boolean(enabled&&dataset?.version);directDataset=directEnabled?dataset:null;directFilterKey=String(filterKey||'');directGeneration++;directWanted=new Set();tileManager?.removeAll();tileObjects.clear();tileLots.clear();if(!directEnabled){if(mode==='direct'){mode='legacy';renderLots();}return;}activateManager(tileManager);mode='direct';const bootstrap=!directFilterKey&&Array.isArray(dataset.bootstrap_tiles)?dataset.bootstrap_tiles:[];for(const entry of bootstrap){if(entry?.payload)installDirectPayload(dataset.version+'/'+entry.z+'/'+entry.x+'/'+entry.y,entry.payload,directGeneration);}requestDirectTiles();}
 function updateTileReview(lotId,status){if(!tileManager)return false;const id=Number(lotId),lot=tileLots.get(id);if(!lot)return false;const updated={...lot,review_status:status};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,mode==='direct'?{preset:directPreset(status)}:opts(updated));return true;}
 function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankrotai-viewport',{bounds:[bounds[0][1],bounds[0][0],bounds[1][1],bounds[1][0]],zoom:map.getZoom()});}
 function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,180);}
