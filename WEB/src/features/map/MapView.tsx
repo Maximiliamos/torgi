@@ -19,6 +19,7 @@ import {
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
+  fetchFilteredYandexMapTile,
   fetchRegions,
   fetchNationwideLotSync,
   fetchOperationsProgress,
@@ -31,6 +32,7 @@ import {
   MapTilePayload,
   YandexMapFeature,
   YandexMapTilePayload,
+  DirectMapFilterQuery,
   OperationsProgress,
   RegionOption,
   searchCadastre,
@@ -190,14 +192,24 @@ export function yandexFeaturePreview(feature: YandexMapFeature): MapTileFeature 
   };
 }
 
+export function directMapFilterSignature(filters: DirectMapFilterQuery) {
+  return [
+    filters.region_code ?? "",
+    filters.min_start_price ?? "",
+    filters.max_start_price ?? "",
+  ].join("|");
+}
+
 export function fetchCachedYandexMapTile(
   completed: Map<string, YandexMapTilePayload>,
   inflight: Map<string, Promise<YandexMapTilePayload>>,
   version: string,
   tile: TileCoordinate,
+  filters: DirectMapFilterQuery = {},
   maxEntries = MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
 ) {
-  const key = mapTileCacheKey(version, tile);
+  const filterKey = directMapFilterSignature(filters);
+  const key = `${mapTileCacheKey(version, tile)}:${filterKey}`;
   const cached = completed.get(key);
   if (cached) {
     completed.delete(key);
@@ -206,7 +218,9 @@ export function fetchCachedYandexMapTile(
   }
   const pending = inflight.get(key);
   if (pending) return pending;
-  const request = fetchYandexMapTile(version, tile.z, tile.x, tile.y)
+  const request = (filterKey
+    ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
+    : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
     .then((payload) => {
       completed.set(key, payload);
       while (completed.size > maxEntries) {
@@ -222,7 +236,6 @@ export function fetchCachedYandexMapTile(
   inflight.set(key, request);
   return request;
 }
-
 export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
   return exact ? `${total} объектов` : `не менее ${returned} объектов в области`;
 }
