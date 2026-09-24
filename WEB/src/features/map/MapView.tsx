@@ -18,6 +18,7 @@ import {
   fetchMapLotDetail,
   fetchMapLotsSWR,
   fetchMapTile,
+  fetchYandexMapTile,
   fetchRegions,
   fetchNationwideLotSync,
   fetchOperationsProgress,
@@ -28,6 +29,8 @@ import {
   MapMarkerLot,
   MapTileFeature,
   MapTilePayload,
+  YandexMapFeature,
+  YandexMapTilePayload,
   OperationsProgress,
   RegionOption,
   searchCadastre,
@@ -40,6 +43,9 @@ export const MAP_REDUCED_LIMIT = 500;
 // The measured populated tile is small (163 B in the deterministic benchmark),
 // while 512 entries preserve useful pan-back history without unbounded growth.
 export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
+export const DIRECT_MAP_TILES =
+  String(import.meta.env.VITE_DIRECT_MAP_TILES ?? "false").toLowerCase() === "true";
+export const MAX_DIRECT_MAP_TILE_CACHE_ENTRIES = 768;
 
 export function yandexMapsApiUrl(apiKey?: string) {
   const params = new URLSearchParams({ lang: "ru_RU", csp: "true" });
@@ -166,6 +172,55 @@ export async function fetchVisibleMapTiles(
     entries: results.filter((value): value is NonNullable<typeof value> => value !== null),
     failed: results.filter((value) => value === null).length,
   };
+}
+
+export function yandexFeaturePreview(feature: YandexMapFeature): MapTileFeature | null {
+  if (feature.properties.kind !== "lot") return null;
+  const [lat, lon] = feature.geometry.coordinates;
+  return {
+    kind: "lot",
+    id: feature.id,
+    lat,
+    lon,
+    title: feature.properties.title,
+    current_price: feature.properties.current_price,
+    start_price: feature.properties.start_price,
+    status: feature.properties.status ?? undefined,
+    review_status: feature.properties.review_status,
+  };
+}
+
+export function fetchCachedYandexMapTile(
+  completed: Map<string, YandexMapTilePayload>,
+  inflight: Map<string, Promise<YandexMapTilePayload>>,
+  version: string,
+  tile: TileCoordinate,
+  maxEntries = MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+) {
+  const key = mapTileCacheKey(version, tile);
+  const cached = completed.get(key);
+  if (cached) {
+    completed.delete(key);
+    completed.set(key, cached);
+    return Promise.resolve(cached);
+  }
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const request = fetchYandexMapTile(version, tile.z, tile.x, tile.y)
+    .then((payload) => {
+      completed.set(key, payload);
+      while (completed.size > maxEntries) {
+        const oldest = completed.keys().next().value;
+        if (oldest === undefined) break;
+        completed.delete(oldest);
+      }
+      return payload;
+    })
+    .finally(() => {
+      if (inflight.get(key) === request) inflight.delete(key);
+    });
+  inflight.set(key, request);
+  return request;
 }
 
 export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
