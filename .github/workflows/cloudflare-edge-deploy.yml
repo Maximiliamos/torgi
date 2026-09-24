@@ -468,6 +468,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
+      VITE_DIRECT_MAP_TILES: ${{ vars.VITE_DIRECT_MAP_TILES || 'true' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -709,6 +710,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KOYEB_SERVICE_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
+      VITE_DIRECT_MAP_TILES: ${{ vars.VITE_DIRECT_MAP_TILES || 'true' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
