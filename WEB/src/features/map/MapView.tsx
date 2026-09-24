@@ -1616,6 +1616,8 @@ export function MapView({
         <YandexDesktopMap
           lots={visibleLots}
           tileEntries={tileEntries}
+          mapDataset={mapDataset}
+          directTileMode={directTileMode}
           reviewMarkerUpdate={reviewMarkerUpdate}
           selectedCadastre={cad}
           showCadastre={showCadastre}
@@ -1623,14 +1625,16 @@ export function MapView({
           selectedLotGeometry={selectedLot?.geometry || null}
           active={active}
           onSelect={selectLot}
+          onDatasetRefresh={acceptMapDataset}
           onClusterSelect={(ids) => {
             setCoincidentLotIds(Array.from(new Set(ids)));
             setSelectedLotId(null);
           }}
           onViewport={handleViewport}
-          onRendered={(durationMs) =>
-            setTimings((value) => ({ ...value, render: durationMs }))
-          }
+          onRendered={(durationMs, count) => {
+            if (directTileMode) setDirectRenderedCount(count);
+            setTimings((value) => ({ ...value, render: durationMs }));
+          }}
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты">
           <span>
