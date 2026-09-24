@@ -231,4 +231,5 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     assert reused["reused_index_count"] == 2
     assert not any(key.startswith("bundles/v1/") for key, _body in puts)
     assert not any(key.startswith("indexes/v1/") for key, _body in puts)
-    assert puts == [("datasets/bundle-v1-s3/manifest.json", puts[0][1])]
+    assert len(puts) == 1
+    assert puts[0][0] == "datasets/bundle-v1-s3/manifest.json"
