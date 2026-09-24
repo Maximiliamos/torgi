@@ -30,6 +30,7 @@ from redis.exceptions import RedisError
 from bankrotai.db import (
     session_scope,
     read_session_scope,
+    SessionLocal,
     get_processed_lot,
     get_top_lots,
     ProcessedLot,
@@ -78,6 +79,11 @@ from bankrotai.services.quality import data_quality_snapshot, list_source_health
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
+from bankrotai.services.map_runtime import (
+    build_filtered_tile,
+    get_runtime_index,
+    schedule_runtime_index_warmup,
+)
 from bankrotai.logic import log_action
 from bankrotai.tasks import (
     QueueUnavailableError,
@@ -457,7 +463,11 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path.startswith("/api/map/lots/"):
             return path.rsplit("/", 1)[-1].isdigit()
-        if path.startswith("/api/map/tiles/") or path.startswith("/api/map/yandex-tiles/"):
+        if (
+            path.startswith("/api/map/tiles/")
+            or path.startswith("/api/map/yandex-tiles/")
+            or path.startswith("/api/map/filtered-tiles/")
+        ):
             parts = path.split("/")
             return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
         if path.startswith("/api/search/"):
@@ -1545,6 +1555,7 @@ def get_current_map_dataset(request: Request):
         }
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
+        schedule_runtime_index_warmup(SessionLocal, dataset.version)
         return JSONResponse(
             content=jsonable_encoder(
                 {
@@ -1629,6 +1640,67 @@ def get_yandex_map_tile(request: Request, version: str, z: int, x: int, y: int):
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         return JSONResponse(_yandex_tile_payload(tile), headers=headers)
+
+
+@app.get("/api/map/filtered-tiles/{version}/{z}/{x}/{y}")
+def get_filtered_map_tile(
+    request: Request,
+    version: str,
+    z: int,
+    x: int,
+    y: int,
+    region_code: str | None = Query(None, pattern=r"^\d{2,3}$"),
+    min_start_price: float | None = Query(None, ge=0),
+    max_start_price: float | None = Query(None, ge=0),
+):
+    if not (0 <= z <= 14 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+        raise HTTPException(status_code=404, detail="Map tile not found")
+    if (
+        min_start_price is not None
+        and max_start_price is not None
+        and min_start_price > max_start_price
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="min_start_price must not exceed max_start_price",
+        )
+
+    started = time.monotonic()
+    try:
+        index = get_runtime_index(SessionLocal, version)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Map dataset not found") from exc
+
+    payload = build_filtered_tile(
+        index,
+        z=z,
+        x=x,
+        y=y,
+        region_code=region_code,
+        min_start_price=min_start_price,
+        max_start_price=max_start_price,
+    )
+    body = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    etag = f'"{hashlib.sha256(body).hexdigest()}"'
+    headers = {
+        "Cache-Control": "private, max-age=30, stale-while-revalidate=60",
+        "ETag": etag,
+        "X-Map-Dataset": version,
+        "X-Map-Index": "runtime",
+        "Server-Timing": f"map-filter;dur={(time.monotonic() - started) * 1000:.1f}",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers=headers,
+    )
 
 
 @app.get("/api/map/lots/{lot_id}")
