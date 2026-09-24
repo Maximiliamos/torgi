@@ -219,6 +219,93 @@ jobs:
           raise SystemExit("REG.RU S3 public probe failed for all documented URL styles")
           PY
 
+      - name: Estimate regional bundle reduction from existing S3 tiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          inventory="$RUNNER_TEMP/s3-tile-keys.tsv"
+          aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+            --region "$MAP_OBJECT_STORE_REGION" \
+            s3api list-objects-v2 \
+            --bucket "$MAP_OBJECT_STORE_BUCKET" \
+            --prefix datasets/ \
+            --query 'Contents[].[Key,Size,LastModified]' \
+            --output text > "$inventory"
+          python - "$inventory" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import sys
+          from collections import defaultdict
+
+          tile_pattern = re.compile(
+              r"^datasets/([^/]+)/tiles/(\d+)/(\d+)/(\d+)\.json$"
+          )
+          rows = defaultdict(lambda: {
+              "objects": 0,
+              "bytes": 0,
+              "groups": set(),
+              "zoom_counts": defaultdict(int),
+              "last_modified": "",
+          })
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              for raw in handle:
+                  parts = raw.rstrip("\n").split("\t")
+                  if len(parts) < 3:
+                      continue
+                  key, size_text, modified = parts[:3]
+                  match = tile_pattern.match(key)
+                  if not match:
+                      continue
+                  version, z_text, x_text, y_text = match.groups()
+                  z, x, y = int(z_text), int(x_text), int(y_text)
+                  try:
+                      size = int(size_text)
+                  except ValueError:
+                      continue
+                  row = rows[version]
+                  row["objects"] += 1
+                  row["bytes"] += size
+                  row["zoom_counts"][z] += 1
+                  row["last_modified"] = max(str(row["last_modified"]), modified)
+                  if z < 7:
+                      group = ("overview", z)
+                  else:
+                      parent_zoom = 6 if z < 12 else 9
+                      shift = max(0, z - parent_zoom)
+                      group = (
+                          "overview" if z < 12 else "detail",
+                          parent_zoom,
+                          x >> shift,
+                          y >> shift,
+                      )
+                  row["groups"].add(group)
+
+          output = []
+          for version, row in rows.items():
+              objects = int(row["objects"])
+              spatial_groups = len(row["groups"])
+              output.append({
+                  "version": version,
+                  "micro_objects": objects,
+                  "bytes": int(row["bytes"]),
+                  "average_bytes": round(int(row["bytes"]) / objects, 1) if objects else 0,
+                  # Detail groups may split by region at borders, so this is a
+                  # conservative lower bound for the final region-aware count.
+                  "spatial_bundle_lower_bound": spatial_groups,
+                  "micro_to_bundle_reduction_lower_bound": (
+                      round(objects / spatial_groups, 1) if spatial_groups else None
+                  ),
+                  "zoom_counts": {
+                      str(z): count for z, count in sorted(row["zoom_counts"].items())
+                  },
+                  "last_modified": row["last_modified"],
+              })
+          output.sort(key=lambda item: item["last_modified"], reverse=True)
+          print(json.dumps({"bundle_estimates": output[:10]}, ensure_ascii=False, indent=2))
+          PY
+
       - name: Delete probe
         if: always()
         shell: bash
