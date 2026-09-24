@@ -150,3 +150,28 @@ def legacy_tile_to_yandex(payload: dict[str, Any] | None) -> dict[str, Any]:
             if isinstance(feature, dict)
         ]
     )
+
+
+def public_yandex_tile_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a browser-public tile without internal review metadata."""
+    source = legacy_tile_to_yandex(payload)
+    features: list[dict[str, Any]] = []
+    for raw in source.get("features", []):
+        if not isinstance(raw, dict):
+            continue
+        feature = {
+            "type": raw.get("type"),
+            "id": raw.get("id"),
+            "geometry": raw.get("geometry"),
+            "properties": dict(raw.get("properties") or {}),
+            "options": dict(raw.get("options") or {}),
+        }
+        properties = feature["properties"]
+        if properties.get("kind") == "lot":
+            properties.pop("review_status", None)
+            status = str(properties.get("status") or "").casefold()
+            feature["options"] = {
+                "preset": LOT_PRESETS["ended"] if status in ENDED_STATUSES else LOT_PRESETS["default"],
+            }
+        features.append(feature)
+    return yandex_feature_collection(features)
