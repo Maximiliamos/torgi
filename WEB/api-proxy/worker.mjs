@@ -224,6 +224,17 @@ function mapEdgeCookie(token) {
   ].join("; ");
 }
 
+function clearMapEdgeCookie() {
+  return [
+    `${MAP_EDGE_COOKIE}=`,
+    "Max-Age=0",
+    "Path=/api/map/",
+    "HttpOnly",
+    "Secure",
+    "SameSite=Strict",
+  ].join("; ");
+}
+
 async function hasMapEdgeSession(request, env) {
   return verifyMapEdgeToken(
     cookieValue(request, MAP_EDGE_COOKIE),
@@ -478,6 +489,13 @@ function proxyResponse(result, requestId, request, incoming) {
   outgoing.set("x-content-type-options", "nosniff");
   outgoing.set("referrer-policy", "same-origin");
   outgoing.set("x-request-id", result.response.headers.get("x-request-id") || requestId);
+  if (
+    incoming.pathname === "/api/auth/logout"
+    && result.response.status >= 200
+    && result.response.status < 400
+  ) {
+    outgoing.append("set-cookie", clearMapEdgeCookie());
+  }
   return new Response(result.body, {
     status: result.response.status,
     statusText: result.response.statusText,
