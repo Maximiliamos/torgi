@@ -13,6 +13,7 @@ from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.orm import Session, aliased
 
 from bankrotai.core import get_settings
+from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
     yandex_cluster_feature,
@@ -418,7 +419,14 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "title": row.title,
                 "current_price": float(row.current_price) if row.current_price is not None else None,
                 "start_price": float(row.start_price) if row.start_price is not None else None,
-                "region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
+                "region_code": (
+                    normalize_canonical_region_code(
+                        normalize_map_region_code(None, row.cadastral_number)
+                    )
+                    or normalize_canonical_region_code(row.region_code)
+                    or row.region_code
+                ),
+                "bundle_region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
                 "status": row.auction_status,
                 "is_archived": row.is_archived,
                 "review_status": row.review_status,
