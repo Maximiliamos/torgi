@@ -159,6 +159,7 @@ class AppSettings:
     map_object_store_access_key: str | None = None
     map_object_store_secret_key: str | None = None
     map_object_store_region: str = "ru-1"
+    map_object_store_layout: str = "tiles"
     map_object_store_workers: int = 4
     map_object_store_timeout_seconds: float = 60.0
     nspd_ca_bundle: str | None = None
@@ -175,6 +176,8 @@ class AppSettings:
         errors: list[str] = []
         if not self.public_api_key or len(self.public_api_key) < 24:
             errors.append("BANKROTAI_API_KEY must contain at least 24 characters")
+        if self.map_object_store_layout not in {"tiles", "regional-bundles-v1"}:
+            errors.append("MAP_OBJECT_STORE_LAYOUT must be tiles or regional-bundles-v1")
         if not self.auth_session_secret or len(self.auth_session_secret) < 32:
             errors.append("AUTH_SESSION_SECRET must contain at least 32 characters")
 
@@ -291,6 +294,7 @@ def load_settings() -> AppSettings:
         map_object_store_access_key=os.getenv("MAP_OBJECT_STORE_ACCESS_KEY") or None,
         map_object_store_secret_key=os.getenv("MAP_OBJECT_STORE_SECRET_KEY") or None,
         map_object_store_region=os.getenv("MAP_OBJECT_STORE_REGION", "ru-1").strip() or "ru-1",
+        map_object_store_layout=os.getenv("MAP_OBJECT_STORE_LAYOUT", "tiles").strip().lower() or "tiles",
         map_object_store_workers=max(1, min(32, int(os.getenv("MAP_OBJECT_STORE_WORKERS", "4")))),
         map_object_store_timeout_seconds=max(3.0, min(120.0, float(os.getenv("MAP_OBJECT_STORE_TIMEOUT_SECONDS", "60")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
