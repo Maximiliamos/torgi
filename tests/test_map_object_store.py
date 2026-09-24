@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import Mock
+
+import requests
 
 from bankrotai.core import AppSettings, load_settings
 from bankrotai.services.map_object_store import (
+    _put_object,
     _signed_headers,
     dataset_public_tile_base_url,
     object_store_configured,
@@ -115,3 +119,70 @@ def test_regru_settings_preserve_explicit_custom_public_domain(monkeypatch):
     settings = load_settings()
 
     assert settings.map_object_store_public_base_url == "https://maps.example.test"
+
+
+def test_s3_put_retries_timeout_then_succeeds(monkeypatch):
+    settings = AppSettings(
+        map_object_store_endpoint="https://s3.regru.cloud",
+        map_object_store_bucket="sterdez-map",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+        map_object_store_region="ru-1",
+        map_object_store_timeout_seconds=60,
+    )
+    ok = Mock(status_code=200, text="")
+    put = Mock(side_effect=[requests.ReadTimeout("slow"), ok])
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.put", put)
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    _put_object(settings, "datasets/v1/tiles/7/1/2.json", b"{}", cache_control="public")
+
+    assert put.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
+def test_s3_put_retries_5xx_then_succeeds(monkeypatch):
+    settings = AppSettings(
+        map_object_store_endpoint="https://s3.regru.cloud",
+        map_object_store_bucket="sterdez-map",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+        map_object_store_region="ru-1",
+    )
+    busy = Mock(status_code=503, text="busy")
+    ok = Mock(status_code=204, text="")
+    put = Mock(side_effect=[busy, ok])
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.put", put)
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    _put_object(settings, "datasets/v1/tiles/7/1/2.json", b"{}", cache_control="public")
+
+    assert put.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
+def test_s3_put_does_not_retry_4xx(monkeypatch):
+    settings = AppSettings(
+        map_object_store_endpoint="https://s3.regru.cloud",
+        map_object_store_bucket="sterdez-map",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+        map_object_store_region="ru-1",
+    )
+    denied = Mock(status_code=403, text="denied")
+    put = Mock(return_value=denied)
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.put", put)
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    try:
+        _put_object(settings, "datasets/v1/tiles/7/1/2.json", b"{}", cache_control="public")
+    except RuntimeError as exc:
+        assert "HTTP 403" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert put.call_count == 1
+    sleep.assert_not_called()
