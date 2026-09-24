@@ -56,6 +56,7 @@ def yandex_lot_feature(point: dict[str, Any]) -> dict[str, Any]:
             "current_price": point.get("current_price"),
             "start_price": point.get("start_price"),
             "region_code": point.get("region_code"),
+            "bundle_region_code": point.get("bundle_region_code"),
             "status": point.get("status"),
             "review_status": point.get("review_status"),
         },
@@ -173,6 +174,7 @@ def public_yandex_tile_payload(payload: dict[str, Any] | None) -> dict[str, Any]
         feature["properties"] = properties
         if properties.get("kind") == "lot":
             properties.pop("review_status", None)
+            properties.pop("bundle_region_code", None)
             status = str(properties.get("status") or "").casefold()
             feature["options"] = {
                 "preset": LOT_PRESETS["ended"] if status in ENDED_STATUSES else LOT_PRESETS["default"],
