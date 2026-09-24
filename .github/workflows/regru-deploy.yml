@@ -312,7 +312,7 @@ jobs:
               -H "X-API-Key: $API_KEY" \
               -b "$RUNNER_TEMP/home-primary.cookies" \
               "https://$HOME_RELAY_HOSTNAME/api/map/datasets/current")"
-            DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and d.get("tile_base_url") else "no")')"
+            DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and ((d.get("object_store_layout")=="regional-bundles-v1" and d.get("bundle_root_url") and d.get("bundle_index_base_url")) or (d.get("object_store_layout")!="regional-bundles-v1" and d.get("tile_base_url"))) else "no")')"
             if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
               break
             fi
