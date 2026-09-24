@@ -363,6 +363,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     started = time.monotonic()
     build_completed = False
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    if get_settings().map_object_store_enabled:
+        version += "-s3"
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
