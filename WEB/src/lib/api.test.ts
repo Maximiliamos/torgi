@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -109,4 +109,55 @@ describe("API client", () => {
     ] }), { status: 200 }));
     await expect(fetchMapTile("v1", 10, 1, 1)).resolves.toMatchObject({ features: [{ id: 1 }, { id: "c:1" }] });
   });
+  it.each([
+    null,
+    { type: "FeatureCollection", features: null },
+    { type: "FeatureCollection", features: [{}] },
+    {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 1,
+        geometry: { type: "Point", coordinates: ["55.7", 37.6] },
+        properties: { kind: "lot" },
+      }],
+    },
+    {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: "c:1",
+        geometry: { type: "Point", coordinates: [55.7, 37.6] },
+        properties: { kind: "cluster", count: 0, bounds: [] },
+      }],
+    },
+  ])("rejects malformed Yandex-ready tile payload %#", async (payload) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+    await expect(fetchYandexMapTile("v1", 10, 1, 1)).rejects.toThrow(/Yandex-тайла/);
+  });
+
+  it("accepts a server-ready Yandex FeatureCollection without client conversion", async () => {
+    const payload = {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 42,
+        geometry: { type: "Point", coordinates: [55.7, 37.6] },
+        properties: {
+          kind: "lot",
+          lotId: 42,
+          title: "Готовый лот",
+          review_status: "approved",
+        },
+        options: { preset: "islands#greenDotIcon" },
+      }],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+    await expect(fetchYandexMapTile("dataset-v1", 12, 1, 1)).resolves.toEqual(payload);
+  });
+
 });
