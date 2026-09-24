@@ -228,6 +228,14 @@ def publish_dataset_to_regional_bundles(
             raise RuntimeError(f"Map dataset {dataset_id} disappeared before bundle publication")
         expected_tile_count = int(dataset.tile_count)
         point_count = int(dataset.point_count)
+        previous_bundle_version = session.scalar(
+            select(MapDataset.version).where(
+                MapDataset.is_current.is_(True),
+                MapDataset.id != dataset_id,
+                MapDataset.status == "ready",
+                MapDataset.version.endswith("-bundle-s3"),
+            )
+        )
 
     groups: dict[str, dict[str, Any]] = defaultdict(dict)
     index_entries: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
@@ -347,6 +355,33 @@ def publish_dataset_to_regional_bundles(
         index_specs[shard_key] = (object_key, body)
         shard_to_object[shard_key] = object_key
 
+    known_immutable_keys: set[str] = set()
+    if previous_bundle_version:
+        try:
+            previous_manifest = _verify_public_manifest(settings, previous_bundle_version)
+            previous_bundles = previous_manifest.get("bundle_objects")
+            previous_indexes = previous_manifest.get("index_shards")
+            if isinstance(previous_bundles, list):
+                known_immutable_keys.update(
+                    str(key) for key in previous_bundles if isinstance(key, str)
+                )
+            if isinstance(previous_indexes, dict):
+                known_immutable_keys.update(
+                    str(key) for key in previous_indexes.values() if isinstance(key, str)
+                )
+            logger.info(
+                "REG.RU S3 incremental publication baseline: previous=%s immutable_objects=%s",
+                previous_bundle_version,
+                len(known_immutable_keys),
+            )
+        except Exception as exc:
+            # The new version remains safe without reuse; content-addressed PUTs
+            # are idempotent, so a baseline read failure only costs extra uploads.
+            logger.warning(
+                "Could not load previous REG.RU S3 bundle manifest; publishing changed objects directly: %s",
+                exc,
+            )
+
     uploaded_bundles = 0
     reused_bundles = 0
     uploaded_indexes = 0
@@ -355,8 +390,10 @@ def publish_dataset_to_regional_bundles(
     reused_bytes = 0
 
     def ensure_immutable(key: str, body: bytes) -> tuple[bool, int]:
-        if _public_object_exists(settings, key):
+        if key in known_immutable_keys:
             return True, len(body)
+        # Hash-addressed keys make direct PUT idempotent. Avoiding a HEAD for
+        # every new object halves first-publication request overhead.
         _put_object(settings, key, body, cache_control=immutable_cache)
         return False, len(body)
 
@@ -453,13 +490,14 @@ def publish_dataset_to_regional_bundles(
         "priority_regions": sorted(CFO_REGION_CODES),
         "regions": regions,
         "index_shards": shard_to_object,
+        "bundle_objects": sorted(set(group_to_object.values())),
         "bundle_root_url": settings.map_object_store_public_base_url,
     }
     manifest_bytes = _write_json_object(
         settings,
         f"{dataset_root}/manifest.json",
         manifest,
-        cache_control="public, max-age=60",
+        cache_control=immutable_cache,
     )
 
     verified = _verify_public_manifest(settings, version)
