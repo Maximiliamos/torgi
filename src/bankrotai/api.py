@@ -1548,7 +1548,11 @@ def get_current_map_dataset(request: Request):
                 }
             )
 
-        tile_base_url = dataset_public_tile_base_url(dataset.version)
+        tile_base_url = (
+            dataset_public_tile_base_url(dataset.version)
+            if dataset.version.endswith("-s3")
+            else None
+        )
         tile_source = "regru-s3" if tile_base_url else "api"
         descriptor_identity = hashlib.sha256(
             f"{dataset.version}|{tile_source}|{tile_base_url or ''}".encode("utf-8")
