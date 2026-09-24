@@ -206,6 +206,18 @@ class AppSettings:
 def load_settings() -> AppSettings:
     load_dotenv()
 
+    map_object_store_endpoint = os.getenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud").rstrip("/")
+    map_object_store_bucket = os.getenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map").strip()
+    configured_public_base = (os.getenv("MAP_OBJECT_STORE_PUBLIC_BASE_URL") or "").rstrip("/") or None
+    if (
+        map_object_store_endpoint == "https://s3.regru.cloud"
+        and (
+            configured_public_base is None
+            or configured_public_base.endswith(".website.regru.cloud")
+        )
+    ):
+        configured_public_base = f"{map_object_store_endpoint}/{map_object_store_bucket}"
+
     # Basic settings
     settings = AppSettings(
         app_env=os.getenv("APP_ENV", "dev").lower(),
@@ -273,9 +285,9 @@ def load_settings() -> AppSettings:
         min_map_points=max(0, int(os.getenv("MIN_MAP_POINTS", "1"))),
         min_map_coverage_ratio=max(0.0, min(1.0, float(os.getenv("MIN_MAP_COVERAGE_RATIO", "0.5")))),
         map_object_store_enabled=os.getenv("MAP_OBJECT_STORE_ENABLED", "false").lower() in {"1", "true", "yes"},
-        map_object_store_endpoint=os.getenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud").rstrip("/"),
-        map_object_store_bucket=os.getenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map").strip(),
-        map_object_store_public_base_url=(os.getenv("MAP_OBJECT_STORE_PUBLIC_BASE_URL") or "").rstrip("/") or None,
+        map_object_store_endpoint=map_object_store_endpoint,
+        map_object_store_bucket=map_object_store_bucket,
+        map_object_store_public_base_url=configured_public_base,
         map_object_store_access_key=os.getenv("MAP_OBJECT_STORE_ACCESS_KEY") or None,
         map_object_store_secret_key=os.getenv("MAP_OBJECT_STORE_SECRET_KEY") or None,
         map_object_store_region=os.getenv("MAP_OBJECT_STORE_REGION", "ru-1").strip() or "ru-1",
