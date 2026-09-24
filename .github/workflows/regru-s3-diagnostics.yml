@@ -132,15 +132,27 @@ jobs:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
         run: |
           set -euo pipefail
-          PROBE_URL="${MAP_OBJECT_STORE_PUBLIC_BASE_URL%/}/$PROBE_KEY"
-          for attempt in $(seq 1 12); do
-            curl --silent --show-error --max-time 20 \
-              -D "$RUNNER_TEMP/probe.headers" \
-              -H 'Origin: https://sterdez.online' \
-              -H 'Cache-Control: no-cache' \
-              -o "$RUNNER_TEMP/probe.json" \
-              "$PROBE_URL" || true
-            if python - <<'PY'
+
+          aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+            --region "$MAP_OBJECT_STORE_REGION" \
+            s3api head-object \
+            --bucket "$MAP_OBJECT_STORE_BUCKET" \
+            --key "$PROBE_KEY" >/dev/null
+
+          PRIMARY_BASE="${MAP_OBJECT_STORE_PUBLIC_BASE_URL%/}"
+          PATH_BASE="${MAP_OBJECT_STORE_ENDPOINT%/}/$MAP_OBJECT_STORE_BUCKET"
+          VERIFIED_URL=""
+
+          for BASE in "$PRIMARY_BASE" "$PATH_BASE"; do
+            PROBE_URL="$BASE/$PROBE_KEY"
+            for attempt in $(seq 1 6); do
+              curl --silent --show-error --max-time 20 \
+                -D "$RUNNER_TEMP/probe.headers" \
+                -H 'Origin: https://sterdez.online' \
+                -H 'Cache-Control: no-cache' \
+                -o "$RUNNER_TEMP/probe.json" \
+                "$PROBE_URL" || true
+              if python - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -152,19 +164,37 @@ jobs:
               raise SystemExit(1)
           raise SystemExit(0 if payload.get("ok") is True and payload.get("sha") == os.environ["GITHUB_SHA"] else 1)
           PY
-            then
-              break
-            fi
-            if [ "$attempt" = 12 ]; then
-              printf 'REG.RU S3 public probe did not become readable\n' >&2
-              cat "$RUNNER_TEMP/probe.headers" >&2 || true
-              exit 1
-            fi
-            sleep 2
+              then
+                tr -d '\r' < "$RUNNER_TEMP/probe.headers" > "$RUNNER_TEMP/probe.headers.normalized"
+                grep -Eiq '^access-control-allow-origin: (\*|https://sterdez\.online)
+      - name: Delete probe
+        if: always()
+        shell: bash
+        env:
+          PROBE_KEY: diagnostics/${{ github.sha }}.json
+        run: |
+          set -euo pipefail
+          if test -n "${MAP_OBJECT_STORE_ACCESS_KEY:-}" && test -n "${MAP_OBJECT_STORE_SECRET_KEY:-}"; then
+            aws --endpoint-url "$MAP_OBJECT_STORE_ENDPOINT" \
+              --region "$MAP_OBJECT_STORE_REGION" \
+              s3api delete-object \
+              --bucket "$MAP_OBJECT_STORE_BUCKET" \
+              --key "$PROBE_KEY" >/dev/null || true
+          fi
+ "$RUNNER_TEMP/probe.headers.normalized"
+                VERIFIED_URL="$PROBE_URL"
+                break 2
+              fi
+              sleep 2
+            done
           done
-          tr -d '\r' < "$RUNNER_TEMP/probe.headers" > "$RUNNER_TEMP/probe.headers.normalized"
-          grep -Eiq '^access-control-allow-origin: (\*|https://sterdez\.online)$' "$RUNNER_TEMP/probe.headers.normalized"
-          printf 'Public S3 read and CORS verified: %s\n' "$PROBE_URL"
+
+          if [ -z "$VERIFIED_URL" ]; then
+            printf 'REG.RU S3 public probe did not become readable through either documented URL style\n' >&2
+            cat "$RUNNER_TEMP/probe.headers" >&2 || true
+            exit 1
+          fi
+          printf 'Public S3 read and CORS verified: %s\n' "$VERIFIED_URL"
 
       - name: Delete probe
         if: always()
