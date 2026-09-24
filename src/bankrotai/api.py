@@ -30,7 +30,6 @@ from redis.exceptions import RedisError
 from bankrotai.db import (
     session_scope,
     read_session_scope,
-    SessionLocal,
     get_processed_lot,
     get_top_lots,
     ProcessedLot,
@@ -1555,7 +1554,7 @@ def get_current_map_dataset(request: Request):
         }
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
-        schedule_runtime_index_warmup(SessionLocal, dataset.version)
+        schedule_runtime_index_warmup(read_session_scope, dataset.version)
         return JSONResponse(
             content=jsonable_encoder(
                 {
@@ -1667,7 +1666,7 @@ def get_filtered_map_tile(
 
     started = time.monotonic()
     try:
-        index = get_runtime_index(SessionLocal, version)
+        index = get_runtime_index(read_session_scope, version)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Map dataset not found") from exc
 
