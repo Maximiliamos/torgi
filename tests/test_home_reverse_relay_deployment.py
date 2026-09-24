@@ -106,10 +106,13 @@ def test_regru_deploy_gates_switch_on_staged_home_api_and_dataset() -> None:
     assert '"https://$HOME_RELAY_HOSTNAME/health/live"' in workflow
     assert '"https://$HOME_RELAY_HOSTNAME/health/ready"' in workflow
     assert '"https://$HOME_RELAY_HOSTNAME/api/map/datasets/current"' in workflow
-    assert 'd["version"]' in workflow
-    assert 'd["point_count"] > 0' in workflow
-    assert 'd["tile_count"] > 0' in workflow
-    assert 'd["published_at"]' in workflow
+    assert 'd.get("version")' in workflow
+    assert 'd.get("point_count",0)>0' in workflow
+    assert 'd.get("tile_count",0)>0' in workflow
+    assert 'd.get("published_at")' in workflow
+    assert 'd.get("tile_source")=="regru-s3"' in workflow
+    assert 'endswith("-s3")' in workflow
+    assert 'd.get("tile_base_url")' in workflow
     assert "docker restart bankrotai-cloudflared" not in workflow
 
 

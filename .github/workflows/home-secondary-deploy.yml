@@ -16,7 +16,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
@@ -278,6 +278,46 @@ jobs:
               "${env:IMAGE_NAME}:${env:GITHUB_SHA}" @workerArgs | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Could not start $($spec.Name)" }
           }
+
+      - name: Ensure REG.RU S3 map dataset is published
+        if: ${{ vars.MAP_OBJECT_STORE_ENABLED == 'true' }}
+        shell: powershell
+        run: |
+          function Get-CurrentMapVersion {
+            $output = docker exec $env:MAP_WORKER_CONTAINER python -c "from sqlalchemy import select; from bankrotai.db import SessionLocal,MapDataset; s=SessionLocal(); d=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True),MapDataset.status=='ready')); print(d.version if d else ''); s.close()"
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect current map dataset" }
+            return (($output | Select-Object -Last 1) -as [string]).Trim()
+          }
+
+          $current = Get-CurrentMapVersion
+          if ($current -notlike '*-s3') {
+            Write-Output "Building first REG.RU S3 map dataset."
+            docker exec $env:MAP_WORKER_CONTAINER python -c "import json; from bankrotai.tasks import build_map_dataset_task; print(json.dumps(build_map_dataset_task.run(), default=str))"
+            if ($LASTEXITCODE -ne 0) {
+              docker logs --tail 200 $env:MAP_WORKER_CONTAINER
+              throw "Initial REG.RU S3 map dataset build failed"
+            }
+          }
+
+          $published = $false
+          foreach ($attempt in 1..180) {
+            $current = Get-CurrentMapVersion
+            if ($current -like '*-s3') {
+              $published = $true
+              break
+            }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $published) {
+            docker logs --tail 200 $env:MAP_WORKER_CONTAINER
+            throw "REG.RU S3 map dataset was not promoted within 15 minutes"
+          }
+
+          docker exec $env:MAP_WORKER_CONTAINER python -c "import json,sys; from bankrotai.core import get_settings; from bankrotai.services.map_object_store import _verify_public_manifest; print(json.dumps(_verify_public_manifest(get_settings(), sys.argv[1]), default=str))" $current
+          if ($LASTEXITCODE -ne 0) {
+            throw "Current REG.RU S3 map manifest is not publicly readable"
+          }
+          Write-Output "REG.RU S3 current map dataset: $current"
 
       - name: Verify local API stability
         shell: powershell
