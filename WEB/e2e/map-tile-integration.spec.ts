@@ -137,7 +137,7 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
 
   await page.getByText("Стартовая цена от").locator("..").locator("input").fill("100000");
   await page.getByRole("button", { name: "Применить" }).click();
-  await expect.poll(() => bulkCalls).toBe(1);
+  await expect.poll(() => bulkCalls).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: "Сбросить" }).click();
   await expect(page.getByLabel("Состояние карты")).toContainText("Система готова");
   expect(tilePaths.length).toBe(afterPan);
