@@ -138,6 +138,14 @@ def test_public_rollout_gates_require_consecutive_successes_with_diagnostics() -
     assert "staged origin did not produce twenty consecutive healthy samples" in cloudflare
 
 
+def test_cloudflare_read_only_diagnostics_retry_network_resets() -> None:
+    workflow = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
+    assert "for attempt in range(1, 4):" in workflow
+    assert "except urllib.error.URLError as exc:" in workflow
+    assert '"network_error": detail' in workflow
+    assert "time.sleep(attempt * 2)" in workflow
+
+
 def test_api_proxy_promotes_home_relay_and_keeps_legacy_read_fallback() -> None:
     config = (ROOT / "WEB" / "api-proxy" / "wrangler.jsonc").read_text(encoding="utf-8")
     worker = (ROOT / "WEB" / "api-proxy" / "worker.mjs").read_text(encoding="utf-8")
