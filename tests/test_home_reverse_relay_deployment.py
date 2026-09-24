@@ -146,6 +146,18 @@ def test_cloudflare_read_only_diagnostics_retry_network_resets() -> None:
     assert "time.sleep(attempt * 2)" in workflow
 
 
+def test_production_web_builds_require_the_yandex_maps_key() -> None:
+    regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
+    cloudflare_deploy = cloudflare.split("\n  deploy:\n", 1)[1]
+
+    assert "VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}" in regru
+    assert "YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}" in regru
+    assert 'test -n "$YANDEX_MAPS_API_KEY"' in regru
+    assert "VITE_YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}" in cloudflare_deploy
+    assert 'test -n "$VITE_YANDEX_MAPS_API_KEY"' in cloudflare_deploy
+
+
 def test_api_proxy_promotes_home_relay_and_keeps_legacy_read_fallback() -> None:
     config = (ROOT / "WEB" / "api-proxy" / "wrangler.jsonc").read_text(encoding="utf-8")
     worker = (ROOT / "WEB" / "api-proxy" / "worker.mjs").read_text(encoding="utf-8")

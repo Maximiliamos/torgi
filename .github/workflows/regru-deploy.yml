@@ -187,12 +187,14 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
           AUTH_BOOTSTRAP_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+          YANDEX_MAPS_API_KEY: ${{ secrets.YANDEX_MAPS_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "$SSH_PRIVATE_KEY"
           test -n "$API_KEY"
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
+          test -n "$YANDEX_MAPS_API_KEY"
 
       - name: Prepare SSH identity
         env:
