@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "home-reverse-relay.yml"
 REGRU_WORKFLOW = ROOT / ".github" / "workflows" / "regru-deploy.yml"
+CLOUDFLARE_WORKFLOW = ROOT / ".github" / "workflows" / "cloudflare-edge-deploy.yml"
 
 
 def test_home_relay_uses_wss_443_instead_of_raw_ssh() -> None:
@@ -118,6 +119,23 @@ def test_regru_readiness_gate_retries_transient_home_startup() -> None:
     assert 'ready_status="$(curl' in workflow
     assert 'if test "$live_status" = "200" && test "$ready_status" = "200"' in workflow
     assert "home API did not become ready; REG.RU configuration was not changed" in workflow
+
+
+def test_public_rollout_gates_require_consecutive_successes_with_diagnostics() -> None:
+    regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "for stability_attempt in $(seq 1 18)" in regru
+    assert "consecutive_successes=0" in regru
+    assert "consecutive_successes=$((consecutive_successes + 1))" in regru
+    assert "canonical stability attempt %s/18: live=%s auth=%s consecutive=%s/6" in regru
+    assert "canonical path did not produce six consecutive healthy samples" in regru
+
+    assert "for stability_attempt in $(seq 1 40)" in cloudflare
+    assert "consecutive_successes=0" in cloudflare
+    assert "consecutive_successes=$((consecutive_successes + 1))" in cloudflare
+    assert "staged origin stability attempt %s/40: live=%s ready=%s consecutive=%s/20" in cloudflare
+    assert "staged origin did not produce twenty consecutive healthy samples" in cloudflare
 
 
 def test_api_proxy_promotes_home_relay_and_keeps_legacy_read_fallback() -> None:

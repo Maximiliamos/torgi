@@ -525,14 +525,28 @@ jobs:
             --retry 18 --retry-delay 5 --retry-all-errors \
             "https://api.sterdez.online/health/ready"
           printf '\n'
-          for stability_check in $(seq 1 6); do
-            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://api.sterdez.online/health/live || true)" = "200"
-            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://sterdez.online/api/auth/me || true)" = "401"
-            if test "$stability_check" != 6; then
-              sleep 5
+          consecutive_successes=0
+          for stability_attempt in $(seq 1 18); do
+            live_status="$(curl --silent --show-error --connect-timeout 3 --max-time 20 \
+              -o /dev/null -w '%{http_code}' https://api.sterdez.online/health/live || true)"
+            auth_status="$(curl --silent --show-error --connect-timeout 3 --max-time 30 \
+              -o /dev/null -w '%{http_code}' https://sterdez.online/api/auth/me || true)"
+            if test "$live_status" = "200" && test "$auth_status" = "401"; then
+              consecutive_successes=$((consecutive_successes + 1))
+            else
+              consecutive_successes=0
             fi
+            printf 'canonical stability attempt %s/18: live=%s auth=%s consecutive=%s/6\n' \
+              "$stability_attempt" "${live_status:-missing}" "${auth_status:-missing}" \
+              "$consecutive_successes"
+            if test "$consecutive_successes" = 6; then
+              break
+            fi
+            if test "$stability_attempt" = 18; then
+              printf 'canonical path did not produce six consecutive healthy samples\n' >&2
+              exit 1
+            fi
+            sleep 5
           done
 
       - name: Verify deployed WEB release
@@ -577,4 +591,3 @@ jobs:
           E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
           E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
         run: npm run test:e2e
-

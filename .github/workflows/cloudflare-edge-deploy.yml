@@ -725,14 +725,28 @@ jobs:
             fi
             sleep 5
           done
-          for stability_check in $(seq 1 20); do
-            test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
-              https://194-226-126-233.sslip.io/health/live || true)" = "200"
-            test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-              https://194-226-126-233.sslip.io/health/ready || true)" = "200"
-            if test "$stability_check" != 20; then
-              sleep 2
+          consecutive_successes=0
+          for stability_attempt in $(seq 1 40); do
+            live_status="$(curl --silent --show-error --connect-timeout 3 --max-time 20 \
+              -o /dev/null -w '%{http_code}' https://194-226-126-233.sslip.io/health/live || true)"
+            ready_status="$(curl --silent --show-error --connect-timeout 3 --max-time 30 \
+              -o /dev/null -w '%{http_code}' https://194-226-126-233.sslip.io/health/ready || true)"
+            if test "$live_status" = "200" && test "$ready_status" = "200"; then
+              consecutive_successes=$((consecutive_successes + 1))
+            else
+              consecutive_successes=0
             fi
+            printf 'staged origin stability attempt %s/40: live=%s ready=%s consecutive=%s/20\n' \
+              "$stability_attempt" "${live_status:-missing}" "${ready_status:-missing}" \
+              "$consecutive_successes"
+            if test "$consecutive_successes" = 20; then
+              break
+            fi
+            if test "$stability_attempt" = 40; then
+              printf 'staged origin did not produce twenty consecutive healthy samples\n' >&2
+              exit 1
+            fi
+            sleep 2
           done
           LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
           curl --fail --silent --show-error --max-time 30 \
