@@ -37,6 +37,7 @@ def test_public_production_deploys_share_the_same_push_scope() -> None:
 
 def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
-    assert "timeout-minutes: 45" in cloudflare
-    assert "for attempt in $(seq 1 360); do" in cloudflare
-    assert 'if test "$attempt" = 360; then' in cloudflare
+    deploy = cloudflare.split("\n  deploy:\n", 1)[1]
+    assert "timeout-minutes: 45" in deploy
+    assert "for attempt in $(seq 1 360); do" in deploy
+    assert 'if test "$attempt" = 360; then' in deploy
