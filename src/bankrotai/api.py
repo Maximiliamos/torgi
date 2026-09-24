@@ -1549,7 +1549,7 @@ def get_current_map_dataset(request: Request):
             )
 
         tile_base_url = (
-            dataset_public_tile_base_url(dataset.version)
+            dataset_public_tile_base_url(dataset.version, settings)
             if dataset.version.endswith("-s3")
             else None
         )
