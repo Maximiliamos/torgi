@@ -34,7 +34,6 @@ def test_public_production_deploys_share_the_same_push_scope() -> None:
     assert '".github/workflows/home-secondary-deploy.yml"' not in cloudflare
 
 
-
 def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
     deploy = cloudflare.split("\n  deploy:\n", 1)[1]
