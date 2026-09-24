@@ -1145,22 +1145,26 @@ export function MapView({
     [appliedFilters, applyResponse, favoritesOnly, tileMode, viewport, viewportLimit],
   );
 
+  const acceptMapDataset = React.useCallback((dataset: MapDataset) => {
+    setMapDataset((current) => current?.version === dataset.version ? current : dataset);
+    setMapDatasetStatus("ready");
+    setError("");
+  }, []);
+
   const loadCurrentMapDataset = React.useCallback(async () => {
     const revision = ++datasetRequestRevision.current;
     setMapDatasetStatus("loading");
     try {
       const dataset = await fetchCurrentMapDataset();
       if (revision !== datasetRequestRevision.current) return;
-      setMapDataset(dataset);
-      setMapDatasetStatus("ready");
-      setError("");
+      acceptMapDataset(dataset);
     } catch {
       if (revision !== datasetRequestRevision.current) return;
       setMapDataset(null);
       setMapDatasetStatus("unavailable");
       setError("Актуальный набор данных карты пока недоступен");
     }
-  }, []);
+  }, [acceptMapDataset]);
 
   React.useEffect(() => {
     if (active) void load();
