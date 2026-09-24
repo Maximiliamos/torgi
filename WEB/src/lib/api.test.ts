@@ -224,7 +224,7 @@ describe("API client", () => {
   });
 
 
-  it("loads multiple logical tiles from one cached regional S3 bundle", async () => {
+  it("loads multiple logical tiles through one cached manifest, spatial index and regional S3 bundle", async () => {
     const tileA = {
       type: "FeatureCollection" as const,
       features: [{
@@ -247,14 +247,25 @@ describe("API client", () => {
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
-      if (url.endsWith("/datasets/bundle-test/indexes/12.json")) {
+      if (url.endsWith("/datasets/bundle-test/manifest.json")) {
         return new Response(JSON.stringify({
           layout: "regional-bundles-v1",
           version: "bundle-test",
-          zoom: 12,
+          detail_parent_zoom: 8,
+          overview_parent_zoom: 6,
+          index_shards: {
+            "detail/8/156/75": "indexes/v1/bb/index.json",
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/indexes/v1/bb/index.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          version: "bundle-test",
+          shard: "detail/8/156/75",
           tiles: {
-            "2500/1200": { bundle: "bundles/v1/aa/hash.json", region: "76" },
-            "2501/1201": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+            "12/2500/1200": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+            "12/2501/1201": { bundle: "bundles/v1/aa/hash.json", region: "76" },
           },
         }), { status: 200 });
       }
@@ -262,7 +273,7 @@ describe("API client", () => {
         return new Response(JSON.stringify({
           layout: "regional-bundles-v1",
           region: "76",
-          bucket: "76/p9/312/150",
+          bucket: "76/p8/156/75",
           tiles: {
             "12/2500/1200": tileA,
             "12/2501/1201": tileB,
@@ -275,32 +286,47 @@ describe("API client", () => {
     const source = {
       layout: "regional-bundles-v1",
       rootUrl: "https://storage-bundle.example.test/sterdez-map",
-      indexBaseUrl: "https://storage-bundle.example.test/sterdez-map/datasets/bundle-test/indexes",
+      manifestUrl: "https://storage-bundle.example.test/sterdez-map/datasets/bundle-test/manifest.json",
     };
     await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2500, 1200))
       .resolves.toEqual(tileA);
     await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2501, 1201))
       .resolves.toEqual(tileB);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/indexes/12.json");
-    expect(String(fetchMock.mock.calls[1][0])).toContain("/bundles/v1/aa/hash.json");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/manifest.json");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/indexes/v1/bb/index.json");
+    expect(String(fetchMock.mock.calls[2][0])).toContain("/bundles/v1/aa/hash.json");
   });
 
   it("rejects a regional bundle index that tries to escape the configured S3 origin", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      layout: "regional-bundles-v1",
-      version: "bundle-escape",
-      zoom: 12,
-      tiles: {
-        "1/1": { bundle: "https://evil.example.test/bundle.json", region: "76" },
-      },
-    }), { status: 200 }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/datasets/bundle-escape/manifest.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          version: "bundle-escape",
+          detail_parent_zoom: 8,
+          overview_parent_zoom: 6,
+          index_shards: {
+            "detail/8/0/0": "indexes/v1/aa/index.json",
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        layout: "regional-bundles-v1",
+        version: "bundle-escape",
+        shard: "detail/8/0/0",
+        tiles: {
+          "12/1/1": { bundle: "https://evil.example.test/bundle.json", region: "76" },
+        },
+      }), { status: 200 });
+    });
 
     await expect(fetchPublicYandexMapBundleTile({
       layout: "regional-bundles-v1",
       rootUrl: "https://storage-escape.example.test/sterdez-map",
-      indexBaseUrl: "https://storage-escape.example.test/sterdez-map/datasets/bundle-escape/indexes",
+      manifestUrl: "https://storage-escape.example.test/sterdez-map/datasets/bundle-escape/manifest.json",
     }, "bundle-escape", 12, 1, 1)).rejects.toThrow(/путь bundle/);
   });
 
