@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 REGIONAL_BUNDLE_LAYOUT = "regional-bundles-v1"
 POINT_ZOOM = 12
-DETAIL_PARENT_ZOOM = 9
+DETAIL_PARENT_ZOOM = 8
 OVERVIEW_PARENT_ZOOM = 6
 _UPLOAD_PAGE_SIZE = 500
 
