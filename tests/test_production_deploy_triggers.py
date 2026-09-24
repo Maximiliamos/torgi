@@ -40,3 +40,16 @@ def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     assert "timeout-minutes: 45" in deploy
     assert "for attempt in $(seq 1 360); do" in deploy
     assert 'if test "$attempt" = 360; then' in deploy
+
+
+def test_staged_s3_readiness_gates_retry_transient_http_failures() -> None:
+    for workflow_path in (REGRU_WORKFLOW, CLOUDFLARE_WORKFLOW):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert "for login_attempt in $(seq 1 12); do" in workflow
+        assert 'login_ok="yes"' in workflow
+        assert "for dataset_attempt in $(seq 1 180); do" in workflow
+        assert "api/map/datasets/current" in workflow
+        assert "|| true)" in workflow
+        assert "DATASET_READY=\"no\"" in workflow
+        assert "2>/dev/null || printf 'no'" in workflow
+        assert "staged REG.RU S3 dataset not ready on attempt %s/180; retrying" in workflow
