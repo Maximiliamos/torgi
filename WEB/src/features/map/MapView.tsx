@@ -40,6 +40,9 @@ export const MAP_REDUCED_LIMIT = 500;
 // The measured populated tile is small (163 B in the deterministic benchmark),
 // while 512 entries preserve useful pan-back history without unbounded growth.
 export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
+export const MAX_PREPARED_TILE_CACHE_ENTRIES = 768;
+export const DIRECT_MAP_TILES =
+  String(import.meta.env.VITE_DIRECT_MAP_TILES || "false").toLowerCase() === "true";
 
 export function yandexMapsApiUrl(apiKey?: string) {
   const params = new URLSearchParams({ lang: "ru_RU", csp: "true" });
