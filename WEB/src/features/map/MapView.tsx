@@ -1649,7 +1649,6 @@ export function MapView({
           selectedLotGeometry={selectedLot?.geometry || null}
           active={active}
           onSelect={selectLot}
-          onDatasetRefresh={acceptMapDataset}
           onClusterSelect={(ids) => {
             setCoincidentLotIds(Array.from(new Set(ids)));
             setSelectedLotId(null);
