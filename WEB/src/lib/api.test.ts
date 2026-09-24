@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchPublicYandexMapBundleTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -221,6 +221,87 @@ describe("API client", () => {
       new Response(JSON.stringify(payload), { status: 200 }),
     );
     await expect(fetchYandexMapTile("dataset-v1", 12, 1, 1)).resolves.toEqual(payload);
+  });
+
+
+  it("loads multiple logical tiles from one cached regional S3 bundle", async () => {
+    const tileA = {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        id: 76,
+        geometry: { type: "Point" as const, coordinates: [57.6, 39.8] },
+        properties: { kind: "lot" as const, lotId: 76, region_code: "76" },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    };
+    const tileB = {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        id: 77,
+        geometry: { type: "Point" as const, coordinates: [57.7, 39.9] },
+        properties: { kind: "lot" as const, lotId: 77, region_code: "76" },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/datasets/bundle-test/indexes/12.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          version: "bundle-test",
+          zoom: 12,
+          tiles: {
+            "2500/1200": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+            "2501/1201": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/bundles/v1/aa/hash.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          region: "76",
+          bucket: "76/p9/312/150",
+          tiles: {
+            "12/2500/1200": tileA,
+            "12/2501/1201": tileB,
+          },
+        }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const source = {
+      layout: "regional-bundles-v1",
+      rootUrl: "https://storage-bundle.example.test/sterdez-map",
+      indexBaseUrl: "https://storage-bundle.example.test/sterdez-map/datasets/bundle-test/indexes",
+    };
+    await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2500, 1200))
+      .resolves.toEqual(tileA);
+    await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2501, 1201))
+      .resolves.toEqual(tileB);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/indexes/12.json");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/bundles/v1/aa/hash.json");
+  });
+
+  it("rejects a regional bundle index that tries to escape the configured S3 origin", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      layout: "regional-bundles-v1",
+      version: "bundle-escape",
+      zoom: 12,
+      tiles: {
+        "1/1": { bundle: "https://evil.example.test/bundle.json", region: "76" },
+      },
+    }), { status: 200 }));
+
+    await expect(fetchPublicYandexMapBundleTile({
+      layout: "regional-bundles-v1",
+      rootUrl: "https://storage-escape.example.test/sterdez-map",
+      indexBaseUrl: "https://storage-escape.example.test/sterdez-map/datasets/bundle-escape/indexes",
+    }, "bundle-escape", 12, 1, 1)).rejects.toThrow(/путь bundle/);
   });
 
 });
