@@ -67,7 +67,6 @@ const dataset: MapDataset = {
 
 describe("direct Yandex tile transport", () => {
   beforeEach(async () => {
-    vi.resetModules();
     vi.stubEnv("VITE_DIRECT_MAP_TILES", "true");
     vi.clearAllMocks();
     vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset);
