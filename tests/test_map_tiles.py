@@ -328,6 +328,26 @@ def test_failed_promotion_keeps_old_dataset_current(monkeypatch):
         assert failed is not None and failed.is_current is False and failed.status == "failed"
 
 
+def test_s3_publication_failure_keeps_old_dataset_current(monkeypatch):
+    factory = _database()
+    old_result = build_map_dataset(factory)
+
+    def fail_s3(*_args, **_kwargs):
+        raise RuntimeError("injected REG.RU S3 failure")
+
+    monkeypatch.setattr(map_builder, "publish_dataset_to_object_store", fail_s3)
+
+    with pytest.raises(RuntimeError, match="injected REG.RU S3 failure"):
+        build_map_dataset(factory)
+
+    with factory() as session:
+        old = session.scalar(select(MapDataset).where(MapDataset.version == old_result["version"]))
+        failed = session.scalar(select(MapDataset).where(MapDataset.version != old_result["version"]))
+        assert old is not None and old.is_current is True and old.status == "ready"
+        assert failed is not None and failed.is_current is False and failed.status == "failed"
+        assert session.query(MapDataset).filter_by(is_current=True).count() == 1
+
+
 def test_mid_build_failure_keeps_old_current_and_partial_dataset_hidden(monkeypatch):
     factory = _database()
     old_result = build_map_dataset(factory)
