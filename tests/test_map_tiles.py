@@ -90,6 +90,17 @@ def test_builder_publishes_cluster_and_point_tiles_atomically(monkeypatch):
         assert cluster.payload_json["features"][0]["kind"] == "cluster"
         assert cluster.payload_json["features"][0]["count"] == 1
         assert point.payload_json["features"][0]["kind"] == "lot"
+        assert cluster.payload_json["yandex"]["type"] == "FeatureCollection"
+        yandex_cluster = cluster.payload_json["yandex"]["features"][0]
+        assert yandex_cluster["properties"]["kind"] == "cluster"
+        assert yandex_cluster["properties"]["count"] == 1
+        assert yandex_cluster["geometry"]["type"] == "Point"
+        assert yandex_cluster["options"]["preset"] == "islands#blueCircleIcon"
+        yandex_point = point.payload_json["yandex"]["features"][0]
+        assert yandex_point["type"] == "Feature"
+        assert yandex_point["properties"]["kind"] == "lot"
+        assert yandex_point["properties"]["lotId"] == yandex_point["id"]
+        assert yandex_point["geometry"]["coordinates"] == pytest.approx([57.6261, 39.8845])
 
 
 def test_builder_dataset_membership_business_matrix():
@@ -315,6 +326,26 @@ def test_failed_promotion_keeps_old_dataset_current(monkeypatch):
         failed = session.scalar(select(MapDataset).where(MapDataset.version != old_result["version"]))
         assert old is not None and old.is_current is True
         assert failed is not None and failed.is_current is False and failed.status == "failed"
+
+
+def test_s3_publication_failure_keeps_old_dataset_current(monkeypatch):
+    factory = _database()
+    old_result = build_map_dataset(factory)
+
+    def fail_s3(*_args, **_kwargs):
+        raise RuntimeError("injected REG.RU S3 failure")
+
+    monkeypatch.setattr(map_builder, "publish_dataset_to_object_store", fail_s3)
+
+    with pytest.raises(RuntimeError, match="injected REG.RU S3 failure"):
+        build_map_dataset(factory)
+
+    with factory() as session:
+        old = session.scalar(select(MapDataset).where(MapDataset.version == old_result["version"]))
+        failed = session.scalar(select(MapDataset).where(MapDataset.version != old_result["version"]))
+        assert old is not None and old.is_current is True and old.status == "ready"
+        assert failed is not None and failed.is_current is False and failed.status == "failed"
+        assert session.query(MapDataset).filter_by(is_current=True).count() == 1
 
 
 def test_mid_build_failure_keeps_old_current_and_partial_dataset_hidden(monkeypatch):
@@ -554,7 +585,7 @@ def test_database_rejects_a_second_current_dataset():
             session.commit()
 
 
-def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
+def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable(monkeypatch):
     factory = _database()
     result = build_map_dataset(factory)
     with factory() as session:
@@ -591,6 +622,8 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
     unauthorized = TestClient(api.app, base_url="https://testserver")
     assert unauthorized.get("/api/map/datasets/current").status_code == 401
     assert unauthorized.get(f"/api/map/tiles/{result['version']}/0/0/0").status_code == 401
+    assert unauthorized.get(f"/api/map/yandex-tiles/{result['version']}/0/0/0").status_code == 401
+    assert unauthorized.get("/api/map/review-statuses?ids=1").status_code == 401
     client = TestClient(api.app, base_url="https://testserver", headers={"X-API-Key": api.settings.public_api_key})
     assert (
         client.post(
@@ -602,11 +635,24 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
         ).status_code
         == 200
     )
+    review_overlay = client.get("/api/map/review-statuses?ids=1")
+    assert review_overlay.status_code == 200
+    assert review_overlay.headers["cache-control"] == "private, max-age=5"
+    assert review_overlay.json() == {"items": [{"id": 1, "review_status": None}]}
+
     current = client.get("/api/map/datasets/current")
     assert current.status_code == 200
     assert current.json()["version"] == result["version"]
-    assert current.headers["cache-control"] == "private, max-age=15, stale-while-revalidate=60"
-    assert current.headers["etag"] == f'"dataset-{result["version"]}"'
+    assert current.headers["cache-control"] == "private, max-age=5, stale-while-revalidate=30"
+    assert current.headers["etag"].startswith(f'"dataset-{result["version"]}-')
+    assert current.json()["tile_source"] == "api"
+    assert current.json()["tile_base_url"] is None
+    assert current.json()["bootstrap_zoom"] == 7
+    assert current.json()["bootstrap_center"] == pytest.approx([57.6261, 39.8845])
+    assert len(current.json()["bootstrap_tiles"]) == 9
+    for bootstrap in current.json()["bootstrap_tiles"]:
+        assert bootstrap["payload"]["type"] == "FeatureCollection"
+        assert isinstance(bootstrap["payload"]["features"], list)
     assert current.headers["x-map-dataset"] == result["version"]
     current_not_modified = client.get(
         "/api/map/datasets/current",
@@ -656,11 +702,61 @@ def test_versioned_tile_api_returns_immutable_private_payload(monkeypatch):
     assert not_modified.status_code == 304
     assert not_modified.headers["etag"] == response.headers["etag"]
 
+    yandex_response = client.get(
+        f"/api/map/yandex-tiles/{result['version']}/{tile.z}/{tile.x}/{tile.y}"
+    )
+    assert yandex_response.status_code == 200
+    assert yandex_response.headers["cache-control"] == (
+        "private, max-age=31536000, immutable"
+    )
+    assert "Accept-Encoding" in yandex_response.headers["vary"]
+    assert yandex_response.headers["x-map-dataset"] == result["version"]
+    yandex_payload = yandex_response.json()
+    assert yandex_payload["type"] == "FeatureCollection"
+    assert yandex_payload["features"]
+    yandex_feature = yandex_payload["features"][0]
+    assert yandex_feature["type"] == "Feature"
+    assert yandex_feature["geometry"]["type"] == "Point"
+    assert yandex_feature["properties"]["kind"] in {"cluster", "lot"}
+    assert not (set(yandex_feature.get("properties", {})) & forbidden)
+
+    yandex_not_modified = client.get(
+        f"/api/map/yandex-tiles/{result['version']}/{tile.z}/{tile.x}/{tile.y}",
+        headers={"If-None-Match": yandex_response.headers["etag"]},
+    )
+    assert yandex_not_modified.status_code == 304
+
+    empty_yandex = client.get(
+        f"/api/map/yandex-tiles/{result['version']}/14/16383/16383"
+    )
+    assert empty_yandex.status_code == 200
+    assert empty_yandex.json() == {"type": "FeatureCollection", "features": []}
+
     for z, x, y in ((-1, 0, 0), (15, 0, 0), (0, -1, 0), (0, 0, -1), (0, 1, 0), (0, 0, 1)):
         assert client.get(f"/api/map/tiles/{result['version']}/{z}/{x}/{y}").status_code == 404
+        assert client.get(f"/api/map/yandex-tiles/{result['version']}/{z}/{x}/{y}").status_code == 404
     assert client.get(f"/api/map/tiles/{result['version']}/0/0/0").status_code == 200
     assert client.get(f"/api/map/tiles/{result['version']}/14/16383/16383").status_code == 200
     assert unauthorized.get("/api/map/lots/1").status_code == 401
+
+    monkeypatch.setattr(api.settings, "map_object_store_enabled", True)
+    monkeypatch.setattr(api.settings, "map_object_store_public_base_url", "https://map.example.test/public")
+    s3_version = f"{result['version']}-s3"
+    with factory() as session:
+        current_dataset = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current_dataset is not None
+        current_dataset.version = s3_version
+        session.commit()
+    s3_current = client.get(
+        "/api/map/datasets/current",
+        headers={"If-None-Match": current.headers["etag"]},
+    )
+    assert s3_current.status_code == 200
+    assert s3_current.headers["etag"] != current.headers["etag"]
+    assert s3_current.json()["tile_source"] == "regru-s3"
+    assert s3_current.json()["tile_base_url"] == (
+        f"https://map.example.test/public/datasets/{s3_version}/tiles"
+    )
 
 
 def test_current_dataset_api_hides_unpublished_states(monkeypatch):

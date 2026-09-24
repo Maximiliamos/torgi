@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "./worker.mjs";
 
+
 describe("API origin failover proxy", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -234,4 +235,58 @@ describe("API origin failover proxy", () => {
 
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("proxies the current map dataset directly to the authenticated origin", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json(
+        { version: "dataset-v1", tile_source: "regru-s3" },
+        { headers: { "cache-control": "private, max-age=5, stale-while-revalidate=30" } },
+      ),
+    );
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/map/datasets/current",
+      { headers: { cookie: "bankrotai_session=signed" } },
+    ), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const upstream = fetchMock.mock.calls[0][0];
+    expect(upstream.url).toBe(
+      "https://home-relay.194-226-126-233.sslip.io/api/map/datasets/current",
+    );
+    expect(upstream.headers.get("cookie")).toBe("bankrotai_session=signed");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control"))
+      .toBe("private, max-age=5, stale-while-revalidate=30");
+    expect(response.headers.get("x-map-cache")).toBeNull();
+  });
+
+  it("keeps the Yandex tile API as an authenticated origin fallback without edge caching", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"type":"FeatureCollection","features":[]}', {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-map-dataset": "dataset-v1",
+        },
+      }),
+    );
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/map/yandex-tiles/dataset-v1/7/77/38",
+      { headers: { cookie: "bankrotai_session=signed" } },
+    ), { KOYEB_SERVICE_KEY: "bound-secret" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0].url).toBe(
+      "https://home-relay.194-226-126-233.sslip.io/api/map/yandex-tiles/dataset-v1/7/77/38",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-map-cache")).toBeNull();
+  });
+
 });

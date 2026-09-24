@@ -10,6 +10,7 @@ const PUBLIC_SOURCE_TIMEOUT_MS = 4_000;
 const TORGI_PROXY_PREFIX = "/__public-source/torgi";
 const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
 
+const MAP_DATASET_BROWSER_CACHE = "private, max-age=5, stale-while-revalidate=30";
 async function publicSourceResponse(request, incoming) {
   if (!SAFE_METHODS.has(request.method)) return new Response("Method Not Allowed", { status: 405 });
   const path = incoming.pathname.slice(TORGI_PROXY_PREFIX.length);
@@ -82,13 +83,18 @@ async function completedResponse(request, incoming, origin, headers, timeoutMs =
   return { response, body };
 }
 
+
+
 function browserPrivateCachePolicy(request, incoming, response) {
   if (!SAFE_METHODS.has(request.method) || ![200, 304].includes(response.status)) return null;
   if (/^\/api\/map\/tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)) {
     return "private, max-age=86400, immutable";
   }
   if (incoming.pathname === "/api/map/datasets/current") {
-    return "private, max-age=15, stale-while-revalidate=60";
+    return MAP_DATASET_BROWSER_CACHE;
+  }
+  if (/^\/api\/map\/filtered-tiles\/[^/]+\/\d+\/\d+\/\d+$/.test(incoming.pathname)) {
+    return response.headers.get("cache-control") || "private, max-age=30, stale-while-revalidate=60";
   }
   if (incoming.pathname === "/api/map/lots") {
     return response.headers.get("cache-control") || "private, max-age=60, stale-while-revalidate=300";
@@ -123,6 +129,7 @@ export default {
     if (incoming.pathname.startsWith(TORGI_PROXY_PREFIX)) {
       return publicSourceResponse(request, incoming);
     }
+
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("x-api-key");

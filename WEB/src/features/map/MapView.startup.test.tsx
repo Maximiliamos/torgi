@@ -389,7 +389,7 @@ describe("tile marker review updates", () => {
       frame.srcdoc.indexOf("function updateTileReview"),
       frame.srcdoc.indexOf("function emitViewport"),
     );
-    expect(updateSource).toContain("tileManager.objects.setObjectOptions(id,opts(updated))");
+    expect(updateSource).toContain("tileManager.objects.setObjectOptions(id,mode==='direct'&&id!==selectedId?{preset:directPreset(status,updated.status)}:opts(updated))");
     expect(updateSource).not.toContain("removeAll");
     expect(updateSource).not.toContain("tileManager.add");
   });
@@ -515,7 +515,7 @@ describe("tile and legacy rendering isolation", () => {
       expect(nonEmptyTileSyncs.length).toBeGreaterThanOrEqual(2);
     });
     expect(fetchMapTile).toHaveBeenCalledTimes(tileCallsBeforeReset);
-    expect(frame.srcdoc).toContain("lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles')renderLots()");
+    expect(frame.srcdoc).toContain("lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles'&&mode!=='direct')renderLots()");
   });
 
   it("ignores a late legacy filter response after the filter is cleared", async () => {

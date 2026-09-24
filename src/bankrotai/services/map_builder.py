@@ -14,6 +14,12 @@ from sqlalchemy.orm import Session, aliased
 
 from bankrotai.core import get_settings
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
+from bankrotai.services.map_payload import (
+    yandex_cluster_feature,
+    yandex_feature_collection,
+    yandex_lot_feature,
+)
+from bankrotai.services.map_object_store import publish_dataset_to_object_store
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -143,7 +149,7 @@ def cleanup_map_datasets(
         return result
 
 
-def _tile_xy(lat: float, lon: float, zoom: int) -> tuple[int, int]:
+def tile_xy(lat: float, lon: float, zoom: int) -> tuple[int, int]:
     scale = 1 << zoom
     x = int((lon + 180.0) / 360.0 * scale)
     bounded_lat = max(-85.05112878, min(85.05112878, lat))
@@ -152,7 +158,7 @@ def _tile_xy(lat: float, lon: float, zoom: int) -> tuple[int, int]:
     return max(0, min(scale - 1, x)), max(0, min(scale - 1, y))
 
 
-def _tile_bounds(z: int, x: int, y: int) -> list[float]:
+def tile_bounds(z: int, x: int, y: int) -> list[float]:
     scale = 1 << z
     west = x / scale * 360.0 - 180.0
     east = (x + 1) / scale * 360.0 - 180.0
@@ -161,8 +167,21 @@ def _tile_bounds(z: int, x: int, y: int) -> list[float]:
     return [west, south, east, north]
 
 
-def _encoded_tile(features: list[dict]) -> tuple[dict, str]:
-    payload = {"features": features}
+# Keep private aliases while other code/tests transition to the public helpers.
+_tile_xy = tile_xy
+_tile_bounds = tile_bounds
+
+
+def _encoded_tile(
+    features: list[dict],
+    yandex_features: list[dict],
+) -> tuple[dict, str]:
+    payload = {
+        # Legacy payload remains intact until the direct-tile frontend rollout.
+        "features": features,
+        # New path is already in the exact ObjectManager FeatureCollection shape.
+        "yandex": yandex_feature_collection(yandex_features),
+    }
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return payload, hashlib.sha256(encoded).hexdigest()
 
@@ -344,6 +363,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     started = time.monotonic()
     build_completed = False
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    if get_settings().map_object_store_enabled:
+        version += "-s3"
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
@@ -366,7 +387,9 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.title,
                     ProcessedLot.current_price,
                     ProcessedLot.start_price,
+                    ProcessedLot.region_code,
                     ProcessedLot.auction_status,
+                    ProcessedLot.is_archived,
                     ProcessedLot.review_status,
                     LotGeoSnapshot.centroid_lat,
                     LotGeoSnapshot.centroid_lon,
@@ -389,7 +412,9 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "title": row.title,
                 "current_price": float(row.current_price) if row.current_price is not None else None,
                 "start_price": float(row.start_price) if row.start_price is not None else None,
+                "region_code": row.region_code,
                 "status": row.auction_status,
+                "is_archived": row.is_archived,
                 "review_status": row.review_status,
             }
             for row in rows
@@ -399,9 +424,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             for zoom in range(MAX_DATASET_ZOOM + 1):
                 buckets: dict[tuple[int, int], list[dict]] = defaultdict(list)
                 for point in points:
-                    buckets[_tile_xy(point["lat"], point["lon"], zoom)].append(point)
+                    buckets[tile_xy(point["lat"], point["lon"], zoom)].append(point)
                 for (x, y), members in buckets.items():
                     if zoom < POINT_ZOOM:
+                        bounds = tile_bounds(zoom, x, y)
                         features = [
                             {
                                 "kind": "cluster",
@@ -409,12 +435,37 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                                 "lat": sum(item["lat"] for item in members) / len(members),
                                 "lon": sum(item["lon"] for item in members) / len(members),
                                 "count": len(members),
-                                "bounds": _tile_bounds(zoom, x, y),
+                                "bounds": bounds,
                             }
                         ]
+                        yandex_features = [
+                            yandex_cluster_feature(
+                                zoom=zoom,
+                                x=x,
+                                y=y,
+                                members=members,
+                                bounds=bounds,
+                            )
+                        ]
                     else:
-                        features = members
-                    payload, etag = _encoded_tile(features)
+                        # Preserve the exact legacy response shape for the currently
+                        # deployed frontend while precomputing the next direct path.
+                        features = [
+                            {
+                                "kind": "lot",
+                                "id": item["id"],
+                                "lat": item["lat"],
+                                "lon": item["lon"],
+                                "title": item["title"],
+                                "current_price": item["current_price"],
+                                "start_price": item["start_price"],
+                                "status": item["status"],
+                                "review_status": item["review_status"],
+                            }
+                            for item in members
+                        ]
+                        yandex_features = [yandex_lot_feature(item) for item in members]
+                    payload, etag = _encoded_tile(features, yandex_features)
                     session.add(
                         MapTile(
                             dataset_id=dataset_id,
@@ -456,6 +507,11 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
+        object_store = publish_dataset_to_object_store(
+            session_factory,
+            dataset_id=dataset_id,
+            version=version,
+        )
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
@@ -482,6 +538,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             "build_duration_ms": build_duration_ms,
             "duration_ms": total_duration_ms,
             "storage": storage,
+            "object_store": object_store,
             **promotion,
         }
     except Exception:

@@ -39,7 +39,7 @@ from bankrotai.scrapers import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 _MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
-_GEO_BATCH_LIMIT = 250
+_GEO_BATCH_LIMIT = settings.geo_batch_limit
 _GEO_CONTINUATION_DELAY_SECONDS = 2
 _MAP_PUBLICATION_DEBOUNCE_SECONDS = 60
 _QUEUE_INGESTION = "ingestion"

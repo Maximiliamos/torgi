@@ -7,6 +7,7 @@ import {
   mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
   visibleTileCoordinates,
+  yandexFeaturePreview,
   yandexMapsApiUrl,
 } from "./MapView";
 
@@ -27,6 +28,13 @@ describe("map lot selection", () => {
   it("centers a selected favorite on its coordinates at a useful zoom", () => {
     expect(MAP_SELECTION_SCRIPT).toContain("map.setCenter([selected.lat,selected.lon]");
     expect(MAP_SELECTION_SCRIPT).toContain("Math.max(map.getZoom(),16)");
+  });
+
+  it("uses tile metadata for selected direct markers instead of requiring legacy lots", () => {
+    expect(MAP_SELECTION_SCRIPT).toContain("tileLots.get(numericId)");
+    expect(MAP_SELECTION_SCRIPT).toContain("mode==='direct'||mode==='tiles'");
+    expect(MAP_SELECTION_SCRIPT).toContain("tileManager.objects.setObjectOptions(numericId,opts(tileLot))");
+    expect(MAP_SELECTION_SCRIPT).toContain("directPreset(tileLot.review_status,tileLot.status)");
   });
 });
 
@@ -76,3 +84,43 @@ describe("precomputed map tiles", () => {
     expect(tiles.some((tile) => tile.x === 31)).toBe(true);
   });
 });
+
+describe("server-ready Yandex markers", () => {
+  it("builds a lightweight card preview without regenerating marker graphics", () => {
+    expect(yandexFeaturePreview({
+      type: "Feature",
+      id: 17,
+      geometry: { type: "Point", coordinates: [55.7, 37.6] },
+      properties: {
+        kind: "lot",
+        lotId: 17,
+        title: "Лот 17",
+        current_price: 1250000,
+        review_status: "approved",
+      },
+      options: { preset: "islands#greenDotIcon" },
+    })).toEqual(expect.objectContaining({
+      kind: "lot",
+      id: 17,
+      lat: 55.7,
+      lon: 37.6,
+      title: "Лот 17",
+      current_price: 1250000,
+      review_status: "approved",
+    }));
+  });
+
+  it("does not expose a lot preview for a server cluster", () => {
+    expect(yandexFeaturePreview({
+      type: "Feature",
+      id: "c:7:77:38",
+      geometry: { type: "Point", coordinates: [55.7, 37.6] },
+      properties: {
+        kind: "cluster",
+        count: 10,
+        bounds: [37, 55, 38, 56],
+      },
+    })).toBeNull();
+  });
+});
+

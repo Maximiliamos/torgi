@@ -145,12 +145,22 @@ class AppSettings:
     celery_hard_time_limit: int = 1800
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
+    geo_batch_limit: int = 500
     geo_max_workers: int = 6
     geo_nspd_concurrency: int = 2
     geo_bulk_ik12_fallback: bool = False
     geo_bulk_nominatim_fallback: bool = False
     min_map_points: int = 1
     min_map_coverage_ratio: float = 0.5
+    map_object_store_enabled: bool = False
+    map_object_store_endpoint: str = "https://s3.regru.cloud"
+    map_object_store_bucket: str = "sterdez-map"
+    map_object_store_public_base_url: str | None = None
+    map_object_store_access_key: str | None = None
+    map_object_store_secret_key: str | None = None
+    map_object_store_region: str = "ru-1"
+    map_object_store_workers: int = 8
+    map_object_store_timeout_seconds: float = 20.0
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -195,6 +205,18 @@ class AppSettings:
 
 def load_settings() -> AppSettings:
     load_dotenv()
+
+    map_object_store_endpoint = os.getenv("MAP_OBJECT_STORE_ENDPOINT", "https://s3.regru.cloud").rstrip("/")
+    map_object_store_bucket = os.getenv("MAP_OBJECT_STORE_BUCKET", "sterdez-map").strip()
+    configured_public_base = (os.getenv("MAP_OBJECT_STORE_PUBLIC_BASE_URL") or "").rstrip("/") or None
+    if (
+        map_object_store_endpoint == "https://s3.regru.cloud"
+        and (
+            configured_public_base is None
+            or configured_public_base.endswith(".website.regru.cloud")
+        )
+    ):
+        configured_public_base = f"{map_object_store_endpoint}/{map_object_store_bucket}"
 
     # Basic settings
     settings = AppSettings(
@@ -255,12 +277,22 @@ def load_settings() -> AppSettings:
         celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
+        geo_batch_limit=max(100, min(1000, int(os.getenv("GEO_BATCH_LIMIT", "500")))),
         geo_max_workers=max(1, min(16, int(os.getenv("GEO_MAX_WORKERS", "6")))),
         geo_nspd_concurrency=max(1, min(4, int(os.getenv("GEO_NSPD_CONCURRENCY", "2")))),
         geo_bulk_ik12_fallback=os.getenv("GEO_BULK_IK12_FALLBACK", "false").lower() in {"1", "true", "yes"},
         geo_bulk_nominatim_fallback=os.getenv("GEO_BULK_NOMINATIM_FALLBACK", "false").lower() in {"1", "true", "yes"},
         min_map_points=max(0, int(os.getenv("MIN_MAP_POINTS", "1"))),
         min_map_coverage_ratio=max(0.0, min(1.0, float(os.getenv("MIN_MAP_COVERAGE_RATIO", "0.5")))),
+        map_object_store_enabled=os.getenv("MAP_OBJECT_STORE_ENABLED", "false").lower() in {"1", "true", "yes"},
+        map_object_store_endpoint=map_object_store_endpoint,
+        map_object_store_bucket=map_object_store_bucket,
+        map_object_store_public_base_url=configured_public_base,
+        map_object_store_access_key=os.getenv("MAP_OBJECT_STORE_ACCESS_KEY") or None,
+        map_object_store_secret_key=os.getenv("MAP_OBJECT_STORE_SECRET_KEY") or None,
+        map_object_store_region=os.getenv("MAP_OBJECT_STORE_REGION", "ru-1").strip() or "ru-1",
+        map_object_store_workers=max(1, min(32, int(os.getenv("MAP_OBJECT_STORE_WORKERS", "8")))),
+        map_object_store_timeout_seconds=max(3.0, min(120.0, float(os.getenv("MAP_OBJECT_STORE_TIMEOUT_SECONDS", "20")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )

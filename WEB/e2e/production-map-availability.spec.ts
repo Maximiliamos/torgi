@@ -63,3 +63,108 @@ test("authenticated map survives five wide viewport movements", async ({ page },
     contentType: "application/json",
   });
 });
+
+
+test("direct prepared tiles render from REG.RU S3", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  const username = process.env.E2E_USERNAME || "reader";
+  const password = process.env.E2E_PASSWORD;
+  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
+  await page.getByLabel("Логин").fill(username);
+  await page.getByLabel("Пароль").fill(password);
+  await page.getByRole("button", { name: "Войти" }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
+    .toBeVisible({ timeout: 40_000 });
+
+  let legacyBulkCalls = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/map/lots") legacyBulkCalls += 1;
+  });
+
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
+  await expect(frameElement).toBeVisible({ timeout: 30_000 });
+  const frame = page.frameLocator('iframe[title="Яндекс.Карта лотов"]');
+  await expect(frame.locator("#hint")).toBeHidden({ timeout: 40_000 });
+
+  const currentMapFrame = () => page.frames().find(
+    (candidate) => candidate !== page.mainFrame() && candidate.url() === "about:srcdoc",
+  );
+  await expect.poll(() => Boolean(currentMapFrame()), { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => currentMapFrame()!.evaluate(() => Boolean(
+    (window as unknown as { bankrotaiDebug?: unknown }).bankrotaiDebug,
+  )), { timeout: 30_000 }).toBe(true);
+
+  const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
+    timeout: 30_000,
+  });
+  expect(datasetResponse.status()).toBe(200);
+  const dataset = await datasetResponse.json() as {
+    version: string;
+    point_count: number;
+    bootstrap_tiles?: unknown[];
+    tile_source?: string;
+    tile_base_url?: string | null;
+  };
+  expect(dataset.version).toBeTruthy();
+  expect(dataset.point_count).toBeGreaterThan(0);
+  expect(dataset.bootstrap_tiles?.length).toBe(9);
+  expect(dataset.tile_source).toBe("regru-s3");
+  expect(dataset.tile_base_url).toMatch(/^https:\/\//);
+
+  const tileBaseUrl = String(dataset.tile_base_url).replace(/\/$/, "");
+  const tileResponsePromise = page.waitForResponse((response) => {
+    return response.url().startsWith(`${tileBaseUrl}/12/`)
+      && response.status() === 200;
+  }, { timeout: 40_000 });
+
+  await currentMapFrame()!.evaluate(() => {
+    (
+      window as unknown as {
+        bankrotaiDebug: { setViewport: (center: number[], zoom: number) => void };
+      }
+    ).bankrotaiDebug.setViewport([57.6261, 39.8845], 12);
+  });
+
+  const firstTileResponse = await tileResponsePromise;
+  const firstHeaders = await firstTileResponse.allHeaders();
+  expect(firstTileResponse.url()).not.toContain("api.sterdez.online/api/map/yandex-tiles/");
+  expect(firstHeaders["cache-control"]).toContain("public");
+  expect(firstHeaders["cache-control"]).toContain("immutable");
+  expect(["*", "https://sterdez.online"]).toContain(firstHeaders["access-control-allow-origin"]);
+
+  const firstPayload = await firstTileResponse.json() as {
+    type?: string;
+    features?: Array<{ properties?: Record<string, unknown> }>;
+  };
+  expect(firstPayload.type).toBe("FeatureCollection");
+  expect(Array.isArray(firstPayload.features)).toBe(true);
+  for (const feature of firstPayload.features || []) {
+    expect(feature.properties).not.toHaveProperty("review_status");
+  }
+
+  const started = Date.now();
+  const directRead = await page.context().request.get(firstTileResponse.url(), { timeout: 30_000 });
+  const directReadMs = Date.now() - started;
+  expect(directRead.status()).toBe(200);
+  expect(legacyBulkCalls).toBe(0);
+  await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
+
+  await testInfo.attach("direct-map-regru-s3-evidence.json", {
+    body: Buffer.from(JSON.stringify({
+      dataset: dataset.version,
+      pointCount: dataset.point_count,
+      tileSource: dataset.tile_source,
+      tileBaseUrl,
+      tileHost: new URL(firstTileResponse.url()).host,
+      directReadMs,
+      legacyBulkCalls,
+    }, null, 2)),
+    contentType: "application/json",
+  });
+});
+

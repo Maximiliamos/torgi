@@ -16,8 +16,12 @@ import {
   fetchCurrentMapDataset,
   fetchCurrentUser,
   fetchMapLotDetail,
+  fetchMapReviewStatuses,
   fetchMapLotsSWR,
   fetchMapTile,
+  fetchYandexMapTile,
+  fetchPublicYandexMapTile,
+  fetchFilteredYandexMapTile,
   fetchRegions,
   fetchNationwideLotSync,
   fetchOperationsProgress,
@@ -28,6 +32,9 @@ import {
   MapMarkerLot,
   MapTileFeature,
   MapTilePayload,
+  YandexMapFeature,
+  YandexMapTilePayload,
+  DirectMapFilterQuery,
   OperationsProgress,
   RegionOption,
   searchCadastre,
@@ -40,6 +47,9 @@ export const MAP_REDUCED_LIMIT = 500;
 // The measured populated tile is small (163 B in the deterministic benchmark),
 // while 512 entries preserve useful pan-back history without unbounded growth.
 export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
+export const DIRECT_MAP_TILES =
+  String(import.meta.env.VITE_DIRECT_MAP_TILES ?? "false").toLowerCase() === "true";
+export const MAX_DIRECT_MAP_TILE_CACHE_ENTRIES = 768;
 
 export function yandexMapsApiUrl(apiKey?: string) {
   const params = new URLSearchParams({ lang: "ru_RU", csp: "true" });
@@ -168,6 +178,77 @@ export async function fetchVisibleMapTiles(
   };
 }
 
+export function yandexFeaturePreview(feature: YandexMapFeature): MapTileFeature | null {
+  if (feature.properties.kind !== "lot") return null;
+  const [lat, lon] = feature.geometry.coordinates;
+  return {
+    kind: "lot",
+    id: feature.id,
+    lat,
+    lon,
+    title: feature.properties.title,
+    current_price: feature.properties.current_price,
+    start_price: feature.properties.start_price,
+    status: feature.properties.status ?? undefined,
+    review_status: feature.properties.review_status,
+  };
+}
+
+export function directMapFilterSignature(filters: DirectMapFilterQuery) {
+  if (
+    filters.region_code == null
+    && filters.min_start_price == null
+    && filters.max_start_price == null
+  ) return "";
+  return [
+    filters.region_code ?? "",
+    filters.min_start_price ?? "",
+    filters.max_start_price ?? "",
+  ].join("|");
+}
+export function fetchCachedYandexMapTile(
+  completed: Map<string, YandexMapTilePayload>,
+  inflight: Map<string, Promise<YandexMapTilePayload>>,
+  version: string,
+  tile: TileCoordinate,
+  filters: DirectMapFilterQuery = {},
+  maxEntries = MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+  tileBaseUrl: string | null = null,
+) {
+  const filterKey = directMapFilterSignature(filters);
+  const key = `${mapTileCacheKey(version, tile)}:${filterKey}`;
+  const cached = completed.get(key);
+  if (cached) {
+    completed.delete(key);
+    completed.set(key, cached);
+    return Promise.resolve(cached);
+  }
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const request = (filterKey
+    ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
+    : tileBaseUrl
+      ? fetchPublicYandexMapTile(tileBaseUrl, tile.z, tile.x, tile.y)
+          .catch((error) => {
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
+            return fetchYandexMapTile(version, tile.z, tile.x, tile.y);
+          })
+      : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
+    .then((payload) => {
+      completed.set(key, payload);
+      while (completed.size > maxEntries) {
+        const oldest = completed.keys().next().value;
+        if (oldest === undefined) break;
+        completed.delete(oldest);
+      }
+      return payload;
+    })
+    .finally(() => {
+      if (inflight.get(key) === request) inflight.delete(key);
+    });
+  inflight.set(key, request);
+  return request;
+}
 export function mapObjectCountLabel(total: number, returned: number, exact: boolean) {
   return exact ? `${total} объектов` : `не менее ${returned} объектов в области`;
 }
@@ -177,7 +258,7 @@ function isTemporaryMapFailure(error: unknown) {
 }
 
 export const MAP_SELECTION_SCRIPT = `
-function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{const lot=lots.find(item=>Number(item.id)===Number(id));if(manager&&lot)manager.objects.setObjectOptions(Number(id),opts(lot));});const selected=lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
+function updateSelection(nextId,focus=false){const previous=selectedId;selectedId=nextId==null?null:Number(nextId);[previous,selectedId].forEach(id=>{if(id==null)return;const numericId=Number(id),legacyLot=lots.find(item=>Number(item.id)===numericId),tileLot=tileLots.get(numericId);if((mode==='direct'||mode==='tiles')&&tileLot&&tileManager){if(numericId===selectedId)tileManager.objects.setObjectOptions(numericId,opts(tileLot));else if(mode==='direct')tileManager.objects.setObjectOptions(numericId,{preset:directPreset(tileLot.review_status,tileLot.status)});else tileManager.objects.setObjectOptions(numericId,opts(tileLot));}else if(manager&&legacyLot)manager.objects.setObjectOptions(numericId,opts(legacyLot));});const selected=(mode==='direct'||mode==='tiles')?tileLots.get(Number(selectedId)):lots.find(item=>Number(item.id)===selectedId);if(focus&&selected&&Number.isFinite(selected.lat)&&Number.isFinite(selected.lon))map.setCenter([selected.lat,selected.lon],Math.max(map.getZoom(),16));}
 `;
 
 export const formatMoscowDate = (value: string) => {
@@ -391,6 +472,9 @@ function CoincidentLotsPanel({
 function YandexDesktopMap({
   lots,
   tileEntries,
+  mapDataset,
+  directTileMode,
+  directFilters,
   reviewMarkerUpdate,
   selectedCadastre,
   showCadastre,
@@ -404,13 +488,16 @@ function YandexDesktopMap({
 }: {
   lots: MapMarkerLot[];
   tileEntries: Array<{ key: string; features: MapTileFeature[] }>;
+  mapDataset: MapDataset | null;
+  directTileMode: boolean;
+  directFilters: DirectMapFilterQuery;
   reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
   selectedCadastre: Record<string, unknown> | null;
   showCadastre: boolean;
   selectedLotId: number | null;
   selectedLotGeometry: GeoJSON.GeoJsonObject | null;
   active: boolean;
-  onSelect: (id: number) => void;
+  onSelect: (id: number, preview?: MapTileFeature | null) => void;
   onClusterSelect: (ids: number[]) => void;
   onViewport: (bounds: [number, number, number, number], zoom: number) => void;
   onRendered: (durationMs: number, count: number) => void;
@@ -418,7 +505,8 @@ function YandexDesktopMap({
   const frame = React.useRef<HTMLIFrameElement>(null);
   const channel = "bankrotai-map-v1";
   const [readyRevision, setReadyRevision] = React.useState(0);
-
+  const directCompleted = React.useRef(new Map<string, YandexMapTilePayload>());
+  const directInflight = React.useRef(new Map<string, Promise<YandexMapTilePayload>>());
   const postCommand = React.useCallback(
     (type: string, payload: Record<string, unknown> = {}) => {
       frame.current?.contentWindow?.postMessage(
@@ -429,6 +517,107 @@ function YandexDesktopMap({
     [channel],
   );
 
+  const directFilterKey = directMapFilterSignature(directFilters);
+
+  const loadDirectTile = React.useCallback((
+    version: string,
+    tile: TileCoordinate,
+  ): Promise<YandexMapTilePayload> => fetchCachedYandexMapTile(
+    directCompleted.current,
+    directInflight.current,
+    version,
+    tile,
+    directFilters,
+    MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
+    mapDataset?.tile_base_url || null,
+  ), [directFilters, mapDataset?.tile_base_url]);
+  const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
+    if (!directTileMode || !mapDataset) return;
+    const version = String(data.version || "");
+    const generation = Number(data.generation);
+    const requestedFilterKey = String(data.filterKey || "");
+    if (
+      version !== mapDataset.version
+      || requestedFilterKey !== directFilterKey
+      || !Number.isFinite(generation)
+    ) return;
+    const normalize = (value: unknown): TileCoordinate[] =>
+      (Array.isArray(value) ? value : [])
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const source = item as Record<string, unknown>;
+          const z = Number(source.z);
+          const x = Number(source.x);
+          const y = Number(source.y);
+          if (
+            ![z, x, y].every(Number.isInteger)
+            || z < 0
+            || z > 14
+            || x < 0
+            || y < 0
+            || x >= 2 ** z
+            || y >= 2 ** z
+          ) return null;
+          return { z, x, y };
+        })
+        .filter((item): item is TileCoordinate => item !== null);
+
+    const visible = normalize(data.visible);
+    const prefetch = normalize(data.prefetch);
+    const runPool = async (items: TileCoordinate[], concurrency: number, publish: boolean) => {
+      let cursor = 0;
+      const reviewIds = new Set<number>();
+      const worker = async () => {
+        while (cursor < items.length) {
+          const tile = items[cursor++];
+          try {
+            const payload = await loadDirectTile(version, tile);
+            if (publish) {
+              postCommand("install-direct-tile", {
+                generation,
+                key: `${version}/${tile.z}/${tile.x}/${tile.y}`,
+                payload,
+              });
+              if (!requestedFilterKey && mapDataset.tile_source === "regru-s3") {
+                for (const feature of payload.features) {
+                  if (feature.properties.kind === "lot" && typeof feature.id === "number") {
+                    reviewIds.add(feature.id);
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            if (publish) {
+              postCommand("direct-tile-failed", {
+                generation,
+                key: `${version}/${tile.z}/${tile.x}/${tile.y}`,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+      };
+      await Promise.all(Array.from(
+        { length: Math.min(Math.max(1, concurrency), items.length) },
+        worker,
+      ));
+      return reviewIds;
+    };
+
+    const reviewIds = await runPool(visible, 12, true);
+    if (reviewIds.size) {
+      const ids = [...reviewIds];
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        try {
+          const overlay = await fetchMapReviewStatuses(ids.slice(offset, offset + 500));
+          postCommand("apply-review-statuses", { items: overlay.items });
+        } catch {
+          // The public map is already visible; review coloring is a non-blocking overlay.
+        }
+      }
+    }
+    void runPool(prefetch, 4, false);
+  }, [directFilterKey, directTileMode, loadDirectTile, mapDataset, postCommand]);
   React.useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (
@@ -436,8 +625,14 @@ function YandexDesktopMap({
         event.data?.channel !== channel
       )
         return;
-      if (event.data?.type === "bankrotai-select")
-        onSelect(Number(event.data.lotId));
+      if (event.data?.type === "bankrotai-select") {
+        const preview = event.data.preview && typeof event.data.preview === "object"
+          ? event.data.preview as MapTileFeature
+          : null;
+        onSelect(Number(event.data.lotId), preview);
+      }
+      if (event.data?.type === "bankrotai-request-tiles")
+        void fulfillDirectTileRequest(event.data as Record<string, unknown>);
       if (event.data?.type === "bankrotai-cluster-select")
         onClusterSelect(
           Array.isArray(event.data.lotIds)
@@ -453,14 +648,22 @@ function YandexDesktopMap({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [channel, onClusterSelect, onRendered, onSelect, onViewport]);
+  }, [channel, fulfillDirectTileRequest, onClusterSelect, onRendered, onSelect, onViewport]);
 
   React.useEffect(() => {
     if (readyRevision) postCommand("replace-lots", { lots });
   }, [lots, postCommand, readyRevision]);
   React.useEffect(() => {
-    if (readyRevision) postCommand("sync-tiles", { entries: tileEntries });
-  }, [postCommand, readyRevision, tileEntries]);
+    if (readyRevision && !directTileMode) postCommand("sync-tiles", { entries: tileEntries });
+  }, [directTileMode, postCommand, readyRevision, tileEntries]);
+  React.useEffect(() => {
+    if (!readyRevision) return;
+    postCommand("set-direct-dataset", {
+      enabled: directTileMode,
+      dataset: directTileMode ? mapDataset : null,
+      filterKey: directFilterKey,
+    });
+  }, [directFilterKey, directTileMode, mapDataset, postCommand, readyRevision]);
   React.useEffect(() => {
     if (readyRevision && reviewMarkerUpdate) postCommand("update-lot-review", reviewMarkerUpdate);
   }, [postCommand, readyRevision, reviewMarkerUpdate]);
@@ -488,7 +691,7 @@ function YandexDesktopMap({
     () => `<!doctype html><html><head><meta charset="utf-8"><script src="${yandexMapsUrl}"></script><style>
 html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}
 </style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
-const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let legacyManager=null;let tileManager=null;let lots=[];let mode='legacy';const tileObjects=new Map();const tileLots=new Map();let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
+const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let legacyManager=null;let tileManager=null;let lots=[];let mode='legacy';const tileObjects=new Map();const tileLots=new Map();let directEnabled=false;let directDataset=null;let directFilterKey='';let directGeneration=0;let directWanted=new Set();let directTimer=null;let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function ended(l){return l.is_archived||['closed','completed','cancelled','canceled','failed','annulled','archive','archived'].includes(String(l.status||'').toLowerCase());}
 function color(l){if(ended(l))return '#111111';return l.review_status==='approved'?'#24a269':l.review_status==='maybe'?'#e0aa16':l.review_status==='rejected'?'#d94b4b':'#7d8795';}
@@ -505,12 +708,22 @@ function renderOverlays(focus=false){if(!map)return;clearOverlays();if(cad&&Numb
 ${MAP_SELECTION_SCRIPT}
 function renderLots(){if(!map||!legacyManager)return;const started=performance.now();activateManager(legacyManager);manager.removeAll();manager.add({type:'FeatureCollection',features:lots.filter(l=>Number.isFinite(l.lat)&&Number.isFinite(l.lon)).map(feature)});if(selectedId!=null)updateSelection(selectedId);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:lots.length}));}
 function syncTiles(entries){if(!map||!tileManager)return;const started=performance.now();if(!entries.length){if(mode==='tiles'){tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='legacy';renderLots();}return;}if(mode!=='tiles'){activateManager(tileManager);tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='tiles';}const wanted=new Set(entries.map(entry=>entry.key));for(const[key,ids]of tileObjects){if(!wanted.has(key)){tileManager.remove(ids);ids.forEach(id=>tileLots.delete(Number(id)));tileObjects.delete(key);}}for(const entry of entries){if(tileObjects.has(entry.key))continue;const raw=entry.features||[];const features=raw.map(feature);tileManager.add({type:'FeatureCollection',features});raw.forEach(item=>{if(item.kind==='lot')tileLots.set(Number(item.id),item);});tileObjects.set(entry.key,features.map(item=>item.id));}requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:[...tileObjects.values()].reduce((n,ids)=>n+ids.length,0)}));}
-function updateTileReview(lotId,status){if(!tileManager)return false;const id=Number(lotId),lot=tileLots.get(id);if(!lot)return false;const updated={...lot,review_status:status};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,opts(updated));return true;}
+function directPreset(status,currentStatus){if(['closed','completed','cancelled','canceled','failed','annulled','archive','archived'].includes(String(currentStatus||'').toLowerCase()))return'islands#blackDotIcon';return status==='approved'?'islands#greenDotIcon':status==='maybe'?'islands#yellowDotIcon':status==='rejected'?'islands#redDotIcon':'islands#grayDotIcon';}
+function directTileXY(lat,lon,z){const scale=2**z,x=Math.max(0,Math.min(scale-1,Math.floor((lon+180)/360*scale))),bounded=Math.max(-85.05112878,Math.min(85.05112878,lat)),rad=bounded*Math.PI/180,y=Math.max(0,Math.min(scale-1,Math.floor((1-Math.asinh(Math.tan(rad))/Math.PI)/2*scale)));return{x,y};}
+function directVisibleTiles(){if(!map)return[];const z=Math.min(14,Math.max(0,Math.floor(map.getZoom()))),scale=2**z,b=map.getBounds(),west=b[0][1],south=b[0][0],east=b[1][1],north=b[1][0],nw=directTileXY(north,west,z),se=directTileXY(south,east,z),ranges=west<=east?[[nw.x,se.x]]:[[nw.x,scale-1],[0,se.x]],items=[];for(const[x0,x1]of ranges)for(let x=x0;x<=x1;x++)for(let y=nw.y;y<=se.y;y++)items.push({z,x,y,key:z+'/'+x+'/'+y});return items;}
+function directNeighborTiles(visible){if(!visible.length)return[];const z=visible[0].z,scale=2**z,existing=new Set(visible.map(t=>t.key)),result=new Map();for(const tile of visible)for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){if(dx===0&&dy===0)continue;const x=(tile.x+dx+scale)%scale,y=Math.max(0,Math.min(scale-1,tile.y+dy)),key=z+'/'+x+'/'+y;if(!existing.has(key))result.set(key,{z,x,y,key});}return[...result.values()];}
+function directPreview(raw){const p=raw?.properties||{},coords=raw?.geometry?.coordinates;if(p.kind!=='lot'||!Array.isArray(coords)||coords.length!==2)return null;return{kind:'lot',id:Number(raw.id),lat:Number(coords[0]),lon:Number(coords[1]),title:p.title,current_price:p.current_price,start_price:p.start_price,status:p.status,review_status:p.review_status};}
+function installDirectPayload(key,payload,generation=directGeneration){if(!directEnabled||generation!==directGeneration||!payload||payload.type!=='FeatureCollection'||!Array.isArray(payload.features)||tileObjects.has(key))return;const started=performance.now();activateManager(tileManager);mode='direct';tileManager.add(payload);const ids=[];for(const item of payload.features){ids.push(item.id);const preview=directPreview(item);if(preview)tileLots.set(Number(item.id),preview);}tileObjects.set(key,ids);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:[...tileObjects.values()].reduce((n,v)=>n+v.length,0)}));}
+function requestDirectTiles(){if(!directEnabled||!directDataset||!map)return;const visible=directVisibleTiles(),version=directDataset.version,generation=++directGeneration;directWanted=new Set(visible.map(t=>version+'/'+t.key));for(const[key,ids]of tileObjects){if(!directWanted.has(key)){tileManager.remove(ids);ids.forEach(id=>tileLots.delete(Number(id)));tileObjects.delete(key);}}const missing=visible.filter(t=>!tileObjects.has(version+'/'+t.key));send('bankrotai-request-tiles',{version,filterKey:directFilterKey,generation,visible:missing.map(({z,x,y})=>({z,x,y})),prefetch:directNeighborTiles(visible).map(({z,x,y})=>({z,x,y}))});if(!missing.length)requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:0,count:[...tileObjects.values()].reduce((n,v)=>n+v.length,0)}));}
+function scheduleDirectTiles(){if(!directEnabled)return;clearTimeout(directTimer);directTimer=setTimeout(requestDirectTiles,70);}
+function setDirectDataset(enabled,dataset,filterKey=''){directEnabled=Boolean(enabled&&dataset?.version);directDataset=directEnabled?dataset:null;directFilterKey=String(filterKey||'');directGeneration++;directWanted=new Set();tileManager?.removeAll();tileObjects.clear();tileLots.clear();if(!directEnabled){if(mode==='direct'){mode='legacy';renderLots();}return;}activateManager(tileManager);mode='direct';const bootstrap=!directFilterKey&&Array.isArray(dataset.bootstrap_tiles)?dataset.bootstrap_tiles:[];for(const entry of bootstrap){if(entry?.payload)installDirectPayload(dataset.version+'/'+entry.z+'/'+entry.x+'/'+entry.y,entry.payload,directGeneration);}requestDirectTiles();}
+function updateTileReview(lotId,status){if(!tileManager)return false;const id=Number(lotId),lot=tileLots.get(id);if(!lot)return false;const updated={...lot,review_status:status};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,mode==='direct'&&id!==selectedId?{preset:directPreset(status,updated.status)}:opts(updated));return true;}
+function applyReviewStatuses(items){if(!tileManager||!Array.isArray(items))return;for(const item of items){const id=Number(item?.id),lot=tileLots.get(id);if(!lot)continue;const updated={...lot,review_status:item.review_status??null};tileLots.set(id,updated);tileManager.objects.setObjectOptions(id,mode==='direct'&&id!==selectedId?{preset:directPreset(updated.review_status,updated.status)}:opts(updated));}}
 function emitViewport(){if(!map)return;const bounds=map.getBounds();send('bankrotai-viewport',{bounds:[bounds[0][1],bounds[0][0],bounds[1][1],bounds[1][0]],zoom:map.getZoom()});}
-function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,250);}
-function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles')renderLots();}else if(data.type==='sync-tiles'){syncTiles(Array.isArray(data.entries)?data.entries:[]);}else if(data.type==='update-lot-review'){updateTileReview(data.lotId,data.status);}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();}}
+function scheduleViewport(){clearTimeout(viewportTimer);viewportTimer=setTimeout(emitViewport,180);}
+function command(data){if(!map){pending.push(data);return;}if(data.type==='replace-lots'){lots=Array.isArray(data.lots)?data.lots:[];if(mode!=='tiles'&&mode!=='direct')renderLots();}else if(data.type==='sync-tiles'&&!directEnabled){syncTiles(Array.isArray(data.entries)?data.entries:[]);}else if(data.type==='set-direct-dataset'){setDirectDataset(data.enabled,data.dataset||null,data.filterKey||'');}else if(data.type==='install-direct-tile'){if(directWanted.has(data.key))installDirectPayload(data.key,data.payload,Number(data.generation));}else if(data.type==='direct-tile-failed'){if(Number(data.generation)===directGeneration)send('bankrotai-direct-tile-error',{key:data.key,message:data.message});}else if(data.type==='update-lot-review'){updateTileReview(data.lotId,data.status);}else if(data.type==='apply-review-statuses'){applyReviewStatuses(data.items);}else if(data.type==='select-lot'){updateSelection(data.lotId,true);}else if(data.type==='toggle-cadastre'){showCad=Boolean(data.enabled);renderOverlays(false);}else if(data.type==='show-cadastre-result'){cad=data.value||null;renderOverlays(Boolean(cad));}else if(data.type==='show-selected-geometry'){selectedGeometry=data.value||null;renderOverlays(false);}else if(data.type==='resume'){map.container.fitToViewport();scheduleViewport();scheduleDirectTiles();}}
 window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!==channel)return;command(event.data);});
-function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});legacyManager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});legacyManager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});legacyManager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));legacyManager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=legacyManager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});tileManager=new ymaps.ObjectManager({clusterize:false});tileManager.objects.events.add('click',event=>{const id=event.get('objectId'),object=tileManager.objects.getById(id);if(object?.properties?.kind==='cluster'&&Array.isArray(object.properties.bounds)){const b=object.properties.bounds;map.setBounds([[b[1],b[0]],[b[3],b[2]]],{checkZoomRange:true,zoomMargin:24});return;}send('bankrotai-select',{lotId:Number(id)});});manager=legacyManager;map.geoObjects.add(manager);map.events.add('boundschange',scheduleViewport);window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>tileLots.get(Number(id))?.review_status??lots.find(l=>Number(l.id)===Number(id))?.review_status??null,clickObject:id=>manager.objects.events.fire('click',{objectId:id}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
+function init(){map=new ymaps.Map('map',{center:[57.6261,39.8845],zoom:7,controls:['zoomControl','typeSelector','fullscreenControl','geolocationControl']});legacyManager=new ymaps.ObjectManager({clusterize:true,gridSize:64,clusterDisableClickZoom:false});legacyManager.clusters.options.set({preset:'islands#darkBlueClusterIcons'});legacyManager.objects.events.add('click',event=>send('bankrotai-select',{lotId:Number(event.get('objectId'))}));legacyManager.clusters.events.add('click',event=>{const clusterId=event.get('objectId');const cluster=legacyManager.clusters.getById(clusterId);if(clusterSelection(clusterId,cluster?.properties?.geoObjects))event.preventDefault?.();});tileManager=new ymaps.ObjectManager({clusterize:false});tileManager.objects.events.add('click',event=>{const id=event.get('objectId'),object=tileManager.objects.getById(id);if(object?.properties?.kind==='cluster'&&Array.isArray(object.properties.bounds)){const b=object.properties.bounds;map.setBounds([[b[1],b[0]],[b[3],b[2]]],{checkZoomRange:true,zoomMargin:24});return;}send('bankrotai-select',{lotId:Number(id),preview:directPreview(object)});});manager=legacyManager;map.geoObjects.add(manager);map.events.add('boundschange',()=>{scheduleViewport();scheduleDirectTiles();});window.bankrotaiDebug={instanceId,getViewport:()=>({center:map.getCenter(),zoom:map.getZoom(),instanceId}),setViewport:(center,zoom)=>map.setCenter(center,zoom),getLotReview:id=>tileLots.get(Number(id))?.review_status??lots.find(l=>Number(l.id)===Number(id))?.review_status??null,clickObject:id=>manager.objects.events.fire('click',{objectId:id}),clickCoincident:ids=>clusterSelection('debug',lots.filter(l=>ids.map(Number).includes(Number(l.id))).map(feature)),getObjectCount:()=>manager.objects.getLength()};pending.splice(0).forEach(command);document.getElementById('hint').style.display='none';send('bankrotai-ready');scheduleViewport();}
 if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textContent='Яндекс.Карты недоступны. Проверьте сеть или блокировщик.';}
 </script></body></html>`,
     [channel, yandexMapsUrl],
@@ -801,6 +1014,7 @@ export function MapView({
 }) {
   const [lots, setLots] = React.useState<MapMarkerLot[]>([]);
   const [selectedLot, setSelectedLot] = React.useState<MapLot | null>(null);
+  const [selectedTilePreview, setSelectedTilePreview] = React.useState<MapTileFeature | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState("");
   const [viewport, setViewport] = React.useState<[number, number, number, number] | null>(null);
@@ -808,6 +1022,7 @@ export function MapView({
   const [mapDataset, setMapDataset] = React.useState<MapDataset | null>(null);
   const [mapDatasetStatus, setMapDatasetStatus] = React.useState<"loading" | "ready" | "unavailable">("loading");
   const [tileEntries, setTileEntries] = React.useState<Array<{ key: string; features: MapTileFeature[] }>>([]);
+  const [directRenderedCount, setDirectRenderedCount] = React.useState(0);
   const [reviewMarkerUpdate, setReviewMarkerUpdate] = React.useState<{ lotId: number; status: string; revision: number } | null>(null);
   const [viewportLimit, setViewportLimit] = React.useState(250);
   const requestRevision = React.useRef(0);
@@ -853,10 +1068,18 @@ export function MapView({
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
-  const visibleMapObjects = tileMode && mapDataset
-    ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
-    : lots.length;
-
+  const directTileMode = DIRECT_MAP_TILES && !favoritesOnly;
+  const directFilters = React.useMemo<DirectMapFilterQuery>(() => ({
+    region_code: appliedFilters.region || undefined,
+    min_start_price: appliedFilters.minPrice ? Number(appliedFilters.minPrice) : undefined,
+    max_start_price: appliedFilters.maxPrice ? Number(appliedFilters.maxPrice) : undefined,
+  }), [appliedFilters.maxPrice, appliedFilters.minPrice, appliedFilters.region]);
+  const directFilterKey = directMapFilterSignature(directFilters);
+  const visibleMapObjects = directTileMode
+    ? directRenderedCount
+    : tileMode && mapDataset
+      ? tileEntries.reduce((count, entry) => count + entry.features.length, 0)
+      : lots.length;
   const applyResponse = React.useCallback((response: Awaited<ReturnType<typeof fetchMapLotsSWR>>["data"], cached: boolean, apiMs = 0) => {
     hasRenderedLots.current = true;
     setLots(
@@ -889,7 +1112,7 @@ export function MapView({
     async (
       applied = appliedFilters,
     ) => {
-      if (tileMode) return;
+      if (tileMode || directTileMode) return;
       if (!favoritesOnly && !viewport) return;
       const revision = ++requestRevision.current;
       requestController.current?.abort();
@@ -942,8 +1165,14 @@ export function MapView({
         if (revision === requestRevision.current) setLoading(false);
       }
     },
-    [appliedFilters, applyResponse, favoritesOnly, tileMode, viewport, viewportLimit],
+    [appliedFilters, applyResponse, directTileMode, favoritesOnly, tileMode, viewport, viewportLimit],
   );
+
+  const acceptMapDataset = React.useCallback((dataset: MapDataset) => {
+    setMapDataset((current) => current?.version === dataset.version ? current : dataset);
+    setMapDatasetStatus("ready");
+    setError("");
+  }, []);
 
   const loadCurrentMapDataset = React.useCallback(async () => {
     const revision = ++datasetRequestRevision.current;
@@ -951,26 +1180,24 @@ export function MapView({
     try {
       const dataset = await fetchCurrentMapDataset();
       if (revision !== datasetRequestRevision.current) return;
-      setMapDataset(dataset);
-      setMapDatasetStatus("ready");
-      setError("");
+      acceptMapDataset(dataset);
     } catch {
       if (revision !== datasetRequestRevision.current) return;
       setMapDataset(null);
       setMapDatasetStatus("unavailable");
       setError("Актуальный набор данных карты пока недоступен");
     }
-  }, []);
+  }, [acceptMapDataset]);
 
   React.useEffect(() => {
     if (active) void load();
   }, [active, load, refreshToken]);
   React.useEffect(() => {
-    if (!tileMode) return;
+    if (!tileMode && !directTileMode) return;
     requestRevision.current += 1;
     requestController.current?.abort();
     setLoading(false);
-  }, [tileMode]);
+  }, [directTileMode, tileMode]);
   React.useEffect(() => () => requestController.current?.abort(), []);
   React.useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
@@ -982,6 +1209,7 @@ export function MapView({
   React.useEffect(() => {
     if (selectedLotId == null) {
       setSelectedLot(null);
+      setSelectedTilePreview(null);
       setDetailLoading(false);
       setDetailError("");
       return;
@@ -990,7 +1218,7 @@ export function MapView({
     setDetailError("");
     let cancelled = false;
     fetchMapLotDetail(selectedLotId)
-      .then((value) => { if (!cancelled) setSelectedLot(value); })
+      .then((value) => { if (!cancelled) { setSelectedLot(value); setSelectedTilePreview(null); } })
       .catch((err) => {
         if (!cancelled)
           setDetailError(
@@ -1025,7 +1253,7 @@ export function MapView({
     return () => { datasetRequestRevision.current += 1; };
   }, [loadCurrentMapDataset, refreshToken]);
   React.useEffect(() => {
-    if (!active || !tileMode || !mapDataset || !viewport) {
+    if (!active || !tileMode || directTileMode || !mapDataset || !viewport) {
       tileRequestRevision.current += 1;
       tileRequestController.current?.abort();
       visibleTileSetSignature.current = null;
@@ -1097,11 +1325,27 @@ export function MapView({
     }).finally(() => {
       if (revision === tileRequestRevision.current) setLoading(false);
     });
-  }, [active, mapDataset, tileMode, viewport, viewportZoom]);
+  }, [active, directTileMode, mapDataset, tileMode, viewport, viewportZoom]);
   React.useEffect(() => () => {
     tileRequestRevision.current += 1;
     tileRequestController.current?.abort();
   }, []);
+
+  React.useEffect(() => {
+    if (!directTileMode || !mapDataset) {
+      setDirectRenderedCount(0);
+      return;
+    }
+    setStatistics((value) => ({
+      ...value,
+      total: directFilterKey ? directRenderedCount : mapDataset.point_count,
+      mapped: directFilterKey ? directRenderedCount : mapDataset.point_count,
+      returned: directRenderedCount,
+      truncated: false,
+      updatedAt: mapDataset.published_at,
+      exact: !directFilterKey,
+    }));
+  }, [directFilterKey, directRenderedCount, directTileMode, mapDataset]);
 
   const review = React.useCallback(async (lotId: number, status: string) => {
     try {
@@ -1168,9 +1412,14 @@ export function MapView({
   );
 
   const selectLot = React.useCallback(
-    (lotId: number) => {
+    (lotId: number, preview?: MapTileFeature | null) => {
       const marker = lots.find((lot) => lot.id === lotId);
-      if (marker) setSelectedLot(markerPreview(marker));
+      if (marker) {
+        setSelectedLot(markerPreview(marker));
+        setSelectedTilePreview(null);
+      } else {
+        setSelectedTilePreview(preview ?? null);
+      }
       setSelectedLotId(lotId);
     },
     [lots],
@@ -1178,11 +1427,13 @@ export function MapView({
   const coincidentLots = coincidentLotIds
     .map((id) => lots.find((lot) => lot.id === id))
     .filter((lot): lot is MapMarkerLot => Boolean(lot));
-  const selectedTileMarker = selectedLotId == null
-    ? null
-    : tileEntries
-      .flatMap((entry) => entry.features)
-      .find((feature) => feature.kind === "lot" && Number(feature.id) === selectedLotId) ?? null;
+  const selectedTileMarker = directTileMode
+    ? selectedTilePreview
+    : selectedLotId == null
+      ? null
+      : tileEntries
+        .flatMap((entry) => entry.features)
+        .find((feature) => feature.kind === "lot" && Number(feature.id) === selectedLotId) ?? null;
 
   const refreshCatalogue = React.useCallback(async () => {
     setSyncing(true);
@@ -1364,7 +1615,7 @@ export function MapView({
               onResume={() => void controlGeocoding(false)}
             />}
             {loading && <MapState>Обновление меток…</MapState>}
-            {tileMode && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
+            {(tileMode || directTileMode) && mapDatasetStatus === "loading" && <MapState>Загрузка карты…</MapState>}
             {mapNotice && <MapState>{mapNotice}</MapState>}
             {message && <MapState>{message}</MapState>}
             {error && <MapState error>{error}</MapState>}
@@ -1382,12 +1633,15 @@ export function MapView({
             catch (err) { setError(String(err)); }
           }}><Search size={14} />Найти</button>
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
-          <button onClick={() => tileMode ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
+          <button onClick={() => (tileMode || directTileMode) ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
           {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
         </div>
         <YandexDesktopMap
           lots={visibleLots}
           tileEntries={tileEntries}
+          mapDataset={mapDataset}
+          directTileMode={directTileMode}
+          directFilters={directFilters}
           reviewMarkerUpdate={reviewMarkerUpdate}
           selectedCadastre={cad}
           showCadastre={showCadastre}
@@ -1400,9 +1654,10 @@ export function MapView({
             setSelectedLotId(null);
           }}
           onViewport={handleViewport}
-          onRendered={(durationMs) =>
-            setTimings((value) => ({ ...value, render: durationMs }))
-          }
+          onRendered={(durationMs, count) => {
+            if (directTileMode) setDirectRenderedCount(count);
+            setTimings((value) => ({ ...value, render: durationMs }));
+          }}
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты">
           <span>
@@ -1416,7 +1671,7 @@ export function MapView({
             {statusContent}
             <span className={error ? "mapAppState mapAppState--error" : "mapAppState"}>
               <i />
-              {loading || (tileMode && mapDatasetStatus === "loading") ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
+              {loading || ((tileMode || directTileMode) && mapDatasetStatus === "loading") ? "Обновление данных" : error ? "Требуется внимание" : "Система готова"}
             </span>
           </div>
         </footer>

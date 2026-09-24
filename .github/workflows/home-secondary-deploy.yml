@@ -29,6 +29,13 @@ jobs:
       CONFIG_ROOT: C:\ProgramData\BankrotAI
       API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
       SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET }}
+      MAP_S3_ENABLED: ${{ vars.MAP_OBJECT_STORE_ENABLED || 'false' }}
+      MAP_S3_ENDPOINT: ${{ vars.REGRU_S3_ENDPOINT || 'https://s3.regru.cloud' }}
+      MAP_S3_BUCKET: ${{ vars.REGRU_S3_BUCKET || 'sterdez-map' }}
+      MAP_S3_PUBLIC_BASE_URL: ${{ vars.REGRU_S3_PUBLIC_BASE_URL }}
+      MAP_S3_REGION: ${{ vars.REGRU_S3_REGION || 'ru-1' }}
+      MAP_S3_ACCESS_KEY: ${{ secrets.REGRU_S3_ACCESS_KEY }}
+      MAP_S3_SECRET_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v7
 
@@ -37,6 +44,14 @@ jobs:
         run: |
           if (-not $env:API_KEY -or -not $env:SESSION_SECRET) {
             throw "Required production secrets are unavailable"
+          }
+          $mapS3Enabled = @('true', '1', 'yes') -contains $env:MAP_S3_ENABLED.ToLowerInvariant()
+          if ($mapS3Enabled) {
+            if (-not $env:MAP_S3_PUBLIC_BASE_URL -or -not $env:MAP_S3_ACCESS_KEY -or -not $env:MAP_S3_SECRET_KEY) {
+              throw "REG.RU S3 is enabled but public base URL or write credentials are unavailable"
+            }
+            Write-Output "::add-mask::$env:MAP_S3_ACCESS_KEY"
+            Write-Output "::add-mask::$env:MAP_S3_SECRET_KEY"
           }
 
       - name: Build current-main API image
@@ -136,6 +151,8 @@ jobs:
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
             "AUTH_SESSION_SECRET=$env:SESSION_SECRET"
+            "MAP_OBJECT_STORE_ENABLED=$env:MAP_S3_ENABLED"
+            "MAP_OBJECT_STORE_PUBLIC_BASE_URL=$env:MAP_S3_PUBLIC_BASE_URL"
             'CORS_ORIGINS=https://sterdez.online,https://bankrotai.pages.dev'
           ))
           $workerConfigPath = Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'
@@ -149,6 +166,20 @@ jobs:
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
+            'GEO_BATCH_LIMIT=500'
+            'GEO_MAX_WORKERS=6'
+            'GEO_NSPD_CONCURRENCY=2'
+            'GEO_BULK_IK12_FALLBACK=false'
+            'GEO_BULK_NOMINATIM_FALLBACK=false'
+            "MAP_OBJECT_STORE_ENABLED=$env:MAP_S3_ENABLED"
+            "MAP_OBJECT_STORE_ENDPOINT=$env:MAP_S3_ENDPOINT"
+            "MAP_OBJECT_STORE_BUCKET=$env:MAP_S3_BUCKET"
+            "MAP_OBJECT_STORE_PUBLIC_BASE_URL=$env:MAP_S3_PUBLIC_BASE_URL"
+            "MAP_OBJECT_STORE_ACCESS_KEY=$env:MAP_S3_ACCESS_KEY"
+            "MAP_OBJECT_STORE_SECRET_KEY=$env:MAP_S3_SECRET_KEY"
+            "MAP_OBJECT_STORE_REGION=$env:MAP_S3_REGION"
+            'MAP_OBJECT_STORE_WORKERS=8'
+            'MAP_OBJECT_STORE_TIMEOUT_SECONDS=20'
           ))
           foreach ($protectedPath in @($redisConfigPath, $configPath, $workerConfigPath)) {
             & icacls.exe $protectedPath /inheritance:r /grant:r `
