@@ -240,7 +240,6 @@ def publish_dataset_to_regional_bundles(
     groups: dict[str, dict[str, Any]] = defaultdict(dict)
     index_entries: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
     group_regions: dict[str, str] = {}
-    group_feature_counts: dict[str, int] = defaultdict(int)
     region_point_counts: dict[str, int] = defaultdict(int)
     region_bounds: dict[str, list[float]] = {}
     seen_tiles = 0
@@ -272,7 +271,6 @@ def publish_dataset_to_regional_bundles(
             tile_key = f"{int(row.z)}/{int(row.x)}/{int(row.y)}"
             groups[bucket][tile_key] = public_payload
             group_regions[bucket] = region_code
-            group_feature_counts[bucket] += len(public_payload.get("features", []))
             index_entries[_index_shard(int(row.z), int(row.x), int(row.y))][tile_key] = {
                 "group": bucket,
                 "region": region_code,
