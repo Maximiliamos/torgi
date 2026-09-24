@@ -159,8 +159,8 @@ class AppSettings:
     map_object_store_access_key: str | None = None
     map_object_store_secret_key: str | None = None
     map_object_store_region: str = "ru-1"
-    map_object_store_workers: int = 8
-    map_object_store_timeout_seconds: float = 20.0
+    map_object_store_workers: int = 4
+    map_object_store_timeout_seconds: float = 60.0
     nspd_ca_bundle: str | None = None
     nspd_allow_insecure_debug: bool = False
 
@@ -291,8 +291,8 @@ def load_settings() -> AppSettings:
         map_object_store_access_key=os.getenv("MAP_OBJECT_STORE_ACCESS_KEY") or None,
         map_object_store_secret_key=os.getenv("MAP_OBJECT_STORE_SECRET_KEY") or None,
         map_object_store_region=os.getenv("MAP_OBJECT_STORE_REGION", "ru-1").strip() or "ru-1",
-        map_object_store_workers=max(1, min(32, int(os.getenv("MAP_OBJECT_STORE_WORKERS", "8")))),
-        map_object_store_timeout_seconds=max(3.0, min(120.0, float(os.getenv("MAP_OBJECT_STORE_TIMEOUT_SECONDS", "20")))),
+        map_object_store_workers=max(1, min(32, int(os.getenv("MAP_OBJECT_STORE_WORKERS", "4")))),
+        map_object_store_timeout_seconds=max(3.0, min(120.0, float(os.getenv("MAP_OBJECT_STORE_TIMEOUT_SECONDS", "60")))),
         nspd_ca_bundle=os.getenv("NSPD_CA_BUNDLE") or None,
         nspd_allow_insecure_debug=os.getenv("NSPD_ALLOW_INSECURE_DEBUG", "false").lower() in {"1", "true", "yes"},
     )

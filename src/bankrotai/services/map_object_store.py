@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -132,26 +133,60 @@ def _signed_headers(
 def _put_object(settings: AppSettings, key: str, body: bytes, *, cache_control: str) -> None:
     assert settings.map_object_store_access_key is not None
     assert settings.map_object_store_secret_key is not None
-    url, headers = _signed_headers(
-        method="PUT",
-        endpoint=settings.map_object_store_endpoint,
-        bucket=settings.map_object_store_bucket,
-        key=key,
-        body=body,
-        content_type="application/json; charset=utf-8",
-        cache_control=cache_control,
-        access_key=settings.map_object_store_access_key,
-        secret_key=settings.map_object_store_secret_key,
-        region=settings.map_object_store_region,
-    )
-    response = requests.put(
-        url,
-        data=body,
-        headers=headers,
-        timeout=settings.map_object_store_timeout_seconds,
-    )
-    if response.status_code not in {200, 201, 204}:
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        url, headers = _signed_headers(
+            method="PUT",
+            endpoint=settings.map_object_store_endpoint,
+            bucket=settings.map_object_store_bucket,
+            key=key,
+            body=body,
+            content_type="application/json; charset=utf-8",
+            cache_control=cache_control,
+            access_key=settings.map_object_store_access_key,
+            secret_key=settings.map_object_store_secret_key,
+            region=settings.map_object_store_region,
+        )
+        try:
+            response = requests.put(
+                url,
+                data=body,
+                headers=headers,
+                timeout=settings.map_object_store_timeout_seconds,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"REG.RU S3 PUT failed for {key} after {max_attempts} attempts: {exc}"
+                ) from exc
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 PUT transient network error: key=%s attempt=%s/%s retry_in=%ss error=%s",
+                key,
+                attempt,
+                max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            continue
+
+        if response.status_code in {200, 201, 204}:
+            return
+
         detail = response.text[:500].replace("\n", " ")
+        if response.status_code >= 500 and attempt < max_attempts:
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 PUT transient HTTP error: key=%s status=%s attempt=%s/%s retry_in=%ss",
+                key,
+                response.status_code,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
         raise RuntimeError(f"REG.RU S3 PUT failed for {key}: HTTP {response.status_code} {detail}")
 
 
