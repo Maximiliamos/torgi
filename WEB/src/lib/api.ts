@@ -415,7 +415,7 @@ export type MapDataset = {
   tile_source?: "regru-s3" | "api";
   object_store_layout?: "tiles" | "regional-bundles-v1";
   bundle_root_url?: string | null;
-  bundle_index_base_url?: string | null;
+  bundle_manifest_url?: string | null;
   priority_regions?: string[];
 };
 export type MapTileFeature = {
@@ -606,13 +606,21 @@ export const fetchPublicYandexMapTile = async (
 export type PublicMapBundleSource = {
   layout?: string | null;
   rootUrl?: string | null;
-  indexBaseUrl?: string | null;
+  manifestUrl?: string | null;
+};
+
+type RegionalBundleManifest = {
+  layout: "regional-bundles-v1";
+  version: string;
+  detail_parent_zoom: number;
+  overview_parent_zoom: number;
+  index_shards: Record<string, string>;
 };
 
 type RegionalBundleIndex = {
   layout: "regional-bundles-v1";
   version: string;
-  zoom: number;
+  shard: string;
   tiles: Record<string, { bundle: string; region: string }>;
 };
 
@@ -623,6 +631,7 @@ type RegionalBundlePayload = {
   tiles: Record<string, YandexMapTilePayload>;
 };
 
+const PUBLIC_MAP_BUNDLE_MANIFEST_CACHE = new Map<string, Promise<RegionalBundleManifest>>();
 const PUBLIC_MAP_BUNDLE_INDEX_CACHE = new Map<string, Promise<RegionalBundleIndex>>();
 const PUBLIC_MAP_BUNDLE_CACHE = new Map<string, Promise<RegionalBundlePayload>>();
 
@@ -664,18 +673,50 @@ async function fetchPublicJson(url: URL): Promise<unknown> {
   return response.json();
 }
 
-function validateRegionalBundleIndex(value: unknown, zoom: number): RegionalBundleIndex {
+function validateRegionalBundleManifest(value: unknown, version: string): RegionalBundleManifest {
+  if (!value || typeof value !== "object") throw new ApiError("Некорректный manifest bundle-карты");
+  const payload = value as Record<string, unknown>;
+  if (
+    payload.layout !== "regional-bundles-v1"
+    || payload.version !== version
+    || !Number.isInteger(payload.detail_parent_zoom)
+    || !Number.isInteger(payload.overview_parent_zoom)
+    || !payload.index_shards
+    || typeof payload.index_shards !== "object"
+  ) {
+    throw new ApiError("Некорректный manifest bundle-карты");
+  }
+  return value as RegionalBundleManifest;
+}
+
+function validateRegionalBundleIndex(value: unknown, version: string, shard: string): RegionalBundleIndex {
   if (!value || typeof value !== "object") throw new ApiError("Некорректный индекс bundle-карты");
   const payload = value as Record<string, unknown>;
   if (
     payload.layout !== "regional-bundles-v1"
-    || payload.zoom !== zoom
+    || payload.version !== version
+    || payload.shard !== shard
     || !payload.tiles
     || typeof payload.tiles !== "object"
   ) {
     throw new ApiError("Некорректный индекс bundle-карты");
   }
   return value as RegionalBundleIndex;
+}
+
+function regionalBundleIndexShard(
+  z: number,
+  x: number,
+  y: number,
+  manifest: RegionalBundleManifest,
+) {
+  if (z <= manifest.overview_parent_zoom) return "overview/root";
+  if (z < 12) {
+    const shift = z - manifest.overview_parent_zoom;
+    return `overview/${manifest.overview_parent_zoom}/${x >> shift}/${y >> shift}`;
+  }
+  const shift = z - manifest.detail_parent_zoom;
+  return `detail/${manifest.detail_parent_zoom}/${x >> shift}/${y >> shift}`;
 }
 
 function validateRegionalBundlePayload(value: unknown): RegionalBundlePayload {
@@ -703,30 +744,45 @@ export async function fetchPublicYandexMapBundleTile(
   if (
     source.layout !== "regional-bundles-v1"
     || !source.rootUrl
-    || !source.indexBaseUrl
+    || !source.manifestUrl
   ) {
     throw new ApiError("REG.RU S3 bundle source is incomplete");
   }
 
   const root = new URL(source.rootUrl);
-  const indexBase = new URL(source.indexBaseUrl);
-  if (root.protocol !== "https:" || indexBase.protocol !== "https:") {
+  const manifestUrl = new URL(source.manifestUrl);
+  if (root.protocol !== "https:" || manifestUrl.protocol !== "https:") {
     throw new ApiError("Публичные bundle-данные карты должны загружаться по HTTPS");
   }
-  if (root.origin !== indexBase.origin) {
-    throw new ApiError("Индекс и bundle карты должны иметь один origin");
+  if (root.origin !== manifestUrl.origin) {
+    throw new ApiError("Manifest и bundle карты должны иметь один origin");
   }
 
-  const indexUrl = new URL(`${z}.json`, `${indexBase.toString().replace(/\/$/, "")}/`);
-  const index = await cacheSharedRequest(
-    PUBLIC_MAP_BUNDLE_INDEX_CACHE,
-    indexUrl.toString(),
-    async () => validateRegionalBundleIndex(await fetchPublicJson(indexUrl), z),
-    20,
+  const manifest = await cacheSharedRequest(
+    PUBLIC_MAP_BUNDLE_MANIFEST_CACHE,
+    manifestUrl.toString(),
+    async () => validateRegionalBundleManifest(await fetchPublicJson(manifestUrl), version),
+    8,
   );
   signal?.throwIfAborted();
 
-  const entry = index.tiles[`${x}/${y}`];
+  const shard = regionalBundleIndexShard(z, x, y, manifest);
+  const indexKey = manifest.index_shards[shard];
+  if (!indexKey) return { type: "FeatureCollection", features: [] };
+  if (indexKey.startsWith("/") || indexKey.includes("..") || indexKey.includes("://")) {
+    throw new ApiError("Некорректный путь индекса bundle карты");
+  }
+  const indexUrl = new URL(indexKey, `${root.toString().replace(/\/$/, "")}/`);
+  if (indexUrl.origin !== root.origin) throw new ApiError("Индекс bundle карты вышел за разрешённый origin");
+  const index = await cacheSharedRequest(
+    PUBLIC_MAP_BUNDLE_INDEX_CACHE,
+    indexUrl.toString(),
+    async () => validateRegionalBundleIndex(await fetchPublicJson(indexUrl), version, shard),
+    128,
+  );
+  signal?.throwIfAborted();
+
+  const entry = index.tiles[`${z}/${x}/${y}`];
   if (!entry) return { type: "FeatureCollection", features: [] };
   if (
     !entry.bundle
