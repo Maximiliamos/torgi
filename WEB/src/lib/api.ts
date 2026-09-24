@@ -367,6 +367,40 @@ export type MapViewportQuery = {
   review_status?: "approved" | "maybe" | "rejected";
   limit?: number;
 };
+export type YandexMapFeature = {
+  type: "Feature";
+  id: string | number;
+  geometry: {
+    type: "Point";
+    coordinates: [number, number];
+  };
+  properties: {
+    kind: "cluster" | "lot";
+    lotId?: number;
+    title?: string;
+    hintContent?: string;
+    iconContent?: string;
+    current_price?: number | null;
+    start_price?: number | null;
+    region_code?: string | null;
+    status?: string | null;
+    review_status?: string | null;
+    count?: number;
+    bounds?: [number, number, number, number];
+  };
+  options?: Record<string, unknown>;
+};
+export type YandexMapTilePayload = {
+  type: "FeatureCollection";
+  features: YandexMapFeature[];
+};
+export type MapBootstrapTile = {
+  z: number;
+  x: number;
+  y: number;
+  etag: string;
+  payload: YandexMapTilePayload;
+};
 export type MapDataset = {
   version: string;
   point_count: number;
@@ -374,6 +408,9 @@ export type MapDataset = {
   max_zoom: number;
   point_zoom: number;
   published_at: string;
+  bootstrap_zoom?: number;
+  bootstrap_center?: [number, number];
+  bootstrap_tiles?: MapBootstrapTile[];
 };
 export type MapTileFeature = {
   kind: "cluster" | "lot";
@@ -389,6 +426,46 @@ export type MapTileFeature = {
   review_status?: string | null;
 };
 export type MapTilePayload = { features: MapTileFeature[] };
+
+export function validateYandexMapTilePayload(value: unknown): YandexMapTilePayload {
+  if (!value || typeof value !== "object") throw new ApiError("Некорректный формат Yandex-тайла");
+  const payload = value as Record<string, unknown>;
+  if (payload.type !== "FeatureCollection" || !Array.isArray(payload.features)) {
+    throw new ApiError("Некорректный формат Yandex-тайла");
+  }
+  for (const raw of payload.features) {
+    if (!raw || typeof raw !== "object") throw new ApiError("Некорректный объект Yandex-тайла");
+    const feature = raw as Record<string, unknown>;
+    if (feature.type !== "Feature" || (typeof feature.id !== "string" && typeof feature.id !== "number")) {
+      throw new ApiError("Некорректный объект Yandex-тайла");
+    }
+    const geometry = feature.geometry as Record<string, unknown> | undefined;
+    if (
+      geometry?.type !== "Point"
+      || !Array.isArray(geometry.coordinates)
+      || geometry.coordinates.length !== 2
+      || !geometry.coordinates.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))
+    ) {
+      throw new ApiError("Некорректная геометрия Yandex-тайла");
+    }
+    const properties = feature.properties as Record<string, unknown> | undefined;
+    if (!properties || (properties.kind !== "cluster" && properties.kind !== "lot")) {
+      throw new ApiError("Некорректные свойства Yandex-тайла");
+    }
+    if (properties.kind === "cluster") {
+      if (
+        !Number.isInteger(properties.count)
+        || Number(properties.count) < 1
+        || !Array.isArray(properties.bounds)
+        || properties.bounds.length !== 4
+        || !properties.bounds.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))
+      ) {
+        throw new ApiError("Некорректный кластер Yandex-тайла");
+      }
+    }
+  }
+  return value as YandexMapTilePayload;
+}
 
 function isFiniteCoordinate(value: unknown, minimum: number, maximum: number): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
@@ -476,6 +553,17 @@ export const fetchMapTile = async (version: string, z: number, x: number, y: num
   validateMapTilePayload(await requestJson<unknown>(
     `/api/map/tiles/${encodeURIComponent(version)}/${z}/${x}/${y}`, undefined, { signal },
   ));
+export const fetchYandexMapTile = async (
+  version: string,
+  z: number,
+  x: number,
+  y: number,
+  signal?: AbortSignal,
+) => validateYandexMapTilePayload(await requestJson<unknown>(
+  `/api/map/yandex-tiles/${encodeURIComponent(version)}/${z}/${x}/${y}`,
+  undefined,
+  { signal },
+));
 
 const MAP_CACHE_NAME = "bankrotai-map-v3";
 const MAP_CACHE_MAX_ENTRIES = 50;
