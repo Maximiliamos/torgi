@@ -78,6 +78,7 @@ from bankrotai.services.quality import data_quality_snapshot, list_source_health
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
+from bankrotai.services.map_edge_token import create_map_edge_token
 from bankrotai.logic import log_action
 from bankrotai.tasks import (
     QueueUnavailableError,
@@ -1548,6 +1549,17 @@ def get_current_map_dataset(request: Request):
                 }
             )
 
+        actor = getattr(request.state, "authenticated_user", None)
+        map_token = None
+        map_token_expires_at = None
+        if actor is not None and settings.map_edge_token_secret:
+            map_token, map_token_expires_at = create_map_edge_token(
+                user_id=actor.id,
+                dataset_version=dataset.version,
+                secret=settings.map_edge_token_secret,
+                ttl_seconds=settings.map_edge_token_ttl_seconds,
+            )
+
         etag = f'"dataset-{dataset.version}"'
         headers = {
             "Cache-Control": "private, max-age=5, stale-while-revalidate=30",
@@ -1568,6 +1580,8 @@ def get_current_map_dataset(request: Request):
                     "bootstrap_zoom": _MAP_BOOTSTRAP_ZOOM,
                     "bootstrap_center": [_MAP_BOOTSTRAP_LAT, _MAP_BOOTSTRAP_LON],
                     "bootstrap_tiles": bootstrap_tiles,
+                    "map_token": map_token,
+                    "map_token_expires_at": map_token_expires_at,
                 }
             ),
             headers=headers,
