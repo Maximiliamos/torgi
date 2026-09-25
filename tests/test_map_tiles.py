@@ -289,6 +289,48 @@ def test_builder_excludes_explicit_unsupported_region_from_public_tiles():
     assert unsupported_id not in included_ids
 
 
+def test_builder_excludes_unsupported_final_bundle_region_from_cadastral_prefix():
+    factory = _database()
+    with factory() as session:
+        unsupported = ProcessedLot(
+            external_id="unsupported-bundle-cadastral-region",
+            source="test",
+            source_system="test",
+            title="Unsupported cadastral bundle region",
+            description="",
+            category="land",
+            region_code="77",
+            cadastral_number="90:01:0000000:1",
+            auction_status="active",
+            current_geo_lat=55.75,
+            current_geo_lon=37.62,
+            current_geo_source="nspd",
+            current_geo_confidence="high",
+            current_geo_observed_at=datetime(2026, 9, 25, 12, 0, 0),
+        )
+        session.add(unsupported)
+        session.commit()
+        unsupported_id = unsupported.id
+
+    result = build_map_dataset(factory)
+    assert result["point_count"] == 1
+
+    with factory() as session:
+        current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current is not None
+        tiles = session.scalars(
+            select(MapTile).where(MapTile.dataset_id == current.id, MapTile.z == 12)
+        ).all()
+        included_ids = {
+            int(feature["id"])
+            for tile in tiles
+            for feature in tile.payload_json["features"]
+            if feature["kind"] == "lot"
+        }
+
+    assert unsupported_id not in included_ids
+
+
 def test_builder_uses_denormalized_current_geo_while_detail_keeps_history_order():
     factory = _database()
     with factory() as session:
