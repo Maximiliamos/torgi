@@ -133,13 +133,14 @@ def _set_progress_state(
     progress: dict[str, Any],
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    task_type: str = "geocoding",
 ) -> None:
     if not task_id:
         return
     with session_factory() as session:
         state = session.scalar(select(BackgroundTaskState).where(BackgroundTaskState.task_id == task_id))
         if state is None:
-            state = BackgroundTaskState(task_id=task_id, task_type="geocoding", status=status)
+            state = BackgroundTaskState(task_id=task_id, task_type=task_type, status=status)
             session.add(state)
         state.status = status
         state.progress_json = progress
@@ -446,6 +447,29 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
         for key, value in (result.get("failure_reasons") or {}).items():
             recent_failure_reasons[str(key)] += int(value or 0)
 
+    ik12_recovery_rows = session.scalars(
+        select(BackgroundTaskState)
+        .where(
+            BackgroundTaskState.task_type == "geocoding_ik12_recovery",
+            BackgroundTaskState.status == "completed",
+        )
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(20)
+    ).all()
+    ik12_processed = 0
+    ik12_recovered = 0
+    ik12_failed = 0
+    ik12_duration = 0.0
+    ik12_failure_reasons: Counter[str] = Counter()
+    for batch in ik12_recovery_rows:
+        value = batch.result_json or {}
+        ik12_processed += int(value.get("processed") or 0)
+        ik12_recovered += int(value.get("recovered") or 0)
+        ik12_failed += int(value.get("failed") or 0)
+        ik12_duration += float(value.get("duration_seconds") or 0.0)
+        for key, count in (value.get("failure_reasons") or {}).items():
+            ik12_failure_reasons[str(key)] += int(count or 0)
+
     return {
         "progress": progress,
         "statistics": statistics,
@@ -460,6 +484,16 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
             "count": len(recent_batches),
             "provider_counts": dict(recent_provider_counts.most_common()),
             "failure_reasons": dict(recent_failure_reasons.most_common(25)),
+        },
+        "ik12_recovery": {
+            "batch_count": len(ik12_recovery_rows),
+            "processed": ik12_processed,
+            "recovered": ik12_recovered,
+            "failed": ik12_failed,
+            "hit_rate_percent": round(ik12_recovered / ik12_processed * 100, 1) if ik12_processed else None,
+            "total_duration_seconds": round(ik12_duration, 2),
+            "average_seconds": round(ik12_duration / ik12_processed, 3) if ik12_processed else None,
+            "failure_reasons": dict(ik12_failure_reasons.most_common(15)),
         },
         "quality": {
             "audited_lots": int(audit["audited_lots"]),
@@ -1096,21 +1130,32 @@ def run_ik12_recovery_batch(
     session_factory: Callable[[], Any],
     *,
     limit: int = 5,
+    progress_task_id: str | None = None,
 ) -> dict[str, Any]:
     """Serialize IK12 recovery with the normal production geocoding batch."""
     with session_factory() as session:
         bind = session.get_bind()
         dialect_name = bind.dialect.name if bind is not None else ""
     if dialect_name == "sqlite":
-        return recover_nspd_failures_with_ik12(session_factory, limit=limit)
-    try:
-        with _distributed_geo_lock():
-            return recover_nspd_failures_with_ik12(session_factory, limit=limit)
-    except GeoBatchAlreadyRunning:
-        return {
-            "status": "busy",
-            "queued": 0,
-            "processed": 0,
-            "recovered": 0,
-            "failed": 0,
-        }
+        result = recover_nspd_failures_with_ik12(session_factory, limit=limit)
+    else:
+        try:
+            with _distributed_geo_lock():
+                result = recover_nspd_failures_with_ik12(session_factory, limit=limit)
+        except GeoBatchAlreadyRunning:
+            result = {
+                "status": "busy",
+                "queued": 0,
+                "processed": 0,
+                "recovered": 0,
+                "failed": 0,
+            }
+    _set_progress_state(
+        session_factory,
+        progress_task_id,
+        status="completed",
+        progress=result,
+        result=result,
+        task_type="geocoding_ik12_recovery",
+    )
+    return result
