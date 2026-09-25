@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -645,3 +645,238 @@ def test_ik12_recovery_miss_does_not_consume_normal_retry_budget(monkeypatch) ->
         assert failure.attempt_count == 6
         assert lot is not None
         assert lot.current_geo_lat is None
+
+
+def test_strategy_refresh_requeues_only_eligible_resolver_failures_once() -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    retryable_error = json.dumps({
+        "error": "No validated geocoding result",
+        "attempts": [
+            {"source": "address_geocoder", "valid": False, "reason": "no_coordinates"},
+        ],
+    }, separators=(",", ":"))
+    mismatch_error = json.dumps({
+        "error": "No validated geocoding result",
+        "attempts": [
+            {"source": "photon", "valid": False, "reason": "locality_name_mismatch"},
+        ],
+    }, separators=(",", ":"))
+    untouched_error = "HTTPSConnectionPool timed out"
+    with scope() as session:
+        lot_ids: dict[str, int] = {}
+        for name, overrides in (
+            ("provider_miss", {}),
+            ("validation_mismatch", {}),
+            ("operational_error", {}),
+            ("resolved", {}),
+            ("snapshot", {}),
+            ("archived", {"is_archived": True}),
+            ("scheduled", {"auction_status": "scheduled"}),
+            ("closed", {"auction_status": "closed"}),
+            ("expired", {"auction_status": "expired"}),
+        ):
+            lot = ProcessedLot(
+                external_id=f"strategy-{name}",
+                source="test",
+                source_system="test",
+                title="Участок",
+                description="",
+                category="land",
+                address="Тестовый адрес",
+                **{"auction_status": "active", **overrides},
+            )
+            session.add(lot)
+            session.flush()
+            lot_ids[name] = lot.id
+        primary = session.get(ProcessedLot, lot_ids["provider_miss"])
+        assert primary is not None
+        duplicate = ProcessedLot(
+            external_id="strategy-duplicate",
+            source="test",
+            source_system="test",
+            title="Дубликат",
+            description="",
+            category="land",
+            address="Тестовый адрес",
+            auction_status="active",
+            duplicate_of_id=primary.id,
+        )
+        session.add(duplicate)
+        session.flush()
+        lot_ids["duplicate"] = duplicate.id
+
+        errors = {
+            "provider_miss": retryable_error,
+            "validation_mismatch": mismatch_error,
+            "operational_error": untouched_error,
+            "resolved": retryable_error,
+            "snapshot": retryable_error,
+            "archived": retryable_error,
+            "scheduled": retryable_error,
+            "closed": retryable_error,
+            "expired": retryable_error,
+            "duplicate": retryable_error,
+        }
+        for name, lot_id in lot_ids.items():
+            session.add(
+                GeoFailure(
+                    lot_id=lot_id,
+                    status="resolved" if name == "resolved" else "terminal",
+                    attempt_count=8,
+                    error_message=errors[name],
+                    last_failed_at=datetime(2026, 9, 1),
+                    next_retry_at=None,
+                )
+            )
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot_ids["snapshot"],
+                geo_source="fixture",
+                geo_method="address",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
+
+    with scope() as session:
+        assert geo_backfill._refresh_failures_for_current_strategy(session) == 3
+        failures = {
+            failure.lot_id: failure
+            for failure in session.scalars(select(GeoFailure)).all()
+        }
+        for name in ("provider_miss", "validation_mismatch", "scheduled"):
+            failure = failures[lot_ids[name]]
+            assert failure.status == "queued"
+            assert failure.attempt_count == 0
+            assert failure.next_retry_at is not None
+            assert failure.error_message == errors[name]
+            assert failure.last_failed_at == datetime(2026, 9, 1)
+        for name in ("operational_error", "resolved", "snapshot", "archived", "closed", "expired", "duplicate"):
+            failure = failures[lot_ids[name]]
+            assert failure.status == ("resolved" if name == "resolved" else "terminal")
+            assert failure.attempt_count == 8
+            assert failure.next_retry_at is None
+            assert failure.error_message == errors[name]
+        marker = session.scalar(
+            select(AppSetting).where(AppSetting.key == geo_backfill._GEO_STRATEGY_SETTING_KEY)
+        )
+        assert marker is not None
+        assert marker.value == "applied"
+
+    with scope() as session:
+        session.add(
+            AppSetting(
+                key=f"{geo_backfill._GEO_STRATEGY_SETTING_PREFIX}2026-10-01-next-v1",
+                value="applied",
+            )
+        )
+        assert geo_backfill._refresh_failures_for_current_strategy(session) == 0
+
+
+def test_strategy_refresh_rejects_nonretryable_structured_attempts() -> None:
+    for reason in ("low_confidence", "coordinates_out_of_range", "provider_timeout"):
+        assert not geo_backfill._is_strategy_retryable_failure(json.dumps({
+            "error": "No validated geocoding result",
+            "attempts": [{"source": "photon", "valid": False, "reason": reason}],
+        }))
+    assert geo_backfill._is_strategy_retryable_failure(json.dumps({
+        "error": "No validated geocoding result",
+        "attempts": [],
+    }))
+
+
+def test_geocoding_batch_prioritizes_cfo_before_newer_non_cfo(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        session.add(
+            AppSetting(
+                key=geo_backfill._GEO_STRATEGY_SETTING_KEY,
+                value="applied",
+            )
+        )
+        cfo = ProcessedLot(
+            external_id="priority-cfo",
+            source="test",
+            source_system="test",
+            title="ЦФО",
+            description="",
+            category="land",
+            region_code="76",
+            region_name="Ярославская область",
+            address="Ярославль, улица Свободы, 1",
+            auction_status="active",
+            last_update=utc_now() - timedelta(days=1),
+        )
+        other = ProcessedLot(
+            external_id="priority-other",
+            source="test",
+            source_system="test",
+            title="Не ЦФО",
+            description="",
+            category="land",
+            region_code="66",
+            region_name="Свердловская область",
+            address="Екатеринбург, улица Ленина, 1",
+            auction_status="active",
+            last_update=utc_now(),
+        )
+        session.add_all([cfo, other])
+        session.flush()
+        cfo_id = cfo.id
+        other_id = other.id
+
+    seen: list[str | None] = []
+
+    def resolve(_cadastral_number, address, **_kwargs):
+        seen.append(address)
+        return CadastralObjectResult(
+            query=str(address or ""),
+            lat=57.6261,
+            lon=39.8845,
+            source="fixture",
+            confidence="high",
+        )
+
+    monkeypatch.setattr(geo_backfill, "resolve_lot_geo", resolve)
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert result["strategy_version"] == geo_backfill._GEO_STRATEGY_VERSION
+    assert result["strategy_requeued"] == 0
+    assert result["queued"] == result["processed"] == result["geocoded"] == 1
+    assert seen == ["Ярославль, улица Свободы, 1"]
+    with scope() as session:
+        assert session.get(ProcessedLot, cfo_id).current_geo_lat == 57.6261
+        assert session.get(ProcessedLot, other_id).current_geo_lat is None
