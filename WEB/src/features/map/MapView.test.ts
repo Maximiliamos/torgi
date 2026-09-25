@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DIRECT_PREFETCH_TILE_CONCURRENCY,
+  DIRECT_VISIBLE_TILE_CONCURRENCY,
+  FILTERED_VISIBLE_TILE_CONCURRENCY,
   formatMoscowDate,
   mapBoundsPrecision,
   mapLimitForZoom,
@@ -124,3 +127,13 @@ describe("server-ready Yandex markers", () => {
   });
 });
 
+
+
+describe("Phase 2 Lite tile pressure", () => {
+  it("keeps static S3 tiles fast while bounding filtered API concurrency", () => {
+    expect(DIRECT_VISIBLE_TILE_CONCURRENCY).toBe(12);
+    expect(DIRECT_PREFETCH_TILE_CONCURRENCY).toBe(4);
+    expect(FILTERED_VISIBLE_TILE_CONCURRENCY).toBe(6);
+    expect(FILTERED_VISIBLE_TILE_CONCURRENCY).toBeLessThan(DIRECT_VISIBLE_TILE_CONCURRENCY);
+  });
+});
