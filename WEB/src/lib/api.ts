@@ -194,9 +194,24 @@ export type SourceHealth = {
   source_system: string;
   status: string;
   items_seen: number;
+  last_attempt_at: string | null;
   last_success_at: string | null;
+  last_complete_success_at: string | null;
   last_failure_at: string | null;
   last_error: string | null;
+  last_error_category: string | null;
+  freshness_status: string;
+  coverage_status: string;
+  freshness_age_seconds: number | null;
+  complete_snapshot_age_seconds: number | null;
+  last_duration_ms: number | null;
+  last_complete_source_run: boolean;
+  last_pages_scanned: number;
+  last_items_inserted: number;
+  last_items_updated: number;
+  last_items_unchanged: number;
+  last_items_archived: number;
+  last_items_failed: number;
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
