@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from bankrotai.core import get_settings
-from bankrotai.region_sanity import coordinate_matches_region_sanity
+from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
@@ -401,7 +401,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 )
             ).all()
         points: list[dict] = []
-        spatial_outlier_count = 0
+        spatial_rejection_counts: dict[str, int] = {}
         for row in rows:
             region_code = (
                 normalize_canonical_region_code(
@@ -410,12 +410,15 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 or normalize_canonical_region_code(row.region_code)
                 or row.region_code
             )
-            if not coordinate_matches_region_sanity(
+            spatial_rejection = coordinate_region_sanity_rejection_reason(
                 float(row.centroid_lat),
                 float(row.centroid_lon),
                 region_code,
-            ):
-                spatial_outlier_count += 1
+            )
+            if spatial_rejection:
+                spatial_rejection_counts[spatial_rejection] = (
+                    spatial_rejection_counts.get(spatial_rejection, 0) + 1
+                )
                 continue
             points.append(
                 {
@@ -433,10 +436,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "review_status": row.review_status,
                 }
             )
-        if spatial_outlier_count:
+        if spatial_rejection_counts:
             logger.warning(
-                "Map dataset excluded gross regional coordinate outliers: count=%s",
-                spatial_outlier_count,
+                "Map dataset excluded spatially invalid coordinates: counts=%s",
+                spatial_rejection_counts,
             )
         tile_count = 0
         with session_factory() as session:

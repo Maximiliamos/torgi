@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
-from bankrotai.region_sanity import coordinate_matches_region_sanity
+from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
 
 logger = logging.getLogger(__name__)
 
@@ -1224,9 +1224,17 @@ def validate_geocoding_result(
                 return False, "city_name_mismatch"
             break
 
-    sanity_region = expected_region or canonical_region or named_region
-    if not coordinate_matches_region_sanity(result.lat, result.lon, sanity_region):
-        return False, "region_bounds_mismatch"
+    # Keep the explicit raw code as a final fallback. Unsupported numeric/source
+    # codes must fail closed instead of becoming indistinguishable from a lot
+    # that genuinely has no regional claim.
+    sanity_region = expected_region or canonical_region or named_region or region_code
+    spatial_rejection = coordinate_region_sanity_rejection_reason(
+        result.lat,
+        result.lon,
+        sanity_region,
+    )
+    if spatial_rejection:
+        return False, spatial_rejection
     return True, "validated"
 
 
