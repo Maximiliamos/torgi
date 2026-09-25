@@ -56,6 +56,7 @@ celery_app.conf.update(
     task_routes={
         "bankrotai.tasks.bulk_torgi_gov_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.scheduled_nationwide_refresh_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
@@ -67,6 +68,11 @@ celery_app.conf.update(
         "expire-ended-lots": {
             "task": "bankrotai.tasks.expire_ended_lots_task",
             "schedule": 60.0,
+        },
+        "nationwide-source-refresh": {
+            "task": "bankrotai.tasks.scheduled_nationwide_refresh_task",
+            "schedule": 3600.0,
+            "options": {"expires": 3300},
         },
         "geocode-pending-lots": {
             "task": "bankrotai.tasks.geocode_pending_lots_task",
@@ -516,7 +522,56 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         raise
 
 
-def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
+_FULL_SYNC_MAX_AGE = timedelta(hours=30)
+
+
+def _scheduled_nationwide_sync_mode() -> str:
+    """Use cheap fast refreshes between periodic complete reconciliation runs."""
+    required_sources = {spec.source_id for spec in default_source_specs()}
+    cutoff = _utc_now() - _FULL_SYNC_MAX_AGE
+    with session_scope() as session:
+        fresh_complete_sources = set(
+            session.query(LotSyncSourceRun.source_system)
+            .filter(
+                LotSyncSourceRun.source_system.in_(required_sources),
+                LotSyncSourceRun.status == "success",
+                LotSyncSourceRun.complete_source_run.is_(True),
+                LotSyncSourceRun.finished_at.isnot(None),
+                LotSyncSourceRun.finished_at >= cutoff,
+            )
+            .distinct()
+            .all()
+        )
+    # SQLAlchemy returns one-column rows from Query in a backend-dependent shape.
+    normalized = {
+        value[0] if isinstance(value, tuple) else getattr(value, "source_system", value)
+        for value in fresh_complete_sources
+    }
+    return "fast" if required_sources <= normalized else "full"
+
+
+@celery_app.task(name="bankrotai.tasks.scheduled_nationwide_refresh_task")
+def scheduled_nationwide_refresh_task() -> dict[str, Any]:
+    mode = _scheduled_nationwide_sync_mode()
+    try:
+        run_id = schedule_nationwide_lot_sync(
+            triggered_by="celery-beat",
+            mode=mode,
+            trigger_type=f"scheduled_{mode}",
+        )
+        return {"status": "queued", "mode": mode, "run_id": run_id}
+    except SyncAlreadyRunningError as exc:
+        return {"status": "busy", "mode": mode, "run_id": exc.run_id}
+    except QueueUnavailableError as exc:
+        return {"status": "queue_unavailable", "mode": mode, "error": str(exc)[:500]}
+
+
+def schedule_nationwide_lot_sync(
+    *,
+    triggered_by: str,
+    mode: str = "fast",
+    trigger_type: str | None = None,
+) -> str:
     if mode not in {"fast", "full"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
     is_source_only = mode.startswith("source:")
@@ -529,7 +584,7 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
         # LotSyncRun.trigger_type is a legacy VARCHAR(20). The source identity
         # is represented by LotSyncSourceRun, so keep this operational label
         # stable and within the existing schema limit.
-        trigger_type="manual_source_full" if is_source_only else f"manual_{mode}",
+        trigger_type=trigger_type or ("manual_source_full" if is_source_only else f"manual_{mode}"),
         total_sources=len(specs),
     )
     try:
