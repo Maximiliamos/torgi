@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Structured Photon candidates are deliberately bounded.
+# Structured Photon candidates stay bounded and deterministic across provider-chain updates.
 
 from bankrotai.geo import (
     CadastralObjectResult,
