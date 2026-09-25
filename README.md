@@ -36,6 +36,13 @@ Production WEB доступен по адресу [https://sterdez.online](https
   dataset старой revision и сначала строит/проверяет новый публичный S3 manifest.
 - Production deploy fail-closed: home/REG.RU/Cloudflare gates проверяют health, SHA релиза,
   авторизацию и готовность S3 dataset до переключения канонического пути.
+- Celery beat раз в час запускает nationwide source-refresh. Между полными проходами
+  используется bounded fast-refresh; если полный snapshot хотя бы одного источника старше
+  допустимого окна, coordinator выбирает full sync. Single-active constraint не позволяет
+  накладывать два nationwide sync друг на друга.
+- `/api/sources` показывает отдельно оперативную свежесть последнего успешного refresh и
+  возраст последнего полного snapshot источника; временная ошибка внешнего источника не
+  делает весь WEB/API unhealthy.
 - Rollout выполняется по зависимости **home → REG.RU → Cloudflare**: при смене
   `MAP_DATASET_REVISION` публичные deploy-gates ждут завершения полной пересборки и
   публикации revision-compatible S3 dataset; прежний dataset остаётся current до успешной
