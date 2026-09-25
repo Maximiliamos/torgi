@@ -21,6 +21,7 @@ import {
   fetchMapTile,
   fetchYandexMapTile,
   fetchPublicYandexMapTile,
+  fetchPublicYandexMapBundleTile,
   fetchFilteredYandexMapTile,
   fetchRegions,
   fetchNationwideLotSync,
@@ -35,6 +36,7 @@ import {
   YandexMapFeature,
   YandexMapTilePayload,
   DirectMapFilterQuery,
+  PublicMapBundleSource,
   OperationsProgress,
   RegionOption,
   searchCadastre,
@@ -214,9 +216,17 @@ export function fetchCachedYandexMapTile(
   filters: DirectMapFilterQuery = {},
   maxEntries = MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
   tileBaseUrl: string | null = null,
+  bundleSource: PublicMapBundleSource = {},
 ) {
   const filterKey = directMapFilterSignature(filters);
-  const key = `${mapTileCacheKey(version, tile)}:${filterKey}`;
+  const sourceKey = filterKey
+    ? "filtered-api"
+    : bundleSource.layout === "regional-bundles-v1"
+      ? `bundle:${bundleSource.rootUrl || ""}:${bundleSource.manifestUrl || ""}`
+      : tileBaseUrl
+        ? `public-tiles:${tileBaseUrl}`
+        : "authenticated-api";
+  const key = `${mapTileCacheKey(version, tile)}:${filterKey}:${sourceKey}`;
   const cached = completed.get(key);
   if (cached) {
     completed.delete(key);
@@ -225,14 +235,22 @@ export function fetchCachedYandexMapTile(
   }
   const pending = inflight.get(key);
   if (pending) return pending;
-  const request = (filterKey
-    ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
+  const publicRequest = (
+    bundleSource.layout === "regional-bundles-v1"
+    && bundleSource.rootUrl
+    && bundleSource.manifestUrl
+  )
+    ? fetchPublicYandexMapBundleTile(bundleSource, version, tile.z, tile.x, tile.y)
     : tileBaseUrl
       ? fetchPublicYandexMapTile(tileBaseUrl, tile.z, tile.x, tile.y)
-          .catch((error) => {
-            if (error instanceof DOMException && error.name === "AbortError") throw error;
-            return fetchYandexMapTile(version, tile.z, tile.x, tile.y);
-          })
+      : null;
+  const request = (filterKey
+    ? fetchFilteredYandexMapTile(version, tile.z, tile.x, tile.y, filters)
+    : publicRequest
+      ? publicRequest.catch((error) => {
+          if (error instanceof DOMException && error.name === "AbortError") throw error;
+          return fetchYandexMapTile(version, tile.z, tile.x, tile.y);
+        })
       : fetchYandexMapTile(version, tile.z, tile.x, tile.y))
     .then((payload) => {
       completed.set(key, payload);
@@ -530,7 +548,18 @@ function YandexDesktopMap({
     directFilters,
     MAX_DIRECT_MAP_TILE_CACHE_ENTRIES,
     mapDataset?.tile_base_url || null,
-  ), [directFilters, mapDataset?.tile_base_url]);
+    {
+      layout: mapDataset?.object_store_layout,
+      rootUrl: mapDataset?.bundle_root_url,
+      manifestUrl: mapDataset?.bundle_manifest_url,
+    },
+  ), [
+    directFilters,
+    mapDataset?.tile_base_url,
+    mapDataset?.object_store_layout,
+    mapDataset?.bundle_root_url,
+    mapDataset?.bundle_manifest_url,
+  ]);
   const fulfillDirectTileRequest = React.useCallback(async (data: Record<string, unknown>) => {
     if (!directTileMode || !mapDataset) return;
     const version = String(data.version || "");

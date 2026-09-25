@@ -95,48 +95,131 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
     }>;
     tile_source?: string;
     tile_base_url?: string | null;
+    object_store_layout?: string;
+    bundle_root_url?: string | null;
+    bundle_manifest_url?: string | null;
+    priority_regions?: string[];
   };
   expect(dataset.version).toMatch(/-s3$/);
   expect(dataset.point_count).toBeGreaterThan(0);
   expect(dataset.tile_count).toBeGreaterThan(0);
   expect(dataset.bootstrap_tiles?.length).toBe(9);
   expect(dataset.tile_source).toBe("regru-s3");
-  expect(dataset.tile_base_url).toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\//);
 
-  const tileBaseUrl = String(dataset.tile_base_url).replace(/\/$/, "");
-  let firstTileResponse: Awaited<ReturnType<typeof page.context.request.get>> | null = null;
-  let firstTileUrl = "";
-  for (const tile of dataset.bootstrap_tiles || []) {
-    const candidateUrl = `${tileBaseUrl}/${tile.z}/${tile.x}/${tile.y}.json`;
-    const response = await page.context().request.get(candidateUrl, {
+  const bundled = dataset.object_store_layout === "regional-bundles-v1";
+  let directObjectUrl = "";
+  let firstPayload: {
+    type?: string;
+    features?: Array<{ properties?: Record<string, unknown> }>;
+  } | null = null;
+  let directHeaders: Record<string, string> = {};
+
+  if (bundled) {
+    expect(dataset.bundle_root_url).toBe("https://s3.regru.cloud/sterdez-map");
+    expect(dataset.bundle_manifest_url)
+      .toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\/.*\/manifest\.json$/);
+    expect(dataset.priority_regions).toContain("76");
+
+    const manifestResponse = await page.context().request.get(String(dataset.bundle_manifest_url), {
       headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
       timeout: 30_000,
     });
-    if (response.status() === 200) {
-      firstTileResponse = response;
-      firstTileUrl = candidateUrl;
+    expect(manifestResponse.status()).toBe(200);
+    const manifestHeaders = await manifestResponse.allHeaders();
+    expect(["*", "https://sterdez.online"]).toContain(manifestHeaders["access-control-allow-origin"]);
+    const manifest = await manifestResponse.json() as {
+      version?: string;
+      layout?: string;
+      detail_parent_zoom?: number;
+      overview_parent_zoom?: number;
+      index_shards?: Record<string, string>;
+    };
+    expect(manifest.version).toBe(dataset.version);
+    expect(manifest.layout).toBe("regional-bundles-v1");
+    expect(manifest.detail_parent_zoom).toBe(8);
+    expect(manifest.overview_parent_zoom).toBe(6);
+
+    for (const tile of dataset.bootstrap_tiles || []) {
+      const overviewZoom = Number(manifest.overview_parent_zoom);
+      const detailZoom = Number(manifest.detail_parent_zoom);
+      const shard = tile.z <= overviewZoom
+        ? "overview/root"
+        : tile.z < 12
+          ? `overview/${overviewZoom}/${tile.x >> (tile.z - overviewZoom)}/${tile.y >> (tile.z - overviewZoom)}`
+          : `detail/${detailZoom}/${tile.x >> (tile.z - detailZoom)}/${tile.y >> (tile.z - detailZoom)}`;
+      const indexKey = manifest.index_shards?.[shard];
+      if (!indexKey) continue;
+      const indexUrl = new URL(
+        indexKey,
+        `${String(dataset.bundle_root_url).replace(/\/$/, "")}/`,
+      ).toString();
+      const indexResponse = await page.context().request.get(indexUrl, {
+        headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+        timeout: 30_000,
+      });
+      if (indexResponse.status() !== 200) continue;
+      const indexPayload = await indexResponse.json() as {
+        shard?: string;
+        tiles?: Record<string, { bundle?: string; region?: string }>;
+      };
+      expect(indexPayload.shard).toBe(shard);
+      const entry = indexPayload.tiles?.[`${tile.z}/${tile.x}/${tile.y}`];
+      if (!entry?.bundle) continue;
+      const bundleUrl = new URL(
+        entry.bundle,
+        `${String(dataset.bundle_root_url).replace(/\/$/, "")}/`,
+      ).toString();
+      const bundleResponse = await page.context().request.get(bundleUrl, {
+        headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+        timeout: 30_000,
+      });
+      if (bundleResponse.status() !== 200) continue;
+      const bundlePayload = await bundleResponse.json() as {
+        tiles?: Record<string, {
+          type?: string;
+          features?: Array<{ properties?: Record<string, unknown> }>;
+        }>;
+      };
+      const logicalTile = bundlePayload.tiles?.[`${tile.z}/${tile.x}/${tile.y}`];
+      if (!logicalTile) continue;
+      directObjectUrl = bundleUrl;
+      directHeaders = await bundleResponse.allHeaders();
+      firstPayload = logicalTile;
       break;
     }
+  } else {
+    expect(dataset.tile_base_url).toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\//);
+    const tileBaseUrl = String(dataset.tile_base_url).replace(/\/$/, "");
+    for (const tile of dataset.bootstrap_tiles || []) {
+      const candidateUrl = `${tileBaseUrl}/${tile.z}/${tile.x}/${tile.y}.json`;
+      const response = await page.context().request.get(candidateUrl, {
+        headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+        timeout: 30_000,
+      });
+      if (response.status() === 200) {
+        directObjectUrl = candidateUrl;
+        directHeaders = await response.allHeaders();
+        firstPayload = await response.json() as {
+          type?: string;
+          features?: Array<{ properties?: Record<string, unknown> }>;
+        };
+        break;
+      }
+    }
   }
-  expect(firstTileResponse, "at least one bootstrap tile must exist in REG.RU S3").not.toBeNull();
 
-  const firstHeaders = await firstTileResponse!.allHeaders();
-  expect(firstHeaders["cache-control"]).toContain("public");
-  expect(firstHeaders["cache-control"]).toContain("immutable");
-  expect(["*", "https://sterdez.online"]).toContain(firstHeaders["access-control-allow-origin"]);
-
-  const firstPayload = await firstTileResponse!.json() as {
-    type?: string;
-    features?: Array<{ properties?: Record<string, unknown> }>;
-  };
-  expect(firstPayload.type).toBe("FeatureCollection");
-  expect(Array.isArray(firstPayload.features)).toBe(true);
-  for (const feature of firstPayload.features || []) {
+  expect(firstPayload, "at least one bootstrap tile must be readable from REG.RU S3").not.toBeNull();
+  expect(directHeaders["cache-control"]).toContain("public");
+  expect(directHeaders["cache-control"]).toContain("immutable");
+  expect(["*", "https://sterdez.online"]).toContain(directHeaders["access-control-allow-origin"]);
+  expect(firstPayload!.type).toBe("FeatureCollection");
+  expect(Array.isArray(firstPayload!.features)).toBe(true);
+  for (const feature of firstPayload!.features || []) {
     expect(feature.properties).not.toHaveProperty("review_status");
   }
 
   const started = Date.now();
-  const directRead = await page.context().request.get(firstTileUrl, {
+  const directRead = await page.context().request.get(directObjectUrl, {
     headers: { Origin: "https://sterdez.online" },
     timeout: 30_000,
   });
@@ -157,8 +240,12 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       pointCount: dataset.point_count,
       tileCount: dataset.tile_count,
       tileSource: dataset.tile_source,
-      tileBaseUrl,
-      tileHost: new URL(firstTileUrl).host,
+      objectStoreLayout: dataset.object_store_layout || "tiles",
+      tileBaseUrl: dataset.tile_base_url || null,
+      bundleRootUrl: dataset.bundle_root_url || null,
+      bundleManifestUrl: dataset.bundle_manifest_url || null,
+      directObjectUrl,
+      tileHost: new URL(directObjectUrl).host,
       directReadMs,
       yandexReady,
       yandexHint: hintText,

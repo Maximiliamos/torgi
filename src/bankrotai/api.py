@@ -79,6 +79,7 @@ from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_stat
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
 from bankrotai.services.map_object_store import dataset_public_tile_base_url
+from bankrotai.services.map_bundle_store import CFO_REGION_CODES, REGIONAL_BUNDLE_LAYOUT
 from bankrotai.services.map_runtime import (
     build_filtered_tile,
     get_runtime_index,
@@ -1548,14 +1549,30 @@ def get_current_map_dataset(request: Request):
                 }
             )
 
+        object_store_dataset = dataset.version.endswith("-s3") and settings.map_object_store_enabled
+        regional_bundle_mode = dataset.version.endswith("-bundle-s3") and object_store_dataset
+        object_store_layout = REGIONAL_BUNDLE_LAYOUT if regional_bundle_mode else "tiles"
         tile_base_url = (
             dataset_public_tile_base_url(dataset.version, settings)
-            if dataset.version.endswith("-s3")
+            if object_store_dataset and not regional_bundle_mode
             else None
         )
-        tile_source = "regru-s3" if tile_base_url else "api"
+        bundle_root_url = (
+            settings.map_object_store_public_base_url
+            if object_store_dataset and regional_bundle_mode
+            else None
+        )
+        bundle_manifest_url = (
+            f"{settings.map_object_store_public_base_url.rstrip('/')}/datasets/{dataset.version}/manifest.json"
+            if bundle_root_url and settings.map_object_store_public_base_url
+            else None
+        )
+        tile_source = "regru-s3" if (tile_base_url or bundle_root_url) else "api"
         descriptor_identity = hashlib.sha256(
-            f"{dataset.version}|{tile_source}|{tile_base_url or ''}".encode("utf-8")
+            (
+                f"{dataset.version}|{tile_source}|{object_store_layout}|"
+                f"{tile_base_url or ''}|{bundle_root_url or ''}|{bundle_manifest_url or ''}"
+            ).encode("utf-8")
         ).hexdigest()[:16]
         etag = f'"dataset-{dataset.version}-{descriptor_identity}"'
         headers = {
@@ -1580,6 +1597,10 @@ def get_current_map_dataset(request: Request):
                     "bootstrap_tiles": bootstrap_tiles,
                     "tile_base_url": tile_base_url,
                     "tile_source": tile_source,
+                    "object_store_layout": object_store_layout,
+                    "bundle_root_url": bundle_root_url,
+                    "bundle_manifest_url": bundle_manifest_url,
+                    "priority_regions": sorted(CFO_REGION_CODES) if regional_bundle_mode else [],
                 }
             ),
             headers=headers,

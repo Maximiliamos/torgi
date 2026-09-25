@@ -12,6 +12,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapTile: vi.fn(),
     fetchYandexMapTile: vi.fn(),
     fetchPublicYandexMapTile: vi.fn(),
+    fetchPublicYandexMapBundleTile: vi.fn(),
     fetchFilteredYandexMapTile: vi.fn(),
     fetchMapReviewStatuses: vi.fn(),
     fetchOperationsProgress: vi.fn(),
@@ -28,6 +29,7 @@ import {
   fetchMapTile,
   fetchYandexMapTile,
   fetchPublicYandexMapTile,
+  fetchPublicYandexMapBundleTile,
   fetchFilteredYandexMapTile,
   fetchMapReviewStatuses,
   fetchOperationsProgress,
@@ -126,6 +128,22 @@ describe("direct Yandex tile transport", () => {
         options: { preset: "islands#grayDotIcon" },
       }],
     });
+    vi.mocked(fetchPublicYandexMapBundleTile).mockResolvedValue({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        id: 77,
+        geometry: { type: "Point", coordinates: [55.7, 37.6] },
+        properties: {
+          kind: "lot",
+          lotId: 77,
+          title: "Bundled lot",
+          current_price: 1_000_000,
+          region_code: "76",
+        },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    });
     vi.mocked(fetchMapReviewStatuses).mockResolvedValue({
       items: [{ id: 77, review_status: "approved" }],
     });
@@ -210,6 +228,53 @@ describe("direct Yandex tile transport", () => {
 
     expect(fetchMapTile).not.toHaveBeenCalled();
     expect(fetchMapLotsSWR).not.toHaveBeenCalled();
+  });
+
+  it("uses the regional bundle transport without changing iframe tile semantics", async () => {
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValueOnce({
+      ...dataset,
+      version: "bundle-v1",
+      tile_base_url: null,
+      object_store_layout: "regional-bundles-v1",
+      bundle_root_url: "https://storage.example.test/sterdez-map",
+      bundle_manifest_url: "https://storage.example.test/sterdez-map/datasets/bundle-v1/manifest.json",
+      priority_regions: ["31", "50", "76", "77"],
+    });
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await waitFor(() => expect(fetchCurrentMapDataset).toHaveBeenCalled());
+
+    act(() => send(frame, "bankrotai-ready"));
+    act(() => send(frame, "bankrotai-request-tiles", {
+      version: "bundle-v1",
+      generation: 5,
+      visible: [{ z: 12, x: 2475, y: 1280 }],
+      prefetch: [],
+    }));
+
+    await waitFor(() => expect(fetchPublicYandexMapBundleTile).toHaveBeenCalledWith(
+      {
+        layout: "regional-bundles-v1",
+        rootUrl: "https://storage.example.test/sterdez-map",
+        manifestUrl: "https://storage.example.test/sterdez-map/datasets/bundle-v1/manifest.json",
+      },
+      "bundle-v1",
+      12,
+      2475,
+      1280,
+    ));
+    expect(fetchPublicYandexMapTile).not.toHaveBeenCalled();
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "install-direct-tile",
+        generation: 5,
+        key: "bundle-v1/12/2475/1280",
+      }),
+      "*",
+    ));
   });
 
   it("falls back to the authenticated Yandex tile API when REG.RU storage is unavailable", async () => {

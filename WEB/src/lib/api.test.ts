@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchPublicYandexMapBundleTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -221,6 +221,111 @@ describe("API client", () => {
       new Response(JSON.stringify(payload), { status: 200 }),
     );
     await expect(fetchYandexMapTile("dataset-v1", 12, 1, 1)).resolves.toEqual(payload);
+  });
+
+
+  it("loads multiple logical tiles through one cached manifest, spatial index and regional S3 bundle", async () => {
+    const tileA = {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        id: 76,
+        geometry: { type: "Point" as const, coordinates: [57.6, 39.8] },
+        properties: { kind: "lot" as const, lotId: 76, region_code: "76" },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    };
+    const tileB = {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        id: 77,
+        geometry: { type: "Point" as const, coordinates: [57.7, 39.9] },
+        properties: { kind: "lot" as const, lotId: 77, region_code: "76" },
+        options: { preset: "islands#grayDotIcon" },
+      }],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/datasets/bundle-test/manifest.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          version: "bundle-test",
+          detail_parent_zoom: 8,
+          overview_parent_zoom: 6,
+          index_shards: {
+            "detail/8/156/75": "indexes/v1/bb/index.json",
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/indexes/v1/bb/index.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          shard: "detail/8/156/75",
+          tiles: {
+            "12/2500/1200": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+            "12/2501/1201": { bundle: "bundles/v1/aa/hash.json", region: "76" },
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/bundles/v1/aa/hash.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          region: "76",
+          bucket: "76/p8/156/75",
+          tiles: {
+            "12/2500/1200": tileA,
+            "12/2501/1201": tileB,
+          },
+        }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const source = {
+      layout: "regional-bundles-v1",
+      rootUrl: "https://storage-bundle.example.test/sterdez-map",
+      manifestUrl: "https://storage-bundle.example.test/sterdez-map/datasets/bundle-test/manifest.json",
+    };
+    await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2500, 1200))
+      .resolves.toEqual(tileA);
+    await expect(fetchPublicYandexMapBundleTile(source, "bundle-test", 12, 2501, 1201))
+      .resolves.toEqual(tileB);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/manifest.json");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/indexes/v1/bb/index.json");
+    expect(String(fetchMock.mock.calls[2][0])).toContain("/bundles/v1/aa/hash.json");
+  });
+
+  it("rejects a regional bundle index that tries to escape the configured S3 origin", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/datasets/bundle-escape/manifest.json")) {
+        return new Response(JSON.stringify({
+          layout: "regional-bundles-v1",
+          version: "bundle-escape",
+          detail_parent_zoom: 8,
+          overview_parent_zoom: 6,
+          index_shards: {
+            "detail/8/0/0": "indexes/v1/aa/index.json",
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        layout: "regional-bundles-v1",
+        shard: "detail/8/0/0",
+        tiles: {
+          "12/1/1": { bundle: "https://evil.example.test/bundle.json", region: "76" },
+        },
+      }), { status: 200 });
+    });
+
+    await expect(fetchPublicYandexMapBundleTile({
+      layout: "regional-bundles-v1",
+      rootUrl: "https://storage-escape.example.test/sterdez-map",
+      manifestUrl: "https://storage-escape.example.test/sterdez-map/datasets/bundle-escape/manifest.json",
+    }, "bundle-escape", 12, 1, 1)).rejects.toThrow(/путь bundle/);
   });
 
 });

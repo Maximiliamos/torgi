@@ -774,21 +774,37 @@ jobs:
             sleep 2
           done
           LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
-          curl --fail --silent --show-error --max-time 30 \
-            -H "X-API-Key: $KOYEB_SERVICE_KEY" \
-            -H 'Content-Type: application/json' \
-            -c "$RUNNER_TEMP/home-primary.cookies" \
-            --data "$LOGIN_PAYLOAD" \
-            https://194-226-126-233.sslip.io/api/auth/login >/dev/null
+          login_ok="no"
+          for login_attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 30 \
+              -H "X-API-Key: $KOYEB_SERVICE_KEY" \
+              -H 'Content-Type: application/json' \
+              -c "$RUNNER_TEMP/home-primary.cookies" \
+              --data "$LOGIN_PAYLOAD" \
+              https://194-226-126-233.sslip.io/api/auth/login >/dev/null; then
+              login_ok="yes"
+              break
+            fi
+            printf 'home API login transient failure on attempt %s/12; retrying\n' "$login_attempt"
+            sleep 5
+          done
+          if test "$login_ok" != "yes"; then
+            echo "Staged home API login did not recover; Cloudflare was not changed" >&2
+            exit 1
+          fi
           for dataset_attempt in $(seq 1 180); do
             DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
               -H "X-API-Key: $KOYEB_SERVICE_KEY" \
               -b "$RUNNER_TEMP/home-primary.cookies" \
-              https://194-226-126-233.sslip.io/api/map/datasets/current)"
-            DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and d.get("tile_base_url") else "no")')"
+              https://194-226-126-233.sslip.io/api/map/datasets/current || true)"
+            DATASET_READY="no"
+            if test -n "$DATASET_JSON"; then
+              DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and ((d.get("object_store_layout")=="regional-bundles-v1" and d.get("bundle_root_url") and d.get("bundle_manifest_url")) or (d.get("object_store_layout")!="regional-bundles-v1" and d.get("tile_base_url"))) else "no")' 2>/dev/null || printf 'no')"
+            fi
             if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
               break
             fi
+            printf 'staged REG.RU S3 dataset not ready on attempt %s/180; retrying\n' "$dataset_attempt"
             if test "$dataset_attempt" = 180; then
               echo "Staged home map dataset did not become REG.RU S3-ready" >&2
               exit 1

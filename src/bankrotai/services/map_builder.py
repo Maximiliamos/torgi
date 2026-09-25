@@ -13,6 +13,7 @@ from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.orm import Session, aliased
 
 from bankrotai.core import get_settings
+from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
     yandex_cluster_feature,
@@ -20,6 +21,11 @@ from bankrotai.services.map_payload import (
     yandex_lot_feature,
 )
 from bankrotai.services.map_object_store import publish_dataset_to_object_store
+from bankrotai.services.map_bundle_store import (
+    REGIONAL_BUNDLE_LAYOUT,
+    normalize_map_region_code,
+    publish_dataset_to_regional_bundles,
+)
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -363,8 +369,9 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     started = time.monotonic()
     build_completed = False
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    if get_settings().map_object_store_enabled:
-        version += "-s3"
+    settings = get_settings()
+    if settings.map_object_store_enabled:
+        version += "-bundle-s3" if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT else "-s3"
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
@@ -388,6 +395,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.current_price,
                     ProcessedLot.start_price,
                     ProcessedLot.region_code,
+                    ProcessedLot.cadastral_number,
                     ProcessedLot.auction_status,
                     ProcessedLot.is_archived,
                     ProcessedLot.review_status,
@@ -412,7 +420,14 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "title": row.title,
                 "current_price": float(row.current_price) if row.current_price is not None else None,
                 "start_price": float(row.start_price) if row.start_price is not None else None,
-                "region_code": row.region_code,
+                "region_code": (
+                    normalize_canonical_region_code(
+                        normalize_map_region_code(None, row.cadastral_number)
+                    )
+                    or normalize_canonical_region_code(row.region_code)
+                    or row.region_code
+                ),
+                "bundle_region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
                 "status": row.auction_status,
                 "is_archived": row.is_archived,
                 "review_status": row.review_status,
@@ -507,11 +522,18 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
-        object_store = publish_dataset_to_object_store(
-            session_factory,
-            dataset_id=dataset_id,
-            version=version,
-        )
+        if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT:
+            object_store = publish_dataset_to_regional_bundles(
+                session_factory,
+                dataset_id=dataset_id,
+                version=version,
+            )
+        else:
+            object_store = publish_dataset_to_object_store(
+                session_factory,
+                dataset_id=dataset_id,
+                version=version,
+            )
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,

@@ -754,9 +754,30 @@ def test_legacy_tile_api_remains_private_while_yandex_tiles_are_public_immutable
     assert s3_current.status_code == 200
     assert s3_current.headers["etag"] != current.headers["etag"]
     assert s3_current.json()["tile_source"] == "regru-s3"
+    assert s3_current.json()["object_store_layout"] == "tiles"
     assert s3_current.json()["tile_base_url"] == (
         f"https://map.example.test/public/datasets/{s3_version}/tiles"
     )
+    assert s3_current.json()["bundle_root_url"] is None
+    assert s3_current.json()["bundle_manifest_url"] is None
+
+    bundle_version = s3_version.removesuffix("-s3") + "-bundle-s3"
+    with factory() as session:
+        current_dataset = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current_dataset is not None
+        current_dataset.version = bundle_version
+        session.commit()
+    bundled_current = client.get("/api/map/datasets/current")
+    assert bundled_current.status_code == 200
+    bundled_payload = bundled_current.json()
+    assert bundled_payload["tile_source"] == "regru-s3"
+    assert bundled_payload["object_store_layout"] == "regional-bundles-v1"
+    assert bundled_payload["tile_base_url"] is None
+    assert bundled_payload["bundle_root_url"] == "https://map.example.test/public"
+    assert bundled_payload["bundle_manifest_url"] == (
+        f"https://map.example.test/public/datasets/{bundle_version}/manifest.json"
+    )
+    assert "76" in bundled_payload["priority_regions"]
 
 
 def test_current_dataset_api_hides_unpublished_states(monkeypatch):
