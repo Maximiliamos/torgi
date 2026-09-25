@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai.core import AppSettings
 from bankrotai.db import Base, MapDataset, MapTile
 from bankrotai.services import map_bundle_store
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
 from bankrotai.services.map_bundle_store import (
     CFO_REGION_CODES,
     REGIONAL_BUNDLE_LAYOUT,
@@ -217,6 +218,7 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     assert len(index_keys) == 2
     assert puts[-1][0] == f"datasets/{first_version}/manifest.json"
     first_manifest = __import__("json").loads(puts[-1][1])
+    assert first_manifest["pipeline_revision"] == MAP_DATASET_REVISION
     assert set(first_manifest["bundle_objects"]) == set(bundle_keys)
     assert set(first_manifest["index_shards"].values()) == set(index_keys)
     assert first["regions"]["76"]["point_count"] == 2
