@@ -26,9 +26,10 @@ def _utc_naive(value: datetime | None) -> datetime | None:
 
 def _age_seconds(now: datetime, value: datetime | None) -> int | None:
     normalized = _utc_naive(value)
-    if normalized is None:
+    normalized_now = _utc_naive(now)
+    if normalized is None or normalized_now is None:
         return None
-    return max(0, int((_utc_naive(now) - normalized).total_seconds()))
+    return max(0, int((normalized_now - normalized).total_seconds()))
 
 
 def build_phase3_health(
@@ -62,11 +63,12 @@ def build_phase3_health(
         .order_by(MapDataset.created_at.desc(), MapDataset.id.desc())
         .limit(1)
     )
+    failed_created_at = _utc_naive(latest_failed_map.created_at) if latest_failed_map is not None else None
+    current_published_at = _utc_naive(current.published_at) if current is not None else None
     failed_after_current = bool(
-        latest_failed_map is not None
-        and current is not None
-        and current.published_at is not None
-        and _utc_naive(latest_failed_map.created_at) > _utc_naive(current.published_at)
+        failed_created_at is not None
+        and current_published_at is not None
+        and failed_created_at > current_published_at
     )
     add(
         "map-publication-last-attempt",
@@ -81,10 +83,12 @@ def build_phase3_health(
         .order_by(LotSyncRun.created_at.desc())
         .limit(1)
     )
+    lease_expires_at = _utc_naive(active_sync.lease_expires_at) if active_sync is not None else None
+    normalized_now = _utc_naive(now)
     lease_expired = bool(
-        active_sync is not None
-        and active_sync.lease_expires_at is not None
-        and _utc_naive(active_sync.lease_expires_at) < _utc_naive(now)
+        lease_expires_at is not None
+        and normalized_now is not None
+        and lease_expires_at < normalized_now
     )
     add(
         "source-sync-lease",
