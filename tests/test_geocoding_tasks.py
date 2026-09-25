@@ -77,6 +77,14 @@ def test_beat_keeps_five_minute_watchdogs_but_publication_latency_is_bounded() -
     assert schedule["recover-ik12-cadastral-misses"]["schedule"] == 300.0
     assert schedule["publish-dirty-map-dataset"]["schedule"] == 300.0
     assert tasks._MAP_PUBLICATION_DEBOUNCE_SECONDS == 60
+    fast_schedule = schedule["refresh-nationwide-sources-fast"]["schedule"]
+    full_schedule = schedule["refresh-nationwide-sources-full"]["schedule"]
+    assert fast_schedule.minute == {0, 15, 30, 45}
+    assert schedule["refresh-nationwide-sources-fast"]["args"] == ("fast",)
+    assert schedule["refresh-nationwide-sources-fast"]["options"]["expires"] == 840
+    assert full_schedule.hour == {3}
+    assert full_schedule.minute == {7}
+    assert schedule["refresh-nationwide-sources-full"]["args"] == ("full",)
 
 
 def test_heavy_tasks_use_isolated_queues() -> None:

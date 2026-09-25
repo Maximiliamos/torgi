@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NoReturn
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.schedules import crontab
 from celery.utils import uuid
 
 from bankrotai.core import get_region_sync_slug, get_settings
@@ -42,6 +43,12 @@ _MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
 _GEO_BATCH_LIMIT = settings.geo_batch_limit
 _GEO_CONTINUATION_DELAY_SECONDS = 2
 _MAP_PUBLICATION_DEBOUNCE_SECONDS = 60
+_FAST_NATIONWIDE_REFRESH_SECONDS = 900
+_FULL_NATIONWIDE_REFRESH_SECONDS = 86_400
+_NATIONWIDE_REFRESH_MAX_RETRIES = 3
+_NATIONWIDE_BUSY_RETRY_MAX_RETRIES = 3
+_NATIONWIDE_BUSY_RETRY_SECONDS = 300
+_PARTIAL_SOURCE_RETRY_DELAY_SECONDS = 60
 _QUEUE_INGESTION = "ingestion"
 _QUEUE_GEOCODING = "geocoding"
 _QUEUE_MAP = "map"
@@ -56,6 +63,8 @@ celery_app.conf.update(
     task_routes={
         "bankrotai.tasks.bulk_torgi_gov_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.automatic_nationwide_lot_refresh_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.automatic_nationwide_source_retry_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
@@ -82,6 +91,24 @@ celery_app.conf.update(
             "task": "bankrotai.tasks.recalculate_public_offer_prices_task",
             "schedule": 300.0,
             "options": {"expires": 240},
+        },
+        # Fast discovery reads one page per source and never reconciles missing
+        # inventory. Keeping it on quarter-hour boundaries leaves the daily full
+        # run an intentional offset, rather than asking both jobs to acquire the
+        # durable lease at the same instant.
+        "refresh-nationwide-sources-fast": {
+            "task": "bankrotai.tasks.automatic_nationwide_lot_refresh_task",
+            "schedule": crontab(minute="0,15,30,45"),
+            "args": ("fast",),
+            "options": {"expires": 840},
+        },
+        "refresh-nationwide-sources-full": {
+            "task": "bankrotai.tasks.automatic_nationwide_lot_refresh_task",
+            # The daily full run is bounded by the ingestion task's production
+            # time limit and is the only cadence allowed to archive.
+            "schedule": crontab(hour=3, minute=7),
+            "args": ("full",),
+            "options": {"expires": 3_600},
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
@@ -341,6 +368,62 @@ def _is_transient_sync_error(exc: Exception) -> bool:
     )
 
 
+def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
+    """Return whether an ingestion result can have changed public map content."""
+    if int(result.get("expired_after_auction") or 0) > 0:
+        return True
+    changed_fields = ("items_inserted", "items_updated", "items_archived", "duplicates_merged")
+    return any(
+        isinstance(source, dict) and any(int(source.get(field) or 0) > 0 for field in changed_fields)
+        for source in result.get("sources", [])
+    )
+
+
+def _failed_source_systems(result: dict[str, Any]) -> tuple[str, ...]:
+    """Return each failed source once, preserving the ingestion result order."""
+    failed: list[str] = []
+    for source in result.get("sources", []):
+        if not isinstance(source, dict) or source.get("status") != "failed":
+            continue
+        source_system = source.get("source_system")
+        if isinstance(source_system, str) and source_system and source_system not in failed:
+            failed.append(source_system)
+    return tuple(failed)
+
+
+def _schedule_partial_source_retries(
+    result: dict[str, Any],
+    *,
+    source_mode: str,
+) -> list[dict[str, str | int]]:
+    """Retry failed sources in the originating scope; successful peers stay out."""
+    scheduled: list[dict[str, str | int]] = []
+    for source_system in _failed_source_systems(result):
+        try:
+            queued = automatic_nationwide_source_retry_task.apply_async(
+                args=[source_system, source_mode],
+                countdown=_PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+            )
+            scheduled.append(
+                {
+                    "source_system": source_system,
+                    "status": "queued",
+                    "task_id": str(queued.id),
+                    "countdown_seconds": _PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+                }
+            )
+        except Exception as exc:
+            logger.exception("Could not schedule targeted retry for source %s", source_system)
+            scheduled.append(
+                {
+                    "source_system": source_system,
+                    "status": "schedule_failed",
+                    "error": str(exc)[:500],
+                }
+            )
+    return scheduled
+
+
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.bulk_torgi_gov_sync_task",
@@ -457,30 +540,25 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
 def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
         if mode == "fast":
-            with session_scope() as session:
-                latest_gis = (
-                    session.query(LotSyncSourceRun)
-                    .filter_by(
-                        source_system="torgi.gov.ru",
-                        status="success",
-                        complete_source_run=True,
-                    )
-                    .order_by(LotSyncSourceRun.finished_at.desc())
-                    .first()
-                )
-                overlap_start = (
-                    latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
-                ) - timedelta(days=1)
-            specs = fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat())
+            specs = _fast_nationwide_source_specs()
         elif mode == "full":
             specs = default_source_specs()
+        elif mode.startswith("source-fast:"):
+            source_system = mode.removeprefix("source-fast:")
+            specs = tuple(spec for spec in _fast_nationwide_source_specs() if spec.source_id == source_system)
+            if not specs:
+                raise ValueError(f"Unsupported source-only fast sync: {source_system}")
         elif mode.startswith("source:"):
             specs = source_full_specs(mode.removeprefix("source:"))
         else:
             raise ValueError(f"Unsupported nationwide sync mode: {mode}")
         result = run_nationwide_sync(SessionLocal, run_id, specs)
         if result.get("status") in {"success", "partial"}:
-            result["map_dataset_build"] = _schedule_map_dataset_build()
+            result["map_dataset_build"] = (
+                _schedule_map_dataset_build()
+                if _sync_changed_map_membership(result)
+                else {"status": "skipped", "reason": "no-map-affecting-source-changes"}
+            )
             try:
                 with session_scope() as session:
                     run = session.get(LotSyncRun, run_id)
@@ -514,6 +592,114 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
                 source_run.error_message = error_message
         logger.exception("Nationwide lot sync %s failed", run_id)
         raise
+
+
+@celery_app.task(bind=True, name="bankrotai.tasks.automatic_nationwide_lot_refresh_task")
+def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
+    """Run one beat-triggered nationwide refresh under the durable run lease."""
+    if mode not in {"fast", "full"}:
+        raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
+    return _run_automatic_nationwide_refresh(
+        self,
+        mode=mode,
+        trigger_type=f"scheduled_{mode}",
+        total_sources=len(default_source_specs()),
+        retry_if_busy=mode == "full",
+    )
+
+
+@celery_app.task(bind=True, name="bankrotai.tasks.automatic_nationwide_source_retry_task")
+def automatic_nationwide_source_retry_task(self, source_system: str, source_mode: str) -> dict[str, Any]:
+    """Bound a retry of one failed source without re-running successful peers."""
+    if source_mode == "fast":
+        mode = f"source-fast:{source_system}"
+        # Validation occurs in nationwide_lot_sync_task, after it computes the
+        # same fast GIS overlap window as the originating run.
+        total_sources = 1
+    elif source_mode == "full":
+        mode = f"source:{source_system}"
+        total_sources = len(source_full_specs(source_system))
+    else:
+        raise ValueError(f"Unsupported source retry mode: {source_mode}")
+    return _run_automatic_nationwide_refresh(
+        self,
+        mode=mode,
+        trigger_type="scheduled_retry",
+        total_sources=total_sources,
+        retry_if_busy=True,
+    )
+
+
+def _run_automatic_nationwide_refresh(
+    task: Any,
+    *,
+    mode: str,
+    trigger_type: str,
+    total_sources: int,
+    retry_if_busy: bool,
+) -> dict[str, Any]:
+    """Create a durable run before work and preserve explicit retry diagnostics."""
+    service = NationwideIngestionService(SessionLocal)
+    try:
+        run_id = service.create_run(
+            triggered_by="celery-beat",
+            trigger_type=trigger_type,
+            total_sources=total_sources,
+        )
+    except SyncAlreadyRunningError as exc:
+        if retry_if_busy:
+            _retry_automatic_refresh(
+                task,
+                exc,
+                max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+                base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+            )
+        return {"status": "skipped", "reason": "already_running", "run_id": exc.run_id}
+
+    try:
+        result = nationwide_lot_sync_task.run(run_id, mode)
+        if result.get("status") != "failed":
+            response = {"run_id": run_id, **result}
+            if result.get("status") == "partial":
+                source_retries = _schedule_partial_source_retries(result, source_mode="fast" if mode == "fast" else "full")
+                if source_retries:
+                    response["targeted_source_retries"] = source_retries
+            return response
+        raise RuntimeError("Nationwide source refresh completed with failed status")
+    except Exception as exc:
+        _retry_automatic_refresh(task, exc)
+
+
+def _retry_automatic_refresh(
+    task: Any,
+    exc: Exception,
+    *,
+    max_retries: int = _NATIONWIDE_REFRESH_MAX_RETRIES,
+    base_delay_seconds: int = 60,
+) -> NoReturn:
+    if task.request.retries >= max_retries:
+        raise exc
+    countdown = min(900, base_delay_seconds * (2 ** task.request.retries))
+    raise task.retry(exc=exc, countdown=countdown, max_retries=max_retries) from exc
+
+
+def _fast_nationwide_source_specs() -> tuple[Any, ...]:
+    """Build the bounded, non-reconciling source set used by fast retries too."""
+    with session_scope() as session:
+        latest_gis = (
+            session.query(LotSyncSourceRun)
+            .filter_by(
+                source_system="torgi.gov.ru",
+                status="success",
+                complete_source_run=True,
+            )
+            .order_by(LotSyncSourceRun.finished_at.desc())
+            .first()
+        )
+        overlap_start = (
+            latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
+        ) - timedelta(days=1)
+    return fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat())
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:

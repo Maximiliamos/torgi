@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import pytest
+from celery.exceptions import Retry
 from fastapi.testclient import TestClient
 
 from bankrotai import api, tasks
@@ -104,7 +105,11 @@ def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
 
 
 def test_completed_ingestion_survives_map_build_queue_failure(monkeypatch) -> None:
-    monkeypatch.setattr(tasks, "run_nationwide_sync", lambda *_args: {"status": "success"})
+    monkeypatch.setattr(
+        tasks,
+        "run_nationwide_sync",
+        lambda *_args: {"status": "success", "sources": [{"items_inserted": 1}]},
+    )
     monkeypatch.setattr(
         tasks.build_map_dataset_task,
         "delay",
@@ -150,6 +155,211 @@ def test_transient_errors_are_classified_for_retry() -> None:
     assert tasks._is_transient_sync_error(TimeoutError("read timeout"))
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 400 invalid filter"))
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 401"))
+
+
+def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> None:
+    created: dict = {}
+
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **kwargs):
+            created.update(kwargs)
+            return "scheduled-run"
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "run",
+        lambda run_id, mode: {"status": "partial", "mode": mode, "run_id": run_id},
+    )
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
+
+    assert result == {"status": "partial", "mode": "fast", "run_id": "scheduled-run"}
+    assert created == {
+        "triggered_by": "celery-beat",
+        "trigger_type": "scheduled_fast",
+        "total_sources": 5,
+    }
+
+
+def test_automatic_nationwide_refresh_skips_existing_run(monkeypatch) -> None:
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **_kwargs):
+            raise SyncAlreadyRunningError("active-run")
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+
+    assert tasks.automatic_nationwide_lot_refresh_task.run("fast") == {
+        "status": "skipped",
+        "reason": "already_running",
+        "run_id": "active-run",
+    }
+
+
+def test_automatic_full_refresh_retries_an_active_lease(monkeypatch) -> None:
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **_kwargs):
+            raise SyncAlreadyRunningError("fast-run")
+
+    captured: dict = {}
+
+    def retry(**kwargs):
+        captured.update(kwargs)
+        raise Retry()
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks.automatic_nationwide_lot_refresh_task, "retry", retry)
+
+    with pytest.raises(Retry):
+        tasks.automatic_nationwide_lot_refresh_task.run("full")
+
+    assert captured["countdown"] == tasks._NATIONWIDE_BUSY_RETRY_SECONDS
+    assert captured["max_retries"] == tasks._NATIONWIDE_BUSY_RETRY_MAX_RETRIES
+
+
+def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> None:
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **_kwargs):
+            return "scheduled-run"
+
+    queued: list[tuple[str, str, int]] = []
+
+    class Queued:
+        id = "source-retry-1"
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "run",
+        lambda _run_id, _mode: {
+            "status": "partial",
+            "sources": [
+                {"source_system": "torgi.gov.ru", "status": "success"},
+                {"source_system": "tbankrot.ru", "status": "failed"},
+                {"source_system": "tbankrot.ru", "status": "failed"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args[0], args[1], countdown)) or Queued(),
+    )
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
+
+    assert queued == [("tbankrot.ru", "fast", tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS)]
+    assert result["targeted_source_retries"] == [
+        {
+            "source_system": "tbankrot.ru",
+            "status": "queued",
+            "task_id": "source-retry-1",
+            "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+        }
+    ]
+
+
+def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) -> None:
+    created: dict = {}
+
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **kwargs):
+            created.update(kwargs)
+            return "retry-run"
+
+    captured: dict = {}
+
+    def retry(**kwargs):
+        captured.update(kwargs)
+        raise Retry()
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "run",
+        lambda _run_id, _mode: {"status": "failed", "sources": [{"source_system": "tbankrot.ru", "status": "failed"}]},
+    )
+    monkeypatch.setattr(tasks.automatic_nationwide_source_retry_task, "retry", retry)
+
+    with pytest.raises(Retry):
+        tasks.automatic_nationwide_source_retry_task.run("tbankrot.ru", "full")
+
+    assert created == {
+        "triggered_by": "celery-beat",
+        "trigger_type": "scheduled_retry",
+        "total_sources": 1,
+    }
+    assert captured["max_retries"] == tasks._NATIONWIDE_REFRESH_MAX_RETRIES
+
+
+def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:
+    captured: dict = {}
+    bounded_spec = tasks.fast_source_specs(gis_publish_date_from="2026-09-25")[1]
+
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **_kwargs):
+            return "fast-retry-run"
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks, "_fast_nationwide_source_specs", lambda: (bounded_spec,))
+    monkeypatch.setattr(
+        tasks,
+        "run_nationwide_sync",
+        lambda _sessions, _run_id, specs: captured.update(specs=specs) or {"status": "success", "sources": []},
+    )
+
+    result = tasks.automatic_nationwide_source_retry_task.run("tbankrot.ru", "fast")
+
+    assert result["status"] == "success"
+    assert len(captured["specs"]) == 1
+    assert captured["specs"][0].source_id == "tbankrot.ru"
+    assert captured["specs"][0].reconcile_missing is False
+    assert captured["specs"][0].max_batches == 1
+
+
+def test_noop_ingestion_skips_map_build(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tasks,
+        "run_nationwide_sync",
+        lambda *_args: {
+            "status": "success",
+            "sources": [
+                {
+                    "items_inserted": 0,
+                    "items_updated": 0,
+                    "items_archived": 0,
+                    "duplicates_merged": 0,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_map_dataset_build",
+        lambda: (_ for _ in ()).throw(AssertionError("no-op sync must not rebuild the map")),
+    )
+
+    result = tasks.nationwide_lot_sync_task.run("run-without-database-row", "source:bidexpert.ru")
+
+    assert result["map_dataset_build"] == {"status": "skipped", "reason": "no-map-affecting-source-changes"}
 
 
 class _Session:

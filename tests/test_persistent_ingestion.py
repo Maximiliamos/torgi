@@ -569,6 +569,24 @@ def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:
     assert result["status"] == "success"
 
 
+def test_slow_source_request_renews_lease_before_page_completion(sessions, monkeypatch) -> None:
+    class SlowConnector(FakeConnector):
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            await asyncio.sleep(0.03)
+            return await super().search(filters, cursor)
+
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: SlowConnector([[lot()]]))
+    service._lease_heartbeat_interval_seconds = 0.01
+    renewals: list[str] = []
+    monkeypatch.setattr(service, "_heartbeat", lambda run_id: renewals.append(run_id))
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+
+    result = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}),)))
+
+    assert result["status"] == "success"
+    assert renewals.count(run_id) >= 3
+
+
 def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_with(service, FakeConnector([[lot("yaroslavl"), lot("moscow", region_code="77")]]))
