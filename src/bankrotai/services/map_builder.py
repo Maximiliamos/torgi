@@ -30,6 +30,9 @@ from bankrotai.services.map_bundle_store import (
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
+# Bump only when map membership/payload semantics change. Deployment checks
+# this token so a dataset built by older map logic cannot remain current.
+MAP_DATASET_REVISION = "r2"
 MAX_WEB_MERCATOR_LAT = 85.05112878
 _PROMOTION_ADVISORY_LOCK_KEY = 4_367_936_669_506_901_092
 logger = logging.getLogger(__name__)
@@ -358,7 +361,13 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     settings = get_settings()
     if settings.map_object_store_enabled:
-        version += "-bundle-s3" if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT else "-s3"
+        version += (
+            f"-{MAP_DATASET_REVISION}-bundle-s3"
+            if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT
+            else f"-{MAP_DATASET_REVISION}-s3"
+        )
+    else:
+        version += f"-{MAP_DATASET_REVISION}"
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)
