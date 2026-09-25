@@ -773,9 +773,9 @@ class PhotonGeocoder:
             return re.sub(r"\s+", "", value.casefold()).translate(confusables).split("/", 1)[0]
 
         expected_house = normalize_house(house_match.group(1)) if house_match else ""
-        from bankrotai.regions import normalize_region_code
+        from bankrotai.regions import normalize_region_code, region_code_from_text
 
-        expected_region = normalize_region_code(address)
+        expected_region = region_code_from_text(address) or normalize_region_code(address)
         expected_locality = expected_locality_name(address)
         scored: list[tuple[int, int, dict[str, Any]]] = []
         for query_index, candidate in enumerate(build_geocoding_address_candidates(address)):
@@ -794,11 +794,32 @@ class PhotonGeocoder:
             for feature in features:
                 props = feature.get("properties") or {}
                 place_name = props.get("name") if props.get("osm_key") == "place" else None
-                city = str(props.get("city") or props.get("town") or props.get("village") or place_name or "")
+                locality_values = [
+                    props.get("city"),
+                    props.get("town"),
+                    props.get("village"),
+                    props.get("hamlet"),
+                    props.get("locality"),
+                    props.get("district"),
+                    props.get("county"),
+                    props.get("municipality"),
+                    place_name,
+                ]
+                locality_text = " ".join(str(value) for value in locality_values if value).casefold()
+                city = str(
+                    props.get("city")
+                    or props.get("town")
+                    or props.get("village")
+                    or props.get("hamlet")
+                    or props.get("locality")
+                    or props.get("district")
+                    or place_name
+                    or ""
+                )
                 state = str(props.get("state") or "")
                 street = str(props.get("street") or "")
                 house = normalize_house(str(props.get("housenumber") or ""))
-                if expected_locality and expected_locality not in city.casefold():
+                if expected_locality and expected_locality not in locality_text:
                     continue
                 if expected_street and street and expected_street not in street.casefold():
                     continue
@@ -808,14 +829,14 @@ class PhotonGeocoder:
                     continue
                 haystack = " ".join(str(value) for value in props.values()).casefold()
                 score = sum(token in haystack for token in expected)
-                score += 4 if expected_locality and expected_locality in city.casefold() else 0
+                score += 4 if expected_locality and expected_locality in locality_text else 0
                 score += 3 if expected_street and expected_street in street.casefold() else 0
                 score += 2 if expected_region and normalize_region_code(state) == expected_region else 0
                 score += 2 if expected_house and house == expected_house else 0
                 scored.append((score, -query_index, feature))
                 exact_candidate_found = bool(
                     expected_locality
-                    and expected_locality in city.casefold()
+                    and expected_locality in locality_text
                     and (not expected_street or expected_street in street.casefold())
                     and (not expected_region or normalize_region_code(state) == expected_region)
                     and (not expected_house or house == expected_house)
@@ -834,7 +855,13 @@ class PhotonGeocoder:
         matched_address = ", ".join(
             str(value)
             for value in (
-                props.get("city") or props.get("town") or props.get("village") or props.get("name"),
+                props.get("city")
+                or props.get("town")
+                or props.get("village")
+                or props.get("hamlet")
+                or props.get("locality")
+                or props.get("district")
+                or props.get("name"),
                 props.get("street"),
                 props.get("housenumber"),
                 props.get("state"),
