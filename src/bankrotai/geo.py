@@ -1036,6 +1036,11 @@ def resolve_lot_geo(
             continue
         seen_cadastral.add(normalized)
         cadastral_candidates.append(normalized)
+        # Composite auction lots can contain dozens of parcel/unit numbers.
+        # Bound provider load while still covering the common building + land
+        # and multi-parcel cases.
+        if len(cadastral_candidates) >= 5:
+            break
 
     address_candidates = build_geocoding_address_candidates(
         address,
