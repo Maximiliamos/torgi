@@ -76,3 +76,17 @@ def test_home_rollout_rebuilds_and_verifies_stale_map_revision() -> None:
     assert '"*-$revision-bundle-s3"' in workflow
     assert "pipeline_revision" in workflow
     assert "wrong pipeline revision" in workflow
+
+
+def test_revision_rebuild_wait_windows_cover_home_publication() -> None:
+    regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "timeout-minutes: 60" in regru
+    assert "for dataset_attempt in $(seq 1 600); do" in regru
+    assert '"$dataset_attempt" = 600' in regru
+
+    assert "timeout-minutes: 90" in cloudflare
+    assert "for attempt in $(seq 1 720); do" in cloudflare
+    assert "for dataset_attempt in $(seq 1 600); do" in cloudflare
+    assert '"$dataset_attempt" = 600' in cloudflare
