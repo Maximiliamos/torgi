@@ -46,6 +46,10 @@ def _factory():
                 start_price=price,
                 current_price=price,
                 auction_status="active",
+                current_geo_lat=lat,
+                current_geo_lon=lon,
+                current_geo_source="test",
+                current_geo_confidence="high",
             )
             session.add(lot)
             session.flush()
@@ -166,6 +170,10 @@ def test_runtime_index_switches_atomically_to_a_new_dataset_version():
             region_code="78",
             start_price=Decimal("4000000"),
             auction_status="active",
+            current_geo_lat=59.93,
+            current_geo_lon=30.33,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(lot)
         session.flush()
