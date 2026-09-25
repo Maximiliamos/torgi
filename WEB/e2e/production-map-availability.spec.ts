@@ -1,4 +1,17 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+const mapDatasetVersionSource = readFileSync(
+  new URL("../../src/bankrotai/services/map_dataset_version.py", import.meta.url),
+  "utf8",
+);
+const MAP_DATASET_REVISION = mapDatasetVersionSource.match(
+  /^MAP_DATASET_REVISION\s*=\s*"([^"]+)"$/m,
+)?.[1];
+
+if (!MAP_DATASET_REVISION) {
+  throw new Error("MAP_DATASET_REVISION is missing from map_dataset_version.py");
+}
 
 test.skip(
   process.env.E2E_PRODUCTION_AUDIT !== "1",
@@ -35,6 +48,7 @@ test("direct map serves five spatial shards without the bulk viewport API", asyn
     bundle_manifest_url?: string | null;
   };
   expect(dataset.object_store_layout).toBe("regional-bundles-v1");
+  expect(dataset.version).toMatch(new RegExp(`-${MAP_DATASET_REVISION}-bundle-s3$`));
   expect(dataset.bundle_root_url).toBe("https://s3.regru.cloud/sterdez-map");
   expect(dataset.bundle_manifest_url).toBeTruthy();
 
@@ -44,8 +58,10 @@ test("direct map serves five spatial shards without the bulk viewport API", asyn
   });
   expect(manifestResponse.status()).toBe(200);
   const manifest = await manifestResponse.json() as {
+    pipeline_revision?: string;
     index_shards?: Record<string, string>;
   };
+  expect(manifest.pipeline_revision).toBe(MAP_DATASET_REVISION);
   const sampleShards = Object.entries(manifest.index_shards || {})
     .filter(([name]) => name.startsWith("detail/8/"))
     .slice(0, 5);
@@ -163,6 +179,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
   let directHeaders: Record<string, string> = {};
 
   if (bundled) {
+    expect(dataset.version).toMatch(new RegExp(`-${MAP_DATASET_REVISION}-bundle-s3$`));
     expect(dataset.bundle_root_url).toBe("https://s3.regru.cloud/sterdez-map");
     expect(dataset.bundle_manifest_url)
       .toMatch(/^https:\/\/s3\.regru\.cloud\/sterdez-map\/datasets\/.*\/manifest\.json$/);
@@ -177,12 +194,14 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
     expect(["*", "https://sterdez.online"]).toContain(manifestHeaders["access-control-allow-origin"]);
     const manifest = await manifestResponse.json() as {
       version?: string;
+      pipeline_revision?: string;
       layout?: string;
       detail_parent_zoom?: number;
       overview_parent_zoom?: number;
       index_shards?: Record<string, string>;
     };
     expect(manifest.version).toBe(dataset.version);
+    expect(manifest.pipeline_revision).toBe(MAP_DATASET_REVISION);
     expect(manifest.layout).toBe("regional-bundles-v1");
     expect(manifest.detail_parent_zoom).toBe(8);
     expect(manifest.overview_parent_zoom).toBe(6);
