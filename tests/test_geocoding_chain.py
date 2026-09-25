@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Keep fallback coverage deterministic across provider-chain changes.
+
 from bankrotai.geo import CadastralObjectResult, resolve_lot_geo, validate_geocoding_result
 
 
