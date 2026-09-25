@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
@@ -198,7 +199,12 @@ def _tile_bounds_from_payload(payload: dict[str, Any]) -> list[float] | None:
         lons.append(lon)
     if not lats:
         return None
-    return [min(lons), min(lats), max(lons), max(lats)]
+    return [min(lons), min(lats), max(lons), maxdef _dataset_pipeline_revision(version: str) -> str | None:
+    match = re.search(r"-(r\\d+)(?:-bundle)?-s3$", version)
+    return match.group(1) if match else None
+
+
+(lats)]
 
 
 def publish_dataset_to_regional_bundles(
@@ -472,6 +478,7 @@ def publish_dataset_to_regional_bundles(
     manifest = {
         "version": version,
         "layout": REGIONAL_BUNDLE_LAYOUT,
+        "pipeline_revision": _dataset_pipeline_revision(version),
         "point_count": point_count,
         "tile_count": expected_tile_count,
         "bundle_count": len(bundle_specs),
