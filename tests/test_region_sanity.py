@@ -1,6 +1,7 @@
 from bankrotai.region_sanity import (
     REGION_SANITY_ENVELOPES,
     coordinate_matches_region_sanity,
+    coordinate_region_sanity_rejection_reason,
     uncovered_canonical_region_codes,
 )
 from bankrotai.regions import REGION_DIRECTORY
@@ -42,6 +43,21 @@ def test_known_cross_country_outliers_are_rejected() -> None:
         assert not coordinate_matches_region_sanity(lat, lon, code)
 
 
-def test_unknown_region_is_not_rejected_by_guesswork() -> None:
+def test_missing_region_is_retained_when_no_claim_can_be_validated() -> None:
     assert coordinate_matches_region_sanity(0.0, 0.0, None)
-    assert coordinate_matches_region_sanity(0.0, 0.0, "unknown")
+
+
+def test_explicit_unsupported_region_is_rejected_fail_closed() -> None:
+    for code in ("88", "90", "91", "93", "95", "unknown"):
+        assert not coordinate_matches_region_sanity(55.0, 37.0, code)
+        assert (
+            coordinate_region_sanity_rejection_reason(55.0, 37.0, code)
+            == "unsupported_region_code"
+        )
+
+
+def test_out_of_bounds_region_has_distinct_diagnostic_reason() -> None:
+    assert (
+        coordinate_region_sanity_rejection_reason(55.0, 127.5, "02")
+        == "region_bounds_mismatch"
+    )

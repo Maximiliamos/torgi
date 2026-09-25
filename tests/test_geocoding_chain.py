@@ -202,6 +202,26 @@ def test_canonical_region_code_rejects_outlier_without_cadastre_or_region_name()
     assert reason == "region_bounds_mismatch"
 
 
+def test_explicit_unsupported_region_code_rejects_new_geo_result() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="address-only",
+            lat=55.75,
+            lon=37.62,
+            source="photon",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number=None,
+        address=None,
+        region_name=None,
+        region_code="90",
+    )
+
+    assert valid is False
+    assert reason == "unsupported_region_code"
+
+
 def test_canonical_region_code_keeps_valid_address_only_coordinate() -> None:
     valid, reason = validate_geocoding_result(
         CadastralObjectResult(

@@ -126,13 +126,23 @@ def coordinate_matches_region_sanity(
     lon: float,
     region_code: str | None,
 ) -> bool:
+    return coordinate_region_sanity_rejection_reason(lat, lon, region_code) is None
+
+
+def coordinate_region_sanity_rejection_reason(
+    lat: float,
+    lon: float,
+    region_code: str | None,
+) -> str | None:
     code = normalize_region_code(region_code)
     if code is None:
-        return True
+        return "unsupported_region_code" if str(region_code or "").strip() else None
     envelope = REGION_SANITY_ENVELOPES.get(code)
     if envelope is None:
-        return True
-    return envelope.contains(lat, lon)
+        return "unsupported_region_code"
+    if not envelope.contains(lat, lon):
+        return "region_bounds_mismatch"
+    return None
 
 
 def uncovered_canonical_region_codes() -> set[str]:
