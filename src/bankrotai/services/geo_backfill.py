@@ -40,6 +40,12 @@ _GEOCODING_PAUSED_KEY = "geocoding_paused"
 _ETA_SAMPLE_BATCHES = 20
 _SAVE_CHUNK_SIZE = 100
 _CAMPAIGN_TASK_ID = re.compile(r"^(geo-\d{8}-\d{6})-")
+_GEO_STRATEGY_SETTING_KEY = "geocoding_strategy_version"
+_GEO_STRATEGY_VERSION = "2026-09-25-photon-structured-cfo-v1"
+_CFO_REGION_CODES = frozenset({
+    "31", "32", "33", "36", "37", "40", "44", "46", "48",
+    "50", "57", "62", "67", "68", "69", "71", "76", "77",
+})
 
 
 def _elapsed_seconds_since(value: datetime) -> int:
@@ -66,6 +72,64 @@ def set_geocoding_paused(session: Any, paused: bool) -> bool:
         setting.value = "true" if paused else "false"
     session.flush()
     return paused
+
+
+def _refresh_failures_for_current_strategy(session: Any) -> int:
+    """Allow a materially improved resolver to retry old failures immediately once.
+
+    Retry backoff reaches seven days after repeated misses. Without a strategy
+    marker, newly deployed provider/candidate improvements would not reach much
+    of the backlog until the old timer elapsed. The marker makes the reset
+    idempotent across deploys and workers.
+    """
+
+    marker = session.scalar(
+        select(AppSetting).where(AppSetting.key == _GEO_STRATEGY_SETTING_KEY)
+    )
+    if marker is not None and marker.value == _GEO_STRATEGY_VERSION:
+        return 0
+
+    retryable_lot_ids = select(ProcessedLot.id).where(
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+        or_(
+            ProcessedLot.cadastral_number.is_not(None),
+            ProcessedLot.address.is_not(None),
+        ),
+        ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+    )
+
+    failures = session.scalars(
+        select(GeoFailure).where(GeoFailure.lot_id.in_(retryable_lot_ids))
+    ).all()
+    requeued = 0
+    now = utc_now()
+    for failure in failures:
+        message = str(failure.error_message or "")
+        # Strategy refresh is for provider/candidate misses and validation
+        # changes, not arbitrary operational exceptions.
+        if (
+            "no_coordinates" not in message
+            and "mismatch" not in message
+            and "No validated" not in message
+            and "Geocoding chain returned no result" not in message
+        ):
+            continue
+        failure.status = "queued"
+        failure.attempt_count = 0
+        failure.next_retry_at = now
+        requeued += 1
+
+    if marker is None:
+        marker = AppSetting(
+            key=_GEO_STRATEGY_SETTING_KEY,
+            value=_GEO_STRATEGY_VERSION,
+        )
+        session.add(marker)
+    else:
+        marker.value = _GEO_STRATEGY_VERSION
+    session.commit()
+    return requeued
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,6 +825,7 @@ def _geocode_pending_lots_unlocked(
     batch_limit = max(1, min(limit, 1000))
     now = utc_now()
     with session_factory() as session:
+        strategy_requeued = _refresh_failures_for_current_strategy(session)
         latest_geo_id = (
             select(func.max(LotGeoSnapshot.id))
             .where(LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -812,6 +877,10 @@ def _geocode_pending_lots_unlocked(
                 or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
             )
             .order_by(
+                case(
+                    (ProcessedLot.region_code.in_(_CFO_REGION_CODES), 0),
+                    else_=1,
+                ),
                 GeoFailure.id.is_(None).desc(),
                 ProcessedLot.needs_geo_check.desc(),
                 ProcessedLot.last_update.desc(),
@@ -824,6 +893,8 @@ def _geocode_pending_lots_unlocked(
     for item in items:
         groups.setdefault(_work_key(item), []).append(item)
     result: dict[str, Any] = {
+        "strategy_version": _GEO_STRATEGY_VERSION,
+        "strategy_requeued": strategy_requeued,
         "queued": len(items),
         "processed": 0,
         "geocoded": 0,
