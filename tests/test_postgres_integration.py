@@ -216,6 +216,10 @@ def test_postgres_serializes_concurrent_map_promotions(engine) -> None:
 def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
     with Session(engine) as session:
         lot = _lot("pg-map-lot", title="Mapped PostgreSQL lot", region_slug="76")
+        lot.current_geo_lat = 57.6261
+        lot.current_geo_lon = 39.8845
+        lot.current_geo_source = "ci"
+        lot.current_geo_confidence = "high"
         session.add(lot)
         session.flush()
         session.add(
@@ -246,10 +250,9 @@ def test_postgres_ready_map_and_explain_analyze(engine, monkeypatch) -> None:
             EXPLAIN (ANALYZE, FORMAT JSON)
             SELECT p.id
             FROM processed_lots AS p
-            JOIN lot_geo_snapshots AS g ON g.lot_id = p.id
             WHERE p.is_archived = false
-              AND g.centroid_lat BETWEEN 57 AND 58
-              AND g.centroid_lon BETWEEN 39 AND 40
+              AND p.current_geo_lat BETWEEN 57 AND 58
+              AND p.current_geo_lon BETWEEN 39 AND 40
             ORDER BY p.last_update DESC
             LIMIT 25
         """)
