@@ -97,6 +97,7 @@ def test_alternate_address_candidate_still_rejects_wrong_region(monkeypatch) -> 
     assert any(
         attempt["reason"] in {
             "result_cadastral_region_mismatch",
+            "result_region_mismatch",
             "locality_name_mismatch",
             "city_distance_mismatch",
         }
