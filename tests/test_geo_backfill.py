@@ -306,6 +306,72 @@ def test_failed_batch_reports_aggregate_reason_without_address(monkeypatch) -> N
     assert secret_address not in str(result["failure_reasons"])
 
 
+def test_geo_input_hash_changes_when_alternate_cadastral_numbers_change() -> None:
+    lot = ProcessedLot(
+        external_id="multi-cad-hash",
+        source="test",
+        source_system="test",
+        title="Комплекс имущества",
+        description="",
+        category="commercial",
+        cadastral_number="76:23:050309:1108",
+        cadastral_numbers=["76:23:050309:1108", "76:23:050309:2209"],
+        auction_status="active",
+    )
+    first = geo_backfill.geo_input_hash(lot)
+    lot.cadastral_numbers = ["76:23:050309:1108", "76:23:050309:3310"]
+    second = geo_backfill.geo_input_hash(lot)
+    assert first != second
+
+
+def test_bulk_pipeline_passes_alternate_cadastral_numbers_to_resolver(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    primary = "76:23:050309:1108"
+    alternate = "76:23:050309:2209"
+    with scope() as session:
+        session.add(
+            ProcessedLot(
+                external_id="multi-cad-bulk",
+                source="test",
+                source_system="test",
+                title="Комплекс имущества",
+                description="",
+                category="commercial",
+                cadastral_number=primary,
+                cadastral_numbers=[primary, alternate],
+                address="г. Ярославль, ул. Свердлова, д. 5",
+                auction_status="active",
+            )
+        )
+
+    captured: list[list[str] | None] = []
+
+    def resolve(_cad, _address, **kwargs):
+        captured.append(kwargs.get("cadastral_numbers"))
+        return CadastralObjectResult(
+            query=alternate,
+            cadastral_number=alternate,
+            lat=57.6291139,
+            lon=39.8828543,
+            source="nspd",
+            confidence="high",
+        )
+
+    monkeypatch.setattr(geo_backfill, "resolve_lot_geo", resolve)
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert result["geocoded"] == 1
+    assert captured == [[primary, alternate]]
+
+
 def test_distinct_bulk_queries_run_with_bounded_parallelism(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
