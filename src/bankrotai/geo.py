@@ -1211,10 +1211,6 @@ def validate_geocoding_result(
     if named_region and canonical_region and named_region != canonical_region:
         return False, "region_code_name_mismatch"
 
-    sanity_region = expected_region or canonical_region or named_region
-    if not coordinate_matches_region_sanity(result.lat, result.lon, sanity_region):
-        return False, "region_bounds_mismatch"
-
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
     expected_locality = expected_locality_name(address)
@@ -1227,6 +1223,10 @@ def validate_geocoding_result(
             if observed_text and city_key not in observed_text:
                 return False, "city_name_mismatch"
             break
+
+    sanity_region = expected_region or canonical_region or named_region
+    if not coordinate_matches_region_sanity(result.lat, result.lon, sanity_region):
+        return False, "region_bounds_mismatch"
     return True, "validated"
 
 
