@@ -199,185 +199,7 @@ jobs:
       - name: Backup and migrate database schema before replacing production containers
         shell: powershell
         run: |
-          $photon = docker ps --filter 'name=^/bankrotai-photon
-      - name: Start private queue and replace API and trusted ingestion worker
-        shell: powershell
-        run: |
-          $redis = docker ps -a --filter "name=^/${env:REDIS_CONTAINER}$" --format '{{.Names}}'
-          if ($redis -ne $env:REDIS_CONTAINER) {
-            docker run --detach --restart unless-stopped `
-              --name $env:REDIS_CONTAINER `
-              --network $env:DOCKER_NETWORK `
-              --mount "type=bind,source=$env:CONFIG_ROOT\redis.conf,target=/usr/local/etc/redis/redis.conf,readonly" `
-              --volume bankrotai-home-redis:/data `
-              redis:7-alpine redis-server /usr/local/etc/redis/redis.conf | Out-Null
-          } else {
-            docker start $env:REDIS_CONTAINER | Out-Null
-          }
-          $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
-          Write-Output "::add-mask::$redisPassword"
-          foreach ($attempt in 1..30) {
-            docker exec --env "REDISCLI_AUTH=$redisPassword" `
-              $env:REDIS_CONTAINER redis-cli ping *> $null
-            if ($LASTEXITCODE -eq 0) { break }
-            Start-Sleep -Seconds 2
-          }
-          if ($LASTEXITCODE -ne 0) { throw "Private Redis did not become ready" }
-
-          $existing = docker ps -a --filter "name=^/${env:CONTAINER_NAME}$" --format '{{.Names}}'
-          if ($existing -eq $env:CONTAINER_NAME) {
-            docker rm --force $env:CONTAINER_NAME | Out-Null
-          }
-          docker run --detach --restart unless-stopped `
-            --name $env:CONTAINER_NAME `
-            --network $env:DOCKER_NETWORK `
-            --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
-            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
-            --publish 127.0.0.1:18000:8000 `
-            --read-only `
-            --tmpfs /tmp:rw,noexec,nosuid,size=64m `
-            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" | Out-Null
-
-          $workerSpecs = @(
-            @{ Name = $env:WORKER_CONTAINER; Queue = 'ingestion,maintenance'; Node = 'ingestion@bankrotai-home'; Beat = $true },
-            @{ Name = $env:GEO_WORKER_CONTAINER; Queue = 'geocoding'; Node = 'geocoding@bankrotai-home'; Beat = $false },
-            @{ Name = $env:MAP_WORKER_CONTAINER; Queue = 'map'; Node = 'map@bankrotai-home'; Beat = $false }
-          )
-          foreach ($spec in $workerSpecs) {
-            $existingWorker = docker ps -a --filter "name=^/$($spec.Name)$" --format '{{.Names}}'
-            if ($existingWorker -eq $spec.Name) {
-              docker rm --force $spec.Name | Out-Null
-            }
-            $workerArgs = @(
-              'celery', '-A', 'bankrotai.tasks:celery_app', 'worker',
-              "--hostname=$($spec.Node)", "--queues=$($spec.Queue)",
-              '--loglevel=INFO', '--concurrency=1'
-            )
-            if ($spec.Beat) {
-              $workerArgs += @('--beat', '--schedule', '/tmp/celerybeat-schedule')
-            }
-            docker run --detach --restart unless-stopped `
-              --name $spec.Name `
-              --network $env:DOCKER_NETWORK `
-              --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
-              --no-healthcheck `
-              --read-only `
-              --tmpfs /tmp:rw,noexec,nosuid,size=128m `
-              "${env:IMAGE_NAME}:${env:GITHUB_SHA}" @workerArgs | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Could not start $($spec.Name)" }
-          }
-
-      - name: Ensure REG.RU S3 map dataset is published
-        if: ${{ vars.MAP_OBJECT_STORE_ENABLED == 'true' }}
-        shell: powershell
-        run: |
-          function Get-CurrentMapVersion {
-            $output = docker exec $env:MAP_WORKER_CONTAINER python -c "from sqlalchemy import select; from bankrotai.db import SessionLocal,MapDataset; s=SessionLocal(); d=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True),MapDataset.status=='ready')); print(d.version if d else ''); s.close()"
-            if ($LASTEXITCODE -ne 0) { throw "Could not inspect current map dataset" }
-            return (($output | Select-Object -Last 1) -as [string]).Trim()
-          }
-
-          $desiredLayout = (docker exec $env:MAP_WORKER_CONTAINER python -c "from bankrotai.core import get_settings; print(get_settings().map_object_store_layout)" | Select-Object -Last 1).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Could not inspect desired map object-store layout" }
-
-          function Test-CurrentLayout([string]$version, [string]$layout) {
-            if ($layout -eq 'regional-bundles-v1') {
-              return $version -like '*-bundle-s3'
-            }
-            return ($version -like '*-s3') -and ($version -notlike '*-bundle-s3')
-          }
-
-          $current = Get-CurrentMapVersion
-          if (-not (Test-CurrentLayout $current $desiredLayout)) {
-            Write-Output "Building REG.RU S3 map dataset for layout=$desiredLayout current=$current"
-            docker exec $env:MAP_WORKER_CONTAINER python -c "import json; from bankrotai.tasks import build_map_dataset_task; print(json.dumps(build_map_dataset_task.run(), default=str))"
-            if ($LASTEXITCODE -ne 0) {
-              docker logs --tail 200 $env:MAP_WORKER_CONTAINER
-              throw "REG.RU S3 map dataset build failed for requested layout"
-            }
-          }
-
-          $published = $false
-          foreach ($attempt in 1..180) {
-            $current = Get-CurrentMapVersion
-            if (Test-CurrentLayout $current $desiredLayout) {
-              $published = $true
-              break
-            }
-            Start-Sleep -Seconds 5
-          }
-          if (-not $published) {
-            docker logs --tail 200 $env:MAP_WORKER_CONTAINER
-            throw "REG.RU S3 map dataset for layout=$desiredLayout was not promoted within 15 minutes"
-          }
-
-          docker exec $env:MAP_WORKER_CONTAINER python -c "import json,sys; from bankrotai.core import get_settings; from bankrotai.services.map_object_store import _verify_public_manifest; print(json.dumps(_verify_public_manifest(get_settings(), sys.argv[1]), default=str))" $current
-          if ($LASTEXITCODE -ne 0) {
-            throw "Current REG.RU S3 map manifest is not publicly readable"
-          }
-          Write-Output "REG.RU S3 current map dataset: $current"
-
-      - name: Verify local API stability
-        shell: powershell
-        run: |
-          foreach ($warmup in 1..30) {
-            try {
-              $ready = Invoke-WebRequest http://127.0.0.1:18000/health/ready -TimeoutSec 10 -UseBasicParsing
-              if ($ready.StatusCode -eq 200) { break }
-            } catch {}
-            Start-Sleep -Seconds 2
-          }
-          if (-not $ready -or $ready.StatusCode -ne 200) {
-            docker logs --tail 100 $env:CONTAINER_NAME
-            throw "Local secondary did not become ready"
-          }
-          $statuses = @()
-          foreach ($attempt in 1..30) {
-            try {
-              $live = Invoke-WebRequest http://127.0.0.1:18000/health/live -TimeoutSec 5 -UseBasicParsing
-              $ready = Invoke-WebRequest http://127.0.0.1:18000/health/ready -TimeoutSec 10 -UseBasicParsing
-              $statuses += "live=$($live.StatusCode),ready=$($ready.StatusCode)"
-            } catch {
-              docker logs --tail 100 $env:CONTAINER_NAME
-              throw
-            }
-            Start-Sleep -Seconds 1
-          }
-          if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
-            throw "Local secondary stability gate failed"
-          }
-          $workerGates = @(
-            @{ Container = $env:WORKER_CONTAINER; Node = 'ingestion@bankrotai-home' },
-            @{ Container = $env:GEO_WORKER_CONTAINER; Node = 'geocoding@bankrotai-home' },
-            @{ Container = $env:MAP_WORKER_CONTAINER; Node = 'map@bankrotai-home' }
-          )
-          foreach ($gate in $workerGates) {
-            docker exec $gate.Container celery -A bankrotai.tasks:celery_app inspect ping `
-              --destination $gate.Node --timeout 10 *> $null
-            if ($LASTEXITCODE -ne 0) {
-              docker logs --tail 100 $gate.Container
-              throw "$($gate.Node) did not answer Celery ping"
-            }
-          }
-          docker exec $env:WORKER_CONTAINER python -c `
-            "import urllib.request; response = urllib.request.urlopen('http://bankrotai-photon:2322/api?q=Yaroslavl&limit=1', timeout=15); assert response.status == 200"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Trusted ingestion worker cannot reach local Photon"
-          }
-          "Local secondary stability gate: 30/30 PASS"
-          "Isolated ingestion/geocoding/map worker gates: PASS"
-          "Local Photon connectivity gate: PASS"
-
-      - name: Report aggregate geocoding quality
-        continue-on-error: true
-        shell: powershell
-        run: |
-          docker exec $env:GEO_WORKER_CONTAINER python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); s.close(); print(json.dumps({'progress': {k:r['progress'].get(k) for k in ('total','geocoded','actionable_remaining','terminal_failures','percent','rate_per_second','eta_seconds','paused')}, 'statistics': r['statistics'], 'failures': r['failures'], 'recent_batches': r['recent_batches'], 'quality': r['quality'], 'cfo': r['cfo']}, ensure_ascii=False, default=str))"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Aggregate geocoding quality report could not be produced"
-          }
- --format '{{.Names}}'
+          $photon = docker ps --filter 'name=^/bankrotai-photon$' --format '{{.Names}}'
           if ($photon -ne 'bankrotai-photon') {
             throw 'Local Photon container is not running'
           }
@@ -387,9 +209,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not attach Photon to the production network' }
           }
 
-          # A schema-changing release must be able to advance the local database
-          # before the new API/worker containers start. Keep a compact custom
-          # pg_dump on the host so a failed/manual rollback has a data checkpoint.
           $backupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
           New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
           $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
@@ -399,6 +218,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Could not create pre-migration PostgreSQL backup; existing production containers were left running"
           }
+
           $hostBackup = Join-Path $backupRoot "pre-migration-${env:GITHUB_SHA}.dump"
           docker cp "${env:POSTGRES_CONTAINER}:${containerBackup}" $hostBackup
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostBackup)) {
@@ -406,7 +226,6 @@ jobs:
           }
           docker exec $env:POSTGRES_CONTAINER rm -f $containerBackup | Out-Null
 
-          # Keep disk growth bounded while retaining several rollback checkpoints.
           Get-ChildItem -LiteralPath $backupRoot -Filter 'pre-migration-*.dump' -File |
             Sort-Object LastWriteTime -Descending |
             Select-Object -Skip 5 |
