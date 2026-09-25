@@ -62,7 +62,8 @@ def test_public_rollout_requires_current_map_pipeline_revision() -> None:
     for workflow_path in (REGRU_WORKFLOW, CLOUDFLARE_WORKFLOW):
         workflow = workflow_path.read_text(encoding="utf-8")
         assert "MAP_DATASET_REVISION" in workflow
-        assert "PYTHONPATH=src python -c" in workflow
+        assert "sed -n" in workflow
+        assert "map_dataset_version.py" in workflow
         assert 'v.endswith(f"-{r}-bundle-s3")' in workflow
         assert 'v.endswith(f"-{r}-s3")' in workflow
 
