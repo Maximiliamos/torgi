@@ -49,6 +49,10 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
             start_price=Decimal("900000"),
             current_price=Decimal("1000000"),
             auction_status="active",
+            current_geo_lat=57.6261,
+            current_geo_lon=39.8845,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(lot)
         session.flush()
