@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
+from bankrotai.region_sanity import coordinate_matches_region_sanity
 
 logger = logging.getLogger(__name__)
 
@@ -79,28 +80,6 @@ CITY_SANITY_ANCHORS = {
     "москв": (55.7558, 37.6176, 90.0),
     "санкт-петербург": (59.9343, 30.3351, 75.0),
 }
-
-CFO_REGION_CODES = frozenset({
-    "31", "32", "33", "36", "37", "40", "44", "46", "48",
-    "50", "57", "62", "67", "68", "69", "71", "76", "77",
-})
-# Deliberately broad envelope, used only as a gross-outlier guard. It is not
-# intended to model exact administrative borders; it merely rejects coordinates
-# thousands of kilometres away from a lot that is known to belong to the CFO.
-CFO_SANITY_BOUNDS = (48.5, 61.0, 26.0, 50.0)  # south, north, west, east
-
-
-def coordinate_matches_region_sanity(
-    lat: float,
-    lon: float,
-    region_code: str | None,
-) -> bool:
-    code = str(region_code or "").strip().zfill(2)
-    if code not in CFO_REGION_CODES:
-        return True
-    south, north, west, east = CFO_SANITY_BOUNDS
-    return south <= float(lat) <= north and west <= float(lon) <= east
-
 
 class IK12Geocoder:
     """Minimal HTTP client for the public IK12 cadastral map challenge API."""
@@ -1056,6 +1035,7 @@ def resolve_lot_geo(
     title: str | None = None,
     description: str | None = None,
     region_name: str | None = None,
+    region_code: str | None = None,
     bulk: bool = False,
 ) -> CadastralObjectResult | None:
     attempts: list[dict[str, Any]] = []
@@ -1092,6 +1072,7 @@ def resolve_lot_geo(
             cadastral_number=expected_cadastral_number or cadastral_number,
             address=validation_address if validation_address is not None else address,
             region_name=region_name,
+            region_code=region_code,
         )
         attempt: dict[str, Any] = {"source": provider, "valid": valid, "reason": reason}
         if candidate_index is not None:
@@ -1185,6 +1166,7 @@ def validate_geocoding_result(
     cadastral_number: str | None,
     address: str | None,
     region_name: str | None,
+    region_code: str | None = None,
 ) -> tuple[bool, str]:
     if result is None or result.lat is None or result.lon is None:
         return False, "no_coordinates"
@@ -1210,9 +1192,12 @@ def validate_geocoding_result(
         observed_region = region_code_from_text(result.address)
         if observed_region and expected_region != observed_region:
             return False, "result_cadastral_region_mismatch"
+    from bankrotai.regions import normalize_region_code
+
+    canonical_region = normalize_region_code(region_code)
     named_region = None
     if region_name:
-        from bankrotai.regions import normalize_region_code, region_code_from_text
+        from bankrotai.regions import region_code_from_text
 
         named_region = normalize_region_code(region_name)
         if expected_region and named_region and expected_region != named_region:
@@ -1221,10 +1206,14 @@ def validate_geocoding_result(
             result_region = region_code_from_text(result.address)
             if result_region and result_region != named_region:
                 return False, "result_region_mismatch"
+    if expected_region and canonical_region and expected_region != canonical_region:
+        return False, "region_cadastral_mismatch"
+    if named_region and canonical_region and named_region != canonical_region:
+        return False, "region_code_name_mismatch"
 
-    sanity_region = expected_region or named_region
+    sanity_region = expected_region or canonical_region or named_region
     if not coordinate_matches_region_sanity(result.lat, result.lon, sanity_region):
-        return False, "cfo_region_bounds_mismatch"
+        return False, "region_bounds_mismatch"
 
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
@@ -1295,6 +1284,7 @@ def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
         title=lot.title,
         description=lot.description,
         region_name=lot.region_name,
+        region_code=lot.region_code,
     )
     return apply_lot_geo_result(session, lot, final_result)
 
