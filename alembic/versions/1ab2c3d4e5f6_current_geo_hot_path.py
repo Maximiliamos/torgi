@@ -47,6 +47,7 @@ def upgrade() -> None:
         sa.column("current_geo_source", sa.String()),
         sa.column("current_geo_confidence", sa.String()),
         sa.column("current_geo_observed_at", sa.DateTime()),
+        sa.column("geo_input_hash", sa.String()),
     )
     snapshots = sa.table(
         "lot_geo_snapshots",
@@ -73,7 +74,10 @@ def upgrade() -> None:
     )
     bind.execute(
         sa.update(processed)
-        .where(has_snapshot)
+        .where(
+            has_snapshot,
+            processed.c.geo_input_hash.is_not(None),
+        )
         .values(
             current_geo_lat=latest(snapshots.c.centroid_lat),
             current_geo_lon=latest(snapshots.c.centroid_lon),
