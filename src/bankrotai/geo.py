@@ -568,6 +568,18 @@ def build_geocoding_address_candidates(
     if locality_query and region:
         candidates.append(f"{locality_query}, {region}")
 
+    # Auction cards frequently keep a vague address in the structured field
+    # while the exact street/house appears only in title or description.
+    # Preserve the structured address as the first choice, but surface one
+    # exact numbered supplemental candidate for the local Photon fallback.
+    source_text = " ".join(part for part in (title, description) if part)
+    supplemental = extract_best_numbered_address(source_text) if source_text else None
+    if supplemental:
+        supplemental = supplemental.strip(" ,.;")
+        if region_name and region_name.casefold() not in supplemental.casefold():
+            supplemental = f"{supplemental}, {region_name}"
+        candidates.append(supplemental)
+
     unique: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -1052,11 +1064,12 @@ def resolve_lot_geo(
         *,
         expected_cadastral_number: str | None = None,
         candidate_index: int | None = None,
+        validation_address: str | None = None,
     ) -> CadastralObjectResult | None:
         valid, reason = validate_geocoding_result(
             result,
             cadastral_number=expected_cadastral_number or cadastral_number,
-            address=address,
+            address=validation_address if validation_address is not None else address,
             region_name=region_name,
         )
         attempt: dict[str, Any] = {"source": provider, "valid": valid, "reason": reason}
@@ -1092,15 +1105,29 @@ def resolve_lot_geo(
             if ik12_result:
                 return ik12_result
 
+    address_attempts: list[str] = []
     if address_candidates:
+        address_attempts.append(address_candidates[0])
+    source_text = " ".join(part for part in (title, description) if part)
+    supplemental = extract_best_numbered_address(source_text) if source_text else None
+    if supplemental:
+        supplemental = supplemental.strip(" ,.;")
+        if region_name and region_name.casefold() not in supplemental.casefold():
+            supplemental = f"{supplemental}, {region_name}"
+        if supplemental.casefold() not in {item.casefold() for item in address_attempts}:
+            address_attempts.append(supplemental)
+
+    for candidate_index, candidate in enumerate(address_attempts):
         addr_result = CADASTRAL_GEOCODER.search_by_address(
-            address_candidates[0],
+            candidate,
             allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
         )
         accepted = accept(
             addr_result,
-            "address_geocoder",
+            "address_geocoder" if candidate_index == 0 else "address_geocoder_alt",
             expected_cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
+            candidate_index=candidate_index,
+            validation_address=candidate,
         )
         if accepted:
             return accepted
@@ -1149,11 +1176,15 @@ def validate_geocoding_result(
         if observed_region and expected_region != observed_region:
             return False, "result_cadastral_region_mismatch"
     if region_name:
-        from bankrotai.regions import normalize_region_code
+        from bankrotai.regions import normalize_region_code, region_code_from_text
 
         named_region = normalize_region_code(region_name)
         if expected_region and named_region and expected_region != named_region:
             return False, "region_cadastral_mismatch"
+        if named_region and result.address:
+            result_region = region_code_from_text(result.address)
+            if result_region and result_region != named_region:
+                return False, "result_region_mismatch"
 
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
