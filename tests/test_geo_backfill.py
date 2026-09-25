@@ -550,7 +550,11 @@ def test_ik12_recovery_resolves_existing_nspd_miss_without_parallel_fallback(mon
         ),
     )
 
-    result = geo_backfill.run_ik12_recovery_batch(scope, limit=5)
+    result = geo_backfill.run_ik12_recovery_batch(
+        scope,
+        limit=5,
+        progress_task_id="ik12-test-success",
+    )
 
     assert result["status"] == "completed"
     assert result["queued"] == result["processed"] == result["recovered"] == 1
@@ -564,6 +568,12 @@ def test_ik12_recovery_resolves_existing_nspd_miss_without_parallel_fallback(mon
         assert lot.geo_input_hash is not None
         assert failure is not None
         assert failure.status == "resolved"
+        state = session.scalar(
+            select(BackgroundTaskState).where(BackgroundTaskState.task_id == "ik12-test-success")
+        )
+        assert state is not None
+        assert state.task_type == "geocoding_ik12_recovery"
+        assert state.result_json["recovered"] == 1
 
 
 def test_ik12_recovery_miss_does_not_consume_normal_retry_budget(monkeypatch) -> None:
