@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -253,3 +254,20 @@ def test_phase3_health_keeps_legacy_source_history_out_of_critical_checks() -> N
     checks = {item["name"]: item for item in health["checks"]}
     assert checks["source-health-present"]["legacy_sources"] == ["ГИС Торги"]
     assert "source-freshness:ГИС Торги" not in checks
+
+
+
+def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "phase3-lite-full-reconcile.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Wait for the same main revision on the home origin" in workflow
+    assert "Deploy home secondary origin" in workflow
+    assert "automatic_nationwide_lot_refresh_task.apply_async(args=['full'])" in workflow
+    assert "rows.Count -eq 5" in workflow
+    assert "$_.coverage -ne 'fresh'" in workflow
+    assert "timeout-minutes: 90" in workflow
