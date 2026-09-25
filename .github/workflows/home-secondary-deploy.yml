@@ -196,7 +196,7 @@ jobs:
             throw 'Protected TBankrot session is missing; run the local session capture first'
           }
 
-      - name: Verify existing database schema before replacing production containers
+      - name: Backup and migrate database schema before replacing production containers
         shell: powershell
         run: |
           $photon = docker ps --filter 'name=^/bankrotai-photon$' --format '{{.Names}}'
@@ -208,13 +208,45 @@ jobs:
             docker network connect $env:DOCKER_NETWORK bankrotai-photon
             if ($LASTEXITCODE -ne 0) { throw 'Could not attach Photon to the production network' }
           }
+
+          $backupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
+          New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+          $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
+          docker exec $env:POSTGRES_CONTAINER pg_dump `
+            --username bankrotai --dbname bankrotai --format=custom `
+            --file $containerBackup
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not create pre-migration PostgreSQL backup; existing production containers were left running"
+          }
+
+          $hostBackup = Join-Path $backupRoot "pre-migration-${env:GITHUB_SHA}.dump"
+          docker cp "${env:POSTGRES_CONTAINER}:${containerBackup}" $hostBackup
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostBackup)) {
+            throw "Could not preserve pre-migration PostgreSQL backup; existing production containers were left running"
+          }
+          docker exec $env:POSTGRES_CONTAINER rm -f $containerBackup | Out-Null
+
+          Get-ChildItem -LiteralPath $backupRoot -Filter 'pre-migration-*.dump' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 5 |
+            Remove-Item -Force
+
+          docker run --rm `
+            --network $env:DOCKER_NETWORK `
+            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
+            python -m alembic upgrade head
+          if ($LASTEXITCODE -ne 0) {
+            throw "Database migration failed; backup preserved at $hostBackup and existing production containers were left running"
+          }
+
           docker run --rm `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
             "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
             python -m alembic current --check-heads
           if ($LASTEXITCODE -ne 0) {
-            throw "Database schema is not at the tested application head; existing production containers were left running"
+            throw "Database schema did not reach the tested application head; backup preserved at $hostBackup and existing production containers were left running"
           }
 
       - name: Start private queue and replace API and trusted ingestion worker
