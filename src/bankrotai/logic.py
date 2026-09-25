@@ -765,6 +765,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             previous_geo_input = (
                 processed.address,
                 processed.cadastral_number,
+                frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
                 processed.region_name,
@@ -801,6 +802,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             current_geo_input = (
                 processed.address,
                 processed.cadastral_number,
+                frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
                 processed.region_name,
