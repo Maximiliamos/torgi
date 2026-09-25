@@ -86,6 +86,55 @@ def test_bulk_mode_skips_slow_fallbacks(monkeypatch) -> None:
     assert calls == ["nspd", "address"]
 
 
+def test_bulk_mode_tries_alternate_cadastral_numbers_before_address(monkeypatch) -> None:
+    alternate = "76:23:050309:2209"
+    calls: list[str] = []
+
+    def nspd_search(query: str):
+        calls.append(query)
+        if query != alternate:
+            return None
+        return CadastralObjectResult(
+            query=query,
+            cadastral_number=alternate,
+            lat=57.6291139,
+            lon=39.8828543,
+            source="nspd",
+            confidence="high",
+        )
+
+    monkeypatch.setattr("bankrotai.geo.CADASTRAL_GEOCODER._search_nspd_geoportal", nspd_search)
+    monkeypatch.setattr(
+        "bankrotai.geo.CADASTRAL_GEOCODER.search_by_address",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("address fallback should not run")),
+    )
+
+    resolved = resolve_lot_geo(
+        CAD,
+        ADDRESS,
+        cadastral_numbers=[CAD, alternate, "invalid"],
+        region_name="Ярославская область",
+        bulk=True,
+    )
+
+    assert resolved is not None
+    assert resolved.source == "nspd"
+    assert resolved.cadastral_number == alternate
+    assert calls == [CAD, alternate]
+    assert resolved.attempts[0] == {
+        "source": "nspd_cadastral",
+        "valid": False,
+        "reason": "no_coordinates",
+        "candidate_index": 0,
+    }
+    assert resolved.attempts[1] == {
+        "source": "nspd_cadastral_alt",
+        "valid": True,
+        "reason": "validated",
+        "candidate_index": 1,
+    }
+
+
 def test_yaroslavl_regression_rejects_other_region() -> None:
     valid, reason = validate_geocoding_result(
         result("legacy", lat=56.3269, lon=44.0059),
