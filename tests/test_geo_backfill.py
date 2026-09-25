@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -645,3 +645,151 @@ def test_ik12_recovery_miss_does_not_consume_normal_retry_budget(monkeypatch) ->
         assert failure.attempt_count == 6
         assert lot is not None
         assert lot.current_geo_lat is None
+
+
+def test_strategy_refresh_requeues_old_provider_misses_once() -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        lots = []
+        for external_id, region_code in (("strategy-cfo", "76"), ("strategy-other", "66")):
+            lot = ProcessedLot(
+                external_id=external_id,
+                source="test",
+                source_system="test",
+                title="Участок",
+                description="",
+                category="land",
+                region_code=region_code,
+                address="Тестовый адрес",
+                auction_status="active",
+            )
+            session.add(lot)
+            session.flush()
+            lots.append(lot)
+            session.add(
+                GeoFailure(
+                    lot_id=lot.id,
+                    status="terminal",
+                    attempt_count=8,
+                    error_message=json.dumps({
+                        "error": "No validated coordinates",
+                        "attempts": [
+                            {"source": "address_geocoder", "valid": False, "reason": "no_coordinates"},
+                        ],
+                    }, separators=(",", ":")),
+                    last_failed_at=utc_now(),
+                    next_retry_at=None,
+                )
+            )
+
+    with scope() as session:
+        refreshed = geo_backfill._refresh_failures_for_current_strategy(session)
+        assert refreshed == 2
+        failures = session.scalars(select(GeoFailure).order_by(GeoFailure.id)).all()
+        assert all(item.status == "queued" for item in failures)
+        assert all(item.attempt_count == 0 for item in failures)
+        assert all(item.next_retry_at is not None for item in failures)
+        marker = session.scalar(
+            select(AppSetting).where(
+                AppSetting.key == geo_backfill._GEO_STRATEGY_SETTING_KEY
+            )
+        )
+        assert marker is not None
+        assert marker.value == geo_backfill._GEO_STRATEGY_VERSION
+
+    with scope() as session:
+        assert geo_backfill._refresh_failures_for_current_strategy(session) == 0
+
+
+def test_geocoding_batch_prioritizes_cfo_before_newer_non_cfo(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        session.add(
+            AppSetting(
+                key=geo_backfill._GEO_STRATEGY_SETTING_KEY,
+                value=geo_backfill._GEO_STRATEGY_VERSION,
+            )
+        )
+        cfo = ProcessedLot(
+            external_id="priority-cfo",
+            source="test",
+            source_system="test",
+            title="ЦФО",
+            description="",
+            category="land",
+            region_code="76",
+            region_name="Ярославская область",
+            address="Ярославль, улица Свободы, 1",
+            auction_status="active",
+            last_update=utc_now() - timedelta(days=1),
+        )
+        other = ProcessedLot(
+            external_id="priority-other",
+            source="test",
+            source_system="test",
+            title="Не ЦФО",
+            description="",
+            category="land",
+            region_code="66",
+            region_name="Свердловская область",
+            address="Екатеринбург, улица Ленина, 1",
+            auction_status="active",
+            last_update=utc_now(),
+        )
+        session.add_all([cfo, other])
+        session.flush()
+        cfo_id = cfo.id
+        other_id = other.id
+
+    seen: list[str | None] = []
+
+    def resolve(*_args, **kwargs):
+        seen.append(kwargs.get("address"))
+        return CadastralObjectResult(
+            query=str(kwargs.get("address") or ""),
+            lat=57.6261,
+            lon=39.8845,
+            source="fixture",
+            confidence="high",
+        )
+
+    monkeypatch.setattr(geo_backfill, "resolve_lot_geo", resolve)
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert result["queued"] == result["processed"] == result["geocoded"] == 1
+    assert seen == ["Ярославль, улица Свободы, 1"]
+    with scope() as session:
+        assert session.get(ProcessedLot, cfo_id).current_geo_lat == 57.6261
+        assert session.get(ProcessedLot, other_id).current_geo_lat is None
