@@ -133,6 +133,11 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
         assert snapshot.centroid_lat == 57.6261
         lot = session.get(ProcessedLot, lot_id)
         assert lot is not None
+        assert lot.current_geo_lat == 57.6261
+        assert lot.current_geo_lon == 39.8845
+        assert lot.current_geo_source == "fixture"
+        assert lot.current_geo_confidence == "high"
+        assert lot.current_geo_observed_at == snapshot.observed_at
         assert lot.geo_input_hash is not None
         assert len(lot.geo_input_hash) == 64
 
