@@ -51,3 +51,14 @@ def test_home_deploy_preserves_local_database_and_only_checks_schema() -> None:
     assert "pg_restore" not in workflow
     assert "python -m bankrotai.cli init-db" not in workflow
     assert "python -m alembic current --check-heads" in workflow
+
+
+def test_home_deploy_clears_only_orphaned_geo_lock_after_worker_stop() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    remove = "docker rm --force $spec.Name"
+    clear = "redis-cli DEL bankrotai:geocoding:batch"
+    start = '"${env:IMAGE_NAME}:${env:GITHUB_SHA}" @workerArgs'
+
+    assert clear in workflow
+    assert workflow.index(remove) < workflow.index(clear) < workflow.index(start)
+    assert 'if ($spec.Name -eq $env:GEO_WORKER_CONTAINER)' in workflow
