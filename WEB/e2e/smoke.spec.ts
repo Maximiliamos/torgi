@@ -322,38 +322,27 @@ test("authenticated list search detail and API failure smoke", async ({
       )?.contentWindow;
     });
     const coincidentPanel = page.getByLabel("Лоты в выбранной точке");
-    // The smoke owns this fixture and is meant to verify the application-side
-    // cluster selection UI, while production-map-availability.spec.ts gates the
-    // real Yandex/S3 transport. Send the same message that the iframe emits
-    // instead of racing Yandex's transient srcdoc recreation.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      mapFrame = page
-        .frames()
-        .find(
-          (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
-        );
-      if (!mapFrame) {
-        await page.waitForTimeout(250);
-        continue;
-      }
-      try {
-        await mapFrame.evaluate(() =>
-          parent.postMessage(
-            {
-              type: "bankrotai-cluster-select",
-              channel: "bankrotai-map-v1",
-              lotIds: [7001, 7002, 7003],
-            },
-            "*",
-          ),
-        );
-      } catch {
-        // Yandex may recreate its srcdoc frame while settling the viewport.
-      }
-      if (await coincidentPanel.isVisible().catch(() => false)) break;
-      await page.waitForTimeout(250);
-    }
-    await expect(coincidentPanel).toBeVisible({ timeout: 10_000 });
+    // The broad smoke verifies the application-side message handler. Dispatch
+    // from the current iframe contentWindow directly so Yandex recreating a
+    // transient srcdoc frame cannot race the test. The dedicated production-map
+    // acceptance suite separately gates real iframe/Yandex/S3 transport.
+    await page.evaluate(() => {
+      const iframe = document.querySelector<HTMLIFrameElement>(
+        'iframe[title="Яндекс.Карта лотов"]',
+      );
+      if (!iframe?.contentWindow) throw new Error("Current Yandex iframe is missing");
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: iframe.contentWindow,
+          data: {
+            type: "bankrotai-cluster-select",
+            channel: "bankrotai-map-v1",
+            lotIds: [7001, 7002, 7003],
+          },
+        }),
+      );
+    });
+    await expect(coincidentPanel).toBeVisible({ timeout: 2_000 });
     for (const [id, title] of [
       [7002, "Земельный участок в Ярославском районе"],
       [7003, "Здание с земельным участком"],
