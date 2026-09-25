@@ -1105,7 +1105,19 @@ def resolve_lot_geo(
             if ik12_result:
                 return ik12_result
 
-    for candidate_index, candidate in enumerate(address_candidates[:4]):
+    address_attempts: list[str] = []
+    if address_candidates:
+        address_attempts.append(address_candidates[0])
+    source_text = " ".join(part for part in (title, description) if part)
+    supplemental = extract_best_numbered_address(source_text) if source_text else None
+    if supplemental:
+        supplemental = supplemental.strip(" ,.;")
+        if region_name and region_name.casefold() not in supplemental.casefold():
+            supplemental = f"{supplemental}, {region_name}"
+        if supplemental.casefold() not in {item.casefold() for item in address_attempts}:
+            address_attempts.append(supplemental)
+
+    for candidate_index, candidate in enumerate(address_attempts):
         addr_result = CADASTRAL_GEOCODER.search_by_address(
             candidate,
             allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
@@ -1164,11 +1176,15 @@ def validate_geocoding_result(
         if observed_region and expected_region != observed_region:
             return False, "result_cadastral_region_mismatch"
     if region_name:
-        from bankrotai.regions import normalize_region_code
+        from bankrotai.regions import normalize_region_code, region_code_from_text
 
         named_region = normalize_region_code(region_name)
         if expected_region and named_region and expected_region != named_region:
             return False, "region_cadastral_mismatch"
+        if named_region and result.address:
+            result_region = region_code_from_text(result.address)
+            if result_region and result_region != named_region:
+                return False, "result_region_mismatch"
 
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
