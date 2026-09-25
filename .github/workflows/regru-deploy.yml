@@ -319,7 +319,7 @@ jobs:
             echo "Staged home API login did not recover; REG.RU configuration was not changed" >&2
             exit 1
           fi
-          export MAP_DATASET_REVISION="$(PYTHONPATH=src python -c 'from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; print(MAP_DATASET_REVISION)')"
+          export MAP_DATASET_REVISION="$(sed -n 's/^MAP_DATASET_REVISION = "\([^"]*\)"/\1/p' src/bankrotai/services/map_dataset_version.py)"
           test -n "$MAP_DATASET_REVISION"
           for dataset_attempt in $(seq 1 180); do
             DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
