@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '17,47 * * * *'
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/phase3-production-health.ps1'
-      - 'src/bankrotai/services/production_health.py'
-      - '.github/workflows/phase3-lite-health.yml'
+  workflow_run:
+    workflows: ['Deploy home secondary origin']
+    types: [completed]
 
 permissions:
   contents: read
@@ -21,6 +18,7 @@ concurrency:
 
 jobs:
   inspect:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 15
     steps:
