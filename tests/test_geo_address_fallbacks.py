@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Structured Photon candidates are deliberately bounded.
+
 from bankrotai.geo import (
     CadastralObjectResult,
     build_geocoding_address_candidates,
