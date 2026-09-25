@@ -73,6 +73,11 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"expires": 240},
         },
+        "recover-ik12-cadastral-misses": {
+            "task": "bankrotai.tasks.recover_ik12_geo_task",
+            "schedule": 300.0,
+            "options": {"expires": 240},
+        },
         "recalculate-public-offer-prices": {
             "task": "bankrotai.tasks.recalculate_public_offer_prices_task",
             "schedule": 300.0,
