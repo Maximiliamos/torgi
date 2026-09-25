@@ -31,6 +31,12 @@ def upgrade() -> None:
             "processed_lots",
             ["current_geo_lat", "current_geo_lon"],
         )
+    if not _has_index("lot_geo_snapshots", "ix_lot_geo_snapshots_lot_observed_id"):
+        op.create_index(
+            "ix_lot_geo_snapshots_lot_observed_id",
+            "lot_geo_snapshots",
+            ["lot_id", "observed_at", "id"],
+        )
 
     bind = op.get_bind()
     processed = sa.table(
@@ -79,6 +85,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _has_index("lot_geo_snapshots", "ix_lot_geo_snapshots_lot_observed_id"):
+        op.drop_index("ix_lot_geo_snapshots_lot_observed_id", table_name="lot_geo_snapshots")
     if _has_index("processed_lots", "ix_processed_lots_current_geo_viewport"):
         op.drop_index("ix_processed_lots_current_geo_viewport", table_name="processed_lots")
     op.drop_column("processed_lots", "current_geo_observed_at")
