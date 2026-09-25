@@ -1,0 +1,88 @@
+name: Phase 3 Lite backup and restore drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      verify_restore:
+        description: 'Restore the backup into an isolated PostgreSQL container'
+        type: boolean
+        default: true
+  schedule:
+    - cron: '17 2 * * 1-6'
+    - cron: '47 2 * * 0'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/backup-home-postgres.ps1'
+      - '.github/workflows/phase3-lite-backup.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: phase3-lite-backup-dr
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create backup and run scheduled restore drill
+        shell: powershell
+        run: |
+          $verify = $false
+          if ('${{ github.event_name }}' -eq 'push') { $verify = $true }
+          if ('${{ github.event.schedule }}' -eq '47 2 * * 0') { $verify = $true }
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.verify_restore }}' -eq 'true') { $verify = $true }
+          .\scripts\backup-home-postgres.ps1 `
+            -Destination 'C:\ProgramData\BankrotAI\dr-backups' `
+            -RetainDays 14 `
+            -VerifyRestore:$verify
+          $latest = Get-ChildItem 'C:\ProgramData\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if ($latest) { Copy-Item $latest.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force }
+      - name: Upload backup metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phase3-backup-${{ github.run_id }}
+          path: ${{ runner.temp }}\phase3-backup-result.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  alert:
+    needs: backup
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Backup/restore alert';
+            const body = `Backup or isolated restore verification failed.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+            } else {
+              await github.rest.issues.create({...context.repo, title, body});
+            }
+
+  recovery:
+    needs: backup
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Backup/restore alert';
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
+              await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
+            }
