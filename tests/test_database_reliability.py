@@ -193,10 +193,10 @@ def test_current_geo_migration_backfills_latest_snapshot(tmp_path: Path) -> None
             INSERT INTO processed_lots (
                 external_id, source, source_system, title, description, category,
                 auction_status, is_archived, detail_level, needs_human_review,
-                is_deal_of_the_week, needs_geo_check, land_risk_flag, last_update
+                is_deal_of_the_week, needs_geo_check, land_risk_flag, geo_input_hash, last_update
             ) VALUES (
                 'geo-migration', 'test', 'test', 'Geo migration', '', 'land',
-                'active', 0, 'detail', 0, 0, 0, 0, :last_update
+                'active', 0, 'detail', 0, 0, 0, 0, 'validated-input', :last_update
             )
             """
         ), {"last_update": datetime(2026, 9, 1, 10, 0, 0)})
