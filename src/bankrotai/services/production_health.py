@@ -98,7 +98,7 @@ def build_phase3_health(
         lease_expires_at=active_sync.lease_expires_at if active_sync is not None else None,
     )
 
-    all_sources = list_source_health(session)
+    all_sources = list_source_health(session, now=now)
     configured_sources = expected_sources or {spec.source_id for spec in default_source_specs()}
     source_by_name = {source.source_system: source for source in all_sources}
     actual_sources = set(source_by_name)
