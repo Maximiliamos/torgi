@@ -215,6 +215,9 @@ class NationwideIngestionService:
         self.profile_timings = profile_timings
         self.use_gis_batch_persistence = use_gis_batch_persistence
         self.gis_batch_size = gis_batch_size
+        # Renew at least three times before expiry. The lower bound avoids a
+        # tight loop if a test or local caller uses a deliberately tiny lease.
+        self._lease_heartbeat_interval_seconds = max(1.0, lease_minutes * 60 / 3)
 
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
@@ -371,7 +374,10 @@ class NationwideIngestionService:
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
             reached_source_end = False
             for _page_number in range(1, page_limit + 1):
-                page = await connector.search(spec.filters, cursor)
+                page = await self._await_with_lease_heartbeat(
+                    run_id,
+                    connector.search(spec.filters, cursor),
+                )
                 pages_fetched = max(1, int(page.metadata.get("pages_fetched") or 1))
                 result.pages_scanned += pages_fetched
                 result.current_category = page.metadata.get("current_category") or page.metadata.get(
@@ -515,7 +521,10 @@ class NationwideIngestionService:
                 lot.detail_level = "detail"
                 lot.raw_data = {**current_raw, **previous_raw}
 
-            await asyncio.gather(*(enrich_if_needed(lot) for lot in accepted))
+            await self._await_with_lease_heartbeat(
+                run_id,
+                asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
+            )
         with self.session_factory() as session:
             bind = session.get_bind()
 
@@ -738,6 +747,20 @@ class NationwideIngestionService:
                 run.heartbeat_at = now
                 run.lease_expires_at = now + timedelta(minutes=self.lease_minutes)
                 session.commit()
+
+    async def _await_with_lease_heartbeat(self, run_id: str, awaitable: Any) -> Any:
+        """Renew the durable lease while an upstream request or enrichment is slow."""
+        task = asyncio.ensure_future(awaitable)
+        self._heartbeat(run_id)
+        while not task.done():
+            done, _pending = await asyncio.wait(
+                {task},
+                timeout=self._lease_heartbeat_interval_seconds,
+            )
+            if task in done:
+                break
+            self._heartbeat(run_id)
+        return task.result()
 
     def _upsert_source_run(
         self,
