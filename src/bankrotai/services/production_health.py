@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import utc_now
 from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset
 from bankrotai.services.geo_backfill import geocoding_progress
+from bankrotai.services.ingestion import default_source_specs
 from bankrotai.services.quality import list_source_health
 
 
@@ -30,7 +31,12 @@ def _age_seconds(now: datetime, value: datetime | None) -> int | None:
     return max(0, int((_utc_naive(now) - normalized).total_seconds()))
 
 
-def build_phase3_health(session: Session, *, now: datetime | None = None) -> dict[str, Any]:
+def build_phase3_health(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    expected_sources: set[str] | None = None,
+) -> dict[str, Any]:
     now = now or utc_now()
     checks: list[dict[str, Any]] = []
 
@@ -59,6 +65,7 @@ def build_phase3_health(session: Session, *, now: datetime | None = None) -> dic
     failed_after_current = bool(
         latest_failed_map is not None
         and current is not None
+        and current.published_at is not None
         and _utc_naive(latest_failed_map.created_at) > _utc_naive(current.published_at)
     )
     add(
@@ -88,13 +95,27 @@ def build_phase3_health(session: Session, *, now: datetime | None = None) -> dic
     )
 
     sources = list_source_health(session)
-    add("source-health-present", bool(sources), source_count=len(sources))
+    configured_sources = expected_sources or {spec.source_id for spec in default_source_specs()}
+    actual_sources = {source.source_system for source in sources}
+    missing_sources = sorted(configured_sources - actual_sources)
+    add(
+        "source-health-present",
+        bool(sources) and not missing_sources,
+        source_count=len(sources),
+        configured_source_count=len(configured_sources),
+        missing_sources=missing_sources,
+    )
     for source in sources:
-        freshness_ok = source.freshness_status in {"fresh", "delayed", "running"}
+        if source.freshness_status == "delayed":
+            freshness_ok = False
+            freshness_severity = "warning"
+        else:
+            freshness_ok = source.freshness_status in {"fresh", "running"}
+            freshness_severity = "critical"
         add(
             f"source-freshness:{source.source_system}",
             freshness_ok,
-            severity="warning" if source.freshness_status == "delayed" else "critical",
+            severity=freshness_severity,
             status=source.status,
             freshness_status=source.freshness_status,
             freshness_age_seconds=source.freshness_age_seconds,
