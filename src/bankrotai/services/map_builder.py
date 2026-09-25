@@ -9,12 +9,12 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Callable
 
-from sqlalchemy import and_, delete, exists, func, or_, select, text, update
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.orm import Session
 
 from bankrotai.core import get_settings
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
-from bankrotai.db import LotGeoSnapshot, MapDataset, MapTile, ProcessedLot
+from bankrotai.db import MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
     yandex_cluster_feature,
     yandex_feature_collection,
@@ -33,20 +33,6 @@ MAX_WEB_MERCATOR_LAT = 85.05112878
 _PROMOTION_ADVISORY_LOCK_KEY = 4_367_936_669_506_901_092
 logger = logging.getLogger(__name__)
 MIN_DIMENSION_COVERAGE_BASELINE = 20
-
-
-def _latest_geo_predicate():
-    """Avoid a full-table window sort while preserving observed_at/id ordering."""
-    newer = aliased(LotGeoSnapshot)
-    return ~exists(
-        select(newer.id).where(
-            newer.lot_id == LotGeoSnapshot.lot_id,
-            or_(
-                newer.observed_at > LotGeoSnapshot.observed_at,
-                and_(newer.observed_at == LotGeoSnapshot.observed_at, newer.id > LotGeoSnapshot.id),
-            ),
-        )
-    ).correlate(LotGeoSnapshot)
 
 
 def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
@@ -399,16 +385,14 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.auction_status,
                     ProcessedLot.is_archived,
                     ProcessedLot.review_status,
-                    LotGeoSnapshot.centroid_lat,
-                    LotGeoSnapshot.centroid_lon,
+                    ProcessedLot.current_geo_lat.label("centroid_lat"),
+                    ProcessedLot.current_geo_lon.label("centroid_lon"),
                 )
-                .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
                 .where(
-                    _latest_geo_predicate(),
                     ProcessedLot.duplicate_of_id.is_(None),
                     ProcessedLot.is_archived.is_(False),
-                    LotGeoSnapshot.centroid_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
-                    LotGeoSnapshot.centroid_lon.between(-180.0, 180.0),
+                    ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
+                    ProcessedLot.current_geo_lon.between(-180.0, 180.0),
                 )
             ).all()
         points = [

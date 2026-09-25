@@ -46,6 +46,10 @@ def _database():
             start_price=Decimal("1000000"),
             current_price=Decimal("900000"),
             auction_status="active",
+            current_geo_lat=57.6261,
+            current_geo_lon=39.8845,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(lot)
         session.flush()
@@ -135,6 +139,11 @@ def test_builder_dataset_membership_business_matrix():
             ids[name] = lot.id
             if has_geo:
                 invalid = name == "invalid-geo-hidden"
+                lot.current_geo_lat = 95.0 if invalid else 55.7 + index / 100
+                lot.current_geo_lon = 200.0 if invalid else 37.6 + index / 100
+                lot.current_geo_source = "test"
+                lot.current_geo_confidence = confidence
+                lot.current_geo_observed_at = now + timedelta(minutes=index)
                 session.add(
                     LotGeoSnapshot(
                         lot_id=lot.id,
@@ -155,6 +164,11 @@ def test_builder_dataset_membership_business_matrix():
             category="land",
             auction_status="active",
             duplicate_of_id=primary.id,
+            current_geo_lat=55.8,
+            current_geo_lon=37.8,
+            current_geo_source="test",
+            current_geo_confidence="high",
+            current_geo_observed_at=now,
         )
         session.add(duplicate)
         session.flush()
@@ -193,7 +207,7 @@ def test_builder_dataset_membership_business_matrix():
     assert ids["duplicate-hidden"] not in included_ids
 
 
-def test_builder_uses_latest_geo_by_observed_at_then_id():
+def test_builder_uses_denormalized_current_geo_while_detail_keeps_history_order():
     factory = _database()
     with factory() as session:
         lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "tile-lot"))
@@ -238,8 +252,8 @@ def test_builder_uses_latest_geo_by_observed_at_then_id():
             for feature in tile.payload_json["features"]
             if feature["kind"] == "lot" and feature["id"] == lot.id
         )
-    assert feature["lat"] == pytest.approx(58.0)
-    assert feature["lon"] == pytest.approx(40.0)
+    assert feature["lat"] == pytest.approx(57.6261)
+    assert feature["lon"] == pytest.approx(39.8845)
     with factory() as session:
         detail = build_map_lot_detail(session, lot.id)
     assert detail is not None
@@ -258,6 +272,10 @@ def test_builder_keeps_distinct_lots_at_same_coordinates_without_duplicate_ids()
             description="",
             category="land",
             auction_status="active",
+            current_geo_lat=57.6261,
+            current_geo_lon=39.8845,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(second)
         session.flush()

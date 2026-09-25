@@ -808,6 +808,11 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             if current_geo_input != previous_geo_input:
                 processed.needs_geo_check = True
                 processed.geo_input_hash = None
+                processed.current_geo_lat = None
+                processed.current_geo_lon = None
+                processed.current_geo_source = None
+                processed.current_geo_confidence = None
+                processed.current_geo_observed_at = None
         
         if normalized.start_price is not None:
             processed.start_price = _to_decimal(normalized.start_price)
