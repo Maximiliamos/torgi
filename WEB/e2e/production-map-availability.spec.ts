@@ -125,7 +125,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       timeout: 30_000,
     });
     expect(manifestResponse.status()).toBe(200);
-    const manifestHeaders = await manifestResponse.allHeaders();
+    const manifestHeaders = manifestResponse.headers();
     expect(["*", "https://sterdez.online"]).toContain(manifestHeaders["access-control-allow-origin"]);
     const manifest = await manifestResponse.json() as {
       version?: string;
@@ -183,7 +183,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       const logicalTile = bundlePayload.tiles?.[`${tile.z}/${tile.x}/${tile.y}`];
       if (!logicalTile) continue;
       directObjectUrl = bundleUrl;
-      directHeaders = await bundleResponse.allHeaders();
+      directHeaders = bundleResponse.headers();
       firstPayload = logicalTile;
       break;
     }
@@ -198,7 +198,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
       });
       if (response.status() === 200) {
         directObjectUrl = candidateUrl;
-        directHeaders = await response.allHeaders();
+        directHeaders = response.headers();
         firstPayload = await response.json() as {
           type?: string;
           features?: Array<{ properties?: Record<string, unknown> }>;
