@@ -219,30 +219,66 @@ def _verify_public_manifest(settings: AppSettings, version: str) -> dict[str, An
         f"/datasets/{quote(version, safe='-_.~')}/manifest.json"
     )
     origin = "https://sterdez.online"
-    response = requests.get(
-        url,
-        headers={"Origin": origin, "Cache-Control": "no-cache"},
-        timeout=settings.map_object_store_timeout_seconds,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"REG.RU S3 public manifest verification failed: HTTP {response.status_code} at {url}"
-        )
-    allow_origin = response.headers.get("access-control-allow-origin")
-    if allow_origin not in {"*", origin}:
-        raise RuntimeError(
-            "REG.RU S3 bucket must allow browser CORS GET from https://sterdez.online "
-            f"(received Access-Control-Allow-Origin={allow_origin!r})"
-        )
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError("REG.RU S3 public manifest is not valid JSON") from exc
-    if payload.get("version") != version:
-        raise RuntimeError(
-            f"REG.RU S3 public manifest version mismatch: expected={version} actual={payload.get('version')}"
-        )
-    return payload
+    max_attempts = 4
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(
+                url,
+                headers={"Origin": origin, "Cache-Control": "no-cache"},
+                timeout=settings.map_object_store_timeout_seconds,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"REG.RU S3 public manifest verification failed after {max_attempts} attempts: {exc}"
+                ) from exc
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 public manifest transient network error: version=%s attempt=%s/%s retry_in=%ss error=%s",
+                version,
+                attempt,
+                max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            continue
+
+        if response.status_code >= 500 and attempt < max_attempts:
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 public manifest transient HTTP error: version=%s status=%s attempt=%s/%s retry_in=%ss",
+                version,
+                response.status_code,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"REG.RU S3 public manifest verification failed: HTTP {response.status_code} at {url}"
+            )
+
+        allow_origin = response.headers.get("access-control-allow-origin")
+        if allow_origin not in {"*", origin}:
+            raise RuntimeError(
+                "REG.RU S3 bucket must allow browser CORS GET from https://sterdez.online "
+                f"(received Access-Control-Allow-Origin={allow_origin!r})"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("REG.RU S3 public manifest is not valid JSON") from exc
+        if payload.get("version") != version:
+            raise RuntimeError(
+                f"REG.RU S3 public manifest version mismatch: expected={version} actual={payload.get('version')}"
+            )
+        return payload
+
+    raise AssertionError("unreachable")
 
 
 def publish_dataset_to_object_store(
