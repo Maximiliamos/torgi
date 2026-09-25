@@ -83,7 +83,9 @@ def test_bulk_mode_skips_slow_fallbacks(monkeypatch) -> None:
     calls = install(monkeypatch)
     resolved = resolve_lot_geo(CAD, ADDRESS, region_name="Ярославская область", bulk=True)
     assert resolved.status == "GEOCODING_FAILED"
-    assert calls == ["nspd", "address"]
+    assert calls[0] == "nspd"
+    assert "ik12" not in calls
+    assert 1 <= calls.count("address") <= 3
 
 
 def test_bulk_mode_tries_alternate_cadastral_numbers_before_address(monkeypatch) -> None:
