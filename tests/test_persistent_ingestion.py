@@ -14,6 +14,7 @@ from bankrotai.connectors.base import AuctionConnector, ConnectorPage, json_safe
 from bankrotai.db import (
     Base,
     CanonicalLot,
+    LotGeoSnapshot,
     LotNote,
     LotPriceEvent,
     LotSyncRun,
@@ -144,6 +145,36 @@ def test_changed_geo_input_resets_hash_and_requeues_lot(sessions) -> None:
         assert processed.geo_input_hash is None
 
 
+def test_changed_alternate_cadastral_number_invalidates_current_geo(sessions) -> None:
+    initial = lot()
+    initial.raw_data["cadastral_numbers"] = [
+        "76:23:010101:1",
+        "76:23:010101:2",
+    ]
+    with sessions.begin() as session:
+        processed = persist_lot(session, initial)
+        processed.geo_input_hash = "b" * 64
+        processed.needs_geo_check = False
+        processed.current_geo_lat = 57.6261
+        processed.current_geo_lon = 39.8845
+        processed.current_geo_source = "nspd"
+        processed.current_geo_confidence = "high"
+
+    changed = lot()
+    changed.raw_data["cadastral_numbers"] = [
+        "76:23:010101:1",
+        "76:23:010101:3",
+    ]
+    with sessions.begin() as session:
+        processed = persist_lot(session, changed)
+        assert processed.needs_geo_check is True
+        assert processed.geo_input_hash is None
+        assert processed.current_geo_lat is None
+        assert processed.current_geo_lon is None
+        assert processed.current_geo_source is None
+        assert processed.current_geo_confidence is None
+
+
 def test_legacy_persistence_records_only_actual_current_price_changes(sessions) -> None:
     with sessions.begin() as session:
         persist_lot(session, lot(price=500_000))
@@ -265,6 +296,16 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
         session.add_all([old_processed, current_processed])
         session.flush()
         old_processed.review_status = "approved"
+        session.add(
+            LotGeoSnapshot(
+                lot_id=old_processed.id,
+                geo_source="nspd",
+                geo_method="cadastral",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
         session.add_all(
             [
                 LotNote(lot_id=old_processed.id, user_id="operator", content="keep"),
@@ -319,6 +360,10 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
         assert rows["current"].is_active is True
         assert processed is not None and processed.is_archived is False and processed.duplicate_of_id is None
         assert processed.review_status == "approved"
+        assert processed.current_geo_lat == pytest.approx(57.6261)
+        assert processed.current_geo_lon == pytest.approx(39.8845)
+        assert processed.current_geo_source == "nspd"
+        assert processed.current_geo_confidence == "high"
         assert expired is not None and expired.is_archived is True and expired.duplicate_of_id == processed.id
         assert session.scalar(select(LotNote.lot_id)) == processed.id
         assert session.scalar(select(Watchlist.lot_id)) == processed.id
