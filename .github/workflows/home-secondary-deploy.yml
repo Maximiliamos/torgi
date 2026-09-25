@@ -385,3 +385,12 @@ jobs:
           "Local secondary stability gate: 30/30 PASS"
           "Isolated ingestion/geocoding/map worker gates: PASS"
           "Local Photon connectivity gate: PASS"
+
+      - name: Report aggregate geocoding quality
+        continue-on-error: true
+        shell: powershell
+        run: |
+          docker exec $env:GEO_WORKER_CONTAINER python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); s.close(); print(json.dumps({'progress': {k:r['progress'].get(k) for k in ('total','geocoded','actionable_remaining','terminal_failures','percent','rate_per_second','eta_seconds','paused')}, 'statistics': r['statistics'], 'failures': r['failures'], 'recent_batches': r['recent_batches'], 'quality': r['quality'], 'cfo': r['cfo']}, ensure_ascii=False, default=str))"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Aggregate geocoding quality report could not be produced"
+          }
