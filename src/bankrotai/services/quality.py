@@ -14,6 +14,7 @@ from bankrotai.db import (
     LotGeoSnapshot,
     LotPriceEvent,
     LotSyncRun,
+    LotSyncSourceRun,
     MapDataset,
     MapTile,
     ProcessedLot,
@@ -187,23 +188,136 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
     }
 
 
+_SOURCE_FRESH_SECONDS = 2 * 3600
+_SOURCE_DELAYED_SECONDS = 6 * 3600
+_SOURCE_COMPLETE_FRESH_SECONDS = 36 * 3600
+
+
+def _source_age_seconds(now: Any, value: Any) -> int | None:
+    if value is None:
+        return None
+    return max(0, int((now - value).total_seconds()))
+
+
 def list_source_health(session: Session) -> list[SourceHealthDTO]:
     states = {row.source_system: row for row in session.scalars(select(SourceHealthState)).all()}
     counts = dict(
         session.execute(select(ProcessedLot.source_system, func.count()).group_by(ProcessedLot.source_system)).all()
     )
-    names = sorted(set(states) | set(counts))
-    return [
-        SourceHealthDTO(
-            source_system=name,
-            status=states[name].status if name in states else "not_checked",
-            items_seen=states[name].items_seen if name in states else int(counts.get(name, 0)),
-            last_success_at=states[name].last_success_at if name in states else None,
-            last_failure_at=states[name].last_failure_at if name in states else None,
-            last_error=states[name].last_error if name in states else None,
+    run_names = set(session.scalars(select(LotSyncSourceRun.source_system).distinct()).all())
+    names = sorted(set(states) | set(counts) | run_names)
+    now = utc_now()
+
+    values: list[SourceHealthDTO] = []
+    for name in names:
+        latest = session.scalar(
+            select(LotSyncSourceRun)
+            .where(LotSyncSourceRun.source_system == name)
+            .order_by(LotSyncSourceRun.started_at.desc(), LotSyncSourceRun.id.desc())
+            .limit(1)
         )
-        for name in names
-    ]
+        latest_success = session.scalar(
+            select(LotSyncSourceRun)
+            .where(
+                LotSyncSourceRun.source_system == name,
+                LotSyncSourceRun.status == "success",
+                LotSyncSourceRun.finished_at.isnot(None),
+            )
+            .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
+            .limit(1)
+        )
+        latest_complete = session.scalar(
+            select(LotSyncSourceRun)
+            .where(
+                LotSyncSourceRun.source_system == name,
+                LotSyncSourceRun.status == "success",
+                LotSyncSourceRun.complete_source_run.is_(True),
+                LotSyncSourceRun.finished_at.isnot(None),
+            )
+            .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
+            .limit(1)
+        )
+        latest_failure = session.scalar(
+            select(LotSyncSourceRun)
+            .where(
+                LotSyncSourceRun.source_system == name,
+                LotSyncSourceRun.status == "failed",
+                LotSyncSourceRun.finished_at.isnot(None),
+            )
+            .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
+            .limit(1)
+        )
+        state = states.get(name)
+        last_success_at = latest_success.finished_at if latest_success is not None else (
+            state.last_success_at if state is not None else None
+        )
+        last_failure_at = latest_failure.finished_at if latest_failure is not None else (
+            state.last_failure_at if state is not None else None
+        )
+        freshness_age = _source_age_seconds(now, last_success_at)
+        complete_age = _source_age_seconds(
+            now,
+            latest_complete.finished_at if latest_complete is not None else None,
+        )
+
+        if latest is not None and latest.status in {"running", "queued"}:
+            freshness_status = "running"
+        elif latest is not None and latest.status == "failed":
+            freshness_status = "failed"
+        elif freshness_age is None:
+            freshness_status = "stale"
+        elif freshness_age <= _SOURCE_FRESH_SECONDS:
+            freshness_status = "fresh"
+        elif freshness_age <= _SOURCE_DELAYED_SECONDS:
+            freshness_status = "delayed"
+        else:
+            freshness_status = "stale"
+
+        if complete_age is None:
+            coverage_status = "missing"
+        elif complete_age <= _SOURCE_COMPLETE_FRESH_SECONDS:
+            coverage_status = "fresh"
+        else:
+            coverage_status = "stale"
+
+        if latest is not None:
+            status = (
+                "healthy"
+                if latest.status == "success" and latest.complete_source_run
+                else "partial"
+                if latest.status == "success"
+                else latest.status
+            )
+        else:
+            status = state.status if state is not None else "not_checked"
+
+        values.append(
+            SourceHealthDTO(
+                source_system=name,
+                status=status,
+                items_seen=latest.items_seen if latest is not None else (
+                    state.items_seen if state is not None else int(counts.get(name, 0))
+                ),
+                last_attempt_at=latest.started_at if latest is not None else (
+                    state.last_started_at if state is not None else None
+                ),
+                last_success_at=last_success_at,
+                last_complete_success_at=latest_complete.finished_at if latest_complete is not None else None,
+                last_failure_at=last_failure_at,
+                last_error=(
+                    latest.error_message
+                    if latest is not None and latest.status == "failed"
+                    else state.last_error if state is not None else None
+                ),
+                freshness_status=freshness_status,
+                coverage_status=coverage_status,
+                freshness_age_seconds=freshness_age,
+                complete_snapshot_age_seconds=complete_age,
+                last_duration_ms=latest.duration_ms if latest is not None else None,
+                last_complete_source_run=bool(latest.complete_source_run) if latest is not None else False,
+            )
+        )
+    return values
 
 
 def update_source_health(
@@ -225,7 +339,7 @@ def update_source_health(
     state.metadata_json = metadata
     if status in {"running", "queued"}:
         state.last_started_at = now
-    elif status == "healthy":
+    elif status in {"healthy", "partial"}:
         state.last_success_at = now
         state.last_error = None
         if items_seen is not None:
