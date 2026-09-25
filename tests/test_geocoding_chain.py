@@ -179,3 +179,44 @@ def test_village_lot_rejects_a_different_locality_in_same_region() -> None:
 
     assert valid is False
     assert reason == "locality_name_mismatch"
+
+
+
+def test_canonical_region_code_rejects_outlier_without_cadastre_or_region_name() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="address-only",
+            lat=55.0,
+            lon=133.0,
+            source="photon",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number=None,
+        address="г. Казань, ул. Кремлевская, 1",
+        region_name=None,
+        region_code="16",
+    )
+
+    assert valid is False
+    assert reason == "region_bounds_mismatch"
+
+
+def test_canonical_region_code_keeps_valid_address_only_coordinate() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="address-only",
+            lat=55.7963,
+            lon=49.1088,
+            source="photon",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number=None,
+        address=None,
+        region_name=None,
+        region_code="16",
+    )
+
+    assert valid is True
+    assert reason == "validated"
