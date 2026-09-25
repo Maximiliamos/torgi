@@ -403,6 +403,16 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         points: list[dict] = []
         spatial_rejection_counts: dict[str, int] = {}
         for row in rows:
+            raw_region_rejection = coordinate_region_sanity_rejection_reason(
+                float(row.centroid_lat),
+                float(row.centroid_lon),
+                row.region_code,
+            )
+            if raw_region_rejection == "unsupported_region_code":
+                spatial_rejection_counts[raw_region_rejection] = (
+                    spatial_rejection_counts.get(raw_region_rejection, 0) + 1
+                )
+                continue
             region_code = (
                 normalize_canonical_region_code(
                     normalize_map_region_code(None, row.cadastral_number)

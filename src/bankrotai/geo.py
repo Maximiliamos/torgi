@@ -1194,6 +1194,8 @@ def validate_geocoding_result(
             return False, "result_cadastral_region_mismatch"
     from bankrotai.regions import normalize_region_code
 
+    if region_code and normalize_region_code(region_code) is None:
+        return False, "unsupported_region_code"
     canonical_region = normalize_region_code(region_code)
     named_region = None
     if region_name:
@@ -1227,7 +1229,7 @@ def validate_geocoding_result(
     # Keep the explicit raw code as a final fallback. Unsupported numeric/source
     # codes must fail closed instead of becoming indistinguishable from a lot
     # that genuinely has no regional claim.
-    sanity_region = expected_region or canonical_region or named_region or region_code
+    sanity_region = expected_region or canonical_region or named_region
     spatial_rejection = coordinate_region_sanity_rejection_reason(
         result.lat,
         result.lon,

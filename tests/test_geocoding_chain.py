@@ -212,7 +212,7 @@ def test_explicit_unsupported_region_code_rejects_new_geo_result() -> None:
             confidence="high",
             address=None,
         ),
-        cadastral_number=None,
+        cadastral_number="77:01:0000000:1",
         address=None,
         region_name=None,
         region_code="90",
