@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -14,7 +15,7 @@ from typing import Any
 
 from redis import Redis
 from redis.exceptions import LockError
-from sqlalchemy import delete, exists, func, or_, select
+from sqlalchemy import case, delete, exists, func, or_, select
 
 from bankrotai.core import get_settings, utc_now
 from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, GeoQueryCache, LotGeoSnapshot, ProcessedLot
@@ -299,6 +300,171 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
         "locality_mismatch_sample_lot_ids": locality_mismatch_ids[:50],
         "coordinate_hotspot_count": len(hotspot_rows),
         "coordinate_hotspots": hotspot_rows[:50],
+    }
+
+
+_CFO_REGION_CODES = frozenset({
+    "31", "32", "33", "36", "37", "40", "44", "46", "48",
+    "50", "57", "62", "67", "68", "69", "71", "76", "77",
+})
+
+
+def _failure_reason_from_message(message: str) -> str:
+    """Aggregate a persisted failure without exposing its query/address."""
+    try:
+        payload = json.loads(message)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = str(message or "").strip()
+        if not value:
+            return "unknown"
+        # Provider/network exceptions are useful operationally, while arbitrary
+        # text can contain addresses. Keep only a conservative class prefix.
+        if ":" in value:
+            prefix = value.split(":", 1)[0].strip()
+            if prefix and len(prefix) <= 80 and " " not in prefix:
+                return prefix[:80]
+        return "unclassified"
+
+    attempts = payload.get("attempts") if isinstance(payload, dict) else None
+    if isinstance(attempts, list):
+        for attempt in reversed(attempts):
+            if not isinstance(attempt, dict):
+                continue
+            reason = attempt.get("reason")
+            source = attempt.get("source")
+            if reason:
+                return f"{source or 'provider'}:{reason}"[:160]
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, str) and error:
+        return error.split(":", 1)[0][:80]
+    return "no_validated_coordinates"
+
+
+def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
+    """Aggregate production geocoding quality without returning raw addresses."""
+    population = (
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+        or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
+    )
+    has_geo = exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
+
+    coverage_rows = session.execute(
+        select(
+            ProcessedLot.region_code,
+            func.count().label("eligible"),
+            func.sum(case((has_geo, 1), else_=0)).label("mapped"),
+        )
+        .where(*population, ProcessedLot.region_code.in_(sorted(_CFO_REGION_CODES)))
+        .group_by(ProcessedLot.region_code)
+    ).all()
+    cfo = {}
+    for region_code, eligible, mapped in coverage_rows:
+        eligible_count = int(eligible or 0)
+        mapped_count = int(mapped or 0)
+        cfo[str(region_code)] = {
+            "eligible": eligible_count,
+            "mapped": mapped_count,
+            "unmapped": max(0, eligible_count - mapped_count),
+            "percent": round(mapped_count / eligible_count * 100, 1) if eligible_count else 100.0,
+        }
+
+    failure_rows = session.execute(
+        select(GeoFailure.status, GeoFailure.attempt_count, GeoFailure.error_message)
+        .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+        .where(*population, GeoFailure.status != "resolved")
+    ).all()
+    status_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    attempt_counts: Counter[str] = Counter()
+    for status, attempts, message in failure_rows:
+        status_counts[str(status or "unknown")] += 1
+        reason_counts[_failure_reason_from_message(str(message or ""))] += 1
+        attempt_counts[str(int(attempts or 0))] += 1
+
+    candidate_rows = session.execute(
+        select(ProcessedLot.region_code, ProcessedLot.cadastral_number)
+        .where(
+            *population,
+            ProcessedLot.region_code.isnot(None),
+            ProcessedLot.cadastral_number.isnot(None),
+        )
+    ).all()
+    cadastral_region_comparable = 0
+    cadastral_region_mismatch = 0
+    mismatch_pairs: Counter[str] = Counter()
+    for region_code, cadastral_number in candidate_rows:
+        prefix = str(cadastral_number or "").strip().split(":", 1)[0]
+        if not (prefix.isdigit() and 1 <= len(prefix) <= 2):
+            continue
+        prefix = prefix.zfill(2)
+        # Only compare codes where cadastral and application subject codes use
+        # the same canonical two-digit identifier. This intentionally skips
+        # special cadastral districts not present in our canonical directory.
+        if prefix not in {f"{value:02d}" for value in range(1, 80)} | {"83", "86", "87", "89"}:
+            continue
+        canonical = str(region_code or "").strip().zfill(2)
+        if not canonical.isdigit():
+            continue
+        cadastral_region_comparable += 1
+        if canonical != prefix:
+            cadastral_region_mismatch += 1
+            mismatch_pairs[f"{canonical}->{prefix}"] += 1
+
+    audit = geocoding_quality_audit(session)
+    progress = geocoding_progress(session)
+    statistics = geocoding_statistics(session)
+
+    recent_batches = session.scalars(
+        select(BackgroundTaskState)
+        .where(
+            BackgroundTaskState.task_type == "geocoding",
+            BackgroundTaskState.status == "completed",
+        )
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(20)
+    ).all()
+    recent_provider_counts: Counter[str] = Counter()
+    recent_failure_reasons: Counter[str] = Counter()
+    for batch in recent_batches:
+        result = batch.result_json or {}
+        for key, value in (result.get("provider_counts") or {}).items():
+            recent_provider_counts[str(key)] += int(value or 0)
+        for key, value in (result.get("failure_reasons") or {}).items():
+            recent_failure_reasons[str(key)] += int(value or 0)
+
+    return {
+        "progress": progress,
+        "statistics": statistics,
+        "cfo": cfo,
+        "failures": {
+            "total_open": len(failure_rows),
+            "by_status": dict(status_counts.most_common()),
+            "by_attempt_count": dict(sorted(attempt_counts.items(), key=lambda item: int(item[0]))),
+            "top_reasons": dict(reason_counts.most_common(25)),
+        },
+        "recent_batches": {
+            "count": len(recent_batches),
+            "provider_counts": dict(recent_provider_counts.most_common()),
+            "failure_reasons": dict(recent_failure_reasons.most_common(25)),
+        },
+        "quality": {
+            "audited_lots": int(audit["audited_lots"]),
+            "invalid_coordinate_count": int(audit["invalid_coordinate_count"]),
+            "locality_mismatch_count": int(audit["locality_mismatch_count"]),
+            "coordinate_hotspot_count": int(audit["coordinate_hotspot_count"]),
+            "largest_coordinate_hotspots": [
+                {
+                    "lat": item["lat"],
+                    "lon": item["lon"],
+                    "lot_count": item["lot_count"],
+                }
+                for item in audit["coordinate_hotspots"][:20]
+            ],
+            "cadastral_region_comparable": cadastral_region_comparable,
+            "cadastral_region_mismatch": cadastral_region_mismatch,
+            "top_cadastral_region_mismatches": dict(mismatch_pairs.most_common(20)),
+        },
     }
 
 
