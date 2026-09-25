@@ -1019,12 +1019,24 @@ def resolve_lot_geo(
     cadastral_number: str | None = None,
     address: str | None = None,
     *,
+    cadastral_numbers: list[str] | None = None,
     title: str | None = None,
     description: str | None = None,
     region_name: str | None = None,
     bulk: bool = False,
 ) -> CadastralObjectResult | None:
     attempts: list[dict[str, Any]] = []
+    cadastral_candidates: list[str] = []
+    seen_cadastral: set[str] = set()
+    for raw in [cadastral_number, *(cadastral_numbers or [])]:
+        normalized = re.sub(r"\s+", "", str(raw or ""))
+        if not normalized or normalized in seen_cadastral:
+            continue
+        if raw != cadastral_number and not CADASTRAL_RE.match(normalized):
+            continue
+        seen_cadastral.add(normalized)
+        cadastral_candidates.append(normalized)
+
     address_candidates = build_geocoding_address_candidates(
         address,
         title=title,
@@ -1032,30 +1044,49 @@ def resolve_lot_geo(
         region_name=region_name,
     )
 
-    def accept(result: CadastralObjectResult | None, provider: str) -> CadastralObjectResult | None:
+    def accept(
+        result: CadastralObjectResult | None,
+        provider: str,
+        *,
+        expected_cadastral_number: str | None = None,
+        candidate_index: int | None = None,
+    ) -> CadastralObjectResult | None:
         valid, reason = validate_geocoding_result(
             result,
-            cadastral_number=cadastral_number,
+            cadastral_number=expected_cadastral_number or cadastral_number,
             address=address,
             region_name=region_name,
         )
-        attempts.append({"source": provider, "valid": valid, "reason": reason})
+        attempt: dict[str, Any] = {"source": provider, "valid": valid, "reason": reason}
+        if candidate_index is not None:
+            attempt["candidate_index"] = candidate_index
+        attempts.append(attempt)
         if result is not None:
             result.attempts = list(attempts)
             if valid and not result.address and address_candidates:
                 result.address = address_candidates[0]
         return result if valid else None
 
-    if cadastral_number:
+    for candidate_index, candidate in enumerate(cadastral_candidates):
         try:
-            nspd_candidate = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral_number)
+            nspd_candidate = CADASTRAL_GEOCODER._search_nspd_geoportal(candidate)
         except NSPDTLSVerificationError:
             nspd_candidate = None
-        nspd_result = accept(nspd_candidate, "nspd_cadastral")
+        nspd_result = accept(
+            nspd_candidate,
+            "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt",
+            expected_cadastral_number=candidate,
+            candidate_index=candidate_index,
+        )
         if nspd_result:
             return nspd_result
         if not bulk or get_settings().geo_bulk_ik12_fallback:
-            ik12_result = accept(IK12_GEOCODER.search_by_cadastral_number(cadastral_number), "ik12_cadastral")
+            ik12_result = accept(
+                IK12_GEOCODER.search_by_cadastral_number(candidate),
+                "ik12_cadastral" if candidate_index == 0 else "ik12_cadastral_alt",
+                expected_cadastral_number=candidate,
+                candidate_index=candidate_index,
+            )
             if ik12_result:
                 return ik12_result
 
@@ -1064,13 +1095,18 @@ def resolve_lot_geo(
             address_candidates[0],
             allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
         )
-        accepted = accept(addr_result, "address_geocoder")
+        accepted = accept(
+            addr_result,
+            "address_geocoder",
+            expected_cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
+        )
         if accepted:
             return accepted
 
     return CadastralObjectResult(
-        query=cadastral_number or (address_candidates[0] if address_candidates else ""),
-        cadastral_number=cadastral_number,
+        query=(cadastral_candidates[0] if cadastral_candidates else cadastral_number)
+        or (address_candidates[0] if address_candidates else ""),
+        cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
         source="geocoding_chain",
         confidence="none",
         status="GEOCODING_FAILED",
@@ -1175,6 +1211,7 @@ def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
     final_result = resolve_lot_geo(
         lot.cadastral_number,
         lot.address,
+        cadastral_numbers=lot.cadastral_numbers,
         title=lot.title,
         description=lot.description,
         region_name=lot.region_name,
