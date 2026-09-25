@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from bankrotai.core import get_settings
+from bankrotai.geo import coordinate_matches_region_sanity
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
@@ -395,29 +396,44 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.current_geo_lon.between(-180.0, 180.0),
                 )
             ).all()
-        points = [
-            {
-                "kind": "lot",
-                "id": row.id,
-                "lat": row.centroid_lat,
-                "lon": row.centroid_lon,
-                "title": row.title,
-                "current_price": float(row.current_price) if row.current_price is not None else None,
-                "start_price": float(row.start_price) if row.start_price is not None else None,
-                "region_code": (
-                    normalize_canonical_region_code(
-                        normalize_map_region_code(None, row.cadastral_number)
-                    )
-                    or normalize_canonical_region_code(row.region_code)
-                    or row.region_code
-                ),
-                "bundle_region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
-                "status": row.auction_status,
-                "is_archived": row.is_archived,
-                "review_status": row.review_status,
-            }
-            for row in rows
-        ]
+        points: list[dict] = []
+        spatial_outlier_count = 0
+        for row in rows:
+            region_code = (
+                normalize_canonical_region_code(
+                    normalize_map_region_code(None, row.cadastral_number)
+                )
+                or normalize_canonical_region_code(row.region_code)
+                or row.region_code
+            )
+            if not coordinate_matches_region_sanity(
+                float(row.centroid_lat),
+                float(row.centroid_lon),
+                region_code,
+            ):
+                spatial_outlier_count += 1
+                continue
+            points.append(
+                {
+                    "kind": "lot",
+                    "id": row.id,
+                    "lat": row.centroid_lat,
+                    "lon": row.centroid_lon,
+                    "title": row.title,
+                    "current_price": float(row.current_price) if row.current_price is not None else None,
+                    "start_price": float(row.start_price) if row.start_price is not None else None,
+                    "region_code": region_code,
+                    "bundle_region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
+                    "status": row.auction_status,
+                    "is_archived": row.is_archived,
+                    "review_status": row.review_status,
+                }
+            )
+        if spatial_outlier_count:
+            logger.warning(
+                "Map dataset excluded gross CFO coordinate outliers: count=%s",
+                spatial_outlier_count,
+            )
         tile_count = 0
         with session_factory() as session:
             for zoom in range(MAX_DATASET_ZOOM + 1):

@@ -175,3 +175,63 @@ def test_village_lot_rejects_a_different_locality_in_same_region() -> None:
 
     assert valid is False
     assert reason == "locality_name_mismatch"
+
+
+def test_cfo_coordinate_guard_rejects_far_east_outlier_without_result_address() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="50:00:0000000:1",
+            cadastral_number="50:00:0000000:1",
+            lat=55.5,
+            lon=105.0,
+            source="nspd",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number="50:00:0000000:1",
+        address=None,
+        region_name="Московская область",
+    )
+
+    assert valid is False
+    assert reason == "cfo_region_bounds_mismatch"
+
+
+def test_cfo_coordinate_guard_keeps_wide_valid_cfo_envelope() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="44:00:0000000:1",
+            cadastral_number="44:00:0000000:1",
+            lat=58.8,
+            lon=47.0,
+            source="nspd",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number="44:00:0000000:1",
+        address=None,
+        region_name="Костромская область",
+    )
+
+    assert valid is True
+    assert reason == "validated"
+
+
+def test_non_cfo_coordinate_is_not_subject_to_cfo_envelope() -> None:
+    valid, reason = validate_geocoding_result(
+        CadastralObjectResult(
+            query="25:00:0000000:1",
+            cadastral_number="25:00:0000000:1",
+            lat=43.1,
+            lon=131.9,
+            source="nspd",
+            confidence="high",
+            address=None,
+        ),
+        cadastral_number="25:00:0000000:1",
+        address=None,
+        region_name="Приморский край",
+    )
+
+    assert valid is True
+    assert reason == "validated"

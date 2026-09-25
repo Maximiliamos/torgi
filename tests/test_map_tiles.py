@@ -207,6 +207,47 @@ def test_builder_dataset_membership_business_matrix():
     assert ids["duplicate-hidden"] not in included_ids
 
 
+def test_builder_excludes_gross_cfo_spatial_outlier_from_public_tiles():
+    factory = _database()
+    with factory() as session:
+        outlier = ProcessedLot(
+            external_id="cfo-spatial-outlier",
+            source="test",
+            source_system="test",
+            title="Outlier",
+            description="",
+            category="land",
+            region_code="50",
+            cadastral_number="50:00:0000000:1",
+            auction_status="active",
+            current_geo_lat=55.5,
+            current_geo_lon=105.0,
+            current_geo_source="nspd",
+            current_geo_confidence="high",
+            current_geo_observed_at=datetime(2026, 9, 25, 12, 0, 0),
+        )
+        session.add(outlier)
+        session.commit()
+        outlier_id = outlier.id
+
+    result = build_map_dataset(factory)
+    assert result["point_count"] == 1  # only the normal fixture lot remains
+
+    with factory() as session:
+        current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current is not None
+        tiles = session.scalars(
+            select(MapTile).where(MapTile.dataset_id == current.id, MapTile.z == 12)
+        ).all()
+        included_ids = {
+            int(feature["id"])
+            for tile in tiles
+            for feature in tile.payload_json["features"]
+            if feature["kind"] == "lot"
+        }
+    assert outlier_id not in included_ids
+
+
 def test_builder_uses_denormalized_current_geo_while_detail_keeps_history_order():
     factory = _database()
     with factory() as session:
