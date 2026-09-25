@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
@@ -196,7 +196,13 @@ _SOURCE_COMPLETE_FRESH_SECONDS = 36 * 3600
 def _source_age_seconds(now: Any, value: Any) -> int | None:
     if value is None:
         return None
-    return max(0, int((now - value).total_seconds()))
+
+    def naive_utc(item: Any) -> Any:
+        if getattr(item, "tzinfo", None) is not None and item.utcoffset() is not None:
+            return item.astimezone(timezone.utc).replace(tzinfo=None)
+        return item.replace(tzinfo=None)
+
+    return max(0, int((naive_utc(now) - naive_utc(value)).total_seconds()))
 
 
 def list_source_health(session: Session) -> list[SourceHealthDTO]:
