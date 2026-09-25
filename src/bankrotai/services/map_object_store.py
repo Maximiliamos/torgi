@@ -219,15 +219,60 @@ def _verify_public_manifest(settings: AppSettings, version: str) -> dict[str, An
         f"/datasets/{quote(version, safe='-_.~')}/manifest.json"
     )
     origin = "https://sterdez.online"
-    response = requests.get(
-        url,
-        headers={"Origin": origin, "Cache-Control": "no-cache"},
-        timeout=settings.map_object_store_timeout_seconds,
-    )
-    if response.status_code != 200:
+    max_attempts = 4
+    response: requests.Response | None = None
+    last_error: requests.RequestException | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(
+                url,
+                headers={"Origin": origin, "Cache-Control": "no-cache"},
+                timeout=settings.map_object_store_timeout_seconds,
+            )
+            last_error = None
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 public manifest transient network error: version=%s "
+                "attempt=%s/%s retry_in=%ss error=%s",
+                version,
+                attempt,
+                max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            continue
+
+        if response.status_code == 200:
+            break
+        if response.status_code >= 500 and attempt < max_attempts:
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "REG.RU S3 public manifest transient HTTP error: version=%s status=%s "
+                "attempt=%s/%s retry_in=%ss",
+                version,
+                response.status_code,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
         raise RuntimeError(
             f"REG.RU S3 public manifest verification failed: HTTP {response.status_code} at {url}"
         )
+
+    if response is None or response.status_code != 200:
+        detail = f": {last_error}" if last_error is not None else ""
+        raise RuntimeError(
+            f"REG.RU S3 public manifest verification failed after {max_attempts} attempts{detail}"
+        )
+
     allow_origin = response.headers.get("access-control-allow-origin")
     if allow_origin not in {"*", origin}:
         raise RuntimeError(
