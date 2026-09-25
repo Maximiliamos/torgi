@@ -754,6 +754,7 @@ class NationwideIngestionService:
                     LotSyncSourceRun.source_system == result.source_system,
                 )
             )
+            created = row is None
             if row is None:
                 row = LotSyncSourceRun(sync_run_id=run_id, source_system=result.source_system)
                 session.add(row)
@@ -784,6 +785,43 @@ class NationwideIngestionService:
             )
             row.started_at = row.started_at or started_at
             row.finished_at = finished_at
+
+            from bankrotai.services.quality import update_source_health
+
+            health_metadata = {
+                "sync_run_id": run_id,
+                "complete_source_run": result.complete_source_run,
+                "pages_scanned": result.pages_scanned,
+                "items_inserted": result.items_inserted,
+                "items_updated": result.items_updated,
+                "items_unchanged": result.items_unchanged,
+                "items_archived": result.items_archived,
+                "items_failed": result.items_failed,
+                "duration_ms": row.duration_ms,
+            }
+            if created and finished_at is None:
+                update_source_health(
+                    session,
+                    result.source_system,
+                    status="running",
+                    metadata=health_metadata,
+                )
+            elif finished_at is not None:
+                health_status = (
+                    "healthy"
+                    if result.status == "success" and result.complete_source_run
+                    else "partial"
+                    if result.status == "success"
+                    else "failed"
+                )
+                update_source_health(
+                    session,
+                    result.source_system,
+                    status=health_status,
+                    items_seen=result.items_seen,
+                    error=result.error,
+                    metadata=health_metadata,
+                )
             session.commit()
 
     @staticmethod
