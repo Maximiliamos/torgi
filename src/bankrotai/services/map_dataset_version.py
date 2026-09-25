@@ -6,7 +6,7 @@ import re
 # Bump this token whenever map membership or public payload semantics change.
 # Production deployment requires the current dataset to carry this revision,
 # so a dataset produced by older map code cannot silently remain active.
-MAP_DATASET_REVISION = "r4"
+MAP_DATASET_REVISION = "r5"
 
 _REVISION_PATTERN = re.compile(r"-(r\d+)(?=(?:-bundle)?-s3$|$)")
 

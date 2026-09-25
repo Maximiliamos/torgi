@@ -259,6 +259,7 @@ def test_builder_excludes_explicit_unsupported_region_from_public_tiles():
             description="",
             category="land",
             region_code="90",
+            cadastral_number="77:01:0000000:1",
             auction_status="active",
             current_geo_lat=55.75,
             current_geo_lon=37.62,
