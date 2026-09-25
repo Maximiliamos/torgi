@@ -157,7 +157,7 @@ jobs:
   build-and-deploy:
     if: github.event_name != 'workflow_dispatch' || !inputs.diagnostics_only
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: production
     steps:
       - name: Check out repository
@@ -321,7 +321,7 @@ jobs:
           fi
           export MAP_DATASET_REVISION="$(sed -n 's/^MAP_DATASET_REVISION = "\([^"]*\)"/\1/p' src/bankrotai/services/map_dataset_version.py)"
           test -n "$MAP_DATASET_REVISION"
-          for dataset_attempt in $(seq 1 180); do
+          for dataset_attempt in $(seq 1 600); do
             DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
               -H "X-API-Key: $API_KEY" \
               -b "$RUNNER_TEMP/home-primary.cookies" \
@@ -333,8 +333,8 @@ jobs:
             if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
               break
             fi
-            printf 'staged REG.RU S3 dataset not ready on attempt %s/180; retrying\n' "$dataset_attempt"
-            if test "$dataset_attempt" = 180; then
+            printf 'staged REG.RU S3 dataset not ready on attempt %s/600; retrying\n' "$dataset_attempt"
+            if test "$dataset_attempt" = 600; then
               echo "Staged home map dataset did not become REG.RU S3-ready" >&2
               exit 1
             fi

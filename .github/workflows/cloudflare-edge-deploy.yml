@@ -700,7 +700,7 @@ jobs:
   deploy:
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.diagnostics_only && !inputs.create_sterdez_zone_only && !inputs.bootstrap_sterdez_edge_only && !inputs.rollback_sterdez_edge_only && !inputs.configure_direct_origin_only && !inputs.configure_api_proxy_only)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -736,7 +736,7 @@ jobs:
           MAP_S3_ENABLED: ${{ vars.MAP_OBJECT_STORE_ENABLED || 'false' }}
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 360); do
+          for attempt in $(seq 1 720); do
             STAGED_SHA="$(curl --fail --silent --show-error --max-time 20 \
               -H 'Cache-Control: no-cache' \
               https://194-226-126-233.sslip.io/deployment.json 2>/dev/null \
@@ -744,7 +744,7 @@ jobs:
             if test "$STAGED_SHA" = "$GITHUB_SHA"; then
               break
             fi
-            if test "$attempt" = 360; then
+            if test "$attempt" = 720; then
               echo "REG.RU staged release did not reach $GITHUB_SHA" >&2
               exit 1
             fi
@@ -794,7 +794,7 @@ jobs:
           fi
           export MAP_DATASET_REVISION="$(sed -n 's/^MAP_DATASET_REVISION = "\([^"]*\)"/\1/p' src/bankrotai/services/map_dataset_version.py)"
           test -n "$MAP_DATASET_REVISION"
-          for dataset_attempt in $(seq 1 180); do
+          for dataset_attempt in $(seq 1 600); do
             DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
               -H "X-API-Key: $KOYEB_SERVICE_KEY" \
               -b "$RUNNER_TEMP/home-primary.cookies" \
@@ -806,8 +806,8 @@ jobs:
             if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
               break
             fi
-            printf 'staged REG.RU S3 dataset not ready on attempt %s/180; retrying\n' "$dataset_attempt"
-            if test "$dataset_attempt" = 180; then
+            printf 'staged REG.RU S3 dataset not ready on attempt %s/600; retrying\n' "$dataset_attempt"
+            if test "$dataset_attempt" = 600; then
               echo "Staged home map dataset did not become REG.RU S3-ready" >&2
               exit 1
             fi

@@ -36,6 +36,11 @@ Production WEB доступен по адресу [https://sterdez.online](https
   dataset старой revision и сначала строит/проверяет новый публичный S3 manifest.
 - Production deploy fail-closed: home/REG.RU/Cloudflare gates проверяют health, SHA релиза,
   авторизацию и готовность S3 dataset до переключения канонического пути.
+- Rollout выполняется по зависимости **home → REG.RU → Cloudflare**: при смене
+  `MAP_DATASET_REVISION` публичные deploy-gates ждут завершения полной пересборки и
+  публикации revision-compatible S3 dataset; прежний dataset остаётся current до успешной
+  атомарной promotion, поэтому длительная пересборка не должна переключать пользователей
+  на частично опубликованную карту.
 
 ### Основные компоненты репозитория
 
