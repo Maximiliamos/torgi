@@ -344,7 +344,7 @@ describe("direct Yandex tile transport", () => {
       filterKey: "76|1500000|",
       generation: 9,
       visible: [{ z: 12, x: 2501, y: 1301 }],
-      prefetch: [],
+      prefetch: [{ z: 12, x: 2502, y: 1301 }],
     }));
 
     await waitFor(() => expect(fetchFilteredYandexMapTile).toHaveBeenCalledWith(
@@ -358,6 +358,13 @@ describe("direct Yandex tile transport", () => {
         max_start_price: undefined,
       },
     ));
+    expect(fetchFilteredYandexMapTile).not.toHaveBeenCalledWith(
+      "direct-v1",
+      12,
+      2502,
+      1301,
+      expect.anything(),
+    );
     expect(fetchMapLotsSWR).not.toHaveBeenCalled();
     expect(fetchMapTile).not.toHaveBeenCalled();
   });
