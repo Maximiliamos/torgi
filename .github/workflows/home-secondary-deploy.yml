@@ -297,6 +297,17 @@ jobs:
             if ($existingWorker -eq $spec.Name) {
               docker rm --force $spec.Name | Out-Null
             }
+            if ($spec.Name -eq $env:GEO_WORKER_CONTAINER) {
+              # The Redis lock has a one-hour TTL. A forced deploy can kill the
+              # only geocoding worker while it owns the lock, leaving a ghost
+              # lock that blocks the replacement worker. At this point the old
+              # GEO container is gone and GitHub serializes manual GEO runs with
+              # this deploy, so there is no live owner to protect.
+              $clearedGeoLock = docker exec --env "REDISCLI_AUTH=$redisPassword" `
+                $env:REDIS_CONTAINER redis-cli DEL bankrotai:geocoding:batch
+              if ($LASTEXITCODE -ne 0) { throw "Could not clear orphaned geocoding lock" }
+              Write-Output "Cleared orphaned geocoding lock before replacement worker: $clearedGeoLock"
+            }
             $workerArgs = @(
               'celery', '-A', 'bankrotai.tasks:celery_app', 'worker',
               "--hostname=$($spec.Node)", "--queues=$($spec.Queue)",
