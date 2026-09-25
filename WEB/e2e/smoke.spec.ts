@@ -324,20 +324,32 @@ test("authenticated list search detail and API failure smoke", async ({
         'iframe[title="Яндекс.Карта лотов"]',
       )?.contentWindow;
     });
-    mapFrame = page
-      .frames()
-      .find(
-        (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
-      );
-    await mapFrame.evaluate(() =>
-      (
-        window as unknown as {
-          bankrotaiDebug: { clickCoincident: (ids: number[]) => void };
-        }
-      ).bankrotaiDebug.clickCoincident([7001, 7002, 7003]),
-    );
     const coincidentPanel = page.getByLabel("Лоты в выбранной точке");
-    await expect(coincidentPanel).toBeVisible();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      mapFrame = page
+        .frames()
+        .find(
+          (frame) => frame !== page.mainFrame() && frame.url() === "about:srcdoc",
+        );
+      if (!mapFrame) {
+        await page.waitForTimeout(250);
+        continue;
+      }
+      try {
+        await mapFrame.evaluate(() =>
+          (
+            window as unknown as {
+              bankrotaiDebug?: { clickCoincident: (ids: number[]) => void };
+            }
+          ).bankrotaiDebug?.clickCoincident([7001, 7002, 7003]),
+        );
+      } catch {
+        // Yandex may recreate its srcdoc frame while settling the viewport.
+      }
+      if (await coincidentPanel.isVisible().catch(() => false)) break;
+      await page.waitForTimeout(350);
+    }
+    await expect(coincidentPanel).toBeVisible({ timeout: 5_000 });
     for (const [id, title] of [
       [7002, "Земельный участок в Ярославском районе"],
       [7003, "Здание с земельным участком"],
