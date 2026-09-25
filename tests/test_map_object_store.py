@@ -11,6 +11,7 @@ from bankrotai.services.map_object_store import (
     _pooled_put,
     _put_object,
     _signed_headers,
+    _verify_public_manifest,
     dataset_public_tile_base_url,
     object_store_configured,
     object_store_public_enabled,
@@ -210,3 +211,61 @@ def test_s3_upload_transport_reuses_session_per_worker(monkeypatch):
     assert session.mount.call_count == 2
 
     delattr(_UPLOAD_HTTP, "session")
+
+
+def test_public_manifest_verification_retries_timeout_then_succeeds(monkeypatch):
+    settings = AppSettings(
+        map_object_store_public_base_url="https://s3.regru.cloud/sterdez-map",
+        map_object_store_timeout_seconds=60,
+    )
+    ok = Mock(
+        status_code=200,
+        headers={"access-control-allow-origin": "https://sterdez.online"},
+    )
+    ok.json.return_value = {"version": "v1-bundle-s3", "layout": "regional-bundles-v1"}
+    get = Mock(side_effect=[requests.ReadTimeout("slow"), ok])
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.get", get)
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    payload = _verify_public_manifest(settings, "v1-bundle-s3")
+
+    assert payload["version"] == "v1-bundle-s3"
+    assert get.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
+def test_public_manifest_verification_retries_5xx_but_not_4xx(monkeypatch):
+    settings = AppSettings(
+        map_object_store_public_base_url="https://s3.regru.cloud/sterdez-map",
+        map_object_store_timeout_seconds=60,
+    )
+    busy = Mock(status_code=503, headers={}, text="busy")
+    ok = Mock(
+        status_code=200,
+        headers={"access-control-allow-origin": "*"},
+    )
+    ok.json.return_value = {"version": "v1-bundle-s3"}
+    get = Mock(side_effect=[busy, ok])
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.get", get)
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    assert _verify_public_manifest(settings, "v1-bundle-s3")["version"] == "v1-bundle-s3"
+    assert get.call_count == 2
+    sleep.assert_called_once_with(1)
+
+    denied = Mock(status_code=403, headers={}, text="denied")
+    get = Mock(return_value=denied)
+    monkeypatch.setattr("bankrotai.services.map_object_store.requests.get", get)
+    sleep.reset_mock()
+
+    try:
+        _verify_public_manifest(settings, "v1-bundle-s3")
+    except RuntimeError as exc:
+        assert "HTTP 403" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert get.call_count == 1
+    sleep.assert_not_called()
