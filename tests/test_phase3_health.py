@@ -65,7 +65,7 @@ def test_phase3_health_accepts_current_map_and_fresh_complete_source() -> None:
         _healthy_source(session, now)
         session.commit()
 
-        health = build_phase3_health(session, now=now)
+        health = build_phase3_health(session, now=now, expected_sources={"torgi.gov.ru"})
 
     assert health["healthy"] is True
     assert health["critical_failure_count"] == 0
@@ -116,7 +116,7 @@ def test_phase3_health_fails_for_expired_sync_lease_and_failed_newer_map() -> No
         _healthy_source(session, now)
         session.commit()
 
-        health = build_phase3_health(session, now=now)
+        health = build_phase3_health(session, now=now, expected_sources={"torgi.gov.ru"})
 
     assert health["healthy"] is False
     checks = {item["name"]: item for item in health["checks"]}
@@ -163,7 +163,7 @@ def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
         )
         session.commit()
 
-        health = build_phase3_health(session, now=now)
+        health = build_phase3_health(session, now=now, expected_sources={"tbankrot.ru"})
 
     assert health["healthy"] is False
     checks = {item["name"]: item for item in health["checks"]}
