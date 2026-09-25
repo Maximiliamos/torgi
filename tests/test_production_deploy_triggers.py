@@ -38,9 +38,9 @@ def test_public_production_deploys_share_the_same_push_scope() -> None:
 def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
     deploy = cloudflare.split("\n  deploy:\n", 1)[1]
-    assert "timeout-minutes: 45" in deploy
-    assert "for attempt in $(seq 1 360); do" in deploy
-    assert 'if test "$attempt" = 360; then' in deploy
+    assert "timeout-minutes: 90" in deploy
+    assert "for attempt in $(seq 1 720); do" in deploy
+    assert 'if test "$attempt" = 720; then' in deploy
 
 
 
@@ -49,12 +49,12 @@ def test_staged_s3_readiness_gates_retry_transient_http_failures() -> None:
         workflow = workflow_path.read_text(encoding="utf-8")
         assert "for login_attempt in $(seq 1 12); do" in workflow
         assert 'login_ok="yes"' in workflow
-        assert "for dataset_attempt in $(seq 1 180); do" in workflow
+        assert "for dataset_attempt in $(seq 1 600); do" in workflow
         assert "api/map/datasets/current" in workflow
         assert "|| true)" in workflow
         assert 'DATASET_READY="no"' in workflow
         assert "2>/dev/null || printf 'no'" in workflow
-        assert "staged REG.RU S3 dataset not ready on attempt %s/180; retrying" in workflow
+        assert "staged REG.RU S3 dataset not ready on attempt %s/600; retrying" in workflow
         assert "bundle_manifest_url" in workflow
 
 
