@@ -5,7 +5,7 @@ test.skip(
   "The production map gate runs only in the dedicated reliability job.",
 );
 
-test("authenticated map survives five wide viewport movements", async ({ page }, testInfo) => {
+test("direct map serves five spatial shards without the bulk viewport API", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   const username = process.env.E2E_USERNAME || "reader";
   const password = process.env.E2E_PASSWORD;
@@ -19,51 +19,99 @@ test("authenticated map survives five wide viewport movements", async ({ page },
   await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
     .toBeVisible({ timeout: 40_000 });
 
-  await page.getByRole("button", { name: "Карта", exact: true }).click();
-  await expect(page.locator('iframe[title="Яндекс.Карта лотов"]')).toBeVisible({ timeout: 30_000 });
+  const bulkRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/map/lots") bulkRequests.push(request.url());
+  });
 
-  const samples = [
-    [20, 45, 60, 70],
-    [21, 45, 61, 70],
-    [22, 45, 62, 70],
-    [23, 45, 63, 70],
-    [24, 45, 64, 70],
-  ];
-  const timings: Array<{ bounds: number[]; status: number; durationMs: number; returned: number }> = [];
-  for (const [west, south, east, north] of samples) {
-    const startedAt = Date.now();
-    let response = await page.context().request.get(
-      `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
-      { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
-    );
-    for (let attempt = 1; attempt < 3 && [502, 503, 504].includes(response.status()); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      response = await page.context().request.get(
-        `/api/map/lots?limit=250&west=${west}&south=${south}&east=${east}&north=${north}`,
-        { headers: { "Cache-Control": "no-cache", "X-Production-Retry-Probe": "1" }, timeout: 30_000 },
-      );
-    }
-    const durationMs = Date.now() - startedAt;
-    expect(response.status(), `wide viewport ${west},${south},${east},${north}`).toBe(200);
-    const payload = await response.json() as { items: unknown[]; limit: number };
-    expect(payload.limit).toBe(250);
-    expect(Array.isArray(payload.items)).toBe(true);
-    expect(payload.items.length).toBeLessThanOrEqual(250);
+  const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
+    timeout: 30_000,
+  });
+  expect(datasetResponse.status()).toBe(200);
+  const dataset = await datasetResponse.json() as {
+    version: string;
+    object_store_layout?: string;
+    bundle_root_url?: string | null;
+    bundle_manifest_url?: string | null;
+  };
+  expect(dataset.object_store_layout).toBe("regional-bundles-v1");
+  expect(dataset.bundle_root_url).toBe("https://s3.regru.cloud/sterdez-map");
+  expect(dataset.bundle_manifest_url).toBeTruthy();
+
+  const manifestResponse = await page.context().request.get(String(dataset.bundle_manifest_url), {
+    headers: { Origin: "https://sterdez.online", "Cache-Control": "no-cache" },
+    timeout: 30_000,
+  });
+  expect(manifestResponse.status()).toBe(200);
+  const manifest = await manifestResponse.json() as {
+    index_shards?: Record<string, string>;
+  };
+  const sampleShards = Object.entries(manifest.index_shards || {})
+    .filter(([name]) => name.startsWith("detail/8/"))
+    .slice(0, 5);
+  expect(sampleShards.length).toBe(5);
+
+  const timings: Array<{
+    shard: string;
+    indexMs: number;
+    bundleMs: number;
+    indexStatus: number;
+    bundleStatus: number;
+  }> = [];
+
+  for (const [shard, indexKey] of sampleShards) {
+    const indexUrl = new URL(
+      indexKey,
+      `${String(dataset.bundle_root_url).replace(/\/$/, "")}/`,
+    ).toString();
+    const indexStarted = Date.now();
+    const indexResponse = await page.context().request.get(indexUrl, {
+      headers: { Origin: "https://sterdez.online" },
+      timeout: 30_000,
+    });
+    const indexMs = Date.now() - indexStarted;
+    expect(indexResponse.status(), `index shard ${shard}`).toBe(200);
+    const indexPayload = await indexResponse.json() as {
+      tiles?: Record<string, { bundle?: string }>;
+    };
+    const bundleKey = Object.values(indexPayload.tiles || {})
+      .map((entry) => entry.bundle)
+      .find((value): value is string => Boolean(value));
+    expect(bundleKey, `bundle for shard ${shard}`).toBeTruthy();
+
+    const bundleUrl = new URL(
+      bundleKey!,
+      `${String(dataset.bundle_root_url).replace(/\/$/, "")}/`,
+    ).toString();
+    const bundleStarted = Date.now();
+    const bundleResponse = await page.context().request.get(bundleUrl, {
+      headers: { Origin: "https://sterdez.online" },
+      timeout: 30_000,
+    });
+    const bundleMs = Date.now() - bundleStarted;
+    expect(bundleResponse.status(), `bundle for shard ${shard}`).toBe(200);
+    const payload = await bundleResponse.json() as { tiles?: Record<string, unknown> };
+    expect(Object.keys(payload.tiles || {}).length).toBeGreaterThan(0);
+
     timings.push({
-      bounds: [west, south, east, north],
-      status: response.status(),
-      durationMs,
-      returned: payload.items.length,
+      shard,
+      indexMs,
+      bundleMs,
+      indexStatus: indexResponse.status(),
+      bundleStatus: bundleResponse.status(),
     });
   }
 
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  await expect(page.locator('iframe[title="Яндекс.Карта лотов"]')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
-  await testInfo.attach("wide-viewport-timings.json", {
+  expect(bulkRequests).toEqual([]);
+
+  await testInfo.attach("direct-spatial-shard-timings.json", {
     body: Buffer.from(JSON.stringify(timings, null, 2)),
     contentType: "application/json",
   });
 });
-
 
 test("direct prepared tiles are published and readable from REG.RU S3", async ({ page }, testInfo) => {
   test.setTimeout(240_000);

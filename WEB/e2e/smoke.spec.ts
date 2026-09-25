@@ -182,6 +182,31 @@ test("authenticated list search detail and API failure smoke", async ({
       }),
     }),
   );
+  await page.route(/\/api\/map\/filtered-tiles\/[^/]+\/\d+\/\d+\/\d+(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        type: "FeatureCollection",
+        features: coincidentLots.map((lot) => ({
+          type: "Feature",
+          id: lot.id,
+          geometry: { type: "Point", coordinates: [lot.lat, lot.lon] },
+          properties: {
+            kind: "lot",
+            lotId: lot.id,
+            title: lot.title,
+            hintContent: lot.title,
+            current_price: lot.current_price,
+            start_price: lot.minimum_price,
+            region_code: "76",
+            status: lot.status,
+          },
+          options: { preset: "islands#grayDotIcon" },
+        })),
+      }),
+    }),
+  );
   await page.route(/\/api\/map\/lots\/(\d+)$/, async (route) => {
     const id = Number(new URL(route.request().url()).pathname.split("/").at(-1));
     const lot = coincidentLots.find((item) => item.id === id);
@@ -207,9 +232,13 @@ test("authenticated list search detail and API failure smoke", async ({
   await page.reload();
   await ensureAuthenticated(page);
   const fixtureMapResponse = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/map/lots" &&
-      response.status() === 200,
+    (response) => {
+      const pathname = new URL(response.url()).pathname;
+      return (
+        pathname.startsWith("/api/map/filtered-tiles/")
+        || pathname === "/api/map/lots"
+      ) && response.status() === 200;
+    },
     { timeout: 30_000 },
   );
   await page.getByRole("button", { name: "Карта", exact: true }).click();
@@ -240,22 +269,28 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Стартовая цена от")).toBeVisible();
   await expect(page.getByText("Стартовая цена до")).toBeVisible();
   await expect(page.getByText("Субъект РФ")).toBeVisible();
-  // This broad smoke intentionally exercises the retained legacy filter path;
-  // the dedicated map-tile-integration spec proves zero bulk calls on startup.
+  // Production direct mode keeps filters on the per-tile API path; the
+  // bulk /api/map/lots endpoint is a retained fallback, not the hot path.
   const minimumPrice = page.getByText("Стартовая цена от").locator("..").locator("input");
   await minimumPrice.fill("1");
   await page.getByRole("button", { name: "Применить" }).click();
-  await fixtureMapResponse;
-  await expect(page.getByLabel("Состояние карты")).toContainText(
-    "10 объектов · 3 на карте · 7 без координат",
-    { timeout: 30_000 },
-  );
+  const mapTransportResponse = await fixtureMapResponse;
+  const mapTransportPath = new URL(mapTransportResponse.url()).pathname;
+  const usedDirectFilteredTiles = mapTransportPath.startsWith("/api/map/filtered-tiles/");
   await expect(page.getByLabel("Состояние карты")).toContainText(
     "Система готова",
+    { timeout: 30_000 },
   );
-  await expect(page.locator(".mapViewportWarning")).toContainText(
-    "Показаны первые 3. Приблизьте карту",
-  );
+  await expect(page.locator(".mapLotCount")).toContainText("На карте:");
+  if (!usedDirectFilteredTiles) {
+    await expect(page.getByLabel("Состояние карты")).toContainText(
+      "10 объектов · 3 на карте · 7 без координат",
+      { timeout: 30_000 },
+    );
+    await expect(page.locator(".mapViewportWarning")).toContainText(
+      "Показаны первые 3. Приблизьте карту",
+    );
+  }
   const yandexMapReady = await page
     .frameLocator('iframe[title="Яндекс.Карта лотов"]')
     .locator("ymaps")
