@@ -84,8 +84,8 @@ def test_source_freshness_keeps_fast_recency_and_complete_coverage_separate() ->
     assert health.freshness_status == "fresh"
     assert health.coverage_status == "fresh"
     assert health.last_complete_source_run is False
-    assert health.last_success_at == fast_run.finished_at
-    assert health.last_complete_success_at == complete_run.finished_at
+    assert health.last_success_at == fast_run.finished_at.replace(tzinfo=None)
+    assert health.last_complete_success_at == complete_run.finished_at.replace(tzinfo=None)
     assert health.last_duration_ms == 60_000
     assert health.last_pages_scanned == 1
     assert health.last_items_inserted == 1
@@ -150,8 +150,8 @@ def test_latest_failure_is_visible_without_losing_last_success() -> None:
     assert health.status == "failed"
     assert health.freshness_status == "failed"
     assert health.coverage_status == "fresh"
-    assert health.last_success_at == success.finished_at
-    assert health.last_failure_at == failure.finished_at
+    assert health.last_success_at == success.finished_at.replace(tzinfo=None)
+    assert health.last_failure_at == failure.finished_at.replace(tzinfo=None)
     assert health.last_error == "HTTP 503 connection timeout"
     assert health.last_error_category == "timeout"
     assert health.last_items_failed == 1
