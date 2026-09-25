@@ -97,3 +97,75 @@ def test_photon_requires_matching_village_name() -> None:
     assert result is not None
     assert result["centroid_lat"] == 57.7133455
     assert result["matched_address"].startswith("Губцево")
+
+
+
+def test_photon_accepts_expected_village_from_district_field() -> None:
+    response = Mock()
+    response.json.return_value = {
+        "features": [{
+            "geometry": {"coordinates": [39.7156, 57.7133]},
+            "properties": {
+                "district": "Губцево",
+                "state": "Ярославская область",
+                "street": "Центральная улица",
+                "housenumber": "5",
+            },
+        }]
+    }
+    response.raise_for_status.return_value = None
+
+    with patch("bankrotai.geo.requests.get", return_value=response):
+        result = PhotonGeocoder("http://photon:2322").geocode(
+            "деревня Губцево, Центральная улица, д. 5, Ярославская область"
+        )
+
+    assert result is not None
+    assert result["centroid_lat"] == 57.7133
+    assert result["matched_address"].startswith("Губцево")
+
+
+def test_photon_rejects_wrong_rural_district_even_in_same_region() -> None:
+    response = Mock()
+    response.json.return_value = {
+        "features": [{
+            "geometry": {"coordinates": [39.9670, 57.6396]},
+            "properties": {
+                "district": "Красный Бор",
+                "state": "Ярославская область",
+                "street": "Центральная улица",
+                "housenumber": "5",
+            },
+        }]
+    }
+    response.raise_for_status.return_value = None
+
+    with patch("bankrotai.geo.requests.get", return_value=response):
+        result = PhotonGeocoder("http://photon:2322").geocode(
+            "деревня Губцево, Центральная улица, д. 5, Ярославская область"
+        )
+
+    assert result is None
+
+
+def test_photon_extracts_region_from_full_address_for_validation() -> None:
+    wrong_region = Mock()
+    wrong_region.json.return_value = {
+        "features": [{
+            "geometry": {"coordinates": [37.6, 55.7]},
+            "properties": {
+                "city": "Ярославль",
+                "state": "Московская область",
+                "street": "улица Свердлова",
+                "housenumber": "5",
+            },
+        }]
+    }
+    wrong_region.raise_for_status.return_value = None
+
+    with patch("bankrotai.geo.requests.get", return_value=wrong_region):
+        result = PhotonGeocoder("http://photon:2322").geocode(
+            "г. Ярославль, ул. Свердлова, д. 5, Ярославская область"
+        )
+
+    assert result is None
