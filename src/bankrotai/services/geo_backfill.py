@@ -40,6 +40,18 @@ _GEOCODING_PAUSED_KEY = "geocoding_paused"
 _ETA_SAMPLE_BATCHES = 20
 _SAVE_CHUNK_SIZE = 100
 _CAMPAIGN_TASK_ID = re.compile(r"^(geo-\d{8}-\d{6})-")
+_GEO_STRATEGY_VERSION = "2026-09-25-structured-photon-cfo-v1"
+_GEO_STRATEGY_SETTING_PREFIX = "geocoding_strategy_applied:"
+_GEO_STRATEGY_SETTING_KEY = f"{_GEO_STRATEGY_SETTING_PREFIX}{_GEO_STRATEGY_VERSION}"
+_CFO_REGION_CODES = frozenset({
+    "31", "32", "33", "36", "37", "40", "44", "46", "48",
+    "50", "57", "62", "67", "68", "69", "71", "76", "77",
+})
+_RETRYABLE_STRATEGY_ERRORS = frozenset({
+    "Geocoding chain returned no result",
+    "No validated coordinates",
+    "No validated geocoding result",
+})
 
 
 def _elapsed_seconds_since(value: datetime) -> int:
@@ -66,6 +78,89 @@ def set_geocoding_paused(session: Any, paused: bool) -> bool:
         setting.value = "true" if paused else "false"
     session.flush()
     return paused
+
+
+def _is_strategy_retryable_failure(error_message: str | None) -> bool:
+    """Recognize persisted resolver misses without retrying operational errors."""
+    message = str(error_message or "").strip()
+    try:
+        payload = json.loads(message)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Before structured attempt history, these exact final messages were
+        # the resolver's persisted miss semantics. Do not substring-match
+        # arbitrary exception text such as connection or storage failures.
+        return message in _RETRYABLE_STRATEGY_ERRORS
+
+    if not isinstance(payload, dict):
+        return False
+    attempts = payload.get("attempts")
+    usable_attempts = (
+        [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, dict)
+            and any(attempt.get(field) is not None for field in ("source", "reason", "valid"))
+        ]
+        if isinstance(attempts, list)
+        else []
+    )
+    if usable_attempts:
+        return any(
+            attempt.get("valid") is False
+            and (
+                str(attempt.get("reason") or "") == "no_coordinates"
+                or str(attempt.get("reason") or "").endswith("_mismatch")
+            )
+            for attempt in usable_attempts
+        )
+    return str(payload.get("error") or "") in _RETRYABLE_STRATEGY_ERRORS
+
+
+def _refresh_failures_for_current_strategy(session: Any) -> int:
+    """Requeue eligible historical resolver misses once for a new strategy."""
+    marker = session.scalar(
+        select(AppSetting).where(AppSetting.key == _GEO_STRATEGY_SETTING_KEY)
+    )
+    if marker is not None:
+        return 0
+
+    eligible_lot_ids = select(ProcessedLot.id).where(
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+        ProcessedLot.auction_status.in_(("active", "scheduled")),
+        or_(
+            ProcessedLot.cadastral_number.isnot(None),
+            ProcessedLot.address.isnot(None),
+        ),
+        ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+    )
+    failures = session.scalars(
+        select(GeoFailure).where(
+            GeoFailure.lot_id.in_(eligible_lot_ids),
+            GeoFailure.status != "resolved",
+        )
+    ).all()
+    now = utc_now()
+    requeued = 0
+    for failure in failures:
+        if not _is_strategy_retryable_failure(failure.error_message):
+            continue
+        # Preserve the evidence and original failure timestamp; only reset
+        # scheduling state so the refreshed resolver gets one new attempt.
+        failure.status = "queued"
+        failure.attempt_count = 0
+        failure.next_retry_at = now
+        requeued += 1
+
+    if marker is None:
+        session.add(
+            AppSetting(
+                key=_GEO_STRATEGY_SETTING_KEY,
+                value="applied",
+            )
+        )
+    session.commit()
+    return requeued
 
 
 @dataclass(frozen=True, slots=True)
@@ -749,6 +844,8 @@ def _geocode_pending_lots_unlocked(
                 "geocoded": 0,
                 "failed": 0,
                 "percent": 0.0,
+                "strategy_version": _GEO_STRATEGY_VERSION,
+                "strategy_requeued": 0,
             }
             _set_progress_state(
                 session_factory,
@@ -761,6 +858,7 @@ def _geocode_pending_lots_unlocked(
     batch_limit = max(1, min(limit, 1000))
     now = utc_now()
     with session_factory() as session:
+        strategy_requeued = _refresh_failures_for_current_strategy(session)
         latest_geo_id = (
             select(func.max(LotGeoSnapshot.id))
             .where(LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -812,6 +910,10 @@ def _geocode_pending_lots_unlocked(
                 or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
             )
             .order_by(
+                case(
+                    (ProcessedLot.region_code.in_(_CFO_REGION_CODES), 0),
+                    else_=1,
+                ),
                 GeoFailure.id.is_(None).desc(),
                 ProcessedLot.needs_geo_check.desc(),
                 ProcessedLot.last_update.desc(),
@@ -824,6 +926,8 @@ def _geocode_pending_lots_unlocked(
     for item in items:
         groups.setdefault(_work_key(item), []).append(item)
     result: dict[str, Any] = {
+        "strategy_version": _GEO_STRATEGY_VERSION,
+        "strategy_requeued": strategy_requeued,
         "queued": len(items),
         "processed": 0,
         "geocoded": 0,
