@@ -44,6 +44,10 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
             category="land",
             current_price=Decimal("1000000"),
             auction_status="active",
+            current_geo_lat=57.6,
+            current_geo_lon=39.8,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(primary)
         session.flush()
@@ -141,6 +145,10 @@ def test_map_payload_reports_viewport_truncation(
                 description="",
                 category="land",
                 auction_status="active",
+                current_geo_lat=57.6 + index / 100,
+                current_geo_lon=39.8 + index / 100,
+                current_geo_source="test",
+                current_geo_confidence="high",
             )
             session.add(lot)
             session.flush()
@@ -188,6 +196,10 @@ def test_map_filters_by_subject_and_start_price_in_database() -> None:
                 region_code=region_code,
                 start_price=Decimal(start_price),
                 auction_status="active",
+                current_geo_lat=lat,
+                current_geo_lon=lon,
+                current_geo_source="test",
+                current_geo_confidence="high",
             )
             session.add(lot)
             session.flush()
@@ -228,6 +240,10 @@ def test_map_response_reuses_precomputed_statistics_across_viewports() -> None:
             description="",
             category="land",
             auction_status="active",
+            current_geo_lat=57.6,
+            current_geo_lon=39.8,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(lot)
         session.flush()
@@ -279,6 +295,10 @@ def test_map_response_can_defer_cold_full_dataset_statistics() -> None:
             description="",
             category="land",
             auction_status="active",
+            current_geo_lat=57.6,
+            current_geo_lon=39.8,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(lot)
         session.flush()
@@ -298,6 +318,10 @@ def test_map_response_can_defer_cold_full_dataset_statistics() -> None:
             description="",
             category="land",
             auction_status="active",
+            current_geo_lat=57.7,
+            current_geo_lon=39.9,
+            current_geo_source="test",
+            current_geo_confidence="high",
         )
         session.add(second_lot)
         session.flush()
