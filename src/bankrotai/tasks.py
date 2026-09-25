@@ -530,7 +530,7 @@ def _scheduled_nationwide_sync_mode() -> str:
     required_sources = {spec.source_id for spec in default_source_specs()}
     cutoff = _utc_now() - _FULL_SYNC_MAX_AGE
     with session_scope() as session:
-        fresh_complete_sources = set(
+        rows = (
             session.query(LotSyncSourceRun.source_system)
             .filter(
                 LotSyncSourceRun.source_system.in_(required_sources),
@@ -542,12 +542,8 @@ def _scheduled_nationwide_sync_mode() -> str:
             .distinct()
             .all()
         )
-    # SQLAlchemy returns one-column rows from Query in a backend-dependent shape.
-    normalized = {
-        value[0] if isinstance(value, tuple) else getattr(value, "source_system", value)
-        for value in fresh_complete_sources
-    }
-    return "fast" if required_sources <= normalized else "full"
+    fresh_complete_sources = {str(row[0]) for row in rows}
+    return "fast" if required_sources <= fresh_complete_sources else "full"
 
 
 @celery_app.task(name="bankrotai.tasks.scheduled_nationwide_refresh_task")
