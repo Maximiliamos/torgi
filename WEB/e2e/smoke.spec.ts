@@ -322,7 +322,11 @@ test("authenticated list search detail and API failure smoke", async ({
       )?.contentWindow;
     });
     const coincidentPanel = page.getByLabel("Лоты в выбранной точке");
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // The smoke owns this fixture and is meant to verify the application-side
+    // cluster selection UI, while production-map-availability.spec.ts gates the
+    // real Yandex/S3 transport. Send the same message that the iframe emits
+    // instead of racing Yandex's transient srcdoc recreation.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       mapFrame = page
         .frames()
         .find(
@@ -334,19 +338,22 @@ test("authenticated list search detail and API failure smoke", async ({
       }
       try {
         await mapFrame.evaluate(() =>
-          (
-            window as unknown as {
-              bankrotaiDebug?: { clickCoincident: (ids: number[]) => void };
-            }
-          ).bankrotaiDebug?.clickCoincident([7001, 7002, 7003]),
+          parent.postMessage(
+            {
+              type: "bankrotai-cluster-select",
+              channel: "bankrotai-map-v1",
+              lotIds: [7001, 7002, 7003],
+            },
+            "*",
+          ),
         );
       } catch {
         // Yandex may recreate its srcdoc frame while settling the viewport.
       }
       if (await coincidentPanel.isVisible().catch(() => false)) break;
-      await page.waitForTimeout(350);
+      await page.waitForTimeout(250);
     }
-    await expect(coincidentPanel).toBeVisible({ timeout: 5_000 });
+    await expect(coincidentPanel).toBeVisible({ timeout: 10_000 });
     for (const [id, title] of [
       [7002, "Земельный участок в Ярославском районе"],
       [7003, "Здание с земельным участком"],
