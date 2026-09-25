@@ -283,6 +283,7 @@ def _promote_active_projection(
         else None
     )
     if previous_geo is not None:
+        inherited_at = utc_now()
         session.add(LotGeoSnapshot(
             lot_id=active_projection.id,
             geo_source=previous_geo.geo_source,
@@ -290,11 +291,17 @@ def _promote_active_projection(
             geo_confidence=previous_geo.geo_confidence,
             centroid_lat=previous_geo.centroid_lat,
             centroid_lon=previous_geo.centroid_lon,
+            observed_at=inherited_at,
             geometry_json=previous_geo.geometry_json,
             trace_reason=f"Promoted canonical sibling; inherited from lot {archived_primary.id}",
             source_checked_at=previous_geo.source_checked_at,
             metadata_json={**(previous_geo.metadata_json or {}), "inherited_from_lot_id": archived_primary.id},
         ))
+        active_projection.current_geo_lat = previous_geo.centroid_lat
+        active_projection.current_geo_lon = previous_geo.centroid_lon
+        active_projection.current_geo_source = previous_geo.geo_source
+        active_projection.current_geo_confidence = previous_geo.geo_confidence
+        active_projection.current_geo_observed_at = inherited_at
     primary_link = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == archived_primary.id))
     if primary_link is not None:
         canonical = session.get(CanonicalLot, primary_link.canonical_lot_id)
@@ -765,6 +772,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             previous_geo_input = (
                 processed.address,
                 processed.cadastral_number,
+                frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
                 processed.region_name,
@@ -801,6 +809,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             current_geo_input = (
                 processed.address,
                 processed.cadastral_number,
+                frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
                 processed.region_name,
@@ -808,6 +817,11 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             if current_geo_input != previous_geo_input:
                 processed.needs_geo_check = True
                 processed.geo_input_hash = None
+                processed.current_geo_lat = None
+                processed.current_geo_lon = None
+                processed.current_geo_source = None
+                processed.current_geo_confidence = None
+                processed.current_geo_observed_at = None
         
         if normalized.start_price is not None:
             processed.start_price = _to_decimal(normalized.start_price)
