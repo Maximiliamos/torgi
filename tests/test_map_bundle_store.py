@@ -178,7 +178,7 @@ def test_bundle_and_index_keys_are_content_addressed():
 
 def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(monkeypatch):
     factory = _factory()
-    first_version = "bundle-v1-r2-bundle-s3"
+    first_version = f"bundle-v1-{MAP_DATASET_REVISION}-bundle-s3"
     first_id = _seed_bundle_dataset(factory, first_version)
     settings = _settings()
     puts: list[tuple[str, bytes]] = []
@@ -236,7 +236,7 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
         previous.is_current = True
         session.commit()
 
-    second_version = "bundle-v2-r2-bundle-s3"
+    second_version = f"bundle-v2-{MAP_DATASET_REVISION}-bundle-s3"
     second_id = _seed_bundle_dataset(factory, second_version)
     puts.clear()
 
