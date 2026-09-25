@@ -198,3 +198,58 @@ def test_phase3_health_fails_when_configured_source_is_missing() -> None:
     assert health["healthy"] is False
     check = next(item for item in health["checks"] if item["name"] == "source-health-present")
     assert check["missing_sources"] == ["missing.example"]
+
+
+
+def test_phase3_health_keeps_legacy_source_history_out_of_critical_checks() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        legacy = LotSyncRun(
+            id="legacy-run",
+            triggered_by="historical",
+            trigger_type="manual_full",
+            status="success",
+            total_sources=1,
+            started_at=(now - timedelta(days=40)).replace(tzinfo=None),
+            finished_at=(now - timedelta(days=40)).replace(tzinfo=None),
+        )
+        session.add(legacy)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=legacy.id,
+                source_system="ГИС Торги",
+                status="success",
+                complete_source_run=True,
+                items_seen=10,
+                started_at=legacy.started_at,
+                finished_at=legacy.finished_at,
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"torgi.gov.ru"},
+        )
+
+    assert health["healthy"] is True
+    assert health["summary"]["source_count"] == 1
+    assert health["summary"]["legacy_source_count"] == 1
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-health-present"]["legacy_sources"] == ["ГИС Торги"]
+    assert "source-freshness:ГИС Торги" not in checks
