@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai.core import AppSettings
 from bankrotai.db import Base, MapDataset, MapTile
 from bankrotai.services import map_bundle_store
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
 from bankrotai.services.map_bundle_store import (
     CFO_REGION_CODES,
     REGIONAL_BUNDLE_LAYOUT,
@@ -76,7 +77,7 @@ def _cluster_payload():
     }
 
 
-def _seed_bundle_dataset(factory, version: str = "bundle-v1-bundle-s3"):
+def _seed_bundle_dataset(factory, version: str = "bundle-v1-r2-bundle-s3"):
     with factory() as session:
         dataset = MapDataset(
             version=version,
@@ -177,7 +178,7 @@ def test_bundle_and_index_keys_are_content_addressed():
 
 def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(monkeypatch):
     factory = _factory()
-    first_version = "bundle-v1-bundle-s3"
+    first_version = "bundle-v1-r2-bundle-s3"
     first_id = _seed_bundle_dataset(factory, first_version)
     settings = _settings()
     puts: list[tuple[str, bytes]] = []
@@ -194,7 +195,11 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     def verify(_settings, version):
         return verified_manifests.get(
             version,
-            {"version": version, "layout": REGIONAL_BUNDLE_LAYOUT},
+            {
+                "version": version,
+                "layout": REGIONAL_BUNDLE_LAYOUT,
+                "pipeline_revision": MAP_DATASET_REVISION,
+            },
         )
 
     monkeypatch.setattr(map_bundle_store, "_verify_public_manifest", verify)
@@ -217,6 +222,7 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     assert len(index_keys) == 2
     assert puts[-1][0] == f"datasets/{first_version}/manifest.json"
     first_manifest = __import__("json").loads(puts[-1][1])
+    assert first_manifest["pipeline_revision"] == MAP_DATASET_REVISION
     assert set(first_manifest["bundle_objects"]) == set(bundle_keys)
     assert set(first_manifest["index_shards"].values()) == set(index_keys)
     assert first["regions"]["76"]["point_count"] == 2
@@ -230,7 +236,7 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
         previous.is_current = True
         session.commit()
 
-    second_version = "bundle-v2-bundle-s3"
+    second_version = "bundle-v2-r2-bundle-s3"
     second_id = _seed_bundle_dataset(factory, second_version)
     puts.clear()
 

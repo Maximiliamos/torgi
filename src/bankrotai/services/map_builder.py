@@ -27,6 +27,7 @@ from bankrotai.services.map_bundle_store import (
     normalize_map_region_code,
     publish_dataset_to_regional_bundles,
 )
+from bankrotai.services.map_dataset_version import build_map_dataset_version
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -355,10 +356,13 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     """Build a complete dataset, then atomically make it current."""
     started = time.monotonic()
     build_completed = False
-    version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     settings = get_settings()
-    if settings.map_object_store_enabled:
-        version += "-bundle-s3" if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT else "-s3"
+    version = build_map_dataset_version(
+        timestamp,
+        object_store_enabled=settings.map_object_store_enabled,
+        object_store_layout=settings.map_object_store_layout,
+    )
     with session_factory() as session:
         expected_current_id = session.scalar(select(MapDataset.id).where(MapDataset.is_current.is_(True)))
         dataset = MapDataset(version=version, status="building", is_current=False)

@@ -2,21 +2,54 @@
 
 BankrotAI — desktop-приложение и web-сервис для сбора, поиска, геокодирования и предварительного AI-анализа лотов банкротных и публичных торгов.
 
-Production WEB доступен по адресу [https://sterdez.online](https://sterdez.online). `www.sterdez.online`
-перенаправляется на основной домен, а `bankrotai.pages.dev` остаётся техническим адресом
-Cloudflare Pages. Публичный домен обслуживает edge-прокси из `WEB/edge-proxy/`; API проходит
-через Pages Function к закрытому origin на REG.RU и использует Neon PostgreSQL.
+Production WEB доступен по адресу [https://sterdez.online](https://sterdez.online).
+`www.sterdez.online` перенаправляется на основной домен, `api.sterdez.online` используется
+для API, а `bankrotai.pages.dev` остаётся техническим адресом Cloudflare Pages.
 
 ## Архитектура
 
+### Текущий production
+
+- **Домашний Windows-PC — основной production origin и источник данных.** На нём работают
+  локальный PostgreSQL, Redis, Photon, FastAPI и раздельные Celery workers для ingestion,
+  geocoding и map publication. Там же работает Celery beat.
+- **Cloudflare обслуживает внешний вход, но не хранит данные карты.** `sterdez.online`
+  проходит через `WEB/edge-proxy/`: статический WEB берётся из Cloudflare Pages, API —
+  через отдельный `WEB/api-proxy/` Worker.
+- **Primary API origin** идёт через защищённый home relay/tunnel на REG.RU к домашнему
+  FastAPI. REG.RU direct origin используется как дополнительный маршрут, но в текущей
+  конфигурации он также в основном ведёт к домашнему origin и не является независимой
+  копией PostgreSQL/API на случай полного отключения домашнего ПК.
+- **Карта заранее строится на домашнем ПК** и публикуется в bucket `sterdez-map` в
+  REG.RU S3. Обычный просмотр карты загружает уже готовые Yandex FeatureCollection tiles
+  напрямую **браузер → REG.RU S3**, без массовой передачи точек через API.
+- Production layout карты — `regional-bundles-v1`: логические tiles объединяются в
+  content-addressed immutable bundles и index shards. Неизменившиеся bundles
+  переиспользуются между версиями dataset.
+- Фильтрованные tiles (регион/цена) пока обслуживаются authenticated API через
+  `/api/map/filtered-tiles/...`; это отдельный путь от прямого S3 hot-path.
+- Cloudflare R2 **не используется в hot-path карты**. Возврат CDN/R2 для map-data не
+  требуется для корректности текущей схемы и может рассматриваться только как отдельная
+  будущая оптимизация.
+- Версия map pipeline хранится в `MAP_DATASET_REVISION`. Если меняется семантика
+  отбора/публичного payload карты, revision увеличивается; deployment не принимает
+  dataset старой revision и сначала строит/проверяет новый публичный S3 manifest.
+- Production deploy fail-closed: home/REG.RU/Cloudflare gates проверяют health, SHA релиза,
+  авторизацию и готовность S3 dataset до переключения канонического пути.
+
+### Основные компоненты репозитория
+
 - `src/bankrotai/gui.py` — PySide6 desktop-интерфейс, импорт файлов и Excel-экспорт.
 - `src/bankrotai/api.py` — FastAPI API, healthchecks и постановка массовых задач.
-- `src/bankrotai/tasks.py` — Celery worker: синхронизация порциями, retries и прогресс.
+- `src/bankrotai/tasks.py` — Celery workers/beat: retries, GEO, публикация карты и фоновые операции.
 - `src/bankrotai/db.py`, `alembic/` — SQLAlchemy и единая цепочка миграций SQLite/PostgreSQL.
 - `src/bankrotai/ai.py`, `src/bankrotai/geo.py` — строгая проверка AI-ответов и геокодирование.
 - `src/bankrotai/connectors/` — SDK и реестр источников; клиенты ГИС «Торги», TBankrot и РАД / ЛОТ-ОНЛАЙН подключены адаптерами, ЕФРСБ использует официальный Publications API.
-- `WEB/` — React/Vite web-клиент.
-- `docker-compose.yml` — PostgreSQL, Redis, миграции, API, worker, beat и web.
+- `src/bankrotai/services/map_builder.py` — построение immutable map dataset.
+- `src/bankrotai/services/map_bundle_store.py` — REG.RU S3 regional bundles/index shards.
+- `src/bankrotai/services/map_dataset_version.py` — revision-контракт map pipeline.
+- `WEB/` — React/Vite web-клиент и Cloudflare edge/API proxy.
+- `docker-compose.yml` — локальный/production-подобный PostgreSQL, Redis, миграции, API, worker, beat и web.
 
 Закрытые лоты не удаляются: они получают `is_archived=true`, дату архивации и остаются доступны для аудита. Каждая смена статуса записывается в `lot_status_history`.
 
@@ -217,6 +250,13 @@ Content-Type: application/json
 
 Ответ содержит `task_id`. Прогресс и итог доступны по `GET /api/tasks/{task_id}`. Если Redis/Celery недоступны, production возвращает `503`; локальный thread fallback разрешается только явным `ALLOW_LOCAL_TASK_FALLBACK=true` вне production.
 
+Текущий Celery beat автоматически выполняет завершение просроченных лотов, GEO-пакеты,
+ограниченный IK12 recovery, пересчёт public-offer цен, публикацию dirty map dataset,
+cleanup старых map versions и ежедневный quality report. **Nationwide/source sync не
+включён в Celery beat**: он запускается через API/CLI либо внешним scheduler. Если production
+должен обновлять источники полностью автоматически, внешний scheduler должен быть
+явно настроен и контролироваться отдельно.
+
 ## Операционная модель сделки
 
 - `GET /api/lots/{lot_id}/procedure` — нормализованные сроки, задаток, ЭТП и реквизиты процедуры;
@@ -284,7 +324,7 @@ bash scripts/docker-smoke.sh
 
 ## CI
 
-GitHub Actions запускается для push и pull request в `main`: Ruff/Mypy, SQLite tests, upgrade существующей БД, PostgreSQL integration/Alembic, WEB typecheck/lint/unit/build и Docker/Playwright smoke. Отдельный ежедневный production reliability workflow проверяет канонический домен, реальные источники, GEO, изображения и ссылки ЭТП без необратимых записей. Python и npm зависимости устанавливаются по lock-файлам.
+GitHub Actions запускается для push и pull request в `main`: Ruff/Mypy, SQLite tests, upgrade существующей БД, PostgreSQL integration/Alembic, WEB typecheck/lint/unit/build и Docker/Playwright smoke. Production deploy разделён на home, REG.RU и Cloudflare workflows; перед переключением они проверяют health, deployment SHA и текущую map pipeline revision. Production functional gate отдельно проверяет реальную карту и чтение REG.RU S3 bundles без bulk `/api/map/lots`. Отдельные scheduled reliability/smoke workflows проверяют канонический домен. Python и npm зависимости устанавливаются по lock-файлам.
 
 ## Ограничения
 
@@ -292,3 +332,5 @@ GitHub Actions запускается для push и pull request в `main`: Ruf
 - Desktop использует отдельную optional-группу зависимостей и не входит в API Docker image.
 - Production ЕФРСБ требует договор и credentials оператора; наличие коннектора не означает предоставленный доступ.
 - `GET` не предназначен для массовой синхронизации; используйте Celery endpoint и проверку статуса.
+- Домашний ПК остаётся основной точкой выполнения PostgreSQL/Redis/Photon/workers; при его полном отключении публичный WEB и уже опубликованные S3 map bundles могут оставаться доступными, но ingest/GEO/map refresh и основная API-функциональность не обновляются.
+- Текущий REG.RU secondary route не следует считать независимой disaster-recovery копией production БД.

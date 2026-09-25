@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REGRU_WORKFLOW = ROOT / ".github" / "workflows" / "regru-deploy.yml"
 CLOUDFLARE_WORKFLOW = ROOT / ".github" / "workflows" / "cloudflare-edge-deploy.yml"
+HOME_WORKFLOW = ROOT / ".github" / "workflows" / "home-secondary-deploy.yml"
 
 
 PRODUCTION_PATHS = (
@@ -55,3 +56,22 @@ def test_staged_s3_readiness_gates_retry_transient_http_failures() -> None:
         assert "2>/dev/null || printf 'no'" in workflow
         assert "staged REG.RU S3 dataset not ready on attempt %s/180; retrying" in workflow
         assert "bundle_manifest_url" in workflow
+
+
+def test_public_rollout_requires_current_map_pipeline_revision() -> None:
+    for workflow_path in (REGRU_WORKFLOW, CLOUDFLARE_WORKFLOW):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert "MAP_DATASET_REVISION" in workflow
+        assert "PYTHONPATH=src python -c" in workflow
+        assert 'v.endswith(f"-{r}-bundle-s3")' in workflow
+        assert 'v.endswith(f"-{r}-s3")' in workflow
+
+
+def test_home_rollout_rebuilds_and_verifies_stale_map_revision() -> None:
+    workflow = HOME_WORKFLOW.read_text(encoding="utf-8")
+    assert "map_dataset_version import MAP_DATASET_REVISION" in workflow
+    assert "$desiredRevision" in workflow
+    assert "Test-CurrentDataset $current $desiredLayout $desiredRevision" in workflow
+    assert '"*-$revision-bundle-s3"' in workflow
+    assert "pipeline_revision" in workflow
+    assert "wrong pipeline revision" in workflow

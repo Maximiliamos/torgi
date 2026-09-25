@@ -329,17 +329,20 @@ jobs:
 
           $desiredLayout = (docker exec $env:MAP_WORKER_CONTAINER python -c "from bankrotai.core import get_settings; print(get_settings().map_object_store_layout)" | Select-Object -Last 1).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Could not inspect desired map object-store layout" }
+          $desiredRevision = (docker exec $env:MAP_WORKER_CONTAINER python -c "from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; print(MAP_DATASET_REVISION)" | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $desiredRevision) { throw "Could not inspect desired map pipeline revision" }
 
-          function Test-CurrentLayout([string]$version, [string]$layout) {
+          function Test-CurrentDataset([string]$version, [string]$layout, [string]$revision) {
+            if (-not $version) { return $false }
             if ($layout -eq 'regional-bundles-v1') {
-              return $version -like '*-bundle-s3'
+              return $version -like "*-$revision-bundle-s3"
             }
-            return ($version -like '*-s3') -and ($version -notlike '*-bundle-s3')
+            return ($version -like "*-$revision-s3") -and ($version -notlike '*-bundle-s3')
           }
 
           $current = Get-CurrentMapVersion
-          if (-not (Test-CurrentLayout $current $desiredLayout)) {
-            Write-Output "Building REG.RU S3 map dataset for layout=$desiredLayout current=$current"
+          if (-not (Test-CurrentDataset $current $desiredLayout $desiredRevision)) {
+            Write-Output "Building REG.RU S3 map dataset for layout=$desiredLayout revision=$desiredRevision current=$current"
             docker exec $env:MAP_WORKER_CONTAINER python -c "import json; from bankrotai.tasks import build_map_dataset_task; print(json.dumps(build_map_dataset_task.run(), default=str))"
             if ($LASTEXITCODE -ne 0) {
               docker logs --tail 200 $env:MAP_WORKER_CONTAINER
@@ -350,7 +353,7 @@ jobs:
           $published = $false
           foreach ($attempt in 1..180) {
             $current = Get-CurrentMapVersion
-            if (Test-CurrentLayout $current $desiredLayout) {
+            if (Test-CurrentDataset $current $desiredLayout $desiredRevision) {
               $published = $true
               break
             }
@@ -358,14 +361,14 @@ jobs:
           }
           if (-not $published) {
             docker logs --tail 200 $env:MAP_WORKER_CONTAINER
-            throw "REG.RU S3 map dataset for layout=$desiredLayout was not promoted within 15 minutes"
+            throw "REG.RU S3 map dataset for layout=$desiredLayout revision=$desiredRevision was not promoted within 15 minutes"
           }
 
-          docker exec $env:MAP_WORKER_CONTAINER python -c "import json,sys; from bankrotai.core import get_settings; from bankrotai.services.map_object_store import _verify_public_manifest; print(json.dumps(_verify_public_manifest(get_settings(), sys.argv[1]), default=str))" $current
+          docker exec $env:MAP_WORKER_CONTAINER python -c "import json,sys; from bankrotai.core import get_settings; from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; from bankrotai.services.map_object_store import _verify_public_manifest; m=_verify_public_manifest(get_settings(), sys.argv[1]); assert m.get('pipeline_revision') == MAP_DATASET_REVISION, (m.get('pipeline_revision'), MAP_DATASET_REVISION); print(json.dumps(m, default=str))" $current
           if ($LASTEXITCODE -ne 0) {
-            throw "Current REG.RU S3 map manifest is not publicly readable"
+            throw "Current REG.RU S3 map manifest is not publicly readable or has the wrong pipeline revision"
           }
-          Write-Output "REG.RU S3 current map dataset: $current"
+          Write-Output "REG.RU S3 current map dataset: $current revision=$desiredRevision"
 
       - name: Verify local API stability
         shell: powershell

@@ -319,6 +319,8 @@ jobs:
             echo "Staged home API login did not recover; REG.RU configuration was not changed" >&2
             exit 1
           fi
+          export MAP_DATASET_REVISION="$(PYTHONPATH=src python -c 'from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; print(MAP_DATASET_REVISION)')"
+          test -n "$MAP_DATASET_REVISION"
           for dataset_attempt in $(seq 1 180); do
             DATASET_JSON="$(curl --fail --silent --show-error --max-time 30 \
               -H "X-API-Key: $API_KEY" \
@@ -326,7 +328,7 @@ jobs:
               "https://$HOME_RELAY_HOSTNAME/api/map/datasets/current" || true)"
             DATASET_READY="no"
             if test -n "$DATASET_JSON"; then
-              DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,sys; d=json.load(sys.stdin); print("yes" if d.get("version") and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and str(d.get("version","")).endswith("-s3") and ((d.get("object_store_layout")=="regional-bundles-v1" and d.get("bundle_root_url") and d.get("bundle_manifest_url")) or (d.get("object_store_layout")!="regional-bundles-v1" and d.get("tile_base_url"))) else "no")' 2>/dev/null || printf 'no')"
+              DATASET_READY="$(printf '%s' "$DATASET_JSON" | python -c 'import json,os,sys; d=json.load(sys.stdin); v=str(d.get("version","")); r=os.environ["MAP_DATASET_REVISION"]; layout=d.get("object_store_layout"); revision_ok=(v.endswith(f"-{r}-bundle-s3") if layout=="regional-bundles-v1" else (v.endswith(f"-{r}-s3") and not v.endswith("-bundle-s3"))); print("yes" if v and revision_ok and d.get("point_count",0)>0 and d.get("tile_count",0)>0 and d.get("published_at") and d.get("tile_source")=="regru-s3" and ((layout=="regional-bundles-v1" and d.get("bundle_root_url") and d.get("bundle_manifest_url")) or (layout!="regional-bundles-v1" and d.get("tile_base_url"))) else "no")' 2>/dev/null || printf 'no')"
             fi
             if test "$MAP_S3_ENABLED" != "true" || test "$DATASET_READY" = "yes"; then
               break

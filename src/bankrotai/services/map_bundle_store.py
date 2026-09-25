@@ -19,6 +19,7 @@ from bankrotai.services.map_object_store import (
     object_store_configured,
 )
 from bankrotai.services.map_payload import legacy_tile_to_yandex, public_yandex_tile_payload
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, dataset_pipeline_revision
 
 
 logger = logging.getLogger(__name__)
@@ -472,6 +473,7 @@ def publish_dataset_to_regional_bundles(
     manifest = {
         "version": version,
         "layout": REGIONAL_BUNDLE_LAYOUT,
+        "pipeline_revision": MAP_DATASET_REVISION,
         "point_count": point_count,
         "tile_count": expected_tile_count,
         "bundle_count": len(bundle_specs),
@@ -503,6 +505,16 @@ def publish_dataset_to_regional_bundles(
         raise RuntimeError(
             "REG.RU S3 regional bundle manifest layout verification failed: "
             f"actual={verified.get('layout')!r}"
+        )
+    if verified.get("pipeline_revision") != MAP_DATASET_REVISION:
+        raise RuntimeError(
+            "REG.RU S3 regional bundle manifest pipeline revision mismatch: "
+            f"expected={MAP_DATASET_REVISION!r} actual={verified.get('pipeline_revision')!r}"
+        )
+    if dataset_pipeline_revision(version) != MAP_DATASET_REVISION:
+        raise RuntimeError(
+            "REG.RU S3 dataset version does not carry the current map pipeline revision: "
+            f"version={version!r} expected_revision={MAP_DATASET_REVISION!r}"
         )
 
     return {
