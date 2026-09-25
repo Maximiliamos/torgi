@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from bankrotai.core import get_settings
-from bankrotai.geo import coordinate_matches_region_sanity
+from bankrotai.region_sanity import coordinate_matches_region_sanity
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
@@ -435,7 +435,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             )
         if spatial_outlier_count:
             logger.warning(
-                "Map dataset excluded gross CFO coordinate outliers: count=%s",
+                "Map dataset excluded gross regional coordinate outliers: count=%s",
                 spatial_outlier_count,
             )
         tile_count = 0

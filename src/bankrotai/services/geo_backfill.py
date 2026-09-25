@@ -172,6 +172,7 @@ class GeoWorkItem:
     title: str | None
     description: str | None
     region_name: str | None
+    region_code: str | None
 
 
 def _work_key(item: GeoWorkItem) -> str:
@@ -190,6 +191,7 @@ def _work_key(item: GeoWorkItem) -> str:
         }),
         "address": " ".join((address_candidates[0] if address_candidates else "").casefold().split()),
         "region": " ".join((item.region_name or "").casefold().split()),
+        "region_code": str(item.region_code or "").strip().zfill(2),
     }
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -892,6 +894,7 @@ def _geocode_pending_lots_unlocked(
                 ProcessedLot.title,
                 ProcessedLot.description,
                 ProcessedLot.region_name,
+                ProcessedLot.region_code,
             )
             .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
             .where(
@@ -970,6 +973,7 @@ def _geocode_pending_lots_unlocked(
                 title=values[0].title,
                 description=values[0].description,
                 region_name=values[0].region_name,
+                region_code=values[0].region_code,
                 bulk=True,
             ): key
             for key, values in missing_groups.items()
@@ -1136,6 +1140,7 @@ def recover_nspd_failures_with_ik12(
                 ProcessedLot.cadastral_number,
                 ProcessedLot.address,
                 ProcessedLot.region_name,
+                ProcessedLot.region_code,
                 GeoFailure.error_message,
                 GeoFailure.attempt_count,
             )
@@ -1183,6 +1188,7 @@ def recover_nspd_failures_with_ik12(
                 cadastral_number=cadastral_number,
                 address=row.address,
                 region_name=row.region_name,
+                region_code=row.region_code,
             )
         except Exception as exc:
             candidate = None
@@ -1209,6 +1215,7 @@ def recover_nspd_failures_with_ik12(
                 cadastral_number=lot.cadastral_number,
                 address=lot.address,
                 region_name=lot.region_name,
+                region_code=lot.region_code,
             )
             if not valid_now or not apply_lot_geo_result(session, lot, candidate):
                 reasons[str(reason_now)] += 1
