@@ -207,6 +207,8 @@ def test_filtered_tile_api_uses_runtime_index_and_etag(monkeypatch):
 
     monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "app_env", "test")
+    with api._filtered_tile_cache_lock:
+        api._filtered_tile_cache.clear()
 
     x, y = tile_xy(57.6261, 39.8845, 12)
     client = TestClient(api.app)
@@ -218,6 +220,7 @@ def test_filtered_tile_api_uses_runtime_index_and_etag(monkeypatch):
     assert response.headers["x-map-index"] == "runtime"
     assert response.headers["x-map-dataset"] == result["version"]
     assert response.headers["cache-control"] == "private, max-age=30, stale-while-revalidate=60"
+    assert response.headers["x-map-filter-cache"] == "MISS"
     assert response.json()["type"] == "FeatureCollection"
     assert len(response.json()["features"]) == 1
 
@@ -227,6 +230,14 @@ def test_filtered_tile_api_uses_runtime_index_and_etag(monkeypatch):
         headers={"If-None-Match": response.headers["etag"]},
     )
     assert not_modified.status_code == 304
+    assert not_modified.headers["x-map-filter-cache"] == "HIT"
+
+    repeated = client.get(
+        f"/api/map/filtered-tiles/{result['version']}/12/{x}/{y}",
+        params={"region_code": "76", "min_start_price": 1_500_000},
+    )
+    assert repeated.status_code == 200
+    assert repeated.headers["x-map-filter-cache"] == "HIT"
 
     invalid = client.get(
         f"/api/map/filtered-tiles/{result['version']}/12/{x}/{y}",
