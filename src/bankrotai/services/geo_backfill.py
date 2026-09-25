@@ -70,6 +70,7 @@ def set_geocoding_paused(session: Any, paused: bool) -> bool:
 class GeoWorkItem:
     lot_id: int
     cadastral_number: str | None
+    cadastral_numbers: list[str] | None
     address: str | None
     title: str | None
     description: str | None
@@ -85,6 +86,11 @@ def _work_key(item: GeoWorkItem) -> str:
     )
     value = {
         "cad": "".join((item.cadastral_number or "").casefold().split()),
+        "cads": sorted({
+            "".join(str(value).casefold().split())
+            for value in (item.cadastral_numbers or [])
+            if value
+        }),
         "address": " ".join((address_candidates[0] if address_candidates else "").casefold().split()),
         "region": " ".join((item.region_name or "").casefold().split()),
     }
@@ -165,6 +171,11 @@ def geo_input_hash(lot: ProcessedLot) -> str:
     payload = {
         "address": " ".join((lot.address or "").casefold().split()),
         "cadastral_number": "".join((lot.cadastral_number or "").casefold().split()),
+        "cadastral_numbers": sorted({
+            "".join(str(value).casefold().split())
+            for value in (lot.cadastral_numbers or [])
+            if value
+        }),
         "description": " ".join((lot.description or "").casefold().split()),
         "region_name": " ".join((lot.region_name or "").casefold().split()),
         "title": " ".join((lot.title or "").casefold().split()),
@@ -742,6 +753,7 @@ def _geocode_pending_lots_unlocked(
             select(
                 ProcessedLot.id,
                 ProcessedLot.cadastral_number,
+                ProcessedLot.cadastral_numbers,
                 ProcessedLot.address,
                 ProcessedLot.title,
                 ProcessedLot.description,
@@ -814,6 +826,7 @@ def _geocode_pending_lots_unlocked(
                 resolve_lot_geo,
                 values[0].cadastral_number,
                 values[0].address,
+                cadastral_numbers=values[0].cadastral_numbers,
                 title=values[0].title,
                 description=values[0].description,
                 region_name=values[0].region_name,
