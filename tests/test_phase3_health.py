@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -198,3 +199,75 @@ def test_phase3_health_fails_when_configured_source_is_missing() -> None:
     assert health["healthy"] is False
     check = next(item for item in health["checks"] if item["name"] == "source-health-present")
     assert check["missing_sources"] == ["missing.example"]
+
+
+
+def test_phase3_health_keeps_legacy_source_history_out_of_critical_checks() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        legacy = LotSyncRun(
+            id="legacy-run",
+            triggered_by="historical",
+            trigger_type="manual_full",
+            status="success",
+            total_sources=1,
+            started_at=(now - timedelta(days=40)).replace(tzinfo=None),
+            finished_at=(now - timedelta(days=40)).replace(tzinfo=None),
+        )
+        session.add(legacy)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=legacy.id,
+                source_system="ГИС Торги",
+                status="success",
+                complete_source_run=True,
+                items_seen=10,
+                started_at=legacy.started_at,
+                finished_at=legacy.finished_at,
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"torgi.gov.ru"},
+        )
+
+    assert health["healthy"] is True
+    assert health["summary"]["source_count"] == 1
+    assert health["summary"]["legacy_source_count"] == 1
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-health-present"]["legacy_sources"] == ["ГИС Торги"]
+    assert "source-freshness:ГИС Торги" not in checks
+
+
+
+def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "phase3-lite-full-reconcile.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Wait for the same main revision on the home origin" in workflow
+    assert "Deploy home secondary origin" in workflow
+    assert "automatic_nationwide_lot_refresh_task.apply_async(args=['full'])" in workflow
+    assert "rows.Count -eq 5" in workflow
+    assert "$_.coverage -ne 'fresh'" in workflow
+    assert "timeout-minutes: 90" in workflow

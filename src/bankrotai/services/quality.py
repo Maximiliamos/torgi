@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
@@ -224,14 +224,18 @@ def _source_error_category(error: str | None) -> str | None:
     return "upstream_error"
 
 
-def list_source_health(session: Session) -> list[SourceHealthDTO]:
+def list_source_health(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> list[SourceHealthDTO]:
     states = {row.source_system: row for row in session.scalars(select(SourceHealthState)).all()}
     counts = dict(
         session.execute(select(ProcessedLot.source_system, func.count()).group_by(ProcessedLot.source_system)).all()
     )
     run_names = set(session.scalars(select(LotSyncSourceRun.source_system).distinct()).all())
     names = sorted(set(states) | set(counts) | run_names)
-    now = utc_now()
+    now = now or utc_now()
 
     values: list[SourceHealthDTO] = []
     for name in names:
