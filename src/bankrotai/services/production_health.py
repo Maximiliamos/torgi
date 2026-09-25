@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from bankrotai.core import utc_now
+from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset
+from bankrotai.services.geo_backfill import geocoding_progress
+from bankrotai.services.quality import list_source_health
+
+
+_GEO_STALL_AFTER = timedelta(hours=24)
+
+
+def _utc_naive(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.replace(tzinfo=None)
+
+
+def _age_seconds(now: datetime, value: datetime | None) -> int | None:
+    normalized = _utc_naive(value)
+    if normalized is None:
+        return None
+    return max(0, int((_utc_naive(now) - normalized).total_seconds()))
+
+
+def build_phase3_health(session: Session, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or utc_now()
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, *, severity: str = "critical", **details: Any) -> None:
+        checks.append({"name": name, "ok": bool(ok), "severity": severity, **details})
+
+    current_maps = session.scalars(
+        select(MapDataset).where(MapDataset.is_current.is_(True))
+    ).all()
+    current = current_maps[0] if len(current_maps) == 1 else None
+    add(
+        "map-current-dataset",
+        current is not None and current.status == "ready" and current.published_at is not None,
+        current_count=len(current_maps),
+        version=current.version if current is not None else None,
+        status=current.status if current is not None else None,
+        published_at=current.published_at if current is not None else None,
+    )
+
+    latest_failed_map = session.scalar(
+        select(MapDataset)
+        .where(MapDataset.status == "failed")
+        .order_by(MapDataset.created_at.desc(), MapDataset.id.desc())
+        .limit(1)
+    )
+    failed_after_current = bool(
+        latest_failed_map is not None
+        and current is not None
+        and _utc_naive(latest_failed_map.created_at) > _utc_naive(current.published_at)
+    )
+    add(
+        "map-publication-last-attempt",
+        not failed_after_current,
+        failed_version=latest_failed_map.version if failed_after_current else None,
+        failed_at=latest_failed_map.created_at if failed_after_current else None,
+    )
+
+    active_sync = session.scalar(
+        select(LotSyncRun)
+        .where(LotSyncRun.status.in_(("queued", "running")))
+        .order_by(LotSyncRun.created_at.desc())
+        .limit(1)
+    )
+    lease_expired = bool(
+        active_sync is not None
+        and active_sync.lease_expires_at is not None
+        and _utc_naive(active_sync.lease_expires_at) < _utc_naive(now)
+    )
+    add(
+        "source-sync-lease",
+        not lease_expired,
+        run_id=active_sync.id if active_sync is not None else None,
+        status=active_sync.status if active_sync is not None else None,
+        lease_expires_at=active_sync.lease_expires_at if active_sync is not None else None,
+    )
+
+    sources = list_source_health(session)
+    add("source-health-present", bool(sources), source_count=len(sources))
+    for source in sources:
+        freshness_ok = source.freshness_status in {"fresh", "delayed", "running"}
+        add(
+            f"source-freshness:{source.source_system}",
+            freshness_ok,
+            severity="warning" if source.freshness_status == "delayed" else "critical",
+            status=source.status,
+            freshness_status=source.freshness_status,
+            freshness_age_seconds=source.freshness_age_seconds,
+            last_success_at=source.last_success_at,
+            last_error_category=source.last_error_category,
+        )
+        add(
+            f"source-coverage:{source.source_system}",
+            source.coverage_status == "fresh",
+            coverage_status=source.coverage_status,
+            complete_snapshot_age_seconds=source.complete_snapshot_age_seconds,
+            last_complete_success_at=source.last_complete_success_at,
+        )
+
+    geo = geocoding_progress(session)
+    latest_geo = session.scalar(
+        select(BackgroundTaskState)
+        .where(
+            BackgroundTaskState.task_type == "geocoding",
+            BackgroundTaskState.status == "completed",
+        )
+        .order_by(BackgroundTaskState.finished_at.desc(), BackgroundTaskState.id.desc())
+        .limit(1)
+    )
+    latest_geo_age = _age_seconds(now, latest_geo.finished_at if latest_geo is not None else None)
+    actionable = int(geo.get("actionable_remaining") or 0)
+    paused = bool(geo.get("paused"))
+    geo_recent = latest_geo_age is not None and latest_geo_age <= int(_GEO_STALL_AFTER.total_seconds())
+    add(
+        "geo-backlog-liveness",
+        actionable == 0 or paused or geo_recent,
+        actionable_remaining=actionable,
+        paused=paused,
+        latest_completed_batch_at=latest_geo.finished_at if latest_geo is not None else None,
+        latest_completed_batch_age_seconds=latest_geo_age,
+        percent=geo.get("percent"),
+    )
+
+    critical_failures = [
+        check for check in checks if not check["ok"] and check["severity"] == "critical"
+    ]
+    warnings = [
+        check for check in checks if not check["ok"] and check["severity"] == "warning"
+    ]
+    return {
+        "checked_at": _utc_naive(now).isoformat() + "Z",
+        "healthy": not critical_failures,
+        "critical_failure_count": len(critical_failures),
+        "warning_count": len(warnings),
+        "checks": checks,
+        "summary": {
+            "map_version": current.version if current is not None else None,
+            "source_count": len(sources),
+            "geo_percent": geo.get("percent"),
+            "geo_actionable_remaining": actionable,
+        },
+    }
