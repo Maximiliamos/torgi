@@ -80,6 +80,27 @@ CITY_SANITY_ANCHORS = {
     "санкт-петербург": (59.9343, 30.3351, 75.0),
 }
 
+CFO_REGION_CODES = frozenset({
+    "31", "32", "33", "36", "37", "40", "44", "46", "48",
+    "50", "57", "62", "67", "68", "69", "71", "76", "77",
+})
+# Deliberately broad envelope, used only as a gross-outlier guard. It is not
+# intended to model exact administrative borders; it merely rejects coordinates
+# thousands of kilometres away from a lot that is known to belong to the CFO.
+CFO_SANITY_BOUNDS = (48.5, 61.0, 26.0, 50.0)  # south, north, west, east
+
+
+def coordinate_matches_region_sanity(
+    lat: float,
+    lon: float,
+    region_code: str | None,
+) -> bool:
+    code = str(region_code or "").strip().zfill(2)
+    if code not in CFO_REGION_CODES:
+        return True
+    south, north, west, east = CFO_SANITY_BOUNDS
+    return south <= float(lat) <= north and west <= float(lon) <= east
+
 
 class IK12Geocoder:
     """Minimal HTTP client for the public IK12 cadastral map challenge API."""
@@ -1175,6 +1196,7 @@ def validate_geocoding_result(
         observed_region = region_code_from_text(result.address)
         if observed_region and expected_region != observed_region:
             return False, "result_cadastral_region_mismatch"
+    named_region = None
     if region_name:
         from bankrotai.regions import normalize_region_code, region_code_from_text
 
@@ -1185,6 +1207,10 @@ def validate_geocoding_result(
             result_region = region_code_from_text(result.address)
             if result_region and result_region != named_region:
                 return False, "result_region_mismatch"
+
+    sanity_region = expected_region or named_region
+    if not coordinate_matches_region_sanity(result.lat, result.lon, sanity_region):
+        return False, "cfo_region_bounds_mismatch"
 
     expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
