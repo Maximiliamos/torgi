@@ -98,16 +98,25 @@ def build_phase3_health(
         lease_expires_at=active_sync.lease_expires_at if active_sync is not None else None,
     )
 
-    sources = list_source_health(session)
+    all_sources = list_source_health(session)
     configured_sources = expected_sources or {spec.source_id for spec in default_source_specs()}
-    actual_sources = {source.source_system for source in sources}
+    source_by_name = {source.source_system: source for source in all_sources}
+    actual_sources = set(source_by_name)
     missing_sources = sorted(configured_sources - actual_sources)
+    legacy_sources = sorted(actual_sources - configured_sources)
+    sources = [
+        source_by_name[name]
+        for name in sorted(configured_sources)
+        if name in source_by_name
+    ]
     add(
         "source-health-present",
         bool(sources) and not missing_sources,
         source_count=len(sources),
         configured_source_count=len(configured_sources),
         missing_sources=missing_sources,
+        legacy_source_count=len(legacy_sources),
+        legacy_sources=legacy_sources,
     )
     for source in sources:
         if source.freshness_status == "delayed":
@@ -176,6 +185,7 @@ def build_phase3_health(
         "summary": {
             "map_version": current.version if current is not None else None,
             "source_count": len(sources),
+            "legacy_source_count": len(legacy_sources),
             "geo_percent": geo.get("percent"),
             "geo_actionable_remaining": actionable,
         },
