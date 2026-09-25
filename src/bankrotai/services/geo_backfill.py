@@ -401,7 +401,7 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
         # Only compare codes where cadastral and application subject codes use
         # the same canonical two-digit identifier. This intentionally skips
         # special cadastral districts not present in our canonical directory.
-        if prefix not in {f"{value:02d}" for value in range(1, 80)} | {"83", "86", "87", "89"}:
+        if prefix not in _CFO_REGION_CODES:
             continue
         canonical = str(region_code or "").strip().zfill(2)
         if not canonical.isdigit():
