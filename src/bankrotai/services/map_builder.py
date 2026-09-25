@@ -413,10 +413,28 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     spatial_rejection_counts.get(raw_region_rejection, 0) + 1
                 )
                 continue
-            region_code = (
-                normalize_canonical_region_code(
-                    normalize_map_region_code(None, row.cadastral_number)
+            bundle_region_code = normalize_map_region_code(
+                row.region_code,
+                row.cadastral_number,
+            )
+            bundle_region_rejection = coordinate_region_sanity_rejection_reason(
+                float(row.centroid_lat),
+                float(row.centroid_lon),
+                bundle_region_code,
+            )
+            if bundle_region_rejection:
+                diagnostic_reason = (
+                    "unsupported_bundle_region_code"
+                    if bundle_region_rejection == "unsupported_region_code"
+                    else f"bundle_{bundle_region_rejection}"
                 )
+                spatial_rejection_counts[diagnostic_reason] = (
+                    spatial_rejection_counts.get(diagnostic_reason, 0) + 1
+                )
+                continue
+
+            region_code = (
+                normalize_canonical_region_code(bundle_region_code)
                 or normalize_canonical_region_code(row.region_code)
                 or row.region_code
             )
@@ -440,7 +458,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "current_price": float(row.current_price) if row.current_price is not None else None,
                     "start_price": float(row.start_price) if row.start_price is not None else None,
                     "region_code": region_code,
-                    "bundle_region_code": normalize_map_region_code(row.region_code, row.cadastral_number),
+                    "bundle_region_code": bundle_region_code,
                     "status": row.auction_status,
                     "is_archived": row.is_archived,
                     "review_status": row.review_status,
