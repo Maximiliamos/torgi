@@ -50,6 +50,8 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     backup = BACKUP_WORKFLOW.read_text(encoding="utf-8")
 
     assert "17,47 * * * *" in health
+    assert "workflow_run:" in health
+    assert "Deploy home secondary origin" in health
     assert "[Phase 3] Production health alert" in health
     assert "listForRepo" in health
     assert "state: 'closed'" in health
