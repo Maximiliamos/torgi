@@ -12,6 +12,7 @@ from bankrotai.services.map_bundle_store import (
     REGIONAL_BUNDLE_LAYOUT,
     _bundle_bucket,
     _bundle_object_key,
+    _dataset_pipeline_revision,
     _index_object_key,
     _index_shard,
     _tile_region_code,
@@ -157,6 +158,11 @@ def test_detail_tiles_are_grouped_by_region_and_stable_parent_cell():
     assert _tile_region_code(12, payload) == "76"
     assert _bundle_bucket(12, 2500, 1200, "76") == _bundle_bucket(12, 2501, 1201, "76")
     assert _tile_region_code(7, _cluster_payload()["yandex"]) == "_overview"
+
+
+def test_pipeline_revision_is_exposed_from_version():
+    assert _dataset_pipeline_revision("20260925T100000000000Z-r2-bundle-s3") == "r2"
+    assert _dataset_pipeline_revision("legacy-bundle-s3") is None
 
 
 def test_bundle_and_index_keys_are_content_addressed():
