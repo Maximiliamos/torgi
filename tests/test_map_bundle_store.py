@@ -77,7 +77,7 @@ def _cluster_payload():
     }
 
 
-def _seed_bundle_dataset(factory, version: str = "bundle-v1-bundle-s3"):
+def _seed_bundle_dataset(factory, version: str = "bundle-v1-r2-bundle-s3"):
     with factory() as session:
         dataset = MapDataset(
             version=version,
@@ -178,7 +178,7 @@ def test_bundle_and_index_keys_are_content_addressed():
 
 def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(monkeypatch):
     factory = _factory()
-    first_version = "bundle-v1-bundle-s3"
+    first_version = "bundle-v1-r2-bundle-s3"
     first_id = _seed_bundle_dataset(factory, first_version)
     settings = _settings()
     puts: list[tuple[str, bytes]] = []
@@ -195,7 +195,11 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
     def verify(_settings, version):
         return verified_manifests.get(
             version,
-            {"version": version, "layout": REGIONAL_BUNDLE_LAYOUT},
+            {
+                "version": version,
+                "layout": REGIONAL_BUNDLE_LAYOUT,
+                "pipeline_revision": MAP_DATASET_REVISION,
+            },
         )
 
     monkeypatch.setattr(map_bundle_store, "_verify_public_manifest", verify)
@@ -232,7 +236,7 @@ def test_regional_publisher_collapses_microtiles_and_reuses_existing_bundles(mon
         previous.is_current = True
         session.commit()
 
-    second_version = "bundle-v2-bundle-s3"
+    second_version = "bundle-v2-r2-bundle-s3"
     second_id = _seed_bundle_dataset(factory, second_version)
     puts.clear()
 
