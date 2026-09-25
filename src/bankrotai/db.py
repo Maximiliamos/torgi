@@ -375,7 +375,10 @@ class LotStatusHistory(Base):
 
 class LotGeoSnapshot(Base):
     __tablename__ = "lot_geo_snapshots"
-    __table_args__ = (Index("ix_lot_geo_snapshots_viewport", "centroid_lat", "centroid_lon"),)
+    __table_args__ = (
+        Index("ix_lot_geo_snapshots_viewport", "centroid_lat", "centroid_lon"),
+        Index("ix_lot_geo_snapshots_lot_observed_id", "lot_id", "observed_at", "id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     lot_id: Mapped[int] = mapped_column(ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True)
     geo_source: Mapped[str] = mapped_column(String(50), nullable=False)
