@@ -1,0 +1,72 @@
+name: Phase 3 Lite production health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_run:
+    workflows: ['Deploy home secondary origin']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: phase3-lite-production-health
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Phase 3 production health
+        shell: powershell
+        run: |
+          .\scripts\phase3-production-health.ps1 `
+            -OutputPath "$env:RUNNER_TEMP\phase3-health.json"
+      - name: Upload health report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phase3-health-${{ github.run_id }}
+          path: ${{ runner.temp }}\phase3-health.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  alert:
+    needs: inspect
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Production health alert';
+            const body = `Phase 3 Lite production health failed.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nThe health report artifact contains container, API, source freshness, GEO, map and backup checks.`;
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+            } else {
+              await github.rest.issues.create({...context.repo, title, body});
+            }
+
+  recovery:
+    needs: inspect
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Production health alert';
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
+              await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
+            }
