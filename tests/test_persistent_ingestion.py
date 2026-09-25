@@ -18,6 +18,7 @@ from bankrotai.db import (
     LotNote,
     LotPriceEvent,
     LotSyncRun,
+    LotSyncSourceRun,
     ProcessedLot,
     SourceLot,
     Watchlist,
@@ -526,6 +527,14 @@ def test_fast_discovery_never_reconciles_missing_rows(sessions) -> None:
     with sessions() as session:
         row = session.scalar(select(SourceLot))
         assert row is not None and row.missing_successful_runs == 0 and row.is_archived is False
+        source_run = session.scalar(
+            select(LotSyncSourceRun).where(
+                LotSyncSourceRun.sync_run_id == run_id,
+                LotSyncSourceRun.source_system == "test-source",
+            )
+        )
+        assert source_run is not None
+        assert source_run.duration_ms is not None and source_run.duration_ms >= 0
 
 
 def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
