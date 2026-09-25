@@ -209,6 +209,18 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not attach Photon to the production network' }
           }
 
+          $schemaAtHead = $false
+          docker run --rm `
+            --network $env:DOCKER_NETWORK `
+            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
+            python -m alembic current --check-heads
+          if ($LASTEXITCODE -eq 0) {
+            $schemaAtHead = $true
+            Write-Output "Database schema is already at application head; skipping backup and migration"
+          }
+
+          if (-not $schemaAtHead) {
           $backupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
           New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
           $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
@@ -247,6 +259,7 @@ jobs:
             python -m alembic current --check-heads
           if ($LASTEXITCODE -ne 0) {
             throw "Database schema did not reach the tested application head; backup preserved at $hostBackup and existing production containers were left running"
+          }
           }
 
       - name: Start private queue and replace API and trusted ingestion worker
