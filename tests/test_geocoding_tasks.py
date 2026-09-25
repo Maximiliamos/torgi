@@ -74,6 +74,7 @@ def test_partial_geocoding_batch_does_not_schedule_continuation(monkeypatch) -> 
 def test_beat_keeps_five_minute_watchdogs_but_publication_latency_is_bounded() -> None:
     schedule = tasks.celery_app.conf.beat_schedule
     assert schedule["geocode-pending-lots"]["schedule"] == 300.0
+    assert schedule["recover-ik12-cadastral-misses"]["schedule"] == 300.0
     assert schedule["publish-dirty-map-dataset"]["schedule"] == 300.0
     assert tasks._MAP_PUBLICATION_DEBOUNCE_SECONDS == 60
 
@@ -82,6 +83,7 @@ def test_heavy_tasks_use_isolated_queues() -> None:
     routes = tasks.celery_app.conf.task_routes
     assert routes["bankrotai.tasks.nationwide_lot_sync_task"]["queue"] == "ingestion"
     assert routes["bankrotai.tasks.geocode_pending_lots_task"]["queue"] == "geocoding"
+    assert routes["bankrotai.tasks.recover_ik12_geo_task"]["queue"] == "geocoding"
     assert routes["bankrotai.tasks.build_map_dataset_task"]["queue"] == "map"
     assert tasks.celery_app.conf.task_default_queue == "maintenance"
 
@@ -109,3 +111,32 @@ def test_automatic_cleanup_keeps_safe_retention_arguments(monkeypatch) -> None:
     tasks.cleanup_old_map_datasets_task.run()
 
     assert captured == {"retain_previous_ready": 1, "min_age_hours": 24, "apply": True}
+
+
+def test_ik12_recovery_marks_map_dirty_only_when_it_recovers(monkeypatch) -> None:
+    import redis
+
+    FakeRedis.values = {}
+    monkeypatch.setattr(
+        geo_backfill,
+        "run_ik12_recovery_batch",
+        lambda *_args, **_kwargs: {
+            "status": "completed",
+            "queued": 5,
+            "processed": 5,
+            "recovered": 2,
+            "failed": 3,
+        },
+    )
+    monkeypatch.setattr(redis, "Redis", FakeRedis)
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_dirty_map_publication",
+        lambda: {"status": "deferred", "maximum_delay_seconds": 60},
+    )
+
+    result = tasks.recover_ik12_geo_task.run()
+
+    assert result["recovered"] == 2
+    assert result["map_dataset_build"]["status"] == "deferred"
+    assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
