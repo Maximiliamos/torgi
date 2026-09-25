@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import AppSettings, get_settings
 from bankrotai.db import MapDataset, MapTile
 from bankrotai.services.map_payload import public_yandex_tile_payload
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, dataset_pipeline_revision
 
 logger = logging.getLogger(__name__)
 _UPLOAD_PAGE_SIZE = 250
@@ -384,6 +385,7 @@ def publish_dataset_to_object_store(
 
     manifest = {
         "version": version,
+        "pipeline_revision": MAP_DATASET_REVISION,
         "point_count": point_count,
         "tile_count": uploaded,
         "format": "yandex-feature-collection-v1",
@@ -402,6 +404,16 @@ def publish_dataset_to_object_store(
         cache_control="public, max-age=60",
     )
     verified = _verify_public_manifest(settings, version)
+    if verified.get("pipeline_revision") != MAP_DATASET_REVISION:
+        raise RuntimeError(
+            "REG.RU S3 manifest pipeline revision mismatch: "
+            f"expected={MAP_DATASET_REVISION!r} actual={verified.get('pipeline_revision')!r}"
+        )
+    if dataset_pipeline_revision(version) != MAP_DATASET_REVISION:
+        raise RuntimeError(
+            "REG.RU S3 dataset version does not carry the current map pipeline revision: "
+            f"version={version!r} expected_revision={MAP_DATASET_REVISION!r}"
+        )
     logger.info(
         "REG.RU S3 map publication verified: version=%s tiles=%s bytes=%s",
         version,
