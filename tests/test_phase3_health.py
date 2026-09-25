@@ -169,3 +169,32 @@ def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
     checks = {item["name"]: item for item in health["checks"]}
     assert checks["source-freshness:tbankrot.ru"]["ok"] is True
     assert checks["source-coverage:tbankrot.ru"]["ok"] is False
+
+
+def test_phase3_health_fails_when_configured_source_is_missing() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"torgi.gov.ru", "missing.example"},
+        )
+
+    assert health["healthy"] is False
+    check = next(item for item in health["checks"] if item["name"] == "source-health-present")
+    assert check["missing_sources"] == ["missing.example"]
