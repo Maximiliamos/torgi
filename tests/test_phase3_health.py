@@ -270,4 +270,8 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage
     assert "automatic_nationwide_lot_refresh_task.apply_async(args=['full'])" in workflow
     assert "rows.Count -eq 5" in workflow
     assert "$_.coverage -ne 'fresh'" in workflow
+    assert "celery_app.AsyncResult" in workflow
+    assert "targeted_source_retries" in workflow
+    assert "if ($task.state -eq 'FAILURE')" in workflow
+    assert "last_error_category" in workflow
     assert "timeout-minutes: 90" in workflow
