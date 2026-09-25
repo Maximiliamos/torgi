@@ -246,15 +246,25 @@ def main():
         )
         print(json.dumps(counts, ensure_ascii=False, indent=2))
     elif args.command == "geocode-pending":
-        from bankrotai.services.geo_backfill import geocode_pending_lots
+        from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
 
         init_db()
-        result = geocode_pending_lots(
-            session_scope,
-            limit=args.limit,
-            re_geocode_existing=args.re_geocode_existing,
-            progress_task_id=args.progress_id,
-        )
+        try:
+            result = geocode_pending_lots(
+                session_scope,
+                limit=args.limit,
+                re_geocode_existing=args.re_geocode_existing,
+                progress_task_id=args.progress_id,
+            )
+        except GeoBatchAlreadyRunning:
+            # A busy distributed lock is an expected no-op for bounded/manual
+            # invocations while the automatic Celery continuation is draining
+            # the production backlog. Report it without manufacturing a failed
+            # GitHub Actions run.
+            result = {
+                "status": "busy",
+                "reason": "another-geocoding-batch-is-running",
+            }
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "geocoding-stats":
         from bankrotai.services.geo_backfill import geocoding_statistics
