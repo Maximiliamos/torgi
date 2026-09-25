@@ -93,12 +93,22 @@ if (-not (Test-Path -LiteralPath $BackupDirectory)) {
         } catch {}
     }
     $verifyAgeHours = if ($verified) { ($now - $verified.file.LastWriteTimeUtc).TotalHours } else { $null }
-    Add-Check -Name 'restore-verification-recent' -Ok ($null -ne $verifyAgeHours -and $verifyAgeHours -le $MaxVerifiedRestoreAgeHours) -Details @{
+    $verifiedChecksumOk = $false
+    if ($verified -and $verified.metadata.backup_file -and $verified.metadata.sha256 -and (Test-Path -LiteralPath $verified.metadata.backup_file)) {
+        $actualHash = (Get-FileHash -LiteralPath $verified.metadata.backup_file -Algorithm SHA256).Hash.ToLowerInvariant()
+        $verifiedChecksumOk = $actualHash -eq ([string]$verified.metadata.sha256).ToLowerInvariant()
+    }
+    Add-Check -Name 'restore-verification-recent' -Ok (
+        $null -ne $verifyAgeHours -and
+        $verifyAgeHours -le $MaxVerifiedRestoreAgeHours -and
+        $verifiedChecksumOk
+    ) -Details @{
         file = if ($verified) { $verified.file.Name } else { $null }
         age_hours = if ($null -ne $verifyAgeHours) { [math]::Round($verifyAgeHours, 2) } else { $null }
         max_age_hours = $MaxVerifiedRestoreAgeHours
         schema_revision = if ($verified) { $verified.metadata.restored_schema_revision } else { $null }
         sha256 = if ($verified) { $verified.metadata.sha256 } else { $null }
+        checksum_ok = $verifiedChecksumOk
     }
 }
 
