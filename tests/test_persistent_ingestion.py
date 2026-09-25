@@ -144,6 +144,36 @@ def test_changed_geo_input_resets_hash_and_requeues_lot(sessions) -> None:
         assert processed.geo_input_hash is None
 
 
+def test_changed_alternate_cadastral_number_invalidates_current_geo(sessions) -> None:
+    initial = lot()
+    initial.raw_data["cadastral_numbers"] = [
+        "76:23:010101:1",
+        "76:23:010101:2",
+    ]
+    with sessions.begin() as session:
+        processed = persist_lot(session, initial)
+        processed.geo_input_hash = "b" * 64
+        processed.needs_geo_check = False
+        processed.current_geo_lat = 57.6261
+        processed.current_geo_lon = 39.8845
+        processed.current_geo_source = "nspd"
+        processed.current_geo_confidence = "high"
+
+    changed = lot()
+    changed.raw_data["cadastral_numbers"] = [
+        "76:23:010101:1",
+        "76:23:010101:3",
+    ]
+    with sessions.begin() as session:
+        processed = persist_lot(session, changed)
+        assert processed.needs_geo_check is True
+        assert processed.geo_input_hash is None
+        assert processed.current_geo_lat is None
+        assert processed.current_geo_lon is None
+        assert processed.current_geo_source is None
+        assert processed.current_geo_confidence is None
+
+
 def test_legacy_persistence_records_only_actual_current_price_changes(sessions) -> None:
     with sessions.begin() as session:
         persist_lot(session, lot(price=500_000))
