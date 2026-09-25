@@ -283,6 +283,7 @@ def _promote_active_projection(
         else None
     )
     if previous_geo is not None:
+        inherited_at = utc_now()
         session.add(LotGeoSnapshot(
             lot_id=active_projection.id,
             geo_source=previous_geo.geo_source,
@@ -290,11 +291,17 @@ def _promote_active_projection(
             geo_confidence=previous_geo.geo_confidence,
             centroid_lat=previous_geo.centroid_lat,
             centroid_lon=previous_geo.centroid_lon,
+            observed_at=inherited_at,
             geometry_json=previous_geo.geometry_json,
             trace_reason=f"Promoted canonical sibling; inherited from lot {archived_primary.id}",
             source_checked_at=previous_geo.source_checked_at,
             metadata_json={**(previous_geo.metadata_json or {}), "inherited_from_lot_id": archived_primary.id},
         ))
+        active_projection.current_geo_lat = previous_geo.centroid_lat
+        active_projection.current_geo_lon = previous_geo.centroid_lon
+        active_projection.current_geo_source = previous_geo.geo_source
+        active_projection.current_geo_confidence = previous_geo.geo_confidence
+        active_projection.current_geo_observed_at = inherited_at
     primary_link = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == archived_primary.id))
     if primary_link is not None:
         canonical = session.get(CanonicalLot, primary_link.canonical_lot_id)
