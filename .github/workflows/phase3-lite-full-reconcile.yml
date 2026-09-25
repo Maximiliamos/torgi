@@ -1,0 +1,77 @@
+name: Phase 3 Lite full source reconciliation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase3-lite-full-reconcile.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: phase3-lite-full-reconcile
+  cancel-in-progress: false
+
+jobs:
+  wait-home-deploy:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for the same main revision on the home origin
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 160); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else f"{r.get(\"status\")}:{r.get(\"conclusion\")}")')"
+            if [ "$state" = "completed:success" ]; then exit 0; fi
+            case "$state" in
+              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for home deployment of $GITHUB_SHA" >&2
+          exit 1
+
+  reconcile:
+    needs: wait-home-deploy
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 90
+    steps:
+      - name: Require canonical ingestion worker
+        shell: powershell
+        run: |
+          $container = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
+          if ($container -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Canonical home ingestion worker is not running'
+          }
+      - name: Request one automatic full reconciliation
+        id: start
+        shell: powershell
+        run: |
+          $taskId = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import automatic_nationwide_lot_refresh_task; print(automatic_nationwide_lot_refresh_task.apply_async(args=['full']).id)"
+          if ($LASTEXITCODE -ne 0 -or -not $taskId) { throw 'Could not queue full reconciliation' }
+          $taskId = ($taskId | Select-Object -Last 1).Trim()
+          "task_id=$taskId" >> $env:GITHUB_OUTPUT
+          Write-Output "Queued automatic full reconciliation task $taskId"
+      - name: Wait for fresh complete snapshots for all configured sources
+        shell: powershell
+        run: |
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(80)
+          do {
+            $json = docker exec bankrotai-home-ingestion-worker python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.quality import list_source_health; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); configured={x.source_id for x in default_source_specs()}; rows=[x for x in list_source_health(s) if x.source_system in configured]; print(json.dumps({'sources':[{'source':x.source_system,'freshness':x.freshness_status,'coverage':x.coverage_status,'last_complete_success_at':x.last_complete_success_at} for x in rows]}, default=str)); s.close()"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not query source freshness' }
+            $health = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $rows = @($health.sources)
+            $ready = $rows.Count -eq 5 -and (@($rows | Where-Object { $_.coverage -ne 'fresh' }).Count -eq 0)
+            $health | ConvertTo-Json -Depth 6
+            if ($ready) { exit 0 }
+            Start-Sleep -Seconds 20
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+          throw 'Full reconciliation did not produce fresh complete snapshots for all configured sources'
