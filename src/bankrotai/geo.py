@@ -1111,8 +1111,12 @@ def resolve_lot_geo(
     # bounded set so malformed auction-card prose does not strand an otherwise
     # geocodable lot. Nominatim remains disabled in bulk unless explicitly
     # configured, so this adds no public-provider fan-out.
-    address_attempt_limit = 3 if bulk else 5
-    address_attempts: list[str] = list(address_candidates[:address_attempt_limit])
+    address_attempt_limit = 3 if bulk else 2
+    address_attempts: list[str] = (
+        list(address_candidates[:address_attempt_limit])
+        if bulk
+        else list(address_candidates[:1])
+    )
     source_text = " ".join(part for part in (title, description) if part)
     supplemental = extract_best_numbered_address(source_text) if source_text else None
     if supplemental:
@@ -1122,9 +1126,9 @@ def resolve_lot_geo(
         if supplemental.casefold() not in {item.casefold() for item in address_attempts}:
             if len(address_attempts) < address_attempt_limit:
                 address_attempts.append(supplemental)
-            elif address_attempts:
-                # A numbered address extracted from title/description is more
-                # specific than the least-preferred generic candidate.
+            elif bulk and address_attempts:
+                # In bulk mode a numbered address extracted from the card is
+                # more specific than the least-preferred generic candidate.
                 address_attempts[-1] = supplemental
 
     for candidate_index, candidate in enumerate(address_attempts):
