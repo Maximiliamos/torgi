@@ -145,7 +145,17 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     schema = inspect(engine)
     columns = {column["name"] for column in schema.get_columns("processed_lots")}
-    assert {"cadastral_numbers", "is_archived", "archived_at", "closed_at"} <= columns
+    assert {
+        "cadastral_numbers",
+        "is_archived",
+        "archived_at",
+        "closed_at",
+        "current_geo_lat",
+        "current_geo_lon",
+        "current_geo_source",
+        "current_geo_confidence",
+        "current_geo_observed_at",
+    } <= columns
     assert "lot_status_history" in schema.get_table_names()
     unique_constraints = {
         item["name"] for item in schema.get_unique_constraints("processed_lots")
@@ -170,6 +180,62 @@ def test_clean_database_migrates_to_head_with_archive_and_cadastral_schema(tmp_p
     } <= source_columns
     with engine.connect() as connection:
         assert connection.exec_driver_sql("SELECT COUNT(*) FROM region_directory").scalar() == 89
+
+
+def test_current_geo_migration_backfills_latest_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "current-geo-backfill.db"
+    _upgrade_database(path, "09a1b2c3d4e5")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+
+    with engine.begin() as connection:
+        result = connection.execute(text(
+            """
+            INSERT INTO processed_lots (
+                external_id, source, source_system, title, description, category,
+                auction_status, is_archived, detail_level, needs_human_review,
+                is_deal_of_the_week, needs_geo_check, land_risk_flag, last_update
+            ) VALUES (
+                'geo-migration', 'test', 'test', 'Geo migration', '', 'land',
+                'active', 0, 'detail', 0, 0, 0, 0, :last_update
+            )
+            """
+        ), {"last_update": datetime(2026, 9, 1, 10, 0, 0)})
+        lot_id = result.lastrowid
+        connection.execute(text(
+            """
+            INSERT INTO lot_geo_snapshots (
+                lot_id, geo_source, geo_method, geo_confidence,
+                centroid_lat, centroid_lon, observed_at
+            ) VALUES
+                (:lot_id, 'older', 'fixture', 'medium', 10.0, 20.0, :older),
+                (:lot_id, 'latest', 'fixture', 'high', 57.6261, 39.8845, :latest)
+            """
+        ), {
+            "lot_id": lot_id,
+            "older": datetime(2026, 9, 1, 12, 0, 0),
+            "latest": datetime(2026, 9, 2, 12, 0, 0),
+        })
+
+    _upgrade_database(path)
+    with create_engine(f"sqlite:///{path.as_posix()}").connect() as connection:
+        row = connection.execute(text(
+            """
+            SELECT current_geo_lat, current_geo_lon, current_geo_source,
+                   current_geo_confidence, current_geo_observed_at
+            FROM processed_lots
+            WHERE external_id = 'geo-migration'
+            """
+        )).one()
+        assert float(row.current_geo_lat) == 57.6261
+        assert float(row.current_geo_lon) == 39.8845
+        assert row.current_geo_source == "latest"
+        assert row.current_geo_confidence == "high"
+        assert str(row.current_geo_observed_at).startswith("2026-09-02 12:00:00")
+
+    schema = inspect(create_engine(f"sqlite:///{path.as_posix()}"))
+    assert "ix_processed_lots_current_geo_viewport" in {
+        item["name"] for item in schema.get_indexes("processed_lots")
+    }
 
 
 def test_single_active_sync_migration_reconciles_existing_duplicates(tmp_path: Path) -> None:

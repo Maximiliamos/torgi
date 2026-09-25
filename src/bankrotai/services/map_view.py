@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from time import perf_counter
 from urllib.parse import urlparse
 
-from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
 
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
@@ -190,20 +190,6 @@ def _map_base_filters(
     return filters
 
 
-def _latest_geo_predicate():
-    """Select the latest row per lot without ranking the whole snapshot table."""
-    newer = aliased(LotGeoSnapshot)
-    return ~exists(
-        select(newer.id).where(
-            newer.lot_id == LotGeoSnapshot.lot_id,
-            or_(
-                newer.observed_at > LotGeoSnapshot.observed_at,
-                and_(newer.observed_at == LotGeoSnapshot.observed_at, newer.id > LotGeoSnapshot.id),
-            ),
-        )
-    ).correlate(LotGeoSnapshot)
-
-
 def build_map_lot_statistics(
     session: Session,
     *,
@@ -225,9 +211,11 @@ def build_map_lot_statistics(
     total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
     mapped_total = (
         session.scalar(
-            select(func.count(ProcessedLot.id))
-            .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
-            .where(*filters, _latest_geo_predicate())
+            select(func.count(ProcessedLot.id)).where(
+                *filters,
+                ProcessedLot.current_geo_lat.is_not(None),
+                ProcessedLot.current_geo_lon.is_not(None),
+            )
         )
         or 0
     )
@@ -266,22 +254,22 @@ def build_map_lots_response(
         assert west is not None and south is not None and east is not None and north is not None
         map_filters.extend(
             (
-                LotGeoSnapshot.centroid_lat >= south,
-                LotGeoSnapshot.centroid_lat <= north,
+                ProcessedLot.current_geo_lat >= south,
+                ProcessedLot.current_geo_lat <= north,
             )
         )
         if west <= east:
             map_filters.extend(
                 (
-                    LotGeoSnapshot.centroid_lon >= west,
-                    LotGeoSnapshot.centroid_lon <= east,
+                    ProcessedLot.current_geo_lon >= west,
+                    ProcessedLot.current_geo_lon <= east,
                 )
             )
         else:
             map_filters.append(
                 or_(
-                    LotGeoSnapshot.centroid_lon >= west,
-                    LotGeoSnapshot.centroid_lon <= east,
+                    ProcessedLot.current_geo_lon >= west,
+                    ProcessedLot.current_geo_lon <= east,
                 )
             )
 
@@ -296,11 +284,14 @@ def build_map_lots_response(
             ProcessedLot.auction_status,
             ProcessedLot.is_archived,
             ProcessedLot.review_status,
-            LotGeoSnapshot.centroid_lat,
-            LotGeoSnapshot.centroid_lon,
+            ProcessedLot.current_geo_lat.label("centroid_lat"),
+            ProcessedLot.current_geo_lon.label("centroid_lon"),
         )
-        .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
-        .where(*map_filters, _latest_geo_predicate())
+        .where(
+            *map_filters,
+            ProcessedLot.current_geo_lat.is_not(None),
+            ProcessedLot.current_geo_lon.is_not(None),
+        )
         .order_by(ProcessedLot.last_update.desc())
         .limit(limit + 1)
     )

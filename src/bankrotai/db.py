@@ -125,6 +125,11 @@ class ProcessedLot(Base):
             "external_id",
             name="uq_processed_lots_source_system_external_id",
         ),
+        Index(
+            "ix_processed_lots_current_geo_viewport",
+            "current_geo_lat",
+            "current_geo_lon",
+        ),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     external_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -163,6 +168,11 @@ class ProcessedLot(Base):
     review_status: Mapped[str | None] = mapped_column(String(20), default=None)  # 'approved', 'rejected', 'maybe'
     needs_geo_check: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
     geo_input_hash: Mapped[str | None] = mapped_column(String(64))
+    current_geo_lat: Mapped[float | None] = mapped_column(Float)
+    current_geo_lon: Mapped[float | None] = mapped_column(Float)
+    current_geo_source: Mapped[str | None] = mapped_column(String(50))
+    current_geo_confidence: Mapped[str | None] = mapped_column(String(20))
+    current_geo_observed_at: Mapped[datetime | None] = mapped_column(DateTime)
     published_at: Mapped[datetime | None] = mapped_column(DateTime)
     duplicate_of_id: Mapped[int | None] = mapped_column(
         ForeignKey("processed_lots.id", ondelete="SET NULL"), index=True
@@ -749,7 +759,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "09a1b2c3d4e5"
+SCHEMA_REVISION = "1ab2c3d4e5f6"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False

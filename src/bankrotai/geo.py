@@ -15,7 +15,7 @@ from requests.exceptions import SSLError
 from sqlalchemy.orm import Session
 
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
-from bankrotai.core import get_settings
+from bankrotai.core import get_settings, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -1110,6 +1110,7 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
         lot.needs_geo_check = True
         return False
 
+    observed_at = utc_now()
     snapshot = LotGeoSnapshot(
         lot_id=lot.id,
         geo_source=final_result.source,
@@ -1117,6 +1118,7 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
         geo_confidence=final_result.confidence,
         centroid_lat=final_result.lat,
         centroid_lon=final_result.lon,
+        observed_at=observed_at,
         geometry_json=final_result.geometry_json,
         metadata_json={
             "query": final_result.query,
@@ -1135,6 +1137,11 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
     )
 
     session.add(snapshot)
+    lot.current_geo_lat = final_result.lat
+    lot.current_geo_lon = final_result.lon
+    lot.current_geo_source = final_result.source
+    lot.current_geo_confidence = final_result.confidence
+    lot.current_geo_observed_at = observed_at
 
     if final_result.address and (not lot.address or len(lot.address) < 15 or is_incomplete_address(lot.address)):
         lot.address = final_result.address
