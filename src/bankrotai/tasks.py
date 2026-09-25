@@ -58,6 +58,7 @@ celery_app.conf.update(
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
@@ -69,6 +70,11 @@ celery_app.conf.update(
         },
         "geocode-pending-lots": {
             "task": "bankrotai.tasks.geocode_pending_lots_task",
+            "schedule": 300.0,
+            "options": {"expires": 240},
+        },
+        "recover-ik12-cadastral-misses": {
+            "task": "bankrotai.tasks.recover_ik12_geo_task",
             "schedule": 300.0,
             "options": {"expires": 240},
         },
@@ -150,6 +156,33 @@ def geocode_pending_lots_task(self) -> dict[str, Any]:
             result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
     if result.get("queued", 0) >= _GEO_BATCH_LIMIT and result.get("processed", 0) >= _GEO_BATCH_LIMIT:
         result["continuation"] = _schedule_geocode_continuation()
+    return result
+
+
+@celery_app.task(bind=True, name="bankrotai.tasks.recover_ik12_geo_task")
+def recover_ik12_geo_task(self) -> dict[str, Any]:
+    from bankrotai.services.geo_backfill import run_ik12_recovery_batch
+
+    task_id = str(self.request.id or uuid())
+    result: dict[str, Any] = run_ik12_recovery_batch(
+        SessionLocal,
+        limit=5,
+        progress_task_id=f"ik12-{task_id}",
+    )
+    if result.get("recovered", 0):
+        try:
+            from redis import Redis
+
+            client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+            client.set(_MAP_DIRTY_KEY, "1")
+            client.close()
+            result["map_dataset_build"] = _schedule_dirty_map_publication()
+        except Exception as exc:
+            logger.exception("Could not mark map dataset dirty after IK12 recovery")
+            result["map_dataset_build"] = {
+                "status": "dirty_mark_failed",
+                "error": str(exc)[:500],
+            }
     return result
 
 

@@ -99,6 +99,16 @@ def test_geocoding_diagnostic_report_aggregates_quality_without_raw_addresses() 
     assert report["failures"]["by_status"] == {"queued": 1}
     assert report["failures"]["by_attempt_count"] == {"3": 1}
     assert report["failures"]["top_reasons"] == {"photon:locality_mismatch": 1}
+    assert report["ik12_recovery"] == {
+        "batch_count": 0,
+        "processed": 0,
+        "recovered": 0,
+        "failed": 0,
+        "hit_rate_percent": None,
+        "total_duration_seconds": 0.0,
+        "average_seconds": None,
+        "failure_reasons": {},
+    }
     assert report["quality"]["cadastral_region_comparable"] == 3
     assert report["quality"]["cadastral_region_mismatch"] == 1
     assert report["quality"]["top_cadastral_region_mismatches"] == {"50->76": 1}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import threading
 import time
 from datetime import datetime
@@ -481,3 +482,166 @@ def test_quality_audit_uses_latest_snapshot_and_reports_suspicious_matches() -> 
     assert audit["audited_lots"] == 1
     assert audit["locality_mismatch_count"] == 1
     assert audit["locality_mismatch_sample_lot_ids"] == [lot_id]
+
+
+def test_ik12_recovery_resolves_existing_nspd_miss_without_parallel_fallback(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="ik12-recovery-success",
+            source="test",
+            source_system="test",
+            title="Участок",
+            description="",
+            category="land",
+            region_code="76",
+            region_name="Ярославская область",
+            cadastral_number="76:23:050309:1108",
+            address="Ярославская область, город Ярославль",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+        session.add(
+            GeoFailure(
+                lot_id=lot.id,
+                status="queued",
+                attempt_count=6,
+                error_message=json.dumps({
+                    "error": "No validated coordinates",
+                    "attempts": [
+                        {"source": "nspd_cadastral", "valid": False, "reason": "no_coordinates"},
+                        {"source": "address_geocoder", "valid": False, "reason": "no_coordinates"},
+                    ],
+                }, separators=(",", ":")),
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now(),
+            )
+        )
+
+    monkeypatch.setattr(
+        geo_backfill.IK12_GEOCODER,
+        "search_by_cadastral_number",
+        lambda _cad: CadastralObjectResult(
+            query="76:23:050309:1108",
+            cadastral_number="76:23:050309:1108",
+            lat=57.6261,
+            lon=39.8845,
+            source="ik12_cadastral",
+            confidence="high",
+            address="Ярославль, Ярославская область",
+        ),
+    )
+
+    result = geo_backfill.run_ik12_recovery_batch(
+        scope,
+        limit=5,
+        progress_task_id="ik12-test-success",
+    )
+
+    assert result["status"] == "completed"
+    assert result["queued"] == result["processed"] == result["recovered"] == 1
+    assert result["failed"] == 0
+    with scope() as session:
+        lot = session.get(ProcessedLot, lot_id)
+        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        assert lot is not None
+        assert lot.current_geo_source == "ik12_cadastral"
+        assert lot.current_geo_lat == 57.6261
+        assert lot.geo_input_hash is not None
+        assert failure is not None
+        assert failure.status == "resolved"
+        state = session.scalar(
+            select(BackgroundTaskState).where(BackgroundTaskState.task_id == "ik12-test-success")
+        )
+        assert state is not None
+        assert state.task_type == "geocoding_ik12_recovery"
+        assert state.result_json["recovered"] == 1
+
+
+def test_ik12_recovery_miss_does_not_consume_normal_retry_budget(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="ik12-recovery-miss",
+            source="test",
+            source_system="test",
+            title="Участок",
+            description="",
+            category="land",
+            region_code="76",
+            region_name="Ярославская область",
+            cadastral_number="76:23:050309:9999",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+        session.add(
+            GeoFailure(
+                lot_id=lot.id,
+                status="queued",
+                attempt_count=6,
+                error_message=json.dumps({
+                    "error": "No validated coordinates",
+                    "attempts": [
+                        {"source": "nspd_cadastral", "valid": False, "reason": "no_coordinates"},
+                    ],
+                }, separators=(",", ":")),
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now(),
+            )
+        )
+
+    monkeypatch.setattr(
+        geo_backfill.IK12_GEOCODER,
+        "search_by_cadastral_number",
+        lambda _cad: None,
+    )
+
+    result = geo_backfill.run_ik12_recovery_batch(scope, limit=5)
+
+    assert result["queued"] == result["processed"] == result["failed"] == 1
+    assert result["recovered"] == 0
+    assert result["failure_reasons"] == {"no_coordinates": 1}
+    with scope() as session:
+        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        lot = session.get(ProcessedLot, lot_id)
+        assert failure is not None
+        assert failure.status == "queued"
+        assert failure.attempt_count == 6
+        assert lot is not None
+        assert lot.current_geo_lat is None

@@ -21,9 +21,11 @@ from bankrotai.core import get_settings, utc_now
 from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, GeoQueryCache, LotGeoSnapshot, ProcessedLot
 from bankrotai.geo import (
     CadastralObjectResult,
+    IK12_GEOCODER,
     apply_lot_geo_result,
     build_geocoding_address_candidates,
     resolve_lot_geo,
+    validate_geocoding_result,
 )
 from bankrotai.services.quality import record_geo_failure, resolve_geo_failure
 
@@ -131,13 +133,14 @@ def _set_progress_state(
     progress: dict[str, Any],
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    task_type: str = "geocoding",
 ) -> None:
     if not task_id:
         return
     with session_factory() as session:
         state = session.scalar(select(BackgroundTaskState).where(BackgroundTaskState.task_id == task_id))
         if state is None:
-            state = BackgroundTaskState(task_id=task_id, task_type="geocoding", status=status)
+            state = BackgroundTaskState(task_id=task_id, task_type=task_type, status=status)
             session.add(state)
         state.status = status
         state.progress_json = progress
@@ -444,6 +447,29 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
         for key, value in (result.get("failure_reasons") or {}).items():
             recent_failure_reasons[str(key)] += int(value or 0)
 
+    ik12_recovery_rows = session.scalars(
+        select(BackgroundTaskState)
+        .where(
+            BackgroundTaskState.task_type == "geocoding_ik12_recovery",
+            BackgroundTaskState.status == "completed",
+        )
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(20)
+    ).all()
+    ik12_processed = 0
+    ik12_recovered = 0
+    ik12_failed = 0
+    ik12_duration = 0.0
+    ik12_failure_reasons: Counter[str] = Counter()
+    for batch in ik12_recovery_rows:
+        value = batch.result_json or {}
+        ik12_processed += int(value.get("processed") or 0)
+        ik12_recovered += int(value.get("recovered") or 0)
+        ik12_failed += int(value.get("failed") or 0)
+        ik12_duration += float(value.get("duration_seconds") or 0.0)
+        for key, count in (value.get("failure_reasons") or {}).items():
+            ik12_failure_reasons[str(key)] += int(count or 0)
+
     return {
         "progress": progress,
         "statistics": statistics,
@@ -458,6 +484,16 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
             "count": len(recent_batches),
             "provider_counts": dict(recent_provider_counts.most_common()),
             "failure_reasons": dict(recent_failure_reasons.most_common(25)),
+        },
+        "ik12_recovery": {
+            "batch_count": len(ik12_recovery_rows),
+            "processed": ik12_processed,
+            "recovered": ik12_recovered,
+            "failed": ik12_failed,
+            "hit_rate_percent": round(ik12_recovered / ik12_processed * 100, 1) if ik12_processed else None,
+            "total_duration_seconds": round(ik12_duration, 2),
+            "average_seconds": round(ik12_duration / ik12_processed, 3) if ik12_processed else None,
+            "failure_reasons": dict(ik12_failure_reasons.most_common(15)),
         },
         "quality": {
             "audited_lots": int(audit["audited_lots"]),
@@ -948,3 +984,178 @@ def geocode_pending_lots(
     except Exception as exc:
         _mark_progress_failed(session_factory, progress_task_id, exc)
         raise
+
+
+def _has_nspd_no_coordinate_attempt(message: str | None) -> bool:
+    """Identify a normal-chain NSPD miss without depending on the final provider."""
+    try:
+        payload = json.loads(str(message or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    attempts = payload.get("attempts") if isinstance(payload, dict) else None
+    if not isinstance(attempts, list):
+        return False
+    return any(
+        isinstance(attempt, dict)
+        and str(attempt.get("source") or "").startswith("nspd_cadastral")
+        and attempt.get("reason") == "no_coordinates"
+        for attempt in attempts
+    )
+
+
+def recover_nspd_failures_with_ik12(
+    session_factory: Callable[[], Any],
+    *,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Sequential, bounded IK12 recovery for repeated NSPD cadastral misses.
+
+    This deliberately does not increment normal GeoFailure attempt counters on
+    a recovery miss. Successful results use the normal validation and
+    persistence path and resolve the existing failure.
+    """
+    started_at = time.monotonic()
+    batch_limit = max(1, min(int(limit), 25))
+
+    with session_factory() as session:
+        if is_geocoding_paused(session):
+            return {
+                "status": "paused",
+                "queued": 0,
+                "processed": 0,
+                "recovered": 0,
+                "failed": 0,
+            }
+        candidates = session.execute(
+            select(
+                ProcessedLot.id,
+                ProcessedLot.cadastral_number,
+                ProcessedLot.address,
+                ProcessedLot.region_name,
+                GeoFailure.error_message,
+                GeoFailure.attempt_count,
+            )
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+                ProcessedLot.cadastral_number.is_not(None),
+                GeoFailure.status.in_(("queued", "terminal")),
+                GeoFailure.attempt_count >= 2,
+            )
+            .order_by(GeoFailure.attempt_count.desc(), GeoFailure.last_failed_at.desc())
+            .limit(max(batch_limit * 20, 100))
+        ).all()
+
+    selected = [
+        row for row in candidates
+        if _has_nspd_no_coordinate_attempt(row.error_message)
+    ][:batch_limit]
+
+    result: dict[str, Any] = {
+        "status": "completed",
+        "queued": len(selected),
+        "processed": 0,
+        "recovered": 0,
+        "failed": 0,
+        "failure_reasons": {},
+        "duration_seconds": 0.0,
+        "average_seconds": 0.0,
+    }
+    reasons: Counter[str] = Counter()
+
+    for row in selected:
+        cadastral_number = re.sub(r"\s+", "", str(row.cadastral_number or ""))
+        if not cadastral_number:
+            reasons["missing_cadastral_number"] += 1
+            result["failed"] += 1
+            result["processed"] += 1
+            continue
+
+        try:
+            candidate = IK12_GEOCODER.search_by_cadastral_number(cadastral_number)
+            valid, reason = validate_geocoding_result(
+                candidate,
+                cadastral_number=cadastral_number,
+                address=row.address,
+                region_name=row.region_name,
+            )
+        except Exception as exc:
+            candidate = None
+            valid = False
+            reason = f"exception:{exc.__class__.__name__}"
+
+        if not valid or candidate is None:
+            reasons[str(reason)] += 1
+            result["failed"] += 1
+            result["processed"] += 1
+            continue
+
+        with session_factory() as session:
+            lot = session.get(ProcessedLot, int(row.id))
+            if lot is None:
+                reasons["lot_disappeared"] += 1
+                result["failed"] += 1
+                result["processed"] += 1
+                continue
+            # Revalidate against the current lot values in case ingestion changed
+            # while the external request was in flight.
+            valid_now, reason_now = validate_geocoding_result(
+                candidate,
+                cadastral_number=lot.cadastral_number,
+                address=lot.address,
+                region_name=lot.region_name,
+            )
+            if not valid_now or not apply_lot_geo_result(session, lot, candidate):
+                reasons[str(reason_now)] += 1
+                result["failed"] += 1
+                result["processed"] += 1
+                session.rollback()
+                continue
+            lot.geo_input_hash = geo_input_hash(lot)
+            resolve_geo_failure(session, lot.id)
+            session.commit()
+
+        result["recovered"] += 1
+        result["processed"] += 1
+
+    duration = time.monotonic() - started_at
+    result["failure_reasons"] = dict(reasons.most_common())
+    result["duration_seconds"] = round(duration, 2)
+    result["average_seconds"] = round(duration / result["processed"], 3) if result["processed"] else 0.0
+    return result
+
+
+def run_ik12_recovery_batch(
+    session_factory: Callable[[], Any],
+    *,
+    limit: int = 5,
+    progress_task_id: str | None = None,
+) -> dict[str, Any]:
+    """Serialize IK12 recovery with the normal production geocoding batch."""
+    with session_factory() as session:
+        bind = session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name == "sqlite":
+        result = recover_nspd_failures_with_ik12(session_factory, limit=limit)
+    else:
+        try:
+            with _distributed_geo_lock():
+                result = recover_nspd_failures_with_ik12(session_factory, limit=limit)
+        except GeoBatchAlreadyRunning:
+            result = {
+                "status": "busy",
+                "queued": 0,
+                "processed": 0,
+                "recovered": 0,
+                "failed": 0,
+            }
+    _set_progress_state(
+        session_factory,
+        progress_task_id,
+        status="completed",
+        progress=result,
+        result=result,
+        task_type="geocoding_ik12_recovery",
+    )
+    return result
