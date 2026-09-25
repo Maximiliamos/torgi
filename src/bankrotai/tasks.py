@@ -154,11 +154,16 @@ def geocode_pending_lots_task(self) -> dict[str, Any]:
     return result
 
 
-@celery_app.task(name="bankrotai.tasks.recover_ik12_geo_task")
-def recover_ik12_geo_task() -> dict[str, Any]:
+@celery_app.task(bind=True, name="bankrotai.tasks.recover_ik12_geo_task")
+def recover_ik12_geo_task(self) -> dict[str, Any]:
     from bankrotai.services.geo_backfill import run_ik12_recovery_batch
 
-    result: dict[str, Any] = run_ik12_recovery_batch(SessionLocal, limit=5)
+    task_id = str(self.request.id or uuid())
+    result: dict[str, Any] = run_ik12_recovery_batch(
+        SessionLocal,
+        limit=5,
+        progress_task_id=f"ik12-{task_id}",
+    )
     if result.get("recovered", 0):
         try:
             from redis import Redis
