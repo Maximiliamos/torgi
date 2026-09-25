@@ -321,3 +321,75 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
   });
 });
 
+
+
+test("filtered map stays responsive for four concurrent requests", async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  const username = process.env.E2E_USERNAME || "reader";
+  const password = process.env.E2E_PASSWORD;
+  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
+  await page.getByLabel("Логин").fill(username);
+  await page.getByLabel("Пароль").fill(password);
+  await page.getByRole("button", { name: "Войти" }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
+    .toBeVisible({ timeout: 40_000 });
+
+  const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
+    timeout: 30_000,
+  });
+  expect(datasetResponse.status()).toBe(200);
+  const dataset = await datasetResponse.json() as {
+    version: string;
+    bootstrap_tiles?: Array<{ z: number; x: number; y: number }>;
+  };
+  const tile = (dataset.bootstrap_tiles || [])[4] || (dataset.bootstrap_tiles || [])[0];
+  if (!tile) throw new Error("Production dataset has no bootstrap tile");
+
+  const path =
+    `/api/map/filtered-tiles/${encodeURIComponent(dataset.version)}/${tile.z}/${tile.x}/${tile.y}`;
+  const query = "?region_code=76&min_start_price=1";
+
+  const warmStarted = Date.now();
+  const warm = await page.context().request.get(`${path}${query}`, { timeout: 30_000 });
+  const warmMs = Date.now() - warmStarted;
+  expect(warm.status()).toBe(200);
+
+  const parallel = await Promise.all(Array.from({ length: 4 }, async (_, index) => {
+    const started = Date.now();
+    const response = await page.context().request.get(`${path}${query}`, { timeout: 30_000 });
+    const durationMs = Date.now() - started;
+    const body = await response.json() as { type?: string };
+    return {
+      index,
+      status: response.status(),
+      durationMs,
+      cache: response.headers()["x-map-filter-cache"] || "",
+      serverTiming: response.headers()["server-timing"] || "",
+      type: body.type,
+    };
+  }));
+
+  for (const result of parallel) {
+    expect(result.status).toBe(200);
+    expect(result.type).toBe("FeatureCollection");
+    expect(result.cache).toBe("HIT");
+    expect(result.durationMs).toBeLessThan(5_000);
+  }
+
+  await testInfo.attach("filtered-four-request-timings.json", {
+    body: Buffer.from(JSON.stringify({
+      dataset: dataset.version,
+      tile,
+      warm: {
+        durationMs: warmMs,
+        cache: warm.headers()["x-map-filter-cache"] || "",
+        serverTiming: warm.headers()["server-timing"] || "",
+      },
+      parallel,
+    }, null, 2)),
+    contentType: "application/json",
+  });
+});

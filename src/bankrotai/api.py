@@ -112,7 +112,10 @@ app = FastAPI(title="BankrotAI API")
 _rate_limit_hits: dict[str, list[float]] = {}
 _map_response_cache: dict[tuple, tuple[float, bytes, str]] = {}
 _map_statistics_cache: dict[tuple, tuple[float, dict]] = {}
+_filtered_tile_cache: dict[tuple, tuple[bytes, str]] = {}
 _map_response_cache_lock = threading.Lock()
+_filtered_tile_cache_lock = threading.Lock()
+_FILTERED_TILE_CACHE_MAX_ENTRIES = 256
 _MAP_RESPONSE_CACHE_SECONDS = 60
 _MAP_STATISTICS_CACHE_SECONDS = 300
 _MAP_BOOTSTRAP_LAT = 57.6261
@@ -1737,33 +1740,61 @@ def get_filtered_map_tile(
         )
 
     started = time.monotonic()
-    try:
-        index = get_runtime_index(read_session_scope, version)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="Map dataset not found") from exc
-
-    payload = build_filtered_tile(
-        index,
-        z=z,
-        x=x,
-        y=y,
-        region_code=region_code,
-        min_start_price=min_start_price,
-        max_start_price=max_start_price,
+    cache_key = (
+        version,
+        z,
+        x,
+        y,
+        region_code,
+        min_start_price,
+        max_start_price,
     )
-    body = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    etag = f'"{hashlib.sha256(body).hexdigest()}"'
+    with _filtered_tile_cache_lock:
+        cached = _filtered_tile_cache.get(cache_key)
+        if cached is not None:
+            _filtered_tile_cache.pop(cache_key, None)
+            _filtered_tile_cache[cache_key] = cached
+
+    cache_state = "HIT" if cached is not None else "MISS"
+    if cached is None:
+        try:
+            index = get_runtime_index(read_session_scope, version)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Map dataset not found") from exc
+
+        payload = build_filtered_tile(
+            index,
+            z=z,
+            x=x,
+            y=y,
+            region_code=region_code,
+            min_start_price=min_start_price,
+            max_start_price=max_start_price,
+        )
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        etag = f'"{hashlib.sha256(body).hexdigest()}"'
+        with _filtered_tile_cache_lock:
+            _filtered_tile_cache[cache_key] = (body, etag)
+            while len(_filtered_tile_cache) > _FILTERED_TILE_CACHE_MAX_ENTRIES:
+                oldest = next(iter(_filtered_tile_cache))
+                _filtered_tile_cache.pop(oldest, None)
+    else:
+        body, etag = cached
+
     headers = {
         "Cache-Control": "private, max-age=30, stale-while-revalidate=60",
         "ETag": etag,
         "X-Map-Dataset": version,
         "X-Map-Index": "runtime",
-        "Server-Timing": f"map-filter;dur={(time.monotonic() - started) * 1000:.1f}",
+        "X-Map-Filter-Cache": cache_state,
+        "Server-Timing": (
+            f'map-filter;desc="{cache_state}";dur={(time.monotonic() - started) * 1000:.1f}'
+        ),
     }
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)

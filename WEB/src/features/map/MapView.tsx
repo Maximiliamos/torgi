@@ -52,6 +52,9 @@ export const MAX_MAP_TILE_CACHE_ENTRIES = 512;
 export const DIRECT_MAP_TILES =
   String(import.meta.env.VITE_DIRECT_MAP_TILES ?? "false").toLowerCase() === "true";
 export const MAX_DIRECT_MAP_TILE_CACHE_ENTRIES = 768;
+export const DIRECT_VISIBLE_TILE_CONCURRENCY = 12;
+export const FILTERED_VISIBLE_TILE_CONCURRENCY = 6;
+export const DIRECT_PREFETCH_TILE_CONCURRENCY = 4;
 
 export function yandexMapsApiUrl(apiKey?: string) {
   const params = new URLSearchParams({ lang: "ru_RU", csp: "true" });
@@ -633,7 +636,11 @@ function YandexDesktopMap({
       return reviewIds;
     };
 
-    const reviewIds = await runPool(visible, 12, true);
+    const reviewIds = await runPool(
+      visible,
+      requestedFilterKey ? FILTERED_VISIBLE_TILE_CONCURRENCY : DIRECT_VISIBLE_TILE_CONCURRENCY,
+      true,
+    );
     if (reviewIds.size) {
       const ids = [...reviewIds];
       for (let offset = 0; offset < ids.length; offset += 500) {
@@ -645,7 +652,9 @@ function YandexDesktopMap({
         }
       }
     }
-    void runPool(prefetch, 4, false);
+    if (!requestedFilterKey) {
+      void runPool(prefetch, DIRECT_PREFETCH_TILE_CONCURRENCY, false);
+    }
   }, [directFilterKey, directTileMode, loadDirectTile, mapDataset, postCommand]);
   React.useEffect(() => {
     const receive = (event: MessageEvent) => {
