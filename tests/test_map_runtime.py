@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from decimal import Decimal
 
@@ -244,3 +245,38 @@ def test_filtered_tile_api_uses_runtime_index_and_etag(monkeypatch):
         params={"min_start_price": 10, "max_start_price": 1},
     )
     assert invalid.status_code == 422
+
+
+
+def test_filtered_tile_cache_handles_four_parallel_users(monkeypatch):
+    reset_runtime_index_for_tests()
+    factory = _factory()
+    result = build_map_dataset(factory)
+
+    @contextmanager
+    def scope():
+        with factory() as session:
+            yield session
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    monkeypatch.setattr(api.settings, "app_env", "test")
+    with api._filtered_tile_cache_lock:
+        api._filtered_tile_cache.clear()
+
+    x, y = tile_xy(57.6261, 39.8845, 12)
+    client = TestClient(api.app)
+    url = f"/api/map/filtered-tiles/{result['version']}/12/{x}/{y}"
+    params = {"region_code": "76", "min_start_price": 1_500_000}
+
+    warm = client.get(url, params=params)
+    assert warm.status_code == 200
+    assert warm.headers["x-map-filter-cache"] == "MISS"
+
+    def load_once() -> tuple[int, str]:
+        response = client.get(url, params=params)
+        return response.status_code, response.headers["x-map-filter-cache"]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: load_once(), range(4)))
+
+    assert results == [(200, "HIT")] * 4
