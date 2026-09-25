@@ -791,6 +791,11 @@ class NationwideIngestionService:
             row.items_failed = result.items_failed
             row.duplicates_merged = result.duplicates_merged
             row.error_message = result.error
+            row.duration_ms = (
+                int(max(0.0, result.elapsed_seconds) * 1000)
+                if finished_at is not None
+                else None
+            )
             row.checkpoint_json = (
                 {
                     "category_pages": result.category_pages,
