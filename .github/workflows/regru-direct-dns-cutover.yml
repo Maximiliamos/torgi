@@ -1,0 +1,275 @@
+name: Cut over STERDEZ directly to REG.RU
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect, cut over to REG.RU DNS-only, or restore Cloudflare proxy
+        required: true
+        default: diagnostics
+        type: choice
+        options:
+          - diagnostics
+          - cutover
+          - rollback
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sterdez-canonical-dns
+  cancel-in-progress: false
+
+env:
+  EXPECTED_ACCOUNT_ID: 594523a2268d250da0b35a34ae6589cd
+  EXPECTED_ZONE_ID: 2d8fea3305ff3d74777d7fa0a1d9bdb0
+  DIRECT_ORIGIN_IP: 194.226.126.233
+  DIRECT_ORIGIN_HOST: 194-226-126-233.sslip.io
+  SSH_PORT: "2222"
+
+jobs:
+  direct-dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Validate owner-provided identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$SSH_PRIVATE_KEY"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "$EXPECTED_ACCOUNT_ID"
+
+      - name: Inspect canonical DNS without changing traffic
+        if: inputs.operation == 'diagnostics'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          headers = {"Authorization": f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}", "Accept": "application/json"}
+          query = urllib.parse.urlencode({"name": "sterdez.online", "account.id": os.environ["CLOUDFLARE_ACCOUNT_ID"]})
+          request = urllib.request.Request(f"{api}/zones?{query}", headers=headers)
+          with urllib.request.urlopen(request, timeout=30) as response:
+              zones = json.load(response)
+          result = zones.get("result", [])
+          if len(result) != 1 or result[0].get("id") != os.environ["EXPECTED_ZONE_ID"]:
+              raise SystemExit("Cloudflare zone identity mismatch")
+          request = urllib.request.Request(
+              f"{api}/zones/{os.environ['EXPECTED_ZONE_ID']}/dns_records?per_page=100", headers=headers
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              records = json.load(response).get("result", [])
+          names = {"sterdez.online", "www.sterdez.online", "api.sterdez.online"}
+          selected = [
+              {key: item.get(key) for key in ("id", "type", "name", "content", "ttl", "proxied", "comment")}
+              for item in records if item.get("name") in names
+          ]
+          if len(selected) != 3:
+              raise SystemExit(f"Expected three canonical DNS records, found {len(selected)}")
+          print(json.dumps({"canonical_dns": selected}, ensure_ascii=False, indent=2))
+          PY
+          curl --fail --silent --show-error --max-time 20 "https://$DIRECT_ORIGIN_HOST/health/ready"
+
+      - name: Prepare REG.RU SSH identity
+        if: inputs.operation == 'cutover'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/regru_cutover"
+          chmod 600 "$HOME/.ssh/regru_cutover"
+          ssh-keyscan -T 20 -p "$SSH_PORT" "$DIRECT_ORIGIN_IP" > "$HOME/.ssh/known_hosts.cutover"
+          chmod 600 "$HOME/.ssh/known_hosts.cutover"
+
+      - name: Verify REG.RU origin before DNS cutover
+        if: inputs.operation == 'cutover'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "https://$DIRECT_ORIGIN_HOST/")" = 200
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "https://$DIRECT_ORIGIN_HOST/health/live")" = 200
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "https://$DIRECT_ORIGIN_HOST/health/ready")" = 200
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "https://$DIRECT_ORIGIN_HOST/api/auth/me")" = 401
+
+      - name: Point canonical DNS directly at REG.RU with automatic rollback
+        if: inputs.operation == 'cutover'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SNAPSHOT="$RUNNER_TEMP/sterdez-dns-before.json"
+
+          rollback() {
+            printf 'Cutover gate failed; restoring the exact Cloudflare DNS snapshot\n' >&2
+            python - "$SNAPSHOT" <<'PY'
+          import json, os, sys, urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          zone = os.environ["EXPECTED_ZONE_ID"]
+          headers = {
+              "Authorization": f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}",
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+          }
+          with open(sys.argv[1], encoding="utf-8") as source:
+              before = json.load(source)
+          request = urllib.request.Request(f"{api}/zones/{zone}/dns_records?per_page=100", headers=headers)
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response).get("result", [])
+          by_name = {item.get("name"): item for item in current}
+          for saved in before:
+              active = by_name.get(saved["name"])
+              if not active:
+                  raise RuntimeError(f"Canonical DNS record disappeared: {saved['name']}")
+              payload = {key: saved[key] for key in ("type", "name", "content", "ttl", "proxied")}
+              payload["comment"] = saved.get("comment")
+              request = urllib.request.Request(
+                  f"{api}/zones/{zone}/dns_records/{active['id']}",
+                  data=json.dumps(payload).encode(), headers=headers, method="PUT"
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(result.get("errors"))
+          print(json.dumps({"rollback": "restored", "records": before}, ensure_ascii=False))
+          PY
+          }
+          trap rollback ERR
+
+          python - "$SNAPSHOT" <<'PY'
+          import json, os, sys, urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          zone = os.environ["EXPECTED_ZONE_ID"]
+          direct_ip = os.environ["DIRECT_ORIGIN_IP"]
+          names = ("sterdez.online", "www.sterdez.online", "api.sterdez.online")
+          headers = {
+              "Authorization": f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}",
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+          }
+          request = urllib.request.Request(f"{api}/zones/{zone}/dns_records?per_page=100", headers=headers)
+          with urllib.request.urlopen(request, timeout=30) as response:
+              records = json.load(response).get("result", [])
+          selected = []
+          for name in names:
+              matches = [item for item in records if item.get("name") == name]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected exactly one DNS record for {name}; found {len(matches)}")
+              selected.append(matches[0])
+          snapshot = [
+              {key: item.get(key) for key in ("type", "name", "content", "ttl", "proxied", "comment")}
+              for item in selected
+          ]
+          with open(sys.argv[1], "w", encoding="utf-8") as output:
+              json.dump(snapshot, output, ensure_ascii=False, indent=2)
+          print(json.dumps({"dns_before": snapshot}, ensure_ascii=False))
+          for item in selected:
+              payload = {
+                  "type": "A", "name": item["name"], "content": direct_ip,
+                  "ttl": 60, "proxied": False,
+                  "comment": "Direct REG.RU origin for Russian clients",
+              }
+              request = urllib.request.Request(
+                  f"{api}/zones/{zone}/dns_records/{item['id']}",
+                  data=json.dumps(payload).encode(), headers=headers, method="PUT"
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(result.get("errors"))
+          PY
+
+          ssh -i "$HOME/.ssh/regru_cutover" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts.cutover" -p "$SSH_PORT" \
+            "root@$DIRECT_ORIGIN_IP" 'docker restart bankrotai-caddy >/dev/null'
+
+          ready=false
+          for attempt in $(seq 1 120); do
+            web="$(curl --silent --show-error --max-time 15 --resolve "sterdez.online:443:$DIRECT_ORIGIN_IP" -o /dev/null -w '%{http_code}' https://sterdez.online/ || true)"
+            live="$(curl --silent --show-error --max-time 15 --resolve "api.sterdez.online:443:$DIRECT_ORIGIN_IP" -o /dev/null -w '%{http_code}' https://api.sterdez.online/health/live || true)"
+            ready_status="$(curl --silent --show-error --max-time 15 --resolve "api.sterdez.online:443:$DIRECT_ORIGIN_IP" -o /dev/null -w '%{http_code}' https://api.sterdez.online/health/ready || true)"
+            auth="$(curl --silent --show-error --max-time 15 --resolve "sterdez.online:443:$DIRECT_ORIGIN_IP" -o /dev/null -w '%{http_code}' https://sterdez.online/api/auth/me || true)"
+            printf 'direct REG.RU gate %s/120: web=%s live=%s ready=%s auth=%s\n' "$attempt" "$web" "$live" "$ready_status" "$auth"
+            if test "$web" = 200 && test "$live" = 200 && test "$ready_status" = 200 && test "$auth" = 401; then
+              ready=true
+              break
+            fi
+            sleep 5
+          done
+          test "$ready" = true
+
+          python - <<'PY'
+          import json, os, time, urllib.request
+          names = ("sterdez.online", "www.sterdez.online", "api.sterdez.online")
+          expected = os.environ["DIRECT_ORIGIN_IP"]
+          for attempt in range(60):
+              good = True
+              observed = {}
+              for name in names:
+                  request = urllib.request.Request(
+                      f"https://dns.google/resolve?name={name}&type=A",
+                      headers={"Accept": "application/dns-json", "User-Agent": "STERDEZ-cutover/1.0"},
+                  )
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      payload = json.load(response)
+                  values = sorted(item.get("data") for item in payload.get("Answer", []) if item.get("type") == 1)
+                  observed[name] = values
+                  good = good and values == [expected]
+              print(json.dumps({"dns_attempt": attempt + 1, "observed": observed}))
+              if good:
+                  break
+              time.sleep(5)
+          else:
+              raise SystemExit("Public DNS did not converge on the REG.RU origin")
+          PY
+
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://sterdez.online/)" = 200
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://api.sterdez.online/health/ready)" = 200
+          test "$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://sterdez.online/api/auth/me)" = 401
+          trap - ERR
+
+      - name: Restore Cloudflare Pages proxy
+        if: inputs.operation == 'rollback'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+
+          api = "https://api.cloudflare.com/client/v4"
+          zone = os.environ["EXPECTED_ZONE_ID"]
+          names = ("sterdez.online", "www.sterdez.online", "api.sterdez.online")
+          headers = {
+              "Authorization": f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}",
+              "Accept": "application/json", "Content-Type": "application/json",
+          }
+          request = urllib.request.Request(f"{api}/zones/{zone}/dns_records?per_page=100", headers=headers)
+          with urllib.request.urlopen(request, timeout=30) as response:
+              records = json.load(response).get("result", [])
+          by_name = {item.get("name"): item for item in records}
+          for name in names:
+              current = by_name.get(name)
+              if not current:
+                  raise SystemExit(f"Canonical DNS record is missing: {name}")
+              payload = {
+                  "type": "CNAME", "name": name, "content": "bankrotai.pages.dev",
+                  "ttl": 1, "proxied": True, "comment": "STERDEZ isolated edge bootstrap",
+              }
+              request = urllib.request.Request(
+                  f"{api}/zones/{zone}/dns_records/{current['id']}",
+                  data=json.dumps(payload).encode(), headers=headers, method="PUT"
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+              if not result.get("success"):
+                  raise RuntimeError(result.get("errors"))
+          print(json.dumps({"rollback": "cloudflare-pages-proxy"}))
+          PY
