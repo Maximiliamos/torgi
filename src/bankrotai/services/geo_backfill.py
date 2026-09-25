@@ -773,18 +773,6 @@ def _save_geo_item(session: Any, lot: ProcessedLot, value: Any) -> tuple[bool, s
     if isinstance(value, Exception):
         _record_scheduled_failure(session, lot_id, str(value))
         return False, _geocoding_failure_reason(value)
-    if isinstance(value, CadastralObjectResult):
-        valid, reason = validate_geocoding_result(
-            value,
-            cadastral_number=lot.cadastral_number,
-            address=lot.address,
-            region_name=lot.region_name,
-            region_code=lot.region_code,
-        )
-        if not valid:
-            lot.geo_input_hash = current_input_hash
-            _record_scheduled_failure(session, lot_id, _geocoding_failure_message(value))
-            return False, str(reason)
     if apply_lot_geo_result(session, lot, value):
         lot.geo_input_hash = current_input_hash
         resolve_geo_failure(session, lot_id)
