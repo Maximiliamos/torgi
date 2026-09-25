@@ -451,6 +451,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path in {
             "/api/map/lots",
+            "/api/quality/geocoding",
             "/api/map/datasets/current",
             "/api/map/review-statuses",
             "/api/cadastre/search",
@@ -1975,6 +1976,14 @@ def get_data_quality():
 def get_operational_quality_report(stale_days: int = Query(7, ge=1, le=90)):
     with read_session_scope() as session:
         return operational_quality_report(session, stale_days=stale_days)
+
+
+@app.get("/api/quality/geocoding", dependencies=[Depends(require_admin)])
+def get_geocoding_quality_report():
+    from bankrotai.services.geo_backfill import geocoding_diagnostic_report
+
+    with read_session_scope() as session:
+        return jsonable_encoder(geocoding_diagnostic_report(session))
 
 
 @app.get("/api/sources")
