@@ -346,7 +346,7 @@ test("filtered map stays responsive for four concurrent requests", async ({ page
     bootstrap_tiles?: Array<{ z: number; x: number; y: number }>;
   };
   const tile = (dataset.bootstrap_tiles || [])[4] || (dataset.bootstrap_tiles || [])[0];
-  expect(tile).toBeTruthy();
+  if (!tile) throw new Error("Production dataset has no bootstrap tile");
 
   const path =
     `/api/map/filtered-tiles/${encodeURIComponent(dataset.version)}/${tile.z}/${tile.x}/${tile.y}`;
