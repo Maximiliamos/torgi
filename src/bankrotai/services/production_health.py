@@ -164,8 +164,11 @@ def build_phase3_health(
     warnings = [
         check for check in checks if not check["ok"] and check["severity"] == "warning"
     ]
+    checked_at = _utc_naive(now)
+    if checked_at is None:
+        raise RuntimeError("Production health clock is unavailable")
     return {
-        "checked_at": _utc_naive(now).isoformat() + "Z",
+        "checked_at": checked_at.isoformat() + "Z",
         "healthy": not critical_failures,
         "critical_failure_count": len(critical_failures),
         "warning_count": len(warnings),
