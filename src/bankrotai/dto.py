@@ -13,9 +13,17 @@ class SourceHealthDTO(AppDTO):
     source_system: str
     status: str
     items_seen: int = 0
+    last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
+    last_complete_success_at: datetime | None = None
     last_failure_at: datetime | None = None
     last_error: str | None = None
+    freshness_status: str = "unknown"
+    coverage_status: str = "unknown"
+    freshness_age_seconds: int | None = None
+    complete_snapshot_age_seconds: int | None = None
+    last_duration_ms: int | None = None
+    last_complete_source_run: bool = False
 
 
 class DataQualityDTO(AppDTO):
