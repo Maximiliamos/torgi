@@ -688,6 +688,8 @@ describe("tile request cache", () => {
 });
 
 describe("visible tile resilience", () => {
+  afterEach(() => cleanup());
+
   it("retries a transient tile failure and keeps every tile", async () => {
     const attempts = new Map<number, number>();
     const result = await fetchVisibleMapTiles(
@@ -703,6 +705,54 @@ describe("visible tile resilience", () => {
     expect(result.entries).toHaveLength(2);
     expect(result.failed).toBe(0);
     expect(attempts.get(1)).toBe(2);
+  });
+
+  it("shows coincident legacy lots from a trusted iframe cluster message", async () => {
+    vi.clearAllMocks();
+    vi.mocked(fetchCurrentUser).mockResolvedValue({ id: 1, username: "reader", role: "reader" });
+    vi.mocked(fetchRegions).mockResolvedValue([{ code: "77", name: "Москва" }]);
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-coincident"));
+    vi.mocked(fetchMapLotDetail).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(fetchOperationsProgress).mockResolvedValue({
+      sync: null,
+      geocoding: { total: 2, geocoded: 2, remaining: 0, terminal_failures: 0, percent: 100, task: null },
+    });
+    vi.mocked(fetchMapLotsSWR).mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 71, title: "Первый совпадающий лот", address: "Москва", current_price: 2_000_000,
+            start_price: 1_500_000, region_code: "77", status: "active", is_archived: false,
+            review_status: null, lat: 55.71, lon: 37.61,
+          },
+          {
+            id: 72, title: "Второй совпадающий лот", address: "Москва", current_price: 3_000_000,
+            start_price: 2_500_000, region_code: "77", status: "active", is_archived: false,
+            review_status: null, lat: 55.71, lon: 37.61,
+          },
+        ],
+        returned: 2, limit: 250, truncated: false, total: 2, mapped_total: 2,
+        without_coordinates: 0, updated_at: "2026-09-25T00:00:00", statistics_exact: true,
+        timings: { server_ms: 1 },
+      },
+      networkMs: 1,
+      fromCache: false,
+    });
+    render(<MapView refreshToken={0} favoritesOnly />);
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    await waitFor(() => expect(fetchMapLotsSWR).toHaveBeenCalledTimes(1));
+
+    act(() => sendMapMessage(frame, "bankrotai-cluster-select", { lotIds: [71, 72] }));
+
+    const panel = await screen.findByLabelText("Лоты в выбранной точке");
+    expect(panel).toHaveTextContent("Первый совпадающий лот");
+    expect(panel).toHaveTextContent("Второй совпадающий лот");
+    await act(async () => panel.querySelector<HTMLButtonElement>('[data-lot-id="71"]')?.click());
+    expect(screen.getByLabelText("Карточка выбранного лота")).toHaveTextContent("Первый совпадающий лот");
+    await act(async () => panel.querySelector<HTMLButtonElement>('[data-lot-id="72"]')?.click());
+    expect(screen.getByLabelText("Карточка выбранного лота")).toHaveTextContent("Второй совпадающий лот");
+    expect(fetchMapLotDetail).toHaveBeenNthCalledWith(1, 71);
+    expect(fetchMapLotDetail).toHaveBeenNthCalledWith(2, 72);
   });
 
   it("opens a visible loading card immediately while full details are pending", async () => {
