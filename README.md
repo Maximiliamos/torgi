@@ -75,6 +75,16 @@ Desktop-поиск работает только с продажей недви�
 В реестре и на карте показывается одна основная карточка, а фотографии, ссылки и
 реквизиты всех найденных источников объединяются в её превью.
 
+## Эксплуатация production
+
+Краткий operational runbook, release checklist, rollback и аварийное восстановление
+зафиксированы в [docs/phase4-lite-operations.md](docs/phase4-lite-operations.md).
+Phase 3 backup/restore thresholds и значения alert-классов остаются в
+[docs/phase3-lite-recovery.md](docs/phase3-lite-recovery.md).
+
+Для текущего масштаба (до четырёх пользователей) приоритет — воспроизводимый
+fail-closed deploy и проверяемое восстановление, а не дополнительный enterprise-слой.
+
 ## Локальная установка
 
 Требуется Python 3.11+.
