@@ -1,0 +1,181 @@
+name: Production per-source full audit
+
+on:
+  push:
+    branches:
+      - audit/all-sources-geo-20260927
+    paths:
+      - '.github/workflows/production-per-source-full-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-per-source-full-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-sources:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 180
+    steps:
+      - name: Require canonical ingestion worker
+        shell: powershell
+        run: |
+          $container = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
+          if ($container -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Canonical home ingestion worker is not running'
+          }
+
+      - name: Run one full production reconciliation per source
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          import time
+          from datetime import datetime, timezone
+          from sqlalchemy import select
+
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
+          from bankrotai.services.ingestion import SyncAlreadyRunningError
+          from bankrotai.tasks import schedule_nationwide_lot_sync
+
+          SOURCES = [
+              'torgi.gov.ru',
+              'tbankrot.ru',
+              'lot-online.ru',
+              'torgi-russia.ru',
+              'bidexpert.ru',
+          ]
+
+          def iso(value):
+              return value.isoformat() + ('Z' if value and value.tzinfo is None else '') if value else None
+
+          def active_run():
+              with SessionLocal() as session:
+                  return session.scalar(
+                      select(LotSyncRun)
+                      .where(LotSyncRun.status.in_(('queued', 'running')))
+                      .order_by(LotSyncRun.created_at.desc())
+                  )
+
+          def wait_for_free(deadline):
+              while time.monotonic() < deadline:
+                  run = active_run()
+                  if run is None:
+                      return
+                  print(json.dumps({
+                      'event': 'waiting_for_existing_sync',
+                      'run_id': run.id,
+                      'status': run.status,
+                      'trigger_type': run.trigger_type,
+                      'heartbeat_at': iso(run.heartbeat_at),
+                      'lease_expires_at': iso(run.lease_expires_at),
+                  }, default=str), flush=True)
+                  time.sleep(10)
+              raise TimeoutError('Could not obtain free nationwide sync lease')
+
+          def schedule_source(source, deadline):
+              while time.monotonic() < deadline:
+                  wait_for_free(deadline)
+                  try:
+                      return schedule_nationwide_lot_sync(
+                          triggered_by='production-source-audit',
+                          mode=f'source:{source}',
+                      )
+                  except SyncAlreadyRunningError:
+                      time.sleep(5)
+              raise TimeoutError(f'Could not schedule source audit for {source}')
+
+          def snapshot(run_id):
+              with SessionLocal() as session:
+                  run = session.get(LotSyncRun, run_id)
+                  rows = session.scalars(
+                      select(LotSyncSourceRun)
+                      .where(LotSyncSourceRun.sync_run_id == run_id)
+                      .order_by(LotSyncSourceRun.source_system)
+                  ).all()
+                  return {
+                      'run_id': run_id,
+                      'status': None if run is None else run.status,
+                      'trigger_type': None if run is None else run.trigger_type,
+                      'created_at': None if run is None else iso(run.created_at),
+                      'started_at': None if run is None else iso(run.started_at),
+                      'finished_at': None if run is None else iso(run.finished_at),
+                      'run_error': None if run is None else run.error_message,
+                      'sources': [{
+                          'source': row.source_system,
+                          'status': row.status,
+                          'complete': bool(row.complete_source_run),
+                          'pages': int(row.pages_scanned or 0),
+                          'seen': int(row.items_seen or 0),
+                          'inserted': int(row.items_inserted or 0),
+                          'updated': int(row.items_updated or 0),
+                          'unchanged': int(row.items_unchanged or 0),
+                          'archived': int(row.items_archived or 0),
+                          'failed': int(row.items_failed or 0),
+                          'duplicates_merged': int(row.duplicates_merged or 0),
+                          'duration_ms': row.duration_ms,
+                          'checkpoint': row.checkpoint_json,
+                          'error': row.error_message,
+                          'started_at': iso(row.started_at),
+                          'finished_at': iso(row.finished_at),
+                      } for row in rows],
+                  }
+
+          results = []
+          for source in SOURCES:
+              source_deadline = time.monotonic() + 70 * 60
+              run_id = schedule_source(source, source_deadline)
+              print(json.dumps({'event': 'source_audit_started', 'source': source, 'run_id': run_id}), flush=True)
+              last = None
+              while time.monotonic() < source_deadline:
+                  state = snapshot(run_id)
+                  status = state['status']
+                  if status != last:
+                      print(json.dumps({
+                          'event': 'source_audit_status',
+                          'source': source,
+                          'run_id': run_id,
+                          'status': status,
+                      }), flush=True)
+                      last = status
+                  if status in ('success', 'partial', 'failed'):
+                      results.append({'source': source, **state})
+                      break
+                  time.sleep(10)
+              else:
+                  results.append({'source': source, **snapshot(run_id), 'audit_timeout': True})
+                  break
+
+          payload = {
+              'captured_at': datetime.now(timezone.utc).isoformat(),
+              'results': results,
+          }
+          print('=== SOURCE_AUDIT_JSON_BEGIN ===')
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print('=== SOURCE_AUDIT_JSON_END ===')
+          '@
+
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) {
+            throw 'Per-source production audit failed to execute'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'production-per-source-full-audit.json'
+          $start = [Array]::IndexOf($out, '=== SOURCE_AUDIT_JSON_BEGIN ===')
+          $end = [Array]::IndexOf($out, '=== SOURCE_AUDIT_JSON_END ===')
+          if ($start -lt 0 -or $end -le $start) {
+            $out | ForEach-Object { Write-Output $_ }
+            throw 'Per-source audit did not produce final JSON markers'
+          }
+          $json = $out[($start + 1)..($end - 1)]
+          $out | ForEach-Object { Write-Output $_ }
+          $json | Set-Content -Path $path -Encoding UTF8
+
+      - name: Upload per-source evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-per-source-full-audit
+          path: ${{ runner.temp }}/production-per-source-full-audit.json
+          if-no-files-found: error
+          retention-days: 14
