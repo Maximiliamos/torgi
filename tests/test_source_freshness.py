@@ -189,3 +189,37 @@ def test_missing_or_old_success_is_stale_without_breaking_source_contract() -> N
 
     assert health.freshness_status == "stale"
     assert health.coverage_status == "stale"
+
+
+
+def test_access_limited_error_gets_stable_category() -> None:
+    factory = _sessions()
+    now = utc_now()
+    with factory() as session:
+        run = LotSyncRun(
+            id="access-limited",
+            triggered_by="test",
+            trigger_type="scheduled_full",
+            status="failed",
+            total_sources=1,
+            started_at=now - timedelta(minutes=2),
+            finished_at=now - timedelta(minutes=1),
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=run.id,
+                source_system="tbankrot.ru",
+                status="failed",
+                complete_source_run=False,
+                error_message="TBankrot access_limited: requires registration/login",
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+            )
+        )
+        session.commit()
+
+        [health] = list_source_health(session)
+
+    assert health.last_error_category == "access_limited"
