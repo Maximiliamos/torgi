@@ -14,6 +14,7 @@ from bankrotai.services.quality import list_source_health
 
 
 _GEO_STALL_AFTER = timedelta(hours=24)
+_CRITICAL_SOURCE_ERROR_CATEGORIES = {"database_integrity", "internal_error"}
 
 
 def _utc_naive(value: datetime | None) -> datetime | None:
@@ -118,16 +119,27 @@ def build_phase3_health(
         legacy_source_count=len(legacy_sources),
         legacy_sources=legacy_sources,
     )
+    operational_sources = [
+        source
+        for source in sources
+        if source.freshness_status in {"fresh", "running", "delayed"}
+    ]
+    add(
+        "source-data-availability",
+        not sources or bool(operational_sources),
+        configured_source_count=len(sources),
+        operational_source_count=len(operational_sources),
+        operational_sources=[source.source_system for source in operational_sources],
+    )
     for source in sources:
-        if source.freshness_status == "delayed":
-            freshness_ok = False
-            freshness_severity = "warning"
-        else:
-            freshness_ok = source.freshness_status in {"fresh", "running"}
-            freshness_severity = "critical"
+        freshness_severity = (
+            "critical"
+            if source.last_error_category in _CRITICAL_SOURCE_ERROR_CATEGORIES
+            else "warning"
+        )
         add(
             f"source-freshness:{source.source_system}",
-            freshness_ok,
+            source.freshness_status in {"fresh", "running"},
             severity=freshness_severity,
             status=source.status,
             freshness_status=source.freshness_status,
@@ -138,6 +150,7 @@ def build_phase3_health(
         add(
             f"source-coverage:{source.source_system}",
             source.coverage_status == "fresh",
+            severity="warning",
             coverage_status=source.coverage_status,
             complete_snapshot_age_seconds=source.complete_snapshot_age_seconds,
             last_complete_success_at=source.last_complete_success_at,

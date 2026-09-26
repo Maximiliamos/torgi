@@ -21,13 +21,18 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 15
+    outputs:
+      warning_count: ${{ steps.health.outputs.warning_count }}
     steps:
       - uses: actions/checkout@v7
       - name: Run Phase 3 production health
+        id: health
         shell: powershell
         run: |
           .\scripts\phase3-production-health.ps1 `
             -OutputPath "$env:RUNNER_TEMP\phase3-health.json"
+          $report = Get-Content -LiteralPath "$env:RUNNER_TEMP\phase3-health.json" -Raw | ConvertFrom-Json
+          "warning_count=$([int]$report.warning_count)" >> $env:GITHUB_OUTPUT
       - name: Upload health report
         if: always()
         uses: actions/upload-artifact@v7
@@ -68,5 +73,40 @@ jobs:
             const existing = issues.find(issue => !issue.pull_request && issue.title === title);
             if (existing) {
               await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
+              await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
+            }
+
+
+  source-warning:
+    needs: inspect
+    if: needs.inspect.result == 'success' && needs.inspect.outputs.warning_count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Source health warning';
+            const body = `Production is up, but Phase 3 reported ${{ needs.inspect.outputs.warning_count }} degraded source freshness/coverage warning(s).\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+            } else {
+              await github.rest.issues.create({...context.repo, title, body});
+            }
+
+  source-warning-recovery:
+    needs: inspect
+    if: needs.inspect.result == 'success' && needs.inspect.outputs.warning_count == '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[Phase 3] Source health warning';
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Source freshness/coverage recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
               await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
             }

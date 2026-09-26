@@ -13,7 +13,9 @@ Phase 3 Lite is intentionally small and optimized for a single home production o
 
 ## Alert meanings
 
-`[Phase 3] Production health alert` covers container health, local API readiness, configured-source freshness/full coverage, expired ingestion lease, map publication state, GEO backlog liveness, disk capacity, recent backup and recent verified restore.
+`[Phase 3] Production health alert` covers hard production failures: container health, local API readiness, missing configured sources, total source-data unavailability, expired ingestion lease, map publication state, GEO backlog liveness, disk capacity, recent backup and recent verified restore.
+
+`[Phase 3] Source health warning` covers per-source freshness or full-coverage degradation caused by an external source while production itself remains available. Internal ingestion failures such as database-integrity or application exceptions remain critical production-health failures. The warning is deduplicated and closes automatically when the source checks recover.
 
 `[Phase 3] Backup/restore alert` means either the dump itself failed or the isolated restore drill could not prove that the backup is usable.
 
@@ -36,5 +38,5 @@ Never restore directly over the live database as a first test. First run an isol
 - C: drive: critical below 10% free.
 - Latest backup: critical when older than 30 hours.
 - Latest verified restore drill: critical when older than 192 hours (8 days).
-- Source complete snapshot: uses the application freshness contract (36-hour full-coverage threshold).
+- Source complete snapshot: uses the application freshness contract (36-hour full-coverage threshold). Individual stale/failed sources are warnings; production becomes critical only when configured source records are missing or no configured source is operational.
 - GEO backlog: critical when actionable work remains, GEO is not paused, and no completed geocoding batch has been recorded for 24 hours.

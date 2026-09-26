@@ -209,8 +209,30 @@ def _source_error_category(error: str | None) -> str | None:
     if not error:
         return None
     message = error.casefold()
+    if any(
+        marker in message
+        for marker in (
+            "uniqueviolation",
+            "integrityerror",
+            "duplicate key value violates unique constraint",
+            "psycopg.errors",
+        )
+    ):
+        return "database_integrity"
+    if any(
+        marker in message
+        for marker in (
+            "traceback (most recent call last)",
+            "attributeerror",
+            "typeerror",
+            "keyerror",
+        )
+    ):
+        return "internal_error"
     if "coverage guard" in message:
         return "coverage_guard"
+    if "access_limited" in message:
+        return "access_limited"
     if "429" in message or "rate limit" in message or "too many requests" in message:
         return "rate_limit"
     if any(marker in message for marker in ("401", "403", "unauthorized", "forbidden", "authentication")):
