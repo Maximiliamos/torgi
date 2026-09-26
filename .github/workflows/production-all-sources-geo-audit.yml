@@ -289,3 +289,165 @@ jobs:
           path: ${{ runner.temp }}/production-all-sources-geo-baseline.json
           if-no-files-found: error
           retention-days: 14
+
+
+  geo-eligibility:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Explain apparent GEO backlog
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from datetime import timedelta
+          from sqlalchemy import exists, func, or_, select
+
+          from bankrotai.db import GeoFailure, LotGeoSnapshot, ProcessedLot, SessionLocal, utc_now
+          from bankrotai.tasks import celery_app
+
+          now = utc_now()
+          population = (
+              ProcessedLot.duplicate_of_id.is_(None),
+              ProcessedLot.is_archived.is_(False),
+              or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
+          )
+          no_geo = ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
+          pending = or_(
+              no_geo,
+              (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
+          )
+
+          def count(*conditions):
+              with SessionLocal() as session:
+                  return int(session.scalar(
+                      select(func.count()).select_from(ProcessedLot)
+                      .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                      .where(*population, *conditions)
+                  ) or 0)
+
+          with SessionLocal() as session:
+              waiting_rows = session.execute(
+                  select(
+                      func.count(),
+                      func.min(GeoFailure.next_retry_at),
+                      func.max(GeoFailure.next_retry_at),
+                  )
+                  .select_from(ProcessedLot)
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      *population,
+                      pending,
+                      GeoFailure.status != 'terminal',
+                      GeoFailure.next_retry_at.is_not(None),
+                      GeoFailure.next_retry_at > now,
+                  )
+              ).one()
+
+              buckets = {}
+              for label, boundary in (
+                  ('within_15m', now + timedelta(minutes=15)),
+                  ('within_1h', now + timedelta(hours=1)),
+                  ('within_6h', now + timedelta(hours=6)),
+                  ('within_24h', now + timedelta(hours=24)),
+              ):
+                  buckets[label] = int(session.scalar(
+                      select(func.count()).select_from(ProcessedLot)
+                      .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                      .where(
+                          *population,
+                          pending,
+                          GeoFailure.status != 'terminal',
+                          GeoFailure.next_retry_at.is_not(None),
+                          GeoFailure.next_retry_at > now,
+                          GeoFailure.next_retry_at <= boundary,
+                      )
+                  ) or 0)
+
+              no_input = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot).where(
+                      ProcessedLot.duplicate_of_id.is_(None),
+                      ProcessedLot.is_archived.is_(False),
+                      ProcessedLot.cadastral_number.is_(None),
+                      ProcessedLot.address.is_(None),
+                  )
+              ) or 0)
+
+          eligible = count(
+              pending,
+              or_(
+                  GeoFailure.id.is_(None),
+                  GeoFailure.next_retry_at.is_(None),
+                  GeoFailure.next_retry_at <= now,
+              ),
+              or_(GeoFailure.status.is_(None), GeoFailure.status != 'terminal'),
+          )
+          waiting = count(
+              pending,
+              GeoFailure.status != 'terminal',
+              GeoFailure.next_retry_at.is_not(None),
+              GeoFailure.next_retry_at > now,
+          )
+          terminal = count(pending, GeoFailure.status == 'terminal')
+          pending_total = count(pending)
+          no_failure = count(pending, GeoFailure.id.is_(None))
+          resolved_no_geo = count(pending, GeoFailure.status == 'resolved')
+          needs_geo_check = count(ProcessedLot.needs_geo_check.is_(True))
+
+          celery = {}
+          try:
+              inspect = celery_app.control.inspect(timeout=3)
+              for key, value in (
+                  ('active', inspect.active() or {}),
+                  ('reserved', inspect.reserved() or {}),
+                  ('scheduled', inspect.scheduled() or {}),
+              ):
+                  compact = {}
+                  for worker, tasks in value.items():
+                      selected = []
+                      for task in tasks or []:
+                          name = str(task.get('name') or task.get('request', {}).get('name') or '')
+                          if any(token in name for token in ('geocode', 'nationwide', 'source_retry')):
+                              selected.append({
+                                  'id': task.get('id') or task.get('request', {}).get('id'),
+                                  'name': name,
+                                  'args': str(task.get('args') or task.get('request', {}).get('args') or '')[:500],
+                              })
+                      if selected:
+                          compact[worker] = selected
+                  celery[key] = compact
+          except Exception as exc:
+              celery = {'error': f'{exc.__class__.__name__}: {exc}'[:500]}
+
+          payload = {
+              'now': now.isoformat() + 'Z',
+              'pending_total': pending_total,
+              'eligible_now': eligible,
+              'waiting_for_retry': waiting,
+              'terminal_pending': terminal,
+              'no_failure_row': no_failure,
+              'resolved_failure_without_geo': resolved_no_geo,
+              'needs_geo_check': needs_geo_check,
+              'active_without_geo_input': no_input,
+              'waiting_retry_min': waiting_rows[1],
+              'waiting_retry_max': waiting_rows[2],
+              'retry_buckets': buckets,
+              'celery': celery,
+          }
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) { throw 'GEO eligibility probe failed' }
+          $path = Join-Path $env:RUNNER_TEMP 'geo-eligibility.json'
+          $out | Set-Content -Path $path -Encoding UTF8
+          Write-Output '=== GEO_ELIGIBILITY_JSON_BEGIN ==='
+          Get-Content $path
+          Write-Output '=== GEO_ELIGIBILITY_JSON_END ==='
+
+      - name: Upload GEO eligibility evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-geo-eligibility
+          path: ${{ runner.temp }}/geo-eligibility.json
+          if-no-files-found: error
+          retention-days: 14
