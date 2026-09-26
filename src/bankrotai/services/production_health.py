@@ -118,17 +118,23 @@ def build_phase3_health(
         legacy_source_count=len(legacy_sources),
         legacy_sources=legacy_sources,
     )
+    operational_sources = [
+        source
+        for source in sources
+        if source.freshness_status in {"fresh", "running", "delayed"}
+    ]
+    add(
+        "source-data-availability",
+        not sources or bool(operational_sources),
+        configured_source_count=len(sources),
+        operational_source_count=len(operational_sources),
+        operational_sources=[source.source_system for source in operational_sources],
+    )
     for source in sources:
-        if source.freshness_status == "delayed":
-            freshness_ok = False
-            freshness_severity = "warning"
-        else:
-            freshness_ok = source.freshness_status in {"fresh", "running"}
-            freshness_severity = "critical"
         add(
             f"source-freshness:{source.source_system}",
-            freshness_ok,
-            severity=freshness_severity,
+            source.freshness_status in {"fresh", "running"},
+            severity="warning",
             status=source.status,
             freshness_status=source.freshness_status,
             freshness_age_seconds=source.freshness_age_seconds,
@@ -138,6 +144,7 @@ def build_phase3_health(
         add(
             f"source-coverage:{source.source_system}",
             source.coverage_status == "fresh",
+            severity="warning",
             coverage_status=source.coverage_status,
             complete_snapshot_age_seconds=source.complete_snapshot_age_seconds,
             last_complete_success_at=source.last_complete_success_at,
