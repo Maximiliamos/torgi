@@ -88,4 +88,5 @@ npm audit
 ```
 
 Актуальная архитектура, API и roadmap описаны в корневых `README.md` и
-`docs/ROADMAP.md`.
+`docs/ROADMAP.md`. Production release/recovery checklist находится в
+`docs/phase4-lite-operations.md`.
