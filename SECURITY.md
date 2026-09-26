@@ -36,3 +36,17 @@ disclosure timeline will be agreed after triage.
   tested deletion/backup procedures.
 - AI results are preliminary machine hypotheses and require independent human
   review.
+
+## Dependency and release security
+
+- Python runtime dependencies are installed from `requirements.lock` and audited in CI
+  with `pip-audit`.
+- WEB dependencies are installed with `npm ci`; CI blocks high-severity npm audit
+  findings for the complete tree and the production-only tree.
+- Dependency/security failures are investigated or fixed. They must not be downgraded
+  to warnings merely to make a release green.
+- Required branch-protection checks must pass before merge to `main`.
+- Production releases use the exact merged Git SHA and fail closed when health,
+  migration, map-publication or recovery gates fail.
+- Root licensing remains an explicit repository-owner decision; no license should be
+  inferred or added automatically.
