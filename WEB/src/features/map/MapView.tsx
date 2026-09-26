@@ -1644,7 +1644,7 @@ export function MapView({
                   </select>
                 </label>
                 <div>
-                  <button type="submit" disabled={!filterUi.dirty}>{filterUi.dirty ? "Применить изменения" : "Применено"}</button>
+                  <button type="submit" disabled={!filterUi.dirty}>{filterUi.dirty ? "Применить" : "Применено"}</button>
                   <button
                     type="button"
                     disabled={filterUi.appliedCount === 0 && !filterUi.dirty}
