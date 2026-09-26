@@ -37,7 +37,7 @@ jobs:
           from datetime import datetime, timezone
           from sqlalchemy import func, select
 
-          from bankrotai.config import settings
+          from bankrotai.core import get_settings
           from bankrotai.db import (
               BackgroundTaskState,
               GeoFailure,
@@ -53,6 +53,8 @@ jobs:
           from bankrotai.services.geo_backfill import geocoding_progress
           from bankrotai.services.ingestion import default_source_specs
           from redis import Redis
+
+          settings = get_settings()
 
           def iso(value):
               return value.isoformat() + ('Z' if value and value.tzinfo is None else '') if value else None
@@ -241,7 +243,7 @@ jobs:
                   'ping': bool(client.ping()),
                   'geo_lock_exists': bool(client.exists('bankrotai:geocoding:batch')),
                   'geo_lock_ttl_seconds': int(client.ttl('bankrotai:geocoding:batch')),
-                  'map_dirty': client.get('bankrotai:map:dirty'),
+                  'map_dirty': client.get('bankrotai:map-dataset-dirty'),
               }
               client.close()
           except Exception as exc:
