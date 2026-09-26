@@ -796,6 +796,20 @@ textarea, input { font: inherit; }
 .sourceList i { background:#e5a313;border-radius:50%;height:10px;margin-top:5px;width:10px; }.sourceList i.ok { background:#169b75; }
 .sourceList span,.sourceList small { color:#667085;display:block;font-size:12px;margin-top:3px; }
 .secondaryButton { background:#fff;border:1px solid #b9c5ce;border-radius:7px;min-height:38px;padding:0 13px; }
+.filterTitle { align-items:center;display:flex;gap:10px;justify-content:space-between;margin-bottom:16px; }
+.filters .filterTitle h3 { margin:0; }
+.filterCount { align-items:center;background:#e4f5ee;border-radius:999px;color:#0e7255;display:inline-flex;font-size:11px;height:21px;justify-content:center;min-width:21px;padding:0 6px; }
+.filterResetButton { align-items:center;background:transparent;border:0;color:#667085;display:inline-flex;font-size:12px;gap:4px;padding:4px; }
+.filterResetButton:hover,.searchClear:hover { color:#146c5f; }
+.searchClear { align-items:center;background:transparent;border:0;color:#7b8794;display:flex;justify-content:center;padding:2px; }
+.refreshingBadge { align-items:center!important;background:#f2f7f5;border:1px solid #c7ded6;border-radius:999px;color:#146c5f!important;display:inline-flex!important;font-size:12px!important;gap:6px;margin:0!important;padding:5px 9px; }
+.emptyState strong { color:#243b53;font-size:14px; }
+.emptyState span { font-size:13px; }
+.emptyState .secondaryButton { margin-top:4px; }
+.detailContext { display:flex;flex-wrap:wrap;gap:5px;margin-top:8px; }
+.detailContext span { background:#f3f6f8;border:1px solid #dde4ea;border-radius:999px;color:#52606d;font-size:11px;padding:3px 7px; }
+.searchSummary { align-items:center;display:flex;gap:12px;justify-content:space-between;margin-top:14px; }
+.searchSummary span { align-items:center;color:#667085;display:inline-flex;font-size:12px;gap:5px; }
 .secondaryButton.active { background:#e4f5ee;border-color:#146c5f;color:#0e7255; }
 .rangeGrid { display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr)); }
 .procedureGrid { display:grid;gap:10px;grid-template-columns:repeat(3,minmax(0,1fr)); }
