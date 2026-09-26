@@ -10,7 +10,7 @@ Roadmap оформлен как набор будущих GitHub issues. Каж�
 | Phase 2 Lite | Fast UX for 1–4 users without enterprise scaling | **100% complete** | Concurrency/cache/map hot-path changes verified in production |
 | Phase 3 Lite | Backups, restore proof, health/recovery and durable reconciliation | **100% complete** | Full reconciliation `36239355328` succeeded; post-reconciliation Phase 3 health/recovery succeeded |
 | Phase 4 Lite | Operations docs, release/recovery checklist, dependency security and issue cleanup | **100% complete** | Runbook/security gates shipped; legacy alert backlog reduced from 405 to 0; production recovery cycle green |
-| Phase 5 | Final UX polish and user acceptance | **Planned** | Starts after Phase 4 Lite acceptance |
+| Phase 5 | Final UX polish and user acceptance | **100% complete** | Registry/search/map UX shipped; production Public WEB and Functional checks green; see `docs/phase5-ux-acceptance.md` |
 
 The delivery phases above are the practical production plan for the current deployment
 (up to four users). The BAT roadmap below remains the longer-term product backlog and
