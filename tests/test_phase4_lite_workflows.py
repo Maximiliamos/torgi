@@ -43,6 +43,6 @@ def test_phase4_operations_runbook_keeps_phase3_safety_contracts() -> None:
         "Never use an unverified dump directly against the live database",
         "Never bypass the single-active ingestion lock",
         "55-minute soft / 60-minute hard",
-        "up to four application users",
+        "no more than four application users",
     ):
         assert text in runbook
