@@ -260,7 +260,7 @@ def test_phase3_health_keeps_legacy_source_history_out_of_critical_checks() -> N
 
 
 
-def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage() -> None:
+def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partial() -> None:
     workflow = (
         Path(__file__).resolve().parents[1]
         / ".github"
@@ -270,9 +270,10 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage
 
     assert "Wait for the same main revision on the home origin" in workflow
     assert "Deploy home secondary origin" in workflow
-    assert "automatic_nationwide_lot_refresh_task.apply_async(args=['full'])" in workflow
-    assert "rows.Count -eq 5" in workflow
-    assert "$_.coverage -ne 'fresh'" in workflow
+    assert "schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full')" in workflow
+    assert "$state.status -in @('success','partial')" in workflow
+    assert "$rows.Count -lt 5" in workflow
+    assert "Full reconciliation left a source run active" in workflow
     assert "timeout-minutes: 90" in workflow
 
 
