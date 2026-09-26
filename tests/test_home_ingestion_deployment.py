@@ -54,6 +54,20 @@ def test_home_deploy_preserves_local_database_and_only_checks_schema() -> None:
 
 
 
+def test_home_deploy_skips_heavy_backup_only_when_schema_is_proven_current() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    precheck = 'python -m alembic current --check-heads'
+    backup = 'pg_dump `'
+    migrate = 'python -m alembic upgrade head'
+
+    assert '$schemaAtHead = $false' in workflow
+    assert 'if (-not $schemaAtHead)' in workflow
+    assert 'Database schema is already at application head; skipping pre-migration backup and migration' in workflow
+    assert 'Database schema is not proven current; preserving pre-migration backup and migration path' in workflow
+    assert workflow.index(precheck) < workflow.index(backup) < workflow.index(migrate)
+
+
 def test_home_deploy_clears_only_orphaned_geo_lock_after_worker_stop() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     remove = "docker rm --force $spec.Name"
