@@ -86,7 +86,7 @@ jobs:
           script: |
             const title = '[Production] Public WEB smoke alert';
             const body = `Public WEB smoke failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
-            const { data: issues } = await github.rest.issues.listForRepo({
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               ...context.repo,
               state: 'open',
               per_page: 100,
@@ -111,17 +111,23 @@ jobs:
         with:
           script: |
             const title = '[Production] Public WEB smoke alert';
-            const { data: issues } = await github.rest.issues.listForRepo({
+            const legacyPrefix = 'Public WEB smoke failed:';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               ...context.repo,
               state: 'open',
               per_page: 100,
             });
-            for (const issue of issues.filter((item) => item.title === title && !item.pull_request)) {
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: issue.number,
-                body: `Recovered in workflow run ${context.runId}.`,
-              });
+            const matches = issues.filter((item) =>
+              !item.pull_request && (item.title === title || item.title.startsWith(legacyPrefix))
+            );
+            for (const issue of matches) {
+              if (issue.title === title) {
+                await github.rest.issues.createComment({
+                  ...context.repo,
+                  issue_number: issue.number,
+                  body: `Recovered in workflow run ${context.runId}.`,
+                });
+              }
               await github.rest.issues.update({
                 ...context.repo,
                 issue_number: issue.number,
