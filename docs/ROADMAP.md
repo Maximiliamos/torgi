@@ -9,7 +9,7 @@ Roadmap оформлен как набор будущих GitHub issues. Каж�
 | Phase 1 | Correctness and freshness of lot/GEO/map data | **100% complete** | Automated ingestion/freshness, GEO/map correctness and production rollout verified |
 | Phase 2 Lite | Fast UX for 1–4 users without enterprise scaling | **100% complete** | Concurrency/cache/map hot-path changes verified in production |
 | Phase 3 Lite | Backups, restore proof, health/recovery and durable reconciliation | **100% complete** | Full reconciliation `36239355328` succeeded; post-reconciliation Phase 3 health/recovery succeeded |
-| Phase 4 Lite | Operations docs, release/recovery checklist, dependency security and issue cleanup | **In progress** | See `docs/phase4-lite-operations.md` |
+| Phase 4 Lite | Operations docs, release/recovery checklist, dependency security and issue cleanup | **100% complete** | Runbook/security gates shipped; legacy alert backlog reduced from 405 to 0; production recovery cycle green |
 | Phase 5 | Final UX polish and user acceptance | **Planned** | Starts after Phase 4 Lite acceptance |
 
 The delivery phases above are the practical production plan for the current deployment
