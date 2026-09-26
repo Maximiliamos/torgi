@@ -1,0 +1,47 @@
+name: Phase 3 post-fix full reconcile
+
+on:
+  push:
+    branches: [diag/phase3-source-failures]
+    paths:
+      - '.github/workflows/phase3-postfix-reconcile.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 90
+    steps:
+      - name: Verify production main revision
+        shell: powershell
+        run: |
+          $expected = '3b7fd47cd79969cb7d8dba7dafd24e4b2394890f'
+          $image = docker inspect bankrotai-home-secondary --format '{{.Config.Image}}'
+          if (-not $image.EndsWith($expected)) {
+            throw "Production API is not yet on expected main revision. image=$image expected=$expected"
+          }
+      - name: Queue full reconciliation
+        shell: powershell
+        run: |
+          $task = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import automatic_nationwide_lot_refresh_task; print(automatic_nationwide_lot_refresh_task.apply_async(args=['full']).id)"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not queue full reconciliation' }
+          Write-Output "Queued: $task"
+      - name: Wait for full run to finish and print configured source status
+        shell: powershell
+        run: |
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(80)
+          do {
+            $json = docker exec bankrotai-home-ingestion-worker python -c "import json; from sqlalchemy import select; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); run=s.scalar(select(LotSyncRun).where(LotSyncRun.trigger_type=='scheduled_full').order_by(LotSyncRun.created_at.desc()).limit(1)); names=[x.source_id for x in default_source_specs()]; rows=[] if run is None else s.scalars(select(LotSyncSourceRun).where(LotSyncSourceRun.sync_run_id==run.id)).all(); print(json.dumps({'run_id':None if run is None else run.id,'run_status':None if run is None else run.status,'run_error':None if run is None else run.error_message,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages':x.pages_scanned,'items_seen':x.items_seen,'archived':x.items_archived,'error':x.error_message} for x in rows if x.source_system in names]},default=str,ensure_ascii=False)); s.close()"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect full reconciliation' }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $state | ConvertTo-Json -Depth 6
+            if ($state.run_status -in @('success','partial','failed')) {
+              if ($state.run_status -eq 'failed') { throw "Full reconciliation failed" }
+              exit 0
+            }
+            Start-Sleep -Seconds 20
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+          throw 'Full reconciliation did not finish before timeout'
