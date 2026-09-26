@@ -14,6 +14,7 @@ from bankrotai.services.quality import list_source_health
 
 
 _GEO_STALL_AFTER = timedelta(hours=24)
+_CRITICAL_SOURCE_ERROR_CATEGORIES = {"database_integrity", "internal_error"}
 
 
 def _utc_naive(value: datetime | None) -> datetime | None:
@@ -131,10 +132,15 @@ def build_phase3_health(
         operational_sources=[source.source_system for source in operational_sources],
     )
     for source in sources:
+        freshness_severity = (
+            "critical"
+            if source.last_error_category in _CRITICAL_SOURCE_ERROR_CATEGORIES
+            else "warning"
+        )
         add(
             f"source-freshness:{source.source_system}",
             source.freshness_status in {"fresh", "running"},
-            severity="warning",
+            severity=freshness_severity,
             status=source.status,
             freshness_status=source.freshness_status,
             freshness_age_seconds=source.freshness_age_seconds,

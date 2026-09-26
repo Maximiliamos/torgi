@@ -327,3 +327,59 @@ def test_phase3_health_fails_only_when_all_configured_sources_are_unavailable() 
     checks = {item["name"]: item for item in health["checks"]}
     assert checks["source-data-availability"]["ok"] is False
     assert checks["source-freshness:tbankrot.ru"]["severity"] == "warning"
+
+
+def test_phase3_health_keeps_internal_source_failure_critical() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        failed = LotSyncRun(
+            id="failed-internal-source",
+            triggered_by="test",
+            trigger_type="scheduled_full",
+            status="partial",
+            total_sources=2,
+            started_at=(now - timedelta(minutes=40)).replace(tzinfo=None),
+            finished_at=(now - timedelta(minutes=20)).replace(tzinfo=None),
+        )
+        session.add(failed)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=failed.id,
+                source_system="lot-online.ru",
+                status="failed",
+                complete_source_run=True,
+                error_message=(
+                    "(psycopg.errors.UniqueViolation) duplicate key value violates "
+                    "unique constraint uq_canonical_lots_legacy_processed_lot_id"
+                ),
+                started_at=failed.started_at,
+                finished_at=failed.finished_at,
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"torgi.gov.ru", "lot-online.ru"},
+        )
+
+    assert health["healthy"] is False
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-data-availability"]["ok"] is True
+    assert checks["source-freshness:lot-online.ru"]["last_error_category"] == "database_integrity"
+    assert checks["source-freshness:lot-online.ru"]["severity"] == "critical"
