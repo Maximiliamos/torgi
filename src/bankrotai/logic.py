@@ -306,6 +306,20 @@ def _promote_active_projection(
     if primary_link is not None:
         canonical = session.get(CanonicalLot, primary_link.canonical_lot_id)
         if canonical is not None:
+            # The promoted projection may still be referenced as the legacy
+            # primary of a stale/orphan canonical row.  legacy_processed_lot_id
+            # is unique, so explicitly release that old ownership before
+            # assigning it to the canonical group that just promoted the
+            # active projection.  SourceLot links remain authoritative.
+            previous_owner = session.scalar(
+                select(CanonicalLot).where(
+                    CanonicalLot.legacy_processed_lot_id == active_projection.id,
+                    CanonicalLot.id != canonical.id,
+                )
+            )
+            if previous_owner is not None:
+                previous_owner.legacy_processed_lot_id = None
+                session.flush()
             canonical.legacy_processed_lot_id = active_projection.id
     return active_projection
 
