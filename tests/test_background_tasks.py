@@ -400,3 +400,15 @@ def test_desktop_can_explicitly_enable_local_fallback(monkeypatch) -> None:
     monkeypatch.setattr(tasks.threading, "Thread", FakeThread)
     assert tasks.schedule_region_sync("yaroslavl") == "started-in-thread"
     assert started == [True]
+
+
+def test_nationwide_tasks_use_dedicated_extended_time_budget() -> None:
+    assert tasks.settings.celery_nationwide_soft_time_limit > tasks.settings.celery_soft_time_limit
+    assert tasks.settings.celery_nationwide_hard_time_limit > tasks.settings.celery_nationwide_soft_time_limit
+    for task in (
+        tasks.nationwide_lot_sync_task,
+        tasks.automatic_nationwide_lot_refresh_task,
+        tasks.automatic_nationwide_source_retry_task,
+    ):
+        assert task.soft_time_limit == tasks.settings.celery_nationwide_soft_time_limit
+        assert task.time_limit == tasks.settings.celery_nationwide_hard_time_limit

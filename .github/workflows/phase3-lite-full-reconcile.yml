@@ -128,7 +128,7 @@ jobs:
         env:
           RUN_ID: ${{ steps.start.outputs.run_id }}
         run: |
-          $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(65)
           do {
             $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(default_source_specs()),'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
@@ -149,4 +149,4 @@ jobs:
             }
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
-          throw 'Full reconciliation did not reach a terminal state within 45 minutes'
+          throw 'Full reconciliation did not reach a terminal state within 65 minutes'
