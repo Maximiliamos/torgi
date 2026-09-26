@@ -125,7 +125,7 @@ def test_phase3_health_fails_for_expired_sync_lease_and_failed_newer_map() -> No
     assert checks["source-sync-lease"]["ok"] is False
 
 
-def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
+def test_phase3_health_reports_missing_source_coverage_as_warning_when_fast_is_fresh() -> None:
     factory = _factory()
     now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
     with factory() as session:
@@ -166,10 +166,11 @@ def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
 
         health = build_phase3_health(session, now=now, expected_sources={"tbankrot.ru"})
 
-    assert health["healthy"] is False
+    assert health["healthy"] is True
     checks = {item["name"]: item for item in health["checks"]}
     assert checks["source-freshness:tbankrot.ru"]["ok"] is True
     assert checks["source-coverage:tbankrot.ru"]["ok"] is False
+    assert checks["source-coverage:tbankrot.ru"]["severity"] == "warning"
 
 
 def test_phase3_health_fails_when_configured_source_is_missing() -> None:
