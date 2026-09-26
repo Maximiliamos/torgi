@@ -55,11 +55,33 @@ jobs:
         id: start
         shell: powershell
         run: |
-          $runId = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import schedule_nationwide_lot_sync; print(schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full'))"
-          if ($LASTEXITCODE -ne 0 -or -not $runId) { throw 'Could not queue full reconciliation' }
-          $runId = ($runId | Select-Object -Last 1).Trim()
-          "run_id=$runId" >> $env:GITHUB_OUTPUT
-          Write-Output "Queued durable full reconciliation run $runId"
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(35)
+          $scheduleScript = @'
+          from bankrotai.services.ingestion import SyncAlreadyRunningError
+          from bankrotai.tasks import schedule_nationwide_lot_sync
+
+          try:
+              print("queued:" + schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full'))
+          except SyncAlreadyRunningError as exc:
+              print("busy:" + exc.run_id)
+          '@
+          do {
+            $result = $scheduleScript | docker exec -i bankrotai-home-ingestion-worker python -
+            if ($LASTEXITCODE -ne 0 -or -not $result) { throw 'Could not request full reconciliation' }
+            $result = ($result | Select-Object -Last 1).Trim()
+            if ($result.StartsWith('queued:')) {
+              $runId = $result.Substring('queued:'.Length)
+              "run_id=$runId" >> $env:GITHUB_OUTPUT
+              Write-Output "Queued durable full reconciliation run $runId"
+              exit 0
+            }
+            if (-not $result.StartsWith('busy:')) {
+              throw "Unexpected full reconciliation scheduling result: $result"
+            }
+            Write-Output "Waiting for active nationwide reconciliation $($result.Substring('busy:'.Length))"
+            Start-Sleep -Seconds 20
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+          throw 'Timed out waiting for the active nationwide reconciliation lease'
       - name: Wait for full reconciliation to finish
         shell: powershell
         env:
