@@ -132,6 +132,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
   await expect(page.getByText("Загрузка лотов", { exact: true })).toBeHidden({ timeout: 30_000 });
   await expect(page.locator(".lotRow")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByText("0 найдено", { exact: true })).toBeVisible();
+  await expect(page.getByText("По заданным фильтрам лотов нет", { exact: true })).toBeVisible();
   await search.fill("");
   await page.getByLabel("Сортировка").selectOption("price_asc");
   const categoryRequest = page.waitForResponse((response) =>
@@ -155,7 +156,7 @@ test("real production auth, registry, sources, GEO, images and source links", as
   const gisResponsePromise = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/search/torgi-gov",
   );
-  await searchView.getByRole("button", { name: "Найти онлайн" }).click();
+  await searchView.getByLabel("Регион онлайн-поиска").press("Enter");
   const gisRegionalResponse = await gisResponsePromise;
   expect(gisRegionalResponse.status()).toBe(200);
   const gisRegionalPayload = await gisRegionalResponse.json() as { items?: unknown[] };
