@@ -24,7 +24,7 @@ from bankrotai.db import (
     Watchlist,
 )
 from bankrotai.domain import NormalizedLot
-from bankrotai.logic import persist_lot
+from bankrotai.logic import _promote_active_projection, persist_lot
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SourceSyncResult,
@@ -375,6 +375,70 @@ def test_auction_start_does_not_archive_lot_and_explicit_closed_status_does(sess
         assert processed is not None and processed.is_archived is False
         current = session.scalar(select(SourceLot).where(SourceLot.external_id == "current"))
         assert current is not None and current.is_active is True
+
+
+def test_promote_active_projection_releases_stale_canonical_legacy_owner(sessions) -> None:
+    with sessions() as session:
+        archived = ProcessedLot(
+            external_id="archived-primary",
+            source="old-source",
+            source_system="old-source",
+            title="Old",
+            description="",
+            category="land",
+            auction_status="expired",
+            is_archived=True,
+        )
+        active = ProcessedLot(
+            external_id="active-projection",
+            source="new-source",
+            source_system="new-source",
+            title="New",
+            description="",
+            category="land",
+            auction_status="active",
+            is_archived=False,
+        )
+        session.add_all([archived, active])
+        session.flush()
+
+        target = CanonicalLot(
+            canonical_key="target-canonical",
+            legacy_processed_lot_id=archived.id,
+            title="Target",
+            category="land",
+        )
+        stale_owner = CanonicalLot(
+            canonical_key="stale-owner",
+            legacy_processed_lot_id=active.id,
+            title="Stale",
+            category="land",
+        )
+        session.add_all([target, stale_owner])
+        session.flush()
+        session.add(
+            SourceLot(
+                canonical_lot_id=target.id,
+                processed_lot_id=archived.id,
+                source_system="old-source",
+                external_id="archived-primary",
+            )
+        )
+        session.flush()
+
+        _promote_active_projection(
+            session,
+            archived_primary=archived,
+            active_projection=active,
+        )
+        session.flush()
+        session.commit()
+
+    with sessions() as session:
+        target = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == "target-canonical"))
+        stale_owner = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == "stale-owner"))
+        assert target is not None and target.legacy_processed_lot_id == active.id
+        assert stale_owner is not None and stale_owner.legacy_processed_lot_id is None
 
 
 def test_public_offer_is_not_archived_at_intermediate_stage_boundary(sessions) -> None:
