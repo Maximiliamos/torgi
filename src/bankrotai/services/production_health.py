@@ -119,11 +119,21 @@ def build_phase3_health(
         legacy_sources=legacy_sources,
     )
     for source in sources:
+        degraded_upstream = source.last_error_category in {"coverage_guard", "access_limited"}
         if source.freshness_status == "delayed":
             freshness_ok = False
             freshness_severity = "warning"
+        elif source.freshness_status in {"fresh", "running"}:
+            freshness_ok = True
+            freshness_severity = "critical"
+        elif degraded_upstream:
+            # A known upstream limitation is operationally degraded, but the
+            # application itself is still healthy. Keep it visible without
+            # turning the whole production health gate red forever.
+            freshness_ok = False
+            freshness_severity = "warning"
         else:
-            freshness_ok = source.freshness_status in {"fresh", "running"}
+            freshness_ok = False
             freshness_severity = "critical"
         add(
             f"source-freshness:{source.source_system}",
@@ -135,12 +145,27 @@ def build_phase3_health(
             last_success_at=source.last_success_at,
             last_error_category=source.last_error_category,
         )
+
+        coverage_ok = source.coverage_status == "fresh"
+        coverage_severity = (
+            "warning"
+            if (
+                not coverage_ok
+                and (
+                    source.freshness_status in {"fresh", "running"}
+                    or degraded_upstream
+                )
+            )
+            else "critical"
+        )
         add(
             f"source-coverage:{source.source_system}",
-            source.coverage_status == "fresh",
+            coverage_ok,
+            severity=coverage_severity,
             coverage_status=source.coverage_status,
             complete_snapshot_age_seconds=source.complete_snapshot_age_seconds,
             last_complete_success_at=source.last_complete_success_at,
+            last_error_category=source.last_error_category,
         )
 
     geo = geocoding_progress(session)
