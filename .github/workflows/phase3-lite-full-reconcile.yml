@@ -51,15 +51,78 @@ jobs:
           if ($container -ne 'bankrotai-home-ingestion-worker') {
             throw 'Canonical home ingestion worker is not running'
           }
-      - name: Request one durable full reconciliation
+      - name: Request or adopt one durable full reconciliation
         id: start
         shell: powershell
         run: |
-          $runId = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import schedule_nationwide_lot_sync; print(schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full'))"
-          if ($LASTEXITCODE -ne 0 -or -not $runId) { throw 'Could not queue full reconciliation' }
-          $runId = ($runId | Select-Object -Last 1).Trim()
-          "run_id=$runId" >> $env:GITHUB_OUTPUT
-          Write-Output "Queued durable full reconciliation run $runId"
+          $probe = @'
+          import json
+          from bankrotai.db import LotSyncRun, SessionLocal
+          from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
+          from bankrotai.tasks import schedule_nationwide_lot_sync
+
+          configured_count = len(default_source_specs())
+          try:
+              run_id = schedule_nationwide_lot_sync(triggered_by="phase3-lite", mode="full")
+              print(json.dumps({
+                  "state": "queued",
+                  "run_id": run_id,
+                  "configured_source_count": configured_count,
+              }))
+          except SyncAlreadyRunningError as exc:
+              session = SessionLocal()
+              try:
+                  run = session.get(LotSyncRun, exc.run_id)
+                  print(json.dumps({
+                      "state": "busy",
+                      "run_id": exc.run_id,
+                      "status": None if run is None else run.status,
+                      "trigger_type": None if run is None else run.trigger_type,
+                      "total_sources": None if run is None else run.total_sources,
+                      "configured_source_count": configured_count,
+                  }))
+              finally:
+                  session.close()
+          '@
+
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
+          $selectedRunId = $null
+          do {
+            $json = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+            if ($LASTEXITCODE -ne 0 -or -not $json) {
+              throw 'Could not inspect or queue full reconciliation'
+            }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $state | ConvertTo-Json -Depth 6
+
+            if ($state.state -eq 'queued') {
+              $selectedRunId = [string]$state.run_id
+              Write-Output "Queued durable full reconciliation run $selectedRunId"
+              break
+            }
+
+            if ($state.state -eq 'busy') {
+              $isFull = (
+                $state.trigger_type -in @('manual_full', 'scheduled_full') -and
+                [int]$state.total_sources -eq [int]$state.configured_source_count
+              )
+              if ($isFull -and $state.status -in @('queued', 'running')) {
+                $selectedRunId = [string]$state.run_id
+                Write-Output "Adopting already-active full reconciliation run $selectedRunId"
+                break
+              }
+              Write-Output "Waiting for active non-full sync $($state.run_id) ($($state.trigger_type), $($state.status))"
+              Start-Sleep -Seconds 15
+              continue
+            }
+
+            throw "Unexpected reconciliation scheduling state: $($state.state)"
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+
+          if (-not $selectedRunId) {
+            throw 'Could not obtain a durable full reconciliation within 45 minutes'
+          }
+          "run_id=$selectedRunId" >> $env:GITHUB_OUTPUT
       - name: Wait for full reconciliation to finish
         shell: powershell
         env:
@@ -67,13 +130,15 @@ jobs:
         run: |
           $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
           do {
-            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(default_source_specs()),'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
             $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
             $state | ConvertTo-Json -Depth 8
             if ($state.status -in @('success','partial')) {
               $rows = @($state.sources)
-              if ($rows.Count -lt 5) { throw "Full reconciliation ended without all configured source runs: $($rows.Count)/5" }
+              if ($rows.Count -lt [int]$state.configured_source_count) {
+                throw "Full reconciliation ended without all configured source runs: $($rows.Count)/$($state.configured_source_count)"
+              }
               if (@($rows | Where-Object { $_.status -in @('queued','running') }).Count -gt 0) {
                 throw 'Full reconciliation left a source run active'
               }
