@@ -1,0 +1,18 @@
+name: Phase 3 source diagnostics
+
+on:
+  push:
+    branches: [diag/phase3-source-failures]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Inspect latest configured source runs
+        shell: powershell
+        run: |
+          docker exec bankrotai-home-ingestion-worker python -c "import json; from sqlalchemy import select; from bankrotai.db import SessionLocal, LotSyncSourceRun, LotSyncRun; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); names=[x.source_id for x in default_source_specs()]; out={};          [out.__setitem__(name,[{'run_id':r.sync_run_id,'status':r.status,'complete':r.complete_source_run,'started_at':r.started_at,'finished_at':r.finished_at,'pages':r.pages_scanned,'items_seen':r.items_seen,'inserted':r.items_inserted,'updated':r.items_updated,'unchanged':r.items_unchanged,'archived':r.items_archived,'failed':r.items_failed,'error':r.error_message,'checkpoint':r.checkpoint_json} for r in s.scalars(select(LotSyncSourceRun).where(LotSyncSourceRun.source_system==name).order_by(LotSyncSourceRun.started_at.desc()).limit(5)).all()]) for name in names]; print(json.dumps(out,default=str,ensure_ascii=False,indent=2)); s.close()"
