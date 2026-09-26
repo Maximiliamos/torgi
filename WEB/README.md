@@ -89,4 +89,4 @@ npm audit
 
 Актуальная архитектура, API и roadmap описаны в корневых `README.md` и
 `docs/ROADMAP.md`. Production release/recovery checklist находится в
-`docs/phase4-lite-operations.md`. Phase 4 Lite operational baseline was accepted after a green production rollout, health checks, dependency audits and legacy-alert recovery.
+`docs/phase4-lite-operations.md`. Phase 4 Lite operational baseline was accepted after a green production rollout, health checks, dependency audits and legacy-alert recovery. A successful durable full reconciliation is followed by an automatic Phase 3 production-health verification.
