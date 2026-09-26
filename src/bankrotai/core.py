@@ -143,6 +143,8 @@ class AppSettings:
     sync_retry_backoff_seconds: int = 5
     celery_soft_time_limit: int = 1500
     celery_hard_time_limit: int = 1800
+    celery_nationwide_soft_time_limit: int = 3300
+    celery_nationwide_hard_time_limit: int = 3600
     external_connect_timeout: float = 5.0
     external_read_timeout: float = 30.0
     geo_batch_limit: int = 500
@@ -278,6 +280,8 @@ def load_settings() -> AppSettings:
         sync_retry_backoff_seconds=int(os.getenv("SYNC_RETRY_BACKOFF_SECONDS", "5")),
         celery_soft_time_limit=int(os.getenv("CELERY_SOFT_TIME_LIMIT", "1500")),
         celery_hard_time_limit=int(os.getenv("CELERY_HARD_TIME_LIMIT", "1800")),
+        celery_nationwide_soft_time_limit=int(os.getenv("CELERY_NATIONWIDE_SOFT_TIME_LIMIT", "3300")),
+        celery_nationwide_hard_time_limit=int(os.getenv("CELERY_NATIONWIDE_HARD_TIME_LIMIT", "3600")),
         external_connect_timeout=float(os.getenv("EXTERNAL_CONNECT_TIMEOUT", "5")),
         external_read_timeout=float(os.getenv("EXTERNAL_READ_TIMEOUT", "30")),
         geo_batch_limit=max(100, min(1000, int(os.getenv("GEO_BATCH_LIMIT", "500")))),
