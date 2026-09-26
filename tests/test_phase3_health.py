@@ -278,6 +278,9 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
     assert "$state.status -in @('success','partial')" in workflow
     assert "$state.configured_source_count" in workflow
     assert "Full reconciliation left a source run active" in workflow
+    assert "Could not obtain a durable full reconciliation within 45 minutes" in workflow
+    assert "AddMinutes(65)" in workflow
+    assert "Full reconciliation did not reach a terminal state within 65 minutes" in workflow
     assert "timeout-minutes: 90" in workflow
 
 
