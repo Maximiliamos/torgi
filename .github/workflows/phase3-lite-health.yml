@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: '17,47 * * * *'
   workflow_run:
-    workflows: ['Deploy home secondary origin']
+    workflows: ['Deploy home secondary origin', 'Phase 3 Lite full source reconciliation']
     types: [completed]
 
 permissions:

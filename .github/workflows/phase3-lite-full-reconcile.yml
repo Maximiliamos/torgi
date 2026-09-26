@@ -51,7 +51,7 @@ jobs:
           if ($container -ne 'bankrotai-home-ingestion-worker') {
             throw 'Canonical home ingestion worker is not running'
           }
-      - name: Request or adopt one durable full reconciliation
+      - name: Request or adopt one durable full reconciliation and reclaim expired lease
         id: start
         shell: powershell
         run: |
@@ -62,6 +62,7 @@ jobs:
           from bankrotai.tasks import schedule_nationwide_lot_sync
 
           configured_count = len(default_source_specs())
+          # create_run() transactionally marks expired queued/running leases failed before scheduling.
           try:
               run_id = schedule_nationwide_lot_sync(triggered_by="phase3-lite", mode="full")
               print(json.dumps({
