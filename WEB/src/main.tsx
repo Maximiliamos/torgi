@@ -26,6 +26,24 @@ const initialQuery: LotQuery = {
   statuses: ["active", "scheduled"], min_discount: 0, max_discount: 100, sort: "recommended"
 };
 
+const sameValues = (left: string[], right: string[]) =>
+  left.length === right.length && left.every((value) => right.includes(value));
+
+export function registryActiveFilterCount(query: LotQuery, watchlistOnly = false) {
+  return [
+    watchlistOnly,
+    query.city_slug !== initialQuery.city_slug,
+    query.search.trim().length > 0,
+    query.sort !== initialQuery.sort,
+    query.min_price != null,
+    query.max_price != null,
+    query.min_risk != null,
+    query.max_risk != null,
+    !sameValues(query.categories, initialQuery.categories),
+    !sameValues(query.statuses, initialQuery.statuses),
+  ].filter(Boolean).length;
+}
+
 const money = (value?: number | null) => value == null ? "—" : new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(value);
 const number = (value?: number | null, suffix = "") => value == null ? "—" : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
 const label = (items: readonly (readonly [string, string])[], value: string) => items.find(([id]) => id === value)?.[1] || value;
@@ -41,7 +59,7 @@ function DetailPanel({ detail, loading, onClose, onOpenDeal }: { detail: LotDeta
   const [procedure, setProcedure] = React.useState<Procedure | null>(null);
   React.useEffect(() => { setMessage(""); setProcedure(null); if (detail) fetchProcedure(detail.id).then(setProcedure).catch(() => setProcedure(null)); }, [detail]);
   return <aside className="detailPanel">
-    <div className="detailHeader"><div><span className="eyebrow">Карточка лота</span><h2>{detail?.title || "Выберите лот"}</h2></div><button className="iconButton" onClick={onClose}><X size={18} /></button></div>
+    <div className="detailHeader"><div><span className="eyebrow">Карточка лота</span><h2>{detail?.title || "Выберите лот"}</h2>{detail && <div className="detailContext"><span>ID {detail.id}</span><span>{detail.source_system}</span><span>{detail.auction_status}</span></div>}</div><button className="iconButton" aria-label="Закрыть карточку" onClick={onClose}><X size={18} /></button></div>
     {loading && <State>Загрузка карточки</State>}
     {!loading && detail && <div className="detailContent">
       <div className="detailGrid"><div><span>Цена</span><strong>{money(detail.current_price)}</strong></div><div><span>Рыночная</span><strong>{money(detail.market_price)}</strong></div><div><span>Дисконт</span><strong>{number(detail.discount_percent, "%")}</strong></div><div><span>Риск</span><strong>{number(detail.risk_score, "/10")}</strong></div></div>
@@ -78,6 +96,11 @@ function RegistryView({ refreshToken, onOpenDeal }: { refreshToken: number; onOp
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [savedSearches, setSavedSearches] = React.useState<Array<{ id: number; name: string; query: LotQuery }>>([]);
   const [watchlistOnly, setWatchlistOnly] = React.useState(false);
+  const activeFilterCount = registryActiveFilterCount(query, watchlistOnly);
+  const resetFilters = React.useCallback(() => {
+    setQuery({ ...initialQuery, categories: [...initialQuery.categories], statuses: [...initialQuery.statuses] });
+    setWatchlistOnly(false);
+  }, []);
   const load = React.useCallback(async () => {
     setLoading(true); setError(null);
     try { const [list, summary] = await Promise.all([watchlistOnly ? fetchWatchlist() : fetchLots(query), fetchStats(query.city_slug)]); setLots(list.items); setTotal(list.total); setStats(summary); }
@@ -91,9 +114,9 @@ function RegistryView({ refreshToken, onOpenDeal }: { refreshToken: number; onOp
   return <>
     <section className="kpiGrid"><Kpi icon={<Building2 />} label="Всего лотов" value={number(stats?.total_lots)} /><Kpi icon={<FileSearch />} label="Активные" value={number(stats?.active_lots)} /><Kpi icon={<Sparkles />} label="С AI-анализом" value={number(stats?.appraised_lots)} /><Kpi icon={<Banknote />} label="Средний дисконт" value={number(stats?.average_discount, "%")} /></section>
     <section className="workspace">
-      <aside className="filters"><h3><ListFilter size={17} /> Фильтры</h3>
+      <aside className="filters"><div className="filterTitle"><h3><ListFilter size={17} /> Фильтры{activeFilterCount > 0 && <span className="filterCount">{activeFilterCount}</span>}</h3>{activeFilterCount > 0 && <button className="filterResetButton" onClick={resetFilters}><X size={14} />Сбросить</button>}</div>
         <label className="field"><span>Регион реестра</span><select value={query.city_slug} onChange={(e) => setQuery({ ...query, city_slug: e.target.value, page: 1 })}><option value="yaroslavl">Ярославская область</option><option value="76">Регион 76</option><option value="84">Т‑Банкрот 84</option></select></label>
-        <label className="field"><span>Поиск</span><div className="searchBox"><Search size={16} /><input value={query.search} onChange={(e) => setQuery({ ...query, search: e.target.value, page: 1 })} placeholder="Название, адрес, кадастр" /></div></label>
+        <label className="field"><span>Поиск</span><div className="searchBox"><Search size={16} /><input value={query.search} onChange={(e) => setQuery({ ...query, search: e.target.value, page: 1 })} placeholder="Название, адрес, кадастр" />{query.search && <button type="button" className="searchClear" aria-label="Очистить поиск" onClick={() => setQuery({ ...query, search: "", page: 1 })}><X size={14} /></button>}</div></label>
         <label className="field"><span>Сортировка</span><select value={query.sort} onChange={(e) => setQuery({ ...query, sort: e.target.value as SortMode, page: 1 })}><option value="recommended">Рекомендации</option><option value="discount">Дисконт</option><option value="price_asc">Цена ↑</option><option value="price_desc">Цена ↓</option><option value="newest">Новые</option></select></label>
         <label className="field"><span>Сохранённые фильтры</span><select value="" onChange={(e) => { const saved = savedSearches.find((item) => item.id === Number(e.target.value)); if (saved) setQuery({ ...saved.query, page: 1 }); }}><option value="">Выберите фильтр</option>{savedSearches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <button className="secondaryButton" onClick={async () => { const name = window.prompt("Название фильтра", `Поиск ${new Date().toLocaleDateString("ru-RU")}`); if (!name) return; await saveSearch(name, query); setSavedSearches(await fetchSavedSearches()); }}>Сохранить фильтр</button>
@@ -102,10 +125,10 @@ function RegistryView({ refreshToken, onOpenDeal }: { refreshToken: number; onOp
         <div className="chipGroup"><span>Категории</span><div>{CATEGORIES.map(([id, text]) => <button key={id} className={`chip ${query.categories.includes(id) ? "active" : ""}`} onClick={() => setQuery({ ...query, categories: toggle(query.categories, id), page: 1 })}>{text}</button>)}</div></div>
         <div className="chipGroup"><span>Статусы</span><div>{STATUSES.map(([id, text]) => <button key={id} className={`chip ${query.statuses.includes(id) ? "active" : ""}`} onClick={() => setQuery({ ...query, statuses: toggle(query.statuses, id), page: 1 })}>{text}</button>)}</div></div>
       </aside>
-      <section className="lotArea"><div className="lotToolbar"><div><strong>{total} найдено</strong><span>Страница {query.page} из {pages}</span></div></div>{error && <State error>{error}</State>}
+      <section className="lotArea"><div className="lotToolbar"><div><strong>{total} найдено</strong><span>Страница {query.page} из {pages}</span></div>{loading && lots.length > 0 && <span className="refreshingBadge" role="status"><Loader2 className="spin" size={14} />Обновляем</span>}</div>{error && <State error>{error}</State>}
         <div className="tableHead"><span>Лот</span><span>Тип и статус</span><span>Цена</span><span>Дисконт</span><span>Рейтинг</span></div>
-        <div className="lotList">{loading && <State>Загрузка лотов</State>}{!loading && lots.map((lot) => <button className="lotRow" key={lot.id} onClick={() => open(lot.id)}><span className="lotMain"><strong>{lot.title}</strong><small>{lot.address || lot.description || "Адрес не указан"}</small></span><span className="lotMeta">{label(CATEGORIES, lot.category)}<small>{lot.auction_status}</small></span><b>{money(lot.current_price)}</b><b>{number(lot.discount_percent, "%")}</b><b>{number(lot.rating)}</b></button>)}</div>
-        <div className="pagination"><button disabled={query.page <= 1} onClick={() => setQuery({ ...query, page: query.page - 1 })}>Назад</button><span>{query.page} / {pages}</span><button disabled={query.page >= pages} onClick={() => setQuery({ ...query, page: query.page + 1 })}>Вперёд</button></div>
+        <div className="lotList">{loading && lots.length === 0 && <State>Загрузка лотов</State>}{!loading && lots.length === 0 && !error && <div className="emptyState" role="status"><FileSearch size={20} /><strong>По заданным фильтрам лотов нет</strong><span>Измените условия поиска или сбросьте фильтры.</span>{activeFilterCount > 0 && <button className="secondaryButton" onClick={resetFilters}>Сбросить фильтры</button>}</div>}{lots.map((lot) => <button className={detail?.id === lot.id ? "lotRow selected" : "lotRow"} key={lot.id} onClick={() => open(lot.id)}><span className="lotMain"><strong>{lot.title}</strong><small>{lot.address || lot.description || "Адрес не указан"}</small></span><span className="lotMeta">{label(CATEGORIES, lot.category)}<small>{lot.auction_status}</small></span><b>{money(lot.current_price)}</b><b>{number(lot.discount_percent, "%")}</b><b>{number(lot.rating)}</b></button>)}</div>
+        <div className="pagination"><button disabled={loading || query.page <= 1} onClick={() => setQuery({ ...query, page: query.page - 1 })}>Назад</button><span>{query.page} / {pages}</span><button disabled={loading || query.page >= pages} onClick={() => setQuery({ ...query, page: query.page + 1 })}>Вперёд</button></div>
       </section>
       <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetail(null)} onOpenDeal={onOpenDeal} />
     </section>
@@ -118,16 +141,17 @@ function SearchView({ refreshToken }: { refreshToken: number }) {
   const [source, setSource] = React.useState<SearchSource>("torgi-gov");
   const [form, setForm] = React.useState({ search: "", region: "", price_min: "", price_max: "", page: 1, page_size: 100, include_closed: false });
   const [regions, setRegions] = React.useState<RegionOption[]>([]); const [meta, setMeta] = React.useState<Record<string, unknown>>({});
-  const [items, setItems] = React.useState<OnlineLot[]>([]); const [loading, setLoading] = React.useState(false); const [error, setError] = React.useState(""); const [imported, setImported] = React.useState<number[]>([]);
+  const [items, setItems] = React.useState<OnlineLot[]>([]); const [loading, setLoading] = React.useState(false); const [error, setError] = React.useState(""); const [imported, setImported] = React.useState<number[]>([]); const [searched, setSearched] = React.useState(false);
   React.useEffect(() => { fetchRegions().then(setRegions).catch(() => setRegions([])); }, []);
-  const run = React.useCallback(async (requestedPage = form.page) => { setLoading(true); setError(""); const request = { ...form, page: requestedPage, price_min: form.price_min || undefined, price_max: form.price_max || undefined }; try { const result = await searchOnline(source, request); setForm((value) => ({ ...value, page: requestedPage })); setItems(result.items); setMeta(result.meta); setImported([]); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка источника"); } finally { setLoading(false); } }, [form, source]);
+  const run = React.useCallback(async (requestedPage = form.page) => { setLoading(true); setSearched(true); setError(""); const request = { ...form, page: requestedPage, price_min: form.price_min || undefined, price_max: form.price_max || undefined }; try { const result = await searchOnline(source, request); setForm((value) => ({ ...value, page: requestedPage })); setItems(result.items); setMeta(result.meta); setImported([]); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка источника"); } finally { setLoading(false); } }, [form, source]);
   React.useEffect(() => { if (refreshToken) void run(); }, [refreshToken]);
   const total = typeof meta.total === "number" ? meta.total : null; const totalPages = typeof meta.total_pages === "number" ? meta.total_pages : null; const hasMore = Boolean(meta.has_more) || Boolean(totalPages && form.page < totalPages);
-  return <section className="pageCard" role="region" aria-label="Онлайн-поиск"><div className="sourceTabs">{(["torgi-gov", "tbankrot", "lot-online"] as SearchSource[]).map((id) => <button className={source === id ? "active" : ""} onClick={() => { setSource(id); setItems([]); setMeta({}); setForm((value) => ({ ...value, page: 1 })); }} key={id}>{id === "torgi-gov" ? "ГИС Торги" : id === "tbankrot" ? "Т‑Банкрот" : "РАД / ЛОТ‑ОНЛАЙН"}</button>)}</div>
+  return <section className="pageCard" role="region" aria-label="Онлайн-поиск"><div className="sourceTabs">{(["torgi-gov", "tbankrot", "lot-online"] as SearchSource[]).map((id) => <button className={source === id ? "active" : ""} onClick={() => { setSource(id); setItems([]); setMeta({}); setError(""); setSearched(false); setForm((value) => ({ ...value, page: 1 })); }} key={id}>{id === "torgi-gov" ? "ГИС Торги" : id === "tbankrot" ? "Т‑Банкрот" : "РАД / ЛОТ‑ОНЛАЙН"}</button>)}</div>
     <datalist id="auction-regions">{regions.map((region) => <option key={region.code} value={region.name}>{region.code}</option>)}</datalist>
-    <div className="searchForm"><label className="field"><span>Поиск</span><input value={form.search} onChange={(e) => setForm({ ...form, search: e.target.value, page: 1 })} placeholder="Название, адрес, кадастровый номер" /></label><label className="field"><span>Регион онлайн-поиска</span><input list="auction-regions" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value, page: 1 })} placeholder="Выберите или введите 76 / Ярославская область" /></label><label className="field"><span>Категория</span><input value="Вся недвижимость" readOnly aria-readonly="true" /></label><label className="field"><span>Цена от</span><input type="number" value={form.price_min} onChange={(e) => setForm({ ...form, price_min: e.target.value, page: 1 })} /></label><label className="field"><span>Цена до</span><input type="number" value={form.price_max} onChange={(e) => setForm({ ...form, price_max: e.target.value, page: 1 })} /></label><label className="checkField"><input type="checkbox" checked={form.include_closed} onChange={(e) => setForm({ ...form, include_closed: e.target.checked, page: 1 })} />Архивные</label><button className="primaryButton" onClick={() => run(1)}><Search size={16} />Найти онлайн</button></div>
-    {error && <State error>{error}</State>}{loading && <State>Запрос к {source}</State>}
-    {!loading && items.length > 0 && <div className="searchSummary"><strong>{total == null ? `${items.length} на странице` : `${total} найдено источником`}</strong><span>Страница {form.page}{totalPages ? ` из ${totalPages}` : ""}</span></div>}
+    <form className="searchForm" onSubmit={(event) => { event.preventDefault(); void run(1); }}><label className="field"><span>Поиск</span><input value={form.search} onChange={(e) => setForm({ ...form, search: e.target.value, page: 1 })} placeholder="Название, адрес, кадастровый номер" /></label><label className="field"><span>Регион онлайн-поиска</span><input list="auction-regions" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value, page: 1 })} placeholder="Выберите или введите 76 / Ярославская область" /></label><label className="field"><span>Категория</span><input value="Вся недвижимость" readOnly aria-readonly="true" /></label><label className="field"><span>Цена от</span><input type="number" value={form.price_min} onChange={(e) => setForm({ ...form, price_min: e.target.value, page: 1 })} /></label><label className="field"><span>Цена до</span><input type="number" value={form.price_max} onChange={(e) => setForm({ ...form, price_max: e.target.value, page: 1 })} /></label><label className="checkField"><input type="checkbox" checked={form.include_closed} onChange={(e) => setForm({ ...form, include_closed: e.target.checked, page: 1 })} />Архивные</label><button type="submit" className="primaryButton" disabled={loading}>{loading ? <Loader2 className="spin" size={16} /> : <Search size={16} />}{loading ? "Ищем…" : "Найти онлайн"}</button></form>
+    {error && <State error>{error}</State>}{loading && items.length === 0 && <State>Запрос к {source}</State>}
+    {items.length > 0 && <div className="searchSummary"><strong>{total == null ? `${items.length} на странице` : `${total} найдено источником`}</strong><span>{loading ? <><Loader2 className="spin" size={13} /> Обновляем результаты</> : <>Страница {form.page}{totalPages ? ` из ${totalPages}` : ""}</>}</span></div>}
+    {searched && !loading && !error && items.length === 0 && <div className="emptyState" role="status"><Search size={20} /><strong>Ничего не найдено</strong><span>Попробуйте изменить запрос, регион или диапазон цены.</span></div>}
     <div className="onlineGrid">{items.map((lot, index) => <article className="onlineCard" key={`${lot.source_system}-${lot.external_id}`}><span className="sourceBadge">{lot.source_system}</span><h3>{lot.title}</h3><p>{lot.address || lot.description || "Без адреса"}</p><div><strong>{money(lot.current_price || lot.start_price)}</strong><span>{lot.auction_status}</span></div><div className="onlineActions"><button disabled={imported.includes(index)} onClick={async () => { try { await importOnlineLot(lot); setImported((values) => [...values, index]); } catch (err) { setError(String(err)); } }}>{imported.includes(index) ? "В реестре" : "Импортировать"}</button>{(lot.lot_url || lot.source_url) && <a href={lot.lot_url || lot.source_url || "#"} target="_blank" rel="noreferrer">Источник <ExternalLink size={14} /></a>}</div></article>)}</div>
     {items.length > 0 && <div className="pagination"><button disabled={loading || form.page <= 1} onClick={() => run(form.page - 1)}>Назад</button><span>{form.page}{totalPages ? ` / ${totalPages}` : ""}</span><button disabled={loading || !hasMore} onClick={() => run(form.page + 1)}>Вперёд</button></div>}
   </section>;
