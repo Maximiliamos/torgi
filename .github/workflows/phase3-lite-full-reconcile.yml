@@ -51,27 +51,37 @@ jobs:
           if ($container -ne 'bankrotai-home-ingestion-worker') {
             throw 'Canonical home ingestion worker is not running'
           }
-      - name: Request one automatic full reconciliation
+      - name: Request one durable full reconciliation
         id: start
         shell: powershell
         run: |
-          $taskId = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import automatic_nationwide_lot_refresh_task; print(automatic_nationwide_lot_refresh_task.apply_async(args=['full']).id)"
-          if ($LASTEXITCODE -ne 0 -or -not $taskId) { throw 'Could not queue full reconciliation' }
-          $taskId = ($taskId | Select-Object -Last 1).Trim()
-          "task_id=$taskId" >> $env:GITHUB_OUTPUT
-          Write-Output "Queued automatic full reconciliation task $taskId"
-      - name: Wait for fresh complete snapshots for all configured sources
+          $runId = docker exec bankrotai-home-ingestion-worker python -c "from bankrotai.tasks import schedule_nationwide_lot_sync; print(schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full'))"
+          if ($LASTEXITCODE -ne 0 -or -not $runId) { throw 'Could not queue full reconciliation' }
+          $runId = ($runId | Select-Object -Last 1).Trim()
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+          Write-Output "Queued durable full reconciliation run $runId"
+      - name: Wait for full reconciliation to finish
         shell: powershell
+        env:
+          RUN_ID: ${{ steps.start.outputs.run_id }}
         run: |
-          $deadline = (Get-Date).ToUniversalTime().AddMinutes(80)
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
           do {
-            $json = docker exec bankrotai-home-ingestion-worker python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.quality import list_source_health; from bankrotai.services.ingestion import default_source_specs; s=SessionLocal(); configured={x.source_id for x in default_source_specs()}; rows=[x for x in list_source_health(s) if x.source_system in configured]; print(json.dumps({'sources':[{'source':x.source_system,'freshness':x.freshness_status,'coverage':x.coverage_status,'last_complete_success_at':x.last_complete_success_at} for x in rows]}, default=str)); s.close()"
-            if ($LASTEXITCODE -ne 0) { throw 'Could not query source freshness' }
-            $health = ($json | Select-Object -Last 1) | ConvertFrom-Json
-            $rows = @($health.sources)
-            $ready = $rows.Count -eq 5 -and (@($rows | Where-Object { $_.coverage -ne 'fresh' }).Count -eq 0)
-            $health | ConvertTo-Json -Depth 6
-            if ($ready) { exit 0 }
+            $json = docker exec bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()" --env PHASE3_RUN_ID=$env:RUN_ID
+            if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $state | ConvertTo-Json -Depth 8
+            if ($state.status -in @('success','partial')) {
+              $rows = @($state.sources)
+              if ($rows.Count -lt 5) { throw "Full reconciliation ended without all configured source runs: $($rows.Count)/5" }
+              if (@($rows | Where-Object { $_.status -in @('queued','running') }).Count -gt 0) {
+                throw 'Full reconciliation left a source run active'
+              }
+              exit 0
+            }
+            if ($state.status -eq 'failed') {
+              throw "Full reconciliation failed: $($state.error)"
+            }
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
-          throw 'Full reconciliation did not produce fresh complete snapshots for all configured sources'
+          throw 'Full reconciliation did not reach a terminal state within 45 minutes'
