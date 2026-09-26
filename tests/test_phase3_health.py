@@ -270,9 +270,13 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
 
     assert "Wait for the same main revision on the home origin" in workflow
     assert "Deploy home secondary origin" in workflow
-    assert "schedule_nationwide_lot_sync(triggered_by='phase3-lite', mode='full')" in workflow
+    assert "schedule_nationwide_lot_sync(triggered_by=\"phase3-lite\", mode=\"full\")" in workflow
+    assert "except SyncAlreadyRunningError as exc" in workflow
+    assert "Adopting already-active full reconciliation run" in workflow
+    assert "Waiting for active non-full sync" in workflow
+    assert "$state.trigger_type -in @('manual_full', 'scheduled_full')" in workflow
     assert "$state.status -in @('success','partial')" in workflow
-    assert "$rows.Count -lt 5" in workflow
+    assert "$state.configured_source_count" in workflow
     assert "Full reconciliation left a source run active" in workflow
     assert "timeout-minutes: 90" in workflow
 
