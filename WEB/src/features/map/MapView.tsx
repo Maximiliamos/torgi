@@ -1026,6 +1026,19 @@ function LotPreviewLoading({
   );
 }
 
+type MapFilterState = { region: string; minPrice: string; maxPrice: string };
+const EMPTY_MAP_FILTERS: MapFilterState = { region: "", minPrice: "", maxPrice: "" };
+
+export function mapFilterUiState(filters: MapFilterState, applied: MapFilterState) {
+  return {
+    dirty:
+      filters.region !== applied.region ||
+      filters.minPrice !== applied.minPrice ||
+      filters.maxPrice !== applied.maxPrice,
+    appliedCount: [applied.region, applied.minPrice, applied.maxPrice].filter(Boolean).length,
+  };
+}
+
 function relativeUpdate(value: string | null, now: number) {
   if (!value) return "время обновления неизвестно";
   const elapsed = Math.max(0, now - new Date(value).getTime());
@@ -1096,15 +1109,12 @@ export function MapView({
   const [showCadastre, setShowCadastre] = React.useState(true);
   const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null);
   const [coincidentLotIds, setCoincidentLotIds] = React.useState<number[]>([]);
-  const [filters, setFilters] = React.useState({
-    region: "",
-    minPrice: "",
-    maxPrice: "",
-  });
-  const [appliedFilters, setAppliedFilters] = React.useState(filters);
+  const [filters, setFilters] = React.useState<MapFilterState>({ ...EMPTY_MAP_FILTERS });
+  const [appliedFilters, setAppliedFilters] = React.useState<MapFilterState>({ ...EMPTY_MAP_FILTERS });
   const [syncing, setSyncing] = React.useState(false);
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
+  const filterUi = mapFilterUiState(filters, appliedFilters);
   const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
   const directTileMode = DIRECT_MAP_TILES && !favoritesOnly;
   const directFilters = React.useMemo<DirectMapFilterQuery>(() => ({
@@ -1592,59 +1602,69 @@ export function MapView({
         ) : (
           <div className="mapControlPanel">
             <h2>Лоты недвижимости</h2>
-            <fieldset className="mapFiltersBox">
-              <legend>Фильтры</legend>
-              <label>
-                <span>Стартовая цена от</span>
-                <input
-                  type="number"
-                  value={filters.minPrice}
-                  onChange={(event) =>
-                    setFilters({ ...filters, minPrice: event.target.value })
-                  }
-                  placeholder="Не задано"
-                />
-              </label>
-              <label>
-                <span>Стартовая цена до</span>
-                <input
-                  type="number"
-                  value={filters.maxPrice}
-                  onChange={(event) =>
-                    setFilters({ ...filters, maxPrice: event.target.value })
-                  }
-                  placeholder="Не задано"
-                />
-              </label>
-              <label>
-                <span>Субъект РФ</span>
-                <select
-                  value={filters.region}
-                  onChange={(event) =>
-                    setFilters({ ...filters, region: event.target.value })
-                  }
-                >
-                  <option value="">Все регионы</option>
-                  {regions.map((region) => (
-                    <option key={region.code} value={region.code}>
-                      {region.code} — {region.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div>
-                <button onClick={() => setAppliedFilters(filters)}>Применить</button>
-                <button
-                  onClick={() => {
-                    const empty = { region: "", minPrice: "", maxPrice: "" };
-                    setFilters(empty);
-                    setAppliedFilters(empty);
-                  }}
-                >
-                  Сбросить
-                </button>
-              </div>
-            </fieldset>
+            <form className="mapFiltersForm" onSubmit={(event) => { event.preventDefault(); if (filterUi.dirty) setAppliedFilters({ ...filters }); }}>
+              <fieldset className="mapFiltersBox">
+                <legend>Фильтры{filterUi.appliedCount > 0 ? ` · применено ${filterUi.appliedCount}` : ""}</legend>
+                <label>
+                  <span>Стартовая цена от</span>
+                  <input
+                    type="number"
+                    value={filters.minPrice}
+                    onChange={(event) =>
+                      setFilters({ ...filters, minPrice: event.target.value })
+                    }
+                    placeholder="Не задано"
+                  />
+                </label>
+                <label>
+                  <span>Стартовая цена до</span>
+                  <input
+                    type="number"
+                    value={filters.maxPrice}
+                    onChange={(event) =>
+                      setFilters({ ...filters, maxPrice: event.target.value })
+                    }
+                    placeholder="Не задано"
+                  />
+                </label>
+                <label>
+                  <span>Субъект РФ</span>
+                  <select
+                    value={filters.region}
+                    onChange={(event) =>
+                      setFilters({ ...filters, region: event.target.value })
+                    }
+                  >
+                    <option value="">Все регионы</option>
+                    {regions.map((region) => (
+                      <option key={region.code} value={region.code}>
+                        {region.code} — {region.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div>
+                  <button type="submit" disabled={!filterUi.dirty}>{filterUi.dirty ? "Применить изменения" : "Применено"}</button>
+                  <button
+                    type="button"
+                    disabled={filterUi.appliedCount === 0 && !filterUi.dirty}
+                    onClick={() => {
+                      setFilters({ ...EMPTY_MAP_FILTERS });
+                      setAppliedFilters({ ...EMPTY_MAP_FILTERS });
+                    }}
+                  >
+                    Сбросить
+                  </button>
+                </div>
+                <small className={filterUi.dirty ? "mapFilterHint mapFilterHint--pending" : "mapFilterHint"}>
+                  {filterUi.dirty
+                    ? "Есть неприменённые изменения"
+                    : filterUi.appliedCount > 0
+                      ? "Фильтры применены к карте"
+                      : "Показаны все лоты"}
+                </small>
+              </fieldset>
+            </form>
             {operationProgress && <OperationProgressCard
               value={operationProgress}
               isAdmin={isAdmin}
@@ -1665,11 +1685,15 @@ export function MapView({
       </div>
       <div className="mapDesktopCanvas">
         <div className="mapTopToolbar">
-          <input value={cadQuery} onChange={(event) => setCadQuery(event.target.value)} placeholder="Кадастровый номер или адрес" aria-label="Кадастровый номер или адрес" />
-          <button disabled={cadQuery.trim().length < 3} onClick={async () => {
+          <form className="mapCadastreSearch" onSubmit={async (event) => {
+            event.preventDefault();
+            if (cadQuery.trim().length < 3) return;
             try { setError(""); setCad(await searchCadastre(cadQuery)); setShowCadastre(true); }
             catch (err) { setError(String(err)); }
-          }}><Search size={14} />Найти</button>
+          }}>
+            <input value={cadQuery} onChange={(event) => setCadQuery(event.target.value)} placeholder="Кадастровый номер или адрес" aria-label="Кадастровый номер или адрес" />
+            <button type="submit" disabled={cadQuery.trim().length < 3}><Search size={14} />Найти</button>
+          </form>
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
           <button onClick={() => (tileMode || directTileMode) ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
           {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
@@ -1697,7 +1721,7 @@ export function MapView({
             setTimings((value) => ({ ...value, render: durationMs }));
           }}
         />
-        <footer className="mapBottomStatus" aria-label="Состояние карты">
+        <footer className="mapBottomStatus" aria-label="Состояние карты" aria-live="polite">
           <span>
             {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте
             {statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
