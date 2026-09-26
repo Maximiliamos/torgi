@@ -1,0 +1,289 @@
+name: Production all-sources GEO audit
+
+on:
+  push:
+    branches:
+      - audit/all-sources-geo-20260927
+    paths:
+      - '.github/workflows/production-all-sources-geo-audit.yml'
+      - 'docs/production-all-sources-geo-audit.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-all-sources-geo-audit
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Require canonical production worker
+        shell: powershell
+        run: |
+          $container = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
+          if ($container -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Canonical home ingestion worker is not running'
+          }
+          docker ps --format 'table {{.Names}}\t{{.Status}}' | Select-String 'bankrotai-home'
+
+      - name: Capture read-only production baseline
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from datetime import datetime, timezone
+          from sqlalchemy import func, select
+
+          from bankrotai.config import settings
+          from bankrotai.db import (
+              BackgroundTaskState,
+              GeoFailure,
+              LotGeoSnapshot,
+              LotSyncRun,
+              LotSyncSourceRun,
+              MapDataset,
+              ProcessedLot,
+              SessionLocal,
+              SourceHealthState,
+              SourceLot,
+          )
+          from bankrotai.services.geo_backfill import geocoding_progress
+          from bankrotai.services.ingestion import default_source_specs
+          from redis import Redis
+
+          def iso(value):
+              return value.isoformat() + ('Z' if value and value.tzinfo is None else '') if value else None
+
+          def json_safe(value):
+              if isinstance(value, datetime):
+                  return iso(value)
+              if isinstance(value, dict):
+                  return {str(k): json_safe(v) for k, v in value.items()}
+              if isinstance(value, (list, tuple)):
+                  return [json_safe(v) for v in value]
+              return value
+
+          now = datetime.now(timezone.utc)
+          configured = [spec.source_id for spec in default_source_specs()]
+          with SessionLocal() as session:
+              geo = geocoding_progress(session)
+
+              source_inventory = []
+              for source in configured:
+                  total = session.scalar(
+                      select(func.count()).select_from(SourceLot).where(SourceLot.source_system == source)
+                  ) or 0
+                  active = session.scalar(
+                      select(func.count()).select_from(SourceLot).where(
+                          SourceLot.source_system == source,
+                          SourceLot.is_active.is_(True),
+                          SourceLot.is_archived.is_(False),
+                      )
+                  ) or 0
+                  archived = session.scalar(
+                      select(func.count()).select_from(SourceLot).where(
+                          SourceLot.source_system == source,
+                          SourceLot.is_archived.is_(True),
+                      )
+                  ) or 0
+                  source_inventory.append({
+                      'source': source,
+                      'source_lots_total': int(total),
+                      'active': int(active),
+                      'archived': int(archived),
+                  })
+
+              population = (
+                  ProcessedLot.duplicate_of_id.is_(None),
+                  ProcessedLot.is_archived.is_(False),
+              )
+              processed_active = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot).where(*population)
+              ) or 0)
+              processed_with_current_geo = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot).where(
+                      *population,
+                      ProcessedLot.current_geo_lat.is_not(None),
+                      ProcessedLot.current_geo_lon.is_not(None),
+                  )
+              ) or 0)
+
+              geo_failure_status = {
+                  str(status): int(count)
+                  for status, count in session.execute(
+                      select(GeoFailure.status, func.count()).group_by(GeoFailure.status)
+                  ).all()
+              }
+              geo_failure_attempts = {
+                  str(attempt): int(count)
+                  for attempt, count in session.execute(
+                      select(GeoFailure.attempt_count, func.count()).group_by(GeoFailure.attempt_count)
+                  ).all()
+              }
+              geo_sources = [
+                  {'source': str(source), 'method': str(method), 'count': int(count)}
+                  for source, method, count in session.execute(
+                      select(LotGeoSnapshot.geo_source, LotGeoSnapshot.geo_method, func.count())
+                      .group_by(LotGeoSnapshot.geo_source, LotGeoSnapshot.geo_method)
+                      .order_by(func.count().desc())
+                  ).all()
+              ][:50]
+
+              active_syncs = []
+              for run in session.scalars(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.status.in_(('queued', 'running')))
+                  .order_by(LotSyncRun.created_at.desc())
+              ).all():
+                  active_syncs.append({
+                      'id': run.id,
+                      'status': run.status,
+                      'trigger_type': run.trigger_type,
+                      'total_sources': run.total_sources,
+                      'heartbeat_at': iso(run.heartbeat_at),
+                      'lease_owner': run.lease_owner,
+                      'lease_expires_at': iso(run.lease_expires_at),
+                      'created_at': iso(run.created_at),
+                  })
+
+              latest_syncs = []
+              for run in session.scalars(
+                  select(LotSyncRun).order_by(LotSyncRun.created_at.desc()).limit(8)
+              ).all():
+                  rows = session.scalars(
+                      select(LotSyncSourceRun)
+                      .where(LotSyncSourceRun.sync_run_id == run.id)
+                      .order_by(LotSyncSourceRun.source_system)
+                  ).all()
+                  latest_syncs.append({
+                      'id': run.id,
+                      'status': run.status,
+                      'trigger_type': run.trigger_type,
+                      'created_at': iso(run.created_at),
+                      'started_at': iso(run.started_at),
+                      'finished_at': iso(run.finished_at),
+                      'error': run.error_message,
+                      'sources': [{
+                          'source': row.source_system,
+                          'status': row.status,
+                          'complete': bool(row.complete_source_run),
+                          'pages': int(row.pages_scanned or 0),
+                          'seen': int(row.items_seen or 0),
+                          'inserted': int(row.items_inserted or 0),
+                          'updated': int(row.items_updated or 0),
+                          'unchanged': int(row.items_unchanged or 0),
+                          'archived': int(row.items_archived or 0),
+                          'failed': int(row.items_failed or 0),
+                          'duration_ms': row.duration_ms,
+                          'checkpoint': row.checkpoint_json,
+                          'error': row.error_message,
+                      } for row in rows],
+                  })
+
+              geo_tasks = []
+              for task in session.scalars(
+                  select(BackgroundTaskState)
+                  .where(BackgroundTaskState.task_type.in_(('geocoding', 'ik12_recovery')))
+                  .order_by(BackgroundTaskState.created_at.desc())
+                  .limit(30)
+              ).all():
+                  geo_tasks.append({
+                      'task_id': task.task_id,
+                      'task_type': task.task_type,
+                      'status': task.status,
+                      'created_at': iso(task.created_at),
+                      'started_at': iso(task.started_at),
+                      'finished_at': iso(task.finished_at),
+                      'progress': task.progress_json,
+                      'result': task.result_json,
+                      'error': task.error_message,
+                  })
+
+              health = []
+              for row in session.scalars(select(SourceHealthState).order_by(SourceHealthState.source_system)).all():
+                  health.append({
+                      'source': row.source_system,
+                      'status': row.status,
+                      'last_started_at': iso(row.last_started_at),
+                      'last_success_at': iso(row.last_success_at),
+                      'last_failure_at': iso(row.last_failure_at),
+                      'items_seen': int(row.items_seen or 0),
+                      'updated_at': iso(row.updated_at),
+                      'last_error': row.last_error,
+                      'metadata': row.metadata_json,
+                  })
+
+              current_map = session.scalar(
+                  select(MapDataset).where(MapDataset.is_current.is_(True)).limit(1)
+              )
+              map_state = None if current_map is None else {
+                  'id': current_map.id,
+                  'version': current_map.version,
+                  'status': current_map.status,
+                  'point_count': int(current_map.point_count or 0),
+                  'tile_count': int(current_map.tile_count or 0),
+                  'created_at': iso(current_map.created_at),
+                  'published_at': iso(current_map.published_at),
+              }
+
+          redis_state = {}
+          try:
+              client = Redis.from_url(
+                  settings.redis_url,
+                  socket_connect_timeout=2,
+                  socket_timeout=2,
+                  decode_responses=True,
+              )
+              redis_state = {
+                  'ping': bool(client.ping()),
+                  'geo_lock_exists': bool(client.exists('bankrotai:geocoding:batch')),
+                  'geo_lock_ttl_seconds': int(client.ttl('bankrotai:geocoding:batch')),
+                  'map_dirty': client.get('bankrotai:map:dirty'),
+              }
+              client.close()
+          except Exception as exc:
+              redis_state = {'error': f'{exc.__class__.__name__}: {exc}'[:500]}
+
+          payload = {
+              'captured_at': now.isoformat(),
+              'configured_sources': configured,
+              'source_inventory': source_inventory,
+              'processed': {
+                  'active_nonduplicate': processed_active,
+                  'with_current_geo': processed_with_current_geo,
+                  'geo_input_population': int(geo.get('total') or 0),
+              },
+              'geocoding_progress': geo,
+              'geo_failure_status': geo_failure_status,
+              'geo_failure_attempts': geo_failure_attempts,
+              'geo_snapshot_sources': geo_sources,
+              'active_syncs': active_syncs,
+              'latest_syncs': latest_syncs,
+              'recent_geo_tasks': geo_tasks,
+              'source_health': health,
+              'current_map': map_state,
+              'redis': redis_state,
+          }
+          print(json.dumps(json_safe(payload), ensure_ascii=False, indent=2, default=str))
+          '@
+
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) {
+            throw 'Production baseline probe failed'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'production-all-sources-geo-baseline.json'
+          $out | Set-Content -Path $path -Encoding UTF8
+          Write-Output '=== AUDIT_BASELINE_JSON_BEGIN ==='
+          Get-Content $path
+          Write-Output '=== AUDIT_BASELINE_JSON_END ==='
+
+      - name: Upload baseline evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-all-sources-geo-baseline
+          path: ${{ runner.temp }}/production-all-sources-geo-baseline.json
+          if-no-files-found: error
+          retention-days: 14
