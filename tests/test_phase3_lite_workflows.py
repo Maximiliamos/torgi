@@ -53,6 +53,9 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "workflow_run:" in health
     assert "Deploy home secondary origin" in health
     assert "[Phase 3] Production health alert" in health
+    assert "[Phase 3] Source health warning" in health
+    assert "warning_count" in health
+    assert "needs.inspect.outputs.warning_count != '0'" in health
     assert "listForRepo" in health
     assert "state: 'closed'" in health
 
