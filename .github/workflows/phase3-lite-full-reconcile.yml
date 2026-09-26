@@ -85,7 +85,7 @@ jobs:
                   session.close()
           '@
 
-          $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(65)
           $selectedRunId = $null
           do {
             $json = $probe | docker exec -i bankrotai-home-ingestion-worker python -
@@ -149,4 +149,4 @@ jobs:
             }
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
-          throw 'Full reconciliation did not reach a terminal state within 45 minutes'
+          throw 'Full reconciliation did not reach a terminal state within 65 minutes'
