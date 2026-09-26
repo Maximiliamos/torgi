@@ -67,7 +67,7 @@ jobs:
         run: |
           $deadline = (Get-Date).ToUniversalTime().AddMinutes(45)
           do {
-            $json = docker exec bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()" --env PHASE3_RUN_ID=$env:RUN_ID
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
             $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
             $state | ConvertTo-Json -Depth 8
