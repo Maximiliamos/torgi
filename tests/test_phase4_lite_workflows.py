@@ -18,8 +18,9 @@ def test_python_runtime_dependencies_are_audited() -> None:
 def test_public_web_alert_is_deduplicated_and_auto_recovers() -> None:
     workflow = PUBLIC_SMOKE.read_text(encoding="utf-8")
     assert "[Production] Public WEB smoke alert" in workflow
-    assert "listForRepo" in workflow
-    assert "issue.title === title" in workflow
+    assert "github.paginate(github.rest.issues.listForRepo" in workflow
+    assert "Public WEB smoke failed:" in workflow
+    assert "item.title.startsWith(legacyPrefix)" in workflow
     assert "state: 'closed'" in workflow
     assert "state_reason: 'completed'" in workflow
     assert "if: success() && github.ref == 'refs/heads/main'" in workflow
@@ -28,8 +29,9 @@ def test_public_web_alert_is_deduplicated_and_auto_recovers() -> None:
 def test_functional_alert_is_deduplicated_and_auto_recovers() -> None:
     workflow = PRODUCTION_FUNCTIONAL.read_text(encoding="utf-8")
     assert "[Production] Functional reliability alert" in workflow
-    assert "listForRepo" in workflow
-    assert "issue.title === title" in workflow
+    assert "github.paginate(github.rest.issues.listForRepo" in workflow
+    assert "Production functional reliability failed:" in workflow
+    assert "item.title.startsWith(legacyPrefix)" in workflow
     assert "state: 'closed'" in workflow
     assert "state_reason: 'completed'" in workflow
     assert "if: success() && github.ref == 'refs/heads/main'" in workflow
