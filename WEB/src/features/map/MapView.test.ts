@@ -6,6 +6,7 @@ import {
   FILTERED_VISIBLE_TILE_CONCURRENCY,
   formatMoscowDate,
   mapBoundsPrecision,
+  mapFilterUiState,
   mapLimitForZoom,
   mapObjectCountLabel,
   MAP_SELECTION_SCRIPT,
@@ -44,6 +45,20 @@ describe("map lot selection", () => {
 describe("auction date display", () => {
   it("treats timezone-less API timestamps as UTC and displays Moscow time", () => {
     expect(formatMoscowDate("2026-08-23T19:30:00")).toContain("22:30");
+  });
+});
+
+describe("map filter UX", () => {
+  it("distinguishes pending edits from applied filters", () => {
+    expect(mapFilterUiState(
+      { region: "76", minPrice: "", maxPrice: "" },
+      { region: "", minPrice: "", maxPrice: "" },
+    )).toEqual({ dirty: true, appliedCount: 0 });
+
+    expect(mapFilterUiState(
+      { region: "76", minPrice: "1000000", maxPrice: "" },
+      { region: "76", minPrice: "1000000", maxPrice: "" },
+    )).toEqual({ dirty: false, appliedCount: 2 });
   });
 });
 
