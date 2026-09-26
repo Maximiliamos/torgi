@@ -125,7 +125,7 @@ def test_phase3_health_fails_for_expired_sync_lease_and_failed_newer_map() -> No
     assert checks["source-sync-lease"]["ok"] is False
 
 
-def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
+def test_phase3_health_reports_missing_source_coverage_as_warning() -> None:
     factory = _factory()
     now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
     with factory() as session:
@@ -166,10 +166,13 @@ def test_phase3_health_reports_missing_source_coverage_as_critical() -> None:
 
         health = build_phase3_health(session, now=now, expected_sources={"tbankrot.ru"})
 
-    assert health["healthy"] is False
+    assert health["healthy"] is True
+    assert health["warning_count"] == 1
     checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-data-availability"]["ok"] is True
     assert checks["source-freshness:tbankrot.ru"]["ok"] is True
     assert checks["source-coverage:tbankrot.ru"]["ok"] is False
+    assert checks["source-coverage:tbankrot.ru"]["severity"] == "warning"
 
 
 def test_phase3_health_fails_when_configured_source_is_missing() -> None:
@@ -271,3 +274,55 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage
     assert "rows.Count -eq 5" in workflow
     assert "$_.coverage -ne 'fresh'" in workflow
     assert "timeout-minutes: 90" in workflow
+
+
+
+def test_phase3_health_fails_only_when_all_configured_sources_are_unavailable() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        failed = LotSyncRun(
+            id="failed-source",
+            triggered_by="test",
+            trigger_type="scheduled_full",
+            status="failed",
+            total_sources=1,
+            started_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+            finished_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+        )
+        session.add(failed)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=failed.id,
+                source_system="tbankrot.ru",
+                status="failed",
+                complete_source_run=False,
+                error_message="upstream unavailable",
+                started_at=failed.started_at,
+                finished_at=failed.finished_at,
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"tbankrot.ru"},
+        )
+
+    assert health["healthy"] is False
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-data-availability"]["ok"] is False
+    assert checks["source-freshness:tbankrot.ru"]["severity"] == "warning"
