@@ -271,3 +271,121 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_requires_fresh_coverage
     assert "rows.Count -eq 5" in workflow
     assert "$_.coverage -ne 'fresh'" in workflow
     assert "timeout-minutes: 90" in workflow
+
+
+
+def test_phase3_health_warns_when_fast_discovery_is_fresh_but_full_coverage_is_stale() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        old_full = LotSyncRun(
+            id="old-full",
+            triggered_by="test",
+            trigger_type="scheduled_full",
+            status="success",
+            total_sources=1,
+            started_at=(now - timedelta(days=3)).replace(tzinfo=None),
+            finished_at=(now - timedelta(days=3)).replace(tzinfo=None),
+        )
+        fast = LotSyncRun(
+            id="fresh-fast",
+            triggered_by="test",
+            trigger_type="scheduled_fast",
+            status="success",
+            total_sources=1,
+            started_at=(now - timedelta(minutes=20)).replace(tzinfo=None),
+            finished_at=(now - timedelta(minutes=10)).replace(tzinfo=None),
+        )
+        session.add_all([old_full, fast])
+        session.flush()
+        session.add_all(
+            [
+                LotSyncSourceRun(
+                    sync_run_id=old_full.id,
+                    source_system="torgi.gov.ru",
+                    status="success",
+                    complete_source_run=True,
+                    items_seen=100,
+                    started_at=old_full.started_at,
+                    finished_at=old_full.finished_at,
+                ),
+                LotSyncSourceRun(
+                    sync_run_id=fast.id,
+                    source_system="torgi.gov.ru",
+                    status="success",
+                    complete_source_run=False,
+                    items_seen=10,
+                    started_at=fast.started_at,
+                    finished_at=fast.finished_at,
+                ),
+            ]
+        )
+        session.commit()
+
+        health = build_phase3_health(session, now=now, expected_sources={"torgi.gov.ru"})
+
+    assert health["healthy"] is True
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-freshness:torgi.gov.ru"]["ok"] is True
+    assert checks["source-coverage:torgi.gov.ru"]["ok"] is False
+    assert checks["source-coverage:torgi.gov.ru"]["severity"] == "warning"
+    assert health["warning_count"] == 1
+
+
+def test_phase3_health_warns_for_access_limited_upstream_instead_of_marking_core_unhealthy() -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        failed = LotSyncRun(
+            id="access-limited",
+            triggered_by="test",
+            trigger_type="scheduled_full",
+            status="failed",
+            total_sources=1,
+            started_at=(now - timedelta(minutes=20)).replace(tzinfo=None),
+            finished_at=(now - timedelta(minutes=10)).replace(tzinfo=None),
+        )
+        session.add(failed)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=failed.id,
+                source_system="tbankrot.ru",
+                status="failed",
+                complete_source_run=False,
+                error_message="TBankrot access_limited: requires registration/login",
+                started_at=failed.started_at,
+                finished_at=failed.finished_at,
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(session, now=now, expected_sources={"tbankrot.ru"})
+
+    assert health["healthy"] is True
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["source-freshness:tbankrot.ru"]["severity"] == "warning"
+    assert checks["source-coverage:tbankrot.ru"]["severity"] == "warning"
+    assert health["warning_count"] == 2
