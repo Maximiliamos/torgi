@@ -60,6 +60,51 @@ def test_repair_missing_processed_link_is_idempotent() -> None:
         assert session.scalar(select(func.count()).select_from(ProcessedLot)) == 1
 
 
+def test_repair_does_not_reassign_processed_anchor_owned_by_another_canonical() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        processed = ProcessedLot(
+            source_system="torgi.gov.ru",
+            source="gis-torgi",
+            external_id="shared-identity",
+            title="Участок",
+            description="",
+            category="land",
+            auction_status="active",
+        )
+        session.add(processed)
+        session.flush()
+        owner = CanonicalLot(
+            canonical_key="owner",
+            legacy_processed_lot_id=processed.id,
+            title="Owner",
+            category="land",
+        )
+        target = CanonicalLot(canonical_key="target", title="Target", category="land")
+        session.add_all((owner, target))
+        session.flush()
+        source = SourceLot(
+            canonical_lot_id=target.id,
+            source_system="torgi.gov.ru",
+            external_id="shared-identity",
+            title="Участок",
+            is_active=True,
+            is_archived=False,
+        )
+        session.add(source)
+        session.commit()
+
+        assert repair_missing_processed_links(session) == {"selected": 1, "repaired": 1}
+        session.refresh(source)
+        session.refresh(owner)
+        session.refresh(target)
+        assert source.processed_lot_id == processed.id
+        assert owner.legacy_processed_lot_id == processed.id
+        assert target.legacy_processed_lot_id is None
+
+
 def test_audit_only_marks_conflict_free_identity_match_repairable() -> None:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)

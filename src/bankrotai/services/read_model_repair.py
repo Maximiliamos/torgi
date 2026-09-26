@@ -104,12 +104,28 @@ def repair_missing_processed_links(
             ProcessedLot.external_id.in_([row.external_id for row in rows]),
         )).all()
     }
+    processed_ids = set(ids_by_identity.values())
+    canonical_owner_by_processed_id = {
+        processed_id: canonical_id
+        for canonical_id, processed_id in session.execute(
+            select(CanonicalLot.id, CanonicalLot.legacy_processed_lot_id).where(
+                CanonicalLot.legacy_processed_lot_id.in_(processed_ids)
+            )
+        )
+        if processed_id is not None
+    }
     for row in rows:
         processed_id = ids_by_identity[(row.source_system, row.external_id)]
         row.processed_lot_id = processed_id
         canonical = session.get(CanonicalLot, row.canonical_lot_id)
-        if canonical is not None and canonical.legacy_processed_lot_id is None:
+        existing_owner_id = canonical_owner_by_processed_id.get(processed_id)
+        if (
+            canonical is not None
+            and canonical.legacy_processed_lot_id is None
+            and existing_owner_id in {None, canonical.id}
+        ):
             canonical.legacy_processed_lot_id = processed_id
+            canonical_owner_by_processed_id[processed_id] = canonical.id
     session.commit()
     return {"selected": len(rows), "repaired": len(rows)}
 
