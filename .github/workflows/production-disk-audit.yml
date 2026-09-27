@@ -1,0 +1,96 @@
+name: Production disk audit
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths:
+      - '.github/workflows/production-disk-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-disk-audit
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Inspect C drive and BankrotAI usage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $drive = Get-PSDrive C
+          $driveRow = [pscustomobject]@{
+            total_gb = [math]::Round(($drive.Used + $drive.Free) / 1GB, 2)
+            used_gb = [math]::Round($drive.Used / 1GB, 2)
+            free_gb = [math]::Round($drive.Free / 1GB, 2)
+            percent_free = [math]::Round(100 * $drive.Free / ($drive.Used + $drive.Free), 2)
+          }
+
+          function Measure-DirectoryGB([string]$Path) {
+            if (-not (Test-Path $Path)) { return 0 }
+            $sum = (Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $sum) { $sum = 0 }
+            return [math]::Round($sum / 1GB, 3)
+          }
+
+          $roots = @(
+            'C:\BankrotAI',
+            'C:\ProgramData\Docker',
+            'C:\Users\Public',
+            'C:\Windows\Temp'
+          )
+          $rootUsage = foreach ($root in $roots) {
+            [pscustomobject]@{ path = $root; size_gb = Measure-DirectoryGB $root }
+          }
+
+          $bankrotChildren = @()
+          if (Test-Path 'C:\BankrotAI') {
+            $bankrotChildren = Get-ChildItem 'C:\BankrotAI' -Directory -Force -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                [pscustomobject]@{ path = $_.FullName; size_gb = Measure-DirectoryGB $_.FullName }
+              } | Sort-Object size_gb -Descending
+          }
+
+          $backups = @()
+          if (Test-Path 'C:\BankrotAI\backups') {
+            $backups = Get-ChildItem 'C:\BankrotAI\backups' -File -Recurse -Force -ErrorAction SilentlyContinue |
+              Sort-Object Length -Descending |
+              Select-Object -First 30 |
+              ForEach-Object {
+                [pscustomobject]@{
+                  path = $_.FullName
+                  size_gb = [math]::Round($_.Length / 1GB, 3)
+                  modified = $_.LastWriteTimeUtc
+                }
+              }
+          }
+
+          $runnerWork = @()
+          if (Test-Path 'C:\BankrotAI\actions-runner\_work') {
+            $runnerWork = Get-ChildItem 'C:\BankrotAI\actions-runner\_work' -Directory -Force -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                [pscustomobject]@{ path = $_.FullName; size_gb = Measure-DirectoryGB $_.FullName }
+              } | Sort-Object size_gb -Descending
+          }
+
+          $dockerDf = docker system df 2>&1 | Out-String
+          $dockerDfVerbose = docker system df -v 2>&1 | Out-String
+
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            drive = $driveRow
+            root_usage = @($rootUsage)
+            bankrotai_children = @($bankrotChildren)
+            largest_backups = @($backups)
+            runner_work = @($runnerWork)
+            docker_system_df = $dockerDf.Trim()
+            docker_system_df_verbose = $dockerDfVerbose.Trim()
+          }
+          '=== DISK_AUDIT_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 8
+          '=== DISK_AUDIT_JSON_END ==='
