@@ -2,7 +2,9 @@
 param(
     [string]$Destination = 'C:\BankrotAI\backups\postgres',
     [switch]$VerifyRestore,
-    [int]$RetainDays = 14
+    [int]$RetainDays = 14,
+    [ValidateRange(0, 9)]
+    [int]$CompressionLevel = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,9 +30,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not read source row counts before backup
 $sourceSchema = docker exec $databaseContainer psql -U $pgUser -d $pgDatabase -Atc $schemaSql
 if ($LASTEXITCODE -ne 0 -or -not $sourceSchema.Trim()) { throw 'Could not read source schema revision before backup' }
 $temporaryDump = "/tmp/bankrotai-$stamp.dump"
+$backupStartedAt = Get-Date
+$backupDurationSeconds = $null
 try {
-    docker exec $databaseContainer pg_dump -U $pgUser -d $pgDatabase -F c -f $temporaryDump
+    Write-Host "Starting pg_dump with compression level $CompressionLevel..."
+    docker exec $databaseContainer pg_dump -U $pgUser -d $pgDatabase -F c -Z $CompressionLevel -f $temporaryDump
     if ($LASTEXITCODE -ne 0) { throw 'pg_dump failed' }
+    $backupDurationSeconds = [math]::Round(((Get-Date) - $backupStartedAt).TotalSeconds, 2)
+    $containerDumpBytes = (docker exec $databaseContainer stat -c '%s' $temporaryDump).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect completed pg_dump size' }
+    Write-Host "pg_dump completed in $backupDurationSeconds seconds; container dump bytes=$containerDumpBytes"
     docker cp "${databaseContainer}:$temporaryDump" $backup | Out-Null
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $backup) -or (Get-Item -LiteralPath $backup).Length -le 0) {
         throw 'pg_dump did not create a non-empty backup'
@@ -99,6 +108,8 @@ $details = [ordered]@{
     source_counts_before = $sourceCounts.Trim()
     source_counts_after = $sourceCountsAfter.Trim()
     source_changed_during_backup = $sourceChangedDuringBackup
+    compression_level = $CompressionLevel
+    backup_duration_seconds = $backupDurationSeconds
     restored_counts = if ($VerifyRestore) { $restoredCounts.Trim() } else { $null }
     restored_schema_revision = if ($VerifyRestore) { $restoredSchema.Trim() } else { $null }
     backup_file = $backup
