@@ -58,6 +58,23 @@ jobs:
             Write-Output "::add-mask::$env:MAP_S3_SECRET_KEY"
           }
 
+      - name: Reclaim safe Docker disk space before build
+        shell: powershell
+        run: |
+          $before = Get-PSDrive -Name C
+          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
+          Write-Output "C: free before Docker cleanup: $beforeFreeGb GB"
+          docker system prune --all --force
+          if ($LASTEXITCODE -ne 0) { throw "Docker pre-build cleanup failed" }
+          docker builder prune --all --force
+          if ($LASTEXITCODE -ne 0) { throw "Docker builder cleanup failed" }
+          $after = Get-PSDrive -Name C
+          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
+          Write-Output "C: free after Docker cleanup: $afterFreeGb GB"
+          if ($after.Free -lt 2GB) {
+            throw "C: still has less than 2 GB free after safe Docker cleanup"
+          }
+
       - name: Build current-main API image
         shell: powershell
         run: |
@@ -464,4 +481,24 @@ jobs:
           docker exec $env:GEO_WORKER_CONTAINER python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); s.close(); print(json.dumps({'progress': {k:r['progress'].get(k) for k in ('total','geocoded','actionable_remaining','terminal_failures','percent','rate_per_second','eta_seconds','paused')}, 'statistics': r['statistics'], 'failures': r['failures'], 'recent_batches': r['recent_batches'], 'quality': r['quality'], 'cfo': r['cfo']}, ensure_ascii=False, default=str))"
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "Aggregate geocoding quality report could not be produced"
+          }
+
+      - name: Reclaim obsolete Docker layers after successful deployment
+        shell: powershell
+        run: |
+          $before = Get-PSDrive -Name C
+          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
+          docker system prune --all --force
+          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy cleanup failed" }
+          docker builder prune --all --force
+          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy builder cleanup failed" }
+          $after = Get-PSDrive -Name C
+          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
+          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
+            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
+          } else { 0 }
+          Write-Output "C: free before post-deploy cleanup: $beforeFreeGb GB"
+          Write-Output "C: free after post-deploy cleanup: $afterFreeGb GB ($afterFreePercent%)"
+          if ($afterFreePercent -lt 10) {
+            throw "C: remains below the production health threshold of 10% free"
           }
