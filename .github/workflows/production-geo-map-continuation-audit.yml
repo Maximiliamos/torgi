@@ -322,7 +322,23 @@ jobs:
           $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          if ($code -eq 0) {
+            $start = [Array]::IndexOf($out, '=== STAGE5_JSON_BEGIN ===')
+            $end = [Array]::IndexOf($out, '=== STAGE5_JSON_END ===')
+            if ($start -lt 0 -or $end -le $start) { throw 'Stage 5 JSON markers missing' }
+            $json = $out[($start + 1)..($end - 1)]
+            $path = Join-Path $env:RUNNER_TEMP 'stage5-geo-benchmark.json'
+            $json | Set-Content -Path $path -Encoding UTF8
+          }
           if ($code -ne 0) { throw 'Stage 5 GEO benchmark failed closed' }
+
+      - name: Upload Stage 5 benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage5-geo-benchmark
+          path: ${{ runner.temp }}/stage5-geo-benchmark.json
+          if-no-files-found: error
+          retention-days: 14
 
   stage6-drain:
     needs: stage5-benchmark
@@ -424,7 +440,23 @@ jobs:
           $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          if ($code -eq 0) {
+            $start = [Array]::IndexOf($out, '=== STAGE6_JSON_BEGIN ===')
+            $end = [Array]::IndexOf($out, '=== STAGE6_JSON_END ===')
+            if ($start -lt 0 -or $end -le $start) { throw 'Stage 6 JSON markers missing' }
+            $json = $out[($start + 1)..($end - 1)]
+            $path = Join-Path $env:RUNNER_TEMP 'stage6-geo-drain.json'
+            $json | Set-Content -Path $path -Encoding UTF8
+          }
           if ($code -ne 0) { throw 'Stage 6 controlled GEO drain failed closed' }
+
+      - name: Upload Stage 6 drain
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage6-geo-drain
+          path: ${{ runner.temp }}/stage6-geo-drain.json
+          if-no-files-found: error
+          retention-days: 14
 
   stage7-8-evidence:
     needs: [stage3-check, stage4-baseline, stage5-benchmark, stage6-drain]
@@ -441,10 +473,13 @@ jobs:
       - name: Verify GEO quality regression and DB-map-S3 agreement
         shell: powershell
         env:
-          STAGE4_BASELINE: ${{ runner.temp }}/stage4-baseline/stage4-geo-quality-baseline.json
+          STAGE4_BASELINE_HOST: ${{ runner.temp }}/stage4-baseline/stage4-geo-quality-baseline.json
           STAGE5_RESULT: ${{ needs.stage5-benchmark.result }}
           STAGE6_RESULT: ${{ needs.stage6-drain.result }}
         run: |
+          $containerBaseline = '/tmp/stage4-geo-quality-baseline.json'
+          docker cp "$env:STAGE4_BASELINE_HOST" "bankrotai-home-ingestion-worker:$containerBaseline"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not copy Stage 4 baseline into production worker container' }
           $probe = @'
           import json
           import os
@@ -650,7 +685,8 @@ jobs:
           if regressions:
               raise RuntimeError(f"GEO quality regression detected: {regressions}")
           '@
-          $out = $probe | docker exec --env "STAGE4_BASELINE=$env:STAGE4_BASELINE" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
+          $out = $probe | docker exec --env "STAGE4_BASELINE=$containerBaseline" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          docker exec bankrotai-home-ingestion-worker sh -lc "rm -f '$containerBaseline'" | Out-Null
           if ($code -ne 0) { throw 'Stage 7/8 evidence failed closed' }
