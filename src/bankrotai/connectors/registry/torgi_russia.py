@@ -16,6 +16,7 @@ class TorgiRussiaConnector(AuctionConnector):
 
     def __init__(self) -> None:
         self.client = TorgiRussiaClient()
+        self._previous_page_ids: frozenset[str] | None = None
 
     @staticmethod
     def _decode_cursor(cursor: str | None) -> int:
@@ -36,6 +37,12 @@ class TorgiRussiaConnector(AuctionConnector):
         page = self._decode_cursor(cursor)
         normalized = replace(normalized, page=page, region_id=None)
         lots, metadata = await asyncio.to_thread(self.client.search_lots, normalized)
+        page_ids = frozenset(lot.external_id for lot in lots)
+        repeated_page = bool(page_ids) and page_ids == self._previous_page_ids
+        if repeated_page:
+            metadata["has_more"] = False
+            metadata["repeated_page_guard"] = True
+        self._previous_page_ids = page_ids
         next_cursor = str(page + 1) if metadata.get("has_more") else None
         metadata.update(
             {
