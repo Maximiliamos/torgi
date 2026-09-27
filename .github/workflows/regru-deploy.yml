@@ -24,6 +24,7 @@ on:
       - ".github/workflows/cloudflare-edge-deploy.yml"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -157,7 +158,7 @@ jobs:
   build-and-deploy:
     if: github.event_name != 'workflow_dispatch' || !inputs.diagnostics_only
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: production
     steps:
       - name: Check out repository
@@ -273,6 +274,32 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             'test "$(id -u)" = 0 && docker version >/dev/null'
+
+      - name: Wait for exact home deployment before staging REG.RU
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 400); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then
+              echo "Exact home deployment is ready: $GITHUB_SHA"
+              break
+            fi
+            case "$state" in
+              completed:*)
+                echo "Exact home deployment failed: $state" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$attempt" = 400 ]; then
+              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
+              exit 1
+            fi
+            sleep 15
+          done
 
       - name: Verify staged home API before changing REG.RU
         env:

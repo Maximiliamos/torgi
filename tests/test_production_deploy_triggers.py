@@ -38,7 +38,7 @@ def test_public_production_deploys_share_the_same_push_scope() -> None:
 def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
     deploy = cloudflare.split("\n  deploy:\n", 1)[1]
-    assert "timeout-minutes: 90" in deploy
+    assert "timeout-minutes: 120" in deploy
     assert "for attempt in $(seq 1 720); do" in deploy
     assert 'if test "$attempt" = 720; then' in deploy
 
@@ -82,11 +82,28 @@ def test_revision_rebuild_wait_windows_cover_home_publication() -> None:
     regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "timeout-minutes: 60" in regru
+    assert "timeout-minutes: 120" in regru
     assert "for dataset_attempt in $(seq 1 600); do" in regru
     assert '"$dataset_attempt" = 600' in regru
 
-    assert "timeout-minutes: 90" in cloudflare
+    assert "timeout-minutes: 120" in cloudflare
     assert "for attempt in $(seq 1 720); do" in cloudflare
     assert "for dataset_attempt in $(seq 1 600); do" in cloudflare
     assert '"$dataset_attempt" = 600' in cloudflare
+
+
+def test_public_rollout_waits_for_exact_home_revision() -> None:
+    regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
+    assert "actions: read" in regru
+    assert "Wait for exact home deployment before staging REG.RU" in regru
+    assert "Deploy home secondary origin" in regru
+    assert "head_sha=$GITHUB_SHA&event=push" in regru
+    assert 'if [ "$state" = "completed:success" ]' in regru
+    assert "Exact home deployment failed" in regru
+
+
+def test_production_functional_rejects_failed_regru_deployment() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "production-functional.yml").read_text(encoding="utf-8")
+    assert 'if [ "$RUN_STATE" = "completed:success" ]' in workflow
+    assert "REG.RU deployment for $EXPECTED_SHA failed" in workflow
+    assert "REG.RU deployment for $EXPECTED_SHA was not found" in workflow
