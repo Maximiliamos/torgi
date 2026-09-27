@@ -19,11 +19,12 @@ jobs:
           $probe = @'
           import json
           from sqlalchemy import select
-          from bankrotai.core import utc_now
+          from bankrotai.core import set_app_setting, utc_now
           from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
           from bankrotai.tasks import celery_app
 
           target = "tbankrot.ru"
+          set_app_setting("source_paused:tbankrot.ru", "true")
           revoked = []
           inspect = celery_app.control.inspect(timeout=3)
           for bucket, payload in (("active", inspect.active() or {}), ("reserved", inspect.reserved() or {}), ("scheduled", inspect.scheduled() or {})):
@@ -69,7 +70,17 @@ jobs:
                   released.append(run.id)
               session.commit()
 
-          print(json.dumps({"revoked": revoked, "released_runs": released}, ensure_ascii=False, indent=2))
+          verify = {"active": [], "reserved": [], "scheduled": []}
+          inspect2 = celery_app.control.inspect(timeout=3)
+          for bucket, payload in (("active", inspect2.active() or {}), ("reserved", inspect2.reserved() or {}), ("scheduled", inspect2.scheduled() or {})):
+              for worker, tasks in payload.items():
+                  for item in tasks or []:
+                      req = item.get("request") or {}
+                      name = str(item.get("name") or req.get("name") or "")
+                      args = str(item.get("args") or req.get("args") or "")
+                      if "automatic_nationwide_source_retry_task" in name and target in args:
+                          verify[bucket].append({"worker": worker, "id": item.get("id") or req.get("id")})
+          print(json.dumps({"pause_setting": True, "revoked": revoked, "released_runs": released, "remaining": verify}, ensure_ascii=False, indent=2))
           '@
           $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
           if ($LASTEXITCODE -ne 0) { throw 'TBankrot pause failed' }
