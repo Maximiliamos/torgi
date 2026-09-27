@@ -712,8 +712,8 @@ def test_torgi_russia_repeatable_collapse_requires_two_guard_failures_then_two_c
         return asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
 
     service = NationwideIngestionService(sessions)
-    baseline = [source_lot(index) for index in range(20)]
-    reduced = baseline[:9]
+    baseline = [source_lot(index) for index in range(50)]
+    reduced = baseline[:24]
     assert run_source(service, baseline)["status"] == "success"
 
     first = run_source(service, reduced)
@@ -729,15 +729,15 @@ def test_torgi_russia_repeatable_collapse_requires_two_guard_failures_then_two_c
         missing = session.scalars(
             select(SourceLot).where(SourceLot.external_id.not_in({item.external_id for item in reduced}))
         ).all()
-        assert len(missing) == 11
+        assert len(missing) == 26
         assert all(row.missing_successful_runs == 1 and row.is_archived is False for row in missing)
 
     fourth = run_source(service, reduced)
     assert fourth["status"] == "success"
-    assert fourth["sources"][0]["items_archived"] == 11
+    assert fourth["sources"][0]["items_archived"] == 26
     with sessions() as session:
         archived = session.scalars(select(SourceLot).where(SourceLot.is_archived.is_(True))).all()
-        assert len(archived) == 11
+        assert len(archived) == 26
         assert all(row.archive_reason == "missing_after_two_complete_syncs" for row in archived)
 
 
@@ -756,12 +756,12 @@ def test_torgi_russia_repeatable_collapse_rejects_unstable_cardinality(sessions)
         return asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
 
     service = NationwideIngestionService(sessions)
-    baseline = [source_lot(index) for index in range(20)]
+    baseline = [source_lot(index) for index in range(50)]
     assert run_source(service, baseline)["status"] == "success"
-    assert run_source(service, baseline[:9])["status"] == "failed"
-    assert run_source(service, baseline[:9])["status"] == "failed"
+    assert run_source(service, baseline[:24])["status"] == "failed"
+    assert run_source(service, baseline[:24])["status"] == "failed"
 
-    unstable = run_source(service, baseline[:5])
+    unstable = run_source(service, baseline[:20])
     assert unstable["status"] == "failed"
     assert unstable["sources"][0]["complete_source_run"] is False
     assert "coverage guard" in unstable["sources"][0]["error"]
