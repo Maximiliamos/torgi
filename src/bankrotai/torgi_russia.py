@@ -127,11 +127,12 @@ class TorgiRussiaClient:
         if filters.region_id is not None and records:
             requested_code = str(int(filters.region_id)).zfill(2)
             observed_codes = {
-                normalize_region_code(str(item.get("region_title") or ""))
+                code
                 for item in records
                 if item.get("region_title")
+                for code in [normalize_region_code(str(item.get("region_title") or ""))]
+                if code is not None
             }
-            observed_codes.discard(None)
             if observed_codes and observed_codes != {requested_code}:
                 raise RuntimeError(
                     "Torgi Russia public region filter was not applied: "
