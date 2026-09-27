@@ -188,3 +188,59 @@ jobs:
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
           throw 'Full reconciliation did not reach a terminal state within 65 minutes'
+
+      - name: Verify post-reconciliation MapDataset and REG.RU S3 manifest
+        shell: powershell
+        env:
+          RUN_ID: ${{ steps.start.outputs.run_id }}
+        run: |
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(20)
+          $selected = $null
+          do {
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-map-worker python -c "import json, os; from sqlalchemy import select; from bankrotai.db import SessionLocal, LotSyncRun, MapDataset; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); current=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True), MapDataset.status=='ready')); build=((run.result_json or {}).get('map_dataset_build') if run is not None else None) or {}; fresh=bool(run is not None and run.finished_at is not None and current is not None and current.published_at is not None and current.published_at >= run.finished_at); print(json.dumps({'run_status':None if run is None else run.status,'run_finished_at':None if run is None else run.finished_at,'map_build':build,'dataset':None if current is None else {'version':current.version,'status':current.status,'published_at':current.published_at,'point_count':current.point_count,'tile_count':current.tile_count},'fresh_after_run':fresh}, default=str)); s.close()"
+            if ($LASTEXITCODE -ne 0 -or -not $json) {
+              throw 'Could not inspect post-reconciliation map state'
+            }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $state | ConvertTo-Json -Depth 8
+            if ($null -eq $state.dataset) {
+              Start-Sleep -Seconds 10
+              continue
+            }
+
+            $buildStatus = [string]$state.map_build.status
+            if ($buildStatus -eq 'schedule_failed') {
+              throw "Map dataset scheduling failed after reconciliation: $($state.map_build.error)"
+            }
+            if ($buildStatus -eq 'skipped' -and [string]$state.map_build.reason -eq 'no-map-affecting-source-changes') {
+              $selected = $state.dataset
+              break
+            }
+            if ($buildStatus -eq 'queued' -and [bool]$state.fresh_after_run) {
+              $selected = $state.dataset
+              break
+            }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+
+          if ($null -eq $selected) {
+            throw 'A post-reconciliation map dataset was not promoted within 20 minutes'
+          }
+
+          $verify = docker exec --env "PHASE3_MAP_VERSION=$($selected.version)" bankrotai-home-map-worker python -c "import json, os; from sqlalchemy import select; from bankrotai.core import get_settings; from bankrotai.db import SessionLocal, MapDataset; from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; from bankrotai.services.map_object_store import _verify_public_manifest; s=SessionLocal(); d=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True), MapDataset.status=='ready')); assert d is not None; assert d.version == os.environ['PHASE3_MAP_VERSION'], (d.version, os.environ['PHASE3_MAP_VERSION']); m=_verify_public_manifest(get_settings(), d.version); assert m.get('version') == d.version, (m.get('version'), d.version); assert m.get('pipeline_revision') == MAP_DATASET_REVISION, (m.get('pipeline_revision'), MAP_DATASET_REVISION); assert int(m.get('point_count', -1)) == int(d.point_count), (m.get('point_count'), d.point_count); assert int(m.get('tile_count', -1)) == int(d.tile_count), (m.get('tile_count'), d.tile_count); print(json.dumps({'version':d.version,'point_count':d.point_count,'tile_count':d.tile_count,'pipeline_revision':MAP_DATASET_REVISION,'public_manifest_verified':True}, default=str)); s.close()"
+          if ($LASTEXITCODE -ne 0 -or -not $verify) {
+            throw 'DB MapDataset and public REG.RU S3 manifest verification failed'
+          }
+          $verified = ($verify | Select-Object -Last 1) | ConvertFrom-Json
+          $verified | ConvertTo-Json -Depth 6
+          @(
+            "",
+            "## Map publication proof",
+            "",
+            "- version: $($verified.version)",
+            "- point_count: $($verified.point_count)",
+            "- tile_count: $($verified.tile_count)",
+            "- pipeline_revision: $($verified.pipeline_revision)",
+            "- public_manifest_verified: $($verified.public_manifest_verified)"
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
