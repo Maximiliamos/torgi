@@ -84,7 +84,7 @@ def test_gis_connector_retries_transient_connection_abort() -> None:
         return [], {"has_more": False, "total_pages": 1}
 
     connector._batch_clients[0].search_lots = flaky_search
-    filters = TorgiGovSearchFilters(category_code="2", page=1)
+    filters = TorgiGovSearchFilters(category_code="903,2", page=1)
 
     page = asyncio.run(connector.search(filters))
 
@@ -102,7 +102,7 @@ def test_gis_connector_does_not_retry_non_transient_error() -> None:
         raise ValueError("invalid response payload")
 
     connector._batch_clients[0].search_lots = broken_search
-    filters = TorgiGovSearchFilters(category_code="2", page=1)
+    filters = TorgiGovSearchFilters(category_code="903,2", page=1)
 
     try:
         asyncio.run(connector.search(filters))
