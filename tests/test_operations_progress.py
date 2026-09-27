@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai import api
 from bankrotai.auth import AuthenticatedUser
 from bankrotai.core import utc_now
-from bankrotai.db import AppSetting, Base, BackgroundTaskState, LotGeoSnapshot, LotSyncRun, LotSyncSourceRun, ProcessedLot
+from bankrotai.db import AppSetting, Base, BackgroundTaskState, GeoFailure, LotGeoSnapshot, LotSyncRun, LotSyncSourceRun, ProcessedLot
 
 
 def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) -> None:
@@ -104,6 +104,8 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
     assert payload["geocoding"]["total"] == 2
     assert payload["geocoding"]["geocoded"] == 1
     assert payload["geocoding"]["remaining"] == 1
+    assert payload["geocoding"]["eligible_now"] == 1
+    assert payload["geocoding"]["waiting_for_retry"] == 0
     assert payload["geocoding"]["task"]["progress"]["processed"] == 4
     assert payload["geocoding"]["rate_per_second"] == 2.0
     assert payload["geocoding"]["eta_seconds"] == 1
@@ -174,3 +176,72 @@ def test_geocoding_campaign_elapsed_time_excludes_idle_gaps() -> None:
 
     assert progress["elapsed_seconds"] == 300
     assert progress["estimated_total_seconds"] == 300
+
+
+def test_geocoding_progress_does_not_claim_eta_for_future_retry(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        pending = ProcessedLot(
+            external_id="waiting-retry",
+            source="test",
+            source_system="test",
+            title="Waiting retry",
+            description="",
+            category="land",
+            address="Москва, Тверская 9",
+            auction_status="active",
+        )
+        session.add(pending)
+        session.flush()
+        session.add(
+            GeoFailure(
+                lot_id=pending.id,
+                status="queued",
+                attempt_count=3,
+                error_message="no coordinates",
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now() + timedelta(hours=6),
+            )
+        )
+        session.add(
+            BackgroundTaskState(
+                task_id="geo-rate-sample",
+                task_type="geocoding",
+                status="completed",
+                result_json={"processed": 100, "duration_seconds": 50},
+                created_at=utc_now() - timedelta(minutes=5),
+            )
+        )
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    monkeypatch.setattr(api.settings, "api_read_only", True)
+    api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(id=1, username="reader", role="reader")
+    try:
+        response = TestClient(api.app).get("/api/operations/progress")
+    finally:
+        api.app.dependency_overrides.pop(api.require_user, None)
+
+    assert response.status_code == 200
+    geo = response.json()["geocoding"]
+    assert geo["total"] == 1
+    assert geo["geocoded"] == 0
+    assert geo["remaining"] == 1
+    assert geo["actionable_remaining"] == 1
+    assert geo["eligible_now"] == 0
+    assert geo["waiting_for_retry"] == 1
+    assert geo["next_retry_at"] is not None
+    assert geo["rate_per_second"] == 2.0
+    assert geo["eta_seconds"] is None
+    assert geo["expected_completion_at"] is None
