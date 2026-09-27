@@ -107,6 +107,33 @@ def test_builder_publishes_cluster_and_point_tiles_atomically(monkeypatch):
         assert yandex_point["geometry"]["coordinates"] == pytest.approx([57.6261, 39.8845])
 
 
+def test_builder_keeps_published_dataset_when_storage_diagnostics_fail(monkeypatch):
+    factory = _database()
+
+    def fail_storage_diagnostics(_session):
+        raise RuntimeError("historical tile count timed out")
+
+    monkeypatch.setattr(
+        map_builder,
+        "map_dataset_storage_statistics",
+        fail_storage_diagnostics,
+    )
+
+    result = build_map_dataset(factory)
+
+    assert result["status"] == "published"
+    assert result["promotion_status"] == "published"
+    assert result["storage"] == {
+        "status": "unavailable",
+        "reason": "storage_diagnostics_failed",
+    }
+    with factory() as session:
+        current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current is not None
+        assert current.status == "ready"
+        assert current.version == result["version"]
+
+
 def test_builder_dataset_membership_business_matrix():
     factory = _database()
     now = datetime(2026, 9, 6, 12, 0, 0)
