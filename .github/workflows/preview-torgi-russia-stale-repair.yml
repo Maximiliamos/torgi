@@ -1,0 +1,155 @@
+name: Preview Torgi Russia stale repair
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths: ['.github/workflows/preview-torgi-russia-stale-repair.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Preview stale Torgi Russia rows without mutation
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from collections import Counter
+          from sqlalchemy import and_, exists, func, select
+          from sqlalchemy.orm import aliased
+
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, ProcessedLot, SessionLocal, SourceLot
+
+          SOURCE = "torgi-russia.ru"
+          with SessionLocal() as session:
+              source_run = session.scalar(
+                  select(LotSyncSourceRun)
+                  .join(LotSyncRun, LotSyncRun.id == LotSyncSourceRun.sync_run_id)
+                  .where(
+                      LotSyncSourceRun.source_system == SOURCE,
+                      LotSyncSourceRun.items_seen >= 20000,
+                  )
+                  .order_by(LotSyncSourceRun.started_at.desc())
+                  .limit(1)
+              )
+              if source_run is None or source_run.started_at is None:
+                  raise RuntimeError("No recent full Torgi Russia source run found")
+
+              cutoff = source_run.started_at
+              stale_filter = (
+                  SourceLot.source_system == SOURCE,
+                  SourceLot.is_archived.is_(False),
+                  SourceLot.last_seen_at < cutoff,
+              )
+
+              stale_total = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(*stale_filter)
+              ) or 0)
+
+              missing_runs = {
+                  str(value): int(count)
+                  for value, count in session.execute(
+                      select(SourceLot.missing_successful_runs, func.count())
+                      .where(*stale_filter)
+                      .group_by(SourceLot.missing_successful_runs)
+                      .order_by(SourceLot.missing_successful_runs)
+                  ).all()
+              }
+              source_statuses = {
+                  str(value or "<none>"): int(count)
+                  for value, count in session.execute(
+                      select(SourceLot.source_status, func.count())
+                      .where(*stale_filter)
+                      .group_by(SourceLot.source_status)
+                      .order_by(func.count().desc())
+                  ).all()
+              }
+              last_seen_bounds = session.execute(
+                  select(func.min(SourceLot.last_seen_at), func.max(SourceLot.last_seen_at))
+                  .where(*stale_filter)
+              ).one()
+
+              processed_active = int(session.scalar(
+                  select(func.count()).select_from(SourceLot)
+                  .join(ProcessedLot, ProcessedLot.id == SourceLot.processed_lot_id)
+                  .where(
+                      *stale_filter,
+                      ProcessedLot.is_archived.is_(False),
+                      ProcessedLot.duplicate_of_id.is_(None),
+                  )
+              ) or 0)
+
+              sibling = aliased(SourceLot)
+              has_other_active_source = exists().where(
+                  and_(
+                      sibling.canonical_lot_id == SourceLot.canonical_lot_id,
+                      sibling.id != SourceLot.id,
+                      sibling.source_system != SOURCE,
+                      sibling.is_active.is_(True),
+                      sibling.is_archived.is_(False),
+                  )
+              )
+              protected_by_other_source = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(
+                      *stale_filter,
+                      SourceLot.canonical_lot_id.is_not(None),
+                      has_other_active_source,
+                  )
+              ) or 0)
+
+              would_archive_on_next_complete = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(
+                      *stale_filter,
+                      SourceLot.missing_successful_runs >= 1,
+                  )
+              ) or 0)
+              would_need_two_more_complete = stale_total - would_archive_on_next_complete
+
+              samples = []
+              rows = session.scalars(
+                  select(SourceLot)
+                  .where(*stale_filter)
+                  .order_by(SourceLot.last_seen_at.asc(), SourceLot.id.asc())
+                  .limit(20)
+              ).all()
+              for row in rows:
+                  processed = session.get(ProcessedLot, row.processed_lot_id) if row.processed_lot_id else None
+                  samples.append({
+                      "source_lot_id": row.id,
+                      "external_id": row.external_id,
+                      "source_status": row.source_status,
+                      "last_seen_at": row.last_seen_at,
+                      "missing_successful_runs": int(row.missing_successful_runs or 0),
+                      "processed_lot_id": row.processed_lot_id,
+                      "processed_status": None if processed is None else processed.auction_status,
+                      "processed_archived": None if processed is None else bool(processed.is_archived),
+                      "canonical_lot_id": row.canonical_lot_id,
+                  })
+
+          payload = {
+              "source_run_id": source_run.sync_run_id,
+              "source_run_started_at": source_run.started_at,
+              "items_seen": int(source_run.items_seen or 0),
+              "stale_total": stale_total,
+              "missing_successful_runs_distribution": missing_runs,
+              "source_status_distribution": source_statuses,
+              "last_seen_min": last_seen_bounds[0],
+              "last_seen_max": last_seen_bounds[1],
+              "stale_with_active_primary_processed_lot": processed_active,
+              "stale_protected_by_other_active_source": protected_by_other_source,
+              "would_archive_on_next_complete_run": would_archive_on_next_complete,
+              "would_require_two_more_complete_runs": would_need_two_more_complete,
+              "oldest_samples": samples,
+          }
+          print("=== TORGI_RUSSIA_STALE_PREVIEW_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== TORGI_RUSSIA_STALE_PREVIEW_END ===")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Torgi Russia stale preview failed' }
