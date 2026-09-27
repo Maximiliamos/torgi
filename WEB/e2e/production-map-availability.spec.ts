@@ -302,6 +302,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
   const frame = page.frameLocator('iframe[title="Яндекс.Карта лотов"]');
   const yandexReady = await frame.locator("#hint").isHidden({ timeout: 15_000 }).catch(() => false);
   const hintText = yandexReady ? "" : await frame.locator("#hint").textContent().catch(() => null);
+  expect(yandexReady, `Yandex Maps JS API did not initialize: ${hintText || "no hint text"}`).toBe(true);
 
   await expect(page.getByText("Сервис временно недоступен", { exact: false })).toHaveCount(0);
   await testInfo.attach("direct-map-regru-s3-evidence.json", {
