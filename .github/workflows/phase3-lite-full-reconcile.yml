@@ -139,7 +139,7 @@ jobs:
         run: |
           $deadline = (Get-Date).ToUniversalTime().AddMinutes(65)
           do {
-            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
             $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
             $state | ConvertTo-Json -Depth 8
@@ -157,6 +157,28 @@ jobs:
               }
               if (@($rows | Where-Object { $_.status -in @('queued','running') }).Count -gt 0) {
                 throw 'Full reconciliation left a source run active'
+              }
+              if ('tbankrot.ru' -in $expectedSources -or @($observedSources | Where-Object { $_ -eq 'tbankrot.ru' }).Count -gt 0) {
+                throw 'TBankrot must remain paused and absent from automatic full reconciliation'
+              }
+              $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
+              if ($incompleteRows.Count -gt 0) {
+                $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
+                throw "Full reconciliation did not finish every configured source successfully: $($failedSummary -join '; ')"
+              }
+              $torgiRussia = @($rows | Where-Object { $_.source -eq 'torgi-russia.ru' }) | Select-Object -First 1
+              if ($null -eq $torgiRussia -or [int64]$torgiRussia.items_seen -le 0) {
+                throw "Torgi Russia production parser returned no lots"
+              }
+              @(
+                "## Final source reconciliation",
+                "",
+                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Failed |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+              ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              foreach ($row in ($rows | Sort-Object source)) {
+                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $($row.items_failed) |" |
+                  Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               }
               exit 0
             }
