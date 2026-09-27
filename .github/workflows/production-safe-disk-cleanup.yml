@@ -22,14 +22,64 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          function DriveState {
-            $d = Get-PSDrive C
+          function DriveState([string]$Name = 'C') {
+            $d = Get-PSDrive $Name
             [pscustomobject]@{
+              name = $Name
+              total_gb = [math]::Round(($d.Used + $d.Free) / 1GB, 2)
               free_gb = [math]::Round($d.Free / 1GB, 2)
               percent_free = [math]::Round(100 * $d.Free / ($d.Used + $d.Free), 2)
             }
           }
-          $before = DriveState
+          function AllDriveStates {
+            @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -match '^[A-Z]
+          $dfBefore = docker system df | Out-String
+
+          # Safe scope: no containers, no volumes, no PostgreSQL backups.
+          $builder = docker builder prune -af 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'docker builder prune failed' }
+          $images = docker image prune -f 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'docker image prune failed' }
+
+          $after = DriveState 'C'
+          $drivesAfter = AllDriveStates
+          $vhdxAfter = DockerVhdx
+          $dfAfter = docker system df | Out-String
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            before = $before
+            after = $after
+            drives_before = $drivesBefore
+            drives_after = $drivesAfter
+            docker_vhdx_before = $vhdxBefore
+            docker_vhdx_after = $vhdxAfter
+            freed_gb = [math]::Round($after.free_gb - $before.free_gb, 2)
+            builder_prune = $builder.Trim()
+            dangling_image_prune = $images.Trim()
+            docker_df_before = $dfBefore.Trim()
+            docker_df_after = $dfAfter.Trim()
+          }
+          '=== SAFE_CLEANUP_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 6
+          '=== SAFE_CLEANUP_JSON_END ==='
+ } |
+              ForEach-Object { DriveState $_.Name })
+          }
+          function DockerVhdx {
+            $root = Join-Path $env:LOCALAPPDATA 'Docker'
+            if (-not (Test-Path $root)) { return @() }
+            @(Get-ChildItem $root -Filter '*.vhdx' -File -Recurse -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                [pscustomobject]@{
+                  path = $_.FullName
+                  size_gb = [math]::Round($_.Length / 1GB, 2)
+                  modified = $_.LastWriteTimeUtc
+                }
+              } | Sort-Object size_gb -Descending)
+          }
+          $before = DriveState 'C'
+          $drivesBefore = AllDriveStates
+          $vhdxBefore = DockerVhdx
           $dfBefore = docker system df | Out-String
 
           # Safe scope: no containers, no volumes, no PostgreSQL backups.
