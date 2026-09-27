@@ -583,8 +583,23 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             promotion_status,
             total_duration_ms,
         )
-        with session_factory() as session:
-            storage = map_dataset_storage_statistics(session)
+        try:
+            with session_factory() as session:
+                storage = map_dataset_storage_statistics(session)
+        except Exception:
+            # Storage statistics are diagnostic only. The dataset promotion
+            # above is already committed atomically, so a slow historical
+            # tile-count query must never turn a successfully published map
+            # into a failed current dataset.
+            logger.exception(
+                "Map dataset storage diagnostics failed after promotion: version=%s dataset_id=%s",
+                version,
+                dataset_id,
+            )
+            storage = {
+                "status": "unavailable",
+                "reason": "storage_diagnostics_failed",
+            }
         return {
             "version": version,
             "build_status": "success",
