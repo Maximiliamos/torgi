@@ -84,11 +84,11 @@ def test_gis_connector_retries_transient_connection_abort() -> None:
         return [], {"has_more": False, "total_pages": 1}
 
     connector._batch_clients[0].search_lots = flaky_search
-    filters = TorgiGovSearchFilters(category_code="903,2", page=1)
+    filters = TorgiGovSearchFilters(category_code="2", page=1)
 
-    page = asyncio.run(connector.search(filters))
+    results = connector._run_jobs(filters, [("2", "2", 1)])
 
-    assert page.next_cursor is None
+    assert results == [([], {"has_more": False, "total_pages": 1})]
     assert attempts == 3
 
 
@@ -102,10 +102,10 @@ def test_gis_connector_does_not_retry_non_transient_error() -> None:
         raise ValueError("invalid response payload")
 
     connector._batch_clients[0].search_lots = broken_search
-    filters = TorgiGovSearchFilters(category_code="903,2", page=1)
+    filters = TorgiGovSearchFilters(category_code="2", page=1)
 
     try:
-        asyncio.run(connector.search(filters))
+        connector._run_jobs(filters, [("2", "2", 1)])
     except ValueError as exc:
         assert str(exc) == "invalid response payload"
     else:
