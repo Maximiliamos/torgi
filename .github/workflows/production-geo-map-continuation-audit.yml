@@ -1,0 +1,656 @@
+name: Production GEO map continuation audit
+
+on:
+  push:
+    branches:
+      - audit/all-sources-geo-20260927
+    paths:
+      - '.github/workflows/production-geo-map-continuation-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-geo-map-continuation-audit
+  cancel-in-progress: false
+
+jobs:
+  stage3-check:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Classify latest Phase 3 reconciliation fail-closed
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from sqlalchemy import select
+
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
+          from bankrotai.services.ingestion import default_source_specs
+
+          ALLOWED_EXTERNAL = {"access_limited", "coverage_guard", "upstream"}
+          INTERNAL_MARKERS = (
+              "integrityerror", "uniqueviolation", "duplicate key",
+              "psycopg", "sqlalchemy", "database", "traceback",
+              "attributeerror", "typeerror", "keyerror",
+              "programmingerror", "dataerror",
+          )
+          UPSTREAM_MARKERS = (
+              "connection aborted", "remotedisconnected", "connection reset",
+              "timeout", "timed out", "ssl", "tls", "dns",
+              "429", "502", "503", "504",
+          )
+
+          def classify(error):
+              message = str(error or "").casefold()
+              if not message:
+                  return None
+              if any(marker in message for marker in INTERNAL_MARKERS):
+                  return "internal"
+              if "access_limited" in message:
+                  return "access_limited"
+              if "coverage guard" in message:
+                  return "coverage_guard"
+              if any(marker in message for marker in UPSTREAM_MARKERS):
+                  return "upstream"
+              return "unknown"
+
+          configured = [spec.source_id for spec in default_source_specs()]
+          with SessionLocal() as session:
+              run = session.scalar(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.triggered_by == "phase3-lite")
+                  .order_by(LotSyncRun.created_at.desc())
+                  .limit(1)
+              )
+              if run is None:
+                  raise RuntimeError("No phase3-lite reconciliation run found")
+              rows = session.scalars(
+                  select(LotSyncSourceRun)
+                  .where(LotSyncSourceRun.sync_run_id == run.id)
+                  .order_by(LotSyncSourceRun.source_system)
+              ).all()
+
+              by_source = {row.source_system: row for row in rows}
+              evidence = []
+              blockers = []
+              for source in configured:
+                  row = by_source.get(source)
+                  if row is None:
+                      blockers.append({"source": source, "reason": "missing_source_row"})
+                      continue
+                  category = classify(row.error_message)
+                  entry = {
+                      "source": source,
+                      "status": row.status,
+                      "complete": bool(row.complete_source_run),
+                      "pages": int(row.pages_scanned or 0),
+                      "seen": int(row.items_seen or 0),
+                      "inserted": int(row.items_inserted or 0),
+                      "updated": int(row.items_updated or 0),
+                      "archived": int(row.items_archived or 0),
+                      "failed_items": int(row.items_failed or 0),
+                      "duration_ms": row.duration_ms,
+                      "error_category": category,
+                      "error": row.error_message,
+                  }
+                  evidence.append(entry)
+                  if row.status == "success" and row.complete_source_run:
+                      continue
+                  if row.status == "failed" and not row.complete_source_run and category in ALLOWED_EXTERNAL:
+                      continue
+                  blockers.append({
+                      "source": source,
+                      "reason": "non_external_or_incomplete_terminal_state",
+                      "status": row.status,
+                      "complete": bool(row.complete_source_run),
+                      "error_category": category,
+                  })
+
+              if run.status not in {"success", "partial"}:
+                  blockers.append({"run": run.id, "reason": "non_terminal_or_failed_run", "status": run.status})
+              if len(rows) != len(configured):
+                  blockers.append({
+                      "run": run.id,
+                      "reason": "configured_source_count_mismatch",
+                      "expected": len(configured),
+                      "actual": len(rows),
+                  })
+
+              payload = {
+                  "run_id": run.id,
+                  "run_status": run.status,
+                  "trigger_type": run.trigger_type,
+                  "created_at": run.created_at,
+                  "started_at": run.started_at,
+                  "finished_at": run.finished_at,
+                  "configured_sources": configured,
+                  "sources": evidence,
+                  "blockers": blockers,
+                  "allowed_external_categories": sorted(ALLOWED_EXTERNAL),
+              }
+
+          print("=== STAGE3_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE3_JSON_END ===")
+          if blockers:
+              raise RuntimeError(f"Stage 3 fail-closed blockers: {blockers}")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Stage 3 reconciliation classification failed' }
+
+  stage4-baseline:
+    needs: stage3-check
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Capture post-reconciliation GEO and quality baseline
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from sqlalchemy import exists, func, or_, select
+
+          from bankrotai.core import utc_now
+          from bankrotai.db import GeoFailure, LotGeoSnapshot, MapDataset, ProcessedLot, SessionLocal
+          from bankrotai.services.geo_backfill import geocoding_diagnostic_report
+          from bankrotai.services.quality import operational_quality_report
+
+          now = utc_now()
+          population = (
+              ProcessedLot.duplicate_of_id.is_(None),
+              ProcessedLot.is_archived.is_(False),
+              or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
+          )
+          pending = or_(
+              ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+              (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
+          )
+
+          with SessionLocal() as session:
+              eligible_now = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot)
+                  .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      *population,
+                      pending,
+                      or_(GeoFailure.id.is_(None), GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
+                      or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+                  )
+              ) or 0)
+              waiting_for_retry = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot)
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      *population,
+                      pending,
+                      GeoFailure.status != "terminal",
+                      GeoFailure.next_retry_at.is_not(None),
+                      GeoFailure.next_retry_at > now,
+                  )
+              ) or 0)
+              terminal_pending = int(session.scalar(
+                  select(func.count()).select_from(ProcessedLot)
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(*population, pending, GeoFailure.status == "terminal")
+              ) or 0)
+              diagnostic = geocoding_diagnostic_report(session)
+              quality = operational_quality_report(session)
+              current_map = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+              map_state = None if current_map is None else {
+                  "id": current_map.id,
+                  "version": current_map.version,
+                  "status": current_map.status,
+                  "point_count": int(current_map.point_count or 0),
+                  "tile_count": int(current_map.tile_count or 0),
+                  "published_at": current_map.published_at,
+              }
+
+          payload = {
+              "captured_at": now,
+              "eligible_now": eligible_now,
+              "waiting_for_retry": waiting_for_retry,
+              "terminal_pending": terminal_pending,
+              "geocoding": diagnostic,
+              "operational_quality": quality,
+              "current_map": map_state,
+          }
+          print("=== STAGE4_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE4_JSON_END ===")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) { throw 'Stage 4 baseline failed' }
+          $start = [Array]::IndexOf($out, '=== STAGE4_JSON_BEGIN ===')
+          $end = [Array]::IndexOf($out, '=== STAGE4_JSON_END ===')
+          if ($start -lt 0 -or $end -le $start) { throw 'Stage 4 JSON markers missing' }
+          $json = $out[($start + 1)..($end - 1)]
+          $out | ForEach-Object { Write-Output $_ }
+          $path = Join-Path $env:RUNNER_TEMP 'stage4-geo-quality-baseline.json'
+          $json | Set-Content -Path $path -Encoding UTF8
+
+      - name: Upload Stage 4 baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage4-geo-quality-baseline
+          path: ${{ runner.temp }}/stage4-geo-quality-baseline.json
+          if-no-files-found: error
+          retention-days: 14
+
+  stage5-benchmark:
+    needs: stage4-baseline
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 90
+    steps:
+      - name: Benchmark bounded GEO batches
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          import time
+
+          from redis import Redis
+
+          from bankrotai.core import get_settings, utc_now
+          from bankrotai.db import SessionLocal
+          from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
+
+          LIMITS = (50, 100, 250, 500)
+          INTERNAL_REASON_MARKERS = (
+              "persistence:", "integrityerror", "uniqueviolation", "psycopg",
+              "sqlalchemy", "programmingerror", "dataerror", "database",
+          )
+
+          def run_batch(limit):
+              deadline = time.monotonic() + 15 * 60
+              while True:
+                  try:
+                      return geocode_pending_lots(SessionLocal, limit=limit)
+                  except GeoBatchAlreadyRunning:
+                      if time.monotonic() >= deadline:
+                          raise TimeoutError(f"GEO lock remained busy for benchmark limit={limit}")
+                      time.sleep(10)
+
+          def assert_batch(result, limit):
+              if result.get("status") == "paused" or result.get("paused"):
+                  raise RuntimeError("Geocoding is paused; benchmark refused")
+              queued = int(result.get("queued") or 0)
+              processed = int(result.get("processed") or 0)
+              if queued != processed:
+                  raise RuntimeError(
+                      f"Partial GEO batch rejected: limit={limit} queued={queued} processed={processed}"
+                  )
+              for reason in (result.get("failure_reasons") or {}):
+                  lowered = str(reason).casefold()
+                  if any(marker in lowered for marker in INTERNAL_REASON_MARKERS):
+                      raise RuntimeError(f"Internal GEO failure reason rejected: {reason}")
+              return queued
+
+          results = []
+          total_geocoded = 0
+          for limit in LIMITS:
+              started = time.monotonic()
+              result = run_batch(limit)
+              result["audit_limit"] = limit
+              result["audit_wall_seconds"] = round(time.monotonic() - started, 2)
+              results.append(result)
+              queued = assert_batch(result, limit)
+              total_geocoded += int(result.get("geocoded") or 0)
+              print(json.dumps({"event": "benchmark_batch", **result}, ensure_ascii=False, default=str), flush=True)
+              if queued == 0:
+                  break
+
+          if total_geocoded:
+              settings = get_settings()
+              client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+              client.set("bankrotai:map-dataset-dirty", "1")
+              client.close()
+
+          payload = {
+              "captured_at": utc_now(),
+              "limits": list(LIMITS),
+              "total_geocoded": total_geocoded,
+              "results": results,
+          }
+          print("=== STAGE5_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE5_JSON_END ===")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Stage 5 GEO benchmark failed closed' }
+
+  stage6-drain:
+    needs: stage5-benchmark
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - name: Drain currently eligible GEO work in bounded batches
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          import time
+
+          from redis import Redis
+
+          from bankrotai.core import get_settings, utc_now
+          from bankrotai.db import SessionLocal
+          from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
+          from bankrotai.tasks import _schedule_dirty_map_publication
+
+          BATCH_LIMIT = 500
+          MAX_BATCHES = 50
+          WALL_LIMIT_SECONDS = 3 * 60 * 60
+          INTERNAL_REASON_MARKERS = (
+              "persistence:", "integrityerror", "uniqueviolation", "psycopg",
+              "sqlalchemy", "programmingerror", "dataerror", "database",
+          )
+
+          started_all = time.monotonic()
+          results = []
+          total_geocoded = 0
+          reached_empty = False
+
+          def run_batch():
+              busy_deadline = time.monotonic() + 15 * 60
+              while True:
+                  try:
+                      return geocode_pending_lots(SessionLocal, limit=BATCH_LIMIT)
+                  except GeoBatchAlreadyRunning:
+                      if time.monotonic() >= busy_deadline:
+                          raise TimeoutError("GEO lock remained busy during controlled drain")
+                      time.sleep(10)
+
+          settings = get_settings()
+          for index in range(1, MAX_BATCHES + 1):
+              if time.monotonic() - started_all >= WALL_LIMIT_SECONDS:
+                  raise TimeoutError("Controlled GEO drain hit its 3-hour wall limit")
+              result = run_batch()
+              queued = int(result.get("queued") or 0)
+              processed = int(result.get("processed") or 0)
+              if result.get("status") == "paused" or result.get("paused"):
+                  raise RuntimeError("Geocoding became paused during controlled drain")
+              if processed != queued:
+                  raise RuntimeError(
+                      f"Partial GEO drain batch rejected: batch={index} queued={queued} processed={processed}"
+                  )
+              for reason in (result.get("failure_reasons") or {}):
+                  lowered = str(reason).casefold()
+                  if any(marker in lowered for marker in INTERNAL_REASON_MARKERS):
+                      raise RuntimeError(f"Internal GEO failure reason rejected: {reason}")
+
+              result["audit_batch"] = index
+              results.append(result)
+              geocoded = int(result.get("geocoded") or 0)
+              total_geocoded += geocoded
+              print(json.dumps({"event": "drain_batch", **result}, ensure_ascii=False, default=str), flush=True)
+
+              if geocoded:
+                  client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+                  client.set("bankrotai:map-dataset-dirty", "1")
+                  client.close()
+
+              if queued == 0:
+                  reached_empty = True
+                  break
+
+          if not reached_empty:
+              raise RuntimeError(
+                  f"Controlled GEO drain exhausted {MAX_BATCHES} batches without reaching an empty eligible queue"
+              )
+
+          publication = None
+          if total_geocoded:
+              publication = _schedule_dirty_map_publication()
+
+          payload = {
+              "captured_at": utc_now(),
+              "batch_limit": BATCH_LIMIT,
+              "batch_count": len(results),
+              "total_geocoded": total_geocoded,
+              "reached_empty_eligible_queue": reached_empty,
+              "publication": publication,
+              "results": results,
+          }
+          print("=== STAGE6_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE6_JSON_END ===")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Stage 6 controlled GEO drain failed closed' }
+
+  stage7-8-evidence:
+    needs: [stage3-check, stage4-baseline, stage5-benchmark, stage6-drain]
+    if: ${{ always() && needs.stage3-check.result == 'success' && needs.stage4-baseline.result == 'success' }}
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 75
+    steps:
+      - name: Download Stage 4 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: stage4-geo-quality-baseline
+          path: ${{ runner.temp }}/stage4-baseline
+
+      - name: Verify GEO quality regression and DB-map-S3 agreement
+        shell: powershell
+        env:
+          STAGE4_BASELINE: ${{ runner.temp }}/stage4-baseline/stage4-geo-quality-baseline.json
+          STAGE5_RESULT: ${{ needs.stage5-benchmark.result }}
+          STAGE6_RESULT: ${{ needs.stage6-drain.result }}
+        run: |
+          $probe = @'
+          import json
+          import os
+          import time
+          from pathlib import Path
+          from urllib.parse import urljoin, urlsplit
+
+          import requests
+          from sqlalchemy import func, select
+
+          from bankrotai.core import get_settings, utc_now
+          from bankrotai.db import MapDataset, MapTile, ProcessedLot, SessionLocal
+          from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
+          from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
+          from bankrotai.services.geo_backfill import geocoding_diagnostic_report
+          from bankrotai.services.map_bundle_store import normalize_map_region_code
+
+          baseline = json.loads(Path(os.environ["STAGE4_BASELINE"]).read_text(encoding="utf-8-sig"))
+          before_quality = baseline["geocoding"]["quality"]
+
+          def expected_map_points():
+              with SessionLocal() as session:
+                  rows = session.execute(
+                      select(
+                          ProcessedLot.id,
+                          ProcessedLot.current_geo_lat,
+                          ProcessedLot.current_geo_lon,
+                          ProcessedLot.region_code,
+                          ProcessedLot.cadastral_number,
+                      ).where(
+                          ProcessedLot.duplicate_of_id.is_(None),
+                          ProcessedLot.is_archived.is_(False),
+                          ProcessedLot.current_geo_lat.between(-85.05112878, 85.05112878),
+                          ProcessedLot.current_geo_lon.between(-180.0, 180.0),
+                      )
+                  ).all()
+
+              accepted = 0
+              rejected = {}
+              for row in rows:
+                  lat = float(row.current_geo_lat)
+                  lon = float(row.current_geo_lon)
+                  raw_reason = coordinate_region_sanity_rejection_reason(lat, lon, row.region_code)
+                  if raw_reason == "unsupported_region_code":
+                      rejected[raw_reason] = rejected.get(raw_reason, 0) + 1
+                      continue
+
+                  bundle_code = normalize_map_region_code(row.region_code, row.cadastral_number)
+                  bundle_reason = coordinate_region_sanity_rejection_reason(lat, lon, bundle_code)
+                  if bundle_reason:
+                      label = "unsupported_bundle_region_code" if bundle_reason == "unsupported_region_code" else f"bundle_{bundle_reason}"
+                      rejected[label] = rejected.get(label, 0) + 1
+                      continue
+
+                  canonical = (
+                      normalize_canonical_region_code(bundle_code)
+                      or normalize_canonical_region_code(row.region_code)
+                      or row.region_code
+                  )
+                  reason = coordinate_region_sanity_rejection_reason(lat, lon, canonical)
+                  if reason:
+                      rejected[reason] = rejected.get(reason, 0) + 1
+                      continue
+                  accepted += 1
+              return accepted, rejected
+
+          def current_map_state():
+              with SessionLocal() as session:
+                  datasets = session.scalars(
+                      select(MapDataset).where(MapDataset.is_current.is_(True))
+                  ).all()
+                  if len(datasets) != 1:
+                      return {"current_count": len(datasets), "dataset": None}
+                  dataset = datasets[0]
+                  actual_tiles = int(session.scalar(
+                      select(func.count()).select_from(MapTile).where(MapTile.dataset_id == dataset.id)
+                  ) or 0)
+                  return {
+                      "current_count": 1,
+                      "dataset": {
+                          "id": dataset.id,
+                          "version": dataset.version,
+                          "status": dataset.status,
+                          "point_count": int(dataset.point_count or 0),
+                          "tile_count": int(dataset.tile_count or 0),
+                          "actual_tile_count": actual_tiles,
+                          "published_at": dataset.published_at,
+                      },
+                  }
+
+          with SessionLocal() as session:
+              after_geo = geocoding_diagnostic_report(session)
+          after_quality = after_geo["quality"]
+
+          regressions = []
+          for key in (
+              "invalid_coordinate_count",
+              "locality_mismatch_count",
+              "cadastral_region_mismatch",
+          ):
+              before = int(before_quality.get(key) or 0)
+              after = int(after_quality.get(key) or 0)
+              if after > before:
+                  regressions.append({"metric": key, "before": before, "after": after})
+
+          deadline = time.monotonic() + 45 * 60
+          final_expected = None
+          final_rejected = None
+          final_map = None
+          while True:
+              final_expected, final_rejected = expected_map_points()
+              final_map = current_map_state()
+              dataset = final_map.get("dataset")
+              if (
+                  final_map.get("current_count") == 1
+                  and dataset
+                  and dataset.get("status") == "ready"
+                  and dataset.get("published_at") is not None
+                  and int(dataset.get("point_count") or -1) == int(final_expected)
+                  and int(dataset.get("tile_count") or -1) == int(dataset.get("actual_tile_count") or -2)
+              ):
+                  break
+              if time.monotonic() >= deadline:
+                  raise RuntimeError(
+                      f"Map did not converge within 45 minutes: expected_points={final_expected} state={final_map}"
+                  )
+              time.sleep(30)
+
+          settings = get_settings()
+          base = str(settings.map_object_store_public_base_url or "").rstrip("/") + "/"
+          parsed = urlsplit(base)
+          host = (parsed.hostname or "").casefold()
+          if parsed.scheme != "https":
+              raise RuntimeError(f"REG.RU public base must be HTTPS, got {parsed.scheme!r}")
+          if not (host == "s3.regru.cloud" or host.endswith(".s3.regru.cloud")):
+              raise RuntimeError(f"Unexpected REG.RU public base host: {host!r}")
+
+          version = final_map["dataset"]["version"]
+          manifest_url = urljoin(base, f"datasets/{version}/manifest.json")
+          response = requests.get(
+              manifest_url,
+              headers={"Cache-Control": "no-cache"},
+              timeout=30,
+              allow_redirects=True,
+          )
+          chain = [*response.history, response]
+          redirect_chain = []
+          for item in chain:
+              parsed_item = urlsplit(item.url)
+              item_host = (parsed_item.hostname or "").casefold()
+              redirect_chain.append({
+                  "status": item.status_code,
+                  "scheme": parsed_item.scheme,
+                  "host": item_host,
+                  "url": item.url,
+              })
+              if parsed_item.scheme != "https":
+                  raise RuntimeError(f"Non-HTTPS manifest hop rejected: {item.url}")
+              if not (item_host == "s3.regru.cloud" or item_host.endswith(".s3.regru.cloud")):
+                  raise RuntimeError(f"Cross-host manifest hop rejected: {item.url}")
+          response.raise_for_status()
+          manifest = response.json()
+
+          if manifest.get("version") != version:
+              raise RuntimeError(
+                  f"S3 manifest version mismatch: db={version!r} s3={manifest.get('version')!r}"
+              )
+          if int(manifest.get("point_count") or -1) != int(final_map["dataset"]["point_count"]):
+              raise RuntimeError(
+                  f"S3 manifest point_count mismatch: db={final_map['dataset']['point_count']} s3={manifest.get('point_count')}"
+              )
+          if int(manifest.get("tile_count") or -1) != int(final_map["dataset"]["tile_count"]):
+              raise RuntimeError(
+                  f"S3 manifest tile_count mismatch: db={final_map['dataset']['tile_count']} s3={manifest.get('tile_count')}"
+              )
+
+          payload = {
+              "captured_at": utc_now(),
+              "stage5_job_result": os.environ.get("STAGE5_RESULT"),
+              "stage6_job_result": os.environ.get("STAGE6_RESULT"),
+              "quality_before": before_quality,
+              "quality_after": after_quality,
+              "quality_regressions": regressions,
+              "expected_map_point_count": final_expected,
+              "map_spatial_rejections": final_rejected,
+              "current_map": final_map,
+              "manifest_url": manifest_url,
+              "manifest_final_url": response.url,
+              "redirect_chain": redirect_chain,
+              "manifest_summary": {
+                  "version": manifest.get("version"),
+                  "layout": manifest.get("layout"),
+                  "point_count": manifest.get("point_count"),
+                  "tile_count": manifest.get("tile_count"),
+                  "pipeline_revision": manifest.get("pipeline_revision"),
+              },
+              "geocoding_after": after_geo,
+          }
+          print("=== STAGE78_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE78_JSON_END ===")
+
+          if regressions:
+              raise RuntimeError(f"GEO quality regression detected: {regressions}")
+          '@
+          $out = $probe | docker exec --env "STAGE4_BASELINE=$env:STAGE4_BASELINE" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Stage 7/8 evidence failed closed' }
