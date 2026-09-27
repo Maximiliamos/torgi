@@ -6,40 +6,61 @@ from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
 from bankrotai.torgi_russia import TorgiRussiaClient
 
 
-def _nextjs_search_html(items: list[dict], *, next_page: int | None = None) -> str:
-    flight = "27:" + json.dumps(
-        ["$", "$L95", None, {"lots": items}],
+def _nextjs_search_html(
+    items: list[dict],
+    *,
+    current_page: int = 1,
+    last_page: int = 1,
+    total: int | None = None,
+    per_page: int = 24,
+) -> str:
+    flight = "25:" + json.dumps(
+        [
+            "$",
+            "$L86",
+            None,
+            {
+                "initialLots": items,
+                "initialMeta": {
+                    "current_page": current_page,
+                    "last_page": last_page,
+                    "per_page": per_page,
+                    "total": len(items) if total is None else total,
+                },
+            },
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     ) + "\n"
     script_payload = json.dumps([1, flight], ensure_ascii=False)
     links = "".join(f'<a href="/lot/{item["id"]}">lot</a>' for item in items)
-    if next_page is not None:
-        links += f'<a href="/search?search=&categorie_childs%5B%5D=6&page={next_page}">{next_page}</a>'
-    return f"<html><body><main>{links}</main><script>self.__next_f.push({script_payload})</script></body></html>"
+    return (
+        "<html><body><main>"
+        + links
+        + f"</main><script>self.__next_f.push({script_payload})</script></body></html>"
+    )
 
 
-def _new_site_lot(*, lot_id: int = 7180653, region_id: int = 33) -> dict:
+def _new_site_lot(*, lot_id: int = 7180653, region_title: str = "Владимирская область") -> dict:
     return {
         "id": lot_id,
         "title": "Здание 33:01:000001:42",
-        "status": {"id": 1, "title": "Идёт приём заявок"},
+        "status": "Идёт приём заявок",
+        "status_id": 1,
         "pictures": [
             {
                 "id": 1,
-                "link": "https://example.test/full.jpg",
-                "thumb_link": "https://example.test/thumb.jpg",
-                "title": "photo.jpg",
+                "url": "https://example.test/full.jpg",
             }
         ],
         "start_price": 5105700,
         "current_price": 4900000,
-        "region": {"id": region_id, "title": "Владимирская область"},
-        "marketplace": {"id": 50, "title": "ЭТП.ТР"},
-        "trade_type": {"id": 5, "title": "Коммерческие торги"},
+        "price_difference": 205700,
+        "region_title": region_title,
+        "marketplace_title": "ЭТП.ТР",
+        "trade_type_title": "Коммерческие торги",
         "trade_form": "Открытый аукцион",
-        "trade_link": "https://example.test/trade/1",
-        "begin_offer_time": "2026-10-08 11:00:00",
+        "days_remaining": "10 дней до торгов",
         "category_ids": [6, 343],
     }
 
@@ -149,11 +170,13 @@ def test_torgi_russia_parse_new_search_payload() -> None:
     assert lots[0].start_price == 5105700
     assert lots[0].current_price == 4900000
     assert lots[0].raw_data["image_urls"] == ["https://example.test/full.jpg"]
-    assert lots[0].raw_data["marketplace"]["id"] == 50
+    assert lots[0].raw_data["marketplace"] == "ЭТП.ТР"
+    assert lots[0].raw_data["trade_type"] == "Коммерческие торги"
+    assert lots[0].raw_data["source_status"] == "Идёт приём заявок"
 
 
 def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:
-    html = _nextjs_search_html([_new_site_lot()], next_page=2)
+    html = _nextjs_search_html([_new_site_lot()], current_page=1, last_page=209, total=5000)
     records, metadata = TorgiRussiaClient.parse_next_search_payload(
         html,
         page_url=(
@@ -164,9 +187,11 @@ def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:
     )
 
     assert [item["id"] for item in records] == [7180653]
-    assert records[0]["trade_link"] == "https://example.test/trade/1"
+    assert records[0]["region_title"] == "Владимирская область"
     assert metadata["has_more"] is True
-    assert metadata["total_pages"] == 2
+    assert metadata["total_pages"] == 209
+    assert metadata["total"] == 5000
+    assert metadata["per_page"] == 24
 
 
 def test_torgi_russia_nextjs_parser_ignores_unlinked_widget_lots() -> None:
@@ -222,14 +247,14 @@ def test_torgi_russia_parse_detail_payload() -> None:
     assert "Начальная цена" in detail["description"]
 
 
-def test_torgi_russia_search_uses_public_nextjs_page_not_legacy_api() -> None:
+def test_torgi_russia_search_uses_verified_real_estate_categories() -> None:
     item = _new_site_lot()
-    html = _nextjs_search_html([item])
+    html = _nextjs_search_html([item], current_page=1, last_page=1, total=1)
 
     class Response:
         url = (
             "https://xn----etbpba5admdlad.xn--p1ai/"
-            "search?search=&categorie_childs%5B%5D=6&page=1"
+            "search?categorie_childs%5B%5D=7&page=1"
         )
         text = html
 
@@ -251,33 +276,68 @@ def test_torgi_russia_search_uses_public_nextjs_page_not_legacy_api() -> None:
     lots, metadata = client.search_lots(TorgiRussiaSearchFilters())
 
     assert session.called_url == "https://xn----etbpba5admdlad.xn--p1ai/search"
-    assert ("categorie_childs[]", 6) in session.called_params
+    selected_categories = [
+        value for key, value in session.called_params if key == "categorie_childs[]"
+    ]
+    assert selected_categories == [7, 33, 343, 9, 18, 17, 16]
     assert ("page", 1) in session.called_params
     assert len(lots) == 1
     assert metadata["transport"] == "public-nextjs-html"
+    assert metadata["per_page"] == 24
     assert lots[0].raw_data["transport"] == "public-nextjs-html"
 
 
-def test_torgi_russia_connector_pages_public_catalog_without_region_api() -> None:
+def test_torgi_russia_connector_pages_each_region_without_legacy_region_api() -> None:
     connector = TorgiRussiaConnector()
+    connector._region_ids = [33, 76]
     calls = []
 
     def search(filters):
         calls.append((filters.region_id, filters.page))
         return [], {
-            "has_more": filters.page == 1,
-            "total_pages": 2,
+            "has_more": filters.region_id == 33 and filters.page == 1,
+            "total_pages": 2 if filters.region_id == 33 else 1,
         }
 
     connector.client.search_lots = search
     first = asyncio.run(connector.search(TorgiRussiaSearchFilters()))
     second = asyncio.run(connector.search(TorgiRussiaSearchFilters(), first.next_cursor))
+    third = asyncio.run(connector.search(TorgiRussiaSearchFilters(), second.next_cursor))
 
-    assert calls == [(None, 1), (None, 2)]
-    assert first.next_cursor == "2"
-    assert second.next_cursor is None
-    assert second.metadata["progress_total"] == 2
+    assert calls == [(33, 1), (33, 2), (76, 1)]
+    assert first.next_cursor == "region:0:2"
+    assert second.next_cursor == "region:1:1"
+    assert third.next_cursor is None
+    assert third.metadata["regions_total"] == 2
+    assert third.metadata["progress_total"] == 2
 
 
-def test_torgi_russia_old_region_cursor_restarts_public_catalog() -> None:
-    assert TorgiRussiaConnector._decode_cursor("region:5:17") == 1
+def test_torgi_russia_legacy_numeric_cursor_maps_to_first_region() -> None:
+    assert TorgiRussiaConnector._decode_cursor("17") == (0, 17)
+    assert TorgiRussiaConnector._decode_cursor("region:5:17") == (5, 17)
+
+
+def test_torgi_russia_rejects_ignored_region_filter() -> None:
+    item = _new_site_lot(region_title="Тамбовская область")
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1&regions%5B%5D=33"
+        text = html
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    client = TorgiRussiaClient(session=Session())
+    try:
+        client.search_lots(TorgiRussiaSearchFilters(region_id=33))
+    except RuntimeError as exc:
+        assert "public region filter was not applied" in str(exc)
+    else:
+        raise AssertionError("ignored region filter must fail closed")

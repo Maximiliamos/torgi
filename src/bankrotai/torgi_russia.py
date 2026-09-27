@@ -17,7 +17,8 @@ from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
-PUBLIC_PAGE_SIZE = 20
+PUBLIC_PAGE_SIZE = 24
+REAL_ESTATE_CATEGORY_IDS = (7, 33, 343, 9, 18, 17, 16)
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 
@@ -98,17 +99,17 @@ class TorgiRussiaClient:
 
     def search_lots(self, filters: TorgiRussiaSearchFilters) -> tuple[list[NormalizedLot], dict]:
         page = max(1, int(filters.page))
-        params: list[tuple[str, str | int]] = [
-            ("search", ""),
-            ("categorie_childs[]", int(filters.category_id)),
-            ("page", page),
-        ]
+        category_ids = (
+            REAL_ESTATE_CATEGORY_IDS
+            if str(filters.category_id) == "6"
+            else (int(filters.category_id),)
+        )
+        params: list[tuple[str, str | int]] = [("search", "")]
+        params.extend(("categorie_childs[]", category_id) for category_id in category_ids)
+        params.append(("page", page))
         if filters.history_only:
             params.append(("history_only", 1))
         if filters.region_id is not None:
-            # The current public UI accepts array-style filters. Keep this as a
-            # best-effort narrowing for callers that already know a region ID;
-            # nationwide ingestion no longer depends on a separate region API.
             params.append(("regions[]", int(filters.region_id)))
 
         response = self.session.get(
@@ -122,13 +123,21 @@ class TorgiRussiaClient:
             page_url=response.url,
             current_page=page,
         )
-        if filters.region_id is not None:
-            records = [
-                item
+
+        if filters.region_id is not None and records:
+            requested_code = str(int(filters.region_id)).zfill(2)
+            observed_codes = {
+                code
                 for item in records
-                if isinstance(item.get("region"), dict)
-                and item["region"].get("id") == filters.region_id
-            ]
+                if item.get("region_title")
+                for code in [normalize_region_code(str(item.get("region_title") or ""))]
+                if code is not None
+            }
+            if observed_codes and observed_codes != {requested_code}:
+                raise RuntimeError(
+                    "Torgi Russia public region filter was not applied: "
+                    f"requested={requested_code} observed={sorted(observed_codes)}"
+                )
 
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
@@ -145,6 +154,7 @@ class TorgiRussiaClient:
             "has_more": bool(page_meta["has_more"]),
             "total_pages": page_meta["total_pages"],
             "total": page_meta.get("total"),
+            "per_page": page_meta.get("per_page"),
             "raw_endpoint": response.url,
             "region_id": filters.region_id,
             "transport": "public-nextjs-html",
@@ -175,6 +185,19 @@ class TorgiRussiaClient:
         return "".join(parts)
 
     @staticmethod
+    def _extract_named_json_value(text: str, key: str):
+        marker = f'"{key}":'
+        start = text.find(marker)
+        if start < 0:
+            return None
+        start += len(marker)
+        try:
+            value, _end = json.JSONDecoder().raw_decode(text, start)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return value
+
+    @staticmethod
     def _extract_balanced_json_object(text: str, start: int) -> str | None:
         depth = 0
         in_string = False
@@ -202,7 +225,15 @@ class TorgiRussiaClient:
     @classmethod
     def _extract_public_lot_records(cls, html: str, *, require_linked: bool = True) -> list[dict]:
         flight = cls._extract_next_flight_text(html)
+        initial_lots = cls._extract_named_json_value(flight, "initialLots")
         records: dict[int, dict] = {}
+        if isinstance(initial_lots, list):
+            for item in initial_lots:
+                if isinstance(item, dict) and isinstance(item.get("id"), int):
+                    records[item["id"]] = item
+
+        # Compatibility fallback for early/new variants that embed the same
+        # objects under a generic component property rather than initialLots.
         for match in LOT_OBJECT_START_RE.finditer(flight):
             raw_object = cls._extract_balanced_json_object(flight, match.start())
             if raw_object is None:
@@ -215,7 +246,10 @@ class TorgiRussiaClient:
                 isinstance(item, dict)
                 and isinstance(item.get("id"), int)
                 and isinstance(item.get("title"), str)
-                and isinstance(item.get("region"), dict)
+                and (
+                    isinstance(item.get("region"), dict)
+                    or isinstance(item.get("region_title"), str)
+                )
                 and ("start_price" in item or "current_price" in item)
             ):
                 records[item["id"]] = item
@@ -239,6 +273,16 @@ class TorgiRussiaClient:
     @staticmethod
     def _pagination_metadata(html: str, *, page_url: str, current_page: int, loaded: int) -> dict:
         flight = TorgiRussiaClient._extract_next_flight_text(html)
+        initial_meta = TorgiRussiaClient._extract_named_json_value(flight, "initialMeta")
+        if isinstance(initial_meta, dict):
+            last_page = max(current_page, int(initial_meta.get("last_page") or current_page))
+            return {
+                "has_more": current_page < last_page,
+                "total_pages": last_page,
+                "total": initial_meta.get("total"),
+                "per_page": initial_meta.get("per_page"),
+            }
+
         last_page_match = re.search(r'"(?:last_page|lastPage)"\s*:\s*(\d+)', flight)
         total_match = re.search(r'"total"\s*:\s*(\d+)', flight)
         if last_page_match:
@@ -247,6 +291,7 @@ class TorgiRussiaClient:
                 "has_more": current_page < last_page,
                 "total_pages": last_page,
                 "total": int(total_match.group(1)) if total_match else None,
+                "per_page": None,
             }
 
         soup = BeautifulSoup(html, "html.parser")
@@ -265,9 +310,10 @@ class TorgiRussiaClient:
                 "has_more": True,
                 "total_pages": max(observed_pages),
                 "total": None,
+                "per_page": None,
             }
 
-        # The new SSR search currently renders 20 lots per page. If pagination
+        # The verified new SSR search renders 24 lots per page. If pagination
         # controls are client-only, one extra request after an exact full final
         # page is harmless and safer than silently truncating a complete source.
         has_more = loaded >= PUBLIC_PAGE_SIZE
@@ -275,6 +321,7 @@ class TorgiRussiaClient:
             "has_more": has_more,
             "total_pages": current_page + 1 if has_more else current_page,
             "total": None,
+            "per_page": PUBLIC_PAGE_SIZE,
         }
 
     @classmethod
@@ -340,15 +387,23 @@ class TorgiRussiaClient:
                 continue
             region_value = item.get("region")
             region: dict = region_value if isinstance(region_value, dict) else {}
-            region_name = str(region.get("title") or "").strip() or None
+            region_name = (
+                str(item.get("region_title") or region.get("title") or "").strip()
+                or None
+            )
             status_value = item.get("status")
-            status: dict = status_value if isinstance(status_value, dict) else {}
+            status = (
+                status_value
+                if isinstance(status_value, (dict, str))
+                else {}
+            )
             pictures_value = item.get("pictures")
             pictures: list = pictures_value if isinstance(pictures_value, list) else []
             photos = [
-                str(picture.get("link") or picture.get("thumb_link"))
+                str(picture.get("url") or picture.get("link") or picture.get("thumb_link"))
                 for picture in pictures
-                if isinstance(picture, dict) and (picture.get("link") or picture.get("thumb_link"))
+                if isinstance(picture, dict)
+                and (picture.get("url") or picture.get("link") or picture.get("thumb_link"))
             ]
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(title)]
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
@@ -381,10 +436,12 @@ class TorgiRussiaClient:
                         "source_status": status,
                         "trade_link": item.get("trade_link"),
                         "category_ids": item.get("category_ids"),
-                        "marketplace": item.get("marketplace"),
-                        "trade_type": item.get("trade_type"),
+                        "marketplace": item.get("marketplace") or item.get("marketplace_title"),
+                        "trade_type": item.get("trade_type") or item.get("trade_type_title"),
                         "trade_form": item.get("trade_form"),
                         "begin_offer_time": item.get("begin_offer_time"),
+                        "status_id": item.get("status_id"),
+                        "days_remaining": item.get("days_remaining"),
                         "listing_fingerprint": sha256(
                             json.dumps(
                                 {
