@@ -613,36 +613,81 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
 
 
 def geocoding_progress(session: Any) -> dict[str, Any]:
-    """Return user-facing, exact queue counters plus the latest durable batch progress."""
+    """Return truthful GEO coverage, runnable work and retry-wait state."""
     population = (
         ProcessedLot.duplicate_of_id.is_(None),
         ProcessedLot.is_archived.is_(False),
         or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
     )
+    has_geo = exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
+    pending = or_(
+        ~has_geo,
+        (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
+    )
+    now = utc_now()
+
     total = int(session.scalar(select(func.count()).select_from(ProcessedLot).where(*population)) or 0)
     geocoded = int(
         session.scalar(
-            select(func.count())
-            .select_from(ProcessedLot)
-            .where(
-                *population,
-                exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
-            )
+            select(func.count()).select_from(ProcessedLot).where(*population, has_geo)
         )
         or 0
     )
     terminal = int(
         session.scalar(
             select(func.count())
-            .select_from(GeoFailure)
-            .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(*population, pending, GeoFailure.status == "terminal")
+        )
+        or 0
+    )
+    eligible_now = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
             .where(
                 *population,
-                GeoFailure.status == "terminal",
+                pending,
+                or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+                or_(
+                    GeoFailure.id.is_(None),
+                    GeoFailure.next_retry_at.is_(None),
+                    GeoFailure.next_retry_at <= now,
+                ),
             )
         )
         or 0
     )
+    waiting_for_retry = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                *population,
+                pending,
+                GeoFailure.status != "terminal",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
+        )
+        or 0
+    )
+    next_retry_at = session.scalar(
+        select(func.min(GeoFailure.next_retry_at))
+        .select_from(ProcessedLot)
+        .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+        .where(
+            *population,
+            pending,
+            GeoFailure.status != "terminal",
+            GeoFailure.next_retry_at.is_not(None),
+            GeoFailure.next_retry_at > now,
+        )
+    )
+
     latest = session.scalar(
         select(BackgroundTaskState)
         .where(BackgroundTaskState.task_type == "geocoding")
@@ -668,8 +713,17 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
     sample_lots = sum(processed for processed, seconds in samples if processed > 0 and seconds > 0)
     sample_seconds = sum(seconds for processed, seconds in samples if processed > 0 and seconds > 0)
     rate = sample_lots / sample_seconds if sample_lots and sample_seconds else None
-    actionable_remaining = max(0, total - geocoded - terminal)
-    eta_seconds = math.ceil(actionable_remaining / rate) if rate else None
+
+    actionable_remaining = eligible_now + waiting_for_retry
+    if actionable_remaining == 0:
+        eta_seconds = 0
+    elif eligible_now > 0 and rate:
+        # This ETA intentionally covers only work that can run now. Future retry
+        # windows are exposed separately and must not be presented as CPU/runtime.
+        eta_seconds = math.ceil(eligible_now / rate)
+    else:
+        eta_seconds = None
+
     elapsed_seconds = None
     if latest is not None and latest.started_at is not None:
         campaign = _CAMPAIGN_TASK_ID.match(latest.task_id)
@@ -691,19 +745,27 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             elapsed_seconds = _elapsed_seconds_since(latest.started_at)
         else:
             elapsed_seconds = math.ceil(float((latest.result_json or {}).get("duration_seconds") or 0))
+
     paused = is_geocoding_paused(session)
+    resolved = min(total, geocoded + terminal)
     return {
         "total": total,
         "geocoded": geocoded,
         "remaining": max(0, total - geocoded),
         "terminal_failures": terminal,
+        "resolved": resolved,
+        "resolved_percent": round((resolved / total * 100) if total else 100.0, 1),
         "actionable_remaining": actionable_remaining,
+        "eligible_now": eligible_now,
+        "waiting_for_retry": waiting_for_retry,
+        "next_retry_at": next_retry_at.isoformat() if next_retry_at is not None else None,
         "percent": round((geocoded / total * 100) if total else 100.0, 1),
         "paused": paused,
         "rate_per_second": round(rate, 3) if rate else None,
         "eta_seconds": eta_seconds,
+        "eta_scope": "eligible_now" if eta_seconds not in (None, 0) else None,
         "expected_completion_at": (datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)).isoformat()
-        if eta_seconds is not None and not paused
+        if eta_seconds is not None and eta_seconds > 0 and not paused
         else None,
         "elapsed_seconds": elapsed_seconds,
         "estimated_total_seconds": (elapsed_seconds + eta_seconds)
