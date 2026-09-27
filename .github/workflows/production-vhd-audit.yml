@@ -33,8 +33,13 @@ jobs:
           $vhdx = @()
           foreach ($profile in $profiles) {
             $dockerRoot = Join-Path $profile.LocalPath 'AppData\Local\Docker'
-            if (Test-Path $dockerRoot) {
-              $vhdx += @(Get-ChildItem $dockerRoot -Filter '*.vhdx' -File -Recurse -ErrorAction SilentlyContinue |
+            try {
+              $exists = Test-Path -LiteralPath $dockerRoot -ErrorAction Stop
+            } catch {
+              continue
+            }
+            if ($exists) {
+              $vhdx += @(Get-ChildItem -LiteralPath $dockerRoot -Filter '*.vhdx' -File -Recurse -ErrorAction SilentlyContinue |
                 ForEach-Object {
                   [pscustomobject]@{
                     path = $_.FullName
@@ -55,12 +60,19 @@ jobs:
               'AppData\Local\Docker\wsl\main\ext4.vhdx'
             )) {
               $candidate = Join-Path $profile.LocalPath $relative
-              if (Test-Path $candidate) {
-                $file = Get-Item $candidate
-                $knownCandidates += [pscustomobject]@{
-                  path = $candidate
-                  size_gb = [math]::Round($file.Length / 1GB, 2)
-                  modified = $file.LastWriteTimeUtc
+              try {
+                $exists = Test-Path -LiteralPath $candidate -ErrorAction Stop
+              } catch {
+                $exists = $false
+              }
+              if ($exists) {
+                $file = Get-Item -LiteralPath $candidate -ErrorAction SilentlyContinue
+                if ($null -ne $file) {
+                  $knownCandidates += [pscustomobject]@{
+                    path = $candidate
+                    size_gb = [math]::Round($file.Length / 1GB, 2)
+                    modified = $file.LastWriteTimeUtc
+                  }
                 }
               }
             }
