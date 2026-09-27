@@ -71,3 +71,32 @@ The audit is complete only when:
 - any stalled/progress-display defect is fixed and regression-tested;
 - valid GEO lots are represented in the current map dataset/public map as expected;
 - production health is green and there are no unexplained active audit blockers.
+
+
+## Continuation after Stage 3 production run
+
+The canonical Phase 3 full reconciliation run `36306099969` completed on
+`f9d04668ebfd538da98e6d11e78df4e87bf52d09` with an overall `partial`
+result. The source rows were terminal and fail-closed:
+
+- `lot-online.ru`: success / complete;
+- `bidexpert.ru`: success / complete;
+- `torgi.gov.ru`: external upstream disconnect, incomplete;
+- `tbankrot.ru`: explicit `access_limited`, incomplete;
+- `torgi-russia.ru`: coverage guard rejection, incomplete.
+
+Stages 4-8 continue only because no DB/internal failure was observed. Unknown or
+internal source failures are default-deny.
+
+The continuation workflow is
+`.github/workflows/production-geo-map-continuation-audit.yml`. It enforces:
+
+- GEO benchmark limits 50 → 100 → 250 → 500;
+- `processed == queued` for every mutating GEO batch;
+- default-deny for persistence/database GEO errors;
+- a bounded drain of currently eligible work only (no retry-time override);
+- quality regression checks before/after;
+- exact DB candidate count ↔ current map point count agreement;
+- DB tile count ↔ stored tile count agreement;
+- HTTPS-only REG.RU manifest access;
+- every redirect hop and final manifest host must be `s3.regru.cloud` or a subdomain.
