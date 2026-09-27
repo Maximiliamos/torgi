@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import requests
+
 from bankrotai.connectors.registry.torgi_gov import TorgiGovConnector
 from bankrotai.scraper_contracts import TorgiGovSearchFilters
 
@@ -66,3 +68,46 @@ def test_gis_connector_keeps_legacy_single_category_cursor() -> None:
     assert first.next_cursor == "2"
     assert second.next_cursor is None
     assert calls == [("2", 1), ("2", 2)]
+
+def test_gis_connector_retries_transient_connection_abort() -> None:
+    connector = TorgiGovConnector(concurrency=1, requests_per_second=1000)
+    attempts = 0
+
+    def flaky_search(filters):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise requests.ConnectionError(
+                "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+            )
+        return [], {"has_more": False, "total_pages": 1}
+
+    connector._batch_clients[0].search_lots = flaky_search
+    filters = TorgiGovSearchFilters(category_code="2", page=1)
+
+    results = connector._run_jobs(filters, [("2", "2", 1)])
+
+    assert results == [([], {"has_more": False, "total_pages": 1})]
+    assert attempts == 3
+
+
+def test_gis_connector_does_not_retry_non_transient_error() -> None:
+    connector = TorgiGovConnector(concurrency=1, requests_per_second=1000)
+    attempts = 0
+
+    def broken_search(filters):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("invalid response payload")
+
+    connector._batch_clients[0].search_lots = broken_search
+    filters = TorgiGovSearchFilters(category_code="2", page=1)
+
+    try:
+        connector._run_jobs(filters, [("2", "2", 1)])
+    except ValueError as exc:
+        assert str(exc) == "invalid response payload"
+    else:
+        raise AssertionError("non-transient connector failure must propagate")
+
+    assert attempts == 1

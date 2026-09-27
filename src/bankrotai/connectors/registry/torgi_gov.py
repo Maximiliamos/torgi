@@ -4,6 +4,8 @@ import asyncio
 import queue
 import threading
 import time
+
+import requests
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
@@ -130,8 +132,27 @@ class TorgiGovConnector(AuctionConnector):
                     try:
                         return client.search_lots(page_filters)
                     except Exception as exc:
-                        message = str(exc).lower()
-                        transient = any(code in message for code in ("429", "500", "502", "503", "504"))
+                        message = str(exc).casefold()
+                        transient = (
+                            isinstance(exc, (requests.ConnectionError, requests.Timeout))
+                            or any(
+                                marker in message
+                                for marker in (
+                                    "429",
+                                    "500",
+                                    "502",
+                                    "503",
+                                    "504",
+                                    "connection aborted",
+                                    "connection reset",
+                                    "remotedisconnected",
+                                    "timeout",
+                                    "timed out",
+                                    "ssl",
+                                    "tls",
+                                )
+                            )
+                        )
                         if not transient or attempt == 2:
                             raise
                         time.sleep(0.5 * (2 ** attempt))
