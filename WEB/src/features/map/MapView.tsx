@@ -739,7 +739,7 @@ function YandexDesktopMap({
 
   const yandexMapsUrl = yandexMapsApiUrl(import.meta.env.VITE_YANDEX_MAPS_API_KEY);
   const html = React.useMemo(
-    () => `<!doctype html><html><head><meta charset="utf-8"><script src="${yandexMapsUrl}"></script><style>
+    () => `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="origin"><script src="${yandexMapsUrl}"></script><style>
 html,body,#map{height:100%;margin:0}body{font:13px Arial,sans-serif;overflow:hidden}.hint{position:absolute;z-index:5;left:12px;top:12px;background:#fff;border:1px solid #cbd2dc;border-radius:4px;padding:9px 12px;color:#42526b;box-shadow:0 2px 8px #0002}
 </style></head><body><div id="map"></div><div id="hint" class="hint">Загрузка Яндекс.Карт…</div><script>
 const channel=${safeScriptJson(channel)};const instanceId=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());let map=null;let manager=null;let legacyManager=null;let tileManager=null;let lots=[];let mode='legacy';const tileObjects=new Map();const tileLots=new Map();let directEnabled=false;let directDataset=null;let directFilterKey='';let directGeneration=0;let directWanted=new Set();let directTimer=null;let cad=null;let selectedGeometry=null;let showCad=true;let selectedId=null;let pending=[];let overlayObjects=[];let viewportTimer=null;
@@ -787,6 +787,7 @@ if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textCon
       title="Яндекс.Карта лотов"
       srcDoc={html}
       sandbox="allow-scripts"
+      referrerPolicy="origin"
     />
   );
 }
