@@ -496,7 +496,7 @@ jobs:
           from bankrotai.services.geo_backfill import geocoding_diagnostic_report
           from bankrotai.services.map_bundle_store import normalize_map_region_code
 
-          baseline = json.loads(base64.b64decode(os.environ["STAGE4_BASELINE_B64"]).decode("utf-8-sig"))
+          baseline = json.loads(base64.b64decode("__STAGE4_BASELINE_B64__").decode("utf-8-sig"))
           before_quality = baseline["geocoding"]["quality"]
 
           def expected_map_points():
@@ -684,7 +684,8 @@ jobs:
           if regressions:
               raise RuntimeError(f"GEO quality regression detected: {regressions}")
           '@
-          $out = $probe | docker exec --env "STAGE4_BASELINE_B64=$baselineB64" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
+          $probe = $probe.Replace("__STAGE4_BASELINE_B64__", $baselineB64)
+          $out = $probe | docker exec --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
           if ($code -ne 0) { throw 'Stage 7/8 evidence failed closed' }
