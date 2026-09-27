@@ -166,6 +166,7 @@ describe("tile map startup", () => {
       },
       geocoding: {
         total: 1000, geocoded: 640, remaining: 360, terminal_failures: 7, percent: 64,
+        eligible_now: 360, waiting_for_retry: 0,
         eta_seconds: 7200, elapsed_seconds: 28800, estimated_total_seconds: 36000, rate_per_second: 0.05,
         expected_completion_at: "2026-09-17T18:30:00+03:00",
         task: { task_id: "geo-1", status: "running", progress: {
@@ -177,13 +178,13 @@ describe("tile map startup", () => {
 
     render(<MapView refreshToken={0} />);
 
-    expect(await screen.findByText("Геокодирование — 64.0%")).toBeInTheDocument();
-    expect(screen.getByText("640 из 1000 с координатами")).toBeInTheDocument();
-    expect(screen.getByText(/В очереди: 360/)).toBeInTheDocument();
+    expect(await screen.findByText("Координаты найдены — 64.0%")).toBeInTheDocument();
+    expect(screen.getByText(/640 из 1000 с координатами · без координат 360/)).toBeInTheDocument();
+    expect(screen.getByText(/Доступно сейчас: 360 · ждут повторной попытки: 0/)).toBeInTheDocument();
     expect(screen.getByText(/Текущий пакет: 125 из 250/)).toBeInTheDocument();
     expect(screen.getByText(/Запросы геокодера: 230 из 230 · из кеша 20/)).toBeInTheDocument();
     expect(screen.getByText(/torgi-russia.ru: 420 лотов/)).toBeInTheDocument();
-    expect(screen.getByText(/Оценка: 10 ч 0 мин всего · осталось ≈ 2 ч 0 мин/)).toBeInTheDocument();
+    expect(screen.getByText(/Текущая доступная очередь: ≈ 2 ч 0 мин/)).toBeInTheDocument();
     expect(screen.getByText(/завершение около/)).toBeInTheDocument();
   });
 
