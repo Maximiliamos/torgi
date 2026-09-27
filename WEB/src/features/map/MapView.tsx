@@ -393,6 +393,12 @@ function OperationProgressCard({
     ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
       .format(new Date(value.geocoding.expected_completion_at))
     : null;
+  const nextRetryTime = value.geocoding.next_retry_at
+    ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+      .format(new Date(value.geocoding.next_retry_at))
+    : null;
+  const eligibleNow = value.geocoding.eligible_now ?? value.geocoding.actionable_remaining ?? value.geocoding.remaining;
+  const waitingForRetry = value.geocoding.waiting_for_retry ?? 0;
   if (!activeSync && !batch && value.geocoding.remaining === 0) return null;
   return (
     <section className="mapOperationProgress" aria-label="Ход обработки данных">
@@ -420,15 +426,22 @@ function OperationProgressCard({
         </div>
       )}
       <div>
-        <strong>Геокодирование — {value.geocoding.percent.toFixed(1)}%</strong>
+        <strong>Координаты найдены — {value.geocoding.percent.toFixed(1)}%</strong>
         <progress max={100} value={value.geocoding.percent} />
-        <span>{value.geocoding.geocoded} из {value.geocoding.total} с координатами</span>
-        <small>В очереди: {value.geocoding.remaining} · окончательных ошибок: {value.geocoding.terminal_failures}</small>
-        {value.geocoding.eta_seconds != null && (
+        <span>{value.geocoding.geocoded} из {value.geocoding.total} с координатами · без координат {value.geocoding.remaining}</span>
+        <small>
+          Доступно сейчас: {eligibleNow} · ждут повторной попытки: {waitingForRetry} · окончательных ошибок: {value.geocoding.terminal_failures}
+        </small>
+        {value.geocoding.eta_seconds != null && value.geocoding.eta_seconds > 0 && eligibleNow > 0 && (
           <small>
-            Оценка: {durationLabel(value.geocoding.estimated_total_seconds)} всего · осталось ≈ {durationLabel(value.geocoding.eta_seconds)}
+            Текущая доступная очередь: ≈ {durationLabel(value.geocoding.eta_seconds)}
             {completionTime ? ` · завершение около ${completionTime}` : ""}
             {value.geocoding.rate_per_second ? ` · ${value.geocoding.rate_per_second.toFixed(2)} лота/с` : ""}
+          </small>
+        )}
+        {eligibleNow === 0 && waitingForRetry > 0 && (
+          <small className="mapOperationProgressStatus">
+            Сейчас доступных задач нет{nextRetryTime ? ` · следующая попытка после ${nextRetryTime}` : ""}
           </small>
         )}
         {value.geocoding.paused && <small className="mapOperationProgressStatus">Приостановлено: текущий пакет безопасно завершается.</small>}
