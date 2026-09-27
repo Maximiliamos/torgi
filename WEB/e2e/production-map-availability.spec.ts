@@ -22,10 +22,18 @@ async function openProductionApp(page: import("@playwright/test").Page): Promise
   const loginHeading = page.getByRole("heading", { name: "Вход" });
   const mapButton = page.getByRole("button", { name: "Карта", exact: true });
 
-  const loginVisible = await loginHeading.isVisible({ timeout: 5_000 }).catch(() => false);
+  let loginVisible = false;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (await mapButton.isVisible().catch(() => false)) return;
+    if (await loginHeading.isVisible().catch(() => false)) {
+      loginVisible = true;
+      break;
+    }
+    await page.waitForTimeout(500);
+  }
+
   if (!loginVisible) {
-    await expect(mapButton).toBeVisible({ timeout: 30_000 });
-    return;
+    throw new Error(`Production app did not show either the map or login form within 30s (url=${page.url()})`);
   }
 
   if (!password) throw new Error("E2E_PASSWORD is required when production auth is enabled");
