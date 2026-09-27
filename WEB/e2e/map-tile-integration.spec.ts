@@ -83,8 +83,8 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator(".appShell")).toBeVisible();
   await page.getByRole("button", { name: "Карта", exact: true }).click();
-  await expect(page.getByLabel("Ход обработки данных")).toContainText("Геокодирование — 64.0%");
-  await expect(page.getByLabel("Ход обработки данных")).toContainText("В очереди: 360");
+  await expect(page.getByLabel("Ход обработки данных")).toContainText("Координаты найдены — 64.0%");
+  await expect(page.getByLabel("Ход обработки данных")).toContainText("Доступно сейчас: 360 · ждут повторной попытки: 0");
   await expect(page.getByLabel("Ход обработки данных")).toContainText("Текущий пакет: 125 из 250");
   const frameElement = page.locator('iframe[title="Яндекс.Карта лотов"]');
   await expect(frameElement).toBeVisible();
