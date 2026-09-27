@@ -13,6 +13,29 @@ if (!MAP_DATASET_REVISION) {
   throw new Error("MAP_DATASET_REVISION is missing from map_dataset_version.py");
 }
 
+async function openProductionApp(page: import("@playwright/test").Page): Promise<void> {
+  const username = process.env.E2E_USERNAME || "reader";
+  const password = process.env.E2E_PASSWORD;
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  const loginHeading = page.getByRole("heading", { name: "Вход" });
+  const mapButton = page.getByRole("button", { name: "Карта", exact: true });
+
+  const loginVisible = await loginHeading.isVisible({ timeout: 5_000 }).catch(() => false);
+  if (!loginVisible) {
+    await expect(mapButton).toBeVisible({ timeout: 30_000 });
+    return;
+  }
+
+  if (!password) throw new Error("E2E_PASSWORD is required when production auth is enabled");
+  await page.getByLabel("Логин").fill(username);
+  await page.getByLabel("Пароль").fill(password);
+  await page.getByRole("button", { name: "Войти" }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
+    .toBeVisible({ timeout: 40_000 });
+}
+
 test.skip(
   process.env.E2E_PRODUCTION_AUDIT !== "1",
   "The production map gate runs only in the dedicated reliability job.",
@@ -20,17 +43,7 @@ test.skip(
 
 test("direct map serves five spatial shards without the bulk viewport API", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
-  const username = process.env.E2E_USERNAME || "reader";
-  const password = process.env.E2E_PASSWORD;
-  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
-
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Логин").fill(username);
-  await page.getByLabel("Пароль").fill(password);
-  await page.getByRole("button", { name: "Войти" }).click();
-  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
-    .toBeVisible({ timeout: 40_000 });
+  await openProductionApp(page);
 
   const bulkRequests: string[] = [];
   page.on("request", (request) => {
@@ -131,17 +144,7 @@ test("direct map serves five spatial shards without the bulk viewport API", asyn
 
 test("direct prepared tiles are published and readable from REG.RU S3", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
-  const username = process.env.E2E_USERNAME || "reader";
-  const password = process.env.E2E_PASSWORD;
-  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
-
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Логин").fill(username);
-  await page.getByLabel("Пароль").fill(password);
-  await page.getByRole("button", { name: "Войти" }).click();
-  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
-    .toBeVisible({ timeout: 40_000 });
+  await openProductionApp(page);
 
   const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
     timeout: 30_000,
@@ -325,17 +328,7 @@ test("direct prepared tiles are published and readable from REG.RU S3", async ({
 
 test("filtered map stays responsive for four concurrent requests", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
-  const username = process.env.E2E_USERNAME || "reader";
-  const password = process.env.E2E_PASSWORD;
-  if (!password) throw new Error("E2E_PASSWORD is required for the production map gate");
-
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Логин").fill(username);
-  await page.getByLabel("Пароль").fill(password);
-  await page.getByRole("button", { name: "Войти" }).click();
-  await expect(page.getByRole("button", { name: new RegExp(`Выйти: ${username}`) }))
-    .toBeVisible({ timeout: 40_000 });
+  await openProductionApp(page);
 
   const datasetResponse = await page.context().request.get("/api/map/datasets/current", {
     timeout: 30_000,
