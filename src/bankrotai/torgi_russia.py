@@ -228,9 +228,9 @@ class TorgiRussiaClient:
         linked_ids: set[int] = set()
         for anchor in soup.select("a[href*='/lot/']"):
             candidate = urljoin(BASE_URL, str(anchor.get("href") or ""))
-            match = re.fullmatch(r"/lot/(\d+)/?", urlparse(candidate).path)
-            if match:
-                linked_ids.add(int(match.group(1)))
+            link_match = re.fullmatch(r"/lot/(\d+)/?", urlparse(candidate).path)
+            if link_match:
+                linked_ids.add(int(link_match.group(1)))
         if require_linked and linked_ids:
             records = {key: value for key, value in records.items() if key in linked_ids}
 
