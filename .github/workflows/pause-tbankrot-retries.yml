@@ -1,0 +1,76 @@
+name: Pause TBankrot retries
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths: ['.github/workflows/pause-tbankrot-retries.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  pause:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Revoke TBankrot retry tasks and release their runs
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.core import utc_now
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
+          from bankrotai.tasks import celery_app
+
+          target = "tbankrot.ru"
+          revoked = []
+          inspect = celery_app.control.inspect(timeout=3)
+          for bucket, payload in (("active", inspect.active() or {}), ("reserved", inspect.reserved() or {}), ("scheduled", inspect.scheduled() or {})):
+              for worker, tasks in payload.items():
+                  for item in tasks or []:
+                      req = item.get("request") or {}
+                      task_id = item.get("id") or req.get("id")
+                      name = str(item.get("name") or req.get("name") or "")
+                      args = str(item.get("args") or req.get("args") or "")
+                      if not task_id or "automatic_nationwide_source_retry_task" not in name or target not in args:
+                          continue
+                      celery_app.control.revoke(task_id, terminate=(bucket == "active"))
+                      revoked.append({"bucket": bucket, "worker": worker, "task_id": task_id})
+
+          released = []
+          now = utc_now().replace(tzinfo=None)
+          with SessionLocal() as session:
+              runs = session.scalars(
+                  select(LotSyncRun)
+                  .where(
+                      LotSyncRun.trigger_type == "scheduled_retry",
+                      LotSyncRun.status.in_(("queued", "running")),
+                  )
+                  .order_by(LotSyncRun.created_at.desc())
+              ).all()
+              for run in runs:
+                  rows = session.scalars(
+                      select(LotSyncSourceRun).where(LotSyncSourceRun.sync_run_id == run.id)
+                  ).all()
+                  if len(rows) != 1 or rows[0].source_system != target:
+                      continue
+                  run.status = "failed"
+                  run.finished_at = now
+                  run.heartbeat_at = now
+                  run.lease_expires_at = None
+                  run.error_message = "TBankrot paused pending refreshed authenticated cookies"
+                  row = rows[0]
+                  if row.status in ("queued", "running"):
+                      row.status = "failed"
+                      row.complete_source_run = False
+                      row.finished_at = now
+                      row.error_message = run.error_message
+                  released.append(run.id)
+              session.commit()
+
+          print(json.dumps({"revoked": revoked, "released_runs": released}, ensure_ascii=False, indent=2))
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0) { throw 'TBankrot pause failed' }
+          $out | ForEach-Object { Write-Output $_ }
