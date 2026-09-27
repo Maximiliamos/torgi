@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/phase3-lite-full-reconcile.yml'
       - '.github/workflows/home-secondary-deploy.yml'
+      - 'src/bankrotai/services/map_builder.py'
 
 permissions:
   actions: read
