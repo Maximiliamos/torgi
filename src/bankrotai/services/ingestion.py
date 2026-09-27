@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
 MIN_COVERAGE_GUARD_BASELINE = 20
 MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
+REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
+COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 2
+COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,10 +430,23 @@ class NationwideIngestionService:
                 active_baseline >= MIN_COVERAGE_GUARD_BASELINE
                 and result.items_seen < active_baseline * MIN_COMPLETE_RUN_COVERAGE_RATIO
             ):
-                result.complete_source_run = False
-                raise RuntimeError(
-                    "source coverage guard rejected reconciliation: "
-                    f"seen={result.items_seen}, active_baseline={active_baseline}"
+                collapse_confirmed = self._repeatable_coverage_collapse_confirmed(
+                    run_id,
+                    spec.source_id,
+                    result.items_seen,
+                )
+                if not collapse_confirmed:
+                    result.complete_source_run = False
+                    raise RuntimeError(
+                        "source coverage guard rejected reconciliation: "
+                        f"seen={result.items_seen}, active_baseline={active_baseline}"
+                    )
+                logger.warning(
+                    "Accepting repeatable coverage collapse for %s after independent stable full-run evidence: "
+                    "seen=%s active_baseline=%s",
+                    spec.source_id,
+                    result.items_seen,
+                    active_baseline,
                 )
             result.items_archived = self._archive_missing_after_complete_run(
                 run_id,
@@ -454,6 +470,69 @@ class NationwideIngestionService:
             if region_code is not None:
                 query = query.where(SourceLot.region_code == region_code)
             return len(session.scalars(query).all())
+
+
+    def _repeatable_coverage_collapse_confirmed(
+        self,
+        run_id: str,
+        source_id: str,
+        items_seen: int,
+    ) -> bool:
+        """Allow a source-specific cardinality collapse only after repeatable full-run evidence.
+
+        The generic 50% coverage guard remains fail-closed. Torgi Russia is allowed
+        to move past an inflated historical baseline only when either two prior
+        coverage-guard runs reached source end with a stable low cardinality, or
+        the immediately preceding accepted complete run observed the same stable
+        cardinality. Missing rows still require two accepted complete runs before
+        archival, so this override never turns one anomalous response into deletion.
+        """
+        if (
+            source_id not in REPEATABLE_COVERAGE_COLLAPSE_SOURCES
+            or items_seen < MIN_COVERAGE_GUARD_BASELINE
+        ):
+            return False
+
+        coverage_error_prefix = "source coverage guard rejected reconciliation:"
+        with self.session_factory() as session:
+            evidence = session.scalars(
+                select(LotSyncSourceRun)
+                .where(
+                    LotSyncSourceRun.source_system == source_id,
+                    LotSyncSourceRun.sync_run_id != run_id,
+                    or_(
+                        LotSyncSourceRun.complete_source_run.is_(True),
+                        LotSyncSourceRun.error_message.startswith(coverage_error_prefix),
+                    ),
+                )
+                .order_by(
+                    LotSyncSourceRun.finished_at.desc(),
+                    LotSyncSourceRun.id.desc(),
+                )
+                .limit(COVERAGE_COLLAPSE_CONFIRMATION_RUNS)
+            ).all()
+
+        def stable(row: LotSyncSourceRun) -> bool:
+            previous_seen = int(row.items_seen or 0)
+            if previous_seen < MIN_COVERAGE_GUARD_BASELINE:
+                return False
+            denominator = max(previous_seen, items_seen)
+            return abs(previous_seen - items_seen) / denominator <= COVERAGE_COLLAPSE_STABILITY_TOLERANCE
+
+        if evidence:
+            previous = evidence[0]
+            if previous.status == "success" and previous.complete_source_run and stable(previous):
+                return True
+
+        if len(evidence) < COVERAGE_COLLAPSE_CONFIRMATION_RUNS:
+            return False
+        return all(
+            row.status == "failed"
+            and not row.complete_source_run
+            and str(row.error_message or "").startswith(coverage_error_prefix)
+            and stable(row)
+            for row in evidence
+        )
 
     async def _persist_page(
         self,
