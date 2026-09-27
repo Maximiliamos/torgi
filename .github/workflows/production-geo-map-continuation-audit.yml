@@ -28,6 +28,7 @@ jobs:
 
           from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
           from bankrotai.services.ingestion import default_source_specs
+          from bankrotai.tasks import _unpaused_source_specs
 
           ALLOWED_EXTERNAL = {"access_limited", "coverage_guard", "upstream"}
           INTERNAL_MARKERS = (
@@ -56,7 +57,7 @@ jobs:
                   return "upstream"
               return "unknown"
 
-          configured = [spec.source_id for spec in default_source_specs()]
+          configured = [spec.source_id for spec in _unpaused_source_specs(default_source_specs())]
           with SessionLocal() as session:
               run = session.scalar(
                   select(LotSyncRun)
