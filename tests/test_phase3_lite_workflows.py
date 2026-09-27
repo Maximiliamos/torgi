@@ -65,3 +65,8 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "-VerifyRestore:$verify" in backup
     assert "[Phase 3] Backup/restore alert" in backup
     assert "cancel-in-progress: false" in backup
+
+    full_reconcile = (ROOT / ".github" / "workflows" / "phase3-lite-full-reconcile.yml").read_text(encoding="utf-8")
+    assert "_unpaused_source_specs(default_source_specs())" in full_reconcile
+    assert "configured_sources" in full_reconcile
+    assert "source set mismatch" in full_reconcile
