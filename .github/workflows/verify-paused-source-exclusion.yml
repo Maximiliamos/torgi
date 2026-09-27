@@ -1,0 +1,92 @@
+name: Verify paused source exclusion
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths: ['.github/workflows/verify-paused-source-exclusion.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Verify TBankrot stays out of automatic source work
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from sqlalchemy import select
+
+          from bankrotai.core import get_app_setting
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
+          from bankrotai.tasks import celery_app
+
+          with SessionLocal() as session:
+              latest = session.scalar(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.trigger_type == "scheduled_fast")
+                  .order_by(LotSyncRun.created_at.desc())
+                  .limit(1)
+              )
+              if latest is None:
+                  raise RuntimeError("No scheduled_fast run found")
+              rows = session.scalars(
+                  select(LotSyncSourceRun)
+                  .where(LotSyncSourceRun.sync_run_id == latest.id)
+                  .order_by(LotSyncSourceRun.source_system)
+              ).all()
+              run_payload = {
+                  "id": latest.id,
+                  "status": latest.status,
+                  "total_sources": latest.total_sources,
+                  "created_at": latest.created_at,
+                  "started_at": latest.started_at,
+                  "finished_at": latest.finished_at,
+                  "sources": [row.source_system for row in rows],
+              }
+
+          tbankrot_tasks = []
+          inspect = celery_app.control.inspect(timeout=3)
+          for bucket, payload in (
+              ("active", inspect.active() or {}),
+              ("reserved", inspect.reserved() or {}),
+              ("scheduled", inspect.scheduled() or {}),
+          ):
+              for worker, tasks in payload.items():
+                  for item in tasks or []:
+                      req = item.get("request") or {}
+                      name = str(item.get("name") or req.get("name") or "")
+                      args = str(item.get("args") or req.get("args") or "")
+                      if "tbankrot.ru" in args:
+                          tbankrot_tasks.append({
+                              "bucket": bucket,
+                              "worker": worker,
+                              "id": item.get("id") or req.get("id"),
+                              "name": name,
+                              "args": args[:500],
+                          })
+
+          pause_value = get_app_setting("source_paused:tbankrot.ru", "false")
+          result = {
+              "pause_value": pause_value,
+              "latest_scheduled_fast": run_payload,
+              "tbankrot_celery_tasks": tbankrot_tasks,
+          }
+          print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+          if str(pause_value).strip().casefold() not in {"1", "true", "yes", "on"}:
+              raise RuntimeError("TBankrot pause flag is not enabled")
+          if int(run_payload["total_sources"] or 0) != 4:
+              raise RuntimeError(f"Expected 4 scheduled-fast sources, got {run_payload['total_sources']}")
+          if "tbankrot.ru" in run_payload["sources"]:
+              raise RuntimeError("TBankrot appeared in latest scheduled_fast source rows")
+          if tbankrot_tasks:
+              raise RuntimeError(f"TBankrot still present in Celery queues: {tbankrot_tasks}")
+          '@
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) { throw 'Paused-source verification failed' }
