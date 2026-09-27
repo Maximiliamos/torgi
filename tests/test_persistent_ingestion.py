@@ -231,6 +231,11 @@ def test_detail_sources_enrich_only_new_or_changed_listings(sessions, source_id:
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
     asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
     assert connector.enrichment_calls == 2
+    connector.compatible_detail_enrichment_versions = frozenset({2, 3})
+    connector.detail_enrichment_version = 3
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
+    assert connector.enrichment_calls == 2
     connector.listing_fingerprint = "changed"
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
     asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
