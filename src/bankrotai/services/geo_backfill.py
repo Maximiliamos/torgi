@@ -764,8 +764,8 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "rate_per_second": round(rate, 3) if rate else None,
         "eta_seconds": eta_seconds,
         "eta_scope": "eligible_now" if eta_seconds not in (None, 0) else None,
-        "expected_completion_at": (datetime.now(timezone.utc) + timedelta(seconds=int(eta_seconds))).isoformat()
-        if eta_seconds not in (None, 0) and not paused
+        "expected_completion_at": (datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)).isoformat()
+        if eta_seconds is not None and eta_seconds > 0 and not paused
         else None,
         "elapsed_seconds": elapsed_seconds,
         "estimated_total_seconds": (elapsed_seconds + eta_seconds)
