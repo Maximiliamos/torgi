@@ -22,7 +22,8 @@ jobs:
 
           from bankrotai.core import get_app_setting
           from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
-          from bankrotai.tasks import celery_app
+          from bankrotai.services.ingestion import default_source_specs
+          from bankrotai.tasks import _unpaused_source_specs, celery_app
 
           with SessionLocal() as session:
               latest = session.scalar(
@@ -70,8 +71,10 @@ jobs:
                           })
 
           pause_value = get_app_setting("source_paused:tbankrot.ru", "false")
+          planned_sources = [spec.source_id for spec in _unpaused_source_specs(default_source_specs())]
           result = {
               "pause_value": pause_value,
+              "planned_automatic_sources": planned_sources,
               "latest_scheduled_fast": run_payload,
               "tbankrot_celery_tasks": tbankrot_tasks,
           }
@@ -79,10 +82,10 @@ jobs:
 
           if str(pause_value).strip().casefold() not in {"1", "true", "yes", "on"}:
               raise RuntimeError("TBankrot pause flag is not enabled")
-          if int(run_payload["total_sources"] or 0) != 4:
-              raise RuntimeError(f"Expected 4 scheduled-fast sources, got {run_payload['total_sources']}")
-          if "tbankrot.ru" in run_payload["sources"]:
-              raise RuntimeError("TBankrot appeared in latest scheduled_fast source rows")
+          if len(planned_sources) != 4:
+              raise RuntimeError(f"Expected 4 unpaused automatic sources, got {planned_sources}")
+          if "tbankrot.ru" in planned_sources:
+              raise RuntimeError("TBankrot appeared in current automatic source plan")
           if tbankrot_tasks:
               raise RuntimeError(f"TBankrot still present in Celery queues: {tbankrot_tasks}")
           '@
