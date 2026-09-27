@@ -298,6 +298,63 @@ def test_compatible_detail_version_reuses_persisted_enrichment(sessions) -> None
     assert connector.enrichment_calls == 2
 
 
+
+def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -> None:
+    class StableDetailConnector(FakeConnector):
+        source_id = "torgi-russia.ru"
+        capabilities = frozenset({"search", "detail_enrichment"})
+        detail_enrichment_version = 4
+        compatible_detail_enrichment_versions = frozenset({3, 4})
+        detail_enrichment_on_listing_change = False
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.enrichment_calls = 0
+            self.listing_fingerprint = "old-transport"
+
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            item = lot("torgi-russia:stable-detail")
+            item.source = "torgi-russia"
+            item.source_system = self.source_id
+            item.description = item.title
+            item.address = None
+            item.cadastral_number = None
+            item.raw_data = {
+                "region_code": "76",
+                "listing_fingerprint": self.listing_fingerprint,
+            }
+            return ConnectorPage(items=[item])
+
+        async def enrich_lot(self, item: NormalizedLot) -> NormalizedLot:
+            self.enrichment_calls += 1
+            item.address = "Ярославль, ул. Свободы, 1"
+            item.cadastral_number = "76:23:010101:99"
+            item.description = "Стабильные detail-поля"
+            item.detail_level = "detail"
+            item.raw_data["detail_enrichment_status"] = "success"
+            return item
+
+    connector = StableDetailConnector()
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
+
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
+    assert connector.enrichment_calls == 1
+
+    connector.listing_fingerprint = "new-nextjs-transport"
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
+
+    assert connector.enrichment_calls == 1
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        assert row is not None
+        assert row.address == "Ярославль, ул. Свободы, 1"
+        assert row.cadastral_number == "76:23:010101:99"
+        assert row.raw_data["listing_fingerprint"] == "new-nextjs-transport"
+        assert row.raw_data["detail_enrichment_status"] == "success"
+
+
 def test_duplicate_external_id_across_pages_is_counted_once(sessions) -> None:
     service = NationwideIngestionService(sessions)
     _, result = run_with(service, FakeConnector([[lot()], [lot()]]))
