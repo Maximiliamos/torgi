@@ -1021,3 +1021,63 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
     response = TestClient(api.app).get("/api/map/datasets/current")
     assert response.status_code == 200
     assert response.json()["version"] == current_result["version"]
+
+
+
+def test_storage_statistics_use_dataset_metadata_without_scanning_tiles():
+    factory = _database()
+    with factory() as session:
+        session.add_all(
+            [
+                MapDataset(
+                    version="ready-current",
+                    status="ready",
+                    is_current=True,
+                    point_count=10,
+                    tile_count=100,
+                ),
+                MapDataset(
+                    version="ready-old",
+                    status="ready",
+                    is_current=False,
+                    point_count=8,
+                    tile_count=80,
+                ),
+                MapDataset(
+                    version="failed-old",
+                    status="failed",
+                    is_current=False,
+                    point_count=7,
+                    tile_count=70,
+                ),
+            ]
+        )
+        session.commit()
+
+        statistics = map_dataset_storage_statistics(session)
+
+    assert statistics["dataset_count"] == 3
+    assert statistics["current_dataset_count"] == 1
+    assert statistics["non_current_dataset_count"] == 2
+    assert statistics["tile_count"] == 250
+    assert statistics["non_current_tile_count"] == 150
+    assert statistics["failed_or_rejected_tile_count"] == 70
+
+
+def test_post_promotion_storage_diagnostic_failure_does_not_invalidate_current(monkeypatch):
+    factory = _database()
+
+    def fail_storage_diagnostics(_session):
+        raise RuntimeError("diagnostic statement timeout")
+
+    monkeypatch.setattr(map_builder, "map_dataset_storage_statistics", fail_storage_diagnostics)
+
+    result = build_map_dataset(factory)
+
+    assert result["build_status"] == "success"
+    assert result["promotion_status"] == "published"
+    assert result["storage"] == {"diagnostics_unavailable": 1}
+    with factory() as session:
+        current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
+        assert current is not None
+        assert current.status == "ready"

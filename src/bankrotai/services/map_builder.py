@@ -38,30 +38,29 @@ MIN_DIMENSION_COVERAGE_BASELINE = 20
 
 
 def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
-    """Return retention diagnostics without deleting historical datasets."""
-    datasets = session.execute(select(MapDataset.id, MapDataset.status, MapDataset.is_current)).all()
-    non_current_ids = [row.id for row in datasets if not row.is_current]
-    failed_or_rejected_ids = [row.id for row in datasets if row.status in {"failed", "rejected"}]
+    """Return retention diagnostics without scanning the large map_tiles table.
 
-    def tile_count(dataset_ids: list[int] | None = None) -> int:
-        statement = select(func.count(MapTile.id))
-        if dataset_ids is not None:
-            if not dataset_ids:
-                return 0
-            statement = statement.where(MapTile.dataset_id.in_(dataset_ids))
-        return int(session.scalar(statement) or 0)
+    MapDataset.tile_count is finalized from the actual inserted row count before
+    publication/promotion. Summing that metadata keeps this post-promotion
+    diagnostic bounded even when hundreds of historical datasets exist.
+    """
+    datasets = session.execute(
+        select(MapDataset.id, MapDataset.status, MapDataset.is_current, MapDataset.tile_count)
+    ).all()
+    non_current = [row for row in datasets if not row.is_current]
+    failed_or_rejected = [row for row in datasets if row.status in {"failed", "rejected"}]
 
     return {
         "dataset_count": len(datasets),
         "current_dataset_count": sum(1 for row in datasets if row.is_current),
-        "non_current_dataset_count": len(non_current_ids),
+        "non_current_dataset_count": len(non_current),
         "building_dataset_count": sum(1 for row in datasets if row.status == "building"),
         "ready_dataset_count": sum(1 for row in datasets if row.status == "ready"),
         "failed_dataset_count": sum(1 for row in datasets if row.status == "failed"),
         "rejected_dataset_count": sum(1 for row in datasets if row.status == "rejected"),
-        "tile_count": tile_count(),
-        "non_current_tile_count": tile_count(non_current_ids),
-        "failed_or_rejected_tile_count": tile_count(failed_or_rejected_ids),
+        "tile_count": sum(int(row.tile_count or 0) for row in datasets),
+        "non_current_tile_count": sum(int(row.tile_count or 0) for row in non_current),
+        "failed_or_rejected_tile_count": sum(int(row.tile_count or 0) for row in failed_or_rejected),
     }
 
 
@@ -356,6 +355,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     """Build a complete dataset, then atomically make it current."""
     started = time.monotonic()
     build_completed = False
+    promotion_completed = False
+    tile_count = 0
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     settings = get_settings()
     version = build_map_dataset_version(
@@ -469,7 +470,6 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "Map dataset excluded spatially invalid coordinates: counts=%s",
                 spatial_rejection_counts,
             )
-        tile_count = 0
         with session_factory() as session:
             for zoom in range(MAX_DATASET_ZOOM + 1):
                 buckets: dict[tuple[int, int], list[dict]] = defaultdict(list)
@@ -575,6 +575,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             expected_current_id=expected_current_id,
             dimension_failures=dimension_failures,
         )
+        promotion_completed = True
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])
         logger.info(
@@ -583,8 +584,18 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             promotion_status,
             total_duration_ms,
         )
-        with session_factory() as session:
-            storage = map_dataset_storage_statistics(session)
+        try:
+            with session_factory() as session:
+                storage = map_dataset_storage_statistics(session)
+        except Exception:
+            # Publication/promotion is authoritative. Retention telemetry must
+            # never retroactively invalidate an already promoted dataset.
+            logger.exception(
+                "Map dataset storage diagnostics failed after promotion: version=%s dataset_id=%s",
+                version,
+                dataset_id,
+            )
+            storage = {"diagnostics_unavailable": 1}
         return {
             "version": version,
             "build_status": "success",
@@ -599,12 +610,30 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             **promotion,
         }
     except Exception:
-        with session_factory() as session:
-            dataset = session.get(MapDataset, dataset_id)
-            if dataset is not None:
-                dataset.status = "failed"
-                session.commit()
-        if build_completed:
+        if not promotion_completed:
+            with session_factory() as session:
+                dataset = session.get(MapDataset, dataset_id)
+                if dataset is not None:
+                    dataset.status = "failed"
+                    try:
+                        dataset.tile_count = int(
+                            session.scalar(
+                                select(func.count(MapTile.id)).where(MapTile.dataset_id == dataset_id)
+                            )
+                            or 0
+                        )
+                    except Exception:
+                        # Preserve failure reporting even if the database itself is degraded.
+                        dataset.tile_count = max(int(dataset.tile_count or 0), tile_count)
+                    session.commit()
+        if promotion_completed:
+            logger.exception(
+                "Map dataset post-promotion step failed: version=%s dataset_id=%s duration_ms=%s",
+                version,
+                dataset_id,
+                round((time.monotonic() - started) * 1000),
+            )
+        elif build_completed:
             logger.exception(
                 "Map dataset promotion failed after successful build: version=%s dataset_id=%s duration_ms=%s",
                 version,
