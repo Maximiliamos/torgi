@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
-from dataclasses import dataclass, field
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,8 +16,10 @@ from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 
 
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
-API_BASE_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api"
+PUBLIC_SEARCH_PATH = "/search"
+PUBLIC_PAGE_SIZE = 20
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
+LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 
 
 def normalize_cadastral_number(value: str) -> str:
@@ -30,6 +32,8 @@ class TorgiRussiaDetails:
     gis_torgi_url: str | None = None
     etp_url: str | None = None
     image_urls: list[str] = field(default_factory=list)
+    cadastral_numbers: list[str] = field(default_factory=list)
+    description: str | None = None
     procedure_number: str | None = None
     address: str | None = None
     category: str | None = None
@@ -43,6 +47,8 @@ class TorgiRussiaDetails:
             "gis_torgi_url": self.gis_torgi_url,
             "etp_url": self.etp_url,
             "torgi_russia_image_urls": list(self.image_urls),
+            "cadastral_numbers": list(self.cadastral_numbers),
+            "description": self.description,
             "address": self.address,
             "category": self.category,
             "application_start_at": self.application_start_at,
@@ -52,100 +58,241 @@ class TorgiRussiaDetails:
 
 
 class TorgiRussiaClient:
-    """Find a matching Torgi Rossii card by cadastral number and parse its gallery."""
+    """Read the public Next.js site without depending on the retired API host."""
 
-    def __init__(self, *, timeout: float = 15, session: requests.Session | None = None):
+    def __init__(self, *, timeout: float = 30, session: requests.Session | None = None):
         self.timeout = timeout
         self.session = session or requests.Session()
-        self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "ru-RU,ru;q=0.9",
-            "Accept": "application/json",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Cache-Control": "no-cache",
+            }
+        )
 
     def find_by_cadastral_numbers(self, values: list[str]) -> TorgiRussiaDetails | None:
         cadastral_numbers = [normalize_cadastral_number(value) for value in values if value]
         for cadastral_number in dict.fromkeys(cadastral_numbers):
-            response = self.session.post(
-                f"{API_BASE_URL}/search",
-                json={"search": cadastral_number, "page": 1, "history_only": 0},
+            response = self.session.get(
+                urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
+                params={"search": cadastral_number, "page": 1},
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            lot_url = self._matching_lot_url_from_payload(response.json(), cadastral_number)
+            records, _ = self.parse_next_search_payload(
+                response.text,
+                page_url=response.url,
+                current_page=1,
+            )
+            lot_url = self._matching_lot_url_from_payload({"data": records}, cadastral_number)
             if lot_url:
                 detail = self.session.get(lot_url, timeout=self.timeout)
                 detail.raise_for_status()
-                parsed = self.parse_lot_page(detail.text, detail.url or lot_url)
-                if parsed.etp_url:
-                    try:
-                        with self.session.get(parsed.etp_url, timeout=self.timeout, stream=True) as etp_response:
-                            etp_response.raise_for_status()
-                            parsed.etp_url = etp_response.url or parsed.etp_url
-                    except requests.RequestException:
-                        pass
-                return parsed
+                return self.parse_lot_page(detail.text, detail.url or lot_url)
         return None
 
     def search_lots(self, filters: TorgiRussiaSearchFilters) -> tuple[list[NormalizedLot], dict]:
-        payload = {
-            "categorie_childs": [int(filters.category_id)],
-            "history_only": 1 if filters.history_only else 0,
-            "page": max(1, int(filters.page)),
-        }
+        page = max(1, int(filters.page))
+        params: list[tuple[str, str | int]] = [
+            ("search", ""),
+            ("categorie_childs[]", int(filters.category_id)),
+            ("page", page),
+        ]
+        if filters.history_only:
+            params.append(("history_only", 1))
         if filters.region_id is not None:
-            payload["regions"] = [filters.region_id]
-        response = self.session.post(f"{API_BASE_URL}/search", json=payload, timeout=self.timeout)
+            # The current public UI accepts array-style filters. Keep this as a
+            # best-effort narrowing for callers that already know a region ID;
+            # nationwide ingestion no longer depends on a separate region API.
+            params.append(("regions[]", int(filters.region_id)))
+
+        response = self.session.get(
+            urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
+            params=params,
+            timeout=self.timeout,
+        )
         response.raise_for_status()
-        data = response.json()
-        lots = self.parse_search_payload(data, history_only=filters.history_only)
-        meta = data.get("meta") if isinstance(data, dict) else {}
-        meta = meta if isinstance(meta, dict) else {}
-        last_page = int(meta.get("last_page") or filters.page)
+        records, page_meta = self.parse_next_search_payload(
+            response.text,
+            page_url=response.url,
+            current_page=page,
+        )
+        if filters.region_id is not None:
+            records = [
+                item
+                for item in records
+                if isinstance(item.get("region"), dict)
+                and item["region"].get("id") == filters.region_id
+            ]
+
+        payload = {"data": records}
+        lots = self.parse_search_payload(payload, history_only=filters.history_only)
+        for lot in lots:
+            raw = dict(lot.raw_data or {})
+            raw["raw_endpoint"] = response.url
+            raw["transport"] = "public-nextjs-html"
+            lot.raw_data = raw
+
         return lots, {
             "source": "torgi-russia.ru",
-            "page": filters.page,
+            "page": page,
             "loaded": len(lots),
-            "has_more": int(filters.page) < last_page,
-            "total_pages": last_page,
-            "total": meta.get("total"),
+            "has_more": bool(page_meta["has_more"]),
+            "total_pages": page_meta["total_pages"],
+            "total": page_meta.get("total"),
             "raw_endpoint": response.url,
             "region_id": filters.region_id,
+            "transport": "public-nextjs-html",
         }
 
-    def list_region_ids(self) -> list[int]:
-        response = self.session.get(f"{API_BASE_URL}/regions/tree", timeout=self.timeout)
-        response.raise_for_status()
-        payload = response.json()
-        roots = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(roots, list):
-            raise RuntimeError("Torgi Russia regions returned an invalid JSON payload")
-        region_ids: list[int] = []
-        for root in roots:
-            children = root.get("children") if isinstance(root, dict) else None
-            if not isinstance(children, list):
-                continue
-            region_ids.extend(
-                child["id"] for child in children
-                if isinstance(child, dict) and isinstance(child.get("id"), int)
-            )
-        result = list(dict.fromkeys(region_ids))
-        if not result:
-            raise RuntimeError("Torgi Russia regions returned no regions")
-        return result
-
-    def fetch_lot_payload(self, external_id: str) -> dict:
+    def fetch_lot_page(self, external_id: str) -> tuple[str, str]:
         numeric_id = external_id.rsplit(":", 1)[-1]
-        response = self.session.get(f"{API_BASE_URL}/lots/{numeric_id}", timeout=self.timeout)
+        lot_url = urljoin(BASE_URL, f"/lot/{numeric_id}")
+        response = self.session.get(lot_url, timeout=self.timeout)
         response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            raise RuntimeError("Torgi Russia detail returned an invalid JSON payload")
-        return data
+        return response.text, response.url or lot_url
+
+    @staticmethod
+    def _extract_next_flight_text(html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        parts: list[str] = []
+        for script in soup.find_all("script"):
+            script_text = script.string or script.get_text() or ""
+            match = re.fullmatch(r"\s*self\.__next_f\.push\((.*)\)\s*", script_text, flags=re.DOTALL)
+            if match is None:
+                continue
+            try:
+                payload = json.loads(match.group(1))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, list) and len(payload) >= 2 and isinstance(payload[1], str):
+                parts.append(payload[1])
+        return "".join(parts)
+
+    @staticmethod
+    def _extract_balanced_json_object(text: str, start: int) -> str | None:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        return None
+
+    @classmethod
+    def _extract_public_lot_records(cls, html: str, *, require_linked: bool = True) -> list[dict]:
+        flight = cls._extract_next_flight_text(html)
+        records: dict[int, dict] = {}
+        for match in LOT_OBJECT_START_RE.finditer(flight):
+            raw_object = cls._extract_balanced_json_object(flight, match.start())
+            if raw_object is None:
+                continue
+            try:
+                item = json.loads(raw_object)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("id"), int)
+                and isinstance(item.get("title"), str)
+                and isinstance(item.get("region"), dict)
+                and ("start_price" in item or "current_price" in item)
+            ):
+                records[item["id"]] = item
+
+        # The SSR payload can contain unrelated widgets. Keep only records that
+        # are also represented by a public /lot/{id} link when the DOM exposes
+        # such links. This preserves the search result set while avoiding JSON
+        # objects from hidden/global data.
+        soup = BeautifulSoup(html, "html.parser")
+        linked_ids: set[int] = set()
+        for anchor in soup.select("a[href*='/lot/']"):
+            candidate = urljoin(BASE_URL, str(anchor.get("href") or ""))
+            link_match = re.fullmatch(r"/lot/(\d+)/?", urlparse(candidate).path)
+            if link_match:
+                linked_ids.add(int(link_match.group(1)))
+        if require_linked and linked_ids:
+            records = {key: value for key, value in records.items() if key in linked_ids}
+
+        return list(records.values())
+
+    @staticmethod
+    def _pagination_metadata(html: str, *, page_url: str, current_page: int, loaded: int) -> dict:
+        flight = TorgiRussiaClient._extract_next_flight_text(html)
+        last_page_match = re.search(r'"(?:last_page|lastPage)"\s*:\s*(\d+)', flight)
+        total_match = re.search(r'"total"\s*:\s*(\d+)', flight)
+        if last_page_match:
+            last_page = max(current_page, int(last_page_match.group(1)))
+            return {
+                "has_more": current_page < last_page,
+                "total_pages": last_page,
+                "total": int(total_match.group(1)) if total_match else None,
+            }
+
+        soup = BeautifulSoup(html, "html.parser")
+        observed_pages: set[int] = {max(1, current_page)}
+        for anchor in soup.select("a[href]"):
+            candidate = urljoin(page_url, str(anchor.get("href") or ""))
+            try:
+                values = parse_qs(urlparse(candidate).query).get("page") or []
+                observed_pages.update(int(value) for value in values if str(value).isdigit())
+            except (TypeError, ValueError):
+                continue
+
+        larger_pages = [page for page in observed_pages if page > current_page]
+        if larger_pages:
+            return {
+                "has_more": True,
+                "total_pages": max(observed_pages),
+                "total": None,
+            }
+
+        # The new SSR search currently renders 20 lots per page. If pagination
+        # controls are client-only, one extra request after an exact full final
+        # page is harmless and safer than silently truncating a complete source.
+        has_more = loaded >= PUBLIC_PAGE_SIZE
+        return {
+            "has_more": has_more,
+            "total_pages": current_page + 1 if has_more else current_page,
+            "total": None,
+        }
+
+    @classmethod
+    def parse_next_search_payload(
+        cls,
+        html: str,
+        *,
+        page_url: str,
+        current_page: int,
+    ) -> tuple[list[dict], dict]:
+        records = cls._extract_public_lot_records(html)
+        metadata = cls._pagination_metadata(
+            html,
+            page_url=page_url,
+            current_page=current_page,
+            loaded=len(records),
+        )
+        return records, metadata
 
     @staticmethod
     def parse_detail_payload(data: dict) -> dict:
@@ -182,7 +329,7 @@ class TorgiRussiaClient:
     @staticmethod
     def parse_search_payload(payload: object, *, history_only: bool = False) -> list[NormalizedLot]:
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise RuntimeError("Torgi Russia search returned an invalid JSON payload")
+            raise RuntimeError("Torgi Russia search returned an invalid payload")
         lots: list[NormalizedLot] = []
         for item in payload["data"]:
             if not isinstance(item, dict) or not isinstance(item.get("id"), int):
@@ -198,26 +345,62 @@ class TorgiRussiaClient:
             status: dict = status_value if isinstance(status_value, dict) else {}
             pictures_value = item.get("pictures")
             pictures: list = pictures_value if isinstance(pictures_value, list) else []
-            photos = [str(picture.get("link") or picture.get("thumb_link")) for picture in pictures if isinstance(picture, dict) and (picture.get("link") or picture.get("thumb_link"))]
+            photos = [
+                str(picture.get("link") or picture.get("thumb_link"))
+                for picture in pictures
+                if isinstance(picture, dict) and (picture.get("link") or picture.get("thumb_link"))
+            ]
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(title)]
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
             start_price = parse_money(str(item.get("start_price") or ""))
             current_price = parse_money(str(item.get("current_price") or ""))
-            lots.append(NormalizedLot(
-                external_id=f"torgi-russia:{external_id}", source="torgi-russia",
-                source_system="torgi-russia.ru", title=title[:500], description=title[:5000],
-                category="real_estate", region_slug=normalize_region_code(region_name),
-                region_name=region_name, address=None, cadastral_number=cadastres[0] if cadastres else None,
-                vin=None, area=None, start_price=start_price, current_price=current_price,
-                auction_status="archived" if history_only else "active", lot_url=lot_url,
-                source_url=lot_url, detail_level="search",
-                raw_data={"raw_endpoint": f"{API_BASE_URL}/search", "image_urls": list(dict.fromkeys(photos)),
-                    "cadastral_numbers": list(dict.fromkeys(cadastres)), "source_status": status,
-                    "trade_link": item.get("trade_link"), "category_ids": item.get("category_ids"),
-                    "listing_fingerprint": sha256(json.dumps({"title": title, "start_price": start_price,
-                        "current_price": current_price, "photos": photos, "status": status},
-                        ensure_ascii=False, sort_keys=True).encode()).hexdigest()},
-            ))
+            lots.append(
+                NormalizedLot(
+                    external_id=f"torgi-russia:{external_id}",
+                    source="torgi-russia",
+                    source_system="torgi-russia.ru",
+                    title=title[:500],
+                    description=title[:5000],
+                    category="real_estate",
+                    region_slug=normalize_region_code(region_name),
+                    region_name=region_name,
+                    address=None,
+                    cadastral_number=cadastres[0] if cadastres else None,
+                    vin=None,
+                    area=None,
+                    start_price=start_price,
+                    current_price=current_price,
+                    auction_status="archived" if history_only else "active",
+                    lot_url=lot_url,
+                    source_url=lot_url,
+                    detail_level="search",
+                    raw_data={
+                        "raw_endpoint": urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
+                        "image_urls": list(dict.fromkeys(photos)),
+                        "cadastral_numbers": list(dict.fromkeys(cadastres)),
+                        "source_status": status,
+                        "trade_link": item.get("trade_link"),
+                        "category_ids": item.get("category_ids"),
+                        "marketplace": item.get("marketplace"),
+                        "trade_type": item.get("trade_type"),
+                        "trade_form": item.get("trade_form"),
+                        "begin_offer_time": item.get("begin_offer_time"),
+                        "listing_fingerprint": sha256(
+                            json.dumps(
+                                {
+                                    "title": title,
+                                    "start_price": start_price,
+                                    "current_price": current_price,
+                                    "photos": photos,
+                                    "status": status,
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ).encode()
+                        ).hexdigest(),
+                    },
+                )
+            )
         return lots
 
     @staticmethod
@@ -228,13 +411,17 @@ class TorgiRussiaClient:
         for item in payload["data"]:
             if not isinstance(item, dict):
                 continue
-            observed = {normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(str(item.get("title") or ""))}
+            observed = {
+                normalize_cadastral_number(value)
+                for value in CADASTRAL_RE.findall(str(item.get("title") or ""))
+            }
             if expected in observed and isinstance(item.get("id"), int):
                 return urljoin(BASE_URL, f"/lot/{item['id']}")
         return None
 
     @staticmethod
     def parse_search_page(html: str, page_url: str) -> list[NormalizedLot]:
+        """Compatibility parser for the pre-Next.js card markup."""
         soup = BeautifulSoup(html, "html.parser")
         lots: list[NormalizedLot] = []
         for card in soup.select("main article.card"):
@@ -255,7 +442,10 @@ class TorgiRussiaClient:
             meta = [item.get_text(" ", strip=True) for item in card.select(".card-meta__item")]
             region_name = next((item for item in meta if normalize_region_code(item)), None)
             region_code = normalize_region_code(region_name)
-            cadastres = [normalize_cadastral_number(item) for item in CADASTRAL_RE.findall(f"{title} {description}")]
+            cadastres = [
+                normalize_cadastral_number(item)
+                for item in CADASTRAL_RE.findall(f"{title} {description}")
+            ]
             gallery = card.select_one(".card-gallery")
             photos: list[str] = []
             if gallery:
@@ -268,38 +458,46 @@ class TorgiRussiaClient:
                     for item in raw_photos
                     if isinstance(item, dict) and item.get("url")
                 ]
-            lots.append(NormalizedLot(
-                external_id=f"torgi-russia:{external_id}",
-                source="torgi-russia",
-                source_system="torgi-russia.ru",
-                title=title[:500],
-                description=description[:5000],
-                category="real_estate",
-                region_slug=region_code,
-                region_name=region_name,
-                address=None,
-                cadastral_number=cadastres[0] if cadastres else None,
-                vin=None,
-                area=None,
-                start_price=start_price,
-                current_price=current_price,
-                auction_status="archived" if "history_only=1" in page_url else "active",
-                lot_url=lot_url,
-                source_url=lot_url,
-                detail_level="search",
-                raw_data={
-                    "raw_endpoint": page_url,
-                    "image_urls": list(dict.fromkeys(photos)),
-                    "cadastral_numbers": list(dict.fromkeys(cadastres)),
-                    "listing_fingerprint": sha256(json.dumps({
-                        "title": title,
-                        "description": description,
-                        "start_price": start_price,
-                        "current_price": current_price,
-                        "photos": photos,
-                    }, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
-                },
-            ))
+            lots.append(
+                NormalizedLot(
+                    external_id=f"torgi-russia:{external_id}",
+                    source="torgi-russia",
+                    source_system="torgi-russia.ru",
+                    title=title[:500],
+                    description=description[:5000],
+                    category="real_estate",
+                    region_slug=region_code,
+                    region_name=region_name,
+                    address=None,
+                    cadastral_number=cadastres[0] if cadastres else None,
+                    vin=None,
+                    area=None,
+                    start_price=start_price,
+                    current_price=current_price,
+                    auction_status="archived" if "history_only=1" in page_url else "active",
+                    lot_url=lot_url,
+                    source_url=lot_url,
+                    detail_level="search",
+                    raw_data={
+                        "raw_endpoint": page_url,
+                        "image_urls": list(dict.fromkeys(photos)),
+                        "cadastral_numbers": list(dict.fromkeys(cadastres)),
+                        "listing_fingerprint": sha256(
+                            json.dumps(
+                                {
+                                    "title": title,
+                                    "description": description,
+                                    "start_price": start_price,
+                                    "current_price": current_price,
+                                    "photos": photos,
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ).encode()
+                        ).hexdigest(),
+                    },
+                )
+            )
         return lots
 
     @staticmethod
@@ -307,7 +505,10 @@ class TorgiRussiaClient:
         soup = BeautifulSoup(html, "html.parser")
         expected = normalize_cadastral_number(cadastral_number)
         for article in soup.select("article"):
-            observed = {normalize_cadastral_number(item) for item in CADASTRAL_RE.findall(article.get_text(" "))}
+            observed = {
+                normalize_cadastral_number(item)
+                for item in CADASTRAL_RE.findall(article.get_text(" "))
+            }
             if expected not in observed:
                 continue
             for anchor in article.select('a[href*="/lot/"]'):
@@ -317,8 +518,8 @@ class TorgiRussiaClient:
                     return urldefrag(candidate).url
         return None
 
-    @staticmethod
-    def parse_lot_page(html: str, page_url: str) -> TorgiRussiaDetails:
+    @classmethod
+    def parse_lot_page(cls, html: str, page_url: str) -> TorgiRussiaDetails:
         soup = BeautifulSoup(html, "html.parser")
         labels: dict[str, str] = {}
         for term in soup.select("dt"):
@@ -337,12 +538,15 @@ class TorgiRussiaClient:
             value = row.get_text(" ", strip=True)
             prefix = label_node.get_text(" ", strip=True)
             if value.startswith(prefix):
-                value = value[len(prefix):].strip()
+                value = value[len(prefix) :].strip()
             if label and value:
                 labels[label] = value
 
         def labelled(*needles: str) -> str | None:
-            return next((value for key, value in labels.items() if any(needle in key for needle in needles)), None)
+            return next(
+                (value for key, value in labels.items() if any(needle in key for needle in needles)),
+                None,
+            )
 
         def parse_date(value: str | None) -> datetime | None:
             if not value:
@@ -357,6 +561,7 @@ class TorgiRussiaClient:
                 except ValueError:
                     pass
             return None
+
         image_urls: list[str] = []
         gallery = soup.select_one("#lot-gallery[data-gallery]")
         if gallery:
@@ -381,23 +586,62 @@ class TorgiRussiaClient:
             if "lot-online.ru" in parsed.netloc:
                 etp_url = candidate
 
+        numeric_match = re.search(r"/lot/(\d+)", urlparse(page_url).path)
+        flight_record = None
+        if numeric_match:
+            numeric_id = int(numeric_match.group(1))
+            flight_record = next(
+                (
+                    item
+                    for item in cls._extract_public_lot_records(html, require_linked=False)
+                    if item.get("id") == numeric_id
+                ),
+                None,
+            )
+        flight_detail = cls.parse_detail_payload(flight_record) if isinstance(flight_record, dict) else {}
+
+        text = soup.get_text(" ", strip=True)
+        cadastres = list(
+            dict.fromkeys(
+                [
+                    *[normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(text)],
+                    *list(flight_detail.get("cadastral_numbers") or []),
+                ]
+            )
+        )
+        image_urls.extend(list(flight_detail.get("image_urls") or []))
+        etp_url = flight_detail.get("etp_url") or etp_url
+
         return TorgiRussiaDetails(
             torgi_russia_url=urldefrag(page_url).url,
             gis_torgi_url=gis_torgi_url,
             etp_url=etp_url,
             image_urls=list(dict.fromkeys(image_urls)),
+            cadastral_numbers=cadastres,
+            description=str(flight_detail.get("description") or "").strip() or None,
             procedure_number=(
-                match.group(0) if (match := re.search(r"\b[A-Z0-9]{7,12}-\d{4}-\d{4}-\d\b", soup.get_text(" "))) else None
+                match.group(0)
+                if (match := re.search(r"\b[A-Z0-9]{7,12}-\d{4}-\d{4}-\d\b", text))
+                else None
             ),
-            address=labelled("адрес", "местонахожд"),
+            address=flight_detail.get("address") or labelled("адрес", "местонахожд"),
             category=labelled("категор", "вид имущества"),
             application_start_at=parse_date(labelled("начало приема заявок", "начало приёма заявок")),
-            application_deadline=parse_date(labelled(
-                "конец приема заявок", "конец приёма заявок",
-                "окончание приема заявок", "окончание приёма заявок",
-            )),
-            auction_at=parse_date(labelled(
-                "конец приема ценовых предложений", "конец приёма ценовых предложений",
-                "дата торгов", "дата аукцион", "проведен",
-            )),
+            application_deadline=parse_date(
+                labelled(
+                    "конец приема заявок",
+                    "конец приёма заявок",
+                    "окончание приема заявок",
+                    "окончание приёма заявок",
+                )
+            ),
+            auction_at=parse_date(
+                labelled(
+                    "конец приема ценовых предложений",
+                    "конец приёма ценовых предложений",
+                    "дата торгов",
+                    "дата аукцион",
+                    "проведен",
+                )
+            ),
         )

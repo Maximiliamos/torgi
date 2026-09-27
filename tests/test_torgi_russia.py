@@ -1,8 +1,47 @@
 import asyncio
+import json
 
 from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
 from bankrotai.torgi_russia import TorgiRussiaClient
+
+
+def _nextjs_search_html(items: list[dict], *, next_page: int | None = None) -> str:
+    flight = "27:" + json.dumps(
+        ["$", "$L95", None, {"lots": items}],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ) + "\n"
+    script_payload = json.dumps([1, flight], ensure_ascii=False)
+    links = "".join(f'<a href="/lot/{item["id"]}">lot</a>' for item in items)
+    if next_page is not None:
+        links += f'<a href="/search?search=&categorie_childs%5B%5D=6&page={next_page}">{next_page}</a>'
+    return f"<html><body><main>{links}</main><script>self.__next_f.push({script_payload})</script></body></html>"
+
+
+def _new_site_lot(*, lot_id: int = 7180653, region_id: int = 33) -> dict:
+    return {
+        "id": lot_id,
+        "title": "Здание 33:01:000001:42",
+        "status": {"id": 1, "title": "Идёт приём заявок"},
+        "pictures": [
+            {
+                "id": 1,
+                "link": "https://example.test/full.jpg",
+                "thumb_link": "https://example.test/thumb.jpg",
+                "title": "photo.jpg",
+            }
+        ],
+        "start_price": 5105700,
+        "current_price": 4900000,
+        "region": {"id": region_id, "title": "Владимирская область"},
+        "marketplace": {"id": 50, "title": "ЭТП.ТР"},
+        "trade_type": {"id": 5, "title": "Коммерческие торги"},
+        "trade_form": "Открытый аукцион",
+        "trade_link": "https://example.test/trade/1",
+        "begin_offer_time": "2026-10-08 11:00:00",
+        "category_ids": [6, 343],
+    }
 
 
 def test_torgi_russia_search_requires_matching_cadastral_number() -> None:
@@ -21,8 +60,8 @@ def test_torgi_russia_lot_page_parses_gallery_and_related_links() -> None:
       {"url":"/pictures/one.jpg","thumb_url":"/thumb/one.jpg"},
       {"url":"https://cdn.example/two.jpg"}
     ]'></div>
-    <a href="https://catalog.lot-online.ru/notice/21000002210000009602/1">\u0422\u043e\u0440\u0433\u0438 \u043d\u0430 \u042d\u0422\u041f</a>
-    <a href="https://torgi.gov.ru/new/public/lots/lot/example/(lotInfo:info)">\u041b\u043e\u0442 \u043d\u0430 \u0413\u0418\u0421 \u0422\u043e\u0440\u0433\u0438</a>
+    <a href="https://catalog.lot-online.ru/notice/21000002210000009602/1">Торги на ЭТП</a>
+    <a href="https://torgi.gov.ru/new/public/lots/lot/example/(lotInfo:info)">Лот на ГИС Торги</a>
     """
 
     result = TorgiRussiaClient.parse_lot_page(
@@ -100,14 +139,8 @@ def test_torgi_russia_parse_search_page() -> None:
     ]
 
 
-def test_torgi_russia_parse_new_search_api_payload() -> None:
-    payload = {"data": [{"id": 7180653, "title": "Здание 33:01:000001:42",
-        "status": {"id": 1, "title": "Идёт приём заявок"},
-        "pictures": [{"link": "https://example.test/full.jpg", "thumb_link": "https://example.test/thumb.jpg"}],
-        "start_price": 5105700, "current_price": 4900000,
-        "region": {"id": 33, "title": "Владимирская область"},
-        "trade_link": "https://example.test/trade/1", "category_ids": [6, 343]}],
-        "meta": {"current_page": 1, "last_page": 2, "total": 25}}
+def test_torgi_russia_parse_new_search_payload() -> None:
+    payload = {"data": [_new_site_lot()]}
     lots = TorgiRussiaClient.parse_search_payload(payload)
     assert len(lots) == 1
     assert lots[0].external_id == "torgi-russia:7180653"
@@ -116,26 +149,72 @@ def test_torgi_russia_parse_new_search_api_payload() -> None:
     assert lots[0].start_price == 5105700
     assert lots[0].current_price == 4900000
     assert lots[0].raw_data["image_urls"] == ["https://example.test/full.jpg"]
+    assert lots[0].raw_data["marketplace"]["id"] == 50
+
+
+def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:
+    html = _nextjs_search_html([_new_site_lot()], next_page=2)
+    records, metadata = TorgiRussiaClient.parse_next_search_payload(
+        html,
+        page_url=(
+            "https://xn----etbpba5admdlad.xn--p1ai/"
+            "search?search=&categorie_childs%5B%5D=6&page=1"
+        ),
+        current_page=1,
+    )
+
+    assert [item["id"] for item in records] == [7180653]
+    assert records[0]["trade_link"] == "https://example.test/trade/1"
+    assert metadata["has_more"] is True
+    assert metadata["total_pages"] == 2
+
+
+def test_torgi_russia_nextjs_parser_ignores_unlinked_widget_lots() -> None:
+    linked = _new_site_lot(lot_id=7180653)
+    hidden = _new_site_lot(lot_id=7180654)
+    flight = "27:" + json.dumps(
+        ["$", "$L95", None, {"lots": [linked, hidden]}],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ) + "\n"
+    html = (
+        '<main><a href="/lot/7180653">shown</a></main>'
+        f"<script>self.__next_f.push({json.dumps([1, flight], ensure_ascii=False)})</script>"
+    )
+
+    records, _ = TorgiRussiaClient.parse_next_search_payload(
+        html,
+        page_url="https://xn----etbpba5admdlad.xn--p1ai/search?page=1",
+        current_page=1,
+    )
+
+    assert [item["id"] for item in records] == [7180653]
 
 
 def test_torgi_russia_new_payload_matches_cadastral_number() -> None:
-    payload = {"data": [{"id": 1, "title": "Лот 76:02:000000:1"},
-        {"id": 2, "title": "Лот 76:02:071501:198"}]}
+    payload = {
+        "data": [
+            {"id": 1, "title": "Лот 76:02:000000:1"},
+            {"id": 2, "title": "Лот 76:02:071501:198"},
+        ]
+    }
     result = TorgiRussiaClient._matching_lot_url_from_payload(payload, "76:02:071501:198")
     assert result == "https://xn----etbpba5admdlad.xn--p1ai/lot/2"
 
 
-def test_torgi_russia_parse_new_detail_api_payload() -> None:
-    detail = TorgiRussiaClient.parse_detail_payload({
-        "information": (
-            "Недвижимое имущество, расположенное по адресу: Владимирская область, "
-            "г. Суздаль, ул. Ленина, д. 1. К\\н: 33:05:130102:857<br>Начальная цена: 10 ₽"
-        ),
-        "cadastrals": ["33:05:130102:857"],
-        "pictures": [{"link": "https://example.test/one.jpg"}],
-        "trade_link": "https://example.test/trade/1",
-        "status": {"id": 1, "title": "Идёт приём заявок"},
-    })
+def test_torgi_russia_parse_detail_payload() -> None:
+    detail = TorgiRussiaClient.parse_detail_payload(
+        {
+            "information": (
+                "Недвижимое имущество, расположенное по адресу: Владимирская область, "
+                "г. Суздаль, ул. Ленина, д. 1. К\\н: 33:05:130102:857<br>Начальная цена: 10 ₽"
+            ),
+            "cadastrals": ["33:05:130102:857"],
+            "pictures": [{"link": "https://example.test/one.jpg"}],
+            "trade_link": "https://example.test/trade/1",
+            "status": {"id": 1, "title": "Идёт приём заявок"},
+        }
+    )
 
     assert detail["address"] == "Владимирская область, г. Суздаль, ул. Ленина, д. 1"
     assert detail["cadastral_numbers"] == ["33:05:130102:857"]
@@ -143,43 +222,62 @@ def test_torgi_russia_parse_new_detail_api_payload() -> None:
     assert "Начальная цена" in detail["description"]
 
 
-def test_torgi_russia_search_sends_region_segment() -> None:
+def test_torgi_russia_search_uses_public_nextjs_page_not_legacy_api() -> None:
+    item = _new_site_lot()
+    html = _nextjs_search_html([item])
+
     class Response:
-        url = "https://example.test/api/search"
+        url = (
+            "https://xn----etbpba5admdlad.xn--p1ai/"
+            "search?search=&categorie_childs%5B%5D=6&page=1"
+        )
+        text = html
+
         def raise_for_status(self):
             return None
-        def json(self):
-            return {"data": [], "meta": {"last_page": 1, "total": 0}}
 
     class Session:
         headers = {}
-        payload = None
-        def post(self, _url, *, json, timeout):
-            self.payload = json
+        called_url = None
+        called_params = None
+
+        def get(self, url, *, params=None, timeout=None):
+            self.called_url = url
+            self.called_params = params
             return Response()
 
     session = Session()
     client = TorgiRussiaClient(session=session)
-    client.search_lots(TorgiRussiaSearchFilters(region_id=33))
-    assert session.payload["regions"] == [33]
+    lots, metadata = client.search_lots(TorgiRussiaSearchFilters())
+
+    assert session.called_url == "https://xn----etbpba5admdlad.xn--p1ai/search"
+    assert ("categorie_childs[]", 6) in session.called_params
+    assert ("page", 1) in session.called_params
+    assert len(lots) == 1
+    assert metadata["transport"] == "public-nextjs-html"
+    assert lots[0].raw_data["transport"] == "public-nextjs-html"
 
 
-def test_torgi_russia_connector_pages_each_region_without_crossing_api_cap() -> None:
+def test_torgi_russia_connector_pages_public_catalog_without_region_api() -> None:
     connector = TorgiRussiaConnector()
-    connector.client.list_region_ids = lambda: [33, 76]
     calls = []
 
     def search(filters):
         calls.append((filters.region_id, filters.page))
-        return [], {"has_more": filters.region_id == 33 and filters.page == 1}
+        return [], {
+            "has_more": filters.page == 1,
+            "total_pages": 2,
+        }
 
     connector.client.search_lots = search
     first = asyncio.run(connector.search(TorgiRussiaSearchFilters()))
     second = asyncio.run(connector.search(TorgiRussiaSearchFilters(), first.next_cursor))
-    third = asyncio.run(connector.search(TorgiRussiaSearchFilters(), second.next_cursor))
 
-    assert calls == [(33, 1), (33, 2), (76, 1)]
-    assert first.next_cursor == "region:0:2"
-    assert second.next_cursor == "region:1:1"
-    assert third.next_cursor is None
-    assert third.metadata["regions_total"] == 2
+    assert calls == [(None, 1), (None, 2)]
+    assert first.next_cursor == "2"
+    assert second.next_cursor is None
+    assert second.metadata["progress_total"] == 2
+
+
+def test_torgi_russia_old_region_cursor_restarts_public_catalog() -> None:
+    assert TorgiRussiaConnector._decode_cursor("region:5:17") == 1
