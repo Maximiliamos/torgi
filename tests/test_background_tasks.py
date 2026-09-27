@@ -412,3 +412,28 @@ def test_nationwide_tasks_use_dedicated_extended_time_budget() -> None:
     ):
         assert task.soft_time_limit == tasks.settings.celery_nationwide_soft_time_limit
         assert task.time_limit == tasks.settings.celery_nationwide_hard_time_limit
+
+
+def test_paused_source_is_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_source_is_paused", lambda source: source == "tbankrot.ru")
+    queued = []
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+    result = tasks._schedule_partial_source_retries(
+        {"sources": [{"source_system": "tbankrot.ru", "status": "failed"}]},
+        source_mode="fast",
+    )
+    assert queued == []
+    assert result == [{"source_system": "tbankrot.ru", "status": "skipped", "reason": "source_paused"}]
+
+
+def test_targeted_retry_skips_paused_source(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_source_is_paused", lambda source: source == "tbankrot.ru")
+    assert tasks.automatic_nationwide_source_retry_task.run("tbankrot.ru", "fast") == {
+        "status": "skipped",
+        "reason": "source_paused",
+        "source_system": "tbankrot.ru",
+    }
