@@ -12,6 +12,7 @@ from bankrotai.torgi_russia import TorgiRussiaClient
 class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
     detail_enrichment_version = 4
+    compatible_detail_enrichment_versions = frozenset({3, 4})
     capabilities = frozenset({"search", "detail_enrichment"})
 
     def __init__(self) -> None:

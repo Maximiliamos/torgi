@@ -570,11 +570,15 @@ class NationwideIngestionService:
                 existing = existing_lot_online.get(lot.external_id)
                 previous_raw = existing.raw_data if existing and isinstance(existing.raw_data, dict) else {}
                 current_raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+                compatible_versions = (
+                    connector.compatible_detail_enrichment_versions
+                    or frozenset({connector.detail_enrichment_version})
+                )
                 needs_detail = (
                     existing is None
                     or previous_raw.get("listing_fingerprint") != current_raw.get("listing_fingerprint")
                     or previous_raw.get("detail_enrichment_status") != "success"
-                    or previous_raw.get("detail_enrichment_version") != connector.detail_enrichment_version
+                    or previous_raw.get("detail_enrichment_version") not in compatible_versions
                 )
                 if needs_detail:
                     try:
