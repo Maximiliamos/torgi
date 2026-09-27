@@ -1,0 +1,103 @@
+name: Production Docker VHD audit
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths:
+      - '.github/workflows/production-vhd-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-vhd-maintenance
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Locate Docker VHDX and compaction capability
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+          $profiles = @(Get-CimInstance Win32_UserProfile |
+            Where-Object { $_.LocalPath -like 'C:\Users\*' } |
+            Select-Object LocalPath,Loaded)
+
+          $vhdx = @()
+          foreach ($profile in $profiles) {
+            $dockerRoot = Join-Path $profile.LocalPath 'AppData\Local\Docker'
+            if (Test-Path $dockerRoot) {
+              $vhdx += @(Get-ChildItem $dockerRoot -Filter '*.vhdx' -File -Recurse -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  [pscustomobject]@{
+                    path = $_.FullName
+                    size_gb = [math]::Round($_.Length / 1GB, 2)
+                    modified = $_.LastWriteTimeUtc
+                    owner_profile = $profile.LocalPath
+                    profile_loaded = $profile.Loaded
+                  }
+                })
+            }
+          }
+
+          $knownCandidates = @()
+          foreach ($profile in $profiles) {
+            foreach ($relative in @(
+              'AppData\Local\Docker\wsl\data\docker_data.vhdx',
+              'AppData\Local\Docker\wsl\disk\docker_data.vhdx',
+              'AppData\Local\Docker\wsl\main\ext4.vhdx'
+            )) {
+              $candidate = Join-Path $profile.LocalPath $relative
+              if (Test-Path $candidate) {
+                $file = Get-Item $candidate
+                $knownCandidates += [pscustomobject]@{
+                  path = $candidate
+                  size_gb = [math]::Round($file.Length / 1GB, 2)
+                  modified = $file.LastWriteTimeUtc
+                }
+              }
+            }
+          }
+
+          $services = @(Get-Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'docker' -or $_.DisplayName -match 'docker' } |
+            Select-Object Name,DisplayName,Status,StartType)
+
+          $wslList = (wsl.exe --list --verbose 2>&1 | Out-String).Trim()
+          $optimize = Get-Command Optimize-VHD -ErrorAction SilentlyContinue
+          $diskpart = Get-Command diskpart.exe -ErrorAction SilentlyContinue
+
+          $drives = @(Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Name.Length -eq 1 } |
+            ForEach-Object {
+              [pscustomobject]@{
+                name = $_.Name
+                total_gb = [math]::Round(($_.Used + $_.Free) / 1GB, 2)
+                free_gb = [math]::Round($_.Free / 1GB, 2)
+                percent_free = [math]::Round(100 * $_.Free / ($_.Used + $_.Free), 2)
+              }
+            })
+
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            identity = $identity.Name
+            is_admin = $isAdmin
+            profiles = $profiles
+            docker_vhdx = @($vhdx | Sort-Object size_gb -Descending)
+            known_candidates = $knownCandidates
+            docker_services = $services
+            wsl_list = $wslList
+            optimize_vhd_available = ($null -ne $optimize)
+            diskpart_available = ($null -ne $diskpart)
+            drives = $drives
+          }
+          '=== VHD_AUDIT_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 7
+          '=== VHD_AUDIT_JSON_END ==='
