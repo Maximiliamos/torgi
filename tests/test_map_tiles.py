@@ -1076,8 +1076,7 @@ def test_post_promotion_storage_diagnostic_failure_does_not_invalidate_current(m
 
     assert result["build_status"] == "success"
     assert result["promotion_status"] == "published"
-    assert result["storage"]["diagnostics_unavailable"] == 1
-    assert "statement timeout" in result["storage"]["error"]
+    assert result["storage"] == {"diagnostics_unavailable": 1}
     with factory() as session:
         current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)))
         assert current is not None
