@@ -1,0 +1,55 @@
+name: Production safe disk cleanup
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths:
+      - '.github/workflows/production-safe-disk-cleanup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-volume-audit
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - name: Reclaim build cache and dangling images only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function DriveState {
+            $d = Get-PSDrive C
+            [pscustomobject]@{
+              free_gb = [math]::Round($d.Free / 1GB, 2)
+              percent_free = [math]::Round(100 * $d.Free / ($d.Used + $d.Free), 2)
+            }
+          }
+          $before = DriveState
+          $dfBefore = docker system df | Out-String
+
+          # Safe scope: no containers, no volumes, no PostgreSQL backups.
+          $builder = docker builder prune -af 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'docker builder prune failed' }
+          $images = docker image prune -f 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'docker image prune failed' }
+
+          $after = DriveState
+          $dfAfter = docker system df | Out-String
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            before = $before
+            after = $after
+            freed_gb = [math]::Round($after.free_gb - $before.free_gb, 2)
+            builder_prune = $builder.Trim()
+            dangling_image_prune = $images.Trim()
+            docker_df_before = $dfBefore.Trim()
+            docker_df_after = $dfAfter.Trim()
+          }
+          '=== SAFE_CLEANUP_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 6
+          '=== SAFE_CLEANUP_JSON_END ==='
