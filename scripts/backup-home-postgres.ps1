@@ -95,7 +95,7 @@ if ($VerifyRestore) {
         $restoreStatus = 'passed'
     } finally {
         $exact = docker ps -a --filter "name=^/${verifyContainer}$" --format '{{.Names}}'
-        if ($exact -eq $verifyContainer) { docker rm -f $verifyContainer | Out-Null }
+        if ($exact -eq $verifyContainer) { docker rm -fv $verifyContainer | Out-Null }
     }
 }
 
