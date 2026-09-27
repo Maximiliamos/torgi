@@ -574,9 +574,16 @@ class NationwideIngestionService:
                     connector.compatible_detail_enrichment_versions
                     or frozenset({connector.detail_enrichment_version})
                 )
+                listing_changed = (
+                    previous_raw.get("listing_fingerprint")
+                    != current_raw.get("listing_fingerprint")
+                )
                 needs_detail = (
                     existing is None
-                    or previous_raw.get("listing_fingerprint") != current_raw.get("listing_fingerprint")
+                    or (
+                        connector.detail_enrichment_on_listing_change
+                        and listing_changed
+                    )
                     or previous_raw.get("detail_enrichment_status") != "success"
                     or previous_raw.get("detail_enrichment_version") not in compatible_versions
                 )
