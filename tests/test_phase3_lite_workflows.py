@@ -68,5 +68,6 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
 
     full_reconcile = (ROOT / ".github" / "workflows" / "phase3-lite-full-reconcile.yml").read_text(encoding="utf-8")
     assert "_unpaused_source_specs(default_source_specs())" in full_reconcile
+    assert "'.github/workflows/home-secondary-deploy.yml'" in full_reconcile
     assert "configured_sources" in full_reconcile
     assert "source set mismatch" in full_reconcile
