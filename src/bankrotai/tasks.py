@@ -10,7 +10,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery.schedules import crontab
 from celery.utils import uuid
 
-from bankrotai.core import get_region_sync_slug, get_settings
+from bankrotai.core import get_app_setting, get_region_sync_slug, get_settings
 from bankrotai.db import (
     BackgroundTaskState,
     LotSyncRun,
@@ -49,6 +49,7 @@ _NATIONWIDE_REFRESH_MAX_RETRIES = 3
 _NATIONWIDE_BUSY_RETRY_MAX_RETRIES = 3
 _NATIONWIDE_BUSY_RETRY_SECONDS = 300
 _PARTIAL_SOURCE_RETRY_DELAY_SECONDS = 60
+_SOURCE_PAUSE_SETTING_PREFIX = "source_paused:"
 _QUEUE_INGESTION = "ingestion"
 _QUEUE_GEOCODING = "geocoding"
 _QUEUE_MAP = "map"
@@ -379,6 +380,15 @@ def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
     )
 
 
+def _source_is_paused(source_system: str) -> bool:
+    value = get_app_setting(f"{_SOURCE_PAUSE_SETTING_PREFIX}{source_system}", "false")
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _unpaused_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(spec for spec in specs if not _source_is_paused(str(spec.source_id)))
+
+
 def _failed_source_systems(result: dict[str, Any]) -> tuple[str, ...]:
     """Return each failed source once, preserving the ingestion result order."""
     failed: list[str] = []
@@ -399,6 +409,9 @@ def _schedule_partial_source_retries(
     """Retry failed sources in the originating scope; successful peers stay out."""
     scheduled: list[dict[str, str | int]] = []
     for source_system in _failed_source_systems(result):
+        if _source_is_paused(source_system):
+            scheduled.append({"source_system": source_system, "status": "skipped", "reason": "source_paused"})
+            continue
         try:
             queued = automatic_nationwide_source_retry_task.apply_async(
                 args=[source_system, source_mode],
@@ -542,7 +555,7 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         if mode == "fast":
             specs = _fast_nationwide_source_specs()
         elif mode == "full":
-            specs = default_source_specs()
+            specs = _unpaused_source_specs(default_source_specs())
         elif mode.startswith("source-fast:"):
             source_system = mode.removeprefix("source-fast:")
             specs = tuple(spec for spec in _fast_nationwide_source_specs() if spec.source_id == source_system)
@@ -608,7 +621,7 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
         self,
         mode=mode,
         trigger_type=f"scheduled_{mode}",
-        total_sources=len(default_source_specs()),
+        total_sources=len(_unpaused_source_specs(default_source_specs())),
         retry_if_busy=mode == "full",
     )
 
@@ -621,6 +634,8 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
 )
 def automatic_nationwide_source_retry_task(self, source_system: str, source_mode: str) -> dict[str, Any]:
     """Bound a retry of one failed source without re-running successful peers."""
+    if _source_is_paused(source_system):
+        return {"status": "skipped", "reason": "source_paused", "source_system": source_system}
     if source_mode == "fast":
         mode = f"source-fast:{source_system}"
         # Validation occurs in nationwide_lot_sync_task, after it computes the
@@ -709,14 +724,14 @@ def _fast_nationwide_source_specs() -> tuple[Any, ...]:
         overlap_start = (
             latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
         ) - timedelta(days=1)
-    return fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat())
+    return _unpaused_source_specs(fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat()))
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
     if mode not in {"fast", "full"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
     is_source_only = mode.startswith("source:")
-    specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else default_source_specs()
+    specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else _unpaused_source_specs(default_source_specs())
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
