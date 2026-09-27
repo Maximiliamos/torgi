@@ -14,6 +14,10 @@ class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
     detail_enrichment_version = 4
     compatible_detail_enrichment_versions = frozenset({3, 4})
+    # Listing-page price/status/photo changes do not invalidate stable detail
+    # fields such as address/cadastral/procedure data. This also prevents the
+    # new Next.js transport shape from forcing a mass detail refetch.
+    detail_enrichment_on_listing_change = False
     capabilities = frozenset({"search", "detail_enrichment"})
 
     def __init__(self) -> None:
