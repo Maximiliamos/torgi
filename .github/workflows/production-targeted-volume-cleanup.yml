@@ -1,0 +1,93 @@
+name: Production targeted orphan volume cleanup
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths:
+      - '.github/workflows/production-targeted-volume-cleanup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-volume-audit
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - name: Remove only audited anonymous unreferenced volumes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @(
+            '0ce50f7fa3177f6f432e24d101b3e75c6816dc8074c715e050b4634a9ca37dea',
+            '6e62b766160f16007dfcdb1860ecd9ae2067f5b2317a2efa2cc0aa794b7466ff',
+            '74d170adddeb00d1f1df6b966be52f37abfd7f5b7d42e2f3a4437da68e8b2d59',
+            '101ac7a1d925d5ee337bc080a872ddc50881bff475336825728652b505d361d0',
+            '263cba230019c6ff569160e8dcd839991ddf995134f9fc37c1e3cd13f06cd8e9',
+            '54822e13e12541d964a5e307e81a4fa9937455e15d07105c658e4197486cb863',
+            '60857e74802af313ddcfa8fb97daca383d3eb5b146735dc3dfa42557ffa3c1d9',
+            '63524aad7052ce6ebb5158ba3a531c38c1d191135dee8a05737ead2b754c4db5',
+            'a7d3650ff4353fa619b495455622d8fdcbce872eee4da12d0e6e952208c49064',
+            'a89e3551d5db7959d86c4ccae045fa28a962de8f9e907635fba9eb86de1d26cd',
+            'acd3d230f665859b6090219e6df9a2f529e8a0bbba2e2bdf1bd642083e19e972',
+            'b30d21f82e9771586d57d16f3cc24aef08f20d5f71df230deceefd5702bdf48c',
+            'bc080989a1e327740354ad5aa6c05b064ae02b00937b10ec0fc0bc2a7a9a0387',
+            'cebe45f145824aff7fb469a739dae905c7690e09800ccca02cd2257b2f8f36aa',
+            'd7a289974e6487699265147f6d212d2480c935fb97a652ae492e0910b4e55f2a',
+            'e00f4d84fc42ef617266aeebbf00bb60c355be5c932325555f3e6eeef8789bc8',
+            'e6a214bd15a405997b23679d791c21c7e17e8ed21d949e41b6fd843207768a35',
+            'e9c4385f228a68ea944757ee3ba6b42100e39151bef321b3028cb25926a852c5',
+            'ed4ffdbd6b422fef0e9f06b4b1d804f6681dd9bd6a049d240545791c0ea7c8e4',
+            'f80f5d86cf501fc6243cd174054f83d38dcb1cc0e89b955557a3cd470f3bb50d',
+            'f5788427c7694dad2df9b4b94ff04b6692873b38b090b19f6413d6dd8b780df2',
+            'fb4a9cfae87dfd59ff6dfa9b65901b80f5bf8ef48fcd2ab2f616f7aee57fb031'
+          )
+
+          $beforeDrive = Get-PSDrive C
+          $beforeFree = $beforeDrive.Free
+          $removed = @()
+          $skipped = @()
+
+          foreach ($name in $targets) {
+            $raw = docker volume inspect $name 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $raw) {
+              $skipped += [pscustomobject]@{ name = $name; reason = 'already_absent' }
+              continue
+            }
+            $meta = ($raw | ConvertFrom-Json)[0]
+            $anonymousProperty = $meta.Labels.PSObject.Properties['com.docker.volume.anonymous']
+            if ($null -eq $anonymousProperty) {
+              throw "Refusing non-anonymous volume: $name"
+            }
+            $refs = @(docker ps -a --filter "volume=$name" --format '{{.ID}}')
+            if ($refs.Count -gt 0) {
+              throw "Refusing referenced volume $name; containers=$($refs -join ',')"
+            }
+            if ($name -eq 'bankrotai-home-postgres' -or $name -eq 'bankrotai-home-redis') {
+              throw "Refusing protected production volume: $name"
+            }
+            docker volume rm $name | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not remove audited volume $name" }
+            $removed += $name
+          }
+
+          $afterDrive = Get-PSDrive C
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            requested = $targets.Count
+            removed_count = $removed.Count
+            removed = $removed
+            skipped = $skipped
+            free_gb_before = [math]::Round($beforeFree / 1GB, 2)
+            free_gb_after = [math]::Round($afterDrive.Free / 1GB, 2)
+            freed_host_gb = [math]::Round(($afterDrive.Free - $beforeFree) / 1GB, 2)
+            percent_free_after = [math]::Round(100 * $afterDrive.Free / ($afterDrive.Used + $afterDrive.Free), 2)
+            docker_df_after = (docker system df | Out-String).Trim()
+          }
+          '=== VOLUME_CLEANUP_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 6
+          '=== VOLUME_CLEANUP_JSON_END ==='
