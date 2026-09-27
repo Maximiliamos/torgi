@@ -178,9 +178,9 @@ describe("tile map startup", () => {
 
     render(<MapView refreshToken={0} />);
 
-    expect(await screen.findByText("Геокодирование — 64.0%")).toBeInTheDocument();
-    expect(screen.getByText("640 из 1000 с координатами")).toBeInTheDocument();
-    expect(screen.getByText(/В очереди: 360/)).toBeInTheDocument();
+    expect(await screen.findByText("Координаты найдены — 64.0%")).toBeInTheDocument();
+    expect(screen.getByText(/640 из 1000 с координатами · без координат 360/)).toBeInTheDocument();
+    expect(screen.getByText(/Доступно сейчас: 360 · ждут повторной попытки: 0/)).toBeInTheDocument();
     expect(screen.getByText(/Текущий пакет: 125 из 250/)).toBeInTheDocument();
     expect(screen.getByText(/Запросы геокодера: 230 из 230 · из кеша 20/)).toBeInTheDocument();
     expect(screen.getByText(/torgi-russia.ru: 420 лотов/)).toBeInTheDocument();
