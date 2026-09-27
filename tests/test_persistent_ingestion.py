@@ -697,6 +697,76 @@ def test_cardinality_collapse_is_not_treated_as_complete_source_run(sessions) ->
         assert all(row.missing_successful_runs == 0 for row in rows)
 
 
+def test_torgi_russia_repeatable_collapse_requires_two_guard_failures_then_two_complete_runs(sessions) -> None:
+    source_id = "torgi-russia.ru"
+
+    def source_lot(index: int) -> NormalizedLot:
+        item = lot(f"torgi-russia:{index}")
+        item.source = "torgi-russia"
+        item.source_system = source_id
+        return item
+
+    def run_source(service: NationwideIngestionService, items: list[NormalizedLot]) -> dict:
+        service.connector_factory = lambda _source: FakeConnector([items])
+        run_id = service.create_run(triggered_by="admin", trigger_type="manual_source_full", total_sources=1)
+        return asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
+
+    service = NationwideIngestionService(sessions)
+    baseline = [source_lot(index) for index in range(50)]
+    reduced = baseline[:24]
+    assert run_source(service, baseline)["status"] == "success"
+
+    first = run_source(service, reduced)
+    second = run_source(service, reduced)
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+
+    third = run_source(service, reduced)
+    assert third["status"] == "success"
+    assert third["sources"][0]["complete_source_run"] is True
+    assert third["sources"][0]["items_archived"] == 0
+    with sessions() as session:
+        missing = session.scalars(
+            select(SourceLot).where(SourceLot.external_id.not_in({item.external_id for item in reduced}))
+        ).all()
+        assert len(missing) == 26
+        assert all(row.missing_successful_runs == 1 and row.is_archived is False for row in missing)
+
+    fourth = run_source(service, reduced)
+    assert fourth["status"] == "success"
+    assert fourth["sources"][0]["items_archived"] == 26
+    with sessions() as session:
+        archived = session.scalars(select(SourceLot).where(SourceLot.is_archived.is_(True))).all()
+        assert len(archived) == 26
+        assert all(row.archive_reason == "missing_after_two_complete_syncs" for row in archived)
+
+
+def test_torgi_russia_repeatable_collapse_rejects_unstable_cardinality(sessions) -> None:
+    source_id = "torgi-russia.ru"
+
+    def source_lot(index: int) -> NormalizedLot:
+        item = lot(f"torgi-russia:{index}")
+        item.source = "torgi-russia"
+        item.source_system = source_id
+        return item
+
+    def run_source(service: NationwideIngestionService, items: list[NormalizedLot]) -> dict:
+        service.connector_factory = lambda _source: FakeConnector([items])
+        run_id = service.create_run(triggered_by="admin", trigger_type="manual_source_full", total_sources=1)
+        return asyncio.run(service.run(run_id, (SourceSyncSpec(source_id, {}),)))
+
+    service = NationwideIngestionService(sessions)
+    baseline = [source_lot(index) for index in range(50)]
+    assert run_source(service, baseline)["status"] == "success"
+    assert run_source(service, baseline[:24])["status"] == "failed"
+    assert run_source(service, baseline[:24])["status"] == "failed"
+
+    unstable = run_source(service, baseline[:20])
+    assert unstable["status"] == "failed"
+    assert unstable["sources"][0]["complete_source_run"] is False
+    assert "coverage guard" in unstable["sources"][0]["error"]
+
+
 def test_yaroslavl_pilot_builds_three_region_scoped_sources() -> None:
     specs = regional_source_specs(region_code="76", region_name="Ярославская область")
 
