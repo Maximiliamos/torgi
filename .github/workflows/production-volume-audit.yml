@@ -1,0 +1,60 @@
+name: Production Docker volume audit
+
+on:
+  push:
+    branches: [audit/all-sources-geo-20260927]
+    paths:
+      - '.github/workflows/production-volume-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-volume-audit
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - name: Inspect dangling Docker volumes read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rows = @()
+          $names = @(docker volume ls -q --filter dangling=true)
+          foreach ($name in $names) {
+            $inspect = docker volume inspect $name | ConvertFrom-Json
+            $meta = $inspect[0]
+            $usageLine = docker system df -v | Select-String -SimpleMatch $name | Select-Object -First 1
+            $size = $null
+            if ($usageLine) {
+              $parts = ($usageLine.Line -split '\s+') | Where-Object { $_ }
+              if ($parts.Count -ge 3) { $size = $parts[-1] }
+            }
+
+            $probe = docker run --rm --network none --mount "type=volume,src=$name,dst=/data,readonly" postgres:17 sh -lc "printf 'PG_VERSION='; if [ -f /data/PG_VERSION ]; then cat /data/PG_VERSION; else printf 'none'; fi; printf '\nTOP='; find /data -mindepth 1 -maxdepth 1 -printf '%f,' 2>/dev/null | head -c 600" 2>$null
+            $rows += [pscustomobject]@{
+              name = $name
+              size = $size
+              created_at = $meta.CreatedAt
+              labels = $meta.Labels
+              scope = $meta.Scope
+              driver = $meta.Driver
+              probe = ($probe -join ' ').Trim()
+            }
+          }
+
+          $containers = @(docker ps -a --format '{{json .}}' | ForEach-Object { $_ | ConvertFrom-Json } |
+            Select-Object ID,Names,Image,Status,Mounts)
+
+          $result = [ordered]@{
+            captured_at = (Get-Date).ToUniversalTime().ToString('o')
+            dangling_count = $rows.Count
+            dangling_volumes = $rows
+            all_containers = $containers
+          }
+          '=== VOLUME_AUDIT_JSON_BEGIN ==='
+          $result | ConvertTo-Json -Depth 8
+          '=== VOLUME_AUDIT_JSON_END ==='
