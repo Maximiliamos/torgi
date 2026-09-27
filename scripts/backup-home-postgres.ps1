@@ -2,7 +2,7 @@
 param(
     [string]$Destination = 'C:\BankrotAI\backups\postgres',
     [switch]$VerifyRestore,
-    [int]$RetainDays = 14,
+    [int]$RetainDays = 7,
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 1
 )
@@ -12,6 +12,14 @@ $databaseContainer = 'bankrotai-home-postgres'
 $verifyContainer = 'bankrotai-backup-verify'
 $resolvedDestination = [System.IO.Path]::GetFullPath($Destination)
 New-Item -ItemType Directory -Force -Path $resolvedDestination | Out-Null
+if ($RetainDays -gt 0) {
+    # Reclaim expired dumps before creating the next multi-GB backup so a
+    # nearly-full disk cannot deadlock the retention policy.
+    $preBackupCutoff = (Get-Date).AddDays(-$RetainDays)
+    Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
+        Where-Object LastWriteTime -lt $preBackupCutoff |
+        Remove-Item -Force
+}
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backup = Join-Path $resolvedDestination "bankrotai-$stamp.dump"
 $metadata = Join-Path $resolvedDestination "bankrotai-$stamp.json"
