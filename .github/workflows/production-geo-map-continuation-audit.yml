@@ -322,7 +322,23 @@ jobs:
           $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          if ($code -eq 0) {
+            $start = [Array]::IndexOf($out, '=== STAGE5_JSON_BEGIN ===')
+            $end = [Array]::IndexOf($out, '=== STAGE5_JSON_END ===')
+            if ($start -lt 0 -or $end -le $start) { throw 'Stage 5 JSON markers missing' }
+            $json = $out[($start + 1)..($end - 1)]
+            $path = Join-Path $env:RUNNER_TEMP 'stage5-geo-benchmark.json'
+            $json | Set-Content -Path $path -Encoding UTF8
+          }
           if ($code -ne 0) { throw 'Stage 5 GEO benchmark failed closed' }
+
+      - name: Upload Stage 5 benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage5-geo-benchmark
+          path: ${{ runner.temp }}/stage5-geo-benchmark.json
+          if-no-files-found: error
+          retention-days: 14
 
   stage6-drain:
     needs: stage5-benchmark
@@ -424,7 +440,23 @@ jobs:
           $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          if ($code -eq 0) {
+            $start = [Array]::IndexOf($out, '=== STAGE6_JSON_BEGIN ===')
+            $end = [Array]::IndexOf($out, '=== STAGE6_JSON_END ===')
+            if ($start -lt 0 -or $end -le $start) { throw 'Stage 6 JSON markers missing' }
+            $json = $out[($start + 1)..($end - 1)]
+            $path = Join-Path $env:RUNNER_TEMP 'stage6-geo-drain.json'
+            $json | Set-Content -Path $path -Encoding UTF8
+          }
           if ($code -ne 0) { throw 'Stage 6 controlled GEO drain failed closed' }
+
+      - name: Upload Stage 6 drain
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage6-geo-drain
+          path: ${{ runner.temp }}/stage6-geo-drain.json
+          if-no-files-found: error
+          retention-days: 14
 
   stage7-8-evidence:
     needs: [stage3-check, stage4-baseline, stage5-benchmark, stage6-drain]
@@ -441,10 +473,13 @@ jobs:
       - name: Verify GEO quality regression and DB-map-S3 agreement
         shell: powershell
         env:
-          STAGE4_BASELINE: ${{ runner.temp }}/stage4-baseline/stage4-geo-quality-baseline.json
+          STAGE4_BASELINE_HOST: ${{ runner.temp }}/stage4-baseline/stage4-geo-quality-baseline.json
           STAGE5_RESULT: ${{ needs.stage5-benchmark.result }}
           STAGE6_RESULT: ${{ needs.stage6-drain.result }}
         run: |
+          $containerBaseline = '/tmp/stage4-geo-quality-baseline.json'
+          docker cp "$env:STAGE4_BASELINE_HOST" "bankrotai-home-ingestion-worker:$containerBaseline"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not copy Stage 4 baseline into production worker container' }
           $probe = @'
           import json
           import os
@@ -650,7 +685,199 @@ jobs:
           if regressions:
               raise RuntimeError(f"GEO quality regression detected: {regressions}")
           '@
-          $out = $probe | docker exec --env "STAGE4_BASELINE=$env:STAGE4_BASELINE" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
+          $out = $probe | docker exec --env "STAGE4_BASELINE=$containerBaseline" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
+          docker exec bankrotai-home-ingestion-worker sh -lc "rm -f '$containerBaseline'" | Out-Null
           if ($code -ne 0) { throw 'Stage 7/8 evidence failed closed' }
+
+
+  stage9-hidden-errors:
+    needs: [stage3-check, stage7-8-evidence]
+    if: ${{ always() && needs.stage3-check.result == 'success' }}
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Capture hidden source queue and stale-baseline diagnostics
+        shell: powershell
+        run: |
+          $probe = @'
+          import json
+          from datetime import timedelta
+
+          from redis import Redis
+          from sqlalchemy import func, select
+
+          from bankrotai.core import get_settings, utc_now
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal, SourceLot
+          from bankrotai.tasks import celery_app
+
+          now = utc_now()
+          with SessionLocal() as session:
+              phase3 = session.scalar(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.triggered_by == "phase3-lite")
+                  .order_by(LotSyncRun.created_at.desc())
+                  .limit(1)
+              )
+              if phase3 is None:
+                  raise RuntimeError("Phase 3 run missing for Stage 9")
+
+              russia_run = session.scalar(
+                  select(LotSyncSourceRun)
+                  .where(
+                      LotSyncSourceRun.sync_run_id == phase3.id,
+                      LotSyncSourceRun.source_system == "torgi-russia.ru",
+                  )
+              )
+              if russia_run is None:
+                  raise RuntimeError("torgi-russia source row missing")
+
+              active_filter = (
+                  SourceLot.source_system == "torgi-russia.ru",
+                  SourceLot.is_active.is_(True),
+                  SourceLot.is_archived.is_(False),
+              )
+              active_total = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(*active_filter)
+              ) or 0)
+              stale_before_run = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(
+                      *active_filter,
+                      SourceLot.last_seen_at < russia_run.started_at,
+                  )
+              ) or 0)
+              seen_during_or_after = int(session.scalar(
+                  select(func.count()).select_from(SourceLot).where(
+                      *active_filter,
+                      SourceLot.last_seen_at >= russia_run.started_at,
+                  )
+              ) or 0)
+
+              age_buckets = {}
+              boundaries = (
+                  ("lt_1d", now - timedelta(days=1), None),
+                  ("1_7d", now - timedelta(days=7), now - timedelta(days=1)),
+                  ("7_30d", now - timedelta(days=30), now - timedelta(days=7)),
+                  ("gte_30d", None, now - timedelta(days=30)),
+              )
+              for label, lower, upper in boundaries:
+                  statement = select(func.count()).select_from(SourceLot).where(*active_filter)
+                  if lower is not None:
+                      statement = statement.where(SourceLot.last_seen_at >= lower)
+                  if upper is not None:
+                      statement = statement.where(SourceLot.last_seen_at < upper)
+                  age_buckets[label] = int(session.scalar(statement) or 0)
+
+              retry_runs = []
+              for run in session.scalars(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.trigger_type == "scheduled_retry")
+                  .order_by(LotSyncRun.created_at.desc())
+                  .limit(30)
+              ).all():
+                  rows = session.scalars(
+                      select(LotSyncSourceRun)
+                      .where(LotSyncSourceRun.sync_run_id == run.id)
+                      .order_by(LotSyncSourceRun.source_system)
+                  ).all()
+                  retry_runs.append({
+                      "run_id": run.id,
+                      "status": run.status,
+                      "created_at": run.created_at,
+                      "started_at": run.started_at,
+                      "finished_at": run.finished_at,
+                      "error": run.error_message,
+                      "sources": [{
+                          "source": row.source_system,
+                          "status": row.status,
+                          "error": row.error_message,
+                      } for row in rows],
+                  })
+
+          celery = {}
+          try:
+              inspect = celery_app.control.inspect(timeout=3)
+              for key, value in (
+                  ("active", inspect.active() or {}),
+                  ("reserved", inspect.reserved() or {}),
+                  ("scheduled", inspect.scheduled() or {}),
+              ):
+                  selected = []
+                  for worker, tasks in value.items():
+                      for task in tasks or []:
+                          request = task.get("request") or {}
+                          name = str(task.get("name") or request.get("name") or "")
+                          if "source_retry" not in name and "geocode" not in name:
+                              continue
+                          selected.append({
+                              "worker": worker,
+                              "id": task.get("id") or request.get("id"),
+                              "name": name,
+                              "args": str(task.get("args") or request.get("args") or "")[:500],
+                          })
+                  celery[key] = selected
+          except Exception as exc:
+              celery = {"error": f"{exc.__class__.__name__}: {exc}"[:500]}
+
+          settings = get_settings()
+          redis_state = {}
+          client = None
+          try:
+              client = Redis.from_url(
+                  settings.redis_url,
+                  socket_connect_timeout=2,
+                  socket_timeout=2,
+                  decode_responses=True,
+              )
+              redis_state = {
+                  "geo_lock_exists": bool(client.exists("bankrotai:geocoding:batch")),
+                  "geo_lock_ttl_seconds": int(client.ttl("bankrotai:geocoding:batch")),
+                  "map_dirty": client.get("bankrotai:map-dataset-dirty"),
+              }
+          except Exception as exc:
+              redis_state = {"error": f"{exc.__class__.__name__}: {exc}"[:500]}
+          finally:
+              if client is not None:
+                  client.close()
+
+          payload = {
+              "captured_at": now,
+              "phase3_run_id": phase3.id,
+              "torgi_russia": {
+                  "run_status": russia_run.status,
+                  "run_started_at": russia_run.started_at,
+                  "run_finished_at": russia_run.finished_at,
+                  "items_seen": int(russia_run.items_seen or 0),
+                  "active_total": active_total,
+                  "active_last_seen_before_full_run": stale_before_run,
+                  "active_seen_during_or_after_full_run": seen_during_or_after,
+                  "active_age_buckets": age_buckets,
+                  "coverage_error": russia_run.error_message,
+              },
+              "recent_scheduled_retry_runs": retry_runs,
+              "celery": celery,
+              "redis": redis_state,
+          }
+          print("=== STAGE9_JSON_BEGIN ===")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+          print("=== STAGE9_JSON_END ===")
+          '@
+
+          $out = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) { throw 'Stage 9 hidden-error probe failed' }
+          $start = [Array]::IndexOf($out, '=== STAGE9_JSON_BEGIN ===')
+          $end = [Array]::IndexOf($out, '=== STAGE9_JSON_END ===')
+          if ($start -lt 0 -or $end -le $start) { throw 'Stage 9 JSON markers missing' }
+          $json = $out[($start + 1)..($end - 1)]
+          $out | ForEach-Object { Write-Output $_ }
+          $path = Join-Path $env:RUNNER_TEMP 'stage9-hidden-errors.json'
+          $json | Set-Content -Path $path -Encoding UTF8
+
+      - name: Upload Stage 9 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage9-hidden-errors
+          path: ${{ runner.temp }}/stage9-hidden-errors.json
+          if-no-files-found: error
+          retention-days: 14
