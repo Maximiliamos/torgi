@@ -200,7 +200,7 @@ class TorgiRussiaClient:
         return None
 
     @classmethod
-    def _extract_public_lot_records(cls, html: str) -> list[dict]:
+    def _extract_public_lot_records(cls, html: str, *, require_linked: bool = True) -> list[dict]:
         flight = cls._extract_next_flight_text(html)
         records: dict[int, dict] = {}
         for match in LOT_OBJECT_START_RE.finditer(flight):
@@ -231,13 +231,24 @@ class TorgiRussiaClient:
             match = re.fullmatch(r"/lot/(\d+)/?", urlparse(candidate).path)
             if match:
                 linked_ids.add(int(match.group(1)))
-        if linked_ids:
+        if require_linked and linked_ids:
             records = {key: value for key, value in records.items() if key in linked_ids}
 
         return list(records.values())
 
     @staticmethod
     def _pagination_metadata(html: str, *, page_url: str, current_page: int, loaded: int) -> dict:
+        flight = TorgiRussiaClient._extract_next_flight_text(html)
+        last_page_match = re.search(r'"(?:last_page|lastPage)"\s*:\s*(\d+)', flight)
+        total_match = re.search(r'"total"\s*:\s*(\d+)', flight)
+        if last_page_match:
+            last_page = max(current_page, int(last_page_match.group(1)))
+            return {
+                "has_more": current_page < last_page,
+                "total_pages": last_page,
+                "total": int(total_match.group(1)) if total_match else None,
+            }
+
         soup = BeautifulSoup(html, "html.parser")
         observed_pages: set[int] = {max(1, current_page)}
         for anchor in soup.select("a[href]"):
@@ -580,7 +591,11 @@ class TorgiRussiaClient:
         if numeric_match:
             numeric_id = int(numeric_match.group(1))
             flight_record = next(
-                (item for item in cls._extract_public_lot_records(html) if item.get("id") == numeric_id),
+                (
+                    item
+                    for item in cls._extract_public_lot_records(html, require_linked=False)
+                    if item.get("id") == numeric_id
+                ),
                 None,
             )
         flight_detail = cls.parse_detail_payload(flight_record) if isinstance(flight_record, dict) else {}
