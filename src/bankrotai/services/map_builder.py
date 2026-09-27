@@ -356,6 +356,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
     started = time.monotonic()
     build_completed = False
     promotion_completed = False
+    tile_count = 0
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     settings = get_settings()
     version = build_map_dataset_version(
@@ -469,7 +470,6 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "Map dataset excluded spatially invalid coordinates: counts=%s",
                 spatial_rejection_counts,
             )
-        tile_count = 0
         with session_factory() as session:
             for zoom in range(MAX_DATASET_ZOOM + 1):
                 buckets: dict[tuple[int, int], list[dict]] = defaultdict(list)
@@ -595,7 +595,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 version,
                 dataset_id,
             )
-            storage = {"diagnostics_unavailable": 1, "error": str(exc)[:500]}
+            storage = {"diagnostics_unavailable": 1}
         return {
             "version": version,
             "build_status": "success",
@@ -615,6 +615,16 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 dataset = session.get(MapDataset, dataset_id)
                 if dataset is not None:
                     dataset.status = "failed"
+                    try:
+                        dataset.tile_count = int(
+                            session.scalar(
+                                select(func.count(MapTile.id)).where(MapTile.dataset_id == dataset_id)
+                            )
+                            or 0
+                        )
+                    except Exception:
+                        # Preserve failure reporting even if the database itself is degraded.
+                        dataset.tile_count = max(int(dataset.tile_count or 0), tile_count)
                     session.commit()
         if promotion_completed:
             logger.exception(
