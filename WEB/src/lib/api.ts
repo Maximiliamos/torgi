@@ -541,8 +541,10 @@ export type OperationsProgress = {
   };
   geocoding: {
     total: number; geocoded: number; remaining: number; actionable_remaining?: number;
-    terminal_failures: number; percent: number; paused?: boolean;
-    rate_per_second?: number | null; eta_seconds?: number | null;
+    terminal_failures: number; resolved?: number; resolved_percent?: number;
+    eligible_now?: number; waiting_for_retry?: number; next_retry_at?: string | null;
+    percent: number; paused?: boolean;
+    rate_per_second?: number | null; eta_seconds?: number | null; eta_scope?: "eligible_now" | null;
     elapsed_seconds?: number | null; estimated_total_seconds?: number | null;
     expected_completion_at?: string | null;
     task: null | {
