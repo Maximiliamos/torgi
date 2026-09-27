@@ -77,3 +77,14 @@ def test_home_deploy_clears_only_orphaned_geo_lock_after_worker_stop() -> None:
     assert clear in workflow
     assert workflow.index(remove) < workflow.index(clear) < workflow.index(start)
     assert 'if ($spec.Name -eq $env:GEO_WORKER_CONTAINER)' in workflow
+
+
+def test_home_deploy_clears_only_orphaned_map_lock_after_worker_stop() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    remove = "docker rm --force $spec.Name"
+    clear = "redis-cli DEL bankrotai:map-dataset-build"
+    start = '"${env:IMAGE_NAME}:${env:GITHUB_SHA}" @workerArgs'
+
+    assert clear in workflow
+    assert workflow.index(remove) < workflow.index(clear) < workflow.index(start)
+    assert 'if ($spec.Name -eq $env:MAP_WORKER_CONTAINER)' in workflow

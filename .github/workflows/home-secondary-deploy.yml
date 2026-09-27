@@ -323,6 +323,16 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "Could not clear orphaned geocoding lock" }
               Write-Output "Cleared orphaned geocoding lock before replacement worker: $clearedGeoLock"
             }
+            if ($spec.Name -eq $env:MAP_WORKER_CONTAINER) {
+              # The map build lock outlives a force-removed worker for up to 30
+              # minutes. The old map container has already been removed above,
+              # so any remaining lock cannot have a live owner and would block
+              # the mandatory current-dataset publication gate.
+              $clearedMapLock = docker exec --env "REDISCLI_AUTH=$redisPassword" `
+                $env:REDIS_CONTAINER redis-cli DEL bankrotai:map-dataset-build
+              if ($LASTEXITCODE -ne 0) { throw "Could not clear orphaned map dataset build lock" }
+              Write-Output "Cleared orphaned map dataset build lock before replacement worker: $clearedMapLock"
+            }
             $workerArgs = @(
               'celery', '-A', 'bankrotai.tasks:celery_app', 'worker',
               "--hostname=$($spec.Node)", "--queues=$($spec.Queue)",
