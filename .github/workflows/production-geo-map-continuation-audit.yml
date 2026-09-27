@@ -477,14 +477,13 @@ jobs:
           STAGE5_RESULT: ${{ needs.stage5-benchmark.result }}
           STAGE6_RESULT: ${{ needs.stage6-drain.result }}
         run: |
-          $containerBaseline = '/tmp/stage4-geo-quality-baseline.json'
-          docker cp "$env:STAGE4_BASELINE_HOST" "bankrotai-home-ingestion-worker:$containerBaseline"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not copy Stage 4 baseline into production worker container' }
+          $baselineBytes = [IO.File]::ReadAllBytes($env:STAGE4_BASELINE_HOST)
+          $baselineB64 = [Convert]::ToBase64String($baselineBytes)
           $probe = @'
+          import base64
           import json
           import os
           import time
-          from pathlib import Path
           from urllib.parse import urljoin, urlsplit
 
           import requests
@@ -497,7 +496,7 @@ jobs:
           from bankrotai.services.geo_backfill import geocoding_diagnostic_report
           from bankrotai.services.map_bundle_store import normalize_map_region_code
 
-          baseline = json.loads(Path(os.environ["STAGE4_BASELINE"]).read_text(encoding="utf-8-sig"))
+          baseline = json.loads(base64.b64decode(os.environ["STAGE4_BASELINE_B64"]).decode("utf-8-sig"))
           before_quality = baseline["geocoding"]["quality"]
 
           def expected_map_points():
@@ -685,10 +684,9 @@ jobs:
           if regressions:
               raise RuntimeError(f"GEO quality regression detected: {regressions}")
           '@
-          $out = $probe | docker exec --env "STAGE4_BASELINE=$containerBaseline" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
+          $out = $probe | docker exec --env "STAGE4_BASELINE_B64=$baselineB64" --env "STAGE5_RESULT=$env:STAGE5_RESULT" --env "STAGE6_RESULT=$env:STAGE6_RESULT" -i bankrotai-home-ingestion-worker python -
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
-          docker exec bankrotai-home-ingestion-worker sh -lc "rm -f '$containerBaseline'" | Out-Null
           if ($code -ne 0) { throw 'Stage 7/8 evidence failed closed' }
 
 
