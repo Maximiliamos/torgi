@@ -41,6 +41,7 @@ class AuctionConnector(ABC):
     source_id: str
     detail_enrichment_version: int = 1
     compatible_detail_enrichment_versions: frozenset[int] | None = None
+    detail_enrichment_on_listing_change: bool = True
     capabilities: frozenset[str] = frozenset({"search"})
 
     @abstractmethod

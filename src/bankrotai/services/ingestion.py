@@ -574,9 +574,16 @@ class NationwideIngestionService:
                     connector.compatible_detail_enrichment_versions
                     or frozenset({connector.detail_enrichment_version})
                 )
+                listing_changed = (
+                    previous_raw.get("listing_fingerprint")
+                    != current_raw.get("listing_fingerprint")
+                )
                 needs_detail = (
                     existing is None
-                    or previous_raw.get("listing_fingerprint") != current_raw.get("listing_fingerprint")
+                    or (
+                        connector.detail_enrichment_on_listing_change
+                        and listing_changed
+                    )
                     or previous_raw.get("detail_enrichment_status") != "success"
                     or previous_raw.get("detail_enrichment_version") not in compatible_versions
                 )
@@ -602,7 +609,9 @@ class NationwideIngestionService:
                 lot.auction_at = existing.auction_at or lot.auction_at
                 lot.procedure_number = existing.procedure_number or lot.procedure_number
                 lot.detail_level = "detail"
-                lot.raw_data = {**current_raw, **previous_raw}
+                # Preserve persisted detail-only evidence while letting the
+                # fresh listing transport win for status/price/photos/fingerprint.
+                lot.raw_data = {**previous_raw, **current_raw}
 
             await self._await_with_lease_heartbeat(
                 run_id,
@@ -974,6 +983,7 @@ class NationwideIngestionService:
             "images",
             "photos",
             "gallery",
+            "listing_fingerprint",
             "public_offer_schedule",
             "next_interval_price",
             "next_price_reduction_at",
