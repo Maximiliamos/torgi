@@ -27,7 +27,7 @@ concurrency:
 jobs:
   backup:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
       - name: Create backup and run scheduled restore drill

@@ -62,6 +62,11 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
 
     assert "17 2 * * 1-6" in backup
     assert "47 2 * * 0" in backup
+    assert "timeout-minutes: 240" in backup
     assert "-VerifyRestore:$verify" in backup
+    assert "[int]$CompressionLevel = 1" in BACKUP.read_text(encoding="utf-8")
+    assert "-Z $CompressionLevel" in BACKUP.read_text(encoding="utf-8")
+    assert "backup_duration_seconds" in BACKUP.read_text(encoding="utf-8")
+    assert "docker rm -fv $verifyContainer" in BACKUP.read_text(encoding="utf-8")
     assert "[Phase 3] Backup/restore alert" in backup
     assert "cancel-in-progress: false" in backup
