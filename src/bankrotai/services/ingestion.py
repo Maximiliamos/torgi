@@ -983,6 +983,7 @@ class NationwideIngestionService:
             "images",
             "photos",
             "gallery",
+            "listing_fingerprint",
             "public_offer_schedule",
             "next_interval_price",
             "next_price_reduction_at",
