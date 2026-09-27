@@ -609,7 +609,9 @@ class NationwideIngestionService:
                 lot.auction_at = existing.auction_at or lot.auction_at
                 lot.procedure_number = existing.procedure_number or lot.procedure_number
                 lot.detail_level = "detail"
-                lot.raw_data = {**current_raw, **previous_raw}
+                # Preserve persisted detail-only evidence while letting the
+                # fresh listing transport win for status/price/photos/fingerprint.
+                lot.raw_data = {**previous_raw, **current_raw}
 
             await self._await_with_lease_heartbeat(
                 run_id,
