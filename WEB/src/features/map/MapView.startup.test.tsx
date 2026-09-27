@@ -116,6 +116,13 @@ function deferredTile() {
   return { promise, resolve, reject };
 }
 
+  it("preserves an origin referer for the sandboxed Yandex Maps loader", async () => {
+    render(<MapView refreshToken={0} />);
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    expect(frame.getAttribute("referrerpolicy")).toBe("origin");
+    expect(frame.srcdoc).toContain('<meta name="referrer" content="origin">');
+  });
+
 describe("tile map startup", () => {
   afterEach(() => {
     cleanup();
