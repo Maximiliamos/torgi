@@ -587,7 +587,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         try:
             with session_factory() as session:
                 storage = map_dataset_storage_statistics(session)
-        except Exception as exc:
+        except Exception:
             # Publication/promotion is authoritative. Retention telemetry must
             # never retroactively invalidate an already promoted dataset.
             logger.exception(
