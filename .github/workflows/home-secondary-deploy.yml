@@ -43,6 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Reclaim bounded home disk space before build
+        shell: powershell
+        run: |
+          .\scripts\home-safe-disk-cleanup.ps1 -MinimumFreePercent 10 -DrRetainDays 7 -PreMigrationRetainCount 2
+
       - name: Require production secrets
         shell: powershell
         run: |
