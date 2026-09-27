@@ -58,21 +58,45 @@ jobs:
             Write-Output "::add-mask::$env:MAP_S3_SECRET_KEY"
           }
 
-      - name: Reclaim safe Docker disk space before build
+      - name: Reclaim safe production disk space before build
         shell: powershell
         run: |
           $before = Get-PSDrive -Name C
           $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          Write-Output "C: free before Docker cleanup: $beforeFreeGb GB"
+          Write-Output "C: free before cleanup: $beforeFreeGb GB"
+
+          # Phase 3 health accepts a restore verification up to 192 hours old.
+          # Keep seven days of DR backups so the weekly verified restore remains
+          # available, while preventing daily multi-GB dumps from filling C:.
+          $drBackupRoot = Join-Path $env:CONFIG_ROOT 'dr-backups'
+          if (Test-Path -LiteralPath $drBackupRoot) {
+            $cutoff = (Get-Date).AddDays(-7)
+            Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*' |
+              Where-Object LastWriteTime -lt $cutoff |
+              Remove-Item -Force
+          }
+
+          # Pre-migration dumps are an additional safety layer. Retain the three
+          # newest; normal DR backups remain separate and restore-verified.
+          $migrationBackupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
+          if (Test-Path -LiteralPath $migrationBackupRoot) {
+            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -Skip 3 |
+              Remove-Item -Force
+          }
+
+          # Never prune volumes: PostgreSQL and Redis persistent data live there.
           docker system prune --all --force
           if ($LASTEXITCODE -ne 0) { throw "Docker pre-build cleanup failed" }
           docker builder prune --all --force
           if ($LASTEXITCODE -ne 0) { throw "Docker builder cleanup failed" }
+
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          Write-Output "C: free after Docker cleanup: $afterFreeGb GB"
+          Write-Output "C: free after cleanup: $afterFreeGb GB"
           if ($after.Free -lt 2GB) {
-            throw "C: still has less than 2 GB free after safe Docker cleanup"
+            throw "C: still has less than 2 GB free after safe cleanup"
           }
 
       - name: Build current-main API image
