@@ -1,0 +1,60 @@
+name: Temporary Torgi Russia region probe
+
+on:
+  push:
+    branches:
+      - fix/torgi-russia-source-region-map-20260928
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install application
+        run: python -m pip install --disable-pip-version-check -e .
+      - name: Probe public region filter IDs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import requests
+          from bankrotai.torgi_russia import BASE_URL, PUBLIC_SEARCH_PATH, REAL_ESTATE_CATEGORY_IDS, TorgiRussiaClient
+
+          for region_id in (80, 81, 82, 83, 84, 85, 90, 91, 92, 93, 94, 95, 99):
+              params = [("search", "")]
+              params.extend(("categorie_childs[]", category_id) for category_id in REAL_ESTATE_CATEGORY_IDS)
+              params.extend([("page", 1), ("regions[]", region_id)])
+              response = requests.get(
+                  BASE_URL + PUBLIC_SEARCH_PATH,
+                  params=params,
+                  timeout=30,
+                  headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ru-RU,ru;q=0.9"},
+              )
+              response.raise_for_status()
+              records, meta = TorgiRussiaClient.parse_next_search_payload(
+                  response.text,
+                  page_url=response.url,
+                  current_page=1,
+              )
+              titles = sorted({
+                  str(item.get("region_title") or (item.get("region") or {}).get("title") or "")
+                  for item in records
+                  if isinstance(item, dict)
+              })
+              print(json.dumps({
+                  "region_id": region_id,
+                  "status": response.status_code,
+                  "loaded": len(records),
+                  "titles": titles,
+                  "total": meta.get("total"),
+                  "total_pages": meta.get("total_pages"),
+                  "url": response.url,
+              }, ensure_ascii=False))
+          PY
