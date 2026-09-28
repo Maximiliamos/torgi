@@ -19,6 +19,22 @@ BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
 PUBLIC_PAGE_SIZE = 24
 REAL_ESTATE_CATEGORY_IDS = (7, 33, 343, 9, 18, 17, 16)
+# The public catalog's regions[] parameter is an internal sequential filter ID,
+# not the canonical subject code after 79. Verified live on 2026-09-28:
+# 80=Nenets AO, 81=KhMAO, 82=Chukotka, 83=Yamal, 84=Crimea,
+# 85=Sevastopol, 86="other territories". IDs 87+ currently return no rows.
+PUBLIC_REGION_FILTER_EXPECTATIONS: dict[int, str | None] = {
+    **{region_id: str(region_id).zfill(2) for region_id in range(1, 80)},
+    80: "83",
+    81: "86",
+    82: "87",
+    83: "89",
+    84: "82",
+    85: "92",
+    86: None,
+}
+PUBLIC_REGION_FILTER_IDS = tuple(PUBLIC_REGION_FILTER_EXPECTATIONS)
+PUBLIC_OTHER_REGION_TITLE = "Иные территории, включая город и космодром Байконур"
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 
@@ -125,19 +141,38 @@ class TorgiRussiaClient:
         )
 
         if filters.region_id is not None and records:
-            requested_code = str(int(filters.region_id)).zfill(2)
-            observed_codes = {
-                code
+            source_region_id = int(filters.region_id)
+            expected_code = PUBLIC_REGION_FILTER_EXPECTATIONS.get(source_region_id)
+            raw_titles = {
+                str(item.get("region_title") or "").strip()
                 for item in records
                 if item.get("region_title")
-                for code in [normalize_region_code(str(item.get("region_title") or ""))]
-                if code is not None
             }
-            if observed_codes and observed_codes != {requested_code}:
+            if source_region_id not in PUBLIC_REGION_FILTER_EXPECTATIONS:
                 raise RuntimeError(
-                    "Torgi Russia public region filter was not applied: "
-                    f"requested={requested_code} observed={sorted(observed_codes)}"
+                    "Torgi Russia public region filter is not supported: "
+                    f"source_region_id={source_region_id}"
                 )
+            if expected_code is None:
+                if raw_titles != {PUBLIC_OTHER_REGION_TITLE}:
+                    raise RuntimeError(
+                        "Torgi Russia public region filter was not applied: "
+                        f"source_region_id={source_region_id} expected={PUBLIC_OTHER_REGION_TITLE!r} "
+                        f"observed={sorted(raw_titles)}"
+                    )
+            else:
+                observed_codes = {
+                    code
+                    for title in raw_titles
+                    for code in [normalize_region_code(title)]
+                    if code is not None
+                }
+                if observed_codes != {expected_code}:
+                    raise RuntimeError(
+                        "Torgi Russia public region filter was not applied: "
+                        f"source_region_id={source_region_id} expected={expected_code} "
+                        f"observed={sorted(observed_codes)} titles={sorted(raw_titles)}"
+                    )
 
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
