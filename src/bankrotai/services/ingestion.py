@@ -291,7 +291,7 @@ class NationwideIngestionService:
             payload = await self._run_active(run_id, specs)
         finally:
             stop_heartbeat.set()
-            heartbeat_thread.join(timeout=5)
+            heartbeat_thread.join()
         self._finalize_run(run_id, payload)
         return payload
 
