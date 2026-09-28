@@ -335,6 +335,33 @@ def test_torgi_russia_legacy_numeric_cursor_maps_to_first_region() -> None:
     assert TorgiRussiaConnector._decode_cursor("region:5:17") == (5, 17)
 
 
+def test_torgi_russia_accepts_khmao_yugra_public_title() -> None:
+    item = _new_site_lot(region_title="Ханты-Мансийский автономный округ - Югра")
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1&regions%5B%5D=81"
+        text = html
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(region_id=81)
+    )
+
+    assert len(lots) == 1
+    assert lots[0].region_slug == "86"
+    assert lots[0].region_name == "Ханты-Мансийский автономный округ - Югра"
+    assert metadata["region_id"] == 81
+
+
 def test_torgi_russia_accepts_shifted_internal_region_filter_id() -> None:
     item = _new_site_lot(region_title="Ненецкий автономный округ")
     html = _nextjs_search_html([item], total=1)
