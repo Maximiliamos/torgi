@@ -281,7 +281,12 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
     assert "Could not obtain a durable full reconciliation within 45 minutes" in workflow
     assert "AddMinutes(85)" in workflow
     assert "Full reconciliation did not reach a terminal state within 85 minutes" in workflow
-    assert "timeout-minutes: 120" in workflow
+    assert "timeout-minutes: 240" in workflow
+    assert 'mode=f"source:{source}"' in workflow
+    assert "phase3-lite-targeted-retry" in workflow
+    assert "Final 4/4 gate failed after targeted retries" in workflow
+    assert "acceptance chain is explicitly 4/4 -> MapDataset -> S3" in workflow
+    assert "Post-retry MapDataset was not promoted within 20 minutes" in workflow
 
 
 
