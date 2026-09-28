@@ -235,7 +235,8 @@ jobs:
                       break
                     }
                     if ($retryState.status -eq 'failed') {
-                      throw "Targeted retry for $source failed: $($retryState.error)"
+                      $sourceErrors = @($retryState.sources | Where-Object { $_.error } | ForEach-Object { "$($_.source): $($_.error)" })
+                      throw "Targeted retry for $source failed: run_error=$($retryState.error) source_errors=$($sourceErrors -join '; ')"
                     }
                     Start-Sleep -Seconds 20
                   } while ((Get-Date).ToUniversalTime() -lt $retryDeadline)
