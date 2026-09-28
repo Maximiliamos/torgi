@@ -10,6 +10,15 @@ from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
 from bankrotai.torgi_russia import TorgiRussiaClient
 
 
+# The public site's region filter still exposes the pre-2022 source taxonomy.
+# The four newer subject codes are not standalone filter buckets there; when
+# requested, the site ignores the value and returns another region. Lots whose
+# addresses are in those territories are nevertheless present under the site's
+# existing region/"Иные территории" buckets, so scanning those unsupported
+# codes would add no coverage and would fail the existing mismatch guard.
+_UNSUPPORTED_PUBLIC_REGION_CODES = frozenset({"80", "81", "84", "85"})
+
+
 class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
     detail_enrichment_version = 4
@@ -23,9 +32,14 @@ class TorgiRussiaConnector(AuctionConnector):
     def __init__(self) -> None:
         self.client = TorgiRussiaClient()
         # The new public site caps an unsegmented search at 5,000 rows while
-        # advertising substantially more active real-estate lots. Region IDs
-        # match the canonical subject codes already verified by this connector.
-        self._region_ids = [int(region.code) for region in REGION_DIRECTORY]
+        # advertising substantially more active real-estate lots. Most region
+        # filters use canonical subject codes. The four newer subject codes are
+        # not exposed as independent source buckets and must not be requested.
+        self._region_ids = [
+            int(region.code)
+            for region in REGION_DIRECTORY
+            if region.code not in _UNSUPPORTED_PUBLIC_REGION_CODES
+        ]
         self._previous_page_signature: tuple[int, frozenset[str]] | None = None
 
     @staticmethod

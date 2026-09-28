@@ -46,7 +46,7 @@ jobs:
   reconcile:
     needs: wait-home-deploy
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Require canonical ingestion worker
         shell: powershell
@@ -137,9 +137,9 @@ jobs:
         env:
           RUN_ID: ${{ steps.start.outputs.run_id }}
         run: |
-          $deadline = (Get-Date).ToUniversalTime().AddMinutes(65)
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(85)
           do {
-            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'error':x.error_message} for x in rows]}, default=str)); s.close()"
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
             $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
             $state | ConvertTo-Json -Depth 8
@@ -158,6 +158,28 @@ jobs:
               if (@($rows | Where-Object { $_.status -in @('queued','running') }).Count -gt 0) {
                 throw 'Full reconciliation left a source run active'
               }
+              if ('tbankrot.ru' -in $expectedSources -or @($observedSources | Where-Object { $_ -eq 'tbankrot.ru' }).Count -gt 0) {
+                throw 'TBankrot must remain paused and absent from automatic full reconciliation'
+              }
+              $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
+              if ($incompleteRows.Count -gt 0) {
+                $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
+                throw "Full reconciliation did not finish every configured source successfully: $($failedSummary -join '; ')"
+              }
+              $torgiRussia = @($rows | Where-Object { $_.source -eq 'torgi-russia.ru' }) | Select-Object -First 1
+              if ($null -eq $torgiRussia -or [int64]$torgiRussia.items_seen -le 0) {
+                throw "Torgi Russia production parser returned no lots"
+              }
+              @(
+                "## Final source reconciliation",
+                "",
+                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Failed |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+              ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              foreach ($row in ($rows | Sort-Object source)) {
+                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $($row.items_failed) |" |
+                  Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              }
               exit 0
             }
             if ($state.status -eq 'failed') {
@@ -165,4 +187,60 @@ jobs:
             }
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
-          throw 'Full reconciliation did not reach a terminal state within 65 minutes'
+          throw 'Full reconciliation did not reach a terminal state within 85 minutes'
+
+      - name: Verify post-reconciliation MapDataset and REG.RU S3 manifest
+        shell: powershell
+        env:
+          RUN_ID: ${{ steps.start.outputs.run_id }}
+        run: |
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(20)
+          $selected = $null
+          do {
+            $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-map-worker python -c "import json, os; from sqlalchemy import select; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun, MapDataset; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); current=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True), MapDataset.status=='ready')); result=(run.result_json or {}) if run is not None else {}; build=(result.get('map_dataset_build') or {}); changed=bool(int(result.get('expired_after_auction') or 0) or any(int(x.items_inserted or 0) or int(x.items_updated or 0) or int(x.items_archived or 0) or int(x.duplicates_merged or 0) for x in rows)); fresh=bool(run is not None and run.finished_at is not None and current is not None and current.published_at is not None and current.published_at >= run.finished_at); print(json.dumps({'run_status':None if run is None else run.status,'run_finished_at':None if run is None else run.finished_at,'map_affecting_changes':changed,'map_build':build,'dataset':None if current is None else {'version':current.version,'status':current.status,'published_at':current.published_at,'point_count':current.point_count,'tile_count':current.tile_count},'fresh_after_run':fresh}, default=str)); s.close()"
+            if ($LASTEXITCODE -ne 0 -or -not $json) {
+              throw 'Could not inspect post-reconciliation map state'
+            }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            $state | ConvertTo-Json -Depth 8
+            if ($null -eq $state.dataset) {
+              Start-Sleep -Seconds 10
+              continue
+            }
+
+            $buildStatus = [string]$state.map_build.status
+            if (-not [bool]$state.map_affecting_changes) {
+              $selected = $state.dataset
+              break
+            }
+            if ($buildStatus -eq 'schedule_failed') {
+              throw "Map dataset scheduling failed after reconciliation: $($state.map_build.error)"
+            }
+            if ([bool]$state.fresh_after_run) {
+              $selected = $state.dataset
+              break
+            }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+
+          if ($null -eq $selected) {
+            throw 'A post-reconciliation map dataset was not promoted within 20 minutes'
+          }
+
+          $verify = docker exec --env "PHASE3_MAP_VERSION=$($selected.version)" bankrotai-home-map-worker python -c "import json, os; from sqlalchemy import select; from bankrotai.core import get_settings; from bankrotai.db import SessionLocal, MapDataset; from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION; from bankrotai.services.map_object_store import _verify_public_manifest; s=SessionLocal(); d=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True), MapDataset.status=='ready')); assert d is not None; assert d.version == os.environ['PHASE3_MAP_VERSION'], (d.version, os.environ['PHASE3_MAP_VERSION']); m=_verify_public_manifest(get_settings(), d.version); assert m.get('version') == d.version, (m.get('version'), d.version); assert m.get('pipeline_revision') == MAP_DATASET_REVISION, (m.get('pipeline_revision'), MAP_DATASET_REVISION); assert int(m.get('point_count', -1)) == int(d.point_count), (m.get('point_count'), d.point_count); assert int(m.get('tile_count', -1)) == int(d.tile_count), (m.get('tile_count'), d.tile_count); print(json.dumps({'version':d.version,'point_count':d.point_count,'tile_count':d.tile_count,'pipeline_revision':MAP_DATASET_REVISION,'public_manifest_verified':True}, default=str)); s.close()"
+          if ($LASTEXITCODE -ne 0 -or -not $verify) {
+            throw 'DB MapDataset and public REG.RU S3 manifest verification failed'
+          }
+          $verified = ($verify | Select-Object -Last 1) | ConvertFrom-Json
+          $verified | ConvertTo-Json -Depth 6
+          @(
+            "",
+            "## Map publication proof",
+            "",
+            "- version: $($verified.version)",
+            "- point_count: $($verified.point_count)",
+            "- tile_count: $($verified.tile_count)",
+            "- pipeline_revision: $($verified.pipeline_revision)",
+            "- public_manifest_verified: $($verified.public_manifest_verified)"
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+

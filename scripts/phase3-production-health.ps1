@@ -56,7 +56,7 @@ foreach ($url in @('http://127.0.0.1:18000/health/live', 'http://127.0.0.1:18000
 
 $appHealth = $null
 try {
-    $appJson = docker exec bankrotai-home-ingestion-worker python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.production_health import build_phase3_health; s=SessionLocal(); print(json.dumps(build_phase3_health(s), default=str)); s.close()"
+    $appJson = docker exec bankrotai-home-ingestion-worker python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.ingestion import default_source_specs; from bankrotai.services.production_health import build_phase3_health; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); expected={x.source_id for x in _unpaused_source_specs(default_source_specs())}; print(json.dumps(build_phase3_health(s, expected_sources=expected), default=str)); s.close()"
     if ($LASTEXITCODE -ne 0) { throw 'Application health query failed' }
     $appHealth = ($appJson | Select-Object -Last 1) | ConvertFrom-Json
     Add-Check -Name 'application-data-health' -Ok ([bool]$appHealth.healthy) -Details @{
