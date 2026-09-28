@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -278,6 +279,23 @@ class NationwideIngestionService:
 
     async def run(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
         self._mark_run_running(run_id)
+        stop_heartbeat = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._lease_watchdog,
+            args=(run_id, stop_heartbeat),
+            daemon=True,
+            name=f"nationwide-lease-{run_id[:8]}",
+        )
+        heartbeat_thread.start()
+        try:
+            payload = await self._run_active(run_id, specs)
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join()
+        self._finalize_run(run_id, payload)
+        return payload
+
+    async def _run_active(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
         if specs and all(not spec.reconcile_missing for spec in specs):
             results = list(await asyncio.gather(*(self._sync_source(run_id, spec) for spec in specs)))
         else:
@@ -304,16 +322,27 @@ class NationwideIngestionService:
             "expired_after_auction": expired_after_auction,
             "profile": {"canonical_dedupe_ms": canonical_dedupe_ms} if self.profile_timings else {},
         }
+        return payload
+
+    def _finalize_run(self, run_id: str, payload: dict[str, Any]) -> None:
+        now = utc_now()
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
             if run is not None:
-                run.status = status
-                run.finished_at = utc_now()
-                run.heartbeat_at = utc_now()
+                run.status = str(payload["status"])
+                run.finished_at = now
+                run.heartbeat_at = now
                 run.lease_expires_at = None
                 run.result_json = payload
                 session.commit()
-        return payload
+
+    def _lease_watchdog(self, run_id: str, stop_event: threading.Event) -> None:
+        """Keep the durable run lease alive even while synchronous DB work blocks the event loop."""
+        while not stop_event.wait(self._lease_heartbeat_interval_seconds):
+            try:
+                self._heartbeat(run_id)
+            except Exception:
+                logger.exception("Could not renew nationwide synchronization lease for %s", run_id)
 
     def _expire_elapsed_auctions(self, *, now: datetime | None = None) -> int:
         """Archive only from explicit source truth or a fully elapsed public-offer schedule.
@@ -823,19 +852,22 @@ class NationwideIngestionService:
             archived_processed.duplicate_of_id = replacement.id
 
     def _mark_run_running(self, run_id: str) -> None:
+        now = utc_now()
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
             if run is None:
                 raise KeyError(run_id)
             run.status = "running"
-            run.started_at = run.started_at or utc_now()
+            run.started_at = run.started_at or now
+            run.heartbeat_at = now
+            run.lease_expires_at = now + timedelta(minutes=self.lease_minutes)
             session.commit()
 
     def _heartbeat(self, run_id: str) -> None:
         now = utc_now()
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
-            if run is not None:
+            if run is not None and run.status in {"queued", "running"}:
                 run.heartbeat_at = now
                 run.lease_expires_at = now + timedelta(minutes=self.lease_minutes)
                 session.commit()
