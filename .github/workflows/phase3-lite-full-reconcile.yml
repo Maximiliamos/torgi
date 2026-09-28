@@ -46,7 +46,7 @@ jobs:
   reconcile:
     needs: wait-home-deploy
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - name: Require canonical ingestion worker
         shell: powershell
@@ -163,8 +163,121 @@ jobs:
               }
               $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
               if ($incompleteRows.Count -gt 0) {
-                $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
-                throw "Full reconciliation did not finish every configured source successfully: $($failedSummary -join '; ')"
+                $retryDeadline = (Get-Date).ToUniversalTime().AddMinutes(85)
+                $latestRetryFinishedAt = $null
+                foreach ($failedRow in @($incompleteRows)) {
+                  $source = [string]$failedRow.source
+                  if (-not $source -or $source -eq 'tbankrot.ru') {
+                    throw "Refusing targeted retry for invalid or paused source: $source"
+                  }
+
+                  $retryRunId = $null
+                  do {
+                    $retryProbe = @'
+          import json
+          import os
+          from bankrotai.services.ingestion import SyncAlreadyRunningError
+          from bankrotai.tasks import schedule_nationwide_lot_sync
+
+          source = os.environ["PHASE3_RETRY_SOURCE"]
+          try:
+              run_id = schedule_nationwide_lot_sync(
+                  triggered_by="phase3-lite-targeted-retry",
+                  mode=f"source:{source}",
+              )
+              print(json.dumps({"state": "queued", "run_id": run_id}))
+          except SyncAlreadyRunningError as exc:
+              print(json.dumps({"state": "busy", "run_id": exc.run_id}))
+          '@
+                    $retryJson = $retryProbe | docker exec -i --env "PHASE3_RETRY_SOURCE=$source" bankrotai-home-ingestion-worker python -
+                    if ($LASTEXITCODE -ne 0 -or -not $retryJson) {
+                      throw "Could not queue targeted retry for $source"
+                    }
+                    $retryQueueState = ($retryJson | Select-Object -Last 1) | ConvertFrom-Json
+                    if ($retryQueueState.state -eq 'queued') {
+                      $retryRunId = [string]$retryQueueState.run_id
+                      Write-Output "Queued targeted full retry for $source as $retryRunId"
+                      break
+                    }
+                    if ($retryQueueState.state -eq 'busy') {
+                      Write-Output "Waiting for active sync $($retryQueueState.run_id) before targeted retry of $source"
+                      Start-Sleep -Seconds 15
+                      continue
+                    }
+                    throw "Unexpected targeted retry queue state for $source: $($retryQueueState.state)"
+                  } while ((Get-Date).ToUniversalTime() -lt $retryDeadline)
+
+                  if (-not $retryRunId) {
+                    throw "Could not obtain targeted retry run for $source within retry deadline"
+                  }
+
+                  $retryState = $null
+                  do {
+                    $retryJson = docker exec --env "PHASE3_RETRY_RUN_ID=$retryRunId" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RETRY_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RETRY_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'finished_at':None if run is None else run.finished_at,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'error':x.error_message} for x in rows]}, default=str)); s.close()"
+                    if ($LASTEXITCODE -ne 0 -or -not $retryJson) {
+                      throw "Could not inspect targeted retry $retryRunId for $source"
+                    }
+                    $retryState = ($retryJson | Select-Object -Last 1) | ConvertFrom-Json
+                    if ($retryState.status -eq 'success') {
+                      $retryRows = @($retryState.sources)
+                      if ($retryRows.Count -ne 1 -or [string]$retryRows[0].source -ne $source -or $retryRows[0].status -ne 'success' -or -not [bool]$retryRows[0].complete) {
+                        throw "Targeted retry for $source did not finish as one complete successful source"
+                      }
+                      $rows = @($rows | Where-Object { [string]$_.source -ne $source }) + @($retryRows)
+                      if ($retryState.finished_at) {
+                        $finished = [datetime]::Parse([string]$retryState.finished_at).ToUniversalTime()
+                        if ($null -eq $latestRetryFinishedAt -or $finished -gt $latestRetryFinishedAt) {
+                          $latestRetryFinishedAt = $finished
+                        }
+                      }
+                      Write-Output "Targeted retry for $source completed successfully"
+                      break
+                    }
+                    if ($retryState.status -eq 'failed') {
+                      throw "Targeted retry for $source failed: $($retryState.error)"
+                    }
+                    Start-Sleep -Seconds 20
+                  } while ((Get-Date).ToUniversalTime() -lt $retryDeadline)
+
+                  if ($null -eq $retryState -or $retryState.status -ne 'success') {
+                    throw "Targeted retry for $source did not reach success within retry deadline"
+                  }
+                }
+
+                $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
+                if ($incompleteRows.Count -gt 0) {
+                  $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
+                  throw "Final 4/4 gate failed after targeted retries: $($failedSummary -join '; ')"
+                }
+
+                # A retry is a separate durable run. Force one immutable map
+                # publication after the final accepted source state so the
+                # acceptance chain is explicitly 4/4 -> MapDataset -> S3.
+                if ($null -ne $latestRetryFinishedAt) {
+                  $mapTaskId = docker exec bankrotai-home-map-worker python -c "from bankrotai.tasks import build_map_dataset_task; r=build_map_dataset_task.delay(); print(r.id)"
+                  if ($LASTEXITCODE -ne 0 -or -not $mapTaskId) {
+                    throw 'Could not queue post-retry MapDataset publication'
+                  }
+                  $mapDeadline = (Get-Date).ToUniversalTime().AddMinutes(20)
+                  do {
+                    $mapJson = docker exec bankrotai-home-map-worker python -c "import json; from sqlalchemy import select; from bankrotai.db import SessionLocal,MapDataset; s=SessionLocal(); d=s.scalar(select(MapDataset).where(MapDataset.is_current.is_(True),MapDataset.status=='ready')); print(json.dumps(None if d is None else {'version':d.version,'published_at':d.published_at}, default=str)); s.close()"
+                    if ($LASTEXITCODE -ne 0 -or -not $mapJson) {
+                      throw 'Could not inspect forced post-retry MapDataset publication'
+                    }
+                    $mapState = ($mapJson | Select-Object -Last 1) | ConvertFrom-Json
+                    if ($null -ne $mapState -and $mapState.published_at) {
+                      $published = [datetime]::Parse([string]$mapState.published_at).ToUniversalTime()
+                      if ($published -ge $latestRetryFinishedAt) {
+                        Write-Output "Post-retry MapDataset $($mapState.version) published after final retry"
+                        break
+                      }
+                    }
+                    Start-Sleep -Seconds 10
+                  } while ((Get-Date).ToUniversalTime() -lt $mapDeadline)
+                  if ($null -eq $mapState -or -not $mapState.published_at -or [datetime]::Parse([string]$mapState.published_at).ToUniversalTime() -lt $latestRetryFinishedAt) {
+                    throw 'Post-retry MapDataset was not promoted within 20 minutes'
+                  }
+                }
               }
               $torgiRussia = @($rows | Where-Object { $_.source -eq 'torgi-russia.ru' }) | Select-Object -First 1
               if ($null -eq $torgiRussia -or [int64]$torgiRussia.items_seen -le 0) {

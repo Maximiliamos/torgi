@@ -1,5 +1,8 @@
 import asyncio
 import json
+from unittest.mock import patch
+
+import requests
 
 from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
@@ -411,3 +414,118 @@ def test_torgi_russia_rejects_ignored_region_filter() -> None:
         assert "public region filter was not applied" in str(exc)
     else:
         raise AssertionError("ignored region filter must fail closed")
+
+
+def test_torgi_russia_retries_read_timeout_with_exact_backoff() -> None:
+    item = _new_site_lot()
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1"
+        text = html
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url, *, params=None, timeout=None):
+            self.calls += 1
+            if self.calls <= 2:
+                raise requests.ReadTimeout("temporary read timeout")
+            return Response()
+
+    session = Session()
+    with patch("bankrotai.torgi_russia.time.sleep") as sleep:
+        lots, _ = TorgiRussiaClient(session=session).search_lots(TorgiRussiaSearchFilters())
+
+    assert len(lots) == 1
+    assert session.calls == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+
+
+def test_torgi_russia_retries_only_retryable_http_statuses() -> None:
+    item = _new_site_lot()
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1"
+        text = html
+
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                response = requests.Response()
+                response.status_code = self.status_code
+                raise requests.HTTPError(f"HTTP {self.status_code}", response=response)
+
+    class Session:
+        headers = {}
+
+        def __init__(self, statuses):
+            self.statuses = list(statuses)
+            self.calls = 0
+
+        def get(self, _url, *, params=None, timeout=None):
+            status = self.statuses[self.calls]
+            self.calls += 1
+            return Response(status)
+
+    retry_session = Session([503, 200])
+    with patch("bankrotai.torgi_russia.time.sleep") as sleep:
+        lots, _ = TorgiRussiaClient(session=retry_session).search_lots(TorgiRussiaSearchFilters())
+    assert len(lots) == 1
+    assert retry_session.calls == 2
+    assert [call.args[0] for call in sleep.call_args_list] == [1]
+
+    permanent_session = Session([403])
+    with patch("bankrotai.torgi_russia.time.sleep") as sleep:
+        try:
+            TorgiRussiaClient(session=permanent_session).search_lots(TorgiRussiaSearchFilters())
+        except requests.HTTPError:
+            pass
+        else:
+            raise AssertionError("HTTP 403 must fail without retry")
+    assert permanent_session.calls == 1
+    sleep.assert_not_called()
+
+
+def test_torgi_russia_exhausts_transient_status_retries_fail_closed() -> None:
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1"
+        text = ""
+        status_code = 503
+
+        def raise_for_status(self):
+            response = requests.Response()
+            response.status_code = self.status_code
+            raise requests.HTTPError("HTTP 503", response=response)
+
+    class Session:
+        headers = {}
+
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url, *, params=None, timeout=None):
+            self.calls += 1
+            return Response()
+
+    session = Session()
+    with patch("bankrotai.torgi_russia.time.sleep") as sleep:
+        try:
+            TorgiRussiaClient(session=session).search_lots(TorgiRussiaSearchFilters())
+        except requests.HTTPError:
+            pass
+        else:
+            raise AssertionError("exhausted transient retries must fail closed")
+
+    assert session.calls == 5
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2, 4, 8]

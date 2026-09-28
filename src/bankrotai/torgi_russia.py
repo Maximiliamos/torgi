@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
@@ -37,6 +38,8 @@ PUBLIC_REGION_FILTER_IDS = tuple(PUBLIC_REGION_FILTER_EXPECTATIONS)
 PUBLIC_OTHER_REGION_TITLE = "Иные территории, включая город и космодром Байконур"
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
+TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
+TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
 def normalize_cadastral_number(value: str) -> str:
@@ -92,15 +95,33 @@ class TorgiRussiaClient:
             }
         )
 
+    def _get_with_retry(self, url: str, *, params=None):
+        """GET with bounded retries for transient transport/upstream failures only."""
+        for attempt in range(len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout)
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code in TORGI_RUSSIA_RETRY_STATUS_CODES:
+                    if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                        response.raise_for_status()
+                        return response
+                    time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                response.raise_for_status()
+                return response
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                    raise
+                time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("Torgi Russia request retry loop exhausted unexpectedly")
+
     def find_by_cadastral_numbers(self, values: list[str]) -> TorgiRussiaDetails | None:
         cadastral_numbers = [normalize_cadastral_number(value) for value in values if value]
         for cadastral_number in dict.fromkeys(cadastral_numbers):
-            response = self.session.get(
+            response = self._get_with_retry(
                 urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
                 params={"search": cadastral_number, "page": 1},
-                timeout=self.timeout,
             )
-            response.raise_for_status()
             records, _ = self.parse_next_search_payload(
                 response.text,
                 page_url=response.url,
@@ -108,8 +129,7 @@ class TorgiRussiaClient:
             )
             lot_url = self._matching_lot_url_from_payload({"data": records}, cadastral_number)
             if lot_url:
-                detail = self.session.get(lot_url, timeout=self.timeout)
-                detail.raise_for_status()
+                detail = self._get_with_retry(lot_url)
                 return self.parse_lot_page(detail.text, detail.url or lot_url)
         return None
 
@@ -128,12 +148,10 @@ class TorgiRussiaClient:
         if filters.region_id is not None:
             params.append(("regions[]", int(filters.region_id)))
 
-        response = self.session.get(
+        response = self._get_with_retry(
             urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
             params=params,
-            timeout=self.timeout,
         )
-        response.raise_for_status()
         records, page_meta = self.parse_next_search_payload(
             response.text,
             page_url=response.url,
@@ -198,8 +216,7 @@ class TorgiRussiaClient:
     def fetch_lot_page(self, external_id: str) -> tuple[str, str]:
         numeric_id = external_id.rsplit(":", 1)[-1]
         lot_url = urljoin(BASE_URL, f"/lot/{numeric_id}")
-        response = self.session.get(lot_url, timeout=self.timeout)
-        response.raise_for_status()
+        response = self._get_with_retry(lot_url)
         return response.text, response.url or lot_url
 
     @staticmethod
