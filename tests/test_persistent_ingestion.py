@@ -771,6 +771,55 @@ def test_slow_source_request_renews_lease_before_page_completion(sessions, monke
     assert renewals.count(run_id) >= 3
 
 
+def test_watchdog_renews_lease_while_event_loop_is_blocked(sessions, monkeypatch) -> None:
+    service = NationwideIngestionService(sessions)
+    service._lease_heartbeat_interval_seconds = 0.01
+    renewals: list[str] = []
+
+    async def blocked_run(_run_id: str, _specs: tuple[SourceSyncSpec, ...]) -> dict:
+        time.sleep(0.05)
+        return {"status": "success", "sources": []}
+
+    monkeypatch.setattr(service, "_heartbeat", lambda run_id: renewals.append(run_id))
+    monkeypatch.setattr(service, "_run_active", blocked_run)
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+
+    result = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}),)))
+
+    assert result["status"] == "success"
+    assert renewals.count(run_id) >= 3
+
+
+def test_mark_running_refreshes_lease_and_finished_run_cannot_be_resurrected(sessions) -> None:
+    service = NationwideIngestionService(sessions, lease_minutes=10)
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        run.lease_expires_at = datetime(2000, 1, 1)
+        session.commit()
+
+    service._mark_run_running(run_id)
+
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        assert run.status == "running"
+        assert run.lease_expires_at is not None
+        assert run.lease_expires_at > datetime.now()
+        run.status = "success"
+        run.lease_expires_at = None
+        session.commit()
+
+    service._heartbeat(run_id)
+
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        assert run.status == "success"
+        assert run.lease_expires_at is None
+
+
 def test_regional_run_does_not_reconcile_lots_outside_its_scope(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_with(service, FakeConnector([[lot("yaroslavl"), lot("moscow", region_code="77")]]))
