@@ -3,7 +3,7 @@ import json
 
 from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
-from bankrotai.torgi_russia import TorgiRussiaClient
+from bankrotai.torgi_russia import PUBLIC_REGION_FILTER_EXPECTATIONS, PUBLIC_REGION_FILTER_IDS, TorgiRussiaClient
 
 
 def _nextjs_search_html(
@@ -287,15 +287,19 @@ def test_torgi_russia_search_uses_verified_real_estate_categories() -> None:
     assert lots[0].raw_data["transport"] == "public-nextjs-html"
 
 
-def test_torgi_russia_connector_skips_unsupported_new_subject_filter_codes() -> None:
+def test_torgi_russia_connector_uses_verified_internal_region_filter_ids() -> None:
     connector = TorgiRussiaConnector()
-    assert 80 not in connector._region_ids
-    assert 81 not in connector._region_ids
-    assert 84 not in connector._region_ids
-    assert 85 not in connector._region_ids
-    assert 82 in connector._region_ids
-    assert 83 in connector._region_ids
-    assert 92 in connector._region_ids
+    assert connector._region_ids == list(PUBLIC_REGION_FILTER_IDS)
+    assert connector._region_ids[0] == 1
+    assert connector._region_ids[-1] == 86
+    assert len(connector._region_ids) == 86
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[80] == "83"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[81] == "86"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[82] == "87"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[83] == "89"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[84] == "82"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[85] == "92"
+    assert PUBLIC_REGION_FILTER_EXPECTATIONS[86] is None
 
 
 def test_torgi_russia_connector_pages_each_region_without_legacy_region_api() -> None:
@@ -326,6 +330,61 @@ def test_torgi_russia_connector_pages_each_region_without_legacy_region_api() ->
 def test_torgi_russia_legacy_numeric_cursor_maps_to_first_region() -> None:
     assert TorgiRussiaConnector._decode_cursor("17") == (0, 17)
     assert TorgiRussiaConnector._decode_cursor("region:5:17") == (5, 17)
+
+
+def test_torgi_russia_accepts_shifted_internal_region_filter_id() -> None:
+    item = _new_site_lot(region_title="Ненецкий автономный округ")
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1&regions%5B%5D=80"
+        text = html
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(region_id=80)
+    )
+
+    assert len(lots) == 1
+    assert lots[0].region_slug == "83"
+    assert metadata["region_id"] == 80
+
+
+def test_torgi_russia_accepts_other_territories_source_bucket() -> None:
+    item = _new_site_lot(
+        region_title="Иные территории, включая город и космодром Байконур"
+    )
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1&regions%5B%5D=86"
+        text = html
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(region_id=86)
+    )
+
+    assert len(lots) == 1
+    assert lots[0].region_slug is None
+    assert lots[0].region_name == "Иные территории, включая город и космодром Байконур"
+    assert metadata["region_id"] == 86
 
 
 def test_torgi_russia_rejects_ignored_region_filter() -> None:
