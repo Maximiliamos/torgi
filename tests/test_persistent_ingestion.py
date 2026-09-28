@@ -788,6 +788,11 @@ def test_watchdog_renews_lease_while_event_loop_is_blocked(sessions, monkeypatch
 
     assert result["status"] == "success"
     assert renewals.count(run_id) >= 3
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        assert run.status == "success"
+        assert run.lease_expires_at is None
 
 
 def test_mark_running_refreshes_lease_and_finished_run_cannot_be_resurrected(sessions) -> None:
