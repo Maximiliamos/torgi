@@ -27,7 +27,7 @@ jobs:
           import requests
           from bankrotai.torgi_russia import BASE_URL, PUBLIC_SEARCH_PATH, REAL_ESTATE_CATEGORY_IDS, TorgiRussiaClient
 
-          for region_id in (80, 81, 82, 83, 84, 85, 90, 91, 92, 93, 94, 95, 99):
+          for region_id in (86, 87, 88, 89):
               params = [("search", "")]
               params.extend(("categorie_childs[]", category_id) for category_id in REAL_ESTATE_CATEGORY_IDS)
               params.extend([("page", 1), ("regions[]", region_id)])
