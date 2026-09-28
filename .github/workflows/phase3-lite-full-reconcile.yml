@@ -8,6 +8,7 @@ on:
       - '.github/workflows/phase3-lite-full-reconcile.yml'
       - '.github/workflows/home-secondary-deploy.yml'
       - 'src/bankrotai/services/map_builder.py'
+      - 'src/bankrotai/services/ingestion.py'
       - 'src/bankrotai/torgi_russia.py'
       - 'src/bankrotai/connectors/registry/torgi_russia.py'
 
