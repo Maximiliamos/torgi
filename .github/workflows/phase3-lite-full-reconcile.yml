@@ -174,21 +174,21 @@ jobs:
                   $retryRunId = $null
                   do {
                     $retryProbe = @'
-import json
-import os
-from bankrotai.services.ingestion import SyncAlreadyRunningError
-from bankrotai.tasks import schedule_nationwide_lot_sync
+          import json
+          import os
+          from bankrotai.services.ingestion import SyncAlreadyRunningError
+          from bankrotai.tasks import schedule_nationwide_lot_sync
 
-source = os.environ["PHASE3_RETRY_SOURCE"]
-try:
-    run_id = schedule_nationwide_lot_sync(
-        triggered_by="phase3-lite-targeted-retry",
-        mode=f"source:{source}",
-    )
-    print(json.dumps({"state": "queued", "run_id": run_id}))
-except SyncAlreadyRunningError as exc:
-    print(json.dumps({"state": "busy", "run_id": exc.run_id}))
-'@
+          source = os.environ["PHASE3_RETRY_SOURCE"]
+          try:
+              run_id = schedule_nationwide_lot_sync(
+                  triggered_by="phase3-lite-targeted-retry",
+                  mode=f"source:{source}",
+              )
+              print(json.dumps({"state": "queued", "run_id": run_id}))
+          except SyncAlreadyRunningError as exc:
+              print(json.dumps({"state": "busy", "run_id": exc.run_id}))
+          '@
                     $retryJson = $retryProbe | docker exec -i --env "PHASE3_RETRY_SOURCE=$source" bankrotai-home-ingestion-worker python -
                     if ($LASTEXITCODE -ne 0 -or -not $retryJson) {
                       throw "Could not queue targeted retry for $source"
