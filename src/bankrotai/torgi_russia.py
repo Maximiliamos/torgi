@@ -38,6 +38,8 @@ PUBLIC_REGION_FILTER_IDS = tuple(PUBLIC_REGION_FILTER_EXPECTATIONS)
 PUBLIC_OTHER_REGION_TITLE = "Иные территории, включая город и космодром Байконур"
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
+TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
+TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
 def normalize_cadastral_number(value: str) -> str:
