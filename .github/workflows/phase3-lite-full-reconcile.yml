@@ -46,7 +46,7 @@ jobs:
   reconcile:
     needs: wait-home-deploy
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Require canonical ingestion worker
         shell: powershell
@@ -137,7 +137,7 @@ jobs:
         env:
           RUN_ID: ${{ steps.start.outputs.run_id }}
         run: |
-          $deadline = (Get-Date).ToUniversalTime().AddMinutes(65)
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(85)
           do {
             $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'error':x.error_message} for x in rows]}, default=str)); s.close()"
             if ($LASTEXITCODE -ne 0) { throw 'Could not query full reconciliation state' }
@@ -187,7 +187,7 @@ jobs:
             }
             Start-Sleep -Seconds 20
           } while ((Get-Date).ToUniversalTime() -lt $deadline)
-          throw 'Full reconciliation did not reach a terminal state within 65 minutes'
+          throw 'Full reconciliation did not reach a terminal state within 85 minutes'
 
       - name: Verify post-reconciliation MapDataset and REG.RU S3 manifest
         shell: powershell
