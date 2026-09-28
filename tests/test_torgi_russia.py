@@ -1,8 +1,8 @@
 import asyncio
 import json
+from unittest.mock import patch
 
 import requests
-from unittest.mock import patch
 
 from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
