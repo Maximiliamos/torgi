@@ -212,6 +212,8 @@ jobs:
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
+            'CELERY_NATIONWIDE_SOFT_TIME_LIMIT=4500'
+            'CELERY_NATIONWIDE_HARD_TIME_LIMIT=5100'
             'GEO_BATCH_LIMIT=500'
             'GEO_MAX_WORKERS=6'
             'GEO_NSPD_CONCURRENCY=2'
