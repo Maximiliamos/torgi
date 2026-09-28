@@ -287,6 +287,17 @@ def test_torgi_russia_search_uses_verified_real_estate_categories() -> None:
     assert lots[0].raw_data["transport"] == "public-nextjs-html"
 
 
+def test_torgi_russia_connector_skips_unsupported_new_subject_filter_codes() -> None:
+    connector = TorgiRussiaConnector()
+    assert 80 not in connector._region_ids
+    assert 81 not in connector._region_ids
+    assert 84 not in connector._region_ids
+    assert 85 not in connector._region_ids
+    assert 82 in connector._region_ids
+    assert 83 in connector._region_ids
+    assert 92 in connector._region_ids
+
+
 def test_torgi_russia_connector_pages_each_region_without_legacy_region_api() -> None:
     connector = TorgiRussiaConnector()
     connector._region_ids = [33, 76]
