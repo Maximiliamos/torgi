@@ -288,10 +288,12 @@ class NationwideIngestionService:
         )
         heartbeat_thread.start()
         try:
-            return await self._run_active(run_id, specs)
+            payload = await self._run_active(run_id, specs)
         finally:
             stop_heartbeat.set()
             heartbeat_thread.join(timeout=5)
+        self._finalize_run(run_id, payload)
+        return payload
 
     async def _run_active(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
         if specs and all(not spec.reconcile_missing for spec in specs):
@@ -320,16 +322,19 @@ class NationwideIngestionService:
             "expired_after_auction": expired_after_auction,
             "profile": {"canonical_dedupe_ms": canonical_dedupe_ms} if self.profile_timings else {},
         }
+        return payload
+
+    def _finalize_run(self, run_id: str, payload: dict[str, Any]) -> None:
+        now = utc_now()
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
             if run is not None:
-                run.status = status
-                run.finished_at = utc_now()
-                run.heartbeat_at = utc_now()
+                run.status = str(payload["status"])
+                run.finished_at = now
+                run.heartbeat_at = now
                 run.lease_expires_at = None
                 run.result_json = payload
                 session.commit()
-        return payload
 
     def _lease_watchdog(self, run_id: str, stop_event: threading.Event) -> None:
         """Keep the durable run lease alive even while synchronous DB work blocks the event loop."""
