@@ -204,7 +204,7 @@ jobs:
                       Start-Sleep -Seconds 15
                       continue
                     }
-                    throw "Unexpected targeted retry queue state for $source: $($retryQueueState.state)"
+                    throw "Unexpected targeted retry queue state for ${source}: $($retryQueueState.state)"
                   } while ((Get-Date).ToUniversalTime() -lt $retryDeadline)
 
                   if (-not $retryRunId) {
