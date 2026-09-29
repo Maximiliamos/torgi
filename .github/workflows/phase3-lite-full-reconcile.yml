@@ -138,6 +138,15 @@ jobs:
         env:
           RUN_ID: ${{ steps.start.outputs.run_id }}
         run: |
+          function Convert-DbUtc([string]$Value) {
+            if (-not $Value) { return $null }
+            return [datetime]::Parse(
+              $Value,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+            )
+          }
+
           $deadline = $null
           do {
             $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import _unpaused_source_specs; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=[x.source_id for x in _unpaused_source_specs(default_source_specs())]; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'heartbeat_at':None if run is None else run.heartbeat_at,'lease_expires_at':None if run is None else run.lease_expires_at,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'progress_at':x.progress_at,'checkpoint':x.checkpoint_json,'error':x.error_message} for x in rows]}, default=str)); s.close()"
@@ -148,14 +157,14 @@ jobs:
               if (-not $state.heartbeat_at -or -not $state.lease_expires_at) {
                 throw 'Active reconciliation is missing heartbeat/lease evidence'
               }
-              $heartbeat = [datetime]::Parse([string]$state.heartbeat_at).ToUniversalTime()
-              $leaseExpiry = [datetime]::Parse([string]$state.lease_expires_at).ToUniversalTime()
+              $heartbeat = Convert-DbUtc ([string]$state.heartbeat_at)
+              $leaseExpiry = Convert-DbUtc ([string]$state.lease_expires_at)
               if ($leaseExpiry -le (Get-Date).ToUniversalTime()) {
                 throw "Full reconciliation lease expired at $leaseExpiry"
               }
               $leaseWindowSeconds = [math]::Max(1, ($leaseExpiry - $heartbeat).TotalSeconds)
               $progressTimes = @($state.sources | Where-Object { $_.progress_at } | ForEach-Object {
-                [datetime]::Parse([string]$_.progress_at).ToUniversalTime()
+                Convert-DbUtc ([string]$_.progress_at)
               })
               $latestProgress = if ($progressTimes.Count -gt 0) {
                 $progressTimes | Sort-Object -Descending | Select-Object -First 1
@@ -247,14 +256,14 @@ jobs:
                       if (-not $retryState.heartbeat_at -or -not $retryState.lease_expires_at) {
                         throw "Targeted retry $retryRunId for $source is missing heartbeat/lease evidence"
                       }
-                      $retryHeartbeat = [datetime]::Parse([string]$retryState.heartbeat_at).ToUniversalTime()
-                      $retryLeaseExpiry = [datetime]::Parse([string]$retryState.lease_expires_at).ToUniversalTime()
+                      $retryHeartbeat = Convert-DbUtc ([string]$retryState.heartbeat_at)
+                      $retryLeaseExpiry = Convert-DbUtc ([string]$retryState.lease_expires_at)
                       if ($retryLeaseExpiry -le (Get-Date).ToUniversalTime()) {
                         throw "Targeted retry $retryRunId for $source lost its lease"
                       }
                       $retryLeaseWindowSeconds = [math]::Max(1, ($retryLeaseExpiry - $retryHeartbeat).TotalSeconds)
                       $retryProgressTimes = @($retryState.sources | Where-Object { $_.progress_at } | ForEach-Object {
-                        [datetime]::Parse([string]$_.progress_at).ToUniversalTime()
+                        Convert-DbUtc ([string]$_.progress_at)
                       })
                       $retryLatestProgress = if ($retryProgressTimes.Count -gt 0) {
                         $retryProgressTimes | Sort-Object -Descending | Select-Object -First 1
@@ -273,7 +282,7 @@ jobs:
                       }
                       $rows = @($rows | Where-Object { [string]$_.source -ne $source }) + @($retryRows)
                       if ($retryState.finished_at) {
-                        $finished = [datetime]::Parse([string]$retryState.finished_at).ToUniversalTime()
+                        $finished = Convert-DbUtc ([string]$retryState.finished_at)
                         if ($null -eq $latestRetryFinishedAt -or $finished -gt $latestRetryFinishedAt) {
                           $latestRetryFinishedAt = $finished
                         }
@@ -315,7 +324,7 @@ jobs:
                     }
                     $mapState = ($mapJson | Select-Object -Last 1) | ConvertFrom-Json
                     if ($null -ne $mapState -and $mapState.published_at) {
-                      $published = [datetime]::Parse([string]$mapState.published_at).ToUniversalTime()
+                      $published = Convert-DbUtc ([string]$mapState.published_at)
                       if ($published -ge $latestRetryFinishedAt) {
                         Write-Output "Post-retry MapDataset $($mapState.version) published after final retry"
                         break
@@ -323,7 +332,7 @@ jobs:
                     }
                     Start-Sleep -Seconds 10
                   } while ((Get-Date).ToUniversalTime() -lt $mapDeadline)
-                  if ($null -eq $mapState -or -not $mapState.published_at -or [datetime]::Parse([string]$mapState.published_at).ToUniversalTime() -lt $latestRetryFinishedAt) {
+                  if ($null -eq $mapState -or -not $mapState.published_at -or (Convert-DbUtc ([string]$mapState.published_at)) -lt $latestRetryFinishedAt) {
                     throw 'Post-retry MapDataset was not promoted within 20 minutes'
                   }
                 }
