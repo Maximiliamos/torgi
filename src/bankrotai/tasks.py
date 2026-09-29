@@ -42,6 +42,7 @@ settings = get_settings()
 _MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
 _GEO_BATCH_LIMIT = settings.geo_batch_limit
 _GEO_CONTINUATION_DELAY_SECONDS = 2
+_GEO_CONTINUATION_MAX_BATCHES = 8
 _MAP_PUBLICATION_DEBOUNCE_SECONDS = 60
 _FAST_NATIONWIDE_REFRESH_SECONDS = 900
 _FULL_NATIONWIDE_REFRESH_SECONDS = 86_400
@@ -170,7 +171,7 @@ def recalculate_public_offer_prices_task() -> dict[str, int]:
 
 
 @celery_app.task(bind=True, name="bankrotai.tasks.geocode_pending_lots_task")
-def geocode_pending_lots_task(self) -> dict[str, Any]:
+def geocode_pending_lots_task(self, continuation_depth: int = 0) -> dict[str, Any]:
     from bankrotai.services.geo_backfill import geocode_pending_lots
 
     task_id = str(self.request.id or uuid())
@@ -191,7 +192,16 @@ def geocode_pending_lots_task(self) -> dict[str, Any]:
             logger.exception("Could not mark map dataset dirty")
             result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
     if result.get("queued", 0) >= _GEO_BATCH_LIMIT and result.get("processed", 0) >= _GEO_BATCH_LIMIT:
-        result["continuation"] = _schedule_geocode_continuation()
+        next_depth = max(0, int(continuation_depth)) + 1
+        if next_depth < _GEO_CONTINUATION_MAX_BATCHES:
+            result["continuation"] = _schedule_geocode_continuation(next_depth)
+        else:
+            result["continuation"] = {
+                "status": "bounded_stop",
+                "completed_batches": next_depth,
+                "max_batches": _GEO_CONTINUATION_MAX_BATCHES,
+                "resume": "celery-beat",
+            }
     return result
 
 
@@ -222,14 +232,19 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
     return result
 
 
-def _schedule_geocode_continuation() -> dict[str, str | int]:
-    """Drain a backlog promptly while beat remains a recovery watchdog."""
+def _schedule_geocode_continuation(continuation_depth: int) -> dict[str, str | int]:
+    """Drain a bounded campaign while beat remains the long-term recovery watchdog."""
     try:
-        queued = geocode_pending_lots_task.apply_async(countdown=_GEO_CONTINUATION_DELAY_SECONDS)
+        queued = geocode_pending_lots_task.apply_async(
+            kwargs={"continuation_depth": int(continuation_depth)},
+            countdown=_GEO_CONTINUATION_DELAY_SECONDS,
+        )
         return {
             "status": "queued",
             "task_id": str(queued.id),
             "countdown_seconds": _GEO_CONTINUATION_DELAY_SECONDS,
+            "continuation_depth": int(continuation_depth),
+            "max_batches": _GEO_CONTINUATION_MAX_BATCHES,
         }
     except Exception as exc:
         logger.exception("Could not schedule the next geocoding batch")
