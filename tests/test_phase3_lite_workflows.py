@@ -69,6 +69,20 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     full_reconcile = (ROOT / ".github" / "workflows" / "phase3-lite-full-reconcile.yml").read_text(encoding="utf-8")
     assert "_unpaused_source_specs(default_source_specs())" in full_reconcile
     assert "'.github/workflows/home-secondary-deploy.yml'" in full_reconcile
+    for runtime_path in (
+        "'alembic/versions/**'",
+        "'src/bankrotai/core.py'",
+        "'src/bankrotai/db.py'",
+        "'src/bankrotai/tasks.py'",
+        "'src/bankrotai/scrapers.py'",
+        "'src/bankrotai/regions.py'",
+        "'src/bankrotai/services/ingestion.py'",
+        "'src/bankrotai/services/map_builder.py'",
+        "'src/bankrotai/services/map_object_store.py'",
+        "'src/bankrotai/services/map_dataset_version.py'",
+        "'src/bankrotai/connectors/**'",
+    ):
+        assert runtime_path in full_reconcile
     assert "'src/bankrotai/services/map_builder.py'" in full_reconcile
     assert "'src/bankrotai/torgi_russia.py'" in full_reconcile
     assert "'src/bankrotai/connectors/registry/torgi_russia.py'" in full_reconcile
