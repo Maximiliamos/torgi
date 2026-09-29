@@ -317,12 +317,12 @@ def test_retired_dataset_retention_deletes_manifests_only(monkeypatch):
         lambda _settings, key: deleted.append(key),
     )
 
-    result = delete_retired_dataset_manifests(["old-a", "old-b"], settings=settings)
+    result = delete_retired_dataset_manifests(["old-a", "old:v2"], settings=settings)
 
     assert result["status"] == "deleted"
     assert result["deleted"] == 2
     assert result["shared_immutable_objects_preserved"] is True
     assert deleted == [
         "datasets/old-a/manifest.json",
-        "datasets/old-b/manifest.json",
+        "datasets/old:v2/manifest.json",
     ]
