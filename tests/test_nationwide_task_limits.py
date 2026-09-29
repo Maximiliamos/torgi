@@ -1,16 +1,13 @@
 from bankrotai import tasks
 
 
-def test_nationwide_ingestion_uses_dedicated_bounded_runtime() -> None:
-    assert tasks.settings.celery_nationwide_soft_time_limit == 3_300
-    assert tasks.settings.celery_nationwide_hard_time_limit == 3_600
-    assert tasks.settings.celery_nationwide_soft_time_limit > tasks.settings.celery_soft_time_limit
-    assert tasks.settings.celery_nationwide_hard_time_limit > tasks.settings.celery_nationwide_soft_time_limit
-
+def test_nationwide_ingestion_uses_progress_watchdog_not_wall_clock_kill_switch() -> None:
+    # Durable nationwide runs are bounded by lease/progress health, not by a
+    # guessed elapsed runtime. HTTP/DB operations keep their own bounded timeouts.
     for task in (
         tasks.nationwide_lot_sync_task,
         tasks.automatic_nationwide_lot_refresh_task,
         tasks.automatic_nationwide_source_retry_task,
     ):
-        assert task.soft_time_limit == tasks.settings.celery_nationwide_soft_time_limit
-        assert task.time_limit == tasks.settings.celery_nationwide_hard_time_limit
+        assert task.soft_time_limit == 0
+        assert task.time_limit == 0
