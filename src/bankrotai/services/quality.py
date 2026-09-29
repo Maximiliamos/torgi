@@ -178,6 +178,11 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
             "tile_count": current.tile_count,
             "published_at": current.published_at,
         } if current else None),
+        "map_delivery": map_delivery_reconciliation_report(
+            session,
+            verify_public_manifest=False,
+            problem_limit=problem_limit,
+        ),
         "last_sync": ({
             "id": last_run.id,
             "status": last_run.status,
@@ -185,6 +190,193 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
             "finished_at": last_run.finished_at,
         } if last_run else None),
         "problems": {"stale_active_lots": stale_lots},
+    }
+
+
+def map_delivery_reconciliation_report(
+    session: Session,
+    *,
+    verify_public_manifest: bool = False,
+    problem_limit: int = 100,
+) -> dict[str, Any]:
+    """Reconcile the public map across DB candidates, MapDataset and REG.RU S3.
+
+    The DB eligibility calculation intentionally mirrors build_map_dataset:
+    duplicates/archives and invalid current coordinates are excluded first,
+    then the same region-sanity checks explain spatial exclusions. This makes
+    every loss between the source database and the published map auditable.
+    """
+    from bankrotai.core import get_settings
+    from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
+    from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
+    from bankrotai.services.map_builder import MAX_WEB_MERCATOR_LAT, POINT_ZOOM
+    from bankrotai.services.map_bundle_store import normalize_map_region_code
+    from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
+    from bankrotai.services.map_object_store import _verify_public_manifest
+
+    current_rows = session.scalars(
+        select(MapDataset).where(MapDataset.is_current.is_(True))
+    ).all()
+    current = current_rows[0] if len(current_rows) == 1 else None
+    if current is None:
+        return {
+            "ok": False,
+            "current_dataset_count": len(current_rows),
+            "error": "exactly one current map dataset is required",
+            "db_candidate_count": 0,
+            "db_eligible_count": 0,
+            "spatially_rejected_count": 0,
+            "spatial_rejection_reasons": {},
+            "dataset_unique_lot_count": 0,
+            "missing_from_dataset_count": 0,
+            "extra_in_dataset_count": 0,
+            "manifest": {"checked": False, "ok": None},
+        }
+
+    candidates = session.execute(
+        select(
+            ProcessedLot.id,
+            ProcessedLot.region_code,
+            ProcessedLot.cadastral_number,
+            ProcessedLot.current_geo_lat,
+            ProcessedLot.current_geo_lon,
+        ).where(
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.is_archived.is_(False),
+            ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
+            ProcessedLot.current_geo_lon.between(-180.0, 180.0),
+        )
+    ).all()
+
+    eligible_ids: set[int] = set()
+    spatial_rejections: dict[str, int] = {}
+    spatial_rejected_ids: list[int] = []
+    for row in candidates:
+        lat = float(row.current_geo_lat)
+        lon = float(row.current_geo_lon)
+        raw_rejection = coordinate_region_sanity_rejection_reason(lat, lon, row.region_code)
+        if raw_rejection == "unsupported_region_code":
+            reason = raw_rejection
+        else:
+            bundle_region_code = normalize_map_region_code(row.region_code, row.cadastral_number)
+            bundle_rejection = coordinate_region_sanity_rejection_reason(lat, lon, bundle_region_code)
+            if bundle_rejection:
+                reason = (
+                    "unsupported_bundle_region_code"
+                    if bundle_rejection == "unsupported_region_code"
+                    else f"bundle_{bundle_rejection}"
+                )
+            else:
+                region_code = (
+                    normalize_canonical_region_code(bundle_region_code)
+                    or normalize_canonical_region_code(row.region_code)
+                    or row.region_code
+                )
+                reason = coordinate_region_sanity_rejection_reason(lat, lon, region_code)
+
+        if reason:
+            spatial_rejections[reason] = spatial_rejections.get(reason, 0) + 1
+            if len(spatial_rejected_ids) < max(1, problem_limit):
+                spatial_rejected_ids.append(int(row.id))
+            continue
+        eligible_ids.add(int(row.id))
+
+    dataset_ids: set[int] = set()
+    point_features = 0
+    for payload in session.scalars(
+        select(MapTile.payload_json).where(
+            MapTile.dataset_id == current.id,
+            MapTile.z == POINT_ZOOM,
+        )
+    ):
+        for feature in (payload or {}).get("features", []):
+            if not isinstance(feature, dict) or feature.get("kind") != "lot":
+                continue
+            lot_id = feature.get("id")
+            if isinstance(lot_id, int):
+                point_features += 1
+                dataset_ids.add(lot_id)
+
+    missing_ids = sorted(eligible_ids - dataset_ids)
+    extra_ids = sorted(dataset_ids - eligible_ids)
+    actual_tile_count = int(
+        session.scalar(
+            select(func.count()).select_from(MapTile).where(MapTile.dataset_id == current.id)
+        )
+        or 0
+    )
+    point_count_matches = int(current.point_count or 0) == len(dataset_ids) == point_features
+    tile_count_matches = int(current.tile_count or 0) == actual_tile_count
+
+    manifest: dict[str, Any] = {"checked": False, "ok": None}
+    if verify_public_manifest:
+        settings = get_settings()
+        if settings.map_object_store_enabled and current.version.endswith("-s3"):
+            try:
+                payload = _verify_public_manifest(settings, current.version)
+                manifest_ok = (
+                    payload.get("version") == current.version
+                    and payload.get("pipeline_revision") == MAP_DATASET_REVISION
+                    and int(payload.get("point_count", -1)) == int(current.point_count or 0)
+                    and int(payload.get("tile_count", -1)) == int(current.tile_count or 0)
+                )
+                manifest = {
+                    "checked": True,
+                    "ok": manifest_ok,
+                    "version": payload.get("version"),
+                    "pipeline_revision": payload.get("pipeline_revision"),
+                    "point_count": payload.get("point_count"),
+                    "tile_count": payload.get("tile_count"),
+                }
+            except Exception as exc:
+                manifest = {
+                    "checked": True,
+                    "ok": False,
+                    "error": f"{exc.__class__.__name__}: {str(exc)[:500]}",
+                }
+        else:
+            manifest = {
+                "checked": True,
+                "ok": False,
+                "error": "current dataset is not configured for public object-store verification",
+            }
+
+    manifest_failed = manifest.get("checked") is True and manifest.get("ok") is not True
+    ok = (
+        len(current_rows) == 1
+        and current.status == "ready"
+        and current.published_at is not None
+        and point_count_matches
+        and tile_count_matches
+        and not missing_ids
+        and not extra_ids
+        and not manifest_failed
+    )
+    return {
+        "ok": ok,
+        "current_dataset_count": len(current_rows),
+        "dataset": {
+            "version": current.version,
+            "status": current.status,
+            "published_at": current.published_at,
+            "declared_point_count": int(current.point_count or 0),
+            "declared_tile_count": int(current.tile_count or 0),
+            "actual_tile_count": actual_tile_count,
+        },
+        "db_candidate_count": len(candidates),
+        "db_eligible_count": len(eligible_ids),
+        "spatially_rejected_count": sum(spatial_rejections.values()),
+        "spatial_rejection_reasons": dict(sorted(spatial_rejections.items())),
+        "spatial_rejected_sample_lot_ids": spatial_rejected_ids,
+        "dataset_unique_lot_count": len(dataset_ids),
+        "dataset_point_feature_count": point_features,
+        "point_count_matches": point_count_matches,
+        "tile_count_matches": tile_count_matches,
+        "missing_from_dataset_count": len(missing_ids),
+        "missing_from_dataset_sample_lot_ids": missing_ids[: max(1, problem_limit)],
+        "extra_in_dataset_count": len(extra_ids),
+        "extra_in_dataset_sample_lot_ids": extra_ids[: max(1, problem_limit)],
+        "manifest": manifest,
     }
 
 
