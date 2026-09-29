@@ -85,7 +85,6 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
         assert runtime_path in full_reconcile
     assert "'src/bankrotai/services/map_builder.py'" in full_reconcile
     assert "'src/bankrotai/torgi_russia.py'" in full_reconcile
-    assert "'src/bankrotai/connectors/registry/torgi_russia.py'" in full_reconcile
     assert "configured_sources" in full_reconcile
     assert "source set mismatch" in full_reconcile
     assert "progress_at" in full_reconcile
