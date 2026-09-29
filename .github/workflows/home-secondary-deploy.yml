@@ -148,6 +148,7 @@ jobs:
           $postgres = docker ps -a --filter "name=^/${env:POSTGRES_CONTAINER}$" --format '{{.Names}}'
           if ($postgres -ne $env:POSTGRES_CONTAINER) {
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $env:POSTGRES_CONTAINER --network $env:DOCKER_NETWORK `
               --env POSTGRES_USER=bankrotai --env POSTGRES_DB=bankrotai `
               --env "POSTGRES_PASSWORD=$password" `
@@ -313,6 +314,7 @@ jobs:
           $redis = docker ps -a --filter "name=^/${env:REDIS_CONTAINER}$" --format '{{.Names}}'
           if ($redis -ne $env:REDIS_CONTAINER) {
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $env:REDIS_CONTAINER `
               --network $env:DOCKER_NETWORK `
               --mount "type=bind,source=$env:CONFIG_ROOT\redis.conf,target=/usr/local/etc/redis/redis.conf,readonly" `
@@ -336,6 +338,7 @@ jobs:
             docker rm --force $env:CONTAINER_NAME | Out-Null
           }
           docker run --detach --restart unless-stopped `
+            --log-opt max-size=20m --log-opt max-file=5 `
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
@@ -385,6 +388,7 @@ jobs:
               $workerArgs += @('--beat', '--schedule', '/tmp/celerybeat-schedule')
             }
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $spec.Name `
               --network $env:DOCKER_NETWORK `
               --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
@@ -489,6 +493,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               docker logs --tail 100 $gate.Container
               throw "$($gate.Node) did not answer Celery ping"
+            }
+          }
+          foreach ($container in @($env:CONTAINER_NAME, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
+            $logConfigJson = docker inspect --format '{{json .HostConfig.LogConfig}}' $container
+            if ($LASTEXITCODE -ne 0 -or -not $logConfigJson) {
+              throw "Could not inspect Docker log rotation for $container"
+            }
+            $logConfig = $logConfigJson | ConvertFrom-Json
+            if (
+              $logConfig.Config.'max-size' -ne '20m' -or
+              $logConfig.Config.'max-file' -ne '5'
+            ) {
+              throw "Docker log rotation is not enforced for $container"
             }
           }
           $limitState = docker exec $env:WORKER_CONTAINER python -c "from bankrotai.tasks import nationwide_lot_sync_task, _DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS, _DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS; print(f'{nationwide_lot_sync_task.soft_time_limit},{nationwide_lot_sync_task.time_limit},{_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS},{_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS}')"
