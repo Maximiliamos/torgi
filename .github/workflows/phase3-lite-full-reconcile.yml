@@ -332,7 +332,7 @@ jobs:
                     }
                     Start-Sleep -Seconds 10
                   } while ((Get-Date).ToUniversalTime() -lt $mapDeadline)
-                  if ($null -eq $mapState -or -not $mapState.published_at -or Convert-DbUtc ([string]$mapState.published_at) -lt $latestRetryFinishedAt) {
+                  if ($null -eq $mapState -or -not $mapState.published_at -or (Convert-DbUtc ([string]$mapState.published_at)) -lt $latestRetryFinishedAt) {
                     throw 'Post-retry MapDataset was not promoted within 20 minutes'
                   }
                 }
