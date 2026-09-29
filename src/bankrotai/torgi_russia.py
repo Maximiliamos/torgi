@@ -109,7 +109,11 @@ class TorgiRussiaClient:
                     continue
                 response.raise_for_status()
                 return response
-            except (requests.Timeout, requests.ConnectionError):
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
                 if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
                     raise
                 time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
