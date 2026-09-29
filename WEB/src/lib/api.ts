@@ -534,9 +534,11 @@ export type LotSyncStatus = {
 export type OperationsProgress = {
   sync: null | {
     task_id: string; status: string; started_at?: string | null; finished_at?: string | null;
+    heartbeat_at?: string | null; lease_expires_at?: string | null;
     sources: Array<{
       source_system: string; status: string; items_seen: number; pages_scanned: number;
       total_pages: number | null; percent: number | null; current_category: string | null;
+      phase?: string | null; progress_at?: string | null; started_at?: string | null; finished_at?: string | null;
     }>;
   };
   geocoding: {
@@ -555,6 +557,15 @@ export type OperationsProgress = {
       } | null;
     };
   };
+  journal?: Array<{
+    kind: "sync" | "geocoding";
+    title: string;
+    status: string;
+    at?: string | null;
+    detail: string;
+    percent?: number | null;
+    phase?: string | null;
+  }>;
 };
 export const startNationwideLotSync = () =>
   requestJson<{ task_id: string; status: string }>("/api/sync/lots", undefined, { method: "POST" });

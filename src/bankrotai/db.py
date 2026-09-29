@@ -507,6 +507,7 @@ class LotSyncSourceRun(Base):
     checkpoint_json: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    progress_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
 
 
 class RegionDirectoryEntry(Base):
@@ -762,7 +763,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "1ab2c3d4e5f6"
+SCHEMA_REVISION = "2bc3d4e5f6a7"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False

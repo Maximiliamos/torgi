@@ -121,6 +121,38 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_source_run_records_real_progress_timestamp_and_phase(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_id, _ = run_with(service, FakeConnector([[lot()]]))
+
+    with sessions() as session:
+        source = session.scalar(
+            select(LotSyncSourceRun).where(LotSyncSourceRun.sync_run_id == run_id)
+        )
+        assert source is not None
+        assert source.progress_at is not None
+        assert source.checkpoint_json is not None
+        assert source.checkpoint_json["phase"] == "complete"
+
+
+def test_stall_detection_uses_progress_age_relative_to_lease_window(sessions) -> None:
+    service = NationwideIngestionService(sessions, lease_minutes=1)
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+    old = datetime.utcnow() - timedelta(minutes=3)
+    with sessions.begin() as session:
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=run_id,
+                source_system="test-source",
+                status="running",
+                started_at=old,
+                progress_at=old,
+            )
+        )
+
+    assert service._source_progress_stalled(run_id) is True
+
+
 def test_non_gis_source_uses_bounded_set_based_persistence(sessions) -> None:
     service = NationwideIngestionService(sessions, profile_timings=True)
     items = [lot(f"lot-{index}") for index in range(25)]

@@ -84,6 +84,7 @@ class SourceSyncResult:
     total_pages: int | None = None
     progress_current: int | None = None
     progress_total: int | None = None
+    phase: str = "scanning"
     error: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
 
@@ -222,6 +223,11 @@ class NationwideIngestionService:
         # Renew at least three times before expiry. The lower bound avoids a
         # tight loop if a test or local caller uses a deliberately tiny lease.
         self._lease_heartbeat_interval_seconds = max(1.0, lease_minutes * 60 / 3)
+        # Nationwide runs are not bounded by elapsed wall-clock time. A stalled
+        # run is one whose heartbeat is alive but source progress has not moved
+        # for two complete lease windows.
+        self._progress_stall_seconds = max(2.0, lease_minutes * 60 * 2)
+        self._stall_events: dict[str, threading.Event] = {}
 
     def create_run(self, *, triggered_by: str | None, trigger_type: str, total_sources: int) -> str:
         now = utc_now()
@@ -280,9 +286,11 @@ class NationwideIngestionService:
     async def run(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
         self._mark_run_running(run_id)
         stop_heartbeat = threading.Event()
+        stall_event = threading.Event()
+        self._stall_events[run_id] = stall_event
         heartbeat_thread = threading.Thread(
             target=self._lease_watchdog,
-            args=(run_id, stop_heartbeat),
+            args=(run_id, stop_heartbeat, stall_event),
             daemon=True,
             name=f"nationwide-lease-{run_id[:8]}",
         )
@@ -292,6 +300,7 @@ class NationwideIngestionService:
         finally:
             stop_heartbeat.set()
             heartbeat_thread.join()
+            self._stall_events.pop(run_id, None)
         self._finalize_run(run_id, payload)
         return payload
 
@@ -336,13 +345,50 @@ class NationwideIngestionService:
                 run.result_json = payload
                 session.commit()
 
-    def _lease_watchdog(self, run_id: str, stop_event: threading.Event) -> None:
-        """Keep the durable run lease alive even while synchronous DB work blocks the event loop."""
+    def _lease_watchdog(
+        self,
+        run_id: str,
+        stop_event: threading.Event,
+        stall_event: threading.Event,
+    ) -> None:
+        """Renew the lease while work moves and flag live-but-stalled runs."""
         while not stop_event.wait(self._lease_heartbeat_interval_seconds):
             try:
+                if self._source_progress_stalled(run_id):
+                    stall_event.set()
+                    logger.error(
+                        "Nationwide synchronization %s stalled: no source progress for %.0fs",
+                        run_id,
+                        self._progress_stall_seconds,
+                    )
+                    return
                 self._heartbeat(run_id)
             except Exception:
                 logger.exception("Could not renew nationwide synchronization lease for %s", run_id)
+
+    def _source_progress_stalled(self, run_id: str) -> bool:
+        now = utc_now()
+        with self.session_factory() as session:
+            running = session.scalars(
+                select(LotSyncSourceRun).where(
+                    LotSyncSourceRun.sync_run_id == run_id,
+                    LotSyncSourceRun.status == "running",
+                )
+            ).all()
+            if not running:
+                return False
+            latest_progress = max(
+                (row.progress_at or row.started_at or now for row in running),
+                default=now,
+            )
+        return (now - latest_progress).total_seconds() > self._progress_stall_seconds
+
+    def _raise_if_stalled(self, run_id: str) -> None:
+        event = self._stall_events.get(run_id)
+        if event is not None and event.is_set():
+            raise RuntimeError(
+                "nationwide synchronization stalled: worker heartbeat is alive but source progress stopped"
+            )
 
     def _expire_elapsed_auctions(self, *, now: datetime | None = None) -> int:
         """Archive only from explicit source truth or a fully elapsed public-offer schedule.
@@ -449,6 +495,7 @@ class NationwideIngestionService:
             if not spec.reconcile_missing:
                 result.complete_source_run = False
                 result.status = "success"
+                result.phase = "complete"
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
                 return result
@@ -477,14 +524,31 @@ class NationwideIngestionService:
                     result.items_seen,
                     active_baseline,
                 )
+            result.phase = "reconcile_missing"
+            result.progress_current = 0
+            result.progress_total = None
+            result.elapsed_seconds = time.perf_counter() - wall_started
+            self._upsert_source_run(run_id, result, started_at=started)
+
+            def reconciliation_progress(processed: int, total: int) -> None:
+                result.progress_current = processed
+                result.progress_total = total
+                result.elapsed_seconds = time.perf_counter() - wall_started
+                self._heartbeat(run_id)
+                self._upsert_source_run(run_id, result, started_at=started)
+
             result.items_archived = self._archive_missing_after_complete_run(
                 run_id,
                 spec.source_id,
                 region_code=spec.archive_region_code,
+                progress_callback=reconciliation_progress,
             )
             result.status = "success"
+            result.phase = "complete"
+            result.progress_current = result.progress_total
         except Exception as exc:
             result.status = "failed"
+            result.phase = "failed"
             result.error = str(exc)
         result.elapsed_seconds = time.perf_counter() - wall_started
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
@@ -766,8 +830,10 @@ class NationwideIngestionService:
         source_id: str,
         *,
         region_code: str | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> int:
         archived = 0
+        batch_size = 250
         with self.session_factory() as session:
             query = select(SourceLot).where(
                 SourceLot.source_system == source_id,
@@ -777,17 +843,25 @@ class NationwideIngestionService:
             if region_code is not None:
                 query = query.where(SourceLot.region_code == region_code)
             rows = session.scalars(query).all()
-            for row in rows:
+            total = len(rows)
+            if progress_callback is not None:
+                progress_callback(0, total)
+            for index, row in enumerate(rows, start=1):
                 row.missing_successful_runs += 1
-                if row.missing_successful_runs < 2:
-                    continue
-                row.is_active = False
-                row.is_archived = True
-                row.archived_at = utc_now()
-                row.archive_reason = "missing_after_two_complete_syncs"
-                self._reconcile_processed_after_source_archive(session, row, row.archived_at)
-                archived += 1
+                if row.missing_successful_runs >= 2:
+                    row.is_active = False
+                    row.is_archived = True
+                    row.archived_at = utc_now()
+                    row.archive_reason = "missing_after_two_complete_syncs"
+                    self._reconcile_processed_after_source_archive(session, row, row.archived_at)
+                    archived += 1
+                if index % batch_size == 0:
+                    session.commit()
+                    if progress_callback is not None:
+                        progress_callback(index, total)
             session.commit()
+            if progress_callback is not None:
+                progress_callback(total, total)
         return archived
 
     @staticmethod
@@ -865,6 +939,7 @@ class NationwideIngestionService:
             session.commit()
 
     def _heartbeat(self, run_id: str) -> None:
+        self._raise_if_stalled(run_id)
         now = utc_now()
         with self.session_factory() as session:
             run = session.get(LotSyncRun, run_id)
@@ -884,7 +959,11 @@ class NationwideIngestionService:
             )
             if task in done:
                 break
-            self._heartbeat(run_id)
+            try:
+                self._heartbeat(run_id)
+            except Exception:
+                task.cancel()
+                raise
         return task.result()
 
     def _upsert_source_run(
@@ -901,6 +980,30 @@ class NationwideIngestionService:
                     LotSyncSourceRun.sync_run_id == run_id,
                     LotSyncSourceRun.source_system == result.source_system,
                 )
+            )
+            now = utc_now()
+            checkpoint = {
+                "category_pages": result.category_pages,
+                "current_category": result.current_category,
+                "total_pages": result.total_pages,
+                "progress_current": result.progress_current,
+                "progress_total": result.progress_total,
+                "phase": result.phase,
+                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+                if result.elapsed_seconds
+                else 0,
+            }
+            is_new = row is None
+            previous_checkpoint = {} if row is None else (row.checkpoint_json or {})
+            progress_changed = bool(
+                is_new
+                or row.status != result.status
+                or row.pages_scanned != result.pages_scanned
+                or row.items_seen != result.items_seen
+                or previous_checkpoint.get("current_category") != result.current_category
+                or previous_checkpoint.get("progress_current") != result.progress_current
+                or previous_checkpoint.get("progress_total") != result.progress_total
+                or previous_checkpoint.get("phase") != result.phase
             )
             if row is None:
                 row = LotSyncSourceRun(sync_run_id=run_id, source_system=result.source_system)
@@ -921,22 +1024,11 @@ class NationwideIngestionService:
                 if finished_at is not None
                 else None
             )
-            row.checkpoint_json = (
-                {
-                    "category_pages": result.category_pages,
-                    "current_category": result.current_category,
-                    "total_pages": result.total_pages,
-                    "progress_current": result.progress_current,
-                    "progress_total": result.progress_total,
-                    "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                    if result.elapsed_seconds
-                    else 0,
-                }
-                if result.category_pages or result.current_category or result.progress_total
-                else None
-            )
+            row.checkpoint_json = checkpoint
             row.started_at = row.started_at or started_at
             row.finished_at = finished_at
+            if progress_changed or row.progress_at is None:
+                row.progress_at = now
             session.commit()
 
     @staticmethod
