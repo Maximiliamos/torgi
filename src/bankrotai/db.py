@@ -507,6 +507,7 @@ class LotSyncSourceRun(Base):
     checkpoint_json: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    progress_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
 
 
 class RegionDirectoryEntry(Base):
