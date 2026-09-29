@@ -1012,6 +1012,7 @@ def get_nationwide_lot_sync(task_id: str, actor: AuthenticatedUser = Depends(req
                     "geocoded": source.geocoded,
                     "duplicates_merged": source.duplicates_merged,
                     "checkpoint": source.checkpoint_json,
+                    "progress_at": source.progress_at,
                     "error": source.error_message,
                 }
                 for source in sources
@@ -1027,12 +1028,13 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
     with read_session_scope() as session:
         sync_run = session.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()).limit(1))
         sources: list[dict[str, Any]] = []
+        source_rows: list[LotSyncSourceRun] = []
         if sync_run is not None:
-            source_rows = session.scalars(
+            source_rows = list(session.scalars(
                 select(LotSyncSourceRun)
                 .where(LotSyncSourceRun.sync_run_id == sync_run.id)
                 .order_by(LotSyncSourceRun.source_system)
-            ).all()
+            ).all())
             for source in source_rows:
                 checkpoint = source.checkpoint_json or {}
                 total_pages = checkpoint.get("total_pages")
@@ -1052,8 +1054,58 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                         "total_pages": total_pages,
                         "percent": percent,
                         "current_category": checkpoint.get("current_category"),
+                        "phase": checkpoint.get("phase"),
+                        "progress_at": source.progress_at,
+                        "started_at": source.started_at,
+                        "finished_at": source.finished_at,
                     }
                 )
+
+        geocoding = geocoding_progress(session)
+        journal: list[dict[str, Any]] = []
+        for source, payload in zip(source_rows, sources, strict=False):
+            checkpoint = source.checkpoint_json or {}
+            detail_parts = [f"{source.items_seen} лотов"]
+            if checkpoint.get("current_category"):
+                detail_parts.append(str(checkpoint["current_category"]))
+            phase = checkpoint.get("phase")
+            if phase and phase not in {"scanning", "complete"}:
+                detail_parts.append(str(phase))
+            journal.append(
+                {
+                    "kind": "sync",
+                    "title": source.source_system,
+                    "status": source.status,
+                    "at": source.finished_at or source.progress_at or source.started_at,
+                    "percent": payload.get("percent"),
+                    "phase": phase,
+                    "detail": " · ".join(detail_parts),
+                }
+            )
+
+        geo_task = geocoding.get("task") or {}
+        if geo_task:
+            geo_progress = geo_task.get("progress") or {}
+            processed = int(geo_progress.get("processed") or 0)
+            queued = int(geo_progress.get("queued") or 0)
+            geo_detail = (
+                f"{processed} из {queued} · координат {int(geo_progress.get('geocoded') or 0)}"
+                if queued
+                else f"координаты {geocoding.get('geocoded', 0)} из {geocoding.get('total', 0)}"
+            )
+            journal.append(
+                {
+                    "kind": "geocoding",
+                    "title": "Координаты",
+                    "status": geo_task.get("status") or "unknown",
+                    "at": geo_task.get("finished_at") or geo_task.get("started_at"),
+                    "percent": geo_progress.get("percent") or geocoding.get("percent"),
+                    "phase": geo_progress.get("phase"),
+                    "detail": geo_detail,
+                }
+            )
+        journal.sort(key=lambda entry: entry.get("at") or datetime.min, reverse=True)
+
         return {
             "sync": None
             if sync_run is None
@@ -1062,9 +1114,12 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 "status": sync_run.status,
                 "started_at": sync_run.started_at,
                 "finished_at": sync_run.finished_at,
+                "heartbeat_at": sync_run.heartbeat_at,
+                "lease_expires_at": sync_run.lease_expires_at,
                 "sources": sources,
             },
-            "geocoding": geocoding_progress(session),
+            "geocoding": geocoding,
+            "journal": journal[:6],
         }
 
 
