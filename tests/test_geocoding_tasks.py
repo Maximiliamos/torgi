@@ -45,7 +45,12 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
     monkeypatch.setattr(
         tasks,
         "_schedule_geocode_continuation",
-        lambda: {"status": "queued", "task_id": "geo-next", "countdown_seconds": 2},
+        lambda depth: {
+            "status": "queued",
+            "task_id": "geo-next",
+            "countdown_seconds": 2,
+            "continuation_depth": depth,
+        },
     )
 
     result = tasks.geocode_pending_lots_task.run()
@@ -56,6 +61,32 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
     assert result["map_dataset_build"]["maximum_delay_seconds"] == 60
     assert result["continuation"]["status"] == "queued"
     assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
+
+
+def test_geocoding_continuation_is_bounded(monkeypatch) -> None:
+    import redis
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "geocode_pending_lots",
+        lambda *_args, **_kwargs: {
+            "queued": tasks._GEO_BATCH_LIMIT,
+            "processed": tasks._GEO_BATCH_LIMIT,
+            "geocoded": 0,
+        },
+    )
+    monkeypatch.setattr(redis, "Redis", FakeRedis)
+
+    result = tasks.geocode_pending_lots_task.run(
+        continuation_depth=tasks._GEO_CONTINUATION_MAX_BATCHES - 1
+    )
+
+    assert result["continuation"] == {
+        "status": "bounded_stop",
+        "completed_batches": tasks._GEO_CONTINUATION_MAX_BATCHES,
+        "max_batches": tasks._GEO_CONTINUATION_MAX_BATCHES,
+        "resume": "celery-beat",
+    }
 
 
 def test_partial_geocoding_batch_does_not_schedule_continuation(monkeypatch) -> None:
@@ -77,6 +108,7 @@ def test_beat_keeps_five_minute_watchdogs_but_publication_latency_is_bounded() -
     assert schedule["recover-ik12-cadastral-misses"]["schedule"] == 300.0
     assert schedule["publish-dirty-map-dataset"]["schedule"] == 300.0
     assert tasks._MAP_PUBLICATION_DEBOUNCE_SECONDS == 60
+    assert tasks._GEO_CONTINUATION_MAX_BATCHES == 8
     fast_schedule = schedule["refresh-nationwide-sources-fast"]["schedule"]
     full_schedule = schedule["refresh-nationwide-sources-full"]["schedule"]
     assert fast_schedule.minute == {0, 15, 30, 45}
