@@ -9,10 +9,12 @@ from bankrotai.core import AppSettings, load_settings
 from bankrotai.services.map_object_store import (
     _UPLOAD_HTTP,
     _pooled_put,
+    _delete_object,
     _put_object,
     _signed_headers,
     _verify_public_manifest,
     dataset_public_tile_base_url,
+    delete_retired_dataset_manifests,
     object_store_configured,
     object_store_public_enabled,
 )
@@ -277,3 +279,50 @@ def test_s3_upload_transport_reuses_session_per_worker(monkeypatch):
     assert session.mount.call_count == 2
 
     delattr(_UPLOAD_HTTP, "session")
+
+
+def test_s3_delete_treats_missing_object_as_success(monkeypatch):
+    settings = AppSettings(
+        map_object_store_endpoint="https://s3.regru.cloud",
+        map_object_store_bucket="sterdez-map",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+        map_object_store_region="ru-1",
+    )
+    missing = Mock(status_code=404, text="")
+    delete = Mock(return_value=missing)
+    sleep = Mock()
+    monkeypatch.setattr("bankrotai.services.map_object_store.time.sleep", sleep)
+
+    _delete_object(settings, "datasets/old/manifest.json", delete=delete)
+
+    delete.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_retired_dataset_retention_deletes_manifests_only(monkeypatch):
+    settings = AppSettings(
+        map_object_store_enabled=True,
+        map_object_store_endpoint="https://s3.regru.cloud",
+        map_object_store_bucket="sterdez-map",
+        map_object_store_public_base_url="https://s3.regru.cloud/sterdez-map",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+        map_object_store_region="ru-1",
+        map_object_store_layout="regional-bundles-v1",
+    )
+    deleted = []
+    monkeypatch.setattr(
+        "bankrotai.services.map_object_store._delete_object",
+        lambda _settings, key: deleted.append(key),
+    )
+
+    result = delete_retired_dataset_manifests(["old-a", "old-b"], settings=settings)
+
+    assert result["status"] == "deleted"
+    assert result["deleted"] == 2
+    assert result["shared_immutable_objects_preserved"] is True
+    assert deleted == [
+        "datasets/old-a/manifest.json",
+        "datasets/old-b/manifest.json",
+    ]
