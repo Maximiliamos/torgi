@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from bankrotai.db import Base, GeoFailure, LotGeoSnapshot, ProcessedLot
-from bankrotai.services.geo_backfill import geocoding_diagnostic_report
+from bankrotai.services.geo_backfill import geocoding_diagnostic_report, geocoding_progress
 
 
 def _lot(
@@ -122,3 +122,36 @@ def test_geocoding_diagnostic_report_aggregates_quality_without_raw_addresses() 
     serialized = json.dumps(report, ensure_ascii=False)
     assert "улица Свободы" not in serialized
     assert "неизвестный адрес" not in serialized
+
+
+def test_geocoding_progress_does_not_count_historical_snapshot_as_current_geo() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        lot = _lot(
+            "historical-only",
+            region_code="76",
+            cadastral_number="76:23:010101:9",
+            address="Ярославль",
+        )
+        session.add(lot)
+        session.flush()
+        session.add(
+            LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source="photon",
+                geo_method="address",
+                geo_confidence="high",
+                centroid_lat=57.6261,
+                centroid_lon=39.8845,
+            )
+        )
+        session.commit()
+
+        progress = geocoding_progress(session)
+
+    assert progress["total"] == 1
+    assert progress["geocoded"] == 0
+    assert progress["remaining"] == 1
+    assert progress["eligible_now"] == 1
