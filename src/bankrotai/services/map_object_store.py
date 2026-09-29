@@ -291,6 +291,95 @@ def _verify_public_manifest(settings: AppSettings, version: str) -> dict[str, An
     return payload
 
 
+def _delete_object(
+    settings: AppSettings,
+    key: str,
+    *,
+    delete: Callable[..., requests.Response] | None = None,
+) -> None:
+    """Delete one object with the same bounded retry policy used for PUT."""
+    assert settings.map_object_store_access_key is not None
+    assert settings.map_object_store_secret_key is not None
+    body = b""
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        url, headers = _signed_headers(
+            method="DELETE",
+            endpoint=settings.map_object_store_endpoint,
+            bucket=settings.map_object_store_bucket,
+            key=key,
+            body=body,
+            content_type="application/octet-stream",
+            cache_control="no-cache",
+            access_key=settings.map_object_store_access_key,
+            secret_key=settings.map_object_store_secret_key,
+            region=settings.map_object_store_region,
+        )
+        try:
+            request_delete = delete or requests.delete
+            response = request_delete(
+                url,
+                headers=headers,
+                timeout=settings.map_object_store_timeout_seconds,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"REG.RU S3 DELETE failed for {key} after {max_attempts} attempts: {exc}"
+                ) from exc
+            time.sleep(2 ** (attempt - 1))
+            continue
+
+        if response.status_code in {200, 202, 204, 404}:
+            return
+        if response.status_code >= 500 and attempt < max_attempts:
+            time.sleep(2 ** (attempt - 1))
+            continue
+        detail = response.text[:500].replace("\n", " ")
+        raise RuntimeError(
+            f"REG.RU S3 DELETE failed for {key}: HTTP {response.status_code} {detail}"
+        )
+
+
+def delete_retired_dataset_manifests(
+    versions: list[str],
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    """Remove version manifests after DB retention selected them for deletion.
+
+    Regional bundle/index objects are content-addressed and can be shared by
+    multiple dataset versions, so this deliberately never deletes them.
+    """
+    selected = [str(version) for version in versions if str(version).strip()]
+    current_settings = settings or get_settings()
+    if not selected:
+        return {"status": "skipped", "reason": "no-retired-datasets", "deleted": 0}
+    if not current_settings.map_object_store_enabled:
+        return {"status": "skipped", "reason": "object-store-disabled", "deleted": 0}
+    if not object_store_configured(current_settings):
+        raise RuntimeError("Object-store retention requires complete REG.RU S3 configuration")
+    if current_settings.map_object_store_layout != "regional-bundles-v1":
+        return {
+            "status": "skipped",
+            "reason": "layout-requires-prefix-aware-gc",
+            "deleted": 0,
+            "versions": selected,
+        }
+
+    for version in selected:
+        _delete_object(
+            current_settings,
+            f"datasets/{quote(version, safe='-_.~')}/manifest.json",
+        )
+    return {
+        "status": "deleted",
+        "deleted": len(selected),
+        "versions": selected,
+        "shared_immutable_objects_preserved": True,
+    }
+
+
 def publish_dataset_to_object_store(
     session_factory: Callable[[], Session],
     *,
