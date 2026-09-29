@@ -74,7 +74,7 @@ from bankrotai.services.operations import (
     save_search,
     toggle_watchlist,
 )
-from bankrotai.services.quality import data_quality_snapshot, list_source_health, operational_quality_report
+from bankrotai.services.quality import data_quality_snapshot, list_source_health, map_delivery_reconciliation_report, operational_quality_report
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
@@ -2062,6 +2062,19 @@ def get_data_quality():
 def get_operational_quality_report(stale_days: int = Query(7, ge=1, le=90)):
     with read_session_scope() as session:
         return operational_quality_report(session, stale_days=stale_days)
+
+
+@app.get("/api/quality/map-delivery", dependencies=[Depends(require_admin)])
+def get_map_delivery_quality_report(
+    verify_manifest: bool = Query(False),
+):
+    with SessionLocal() as session:
+        return jsonable_encoder(
+            map_delivery_reconciliation_report(
+                session,
+                verify_public_manifest=verify_manifest,
+            )
+        )
 
 
 @app.get("/api/quality/geocoding", dependencies=[Depends(require_admin)])
