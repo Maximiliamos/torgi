@@ -236,12 +236,36 @@ jobs:
                   }
 
                   $retryState = $null
+                  $retryProgressDeadline = $null
                   do {
-                    $retryJson = docker exec --env "PHASE3_RETRY_RUN_ID=$retryRunId" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RETRY_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RETRY_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'finished_at':None if run is None else run.finished_at,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'error':x.error_message} for x in rows]}, default=str)); s.close()"
+                    $retryJson = docker exec --env "PHASE3_RETRY_RUN_ID=$retryRunId" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RETRY_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RETRY_RUN_ID']).all(); print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'finished_at':None if run is None else run.finished_at,'heartbeat_at':None if run is None else run.heartbeat_at,'lease_expires_at':None if run is None else run.lease_expires_at,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'progress_at':x.progress_at,'checkpoint':x.checkpoint_json,'error':x.error_message} for x in rows]}, default=str)); s.close()"
                     if ($LASTEXITCODE -ne 0 -or -not $retryJson) {
                       throw "Could not inspect targeted retry $retryRunId for $source"
                     }
                     $retryState = ($retryJson | Select-Object -Last 1) | ConvertFrom-Json
+                    if ($retryState.status -in @('queued','running')) {
+                      if (-not $retryState.heartbeat_at -or -not $retryState.lease_expires_at) {
+                        throw "Targeted retry $retryRunId for $source is missing heartbeat/lease evidence"
+                      }
+                      $retryHeartbeat = [datetime]::Parse([string]$retryState.heartbeat_at).ToUniversalTime()
+                      $retryLeaseExpiry = [datetime]::Parse([string]$retryState.lease_expires_at).ToUniversalTime()
+                      if ($retryLeaseExpiry -le (Get-Date).ToUniversalTime()) {
+                        throw "Targeted retry $retryRunId for $source lost its lease"
+                      }
+                      $retryLeaseWindowSeconds = [math]::Max(1, ($retryLeaseExpiry - $retryHeartbeat).TotalSeconds)
+                      $retryProgressTimes = @($retryState.sources | Where-Object { $_.progress_at } | ForEach-Object {
+                        [datetime]::Parse([string]$_.progress_at).ToUniversalTime()
+                      })
+                      $retryLatestProgress = if ($retryProgressTimes.Count -gt 0) {
+                        $retryProgressTimes | Sort-Object -Descending | Select-Object -First 1
+                      } else {
+                        $retryHeartbeat
+                      }
+                      $retryProgressDeadline = $retryLatestProgress.AddSeconds($retryLeaseWindowSeconds * 2)
+                      if ((Get-Date).ToUniversalTime() -ge $retryProgressDeadline) {
+                        throw "Targeted retry for $source stalled: no durable progress since $retryLatestProgress"
+                      }
+                    }
                     if ($retryState.status -eq 'success') {
                       $retryRows = @($retryState.sources)
                       if ($retryRows.Count -ne 1 -or [string]$retryRows[0].source -ne $source -or $retryRows[0].status -ne 'success' -or -not [bool]$retryRows[0].complete) {
@@ -262,10 +286,10 @@ jobs:
                       throw "Targeted retry for $source failed: run_error=$($retryState.error) source_errors=$($sourceErrors -join '; ')"
                     }
                     Start-Sleep -Seconds 20
-                  } while ((Get-Date).ToUniversalTime() -lt $retryDeadline)
+                  } while ($null -eq $retryProgressDeadline -or (Get-Date).ToUniversalTime() -lt $retryProgressDeadline)
 
                   if ($null -eq $retryState -or $retryState.status -ne 'success') {
-                    throw "Targeted retry for $source did not reach success within retry deadline"
+                    throw "Targeted retry for $source stalled before reaching success"
                   }
                 }
 
