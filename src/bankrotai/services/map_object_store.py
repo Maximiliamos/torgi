@@ -370,7 +370,7 @@ def delete_retired_dataset_manifests(
     for version in selected:
         _delete_object(
             current_settings,
-            f"datasets/{quote(version, safe='-_.~')}/manifest.json",
+            f"datasets/{version}/manifest.json",
         )
     return {
         "status": "deleted",
