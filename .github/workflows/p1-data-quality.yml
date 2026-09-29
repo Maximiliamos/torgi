@@ -1,0 +1,73 @@
+name: P1 production data quality
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 4 * * *'
+  workflow_run:
+    workflows: ['Phase 3 Lite full source reconciliation']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: p1-production-data-quality
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    outputs:
+      warning_count: ${{ steps.audit.outputs.warning_count }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit DB to MapDataset to S3 and GEO quality
+        id: audit
+        shell: powershell
+        run: |
+          .\scripts\p1-production-audit.ps1 -OutputPath "$env:RUNNER_TEMP\p1-data-quality.json"
+          $report = Get-Content -LiteralPath "$env:RUNNER_TEMP\p1-data-quality.json" -Raw | ConvertFrom-Json
+          "warning_count=$([int]$report.warning_count)" >> $env:GITHUB_OUTPUT
+      - name: Upload P1 quality report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p1-data-quality-${{ github.run_id }}
+          path: ${{ runner.temp }}\p1-data-quality.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  alert:
+    needs: audit
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[P1] Data quality / map delivery alert';
+            const body = `DB → MapDataset → REG.RU S3 reconciliation failed.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+            else await github.rest.issues.create({...context.repo, title, body});
+
+  recovery:
+    needs: audit
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[P1] Data quality / map delivery alert';
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
+              await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
+            }
