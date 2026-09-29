@@ -443,6 +443,39 @@ def test_torgi_russia_rejects_ignored_region_filter() -> None:
         raise AssertionError("ignored region filter must fail closed")
 
 
+def test_torgi_russia_retries_incomplete_http_body() -> None:
+    item = _new_site_lot()
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1"
+        text = html
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url, *, params=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise requests.exceptions.ChunkedEncodingError("incomplete body")
+            return Response()
+
+    session = Session()
+    with patch("bankrotai.torgi_russia.time.sleep") as sleep:
+        lots, _ = TorgiRussiaClient(session=session).search_lots(TorgiRussiaSearchFilters())
+
+    assert len(lots) == 1
+    assert session.calls == 2
+    assert [call.args[0] for call in sleep.call_args_list] == [1]
+
+
 def test_torgi_russia_retries_read_timeout_with_exact_backoff() -> None:
     item = _new_site_lot()
     html = _nextjs_search_html([item], total=1)
