@@ -752,7 +752,12 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
         total_sources=len(specs),
     )
     try:
-        nationwide_lot_sync_task.apply_async(args=[run_id, mode], task_id=run_id)
+        nationwide_lot_sync_task.apply_async(
+            args=[run_id, mode],
+            task_id=run_id,
+            soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
+            time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
+        )
     except Exception as exc:
         with session_scope() as session:
             run = session.get(LotSyncRun, run_id)

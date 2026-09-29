@@ -136,8 +136,15 @@ def test_source_only_schedule_uses_schema_safe_trigger_type(monkeypatch) -> None
 
     monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
     monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
-    monkeypatch.setattr(tasks.nationwide_lot_sync_task, "apply_async", lambda **_kwargs: None)
+    captured_dispatch = {}
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "apply_async",
+        lambda **kwargs: captured_dispatch.update(kwargs),
+    )
     assert tasks.schedule_nationwide_lot_sync(triggered_by="test", mode="source:bidexpert.ru") == "source-run"
+    assert captured_dispatch["soft_time_limit"] == tasks._DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS
+    assert captured_dispatch["time_limit"] == tasks._DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS
 
 
 def test_duplicate_nationwide_sync_returns_existing_task(monkeypatch) -> None:

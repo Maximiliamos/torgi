@@ -212,8 +212,8 @@ jobs:
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
-            'CELERY_NATIONWIDE_SOFT_TIME_LIMIT=4500'
-            'CELERY_NATIONWIDE_HARD_TIME_LIMIT=5100'
+            'CELERY_NATIONWIDE_SOFT_TIME_LIMIT=14400'
+            'CELERY_NATIONWIDE_HARD_TIME_LIMIT=18000'
             'GEO_BATCH_LIMIT=500'
             'GEO_MAX_WORKERS=6'
             'GEO_NSPD_CONCURRENCY=2'
@@ -491,6 +491,15 @@ jobs:
               throw "$($gate.Node) did not answer Celery ping"
             }
           }
+          $limitState = docker exec $env:WORKER_CONTAINER python -c "from bankrotai.tasks import nationwide_lot_sync_task, _DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS, _DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS; print(f'{nationwide_lot_sync_task.soft_time_limit},{nationwide_lot_sync_task.time_limit},{_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS},{_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS}')"
+          if ($LASTEXITCODE -ne 0 -or -not $limitState) {
+            throw "Could not inspect nationwide Celery task limits"
+          }
+          $limitParts = (($limitState | Select-Object -Last 1) -as [string]).Trim().Split(',')
+          if ($limitParts.Count -ne 4 -or [int]$limitParts[0] -lt 14400 -or [int]$limitParts[1] -lt 18000 -or [int]$limitParts[2] -lt 14400 -or [int]$limitParts[3] -lt 18000) {
+            throw "Nationwide Celery task limits are below durable production minimum: $limitState"
+          }
+          Write-Output "Nationwide Celery task limits: soft=$($limitParts[0]) hard=$($limitParts[1])"
           docker exec $env:WORKER_CONTAINER python -c `
             "import urllib.request; response = urllib.request.urlopen('http://bankrotai-photon:2322/api?q=Yaroslavl&limit=1', timeout=15); assert response.status == 200"
           if ($LASTEXITCODE -ne 0) {
