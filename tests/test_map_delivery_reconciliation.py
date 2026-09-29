@@ -87,6 +87,7 @@ def test_map_delivery_reconciliation_exposes_missing_eligible_lot() -> None:
         missing.cadastral_number = "76:23:010101:2"
         session.add_all([present, missing])
         session.flush()
+        missing_id = missing.id
         dataset = MapDataset(
             version="20260930T000000000000Z-r6-bundle-s3",
             status="ready",
@@ -115,4 +116,4 @@ def test_map_delivery_reconciliation_exposes_missing_eligible_lot() -> None:
     assert report["ok"] is False
     assert report["db_eligible_count"] == 2
     assert report["missing_from_dataset_count"] == 1
-    assert report["missing_from_dataset_sample_lot_ids"] == [missing.id]
+    assert report["missing_from_dataset_sample_lot_ids"] == [missing_id]
