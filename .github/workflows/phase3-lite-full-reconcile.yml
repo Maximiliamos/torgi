@@ -7,10 +7,18 @@ on:
     paths:
       - '.github/workflows/phase3-lite-full-reconcile.yml'
       - '.github/workflows/home-secondary-deploy.yml'
-      - 'src/bankrotai/services/map_builder.py'
+      - 'alembic/versions/**'
+      - 'src/bankrotai/core.py'
+      - 'src/bankrotai/db.py'
+      - 'src/bankrotai/tasks.py'
+      - 'src/bankrotai/scrapers.py'
+      - 'src/bankrotai/regions.py'
       - 'src/bankrotai/services/ingestion.py'
+      - 'src/bankrotai/services/map_builder.py'
+      - 'src/bankrotai/services/map_object_store.py'
+      - 'src/bankrotai/services/map_dataset_version.py'
       - 'src/bankrotai/torgi_russia.py'
-      - 'src/bankrotai/connectors/registry/torgi_russia.py'
+      - 'src/bankrotai/connectors/**'
 
 permissions:
   actions: read
