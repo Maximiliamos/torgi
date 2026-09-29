@@ -308,28 +308,31 @@ def _distributed_geo_lock():
 
 
 def geocoding_statistics(session: Any) -> dict[str, int]:
-    ranked = (
-        select(
-            LotGeoSnapshot.id.label("geo_id"),
-            LotGeoSnapshot.lot_id,
-            func.row_number()
-            .over(
-                partition_by=LotGeoSnapshot.lot_id,
-                order_by=(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc()),
-            )
-            .label("position"),
-        )
-        .join(ProcessedLot, ProcessedLot.id == LotGeoSnapshot.lot_id)
-        .where(ProcessedLot.is_archived.is_(False))
-        .subquery()
-    )
-    latest_ids = select(ranked.c.lot_id, ranked.c.geo_id).where(ranked.c.position == 1).subquery()
+    """Count the coordinates currently used by the map, not historical snapshots."""
     rows = session.execute(
-        select(LotGeoSnapshot.geo_source, LotGeoSnapshot.geo_confidence, func.count())
-        .join(latest_ids, LotGeoSnapshot.id == latest_ids.c.geo_id)
-        .group_by(LotGeoSnapshot.geo_source, LotGeoSnapshot.geo_confidence)
+        select(
+            ProcessedLot.current_geo_source,
+            ProcessedLot.current_geo_confidence,
+            func.count(),
+        ).where(
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.is_archived.is_(False),
+            ProcessedLot.current_geo_lat.is_not(None),
+            ProcessedLot.current_geo_lon.is_not(None),
+        ).group_by(
+            ProcessedLot.current_geo_source,
+            ProcessedLot.current_geo_confidence,
+        )
     ).all()
-    active = int(session.scalar(select(func.count()).where(ProcessedLot.is_archived.is_(False))) or 0)
+    active = int(
+        session.scalar(
+            select(func.count()).where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+            )
+        )
+        or 0
+    )
     with_coordinates = sum(int(count) for _source, _confidence, count in rows)
     result = {
         "active_lots": active,
@@ -569,6 +572,7 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
 
     return {
         "progress": progress,
+        "backlog": geocoding_backlog_classification(session),
         "statistics": statistics,
         "cfo": cfo,
         "failures": {
@@ -612,6 +616,85 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
     }
 
 
+def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
+    """Classify every active unmapped lot by input and retry state."""
+    now = utc_now()
+    population = (
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+    )
+    current_missing = or_(
+        ProcessedLot.current_geo_lat.is_(None),
+        ProcessedLot.current_geo_lon.is_(None),
+    )
+    rows = session.execute(
+        select(
+            ProcessedLot.id,
+            ProcessedLot.cadastral_number,
+            ProcessedLot.address,
+            GeoFailure.status,
+            GeoFailure.next_retry_at,
+            GeoFailure.error_message,
+        )
+        .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+        .where(*population, current_missing)
+    ).all()
+
+    by_input = {
+        "cadastre_and_address": 0,
+        "cadastre_only": 0,
+        "address_only": 0,
+        "no_geocoding_input": 0,
+    }
+    retry_state = {
+        "eligible_now": 0,
+        "waiting_for_retry": 0,
+        "terminal": 0,
+        "no_geocoding_input": 0,
+    }
+    reasons: Counter[str] = Counter()
+    samples: dict[str, list[int]] = {key: [] for key in retry_state}
+
+    for lot_id, cadastral_number, address, status, next_retry_at, error_message in rows:
+        has_cadastre = bool(str(cadastral_number or "").strip())
+        has_address = bool(str(address or "").strip())
+        if has_cadastre and has_address:
+            by_input["cadastre_and_address"] += 1
+        elif has_cadastre:
+            by_input["cadastre_only"] += 1
+        elif has_address:
+            by_input["address_only"] += 1
+        else:
+            by_input["no_geocoding_input"] += 1
+            state = "no_geocoding_input"
+            retry_state[state] += 1
+            if len(samples[state]) < 25:
+                samples[state].append(int(lot_id))
+            continue
+
+        if status == "terminal":
+            state = "terminal"
+        elif next_retry_at is not None and next_retry_at > now:
+            state = "waiting_for_retry"
+        else:
+            state = "eligible_now"
+        retry_state[state] += 1
+        if len(samples[state]) < 25:
+            samples[state].append(int(lot_id))
+        if error_message:
+            reasons[_failure_reason_from_message(str(error_message))] += 1
+
+    actionable = retry_state["eligible_now"] + retry_state["waiting_for_retry"]
+    return {
+        "unmapped_active_lots": len(rows),
+        "actionable_remaining": actionable,
+        "by_input": by_input,
+        "retry_state": retry_state,
+        "top_failure_reasons": dict(reasons.most_common(25)),
+        "sample_lot_ids": samples,
+    }
+
+
 def geocoding_progress(session: Any) -> dict[str, Any]:
     """Return truthful GEO coverage, runnable work and retry-wait state."""
     population = (
@@ -619,7 +702,10 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         ProcessedLot.is_archived.is_(False),
         or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
     )
-    has_geo = exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
+    has_geo = (
+        ProcessedLot.current_geo_lat.is_not(None)
+        & ProcessedLot.current_geo_lon.is_not(None)
+    )
     pending = or_(
         ~has_geo,
         (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
@@ -929,9 +1015,13 @@ def _geocode_pending_lots_unlocked(
             .correlate(ProcessedLot)
             .scalar_subquery()
         )
+        current_geo_missing = or_(
+            ProcessedLot.current_geo_lat.is_(None),
+            ProcessedLot.current_geo_lon.is_(None),
+        )
         pending_filter = (
             or_(
-                ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+                current_geo_missing,
                 ProcessedLot.needs_geo_check.is_(True),
                 exists().where(
                     (LotGeoSnapshot.id == latest_geo_id)
@@ -943,7 +1033,7 @@ def _geocode_pending_lots_unlocked(
             )
             if re_geocode_existing
             else or_(
-                ~exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id),
+                current_geo_missing,
                 (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
             )
         )
