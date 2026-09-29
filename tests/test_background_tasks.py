@@ -402,16 +402,14 @@ def test_desktop_can_explicitly_enable_local_fallback(monkeypatch) -> None:
     assert started == [True]
 
 
-def test_nationwide_tasks_use_dedicated_extended_time_budget() -> None:
-    assert tasks.settings.celery_nationwide_soft_time_limit > tasks.settings.celery_soft_time_limit
-    assert tasks.settings.celery_nationwide_hard_time_limit > tasks.settings.celery_nationwide_soft_time_limit
+def test_nationwide_tasks_use_progress_watchdog_instead_of_elapsed_time_budget() -> None:
     for task in (
         tasks.nationwide_lot_sync_task,
         tasks.automatic_nationwide_lot_refresh_task,
         tasks.automatic_nationwide_source_retry_task,
     ):
-        assert task.soft_time_limit == tasks.settings.celery_nationwide_soft_time_limit
-        assert task.time_limit == tasks.settings.celery_nationwide_hard_time_limit
+        assert task.soft_time_limit == 0
+        assert task.time_limit == 0
 
 
 def test_paused_source_is_not_retried(monkeypatch) -> None:
