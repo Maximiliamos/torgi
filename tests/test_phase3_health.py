@@ -271,6 +271,9 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
     assert "Wait for the same main revision on the home origin" in workflow
     assert "Deploy home secondary origin" in workflow
     assert "src/bankrotai/services/ingestion.py" in workflow
+    assert "src/bankrotai/tasks.py" in workflow
+    assert "src/bankrotai/scrapers.py" in workflow
+    assert "src/bankrotai/core.py" in workflow
     assert "schedule_nationwide_lot_sync(triggered_by=\"phase3-lite\", mode=\"full\")" in workflow
     assert "except SyncAlreadyRunningError as exc" in workflow
     assert "Adopting already-active full reconciliation run" in workflow

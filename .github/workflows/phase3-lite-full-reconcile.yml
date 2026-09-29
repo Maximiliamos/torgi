@@ -9,6 +9,9 @@ on:
       - '.github/workflows/home-secondary-deploy.yml'
       - 'src/bankrotai/services/map_builder.py'
       - 'src/bankrotai/services/ingestion.py'
+      - 'src/bankrotai/tasks.py'
+      - 'src/bankrotai/scrapers.py'
+      - 'src/bankrotai/core.py'
       - 'src/bankrotai/torgi_russia.py'
       - 'src/bankrotai/connectors/registry/torgi_russia.py'
 
