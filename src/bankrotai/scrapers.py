@@ -3085,6 +3085,8 @@ class LotOnlineClientError(RuntimeError):
 class LotOnlineClient:
     BASE_URL = "https://catalog.lot-online.ru"
     SEARCH_ENDPOINT = f"{BASE_URL}/index.php"
+    RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
+    RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
     DEFAULT_CATEGORY_ID = "1"
     CATEGORY_LABELS = {
         "1": "Недвижимое имущество",
@@ -3114,6 +3116,29 @@ class LotOnlineClient:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
         })
+
+    def _get_with_retry(self, url: str, *, params: dict[str, str] | None = None):
+        for attempt in range(len(self.RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout)
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code in self.RETRY_STATUS_CODES:
+                    if attempt >= len(self.RETRY_DELAYS_SECONDS):
+                        response.raise_for_status()
+                        return response
+                    time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                response.raise_for_status()
+                return response
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt >= len(self.RETRY_DELAYS_SECONDS):
+                    raise
+                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("Lot Online request retry loop exhausted unexpectedly")
 
     @classmethod
     def _region_feature_hash(cls, value: str | None) -> str | None:
@@ -3169,8 +3194,7 @@ class LotOnlineClient:
     def fetch_detail_fields(self, url: str) -> dict[str, Any]:
         """Fetch structured address/cadastre fields absent from listing cards."""
         try:
-            response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()
+            response = self._get_with_retry(url)
         except requests.RequestException as exc:
             raise LotOnlineClientError(f"Не удалось загрузить карточку ЛОТ-ОНЛАЙН: {exc}") from exc
 
@@ -3245,8 +3269,7 @@ class LotOnlineClient:
     def search_lots(self, filters: LotOnlineSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
         params = self._build_query_params(filters)
         try:
-            response = self.session.get(self.SEARCH_ENDPOINT, params=params, timeout=self.timeout)
-            response.raise_for_status()
+            response = self._get_with_retry(self.SEARCH_ENDPOINT, params=params)
         except requests.RequestException as exc:
             raise LotOnlineClientError(
                 "Не удалось подключиться к catalog.lot-online.ru. "

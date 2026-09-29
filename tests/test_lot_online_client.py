@@ -1,4 +1,7 @@
 from datetime import datetime
+from unittest.mock import patch
+
+import requests
 
 from bankrotai.scraper_contracts import LotOnlineSearchFilters
 from bankrotai.domain import NormalizedLot
@@ -72,6 +75,37 @@ def test_parses_listing_card_into_normalized_lot() -> None:
     assert lot.raw_data["image_urls"] == ["https://catalog.lot-online.ru/cdn/bkr/353x254/lot-1759164.jpg"]
     assert lot.platform_name == "РАД / ЛОТ-ОНЛАЙН"
     assert meta == {"has_more": True, "total_pages": 2}
+
+
+def test_search_retries_transient_dns_connection_failure() -> None:
+    class Response:
+        content = LISTING_HTML.encode("utf-8")
+        url = "https://catalog.lot-online.ru/index.php?page=1"
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise requests.ConnectionError("temporary DNS failure")
+            return Response()
+
+    session = Session()
+    with patch("bankrotai.scrapers.time.sleep") as sleep:
+        lots, _ = LotOnlineClient(session=session).search_lots(LotOnlineSearchFilters())
+
+    assert len(lots) == 1
+    assert session.calls == 2
+    assert [call.args[0] for call in sleep.call_args_list] == [1]
 
 
 def test_archive_mode_is_validated() -> None:

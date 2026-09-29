@@ -49,6 +49,14 @@ _NATIONWIDE_REFRESH_MAX_RETRIES = 3
 _NATIONWIDE_BUSY_RETRY_MAX_RETRIES = 3
 _NATIONWIDE_BUSY_RETRY_SECONDS = 300
 _PARTIAL_SOURCE_RETRY_DELAY_SECONDS = 60
+_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS = max(
+    int(settings.celery_nationwide_soft_time_limit),
+    4 * 60 * 60,
+)
+_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS = max(
+    int(settings.celery_nationwide_hard_time_limit),
+    _DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS + 60 * 60,
+)
 _SOURCE_PAUSE_SETTING_PREFIX = "source_paused:"
 _QUEUE_INGESTION = "ingestion"
 _QUEUE_GEOCODING = "geocoding"
@@ -547,8 +555,8 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.nationwide_lot_sync_task",
-    soft_time_limit=0,
-    time_limit=0,
+    soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
 def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
@@ -610,8 +618,8 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
-    soft_time_limit=0,
-    time_limit=0,
+    soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
 def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     """Run one beat-triggered nationwide refresh under the durable run lease."""
@@ -629,8 +637,8 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_source_retry_task",
-    soft_time_limit=0,
-    time_limit=0,
+    soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
 def automatic_nationwide_source_retry_task(self, source_system: str, source_mode: str) -> dict[str, Any]:
     """Bound a retry of one failed source without re-running successful peers."""

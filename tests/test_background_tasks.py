@@ -402,14 +402,14 @@ def test_desktop_can_explicitly_enable_local_fallback(monkeypatch) -> None:
     assert started == [True]
 
 
-def test_nationwide_tasks_use_progress_watchdog_instead_of_elapsed_time_budget() -> None:
+def test_nationwide_tasks_use_progress_watchdog_with_emergency_ceiling() -> None:
     for task in (
         tasks.nationwide_lot_sync_task,
         tasks.automatic_nationwide_lot_refresh_task,
         tasks.automatic_nationwide_source_retry_task,
     ):
-        assert task.soft_time_limit == 0
-        assert task.time_limit == 0
+        assert task.soft_time_limit == tasks._DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS
+        assert task.time_limit == tasks._DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS
 
 
 def test_paused_source_is_not_retried(monkeypatch) -> None:
