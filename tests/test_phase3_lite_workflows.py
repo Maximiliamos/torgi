@@ -67,6 +67,7 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "cancel-in-progress: false" in backup
 
     full_reconcile = (ROOT / ".github" / "workflows" / "phase3-lite-full-reconcile.yml").read_text(encoding="utf-8")
+    home_deploy = (ROOT / ".github" / "workflows" / "home-secondary-deploy.yml").read_text(encoding="utf-8")
     assert "_unpaused_source_specs(default_source_specs())" in full_reconcile
     assert "'.github/workflows/home-secondary-deploy.yml'" in full_reconcile
     assert "'src/bankrotai/services/map_builder.py'" in full_reconcile
@@ -76,6 +77,9 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "source set mismatch" in full_reconcile
     assert "progress_at" in full_reconcile
     assert "lease_expires_at" in full_reconcile
+    assert "CELERY_NATIONWIDE_SOFT_TIME_LIMIT=14400" in home_deploy
+    assert "CELERY_NATIONWIDE_HARD_TIME_LIMIT=18000" in home_deploy
+    assert "Nationwide Celery task limits" in home_deploy
     assert "stalled: no durable source progress" in full_reconcile
     assert "did not reach a terminal state within 85 minutes" not in full_reconcile
     assert "did not reach success within retry deadline" not in full_reconcile
