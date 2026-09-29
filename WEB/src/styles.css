@@ -724,6 +724,18 @@ textarea, input { font: inherit; }
 .mapOperationProgressActions { display:flex;justify-content:flex-end;margin-top:3px; }
 .mapOperationProgressActions button { background:#fff;border:1px solid #7aac8d;border-radius:4px;color:#17683b;cursor:pointer;padding:5px 10px; }
 .mapOperationProgressActions button:disabled { cursor:wait;opacity:.6; }
+.mapOperationJournal { border-top:1px solid #cfe0d5;display:grid;gap:5px;margin-top:2px;padding-top:8px; }
+.mapOperationJournalHeader { align-items:center!important;display:flex!important;flex-direction:row!important;justify-content:space-between; }
+.mapOperationJournalHeader strong { color:#365a46;font-size:11px;text-transform:uppercase; }
+.mapOperationJournalHeader span { color:#7a8b80;font-size:10px; }
+.mapOperationJournalRow { align-items:center!important;display:grid!important;gap:6px!important;grid-template-columns:34px 7px minmax(0,1fr); }
+.mapOperationJournalRow time { color:#7a8b80;font-size:10px;font-variant-numeric:tabular-nums; }
+.mapOperationJournalRow i { background:#d0a12f;border-radius:50%;height:7px;width:7px; }
+.mapOperationJournalRow i[data-status="success"],.mapOperationJournalRow i[data-status="completed"] { background:#20a36e; }
+.mapOperationJournalRow i[data-status="failed"] { background:#d64545; }
+.mapOperationJournalRow div { display:block!important;min-width:0; }
+.mapOperationJournalRow b { color:#31473a;display:block;font-size:10px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.mapOperationJournalRow small { color:#66756c;display:block;font-size:10px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .mapControlCheck { align-items:center;display:flex;font-size:12px;gap:6px;min-height:23px; }
 .mapFiltersForm { margin:0; }
 .mapFiltersBox { border:1px solid #b8bdc4;margin:0;padding:10px 9px 9px; }
