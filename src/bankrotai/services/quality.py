@@ -255,6 +255,7 @@ def map_delivery_reconciliation_report(
         lat = float(row.current_geo_lat)
         lon = float(row.current_geo_lon)
         raw_rejection = coordinate_region_sanity_rejection_reason(lat, lon, row.region_code)
+        reason: str | None
         if raw_rejection == "unsupported_region_code":
             reason = raw_rejection
         else:
