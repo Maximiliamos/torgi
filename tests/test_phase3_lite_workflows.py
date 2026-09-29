@@ -43,6 +43,8 @@ def test_phase3_health_covers_runtime_data_and_disaster_recovery() -> None:
     assert "restore-verification-recent" in script
     assert "MaxBackupAgeHours = 30" in script
     assert "MaxVerifiedRestoreAgeHours = 192" in script
+    assert "disk-c-headroom" in script
+    assert "recommended_percent = 15" in script
 
 
 def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_alerts() -> None:
@@ -63,6 +65,7 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "17 2 * * 1-6" in backup
     assert "47 2 * * 0" in backup
     assert "-VerifyRestore:$verify" in backup
+    assert "-RetainDays 14" in backup
     assert "[Phase 3] Backup/restore alert" in backup
     assert "cancel-in-progress: false" in backup
 
