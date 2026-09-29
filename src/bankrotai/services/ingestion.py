@@ -47,7 +47,7 @@ ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_sub
 MIN_COVERAGE_GUARD_BASELINE = 20
 MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
 REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
-COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 2
+COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 1
 COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
 
 
@@ -510,11 +510,12 @@ class NationwideIngestionService:
         """Allow a source-specific cardinality collapse only after repeatable full-run evidence.
 
         The generic 50% coverage guard remains fail-closed. Torgi Russia is allowed
-        to move past an inflated historical baseline only when either two prior
-        coverage-guard runs reached source end with a stable low cardinality, or
-        the immediately preceding accepted complete run observed the same stable
-        cardinality. Missing rows still require two accepted complete runs before
-        archival, so this override never turns one anomalous response into deletion.
+        to move past an inflated historical baseline only after the current full run
+        and at least one prior independent coverage-guard run reached source end with
+        a stable low cardinality, or the immediately preceding accepted complete run
+        observed the same stable cardinality. Missing rows still require two accepted
+        complete runs before archival, so this override never turns one anomalous
+        response into deletion.
         """
         if (
             source_id not in REPEATABLE_COVERAGE_COLLAPSE_SOURCES
