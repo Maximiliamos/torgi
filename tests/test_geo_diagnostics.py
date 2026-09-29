@@ -54,6 +54,10 @@ def test_geocoding_diagnostic_report_aggregates_quality_without_raw_addresses() 
             cadastral_number="76:23:010101:3",
             address="Ярославль, улица Победы, 1",
         )
+        mapped.current_geo_lat = 57.6261
+        mapped.current_geo_lon = 39.8845
+        mapped.current_geo_source = "photon"
+        mapped.current_geo_confidence = "high"
         session.add_all([mapped, failed, mismatch])
         session.flush()
         session.add(
@@ -89,6 +93,9 @@ def test_geocoding_diagnostic_report_aggregates_quality_without_raw_addresses() 
 
     assert report["progress"]["total"] == 3
     assert report["progress"]["geocoded"] == 1
+    assert report["backlog"]["unmapped_active_lots"] == 2
+    assert report["backlog"]["actionable_remaining"] == 2
+    assert report["backlog"]["by_input"]["cadastre_and_address"] == 2
     assert report["cfo"]["76"] == {
         "eligible": 2,
         "mapped": 1,
