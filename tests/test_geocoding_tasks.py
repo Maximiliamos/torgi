@@ -140,17 +140,30 @@ def test_dirty_map_publication_is_coalesced(monkeypatch) -> None:
 
 
 def test_automatic_cleanup_keeps_safe_retention_arguments(monkeypatch) -> None:
-    captured: dict = {}
+    calls: list[dict] = []
 
     def cleanup(_factory, **kwargs):
-        captured.update(kwargs)
-        return {"candidate_dataset_count": 0}
+        calls.append(dict(kwargs))
+        return {
+            "candidate_dataset_count": 1,
+            "candidate_versions": ["old-r6-bundle-s3"],
+        }
 
+    deleted: list[list[str]] = []
     monkeypatch.setattr(map_builder, "cleanup_map_datasets", cleanup)
+    monkeypatch.setattr(
+        "bankrotai.services.map_object_store.delete_retired_dataset_manifests",
+        lambda versions: deleted.append(list(versions)) or {"status": "deleted", "deleted": len(versions)},
+    )
 
-    tasks.cleanup_old_map_datasets_task.run()
+    result = tasks.cleanup_old_map_datasets_task.run()
 
-    assert captured == {"retain_previous_ready": 1, "min_age_hours": 24, "apply": True}
+    assert calls == [
+        {"retain_previous_ready": 1, "min_age_hours": 24, "apply": False},
+        {"retain_previous_ready": 1, "min_age_hours": 24, "apply": True},
+    ]
+    assert deleted == [["old-r6-bundle-s3"]]
+    assert result["manifest_retention"]["status"] == "deleted"
 
 
 def test_ik12_recovery_marks_map_dirty_only_when_it_recovers(monkeypatch) -> None:
