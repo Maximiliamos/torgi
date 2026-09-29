@@ -461,7 +461,10 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
         ProcessedLot.is_archived.is_(False),
         or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
     )
-    has_geo = exists().where(LotGeoSnapshot.lot_id == ProcessedLot.id)
+    has_geo = (
+        ProcessedLot.current_geo_lat.is_not(None)
+        & ProcessedLot.current_geo_lon.is_not(None)
+    )
 
     coverage_rows = session.execute(
         select(
@@ -618,7 +621,12 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
 
 def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
     """Classify every active unmapped lot by input and retry state."""
-    now = utc_now()
+    current = utc_now()
+    now = (
+        current.astimezone(timezone.utc).replace(tzinfo=None)
+        if current.tzinfo is not None
+        else current
+    )
     population = (
         ProcessedLot.duplicate_of_id.is_(None),
         ProcessedLot.is_archived.is_(False),
@@ -672,9 +680,12 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
                 samples[state].append(int(lot_id))
             continue
 
+        retry_at = next_retry_at
+        if retry_at is not None and retry_at.tzinfo is not None:
+            retry_at = retry_at.astimezone(timezone.utc).replace(tzinfo=None)
         if status == "terminal":
             state = "terminal"
-        elif next_retry_at is not None and next_retry_at > now:
+        elif retry_at is not None and retry_at > now:
             state = "waiting_for_retry"
         else:
             state = "eligible_now"
