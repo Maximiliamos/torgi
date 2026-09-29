@@ -6,6 +6,8 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 PUBLIC_SMOKE = ROOT / ".github" / "workflows" / "public-web-smoke.yml"
 PRODUCTION_FUNCTIONAL = ROOT / ".github" / "workflows" / "production-functional.yml"
 OPERATIONS = ROOT / "docs" / "phase4-lite-operations.md"
+P1_QUALITY = ROOT / ".github" / "workflows" / "p1-data-quality.yml"
+P1_AUDIT = ROOT / "scripts" / "p1-production-audit.ps1"
 
 
 def test_python_runtime_dependencies_are_audited() -> None:
@@ -48,3 +50,16 @@ def test_phase4_operations_runbook_keeps_phase3_safety_contracts() -> None:
         "no more than four application users",
     ):
         assert text in runbook
+
+
+def test_p1_data_quality_reconciles_db_map_and_public_s3() -> None:
+    workflow = P1_QUALITY.read_text(encoding="utf-8")
+    script = P1_AUDIT.read_text(encoding="utf-8")
+
+    assert "Phase 3 Lite full source reconciliation" in workflow
+    assert "p1-production-audit.ps1" in workflow
+    assert "p1-data-quality-" in workflow
+    assert "[P1] Data quality / map delivery alert" in workflow
+    assert "map_delivery_reconciliation_report(s, verify_public_manifest=True)" in script
+    assert "geocoding_diagnostic_report(s)" in script
+    assert "if (-not $result.healthy) { exit 1 }" in script
