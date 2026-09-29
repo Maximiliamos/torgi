@@ -38,6 +38,10 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
             category="land",
             address="Москва, Тверская 1",
             auction_status="active",
+            current_geo_lat=55.75,
+            current_geo_lon=37.61,
+            current_geo_source="photon",
+            current_geo_confidence="high",
         )
         session.add(mapped)
         session.flush()
