@@ -74,7 +74,7 @@ If the runner listener is alive but disconnected and is in a long reconnect back
 
 Phase 3 policy remains authoritative:
 
-- daily PostgreSQL backup;
+- daily PostgreSQL backup with 14-day local retention;
 - weekly isolated restore drill;
 - SHA-256 verification;
 - schema-revision and critical row-count plausibility checks;
@@ -95,10 +95,20 @@ The Phase 3 observer is revision-gated: it waits until the exact main SHA is dep
 - If no nationwide sync owns the lease, it creates its own durable full run.
 - If an already-active durable full run matches the configured full-source scope, it adopts that exact run ID.
 - If a fast/source-only run owns the lease, it waits for release and then creates its own full run.
-- Full nationwide tasks use a dedicated 55-minute soft / 60-minute hard Celery time budget.
-- The observer waits long enough for that budget and accepts only terminal success or policy-approved partial outcomes.
+- Full nationwide tasks use a 4-hour soft / 5-hour hard Celery emergency ceiling. Durable source progress and the lease/progress watchdog are the primary liveness controls; elapsed wall-clock time alone is not a failure.
+- The observer accepts only terminal success or policy-approved partial outcomes, and targeted retries may finish an incomplete source without repeating already-complete sources.
 
 Never bypass the single-active ingestion lock to make a workflow green.
+
+
+## P1/P2 automatic quality and maintenance
+
+- P1 data quality runs after a successful full reconciliation and once per day. It reconciles current DB map candidates against the current MapDataset and the public REG.RU S3 manifest, and records GEO backlog/quality diagnostics.
+- P2 maintenance runs in audit-only mode after home deployment and applies bounded maintenance on its daily schedule.
+- Production application/worker Docker logs are capped at 20 MB x 5 files per container and deployment verifies that policy inside the running containers.
+- C: below 15% free is an early warning; below 10% is a hard production-health failure.
+- MapDataset database retention preserves the current dataset and at least one rollback-ready dataset. For the regional-bundle S3 layout, retired version manifests are removed while shared content-addressed bundles/index shards are preserved.
+- Health/maintenance JSON logs are retained for 14 days. Docker image/builder cleanup only targets objects older than the configured retention window; running containers and volumes are never pruned by P2 maintenance.
 
 ## Dependency and security gate
 
