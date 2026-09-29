@@ -547,8 +547,8 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.nationwide_lot_sync_task",
-    soft_time_limit=settings.celery_nationwide_soft_time_limit,
-    time_limit=settings.celery_nationwide_hard_time_limit,
+    soft_time_limit=0,
+    time_limit=0,
 )
 def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
@@ -610,8 +610,8 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
-    soft_time_limit=settings.celery_nationwide_soft_time_limit,
-    time_limit=settings.celery_nationwide_hard_time_limit,
+    soft_time_limit=0,
+    time_limit=0,
 )
 def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     """Run one beat-triggered nationwide refresh under the durable run lease."""
@@ -629,8 +629,8 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_source_retry_task",
-    soft_time_limit=settings.celery_nationwide_soft_time_limit,
-    time_limit=settings.celery_nationwide_hard_time_limit,
+    soft_time_limit=0,
+    time_limit=0,
 )
 def automatic_nationwide_source_retry_task(self, source_system: str, source_mode: str) -> dict[str, Any]:
     """Bound a retry of one failed source without re-running successful peers."""
