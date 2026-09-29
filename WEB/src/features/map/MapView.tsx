@@ -377,6 +377,13 @@ function durationLabel(seconds?: number | null) {
   return `${rest} мин`;
 }
 
+function journalTime(value?: string | null) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(parsed);
+}
+
 function OperationProgressCard({
   value, isAdmin, controlBusy, onPause, onResume,
 }: {
@@ -399,7 +406,8 @@ function OperationProgressCard({
     : null;
   const eligibleNow = value.geocoding.eligible_now ?? value.geocoding.actionable_remaining ?? value.geocoding.remaining;
   const waitingForRetry = value.geocoding.waiting_for_retry ?? 0;
-  if (!activeSync && !batch && value.geocoding.remaining === 0) return null;
+  const journal = value.journal ?? [];
+  if (!activeSync && !batch && value.geocoding.remaining === 0 && journal.length === 0) return null;
   return (
     <section className="mapOperationProgress" aria-label="Ход обработки данных">
       {activeSync && (
@@ -455,6 +463,24 @@ function OperationProgressCard({
           </div>
         )}
       </div>
+      {journal.length > 0 && (
+        <div className="mapOperationJournal">
+          <div className="mapOperationJournalHeader">
+            <strong>Журнал</strong>
+            <span>последние процессы</span>
+          </div>
+          {journal.slice(0, 6).map((entry, index) => (
+            <div className="mapOperationJournalRow" key={`${entry.kind}-${entry.title}-${entry.at ?? index}`}>
+              <time dateTime={entry.at ?? undefined}>{journalTime(entry.at)}</time>
+              <i data-status={entry.status} aria-hidden="true" />
+              <div>
+                <b>{entry.title}</b>
+                <small>{entry.detail}{entry.percent != null ? ` · ${entry.percent.toFixed(1)}%` : ""}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
