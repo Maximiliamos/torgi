@@ -248,6 +248,29 @@ jobs:
           $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
           Write-Output "::add-mask::$password"
           Write-Output "::add-mask::$redisPassword"
+
+          $tbankrotAuthRoot = Join-Path $env:CONFIG_ROOT 'tbankrot-auth'
+          New-Item -ItemType Directory -Path $tbankrotAuthRoot -Force | Out-Null
+          $legacyTbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
+          $tbankrotCookiePath = Join-Path $tbankrotAuthRoot 'tbankrot-cookies.json'
+          if ((Test-Path -LiteralPath $legacyTbankrotCookiePath) -and -not (Test-Path -LiteralPath $tbankrotCookiePath)) {
+            Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath
+          }
+          $brokerTokenPath = Join-Path $env:CONFIG_ROOT 'tbankrot-broker-token.txt'
+          if (-not (Test-Path -LiteralPath $brokerTokenPath)) {
+            $bytes = New-Object byte[] 48
+            [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            $brokerToken = ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+            [IO.File]::WriteAllText($brokerTokenPath, $brokerToken)
+          }
+          $brokerToken = [IO.File]::ReadAllText($brokerTokenPath).Trim()
+          if ($brokerToken.Length -lt 32) { throw 'TBankrot auth broker token is invalid' }
+          Write-Output "::add-mask::$brokerToken"
+          & icacls.exe $tbankrotAuthRoot /inheritance:r /grant:r `
+            'SYSTEM:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)M' | Out-Null
+          & icacls.exe $brokerTokenPath /inheritance:r /grant:r `
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
+
           $redisConfigPath = Join-Path $env:CONFIG_ROOT 'redis.conf'
           [System.IO.File]::WriteAllLines($redisConfigPath, @(
             'bind 0.0.0.0'
@@ -263,7 +286,9 @@ jobs:
             'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'ONLINE_SOURCE_CACHE_FIRST=true'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
-            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot/tbankrot-cookies.json'
+            'TBANKROT_AUTH_BROKER_URL=http://bankrotai-tbankrot-auth:18443'
+            "TBANKROT_AUTH_BROKER_TOKEN=$brokerToken"
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
@@ -284,7 +309,7 @@ jobs:
             'DATABASE_TRUSTED_LOCAL=true'
             'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
-            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot/tbankrot-cookies.json'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
@@ -310,9 +335,12 @@ jobs:
             & icacls.exe $protectedPath /inheritance:r /grant:r `
               'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
           }
-          $tbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
-          if (-not (Test-Path -LiteralPath $tbankrotCookiePath)) {
-            throw 'Protected TBankrot session is missing; run the local session capture first'
+          if (Test-Path -LiteralPath $tbankrotCookiePath) {
+            & icacls.exe $tbankrotCookiePath /inheritance:r /grant:r `
+              'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
+            Write-Output 'Existing protected TBankrot session preserved'
+          } else {
+            Write-Output 'No TBankrot session yet; web Auth Center will create it on first login'
           }
 
       - name: Backup and migrate database schema before replacing production containers
