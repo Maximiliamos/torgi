@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from bankrotai import tasks
 from bankrotai.services import geo_backfill, map_builder
 
@@ -104,6 +106,8 @@ def test_partial_geocoding_batch_does_not_schedule_continuation(monkeypatch) -> 
 
 def test_beat_keeps_five_minute_watchdogs_but_publication_latency_is_bounded() -> None:
     schedule = tasks.celery_app.conf.beat_schedule
+    assert schedule["probe-geo-network"]["schedule"] == 60.0
+    assert schedule["probe-geo-network"]["options"]["expires"] == 50
     assert schedule["geocode-pending-lots"]["schedule"] == 300.0
     assert schedule["recover-ik12-cadastral-misses"]["schedule"] == 300.0
     assert schedule["publish-dirty-map-dataset"]["schedule"] == 300.0
@@ -124,6 +128,7 @@ def test_heavy_tasks_use_isolated_queues() -> None:
     assert routes["bankrotai.tasks.nationwide_lot_sync_task"]["queue"] == "ingestion"
     assert routes["bankrotai.tasks.geocode_pending_lots_task"]["queue"] == "geocoding"
     assert routes["bankrotai.tasks.recover_ik12_geo_task"]["queue"] == "geocoding"
+    assert routes["bankrotai.tasks.probe_geo_network_task"]["queue"] == "geocoding"
     assert routes["bankrotai.tasks.build_map_dataset_task"]["queue"] == "map"
     assert tasks.celery_app.conf.task_default_queue == "maintenance"
 
@@ -193,3 +198,34 @@ def test_ik12_recovery_marks_map_dirty_only_when_it_recovers(monkeypatch) -> Non
     assert result["recovered"] == 2
     assert result["map_dataset_build"]["status"] == "deferred"
     assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
+
+
+
+def test_network_probe_releases_transient_waiters_and_resumes_geo(monkeypatch) -> None:
+    from bankrotai.services import geo_resilience
+
+    monkeypatch.setattr(
+        geo_resilience,
+        "probe_geo_network",
+        lambda: {
+            "state": "healthy",
+            "previous_state": "down",
+            "network_recovered": True,
+            "recovered_providers": ["nspd", "photon"],
+        },
+    )
+    monkeypatch.setattr(
+        geo_backfill,
+        "release_transient_geo_failures",
+        lambda *_args, **_kwargs: {"network": 7, "provider": 3},
+    )
+    monkeypatch.setattr(
+        tasks.geocode_pending_lots_task,
+        "apply_async",
+        lambda **kwargs: SimpleNamespace(id=f"resume-{kwargs['countdown']}"),
+    )
+
+    result = tasks.probe_geo_network_task.run()
+
+    assert result["released_waiters"] == {"network": 7, "provider": 3}
+    assert result["resume_task_id"] == "resume-1"
