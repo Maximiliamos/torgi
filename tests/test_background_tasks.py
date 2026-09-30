@@ -442,3 +442,18 @@ def test_targeted_retry_skips_paused_source(monkeypatch) -> None:
         "reason": "source_paused",
         "source_system": "tbankrot.ru",
     }
+
+
+def test_tbankrot_is_paused_by_default_even_without_database_setting(monkeypatch) -> None:
+    captured = {}
+
+    def fake_get(key, default):
+        captured["key"] = key
+        captured["default"] = default
+        return default
+
+    monkeypatch.setattr(tasks, "get_app_setting", fake_get)
+
+    assert tasks._source_is_paused("tbankrot.ru") is True
+    assert captured == {"key": "source_paused:tbankrot.ru", "default": "true"}
+    assert tasks._source_is_paused("bidexpert.ru") is False
