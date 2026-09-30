@@ -97,10 +97,10 @@ async function saveCookies(context) {
   return { captured_at: capturedAt, cookie_count: cookies.length };
 }
 
-async function inspectAccess(context) {
+async function inspectAccess(context, timeoutMs = 30000) {
   const page = await context.newPage();
   try {
-    await page.goto(VERIFY_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(VERIFY_URL, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     const result = await page.evaluate(() => {
       const text = document.body?.innerText || "";
       const blocked = Boolean(document.querySelector(".lot_list_container.blur"));
@@ -129,7 +129,7 @@ async function verifyContext(context) {
   return { ...result, ...saved };
 }
 
-async function probeSavedSession() {
+async function probeSavedSession(timeoutMs = 30000) {
   const cookies = await loadCookies();
   if (!cookies.length) return { ok: false, state: "auth_required", saved: false };
   const context = await browser.newContext({
@@ -139,7 +139,7 @@ async function probeSavedSession() {
   });
   try {
     await context.addCookies(cookies);
-    const result = await inspectAccess(context);
+    const result = await inspectAccess(context, timeoutMs);
     return { ...result, saved: true };
   } finally {
     await context.close().catch(() => undefined);
@@ -151,7 +151,7 @@ async function cachedSavedSessionProbe() {
     return statusProbeCache.result;
   }
   if (!statusProbePromise) {
-    statusProbePromise = probeSavedSession()
+    statusProbePromise = probeSavedSession(6000)
       .then((result) => {
         statusProbeCache = { at: Date.now(), result };
         return result;
