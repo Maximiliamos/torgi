@@ -19,7 +19,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       IMAGE_NAME: bankrotai-home-api
       CONTAINER_NAME: bankrotai-home-secondary
@@ -41,6 +41,116 @@ jobs:
       MAP_S3_ACCESS_KEY: ${{ secrets.REGRU_S3_ACCESS_KEY }}
       MAP_S3_SECRET_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
     steps:
+      - name: Emergency runner recovery before checkout
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workRoot = Split-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) -Parent
+          $repoGit = Join-Path $env:GITHUB_WORKSPACE '.git'
+          $staleAutoMergeLock = Join-Path $repoGit 'AUTO_MERGE.lock'
+          if (Test-Path -LiteralPath $staleAutoMergeLock) {
+            Remove-Item -LiteralPath $staleAutoMergeLock -Force -ErrorAction SilentlyContinue
+            Write-Output "Removed stale Git AUTO_MERGE lock"
+          }
+
+          $runnerTemp = Join-Path $workRoot '_temp'
+          if (Test-Path -LiteralPath $runnerTemp) {
+            $cutoff = (Get-Date).AddHours(-6)
+            Get-ChildItem -LiteralPath $runnerTemp -Force -ErrorAction SilentlyContinue |
+              Where-Object LastWriteTime -lt $cutoff |
+              ForEach-Object {
+                try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch {}
+              }
+          }
+
+          $drBackupRoot = Join-Path $env:CONFIG_ROOT 'dr-backups'
+          if (Test-Path -LiteralPath $drBackupRoot) {
+            $drive = Get-PSDrive -Name C
+            $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
+              ($drive.Free / ($drive.Used + $drive.Free)) * 100
+            } else { 0 }
+            if ($freePercent -lt 10) {
+              Write-Warning "Emergency disk pressure detected before checkout: $([math]::Round($freePercent,1))% free"
+              $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
+                Sort-Object LastWriteTimeUtc -Descending)
+              $protected = New-Object 'System.Collections.Generic.HashSet[string]'
+              $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
+                Sort-Object LastWriteTimeUtc -Descending |
+                ForEach-Object {
+                  try {
+                    $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                    if ($meta.restore_verification -eq 'passed' -and $meta.backup_file -and
+                        (Test-Path -LiteralPath ([string]$meta.backup_file))) {
+                      [pscustomobject]@{ metadata_file = $_.FullName; backup_file = [string]$meta.backup_file }
+                    }
+                  } catch {}
+                } | Select-Object -First 1)
+              if ($verified.Count -gt 0) {
+                [void]$protected.Add($verified[0].backup_file)
+              } elseif ($dumpFiles.Count -gt 0) {
+                [void]$protected.Add($dumpFiles[0].FullName)
+              }
+              foreach ($dump in $dumpFiles) {
+                if ($protected.Contains($dump.FullName)) { continue }
+                $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+                Remove-Item -LiteralPath $dump.FullName -Force -ErrorAction SilentlyContinue
+                $metaPath = Join-Path $drBackupRoot "$stem.json"
+                if (Test-Path -LiteralPath $metaPath) {
+                  Remove-Item -LiteralPath $metaPath -Force -ErrorAction SilentlyContinue
+                }
+              }
+              Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $keep = $false
+                  if ($verified.Count -gt 0) { $keep = $_.FullName -eq $verified[0].metadata_file }
+                  -not $keep
+                } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $migrationBackupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
+          if (Test-Path -LiteralPath $migrationBackupRoot) {
+            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
+              Sort-Object LastWriteTimeUtc -Descending |
+              Select-Object -Skip 1 |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+          $drive = Get-PSDrive -Name C
+          Write-Output ("C: free after emergency file cleanup: {0:N2} GB ({1:N1}%)" -f
+            ($drive.Free / 1GB), (($drive.Free / ($drive.Used + $drive.Free)) * 100))
+
+          $dockerResponsive = $false
+          try {
+            docker version --format '{{.Server.Version}}' *> $null
+            $dockerResponsive = $LASTEXITCODE -eq 0
+          } catch {}
+          if ($dockerResponsive) {
+            foreach ($name in @(
+              $env:POSTGRES_CONTAINER,
+              $env:REDIS_CONTAINER,
+              $env:CONTAINER_NAME,
+              $env:WORKER_CONTAINER,
+              $env:GEO_WORKER_CONTAINER,
+              $env:MAP_WORKER_CONTAINER
+            )) {
+              $exists = docker ps -a --filter "name=^/$name$" --format '{{.Names}}'
+              if ($exists -eq $name) { docker start $name *> $null }
+            }
+            try {
+              $ready = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri 'http://127.0.0.1:18000/health/live').StatusCode
+            } catch { $ready = 0 }
+            if ($ready -ne 200) {
+              $exists = docker ps -a --filter "name=^/$($env:CONTAINER_NAME)$" --format '{{.Names}}'
+              if ($exists -eq $env:CONTAINER_NAME) {
+                docker restart $env:CONTAINER_NAME *> $null
+              }
+            }
+          } else {
+            Write-Warning "Docker daemon is not responsive yet; continuing with file-level recovery"
+          }
+
       - uses: actions/checkout@v7
 
       - name: Require production secrets
@@ -58,104 +168,44 @@ jobs:
             Write-Output "::add-mask::$env:MAP_S3_SECRET_KEY"
           }
 
-      - name: Reclaim safe production disk space before build
+      - name: Reclaim bounded Docker disk space before build
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
+          function Invoke-DockerCleanup {
+            param([string[]]$Arguments, [int]$TimeoutSeconds = 300)
+            $argLine = ($Arguments | ForEach-Object {
+              if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+            }) -join ' '
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $argLine -PassThru -WindowStyle Hidden
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Write-Warning "Docker cleanup timed out after $TimeoutSeconds seconds: docker $argLine"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              return $false
+            }
+            if ($process.ExitCode -ne 0) {
+              Write-Warning "Docker cleanup exited $($process.ExitCode): docker $argLine"
+              return $false
+            }
+            return $true
+          }
+
           $before = Get-PSDrive -Name C
-          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          Write-Output "C: free before cleanup: $beforeFreeGb GB"
+          $beforePercent = [math]::Round(($before.Free / ($before.Used + $before.Free)) * 100, 1)
+          Write-Output ("C: free before Docker cleanup: {0:N2} GB ({1:N1}%)" -f ($before.Free / 1GB), $beforePercent)
 
-          # Phase 3 health accepts a restore verification up to 192 hours old.
-          # Keep seven days of DR backups so the weekly verified restore remains
-          # available, while preventing daily multi-GB dumps from filling C:.
-          $drBackupRoot = Join-Path $env:CONFIG_ROOT 'dr-backups'
-          if (Test-Path -LiteralPath $drBackupRoot) {
-            $cutoff = (Get-Date).AddDays(-7)
-            Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*' |
-              Where-Object LastWriteTime -lt $cutoff |
-              Remove-Item -Force
-          }
-
-          # Pre-migration dumps are an additional safety layer. Retain the three
-          # newest; normal DR backups remain separate and restore-verified.
-          $migrationBackupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
-          if (Test-Path -LiteralPath $migrationBackupRoot) {
-            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -Skip 3 |
-              Remove-Item -Force
-          }
-
-          # Never prune volumes: PostgreSQL and Redis persistent data live there.
-          docker system prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker pre-build cleanup failed" }
-          docker builder prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker builder cleanup failed" }
-
-          $after = Get-PSDrive -Name C
-          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free after normal cleanup: $afterFreeGb GB ($afterFreePercent%)"
-
-          # Emergency pressure relief: database volumes are never touched.
-          # Keep the two newest DR dumps plus the newest restore-verified dump;
-          # only retire older backup sets until a 12% recovery target is met.
-          if ($afterFreePercent -lt 10 -and (Test-Path -LiteralPath $drBackupRoot)) {
-            Write-Warning "C: is below 10%; thinning old DR backup sets while preserving recovery anchors"
-            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
-              Sort-Object LastWriteTimeUtc -Descending)
-            $protected = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($file in ($dumpFiles | Select-Object -First 2)) {
-              [void]$protected.Add($file.FullName)
-            }
-            $verifiedMetadata = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
-              Sort-Object LastWriteTimeUtc -Descending |
-              ForEach-Object {
-                try {
-                  $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
-                } catch {}
-              } | Select-Object -First 1)
-            if ($verifiedMetadata.Count -gt 0) {
-              [void]$protected.Add([string]$verifiedMetadata[0].backup_file)
-            }
-            foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
-              if ($protected.Contains($dump.FullName)) { continue }
-              $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
-              Remove-Item -LiteralPath $dump.FullName -Force
-              $metadataPath = Join-Path $drBackupRoot "$stem.json"
-              if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
-              $drive = Get-PSDrive -Name C
-              $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
-                ($drive.Free / ($drive.Used + $drive.Free)) * 100
-              } else { 0 }
-              if ($freePercent -ge 12) { break }
-            }
-          }
-
-          # If pressure remains critical, retain only the newest pre-migration
-          # dump. The normal restore-verified DR backups above remain protected.
-          $pressure = Get-PSDrive -Name C
-          $pressurePercent = if (($pressure.Used + $pressure.Free) -gt 0) {
-            ($pressure.Free / ($pressure.Used + $pressure.Free)) * 100
-          } else { 0 }
-          if ($pressurePercent -lt 10 -and (Test-Path -LiteralPath $migrationBackupRoot)) {
-            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
-              Sort-Object LastWriteTimeUtc -Descending |
-              Select-Object -Skip 1 |
-              Remove-Item -Force
+          if ($beforePercent -lt 15) {
+            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
+            [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
           }
 
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free after adaptive cleanup: $afterFreeGb GB ($afterFreePercent%)"
-          if ($after.Free -lt 2GB) {
-            throw "C: still has less than 2 GB free after safe cleanup"
+          $afterFreePercent = [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
+          Write-Output "C: free after bounded Docker cleanup: $afterFreeGb GB ($afterFreePercent%)"
+          if ($after.Free -lt 4GB) {
+            throw "C: still has less than 4 GB free; refusing Chromium/API image build without safe headroom"
           }
 
       - name: Build current-main API image
