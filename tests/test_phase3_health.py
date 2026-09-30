@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun, MapDataset
+from bankrotai.services import production_health
 from bankrotai.services.production_health import build_phase3_health
 
 
@@ -407,3 +408,50 @@ def test_phase3_health_keeps_internal_source_failure_critical() -> None:
     assert checks["source-data-availability"]["ok"] is True
     assert checks["source-freshness:lot-online.ru"]["last_error_category"] == "database_integrity"
     assert checks["source-freshness:lot-online.ru"]["severity"] == "critical"
+
+
+
+def test_phase3_health_reports_external_geo_network_degradation_as_warning(monkeypatch) -> None:
+    factory = _factory()
+    now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        production_health,
+        "resilience_snapshot",
+        lambda: {
+            "network": {
+                "state": "down",
+                "failed_external_probes": 2,
+                "fingerprint_changed": True,
+                "updated_at": "2026-09-25T20:59:00+00:00",
+            },
+            "providers": {
+                "photon": {"state": "healthy", "last_error_category": None, "last_latency_ms": 10},
+                "nspd": {"state": "open", "last_error_category": "dns_error", "last_latency_ms": 3000},
+                "ik12": {"state": "open", "last_error_category": "dns_error", "last_latency_ms": 3000},
+            },
+        },
+    )
+
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        session.commit()
+        health = build_phase3_health(session, now=now, expected_sources={"torgi.gov.ru"})
+
+    assert health["healthy"] is True
+    checks = {item["name"]: item for item in health["checks"]}
+    assert checks["geo-external-network"]["ok"] is False
+    assert checks["geo-external-network"]["severity"] == "warning"
+    assert checks["geo-external-network"]["fingerprint_changed"] is True
+    assert checks["geo-provider-circuits"]["ok"] is False
+    assert checks["geo-provider-circuits"]["open_providers"] == ["ik12", "nspd"]
