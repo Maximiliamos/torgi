@@ -419,7 +419,11 @@ def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
 
 
 def _source_is_paused(source_system: str) -> bool:
-    value = get_app_setting(f"{_SOURCE_PAUSE_SETTING_PREFIX}{source_system}", "false")
+    # TBankrot is intentionally isolated behind interactive authentication.
+    # A fresh/restored database must never add it to automatic nationwide runs
+    # merely because the pause setting has not been persisted yet.
+    default = "true" if source_system == "tbankrot.ru" else "false"
+    value = get_app_setting(f"{_SOURCE_PAUSE_SETTING_PREFIX}{source_system}", default)
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
