@@ -1119,7 +1119,7 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
         for item in source_health:
             if item.source_system not in configured_source_systems:
                 continue
-            paused = bool(paused_settings.get(item.source_system, False))
+            paused = item.source_system == "tbankrot.ru" or bool(paused_settings.get(item.source_system, False))
             ready = item.coverage_status == "fresh"
             if not paused:
                 active_source_total += 1
@@ -1141,7 +1141,9 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 }
             )
         known_sources = {str(item["source_system"]) for item in source_items}
-        for source_system, paused in paused_settings.items():
+        isolated_or_configured_paused = set(paused_settings) | {"tbankrot.ru"}
+        for source_system in sorted(isolated_or_configured_paused):
+            paused = source_system == "tbankrot.ru" or bool(paused_settings.get(source_system, False))
             if not paused or source_system in known_sources:
                 continue
             source_items.append(
@@ -1262,7 +1264,7 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
         paused_value = session.scalar(
             select(AppSetting.value).where(AppSetting.key == "source_paused:tbankrot.ru")
         )
-        paused = str(paused_value or "").strip().casefold() in {"1", "true", "yes", "on"}
+        paused = True  # P5: TBankrot is permanently isolated from broad automatic refreshes.
         latest_source = session.scalar(
             select(LotSyncSourceRun)
             .where(LotSyncSourceRun.source_system == "tbankrot.ru")
