@@ -105,6 +105,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Emergency runner recovery before checkout" in deploy
     assert "AUTO_MERGE.lock" in deploy
     assert "Invoke-DockerCleanup" in deploy
+    assert "wsl.exe --shutdown" in deploy
+    assert "Docker Desktop/WSL backend recovered successfully" in deploy
+    assert "beforeFreeGb -lt 20" in deploy
     assert "docker system prune" not in deploy
     assert "less than 4 GB free" in deploy
     assert "restore_verification -eq 'passed'" in deploy
