@@ -88,3 +88,19 @@ def test_home_deploy_clears_only_orphaned_map_lock_after_worker_stop() -> None:
     assert clear in workflow
     assert workflow.index(remove) < workflow.index(clear) < workflow.index(start)
     assert 'if ($spec.Name -eq $env:MAP_WORKER_CONTAINER)' in workflow
+
+
+def test_home_deploy_recovers_runner_before_checkout_and_never_prunes_volumes() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    recovery = "Emergency runner recovery before checkout"
+    checkout = "actions/checkout@v7"
+    assert recovery in workflow
+    assert workflow.index(recovery) < workflow.index(checkout)
+    assert "AUTO_MERGE.lock" in workflow
+    assert "runnerTemp" in workflow
+    assert "docker system prune" not in workflow
+    assert "docker volume prune" not in workflow
+    assert "Invoke-DockerCleanup" in workflow
+    assert "less than 4 GB free" in workflow
+    assert "docker restart $env:CONTAINER_NAME" in workflow
