@@ -901,6 +901,8 @@ async def search_auction_source(
         }
     except Exception as exc:
         logger.warning("Public search failed for %s: %s", source, exc)
+        if source == "tbankrot" and "access_limited" in str(exc).casefold():
+            raise HTTPException(status_code=428, detail="TBankrot authentication required") from exc
         raise HTTPException(status_code=502, detail=f"Source {source} is temporarily unavailable") from exc
     return {
         "source": source,
