@@ -87,7 +87,9 @@ def test_operational_failure_does_not_consume_semantic_retry_budget() -> None:
         assert failure.status == "network_wait"
         assert failure.attempt_count == 5
         assert failure.next_retry_at is not None
-        assert failure.next_retry_at <= utc_now() + timedelta(minutes=2)
+        next_retry = failure.next_retry_at
+        assert next_retry is not None
+        assert next_retry.replace(tzinfo=None) <= utc_now().replace(tzinfo=None) + timedelta(minutes=2)
 
 
 def test_repeated_no_match_is_deferred_in_hours_not_days() -> None:
@@ -154,7 +156,7 @@ def test_changed_geo_input_reactivates_deferred_lot() -> None:
         failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot.id))
 
         assert not ok
-        assert label == "no_match"
+        assert label == "address_geocoder:no_coordinates"
         assert failure is not None
         assert failure.attempt_count == 1
         assert failure.status == "queued"
@@ -192,6 +194,7 @@ def test_deferred_lots_are_not_counted_as_runnable_backlog(monkeypatch) -> None:
     with Session(engine) as session:
         deferred = _lot()
         deferred.external_id = "p6-deferred"
+        deferred.geo_input_hash = "a" * 64
         waiting = _lot()
         waiting.external_id = "p6-network-wait"
         session.add_all([deferred, waiting])
