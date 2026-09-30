@@ -541,6 +541,21 @@ export type OperationsProgress = {
       phase?: string | null; progress_at?: string | null; started_at?: string | null; finished_at?: string | null;
     }>;
   };
+  summary?: {
+    sources: {
+      ready: number; total: number; paused: number;
+      items: Array<{
+        source_system: string; paused: boolean; ready: boolean; status: string;
+        freshness_status: string; coverage_status: string;
+        last_success_at?: string | null; last_complete_success_at?: string | null;
+        last_error_category?: string | null; items_seen: number;
+      }>;
+    };
+    last_update_at?: string | null;
+    map: null | {
+      version: string; status: string; point_count: number; tile_count: number; published_at?: string | null;
+    };
+  };
   geocoding: {
     total: number; geocoded: number; remaining: number; actionable_remaining?: number;
     terminal_failures: number; resolved?: number; resolved_percent?: number;

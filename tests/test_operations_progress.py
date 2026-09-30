@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from bankrotai import api
 from bankrotai.auth import AuthenticatedUser
 from bankrotai.core import utc_now
-from bankrotai.db import AppSetting, Base, BackgroundTaskState, GeoFailure, LotGeoSnapshot, LotSyncRun, LotSyncSourceRun, ProcessedLot
+from bankrotai.db import AppSetting, Base, BackgroundTaskState, GeoFailure, LotGeoSnapshot, LotSyncRun, LotSyncSourceRun, MapDataset, ProcessedLot
 
 
 def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) -> None:
@@ -67,6 +67,24 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
                 auction_status="active",
             )
         )
+        session.add(LotSyncRun(
+            id="sync-prev", trigger_type="scheduled_full", status="success", total_sources=1,
+            created_at=utc_now() - timedelta(hours=2),
+            started_at=utc_now() - timedelta(hours=2),
+            finished_at=utc_now() - timedelta(hours=1, minutes=50),
+        ))
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id="sync-prev",
+                source_system="torgi-russia.ru",
+                status="success",
+                complete_source_run=True,
+                pages_scanned=10,
+                items_seen=1000,
+                started_at=utc_now() - timedelta(hours=2),
+                finished_at=utc_now() - timedelta(hours=1, minutes=50),
+            )
+        )
         session.add(LotSyncRun(id="sync-1", trigger_type="manual", status="running", total_sources=1))
         session.add(
             LotSyncSourceRun(
@@ -92,6 +110,15 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
             result_json={"processed": 100, "duration_seconds": 50},
             created_at=utc_now() - timedelta(hours=1),
         ))
+        session.add(AppSetting(key="source_paused:tbankrot.ru", value="true"))
+        session.add(MapDataset(
+            version="p4-test-s3",
+            status="ready",
+            is_current=True,
+            point_count=39705,
+            tile_count=64588,
+            published_at=utc_now() - timedelta(minutes=20),
+        ))
 
     monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "api_read_only", True)
@@ -115,6 +142,14 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
     assert payload["geocoding"]["eta_seconds"] == 1
     assert payload["geocoding"]["expected_completion_at"] is not None
     assert payload["geocoding"]["paused"] is False
+    assert payload["summary"]["sources"]["ready"] == 1
+    assert payload["summary"]["sources"]["total"] == 1
+    assert payload["summary"]["sources"]["paused"] == 1
+    assert payload["summary"]["sources"]["items"][-1]["source_system"] == "tbankrot.ru"
+    assert payload["summary"]["sources"]["items"][-1]["paused"] is True
+    assert payload["summary"]["map"]["point_count"] == 39705
+    assert payload["summary"]["map"]["status"] == "ready"
+    assert payload["summary"]["last_update_at"] is not None
 
 
 def test_geocoding_pause_controls_require_admin_and_persist(monkeypatch) -> None:

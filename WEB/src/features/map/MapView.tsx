@@ -384,6 +384,22 @@ function journalTime(value?: string | null) {
   return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(parsed);
 }
 
+function operationsDateTime(value?: string | null) {
+  if (!value) return "нет данных";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "нет данных";
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).format(parsed);
+}
+
+export function operationsSourceSummaryLabel(
+  summary?: OperationsProgress["summary"],
+) {
+  if (!summary || summary.sources.total === 0) return "Источники ещё не проверены";
+  return summary.sources.ready + "/" + summary.sources.total + " источника готовы";
+}
+
 function OperationProgressCard({
   value, isAdmin, controlBusy, onPause, onResume,
 }: {
@@ -407,9 +423,48 @@ function OperationProgressCard({
   const eligibleNow = value.geocoding.eligible_now ?? value.geocoding.actionable_remaining ?? value.geocoding.remaining;
   const waitingForRetry = value.geocoding.waiting_for_retry ?? 0;
   const journal = value.journal ?? [];
-  if (!activeSync && !batch && value.geocoding.remaining === 0 && journal.length === 0) return null;
+  const summary = value.summary;
+  const pausedSources = summary?.sources.items.filter((source) => source.paused) ?? [];
+  if (!summary && !activeSync && !batch && value.geocoding.remaining === 0 && journal.length === 0) return null;
   return (
     <section className="mapOperationProgress" aria-label="Ход обработки данных">
+      {summary && (
+        <div className="mapOperationsOverview">
+          <div className="mapOperationsOverviewHeader">
+            <strong>Состояние данных</strong>
+            <span data-ready={summary.sources.ready === summary.sources.total && summary.sources.total > 0}>
+              {operationsSourceSummaryLabel(summary)}
+            </span>
+          </div>
+          <div className="mapOperationsMetrics">
+            <div>
+              <small>Источники</small>
+              <b>{summary.sources.ready}/{summary.sources.total}</b>
+              <span>полный снимок актуален</span>
+            </div>
+            <div>
+              <small>Последнее обновление</small>
+              <b>{operationsDateTime(summary.last_update_at)}</b>
+              <span>{summary.sources.items.filter((source) => !source.paused && source.last_error_category).length} предупреждений</span>
+            </div>
+            <div>
+              <small>Координаты</small>
+              <b>{value.geocoding.percent.toFixed(1)}%</b>
+              <span>{value.geocoding.remaining} без координат</span>
+            </div>
+            <div>
+              <small>Карта</small>
+              <b>{summary.map?.point_count ?? 0}</b>
+              <span>{summary.map?.status === "ready" ? "актуальна" : summary.map?.status ?? "нет dataset"}</span>
+            </div>
+          </div>
+          {pausedSources.length > 0 && (
+            <small className="mapOperationsPaused">
+              Изолированы от общего обновления: {pausedSources.map((source) => source.source_system).join(", ")}
+            </small>
+          )}
+        </div>
+      )}
       {activeSync && (
         <div>
           <strong>Поиск лотов</strong>

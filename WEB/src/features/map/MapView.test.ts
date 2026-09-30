@@ -9,6 +9,7 @@ import {
   mapFilterUiState,
   mapLimitForZoom,
   mapObjectCountLabel,
+  operationsSourceSummaryLabel,
   MAP_SELECTION_SCRIPT,
   visibleTileCoordinates,
   yandexFeaturePreview,
@@ -150,5 +151,16 @@ describe("Phase 2 Lite tile pressure", () => {
     expect(DIRECT_PREFETCH_TILE_CONCURRENCY).toBe(4);
     expect(FILTERED_VISIBLE_TILE_CONCURRENCY).toBe(6);
     expect(FILTERED_VISIBLE_TILE_CONCURRENCY).toBeLessThan(DIRECT_VISIBLE_TILE_CONCURRENCY);
+  });
+});
+
+
+describe("P4 operations UX", () => {
+  it("summarizes production source readiness without counting paused isolated sources", () => {
+    expect(operationsSourceSummaryLabel({
+      sources: { ready: 4, total: 4, paused: 1, items: [] },
+      last_update_at: "2026-09-30T00:00:00Z",
+      map: { version: "v1", status: "ready", point_count: 39705, tile_count: 64588, published_at: null },
+    })).toBe("4/4 источника готовы");
   });
 });
