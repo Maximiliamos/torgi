@@ -44,13 +44,11 @@ foreach ($name in $requiredContainers) {
 }
 
 $disk = Get-PSDrive -Name C
-$diskPercentFree = if (($disk.Used + $disk.Free) -gt 0) {
-    [math]::Round(($disk.Free / ($disk.Used + $disk.Free)) * 100, 1)
-} else { 0 }
-Add-Check -Name 'disk-c' -Ok ($diskPercentFree -ge 10) -Details @{ percent_free = $diskPercentFree; minimum_percent = 10 }
-Add-Check -Name 'disk-c-headroom' -Ok ($diskPercentFree -ge 15) -Severity 'warning' -Details @{
-    percent_free = $diskPercentFree
-    recommended_percent = 15
+$diskFreeGb = [math]::Round($disk.Free / 1GB, 2)
+Add-Check -Name 'disk-c' -Ok ($diskFreeGb -ge 15) -Details @{ free_gb = $diskFreeGb; minimum_gb = 15 }
+Add-Check -Name 'disk-c-headroom' -Ok ($diskFreeGb -ge 25) -Severity 'warning' -Details @{
+    free_gb = $diskFreeGb
+    recommended_gb = 25
 }
 
 foreach ($url in @('http://127.0.0.1:18000/health/live', 'http://127.0.0.1:18000/health/ready')) {
