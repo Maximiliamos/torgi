@@ -883,3 +883,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .tbankrotState { min-width:0; }.tbankrotStatusGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media (max-width:560px) { .tbankrotStatusGrid { grid-template-columns:1fr; } }
+
+.sourceAuthAlert { background:#d64545;border:2px solid #fff;border-radius:50%;height:9px;position:absolute;right:5px;top:5px;width:9px; }
+.appRail button { position:relative; }
