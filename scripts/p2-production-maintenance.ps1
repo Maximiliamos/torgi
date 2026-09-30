@@ -110,6 +110,47 @@ if ($Apply) {
     }
 }
 
+if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
+    $drBackupRoot = 'C:\ProgramData\BankrotAI\dr-backups'
+    if (Test-Path -LiteralPath $drBackupRoot) {
+        $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
+            Sort-Object LastWriteTimeUtc -Descending)
+        $protected = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($file in ($dumpFiles | Select-Object -First 2)) {
+            [void]$protected.Add($file.FullName)
+        }
+        $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
+            Sort-Object LastWriteTimeUtc -Descending |
+            ForEach-Object {
+                try {
+                    $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                    if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
+                } catch {}
+            } | Select-Object -First 1)
+        if ($verified.Count -gt 0) {
+            [void]$protected.Add([string]$verified[0].backup_file)
+        }
+        foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
+            if ($protected.Contains($dump.FullName)) { continue }
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+            Remove-Item -LiteralPath $dump.FullName -Force
+            $metadataPath = Join-Path $drBackupRoot "$stem.json"
+            if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
+            if ((Get-FreePercent) -ge 12) { break }
+        }
+    }
+
+    if ((Get-FreePercent) -lt $CriticalFreePercent) {
+        $migrationRoot = 'C:\ProgramData\BankrotAI\db-backups'
+        if (Test-Path -LiteralPath $migrationRoot) {
+            Get-ChildItem -LiteralPath $migrationRoot -File -Filter 'pre-migration-*.dump' |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -Skip 1 |
+                Remove-Item -Force
+        }
+    }
+}
+
 $afterFree = Get-FreePercent
 $dockerAfter = (docker system df 2>&1 | Out-String).Trim()
 Add-Check -Name 'disk-c-critical' -Ok ($afterFree -ge $CriticalFreePercent) -Details @{
