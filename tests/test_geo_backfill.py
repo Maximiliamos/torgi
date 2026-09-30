@@ -924,6 +924,11 @@ def test_network_failure_does_not_consume_lot_retry_budget(monkeypatch) -> None:
 
     monkeypatch.setattr(
         geo_backfill,
+        "resilience_snapshot",
+        lambda: {"network": {"state": "down"}, "providers": {}},
+    )
+    monkeypatch.setattr(
+        geo_backfill,
         "resolve_lot_geo",
         lambda *_args, **_kwargs: CadastralObjectResult(
             query="Москва",
