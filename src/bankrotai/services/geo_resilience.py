@@ -30,7 +30,10 @@ _PROVIDER_OPEN_SECONDS = {
 _NETWORK_RECOVERY_SUCCESSES = 2
 _LOCK = threading.RLock()
 _PROVIDER_STATE: dict[str, dict[str, Any]] = {}
+_PROVIDER_REFRESHED_AT: dict[str, float] = {}
 _NETWORK_STATE: dict[str, Any] = {}
+_NETWORK_REFRESHED_AT = 0.0
+_STATE_REFRESH_SECONDS = 5.0
 _REDIS_DISABLED_UNTIL = 0.0
 
 
@@ -168,12 +171,14 @@ def operational_category_from_reason(reason: str | None) -> str | None:
 
 
 def _provider_state(provider: str) -> dict[str, Any]:
+    now = time.monotonic()
     with _LOCK:
         cached = _PROVIDER_STATE.get(provider)
-        if cached is not None:
+        refreshed_at = float(_PROVIDER_REFRESHED_AT.get(provider) or 0.0)
+        if cached is not None and now - refreshed_at < _STATE_REFRESH_SECONDS:
             return dict(cached)
     restored = _read_redis_json(f"{_PROVIDER_PREFIX}{provider}")
-    state = restored or {
+    state = restored or cached or {
         "provider": provider,
         "state": "unknown",
         "consecutive_failures": 0,
@@ -185,12 +190,14 @@ def _provider_state(provider: str) -> dict[str, Any]:
     }
     with _LOCK:
         _PROVIDER_STATE[provider] = dict(state)
+        _PROVIDER_REFRESHED_AT[provider] = now
     return dict(state)
 
 
 def _save_provider_state(provider: str, state: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         _PROVIDER_STATE[provider] = dict(state)
+        _PROVIDER_REFRESHED_AT[provider] = time.monotonic()
     _write_redis_json(f"{_PROVIDER_PREFIX}{provider}", state)
     return dict(state)
 
@@ -246,11 +253,14 @@ def record_provider_failure(
 
 
 def _network_state() -> dict[str, Any]:
+    global _NETWORK_REFRESHED_AT
+    now = time.monotonic()
     with _LOCK:
-        if _NETWORK_STATE:
-            return dict(_NETWORK_STATE)
+        cached = dict(_NETWORK_STATE) if _NETWORK_STATE else None
+        if cached is not None and now - _NETWORK_REFRESHED_AT < _STATE_REFRESH_SECONDS:
+            return cached
     restored = _read_redis_json(_NETWORK_KEY)
-    state = restored or {
+    state = restored or cached or {
         "state": "unknown",
         "consecutive_successes": 0,
         "failed_external_probes": 0,
@@ -259,14 +269,18 @@ def _network_state() -> dict[str, Any]:
         "updated_at": None,
     }
     with _LOCK:
+        _NETWORK_STATE.clear()
         _NETWORK_STATE.update(state)
+        _NETWORK_REFRESHED_AT = now
     return dict(state)
 
 
 def _save_network_state(state: dict[str, Any]) -> dict[str, Any]:
+    global _NETWORK_REFRESHED_AT
     with _LOCK:
         _NETWORK_STATE.clear()
         _NETWORK_STATE.update(state)
+        _NETWORK_REFRESHED_AT = time.monotonic()
     _write_redis_json(_NETWORK_KEY, state)
     return dict(state)
 
