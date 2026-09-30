@@ -81,6 +81,8 @@ class AppSettings:
     openai_model_search: str = "gpt-4o"
     openai_model_risk: str = "gpt-4o-mini"
     tbankrot_api_key: str | None = None
+    tbankrot_auth_broker_url: str | None = None
+    tbankrot_auth_broker_token: str | None = None
     torgi_gov_base_url: str = "https://torgi.gov.ru"
     online_source_cache_first: bool = False
 
@@ -234,6 +236,8 @@ def load_settings() -> AppSettings:
         openai_model_search=os.getenv("OPENAI_MODEL_SEARCH", "gpt-4o"),
         openai_model_risk=os.getenv("OPENAI_MODEL_RISK", "gpt-4o-mini"),
         tbankrot_api_key=os.getenv("TBANKROT_API_KEY"),
+        tbankrot_auth_broker_url=(os.getenv("TBANKROT_AUTH_BROKER_URL") or "").rstrip("/") or None,
+        tbankrot_auth_broker_token=os.getenv("TBANKROT_AUTH_BROKER_TOKEN") or None,
         torgi_gov_base_url=os.getenv("TORGI_GOV_BASE_URL", "https://torgi.gov.ru").rstrip("/"),
         online_source_cache_first=os.getenv("ONLINE_SOURCE_CACHE_FIRST", "false").lower() in {"1", "true", "yes"},
         # AI Provider settings
