@@ -1102,6 +1102,24 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                     "items_seen": item.items_seen,
                 }
             )
+        known_sources = {str(item["source_system"]) for item in source_items}
+        for source_system, paused in paused_settings.items():
+            if not paused or source_system in known_sources:
+                continue
+            source_items.append(
+                {
+                    "source_system": source_system,
+                    "paused": True,
+                    "ready": False,
+                    "status": "paused",
+                    "freshness_status": "paused",
+                    "coverage_status": "paused",
+                    "last_success_at": None,
+                    "last_complete_success_at": None,
+                    "last_error_category": None,
+                    "items_seen": 0,
+                }
+            )
         source_items.sort(key=lambda item: (bool(item["paused"]), str(item["source_system"])))
 
         current_map = session.scalar(
