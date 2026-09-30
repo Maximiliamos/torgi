@@ -11,6 +11,7 @@ WEB = ROOT / "WEB" / "src" / "main.tsx"
 WEB_API = ROOT / "WEB" / "src" / "lib" / "api.ts"
 PHASE3_HEALTH = ROOT / "scripts" / "phase3-production-health.ps1"
 P2_MAINTENANCE = ROOT / "scripts" / "p2-production-maintenance.ps1"
+API_PROXY = ROOT / "WEB" / "api-proxy" / "worker.mjs"
 
 
 def test_tbankrot_browser_broker_is_origin_bounded_and_never_exposes_cookies() -> None:
@@ -101,3 +102,13 @@ def test_p5_is_covered_by_existing_production_health_and_maintenance() -> None:
     assert "'bankrotai-tbankrot-auth'" in p2
     assert "node --check ../tbankrot-auth/server.mjs" in ci
     assert "playwright:v1.55.1-noble" in BROKER_DOCKERFILE.read_text(encoding="utf-8")
+
+
+
+def test_tbankrot_auth_center_has_home_only_proxy_budget() -> None:
+    proxy = API_PROXY.read_text(encoding="utf-8")
+
+    assert "TBANKROT_SAFE_TIMEOUT_MS = 20_000" in proxy
+    assert "TBANKROT_MUTATION_TIMEOUT_MS = 55_000" in proxy
+    assert 'incoming.pathname.startsWith("/api/tbankrot/")' in proxy
+    assert "SAFE_METHODS.has(request.method) && !tbankrotRequest" in proxy
