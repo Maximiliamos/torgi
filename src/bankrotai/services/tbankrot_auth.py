@@ -307,7 +307,8 @@ class TBankrotAuthBrowser:
             html = await self._page.content()
             if TBankrotClient._is_listing_access_limited(html):
                 return (await self._browser_state(message="Авторизация ещё не подтверждена TBankrot")).as_dict()
-            total = TBankrotClient._extract_search_total(html)
+            total_parser = object.__new__(TBankrotClient)
+            total = total_parser._extract_search_total(html)
             cookies = await self._context.cookies([TBANKROT_HOME_URL])
             cookies = [
                 cookie
