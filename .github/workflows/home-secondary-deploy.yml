@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 90
     env:
       IMAGE_NAME: bankrotai-home-api
+      TBANKROT_AUTH_IMAGE: bankrotai-tbankrot-auth
+      TBANKROT_AUTH_CONTAINER: bankrotai-tbankrot-auth
       CONTAINER_NAME: bankrotai-home-secondary
       WORKER_CONTAINER: bankrotai-home-ingestion-worker
       GEO_WORKER_CONTAINER: bankrotai-home-geocoding-worker
@@ -174,6 +176,20 @@ jobs:
             }
           }
           if (!$built) { throw 'Could not build the current-main API image after four attempts' }
+
+          $brokerBuilt = $false
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            docker build --pull --file Dockerfile.tbankrot-auth --tag "${env:TBANKROT_AUTH_IMAGE}:${env:GITHUB_SHA}" .
+            if ($LASTEXITCODE -eq 0) {
+              $brokerBuilt = $true
+              break
+            }
+            if ($attempt -lt 4) {
+              Write-Warning "TBankrot auth broker image build failed on attempt $attempt/4; retrying in 20 seconds"
+              Start-Sleep -Seconds 20
+            }
+          }
+          if (!$brokerBuilt) { throw 'Could not build the TBankrot auth broker image after four attempts' }
 
       - name: Preserve and start local PostgreSQL
         shell: powershell
