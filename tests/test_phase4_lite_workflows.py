@@ -83,8 +83,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Deploy home secondary origin" in workflow
     assert "p2-production-maintenance.ps1" in workflow
     assert "[P2] Production maintenance alert" in workflow
-    assert "docker image prune --force" in script
-    assert "docker builder prune --force" in script
+    assert "Invoke-DockerCleanup" in script
+    assert "@('image','prune','--all','--force'" in script
+    assert "@('builder','prune','--all','--force'" in script
     assert "docker system prune" not in script
     assert "disk-c-critical" in script
     assert "disk-c-headroom" in script
