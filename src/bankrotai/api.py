@@ -1303,11 +1303,14 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
         or stale_auth_failure
     )
     syncing = latest_source is not None and latest_source.status in {"queued", "running"}
+    source_unavailable = bool(broker.get("validation_error"))
     state = (
         "broker_unavailable"
         if not broker_available
         else "syncing"
         if syncing
+        else "source_unavailable"
+        if source_unavailable
         else "auth_required"
         if auth_required
         else "ready"
@@ -1317,6 +1320,7 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
         "paused_from_automatic_sync": paused,
         "broker_available": broker_available,
         "broker_error": broker_error,
+        "source_validation_error": broker.get("validation_error"),
         "saved_session": bool(broker.get("saved")),
         "captured_at": broker.get("captured_at"),
         "validated_at": broker.get("validated_at"),
