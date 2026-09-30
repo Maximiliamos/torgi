@@ -30,6 +30,70 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
+      - name: Reclaim safe backup space under critical disk pressure
+        shell: powershell
+        run: |
+          $drive = Get-PSDrive -Name C
+          $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
+            ($drive.Free / ($drive.Used + $drive.Free)) * 100
+          } else { 0 }
+          if ($freePercent -ge 10) {
+            Write-Output ("C: disk preflight OK: {0:N1}% free" -f $freePercent)
+            exit 0
+          }
+
+          $drBackupRoot = 'C:\ProgramData\BankrotAI\dr-backups'
+          if (Test-Path -LiteralPath $drBackupRoot) {
+            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
+              Sort-Object LastWriteTimeUtc -Descending)
+            $protected = New-Object 'System.Collections.Generic.HashSet[string]'
+            foreach ($file in ($dumpFiles | Select-Object -First 2)) {
+              [void]$protected.Add($file.FullName)
+            }
+            $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
+              Sort-Object LastWriteTimeUtc -Descending |
+              ForEach-Object {
+                try {
+                  $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
+                } catch {}
+              } | Select-Object -First 1)
+            if ($verified.Count -gt 0) {
+              [void]$protected.Add([string]$verified[0].backup_file)
+            }
+            foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
+              if ($protected.Contains($dump.FullName)) { continue }
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+              Remove-Item -LiteralPath $dump.FullName -Force
+              $metaPath = Join-Path $drBackupRoot "$stem.json"
+              if (Test-Path -LiteralPath $metaPath) { Remove-Item -LiteralPath $metaPath -Force }
+              $drive = Get-PSDrive -Name C
+              $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
+                ($drive.Free / ($drive.Used + $drive.Free)) * 100
+              } else { 0 }
+              if ($freePercent -ge 12) { break }
+            }
+          }
+
+          if ($freePercent -lt 10) {
+            $migrationRoot = 'C:\ProgramData\BankrotAI\db-backups'
+            if (Test-Path -LiteralPath $migrationRoot) {
+              Get-ChildItem -LiteralPath $migrationRoot -File -Filter 'pre-migration-*.dump' |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -Skip 1 |
+                Remove-Item -Force
+            }
+          }
+
+          $drive = Get-PSDrive -Name C
+          $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
+            [math]::Round(($drive.Free / ($drive.Used + $drive.Free)) * 100, 1)
+          } else { 0 }
+          Write-Output "C: disk preflight after cleanup: $freePercent% free"
+          if ($freePercent -lt 10) {
+            throw "Backup refused: C: remains below 10% free after safe cleanup"
+          }
+
       - name: Create backup and run scheduled restore drill
         shell: powershell
         run: |
