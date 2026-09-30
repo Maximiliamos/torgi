@@ -194,7 +194,7 @@ export function App({ username = "Пользователь", role = "reader", on
   React.useEffect(() => {
     let active = true;
     const refreshTBankrotState = () => fetchTBankrotStatus()
-      .then((status) => { if (active) setTbankrotNeedsAttention(["auth_required", "broker_unavailable"].includes(status.state)); })
+      .then((status) => { if (active) setTbankrotNeedsAttention(["auth_required", "source_unavailable", "broker_unavailable"].includes(status.state)); })
       .catch(() => { if (active) setTbankrotNeedsAttention(true); });
     void refreshTBankrotState();
     const timer = window.setInterval(refreshTBankrotState, 30_000);
