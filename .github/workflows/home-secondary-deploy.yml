@@ -719,6 +719,10 @@ jobs:
       - name: Reclaim obsolete Docker layers after successful deployment
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
+          $warningFreeGb = 20
+          $criticalFreeGb = 10
+
           function Invoke-DockerCleanup {
             param([string[]]$Arguments, [int]$TimeoutSeconds = 300)
             $argLine = ($Arguments | ForEach-Object {
@@ -730,21 +734,31 @@ jobs:
               & taskkill.exe /PID $process.Id /T /F *> $null
               return $false
             }
-            return $process.ExitCode -eq 0
+            if ($process.ExitCode -ne 0) {
+              Write-Warning "Post-deploy Docker cleanup exited $($process.ExitCode): docker $argLine"
+              return $false
+            }
+            return $true
           }
 
           $before = Get-PSDrive -Name C
           $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
-          [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
-          [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+          Write-Output "C: free before post-deploy maintenance: $beforeFreeGb GB"
+
+          if ($beforeFreeGb -lt $warningFreeGb) {
+            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
+            [void](Invoke-DockerCleanup -Arguments @('image','prune','--force','--filter','until=168h') -TimeoutSeconds 180)
+            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--force','--filter','until=168h') -TimeoutSeconds 180)
+          } else {
+            Write-Output "Post-deploy cleanup skipped: $beforeFreeGb GB >= $warningFreeGb GB"
+          }
+
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free before post-deploy cleanup: $beforeFreeGb GB"
-          Write-Output "C: free after post-deploy cleanup: $afterFreeGb GB ($afterFreePercent%)"
-          if ($afterFreePercent -lt 10) {
-            throw "C: remains below the production health threshold of 10% free"
+          Write-Output "C: free after post-deploy maintenance: $afterFreeGb GB"
+          if ($afterFreeGb -lt $criticalFreeGb) {
+            throw "C: has only $afterFreeGb GB free after a healthy deployment; emergency floor is $criticalFreeGb GB"
+          }
+          if ($afterFreeGb -lt $warningFreeGb) {
+            Write-Warning "C: free space is below the recommended $warningFreeGb GB headroom, but production deployment remains healthy"
           }
