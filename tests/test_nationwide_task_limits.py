@@ -30,3 +30,30 @@ def test_tbankrot_is_always_isolated_from_automatic_source_sets(monkeypatch) -> 
     automatic = tasks._unpaused_source_specs(tasks.default_source_specs())
     assert "tbankrot.ru" not in {spec.source_id for spec in automatic}
     assert "tbankrot.ru" in {spec.source_id for spec in tasks.source_full_specs("tbankrot.ru")}
+
+
+
+def test_deferred_tbankrot_sync_is_pinned_to_ingestion_queue(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    queued: list[dict] = []
+
+    class Result:
+        id = "deferred-tbankrot-1"
+
+    monkeypatch.setattr(
+        tasks.deferred_tbankrot_sync_task,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs) or Result(),
+    )
+
+    task_id = tasks.schedule_deferred_tbankrot_sync(triggered_by="test-auth")
+
+    assert task_id == "deferred-tbankrot-1"
+    assert queued == [{
+        "args": ["test-auth"],
+        "countdown": 15,
+        "queue": tasks._QUEUE_INGESTION,
+    }]
+    assert tasks.celery_app.conf.task_routes["bankrotai.tasks.deferred_tbankrot_sync_task"] == {
+        "queue": tasks._QUEUE_INGESTION,
+    }
