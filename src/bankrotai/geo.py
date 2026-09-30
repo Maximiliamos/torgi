@@ -681,6 +681,10 @@ class NominatimGeocoder:
     def geocode(self, address: str) -> dict | None:
         if not address or len(address.strip()) < 5:
             return None
+        if not external_network_available():
+            raise GeoProviderOperationalError("nominatim", "external_network_down")
+        if not provider_available("nominatim"):
+            raise GeoProviderOperationalError("nominatim", "provider_circuit_open")
 
         normalized_address = " ".join(address.casefold().split())
         cache_key = (normalized_address, "nominatim")
@@ -727,7 +731,10 @@ class NominatimGeocoder:
 
         expected_tokens = match_tokens(address)
         value = None
+        successful_requests = 0
+        last_operational_error: GeoProviderOperationalError | None = None
         for index, candidate in enumerate(build_geocoding_address_candidates(address)):
+            started = time.monotonic()
             try:
                 with self._request_lock:
                     elapsed = time.monotonic() - self.last_request_time
@@ -748,6 +755,8 @@ class NominatimGeocoder:
                 resp = requests.get(self.base_url, params=params, headers=headers, timeout=10)
                 resp.raise_for_status()
                 data = resp.json()
+                successful_requests += 1
+                record_provider_success("nominatim", latency_ms=(time.monotonic() - started) * 1000)
                 if not data:
                     continue
                 scored = [
@@ -768,8 +777,25 @@ class NominatimGeocoder:
                     "trace_reason": f"OSM Nominatim: {candidate}",
                 }
                 break
+            except requests.RequestException as e:
+                category = classify_operational_exception(e)
+                record_provider_failure(
+                    "nominatim",
+                    category,
+                    detail=str(e),
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
+                last_operational_error = GeoProviderOperationalError("nominatim", category, str(e))
+                logger.warning("Nominatim request failed for '%s': %s", candidate, e)
             except Exception as e:
-                logger.warning("Geocoding failed for '%s': %s", candidate, e)
+                record_provider_failure(
+                    "nominatim",
+                    "server_error",
+                    detail=str(e),
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
+                last_operational_error = GeoProviderOperationalError("nominatim", "server_error", str(e))
+                logger.warning("Nominatim response failed for '%s': %s", candidate, e)
 
         with self._lock:
             self._cache[cache_key] = value
@@ -778,6 +804,8 @@ class NominatimGeocoder:
             completed_event = self._inflight.pop(cache_key, None)
             if completed_event:
                 completed_event.set()
+        if value is None and successful_requests == 0 and last_operational_error is not None:
+            raise last_operational_error
         return dict(value) if value else None
 
 
