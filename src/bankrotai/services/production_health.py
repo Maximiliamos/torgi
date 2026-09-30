@@ -179,6 +179,16 @@ def build_phase3_health(
         latest_completed_batch_age_seconds=latest_geo_age,
         percent=geo.get("percent"),
     )
+    network = geo.get("network") or {}
+    external = network.get("external") or {}
+    add(
+        "geo-external-network",
+        not bool(external.get("circuit_open")),
+        severity="warning",
+        circuit_open=bool(external.get("circuit_open")),
+        circuit_open_until=external.get("circuit_open_until"),
+        degraded_providers=external.get("degraded_providers") or [],
+    )
 
     critical_failures = [
         check for check in checks if not check["ok"] and check["severity"] == "critical"
@@ -200,6 +210,11 @@ def build_phase3_health(
             "source_count": len(sources),
             "legacy_source_count": len(legacy_sources),
             "geo_percent": geo.get("percent"),
+            "geo_classified_percent": geo.get("classified_percent"),
             "geo_actionable_remaining": actionable,
+            "geo_deferred_no_match": geo.get("deferred_no_match"),
+            "geo_deferred_validation": geo.get("deferred_validation"),
+            "geo_network_wait": geo.get("network_wait"),
+            "geo_external_network_degraded": bool(external.get("circuit_open")),
         },
     }

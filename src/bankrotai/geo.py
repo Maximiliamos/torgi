@@ -17,6 +17,13 @@ from sqlalchemy.orm import Session
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
+from bankrotai.services.geo_resilience import (
+    GeoProviderUnavailable,
+    classify_transport_exception,
+    record_provider_failure,
+    record_provider_success,
+    require_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +104,7 @@ class IK12Geocoder:
         raise RuntimeError("IK12 proof-of-work limit exceeded")
 
     def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult | None:
+        require_provider("ik12", external=True)
         started = time.monotonic()
         try:
             token_response = self.session.get(
@@ -125,9 +133,16 @@ class IK12Geocoder:
             )
             response.raise_for_status()
             payload = response.json()
-        except (KeyError, TypeError, ValueError, requests.RequestException, RuntimeError) as exc:
+            record_provider_success("ik12", latency_ms=(time.monotonic() - started) * 1000)
+        except requests.RequestException as exc:
+            category = classify_transport_exception(exc)
+            record_provider_failure("ik12", category, latency_ms=(time.monotonic() - started) * 1000)
             logger.warning("IK12 request failed for %s: %s", cadastral_number, exc)
-            return None
+            raise GeoProviderUnavailable("ik12", category, str(exc)) from exc
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            record_provider_failure("ik12", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
+            logger.warning("IK12 response failed for %s: %s", cadastral_number, exc)
+            raise GeoProviderUnavailable("ik12", "provider_protocol", str(exc)) from exc
 
         features = (payload.get("object_data") or {}).get("features") or []
         expected = cadastral_number.replace(" ", "")
@@ -215,7 +230,7 @@ class CadastralGeocoder:
 
         try:
             nspd_result = self._search_nspd_geoportal(cadastral_number)
-        except NSPDTLSVerificationError:
+        except (NSPDTLSVerificationError, GeoProviderUnavailable):
             logger.warning(
                 "NSPD TLS verification failed for %s; leaving the lot for manual GEO review",
                 cadastral_number,
@@ -242,10 +257,22 @@ class CadastralGeocoder:
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
-        result = PHOTON_GEOCODER.geocode(address)
+        photon_error: GeoProviderUnavailable | None = None
+        try:
+            result = PHOTON_GEOCODER.geocode(address)
+        except GeoProviderUnavailable as exc:
+            photon_error = exc
+            result = None
         source = "photon" if result else "nominatim"
         if not result and allow_nominatim:
-            result = NOMINATIM_GEOCODER.geocode(address)
+            try:
+                result = NOMINATIM_GEOCODER.geocode(address)
+            except GeoProviderUnavailable:
+                if photon_error is not None:
+                    raise photon_error
+                raise
+        elif not result and photon_error is not None:
+            raise photon_error
 
         if not result:
             return CadastralObjectResult(
@@ -357,6 +384,8 @@ class CadastralGeocoder:
         )
 
     def _search_nspd_geoportal(self, cadastral_number: str) -> CadastralObjectResult | None:
+        require_provider("nspd", external=True)
+        started = time.monotonic()
         headers = {
             "Referer": NSPD_REFERER,
             "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
@@ -382,17 +411,22 @@ class CadastralGeocoder:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                record_provider_success("nspd", latency_ms=(time.monotonic() - started) * 1000)
             except SSLError as e:
                 self._open_circuit("nspd")
+                record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
                 logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
                 raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
             except requests.RequestException as e:
                 self._open_circuit("nspd")
+                category = classify_transport_exception(e)
+                record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
                 logger.warning("NSPD request failed for %s; pausing NSPD requests: %s", cadastral_number, e)
-                return None
+                raise GeoProviderUnavailable("nspd", category, str(e)) from e
             except Exception as e:
+                record_provider_failure("nspd", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
                 logger.warning("NSPD response failed for %s: %s", cadastral_number, e)
-                return None
+                raise GeoProviderUnavailable("nspd", "provider_protocol", str(e)) from e
 
         features = (data.get("data") or {}).get("features") or data.get("features") or []
         if not features:
@@ -629,6 +663,10 @@ class NominatimGeocoder:
     def geocode(self, address: str) -> dict | None:
         if not address or len(address.strip()) < 5:
             return None
+        require_provider("nominatim", external=True)
+        transport_successes = 0
+        operational_failures = 0
+        last_operational_category = "connection_error"
 
         normalized_address = " ".join(address.casefold().split())
         cache_key = (normalized_address, "nominatim")
@@ -676,6 +714,7 @@ class NominatimGeocoder:
         expected_tokens = match_tokens(address)
         value = None
         for index, candidate in enumerate(build_geocoding_address_candidates(address)):
+            started = time.monotonic()
             try:
                 with self._request_lock:
                     elapsed = time.monotonic() - self.last_request_time
@@ -696,6 +735,8 @@ class NominatimGeocoder:
                 resp = requests.get(self.base_url, params=params, headers=headers, timeout=10)
                 resp.raise_for_status()
                 data = resp.json()
+                transport_successes += 1
+                record_provider_success("nominatim", latency_ms=(time.monotonic() - started) * 1000)
                 if not data:
                     continue
                 scored = [
@@ -716,8 +757,23 @@ class NominatimGeocoder:
                     "trace_reason": f"OSM Nominatim: {candidate}",
                 }
                 break
-            except Exception as e:
-                logger.warning("Geocoding failed for '%s': %s", candidate, e)
+            except requests.RequestException as e:
+                operational_failures += 1
+                last_operational_category = classify_transport_exception(e)
+                record_provider_failure("nominatim", last_operational_category, latency_ms=(time.monotonic() - started) * 1000)
+                logger.warning("Nominatim geocoding failed for '%s': %s", candidate, e)
+            except (ValueError, TypeError, KeyError) as e:
+                operational_failures += 1
+                last_operational_category = "provider_protocol"
+                record_provider_failure("nominatim", last_operational_category, latency_ms=(time.monotonic() - started) * 1000)
+                logger.warning("Nominatim response failed for '%s': %s", candidate, e)
+
+        if value is None and operational_failures and transport_successes == 0:
+            with self._lock:
+                completed_event = self._inflight.pop(cache_key, None)
+                if completed_event:
+                    completed_event.set()
+            raise GeoProviderUnavailable("nominatim", last_operational_category)
 
         with self._lock:
             self._cache[cache_key] = value
@@ -757,6 +813,10 @@ class PhotonGeocoder:
     def geocode(self, address: str) -> dict[str, Any] | None:
         if not self.base_url or len(address.strip()) < 5:
             return None
+        require_provider("photon", external=False)
+        operational_failures = 0
+        transport_successes = 0
+        last_operational_category = "connection_error"
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
         street_match = re.search(
             r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок)\s*([^,;]+)",
@@ -792,6 +852,7 @@ class PhotonGeocoder:
         scored: list[tuple[int, int, dict[str, Any]]] = []
         for query_index, candidate in enumerate(build_geocoding_address_candidates(address)):
             exact_candidate_found = False
+            started = time.monotonic()
             try:
                 response = requests.get(
                     f"{self.base_url}/api",
@@ -800,8 +861,19 @@ class PhotonGeocoder:
                 )
                 response.raise_for_status()
                 features = response.json().get("features") or []
-            except (requests.RequestException, ValueError, AttributeError) as exc:
+                transport_successes += 1
+                record_provider_success("photon", latency_ms=(time.monotonic() - started) * 1000)
+            except requests.RequestException as exc:
+                operational_failures += 1
+                last_operational_category = classify_transport_exception(exc)
+                record_provider_failure("photon", last_operational_category, latency_ms=(time.monotonic() - started) * 1000)
                 logger.warning("Local Photon geocoding failed for '%s': %s", candidate, exc)
+                continue
+            except (ValueError, AttributeError) as exc:
+                operational_failures += 1
+                last_operational_category = "provider_protocol"
+                record_provider_failure("photon", last_operational_category, latency_ms=(time.monotonic() - started) * 1000)
+                logger.warning("Local Photon response failed for '%s': %s", candidate, exc)
                 continue
             for feature in features:
                 props = feature.get("properties") or {}
@@ -856,6 +928,8 @@ class PhotonGeocoder:
             if exact_candidate_found:
                 break
         if not scored:
+            if operational_failures and transport_successes == 0:
+                raise GeoProviderUnavailable("photon", last_operational_category)
             return None
         score, _query_rank, feature = max(scored, key=lambda item: (item[0], item[1]))
         if expected and score < min(2, len(expected)):
@@ -1059,6 +1133,22 @@ def resolve_lot_geo(
         region_name=region_name,
     )
 
+    def note_operational(
+        exc: GeoProviderUnavailable,
+        provider: str,
+        *,
+        candidate_index: int | None = None,
+    ) -> None:
+        attempt: dict[str, Any] = {
+            "source": provider,
+            "valid": False,
+            "reason": exc.category,
+            "operational": True,
+        }
+        if candidate_index is not None:
+            attempt["candidate_index"] = candidate_index
+        attempts.append(attempt)
+
     def accept(
         result: CadastralObjectResult | None,
         provider: str,
@@ -1085,25 +1175,44 @@ def resolve_lot_geo(
         return result if valid else None
 
     for candidate_index, candidate in enumerate(cadastral_candidates):
+        nspd_source = "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt"
         try:
             nspd_candidate = CADASTRAL_GEOCODER._search_nspd_geoportal(candidate)
-        except NSPDTLSVerificationError:
+        except GeoProviderUnavailable as exc:
+            note_operational(exc, nspd_source, candidate_index=candidate_index)
             nspd_candidate = None
-        nspd_result = accept(
-            nspd_candidate,
-            "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt",
-            expected_cadastral_number=candidate,
-            candidate_index=candidate_index,
-        )
-        if nspd_result:
-            return nspd_result
-        if not bulk or get_settings().geo_bulk_ik12_fallback:
-            ik12_result = accept(
-                IK12_GEOCODER.search_by_cadastral_number(candidate),
-                "ik12_cadastral" if candidate_index == 0 else "ik12_cadastral_alt",
+            nspd_result = None
+        except NSPDTLSVerificationError as exc:
+            note_operational(
+                GeoProviderUnavailable("nspd", "tls_error", str(exc)),
+                nspd_source,
+                candidate_index=candidate_index,
+            )
+            nspd_candidate = None
+            nspd_result = None
+        else:
+            nspd_result = accept(
+                nspd_candidate,
+                nspd_source,
                 expected_cadastral_number=candidate,
                 candidate_index=candidate_index,
             )
+        if nspd_result:
+            return nspd_result
+        if not bulk or get_settings().geo_bulk_ik12_fallback:
+            ik12_source = "ik12_cadastral" if candidate_index == 0 else "ik12_cadastral_alt"
+            try:
+                ik12_candidate = IK12_GEOCODER.search_by_cadastral_number(candidate)
+            except GeoProviderUnavailable as exc:
+                note_operational(exc, ik12_source, candidate_index=candidate_index)
+                ik12_result = None
+            else:
+                ik12_result = accept(
+                    ik12_candidate,
+                    ik12_source,
+                    expected_cadastral_number=candidate,
+                    candidate_index=candidate_index,
+                )
             if ik12_result:
                 return ik12_result
 
@@ -1134,29 +1243,36 @@ def resolve_lot_geo(
                 address_attempts[-1] = supplemental
 
     for candidate_index, candidate in enumerate(address_attempts):
-        addr_result = CADASTRAL_GEOCODER.search_by_address(
-            candidate,
-            allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
-        )
-        accepted = accept(
-            addr_result,
-            "address_geocoder" if candidate_index == 0 else "address_geocoder_alt",
-            expected_cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
-            candidate_index=candidate_index,
-            validation_address=candidate,
-        )
+        address_source = "address_geocoder" if candidate_index == 0 else "address_geocoder_alt"
+        try:
+            addr_result = CADASTRAL_GEOCODER.search_by_address(
+                candidate,
+                allow_nominatim=not bulk or get_settings().geo_bulk_nominatim_fallback,
+            )
+        except GeoProviderUnavailable as exc:
+            note_operational(exc, address_source, candidate_index=candidate_index)
+            accepted = None
+        else:
+            accepted = accept(
+                addr_result,
+                address_source,
+                expected_cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
+                candidate_index=candidate_index,
+                validation_address=candidate,
+            )
         if accepted:
             return accepted
 
+    operational = any(bool(attempt.get("operational")) for attempt in attempts)
     return CadastralObjectResult(
         query=(cadastral_candidates[0] if cadastral_candidates else cadastral_number)
         or (address_candidates[0] if address_candidates else ""),
         cadastral_number=cadastral_candidates[0] if cadastral_candidates else cadastral_number,
         source="geocoding_chain",
         confidence="none",
-        status="GEOCODING_FAILED",
+        status="GEOCODING_DEGRADED" if operational else "GEOCODING_FAILED",
         attempts=attempts,
-        error="No validated geocoding result",
+        error="Operational geocoding dependency degraded" if operational else "No validated geocoding result",
     )
 
 

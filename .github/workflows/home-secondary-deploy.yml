@@ -711,7 +711,7 @@ jobs:
         continue-on-error: true
         shell: powershell
         run: |
-          docker exec $env:GEO_WORKER_CONTAINER python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); s.close(); print(json.dumps({'progress': {k:r['progress'].get(k) for k in ('total','geocoded','actionable_remaining','terminal_failures','percent','rate_per_second','eta_seconds','paused')}, 'statistics': r['statistics'], 'failures': r['failures'], 'recent_batches': r['recent_batches'], 'quality': r['quality'], 'cfo': r['cfo']}, ensure_ascii=False, default=str))"
+          docker exec $env:GEO_WORKER_CONTAINER python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); s.close(); print(json.dumps({'progress': {k:r['progress'].get(k) for k in ('total','geocoded','actionable_remaining','eligible_now','waiting_for_retry','network_wait','deferred_no_match','deferred_validation','classified_percent','terminal_failures','percent','rate_per_second','eta_seconds','paused')}, 'network': r['progress'].get('network'), 'statistics': r['statistics'], 'failures': r['failures'], 'recent_batches': r['recent_batches'], 'quality': r['quality'], 'cfo': r['cfo']}, ensure_ascii=False, default=str))"
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "Aggregate geocoding quality report could not be produced"
           }

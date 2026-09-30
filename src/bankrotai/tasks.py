@@ -13,6 +13,7 @@ from celery.utils import uuid
 from bankrotai.core import get_app_setting, get_region_sync_slug, get_settings
 from bankrotai.db import (
     BackgroundTaskState,
+    GeoFailure,
     LotSyncRun,
     LotSyncSourceRun,
     SessionLocal,
@@ -78,6 +79,7 @@ celery_app.conf.update(
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.probe_geo_network_health_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
@@ -96,6 +98,11 @@ celery_app.conf.update(
             "task": "bankrotai.tasks.recover_ik12_geo_task",
             "schedule": 300.0,
             "options": {"expires": 240},
+        },
+        "probe-geo-network-health": {
+            "task": "bankrotai.tasks.probe_geo_network_health_task",
+            "schedule": 60.0,
+            "options": {"expires": 45},
         },
         "recalculate-public-offer-prices": {
             "task": "bankrotai.tasks.recalculate_public_offer_prices_task",
@@ -231,6 +238,29 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
             }
     return result
 
+
+
+@celery_app.task(name="bankrotai.tasks.probe_geo_network_health_task")
+def probe_geo_network_health_task() -> dict[str, Any]:
+    """Detect network/provider recovery and release operational waits without touching semantic retries."""
+    from sqlalchemy import update
+
+    from bankrotai.services.geo_resilience import probe_geo_network_health
+
+    snapshot = probe_geo_network_health()
+    probes = snapshot.get("probes") or {}
+    all_healthy = bool(probes) and all(bool(value.get("ok")) for value in probes.values() if isinstance(value, dict))
+    released = 0
+    if all_healthy:
+        with session_scope() as session:
+            result = session.execute(
+                update(GeoFailure)
+                .where(GeoFailure.status == "network_wait")
+                .values(next_retry_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            )
+            released = int(result.rowcount or 0)
+    snapshot["released_network_wait"] = released
+    return snapshot
 
 def _schedule_geocode_continuation(continuation_depth: int) -> dict[str, str | int]:
     """Drain a bounded campaign while beat remains the long-term recovery watchdog."""
