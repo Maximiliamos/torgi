@@ -1159,4 +1159,5 @@ def test_recovery_probe_can_release_network_and_provider_waiters() -> None:
         failures = session.scalars(select(GeoFailure).order_by(GeoFailure.lot_id)).all()
         assert [failure.status for failure in failures] == ["queued", "queued"]
         assert [failure.attempt_count for failure in failures] == [4, 3]
-        assert all(failure.next_retry_at is not None and failure.next_retry_at <= utc_now() for failure in failures)
+        now_naive = utc_now().replace(tzinfo=None)
+        assert all(failure.next_retry_at is not None and failure.next_retry_at <= now_naive for failure in failures)
