@@ -45,6 +45,9 @@ def test_phase3_health_covers_runtime_data_and_disaster_recovery() -> None:
     assert "MaxVerifiedRestoreAgeHours = 192" in script
     assert "disk-c-headroom" in script
     assert "recommended_gb = 25" in script
+    assert "network-fingerprint" in script
+    assert "Get-NetRoute" in script
+    assert "Get-DnsClientServerAddress" in script
 
 
 def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_alerts() -> None:

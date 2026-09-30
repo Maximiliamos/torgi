@@ -78,6 +78,7 @@ celery_app.conf.update(
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.probe_geo_network_task": {"queue": _QUEUE_MAINTENANCE},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
@@ -86,6 +87,11 @@ celery_app.conf.update(
         "expire-ended-lots": {
             "task": "bankrotai.tasks.expire_ended_lots_task",
             "schedule": 60.0,
+        },
+        "probe-geo-network": {
+            "task": "bankrotai.tasks.probe_geo_network_task",
+            "schedule": 60.0,
+            "options": {"expires": 50},
         },
         "geocode-pending-lots": {
             "task": "bankrotai.tasks.geocode_pending_lots_task",
@@ -168,6 +174,29 @@ def recalculate_public_offer_prices_task() -> dict[str, int]:
         except Exception:
             logger.exception("Could not mark map dataset dirty after public-offer price update")
     return result
+
+
+@celery_app.task(name="bankrotai.tasks.probe_geo_network_task")
+def probe_geo_network_task() -> dict[str, Any]:
+    """Classify network/provider health without charging outages to lot retry budgets."""
+    from bankrotai.services.geo_backfill import release_transient_geo_failures
+    from bankrotai.services.geo_resilience import probe_geo_network
+
+    report = probe_geo_network()
+    released = release_transient_geo_failures(
+        SessionLocal,
+        network_recovered=bool(report.get("network_recovered")),
+        recovered_providers=set(report.get("recovered_providers") or []),
+    )
+    report["released_waiters"] = released
+    if int(released.get("network") or 0) + int(released.get("provider") or 0) > 0:
+        try:
+            queued = geocode_pending_lots_task.apply_async(countdown=1)
+            report["resume_task_id"] = str(queued.id)
+        except Exception as exc:
+            logger.exception("Could not resume GEO after network/provider recovery")
+            report["resume_error"] = str(exc)[:500]
+    return report
 
 
 @celery_app.task(bind=True, name="bankrotai.tasks.geocode_pending_lots_task")

@@ -27,12 +27,28 @@ from bankrotai.geo import (
     resolve_lot_geo,
     validate_geocoding_result,
 )
+from bankrotai.services.geo_resilience import (
+    GeoProviderOperationalError,
+    classify_operational_exception,
+    is_operational_reason,
+    operational_category_from_reason,
+    resilience_snapshot,
+)
 from bankrotai.services.quality import record_geo_failure, resolve_geo_failure
 
 
 _BASE_RETRY_SECONDS = 21_600
 _MAX_RETRY_SECONDS = 604_800
 _MAX_ATTEMPTS = 8
+_DEFERRED_GEO_STATUSES = frozenset({
+    "deferred_no_match",
+    "deferred_validation",
+    "deferred_bad_input",
+})
+_NON_RUNNABLE_GEO_STATUSES = frozenset({"resolved", "terminal", *_DEFERRED_GEO_STATUSES})
+_NETWORK_RETRY_DELAYS_SECONDS = (60, 180, 300, 900)
+_PROVIDER_RETRY_DELAYS_SECONDS = (60, 300, 900, 3600)
+_RATE_LIMIT_RETRY_DELAYS_SECONDS = (300, 900, 1800, 3600)
 _GEO_LOCK_NAME = "bankrotai:geocoding:batch"
 _GEO_LOCK_SECONDS = 3600
 _SUCCESS_CACHE_DAYS = 30
@@ -105,6 +121,8 @@ def _is_strategy_retryable_failure(error_message: str | None) -> bool:
         else []
     )
     if usable_attempts:
+        if any(is_operational_reason(str(attempt.get("reason") or "")) for attempt in usable_attempts):
+            return False
         return any(
             attempt.get("valid") is False
             and (
@@ -599,6 +617,7 @@ def geocoding_diagnostic_report(session: Any) -> dict[str, Any]:
             "average_seconds": round(ik12_duration / ik12_processed, 3) if ik12_processed else None,
             "failure_reasons": dict(ik12_failure_reasons.most_common(15)),
         },
+        "resilience": resilience_snapshot(),
         "quality": {
             "audited_lots": int(audit["audited_lots"]),
             "invalid_coordinate_count": int(audit["invalid_coordinate_count"]),
@@ -657,6 +676,11 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
     retry_state = {
         "eligible_now": 0,
         "waiting_for_retry": 0,
+        "waiting_network": 0,
+        "waiting_provider": 0,
+        "deferred_no_match": 0,
+        "deferred_validation": 0,
+        "deferred_bad_input": 0,
         "terminal": 0,
         "no_geocoding_input": 0,
     }
@@ -685,6 +709,12 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
             retry_at = retry_at.astimezone(timezone.utc).replace(tzinfo=None)
         if status == "terminal":
             state = "terminal"
+        elif status in _DEFERRED_GEO_STATUSES:
+            state = str(status)
+        elif status == "waiting_network" and retry_at is not None and retry_at > now:
+            state = "waiting_network"
+        elif status == "waiting_provider" and retry_at is not None and retry_at > now:
+            state = "waiting_provider"
         elif retry_at is not None and retry_at > now:
             state = "waiting_for_retry"
         else:
@@ -695,7 +725,12 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
         if error_message:
             reasons[_failure_reason_from_message(str(error_message))] += 1
 
-    actionable = retry_state["eligible_now"] + retry_state["waiting_for_retry"]
+    actionable = (
+        retry_state["eligible_now"]
+        + retry_state["waiting_for_retry"]
+        + retry_state["waiting_network"]
+        + retry_state["waiting_provider"]
+    )
     return {
         "unmapped_active_lots": len(rows),
         "actionable_remaining": actionable,
@@ -747,7 +782,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             .where(
                 *population,
                 pending,
-                or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+                or_(GeoFailure.status.is_(None), GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES))),
                 or_(
                     GeoFailure.id.is_(None),
                     GeoFailure.next_retry_at.is_(None),
@@ -757,6 +792,48 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         )
         or 0
     )
+    waiting_network = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                *population,
+                pending,
+                GeoFailure.status == "waiting_network",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
+        )
+        or 0
+    )
+    waiting_provider = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                *population,
+                pending,
+                GeoFailure.status == "waiting_provider",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
+        )
+        or 0
+    )
+    deferred_counts = {
+        status: int(
+            session.scalar(
+                select(func.count())
+                .select_from(ProcessedLot)
+                .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                .where(*population, pending, GeoFailure.status == status)
+            )
+            or 0
+        )
+        for status in sorted(_DEFERRED_GEO_STATUSES)
+    }
     waiting_for_retry = int(
         session.scalar(
             select(func.count())
@@ -765,7 +842,8 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             .where(
                 *population,
                 pending,
-                GeoFailure.status != "terminal",
+                GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES)),
+                GeoFailure.status.not_in(("waiting_network", "waiting_provider")),
                 GeoFailure.next_retry_at.is_not(None),
                 GeoFailure.next_retry_at > now,
             )
@@ -779,7 +857,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         .where(
             *population,
             pending,
-            GeoFailure.status != "terminal",
+            GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES)),
             GeoFailure.next_retry_at.is_not(None),
             GeoFailure.next_retry_at > now,
         )
@@ -811,7 +889,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
     sample_seconds = sum(seconds for processed, seconds in samples if processed > 0 and seconds > 0)
     rate = sample_lots / sample_seconds if sample_lots and sample_seconds else None
 
-    actionable_remaining = eligible_now + waiting_for_retry
+    actionable_remaining = eligible_now + waiting_for_retry + waiting_network + waiting_provider
     if actionable_remaining == 0:
         eta_seconds = 0
     elif eligible_now > 0 and rate:
@@ -844,7 +922,8 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             elapsed_seconds = math.ceil(float((latest.result_json or {}).get("duration_seconds") or 0))
 
     paused = is_geocoding_paused(session)
-    resolved = min(total, geocoded + terminal)
+    deferred_total = sum(deferred_counts.values())
+    resolved = min(total, geocoded + terminal + deferred_total)
     return {
         "total": total,
         "geocoded": geocoded,
@@ -855,6 +934,10 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "actionable_remaining": actionable_remaining,
         "eligible_now": eligible_now,
         "waiting_for_retry": waiting_for_retry,
+        "waiting_network": waiting_network,
+        "waiting_provider": waiting_provider,
+        "deferred": deferred_counts,
+        "deferred_total": deferred_total,
         "next_retry_at": next_retry_at.isoformat() if next_retry_at is not None else None,
         "percent": round((geocoded / total * 100) if total else 100.0, 1),
         "paused": paused,
@@ -880,6 +963,198 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             "finished_at": latest.finished_at,
         },
     }
+
+
+def _parse_failure_payload(message: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(str(message or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _geo_failure_classification(value: Any) -> dict[str, Any]:
+    if isinstance(value, GeoProviderOperationalError):
+        return {
+            "failure_class": "transient",
+            "category": value.category,
+            "provider": value.provider,
+            "attempts": [],
+            "error": str(value),
+        }
+    if isinstance(value, Exception):
+        return {
+            "failure_class": "transient",
+            "category": classify_operational_exception(value),
+            "provider": None,
+            "attempts": [],
+            "error": str(value),
+        }
+
+    attempts = getattr(value, "attempts", None) or []
+    operational = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt, dict) and is_operational_reason(str(attempt.get("reason") or ""))
+    ]
+    if operational:
+        last = operational[-1]
+        return {
+            "failure_class": "transient",
+            "category": operational_category_from_reason(str(last.get("reason") or "")) or "provider_unavailable",
+            "provider": str(last.get("provider") or last.get("source") or "") or None,
+            "attempts": attempts,
+            "error": getattr(value, "error", None) or "Operational geocoding dependency unavailable",
+        }
+
+    status = str(getattr(value, "status", "") or "")
+    reasons = [
+        str(attempt.get("reason") or "")
+        for attempt in attempts
+        if isinstance(attempt, dict) and attempt.get("valid") is False
+    ]
+    if status == "GEOCODING_BAD_INPUT":
+        failure_class = "deferred_bad_input"
+    elif reasons and all(reason == "no_coordinates" for reason in reasons):
+        failure_class = "deferred_no_match"
+    elif any(reason.endswith("_mismatch") or reason in {"low_confidence", "coordinates_out_of_range"} for reason in reasons):
+        failure_class = "deferred_validation"
+    else:
+        failure_class = "deferred_no_match"
+
+    return {
+        "failure_class": failure_class,
+        "category": failure_class.removeprefix("deferred_"),
+        "provider": None,
+        "attempts": attempts,
+        "error": getattr(value, "error", None) or "No validated coordinates",
+    }
+
+
+def _transient_retry_delay(category: str, transient_count: int) -> int:
+    schedule = (
+        _RATE_LIMIT_RETRY_DELAYS_SECONDS
+        if category == "rate_limited"
+        else _NETWORK_RETRY_DELAYS_SECONDS
+        if category in {"dns_error", "connect_timeout", "read_timeout", "connection_error", "tls_error", "external_network_down"}
+        else _PROVIDER_RETRY_DELAYS_SECONDS
+    )
+    return int(schedule[min(max(1, transient_count) - 1, len(schedule) - 1)])
+
+
+def _record_transient_geo_failure(
+    session: Any,
+    lot_id: int,
+    classification: dict[str, Any],
+) -> GeoFailure:
+    failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+    previous_payload = _parse_failure_payload(failure.error_message if failure is not None else None)
+    transient_count = int(previous_payload.get("transient_count") or 0) + 1
+    category = str(classification.get("category") or "provider_unavailable")
+    network_like_category = category in {
+        "dns_error",
+        "connect_timeout",
+        "read_timeout",
+        "connection_error",
+        "tls_error",
+        "external_network_down",
+    }
+    network_state = str((resilience_snapshot().get("network") or {}).get("state") or "unknown")
+    confirmed_network_outage = category == "external_network_down" or (
+        network_like_category and network_state == "down"
+    )
+    status = "waiting_network" if confirmed_network_outage else "waiting_provider"
+    now = utc_now()
+    payload = {
+        "error": classification.get("error"),
+        "attempts": classification.get("attempts") or [],
+        "failure_class": "transient",
+        "error_category": category,
+        "provider": classification.get("provider"),
+        "transient_count": transient_count,
+    }
+    if failure is None:
+        failure = GeoFailure(
+            lot_id=lot_id,
+            status=status,
+            attempt_count=0,
+            error_message=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000],
+            last_failed_at=now,
+        )
+        session.add(failure)
+    else:
+        # Operational outages belong to the network/provider, not to the lot.
+        # Preserve the semantic attempt budget exactly as it was.
+        failure.status = status
+        failure.error_message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
+        failure.last_failed_at = now
+        failure.resolved_at = None
+    failure.next_retry_at = now + timedelta(seconds=_transient_retry_delay(category, transient_count))
+    return failure
+
+
+def _record_deferred_geo_failure(
+    session: Any,
+    lot_id: int,
+    classification: dict[str, Any],
+) -> GeoFailure:
+    failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+    now = utc_now()
+    status = str(classification.get("failure_class") or "deferred_no_match")
+    payload = {
+        "error": classification.get("error"),
+        "attempts": classification.get("attempts") or [],
+        "failure_class": status,
+        "error_category": classification.get("category"),
+        "provider": classification.get("provider"),
+    }
+    if failure is None:
+        failure = GeoFailure(
+            lot_id=lot_id,
+            status=status,
+            attempt_count=1,
+            error_message=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000],
+            last_failed_at=now,
+            next_retry_at=None,
+        )
+        session.add(failure)
+    else:
+        failure.status = status
+        failure.attempt_count = int(failure.attempt_count or 0) + 1
+        failure.error_message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
+        failure.last_failed_at = now
+        failure.next_retry_at = None
+        failure.resolved_at = None
+    return failure
+
+
+def release_transient_geo_failures(
+    session_factory: Callable[[], Any],
+    *,
+    network_recovered: bool = False,
+    recovered_providers: set[str] | None = None,
+) -> dict[str, int]:
+    recovered_providers = recovered_providers or set()
+    released_network = 0
+    released_provider = 0
+    with session_factory() as session:
+        rows = session.scalars(
+            select(GeoFailure).where(GeoFailure.status.in_(("waiting_network", "waiting_provider")))
+        ).all()
+        now = utc_now()
+        for failure in rows:
+            payload = _parse_failure_payload(failure.error_message)
+            provider = str(payload.get("provider") or "")
+            if failure.status == "waiting_network" and network_recovered:
+                failure.status = "queued"
+                failure.next_retry_at = now
+                released_network += 1
+            elif failure.status == "waiting_provider" and provider in recovered_providers:
+                failure.status = "queued"
+                failure.next_retry_at = now
+                released_provider += 1
+        session.commit()
+    return {"network": released_network, "provider": released_provider}
 
 
 def _record_scheduled_failure(session: Any, lot_id: int, error: str) -> None:
@@ -929,16 +1204,20 @@ def _geocoding_failure_reason(value: Any) -> str:
 def _save_geo_item(session: Any, lot: ProcessedLot, value: Any) -> tuple[bool, str]:
     lot_id = lot.id
     current_input_hash = geo_input_hash(lot)
-    if isinstance(value, Exception):
-        _record_scheduled_failure(session, lot_id, str(value))
-        return False, _geocoding_failure_reason(value)
-    if apply_lot_geo_result(session, lot, value):
+    if not isinstance(value, Exception) and apply_lot_geo_result(session, lot, value):
         lot.geo_input_hash = current_input_hash
         resolve_geo_failure(session, lot_id)
         return True, (value.source or "unknown")
+
     lot.geo_input_hash = current_input_hash
-    _record_scheduled_failure(session, lot_id, _geocoding_failure_message(value))
-    return False, _geocoding_failure_reason(value)
+    classification = _geo_failure_classification(value)
+    failure_class = str(classification["failure_class"])
+    if failure_class == "transient":
+        _record_transient_geo_failure(session, lot_id, classification)
+        return False, f"transient:{classification.get('category') or 'provider_unavailable'}"[:160]
+
+    _record_deferred_geo_failure(session, lot_id, classification)
+    return False, failure_class[:160]
 
 
 def _save_geo_chunk(
@@ -980,7 +1259,17 @@ def _save_geo_item_isolated(
             return outcome
     except Exception as exc:
         with session_factory() as session:
-            _record_scheduled_failure(session, item.lot_id, str(exc))
+            _record_transient_geo_failure(
+                session,
+                item.lot_id,
+                {
+                    "failure_class": "transient",
+                    "category": "provider_unavailable",
+                    "provider": "database",
+                    "attempts": [],
+                    "error": f"persistence:{exc.__class__.__name__}",
+                },
+            )
             session.commit()
         return False, f"persistence:{exc.__class__.__name__}"[:160]
 
@@ -1073,7 +1362,7 @@ def _geocode_pending_lots_unlocked(
                     GeoFailure.next_retry_at.is_(None),
                     GeoFailure.next_retry_at <= now,
                 ),
-                or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+                or_(GeoFailure.status.is_(None), GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES))),
             )
             .order_by(
                 case(
