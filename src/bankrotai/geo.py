@@ -416,7 +416,7 @@ class CadastralGeocoder:
                 self._open_circuit("nspd")
                 record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
                 logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
-                raise GeoProviderUnavailable("nspd", "tls_error", str(e)) from e
+                raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
             except requests.RequestException as e:
                 self._open_circuit("nspd")
                 category = classify_transport_exception(e)
@@ -1182,7 +1182,12 @@ def resolve_lot_geo(
             note_operational(exc, nspd_source, candidate_index=candidate_index)
             nspd_candidate = None
             nspd_result = None
-        except NSPDTLSVerificationError:
+        except NSPDTLSVerificationError as exc:
+            note_operational(
+                GeoProviderUnavailable("nspd", "tls_error", str(exc)),
+                nspd_source,
+                candidate_index=candidate_index,
+            )
             nspd_candidate = None
             nspd_result = None
         else:
