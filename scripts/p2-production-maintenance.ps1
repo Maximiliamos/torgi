@@ -166,7 +166,7 @@ if ($Apply -and (Get-FreeGb) -lt $CriticalFreeGb) {
             Remove-Item -LiteralPath $dump.FullName -Force
             $metadataPath = Join-Path $drBackupRoot "$stem.json"
             if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
-            if ((Get-FreeGb) -ge 12) { break }
+            if ((Get-FreeGb) -ge $WarningFreeGb) { break }
         }
     }
 
