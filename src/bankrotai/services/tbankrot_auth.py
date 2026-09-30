@@ -63,6 +63,11 @@ async def broker_status(settings: AppSettings) -> dict[str, Any]:
     return dict(response.json())
 
 
+async def probe_saved_session(settings: AppSettings) -> dict[str, Any]:
+    response = await _request(settings, "GET", "/probe", timeout=40.0)
+    return dict(response.json())
+
+
 async def start_browser_session(settings: AppSettings) -> dict[str, Any]:
     response = await _request(settings, "POST", "/session/start", timeout=40.0)
     return dict(response.json())
