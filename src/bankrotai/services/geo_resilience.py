@@ -31,6 +31,7 @@ _NETWORK_RECOVERY_SUCCESSES = 2
 _LOCK = threading.RLock()
 _PROVIDER_STATE: dict[str, dict[str, Any]] = {}
 _NETWORK_STATE: dict[str, Any] = {}
+_REDIS_DISABLED_UNTIL = 0.0
 
 
 _OPERATIONAL_CATEGORIES = frozenset({
@@ -63,6 +64,8 @@ def _now_iso() -> str:
 
 
 def _redis() -> Redis | None:
+    if time.monotonic() < _REDIS_DISABLED_UNTIL:
+        return None
     try:
         return Redis.from_url(
             get_settings().redis_url,
@@ -75,6 +78,7 @@ def _redis() -> Redis | None:
 
 
 def _read_redis_json(key: str) -> dict[str, Any] | None:
+    global _REDIS_DISABLED_UNTIL
     client = _redis()
     if client is None:
         return None
@@ -85,6 +89,7 @@ def _read_redis_json(key: str) -> dict[str, Any] | None:
         value = json.loads(raw)
         return value if isinstance(value, dict) else None
     except Exception:
+        _REDIS_DISABLED_UNTIL = time.monotonic() + 30.0
         return None
     finally:
         try:
@@ -94,12 +99,14 @@ def _read_redis_json(key: str) -> dict[str, Any] | None:
 
 
 def _write_redis_json(key: str, value: dict[str, Any]) -> None:
+    global _REDIS_DISABLED_UNTIL
     client = _redis()
     if client is None:
         return
     try:
         client.set(key, json.dumps(value, ensure_ascii=False, separators=(",", ":")), ex=_STATE_TTL_SECONDS)
     except Exception:
+        _REDIS_DISABLED_UNTIL = time.monotonic() + 30.0
         pass
     finally:
         try:
