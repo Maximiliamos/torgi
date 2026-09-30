@@ -308,7 +308,7 @@ def test_failed_batch_reports_aggregate_reason_without_address(monkeypatch) -> N
     result = geo_backfill.geocode_pending_lots(scope, limit=1)
 
     assert result["failed"] == 1
-    assert result["failure_reasons"] == {"photon:locality_name_mismatch": 1}
+    assert result["failure_reasons"] == {"deferred_validation": 1}
     assert secret_address not in str(result["failure_reasons"])
 
 
@@ -791,7 +791,7 @@ def test_strategy_refresh_requeues_only_eligible_resolver_failures_once() -> Non
 
 
 def test_strategy_refresh_rejects_nonretryable_structured_attempts() -> None:
-    for reason in ("low_confidence", "coordinates_out_of_range", "provider_timeout"):
+    for reason in ("low_confidence", "coordinates_out_of_range", "provider_timeout", "operational:read_timeout"):
         assert not geo_backfill._is_strategy_retryable_failure(json.dumps({
             "error": "No validated geocoding result",
             "attempts": [{"source": "photon", "valid": False, "reason": reason}],
@@ -880,3 +880,278 @@ def test_geocoding_batch_prioritizes_cfo_before_newer_non_cfo(monkeypatch) -> No
     with scope() as session:
         assert session.get(ProcessedLot, cfo_id).current_geo_lat == 57.6261
         assert session.get(ProcessedLot, other_id).current_geo_lat is None
+
+
+
+def test_network_failure_does_not_consume_lot_retry_budget(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="p6-network-wait",
+            source="test",
+            source_system="test",
+            title="Склад",
+            description="",
+            category="commercial",
+            address="Москва, Тверская улица, дом 1",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+        session.add(
+            GeoFailure(
+                lot_id=lot.id,
+                status="queued",
+                attempt_count=5,
+                error_message="previous semantic attempt",
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now(),
+            )
+        )
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "resolve_lot_geo",
+        lambda *_args, **_kwargs: CadastralObjectResult(
+            query="Москва",
+            source="geocoding_chain",
+            confidence="none",
+            status="GEOCODING_DEFERRED",
+            attempts=[
+                {
+                    "source": "nspd_cadastral",
+                    "provider": "nspd",
+                    "valid": False,
+                    "reason": "operational:read_timeout",
+                }
+            ],
+            error="Operational geocoding dependency unavailable",
+        ),
+    )
+
+    first = geo_backfill.geocode_pending_lots(scope, limit=1)
+    second = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert first["failed"] == 1
+    assert first["failure_reasons"] == {"transient:read_timeout": 1}
+    assert second["queued"] == 0
+    with scope() as session:
+        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        assert failure is not None
+        assert failure.status == "waiting_network"
+        assert failure.attempt_count == 5
+        assert failure.next_retry_at is not None
+        payload = json.loads(failure.error_message)
+        assert payload["failure_class"] == "transient"
+        assert payload["error_category"] == "read_timeout"
+        assert payload["provider"] == "nspd"
+        assert payload["transient_count"] == 1
+
+
+def test_semantic_no_match_moves_to_deferred_queue_without_multiday_retry(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="p6-deferred-no-match",
+            source="test",
+            source_system="test",
+            title="Склад",
+            description="",
+            category="commercial",
+            address="Неизвестный адрес",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "resolve_lot_geo",
+        lambda *_args, **_kwargs: CadastralObjectResult(
+            query="Неизвестный адрес",
+            source="geocoding_chain",
+            confidence="none",
+            status="GEOCODING_FAILED",
+            attempts=[
+                {"source": "address_geocoder", "valid": False, "reason": "no_coordinates"},
+                {"source": "address_geocoder_alt", "valid": False, "reason": "no_coordinates"},
+            ],
+            error="No validated geocoding result",
+        ),
+    )
+
+    first = geo_backfill.geocode_pending_lots(scope, limit=1)
+    second = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert first["failed"] == 1
+    assert first["failure_reasons"] == {"deferred_no_match": 1}
+    assert second["queued"] == 0
+    with scope() as session:
+        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        progress = geo_backfill.geocoding_progress(session)
+        assert failure is not None
+        assert failure.status == "deferred_no_match"
+        assert failure.next_retry_at is None
+        assert failure.attempt_count == 1
+        assert progress["actionable_remaining"] == 0
+        assert progress["deferred"]["deferred_no_match"] == 1
+        assert progress["deferred_total"] == 1
+        assert progress["resolved"] == 1
+        assert progress["resolved_percent"] == 100.0
+
+
+def test_validation_mismatch_is_deferred_not_retried_on_timer(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        lot = ProcessedLot(
+            external_id="p6-deferred-validation",
+            source="test",
+            source_system="test",
+            title="Склад",
+            description="",
+            category="commercial",
+            address="Ярославль, улица Свободы, дом 1",
+            auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        lot_id = lot.id
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "resolve_lot_geo",
+        lambda *_args, **_kwargs: CadastralObjectResult(
+            query="Ярославль",
+            source="geocoding_chain",
+            confidence="none",
+            status="GEOCODING_FAILED",
+            attempts=[
+                {
+                    "source": "address_geocoder",
+                    "valid": False,
+                    "reason": "locality_name_mismatch",
+                }
+            ],
+            error="No validated geocoding result",
+        ),
+    )
+
+    result = geo_backfill.geocode_pending_lots(scope, limit=1)
+
+    assert result["failure_reasons"] == {"deferred_validation": 1}
+    with scope() as session:
+        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        assert failure is not None
+        assert failure.status == "deferred_validation"
+        assert failure.next_retry_at is None
+
+
+def test_recovery_probe_can_release_network_and_provider_waiters() -> None:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    with scope() as session:
+        lots = []
+        for name in ("network", "provider"):
+            lot = ProcessedLot(
+                external_id=f"p6-release-{name}",
+                source="test",
+                source_system="test",
+                title=name,
+                description="",
+                category="commercial",
+                address=f"Москва, Тверская, {name}",
+                auction_status="active",
+            )
+            session.add(lot)
+            session.flush()
+            lots.append(lot.id)
+        session.add_all([
+            GeoFailure(
+                lot_id=lots[0],
+                status="waiting_network",
+                attempt_count=4,
+                error_message=json.dumps({
+                    "failure_class": "transient",
+                    "provider": "nspd",
+                    "error_category": "dns_error",
+                    "transient_count": 1,
+                }),
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now() + timedelta(hours=1),
+            ),
+            GeoFailure(
+                lot_id=lots[1],
+                status="waiting_provider",
+                attempt_count=3,
+                error_message=json.dumps({
+                    "failure_class": "transient",
+                    "provider": "photon",
+                    "error_category": "local_service_unavailable",
+                    "transient_count": 1,
+                }),
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now() + timedelta(hours=1),
+            ),
+        ])
+
+    released = geo_backfill.release_transient_geo_failures(
+        scope,
+        network_recovered=True,
+        recovered_providers={"photon"},
+    )
+
+    assert released == {"network": 1, "provider": 1}
+    with scope() as session:
+        failures = session.scalars(select(GeoFailure).order_by(GeoFailure.lot_id)).all()
+        assert [failure.status for failure in failures] == ["queued", "queued"]
+        assert [failure.attempt_count for failure in failures] == [4, 3]
+        assert all(failure.next_retry_at is not None and failure.next_retry_at <= utc_now() for failure in failures)
