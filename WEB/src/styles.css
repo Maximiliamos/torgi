@@ -717,6 +717,16 @@ textarea, input { font: inherit; }
 .mapControlPanel .mapAllRussiaButton { background:#20a45b;border-color:#20a45b;border-radius:5px;color:#fff;font-weight:700;min-height:42px;margin-bottom:3px; }
 .mapOperationProgress { background:#f4f8f5;border:1px solid #b9d8c5;border-radius:6px;display:flex;flex-direction:column;gap:9px;padding:9px; }
 .mapOperationProgress>div { display:flex;flex-direction:column;gap:4px; }
+.mapOperationsOverview { border-bottom:1px solid #cfe0d5;padding-bottom:8px; }
+.mapOperationsOverviewHeader { align-items:center!important;display:flex!important;flex-direction:row!important;justify-content:space-between; }
+.mapOperationsOverviewHeader span { background:#fff4d6;border:1px solid #ebcd7c;border-radius:999px;color:#856000!important;font-size:10px;padding:3px 7px; }
+.mapOperationsOverviewHeader span[data-ready="true"] { background:#e7f7ee;border-color:#9bd2b1;color:#17683b!important; }
+.mapOperationsMetrics { display:grid!important;gap:6px!important;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:3px; }
+.mapOperationsMetrics>div { background:#fff;border:1px solid #dce9e1;border-radius:5px;display:block!important;min-width:0;padding:6px; }
+.mapOperationsMetrics small { color:#7a8b80!important;display:block;font-size:9px;text-transform:uppercase; }
+.mapOperationsMetrics b { color:#234535;display:block;font-size:13px;line-height:1.25;margin:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.mapOperationsMetrics span { color:#66756c!important;display:block;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.mapOperationsPaused { background:#fff8e8;border-radius:4px;color:#8a5b00!important;margin-top:3px;padding:4px 6px; }
 .mapOperationProgress strong { color:#17683b;font-size:13px; }
 .mapOperationProgress span,.mapOperationProgress small { color:#3f4a44;line-height:1.3; }
 .mapOperationProgress progress { accent-color:#20a45b;height:9px;width:100%; }
