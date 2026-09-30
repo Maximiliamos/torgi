@@ -78,6 +78,7 @@ celery_app.conf.update(
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.probe_geo_network_health_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
@@ -96,6 +97,11 @@ celery_app.conf.update(
             "task": "bankrotai.tasks.recover_ik12_geo_task",
             "schedule": 300.0,
             "options": {"expires": 240},
+        },
+        "probe-geo-network-health": {
+            "task": "bankrotai.tasks.probe_geo_network_health_task",
+            "schedule": 60.0,
+            "options": {"expires": 45},
         },
         "recalculate-public-offer-prices": {
             "task": "bankrotai.tasks.recalculate_public_offer_prices_task",
@@ -231,6 +237,14 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
             }
     return result
 
+
+
+@celery_app.task(name="bankrotai.tasks.probe_geo_network_health_task")
+def probe_geo_network_health_task() -> dict[str, Any]:
+    """Continuously distinguish local GEO health from external DNS/route/provider failures."""
+    from bankrotai.services.geo_resilience import probe_geo_network_health
+
+    return probe_geo_network_health()
 
 def _schedule_geocode_continuation(continuation_depth: int) -> dict[str, str | int]:
     """Drain a bounded campaign while beat remains the long-term recovery watchdog."""
