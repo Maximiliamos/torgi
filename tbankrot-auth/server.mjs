@@ -94,7 +94,7 @@ async function saveCookies(context) {
   return { captured_at: capturedAt, cookie_count: cookies.length };
 }
 
-async function verifyContext(context) {
+async function inspectAccess(context) {
   const page = await context.newPage();
   try {
     await page.goto(VERIFY_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -105,13 +105,37 @@ async function verifyContext(context) {
       const cards = document.querySelectorAll(".lot_container").length;
       return { blocked, prompt, cards, title: document.title || "" };
     });
-    if (result.blocked && result.prompt) {
-      return { ok: false, state: "auth_required", cards: result.cards };
-    }
-    const saved = await saveCookies(context);
-    return { ok: true, state: "authenticated", cards: result.cards, ...saved };
+    return {
+      ok: !(result.blocked && result.prompt),
+      state: result.blocked && result.prompt ? "auth_required" : "authenticated",
+      cards: result.cards,
+    };
   } finally {
     await page.close().catch(() => undefined);
+  }
+}
+
+async function verifyContext(context) {
+  const result = await inspectAccess(context);
+  if (!result.ok) return result;
+  const saved = await saveCookies(context);
+  return { ...result, ...saved };
+}
+
+async function probeSavedSession() {
+  const cookies = await loadCookies();
+  if (!cookies.length) return { ok: false, state: "auth_required", saved: false };
+  const context = await browser.newContext({
+    viewport: VIEWPORT,
+    locale: "ru-RU",
+    timezoneId: "Europe/Moscow",
+  });
+  try {
+    await context.addCookies(cookies);
+    const result = await inspectAccess(context);
+    return { ...result, saved: true };
+  } finally {
+    await context.close().catch(() => undefined);
   }
 }
 
@@ -234,6 +258,9 @@ const server = http.createServer(async (request, response) => {
         active_session_id: active?.id || null,
         viewport: VIEWPORT,
       });
+    }
+    if (url.pathname === "/probe" && request.method === "GET") {
+      return json(response, 200, await probeSavedSession());
     }
     if (url.pathname === "/session/start" && request.method === "POST") {
       const session = await createSession();
