@@ -20,3 +20,13 @@ def test_nationwide_ingestion_uses_progress_watchdog_with_emergency_ceiling() ->
     ):
         assert task.soft_time_limit == tasks._DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS
         assert task.time_limit == tasks._DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS
+
+
+
+def test_tbankrot_is_always_isolated_from_automatic_source_sets(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "get_app_setting", lambda *_args, **_kwargs: "false")
+
+    assert tasks._source_is_paused("tbankrot.ru") is True
+    automatic = tasks._unpaused_source_specs(tasks.default_source_specs())
+    assert "tbankrot.ru" not in {spec.source_id for spec in automatic}
+    assert "tbankrot.ru" in {spec.source_id for spec in tasks.source_full_specs("tbankrot.ru")}
