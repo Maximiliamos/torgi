@@ -75,7 +75,7 @@ def classify_transport_exception(exc: BaseException) -> str:
     if isinstance(exc, requests.exceptions.Timeout) or "timed out" in text or "timeout" in text:
         return "read_timeout"
     if isinstance(exc, requests.exceptions.ConnectionError):
-        if any(marker in text for marker in ("name resolution", "getaddrinfo", "no address associated", "nodename")):
+        if any(marker in text for marker in ("name resolution", "nameresolution", "failed to resolve", "getaddrinfo", "no address associated", "nodename")):
             return "dns_error"
         return "connection_error"
     if isinstance(exc, socket.gaierror):
