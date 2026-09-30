@@ -98,7 +98,7 @@ from bankrotai.tasks import (
     schedule_nationwide_lot_sync,
     schedule_region_sync,
 )
-from bankrotai.services.ingestion import SyncAlreadyRunningError
+from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -1076,11 +1076,14 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             ).all()
         }
         source_health = list_source_health(session)
+        configured_source_systems = {str(spec.source_id) for spec in default_source_specs()}
         source_items: list[dict[str, Any]] = []
         ready_sources = 0
         active_source_total = 0
         last_complete_updates: list[datetime] = []
         for item in source_health:
+            if item.source_system not in configured_source_systems:
+                continue
             paused = bool(paused_settings.get(item.source_system, False))
             ready = item.coverage_status == "fresh"
             if not paused:
