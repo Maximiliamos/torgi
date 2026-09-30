@@ -111,6 +111,10 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "beforeFreeGb -lt 20" in deploy
     assert "docker system prune" not in deploy
     assert "less than 4 GB free" in deploy
+    assert "$warningFreeGb = 20" in deploy
+    assert "$criticalFreeGb = 10" in deploy
+    assert "Post-deploy cleanup skipped" in deploy
+    assert "production deployment remains healthy" in deploy
     assert "restore_verification -eq 'passed'" in deploy
     assert "Get-FreeGb) -lt $CriticalFreeGb" in script
     assert "Invoke-DockerCleanup" in script
