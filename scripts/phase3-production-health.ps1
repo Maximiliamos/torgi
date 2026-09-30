@@ -51,6 +51,56 @@ Add-Check -Name 'disk-c-headroom' -Ok ($diskFreeGb -ge 25) -Severity 'warning' -
     recommended_gb = 25
 }
 
+$networkFingerprintPath = 'C:\ProgramData\BankrotAI\network-fingerprint.sha256'
+try {
+    $defaultRoutes = @(
+        Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+            Where-Object State -eq 'Alive' |
+            Sort-Object RouteMetric, InterfaceMetric |
+            Select-Object InterfaceIndex, InterfaceAlias, RouteMetric, InterfaceMetric
+    )
+    $upAdapters = @(
+        Get-NetAdapter -ErrorAction Stop |
+            Where-Object Status -eq 'Up' |
+            Select-Object ifIndex, Name, InterfaceDescription
+    )
+    $dnsState = @(
+        Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.ServerAddresses -and $_.ServerAddresses.Count -gt 0 } |
+            Select-Object InterfaceIndex, InterfaceAlias, @{Name='ServerCount';Expression={$_.ServerAddresses.Count}}
+    )
+    $fingerprintInput = [ordered]@{
+        routes = $defaultRoutes
+        adapters = $upAdapters
+        dns = $dnsState
+    } | ConvertTo-Json -Depth 6 -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($fingerprintInput)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $fingerprint = ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+    $previousFingerprint = if (Test-Path -LiteralPath $networkFingerprintPath) {
+        (Get-Content -LiteralPath $networkFingerprintPath -Raw).Trim()
+    } else { '' }
+    $fingerprintChanged = [bool]($previousFingerprint -and $previousFingerprint -ne $fingerprint)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $networkFingerprintPath) | Out-Null
+    Set-Content -LiteralPath $networkFingerprintPath -Value $fingerprint -Encoding ascii
+    Add-Check -Name 'network-fingerprint' -Ok $true -Severity 'warning' -Details @{
+        fingerprint = $fingerprint
+        changed = $fingerprintChanged
+        default_route_count = $defaultRoutes.Count
+        active_adapter_count = $upAdapters.Count
+        dns_interface_count = $dnsState.Count
+    }
+} catch {
+    Add-Check -Name 'network-fingerprint' -Ok $true -Severity 'warning' -Details @{
+        unavailable = $true
+        error = $_.Exception.Message
+    }
+}
+
 foreach ($url in @('http://127.0.0.1:18000/health/live', 'http://127.0.0.1:18000/health/ready')) {
     try { $statusCode = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Uri $url).StatusCode } catch { $statusCode = 0 }
     Add-Check -Name $url -Ok ($statusCode -eq 200) -Details @{ status = $statusCode }
