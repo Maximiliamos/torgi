@@ -659,12 +659,25 @@ jobs:
       - name: Reclaim obsolete Docker layers after successful deployment
         shell: powershell
         run: |
+          function Invoke-DockerCleanup {
+            param([string[]]$Arguments, [int]$TimeoutSeconds = 300)
+            $argLine = ($Arguments | ForEach-Object {
+              if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+            }) -join ' '
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $argLine -PassThru -WindowStyle Hidden
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Write-Warning "Post-deploy Docker cleanup timed out: docker $argLine"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              return $false
+            }
+            return $process.ExitCode -eq 0
+          }
+
           $before = Get-PSDrive -Name C
           $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          docker system prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy cleanup failed" }
-          docker builder prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy builder cleanup failed" }
+          [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
+          [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+          [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
           $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
