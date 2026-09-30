@@ -112,5 +112,18 @@ def test_home_emergency_docker_probe_is_bounded_and_recovers_service() -> None:
 
     assert "Invoke-DockerEmergency" in workflow
     assert "WaitForExit($TimeoutSeconds * 1000)" in workflow
-    assert "Restart-Service -Name 'com.docker.service' -Force" in workflow
+    assert "wsl.exe" in workflow
+    assert "@('--shutdown')" in workflow
     assert "Docker daemon remains unavailable after bounded recovery" in workflow
+
+
+def test_home_recovery_resets_wsl_without_unregistering_docker_data() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "wsl.exe" in workflow
+    assert "@('--shutdown')" in workflow
+    assert "Docker Desktop.exe" in workflow
+    assert "com.docker.backend" in workflow
+    assert "--unregister" not in workflow
+    assert "Skipping Docker prune because absolute free space is already >= 20 GB" in workflow
+    assert "production health threshold of 10 GB free" in workflow
