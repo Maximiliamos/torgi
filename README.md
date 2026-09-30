@@ -87,6 +87,11 @@ TBankrot работает как изолированный authenticated source
 проверки сессии, хранения cookies и source-only reconciliation описаны в
 [docs/p5-tbankrot-auth-center.md](docs/p5-tbankrot-auth-center.md).
 
+P6 разделяет сетевые/provider-сбои GEO и реальные ошибки данных, вводит
+circuit breakers, минутный network probe и безопасные transient/deferred
+очереди. Контракт описан в
+[docs/p6-network-geo-resilience.md](docs/p6-network-geo-resilience.md).
+
 Для текущего масштаба (до четырёх пользователей) приоритет — воспроизводимый
 fail-closed deploy и проверяемое восстановление, а не дополнительный enterprise-слой.
 После production reconciliation отдельный P1-контур сверяет текущие координаты и
