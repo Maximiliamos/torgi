@@ -8,11 +8,12 @@ import {
 import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
-  fetchSavedSearches, fetchSources, fetchStats, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
+  fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
+import { TBankrotView } from "./features/tbankrot/TBankrotView";
 import "./styles.css";
 
 const CATEGORIES = [
@@ -179,7 +180,7 @@ function ReliabilityView({ refreshToken }: { refreshToken: number }) {
   return <section className="reliabilityGrid"><div className="pageCard"><h2>Полнота данных</h2><div className="metricGrid">{Object.entries(quality).map(([key, value]) => <div key={key}><span>{key.split("_").join(" ")}</span><strong>{value}</strong></div>)}</div></div><div className="pageCard"><h2>Состояние источников</h2><div className="sourceList">{sources.map((source) => <article key={source.source_system}><i className={source.freshness_status === "fresh" && source.coverage_status === "fresh" ? "ok" : "warn"} /><div><strong>{source.source_system}</strong><span>{source.status} · свежесть {source.freshness_status} · полный снимок {source.coverage_status} · {source.items_seen} записей</span>{source.last_success_at && <small>Последнее успешное обновление: {new Date(source.last_success_at).toLocaleString("ru-RU")}</small>}<small>Последний проход: {source.last_pages_scanned} стр. · +{source.last_items_inserted} / Δ{source.last_items_updated} / архив {source.last_items_archived} / ошибок {source.last_items_failed}{source.last_duration_ms !== null ? ` · ${Math.round(source.last_duration_ms / 1000)} c` : ""}</small>{source.last_error && <small>{source.last_error_category || "ошибка"}: {source.last_error}</small>}</div></article>)}</div><button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>{diagnostics && <pre className="diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>}{error && <State error>{error}</State>}</div></section>;
 }
 
-const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["reliability", "Надёжность", <Activity />]];
+const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["tbankrot", "TBankrot", <ShieldCheck />], ["reliability", "Надёжность", <Activity />]];
 function ServerClock() {
   const [anchor, setAnchor] = React.useState<{ server: number; local: number; synchronized: boolean } | null>(null);
   const [tick, setTick] = React.useState(Date.now());
@@ -188,21 +189,33 @@ function ServerClock() {
   return <div className="globalClock" aria-label="Текущее московское время"><span>Москва · {value}</span><i className={anchor?.synchronized ? "online" : "fallback"} title={anchor?.synchronized ? "Время проверено по онлайн-источнику" : "Используются системные часы"} /></div>;
 }
 
-export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
+export function App({ username = "Пользователь", role = "reader", onLogout = () => undefined }: { username?: string; role?: string; onLogout?: () => void }) {
   const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true);
+  const [tbankrotNeedsAuth, setTbankrotNeedsAuth] = React.useState(false);
+  React.useEffect(() => {
+    if (role !== "admin") return;
+    let cancelled = false;
+    const check = () => fetchTBankrotAuthStatus()
+      .then((value) => { if (!cancelled) setTbankrotNeedsAuth(value.requires_auth); })
+      .catch(() => undefined);
+    void check();
+    const timer = window.setInterval(check, 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [role, refreshToken]);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
   const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
+  const visibleNav = nav.filter(([id]) => id !== "tbankrot" || role === "admin");
   return <main className="appShell">
     <nav className="appRail" aria-label="Основная навигация">
       <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
-      {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}</button>)}
+      {visibleNav.map(([id, text, icon]) => <button key={id} title={id === "tbankrot" && tbankrotNeedsAuth ? "TBankrot — требуется авторизация" : text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}{id === "tbankrot" && tbankrotNeedsAuth && <span className="sourceAuthAlert" aria-label="Требуется авторизация" />}</button>)}
       <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
       <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
     </nav>
     <section className="appWorkspace">
-      {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
-      {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>}
+      {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{visibleNav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
+      {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "tbankrot" && <TBankrotView refreshToken={refreshToken} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>}
       <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} statusContent={view === "map" ? <ServerClock /> : undefined} />}</div>
       {view !== "map" && <ServerClock />}
     </section>
@@ -230,7 +243,7 @@ export function AuthenticatedApp() {
   if (checking) return <main className="authScreen"><Loader2 className="spin" /></main>;
   if (startupError) return <main className="authScreen"><section className="authCard" role="alert"><span className="eyebrow">BankrotAI Web</span><h1>Нет связи с сервисом</h1><State error>{startupError}</State><button className="primaryButton" onClick={() => void checkSession()}><RefreshCcw size={16} />Повторить</button></section></main>;
   if (!user) return <main className="authScreen"><form className="authCard" onSubmit={async (event) => { event.preventDefault(); setError(""); try { setUser(await login(username, password)); setPassword(""); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка авторизации"); } }}><span className="eyebrow">BankrotAI Web</span><h1>Вход</h1><label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label><label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>{error && <State error>{error}</State>}<button className="primaryButton">Войти</button></form></main>;
-  return <App username={user.username} onLogout={async () => { await logout(); await clearMapCache(); setUser(null); }} />;
+  return <App username={user.username} role={user.role} onLogout={async () => { await logout(); await clearMapCache(); setUser(null); }} />;
 }
 
 const root = document.getElementById("root"); if (root) createRoot(root).render(<AuthenticatedApp />);

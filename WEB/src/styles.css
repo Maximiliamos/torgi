@@ -851,3 +851,38 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
 @media (max-width:1100px) { .searchForm { grid-template-columns:repeat(3,1fr); }.onlineGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }.mapDesktopShell { grid-template-columns:330px minmax(0,1fr); }.toolGrid { grid-template-columns:1fr; } }
 @media (max-width:760px) { .appShell { grid-template-columns:48px minmax(0,1fr); }.appRail { padding:7px 3px; }.appRail button { height:39px;width:39px; }.pageHeader { padding:14px 12px; }.viewContainer { padding:0 12px 12px; }.viewContainer--map { padding:0; }.mainNav { overflow-x:auto; }.mainNav button { flex:0 0 auto; }.searchForm,.onlineGrid,.reliabilityGrid,.toolGrid,.formCard,.procedureGrid { grid-template-columns:1fr; }.mapDesktopShell { display:flex;flex-direction:column;height:auto; }.mapDesktopCanvas { height:58vh;min-height:430px;order:0; }.mapDesktopSidebar { border-bottom:1px solid #c9cfd6;border-right:0;max-height:620px;order:1; }.yandexDesktopFrame { height:100%; }.mapBottomStatus { font-size:10px; }.mapAppState { display:none; }.dealHeader { display:block; } }
+
+
+/* P5 TBankrot Auth Center */
+.tbankrotAuthPage { display:grid;gap:14px;padding-bottom:24px; }
+.tbankrotHero { align-items:start;background:#fff;border:1px solid #dce3e9;border-radius:10px;display:flex;gap:18px;justify-content:space-between;padding:18px; }
+.tbankrotHero h2 { margin:4px 0 8px; }.tbankrotHero p { color:#667085;line-height:1.5;margin:0;max-width:760px; }
+.tbankrotState { align-items:center;background:#f3f5f7;border:1px solid #d5dce3;border-radius:9px;display:flex;gap:9px;min-width:250px;padding:11px 13px; }
+.tbankrotState--ok { background:#eaf8f1;border-color:#9fd2b6;color:#17683b; }.tbankrotState--warn { background:#fff8e6;border-color:#e8c86d;color:#8a5b00; }
+.tbankrotState strong,.tbankrotState span { display:block; }.tbankrotState span { font-size:11px;margin-top:2px;opacity:.8; }
+.tbankrotStatusGrid { display:grid;gap:10px;grid-template-columns:repeat(4,minmax(0,1fr)); }
+.tbankrotStatusGrid article { background:#fff;border:1px solid #dce3e9;border-radius:8px;padding:12px 14px; }
+.tbankrotStatusGrid span { color:#667085;display:block;font-size:11px; }.tbankrotStatusGrid strong { display:block;font-size:16px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.tbankrotNotice { align-items:center;background:#eef8f3;border:1px solid #b8ddca;border-radius:8px;color:#17683b;display:flex;gap:8px;padding:10px 12px; }
+.tbankrotNotice--error { background:#fff1f1;border-color:#e5aaaa;color:#a52626; }
+.tbankrotActionCard { align-items:center;background:#fff;border:1px solid #dce3e9;border-radius:10px;display:flex;gap:20px;justify-content:space-between;padding:18px; }
+.tbankrotActionCard h3 { margin:0 0 7px; }.tbankrotActionCard p { color:#667085;line-height:1.5;margin:0;max-width:720px; }
+.tbankrotActions { display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end; }
+.tbankrotBrowserCard { background:#fff;border:1px solid #ccd5dd;border-radius:10px;box-shadow:0 8px 30px #1112;overflow:hidden; }
+.tbankrotBrowserCard>header { align-items:center;background:#f5f7f9;border-bottom:1px solid #d9e0e6;display:flex;gap:12px;justify-content:space-between;padding:9px 12px; }
+.tbankrotBrowserCard>header strong,.tbankrotBrowserCard>header span { display:block; }.tbankrotBrowserCard>header span { color:#667085;font-size:10px;margin-top:2px;max-width:720px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.tbankrotBrowserCard>header>div:last-child { display:flex;gap:6px; }.tbankrotBrowserCard>header a,.tbankrotBrowserCard>header button { align-items:center;background:#fff;border:1px solid #cbd5df;border-radius:5px;color:#52606d;display:flex;height:31px;justify-content:center;width:34px; }
+.tbankrotBrowserViewport { aspect-ratio:1280/760;background:#e9edf1;overflow:hidden;position:relative;width:100%; }
+.tbankrotBrowserViewport img { cursor:default;display:block;height:100%;object-fit:contain;user-select:none;width:100%; }
+.tbankrotBrowserLoading { align-items:center;color:#667085;display:flex;gap:8px;height:100%;justify-content:center; }
+.tbankrotKeyboardCapture { height:1px;left:-10000px;opacity:0;position:absolute;top:0;width:1px; }
+.tbankrotBrowserCard>footer { align-items:center;background:#f8fafb;border-top:1px solid #d9e0e6;display:flex;gap:12px;justify-content:space-between;padding:10px 12px; }
+.tbankrotBrowserCard>footer span { color:#667085;font-size:11px;line-height:1.4;max-width:760px; }
+@media (max-width:900px) {
+  .tbankrotHero,.tbankrotActionCard,.tbankrotBrowserCard>footer { align-items:stretch;flex-direction:column; }
+  .tbankrotState { min-width:0; }.tbankrotStatusGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:560px) { .tbankrotStatusGrid { grid-template-columns:1fr; } }
+
+.sourceAuthAlert { background:#d64545;border:2px solid #fff;border-radius:50%;height:9px;position:absolute;right:5px;top:5px;width:9px; }
+.appRail button { position:relative; }

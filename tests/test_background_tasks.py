@@ -188,7 +188,7 @@ def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> No
     assert created == {
         "triggered_by": "celery-beat",
         "trigger_type": "scheduled_fast",
-        "total_sources": 5,
+        "total_sources": 4,
     }
 
 
@@ -254,8 +254,8 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
             "status": "partial",
             "sources": [
                 {"source_system": "torgi.gov.ru", "status": "success"},
-                {"source_system": "tbankrot.ru", "status": "failed"},
-                {"source_system": "tbankrot.ru", "status": "failed"},
+                {"source_system": "bidexpert.ru", "status": "failed"},
+                {"source_system": "bidexpert.ru", "status": "failed"},
             ],
         },
     )
@@ -267,10 +267,10 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
 
     result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
 
-    assert queued == [("tbankrot.ru", "fast", tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS)]
+    assert queued == [("bidexpert.ru", "fast", tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS)]
     assert result["targeted_source_retries"] == [
         {
-            "source_system": "tbankrot.ru",
+            "source_system": "bidexpert.ru",
             "status": "queued",
             "task_id": "source-retry-1",
             "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
@@ -299,12 +299,12 @@ def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) 
     monkeypatch.setattr(
         tasks.nationwide_lot_sync_task,
         "run",
-        lambda _run_id, _mode: {"status": "failed", "sources": [{"source_system": "tbankrot.ru", "status": "failed"}]},
+        lambda _run_id, _mode: {"status": "failed", "sources": [{"source_system": "bidexpert.ru", "status": "failed"}]},
     )
     monkeypatch.setattr(tasks.automatic_nationwide_source_retry_task, "retry", retry)
 
     with pytest.raises(Retry):
-        tasks.automatic_nationwide_source_retry_task.run("tbankrot.ru", "full")
+        tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "full")
 
     assert created == {
         "triggered_by": "celery-beat",
@@ -316,7 +316,7 @@ def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) 
 
 def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:
     captured: dict = {}
-    bounded_spec = tasks.fast_source_specs(gis_publish_date_from="2026-09-25")[1]
+    bounded_spec = next(spec for spec in tasks.fast_source_specs(gis_publish_date_from="2026-09-25") if spec.source_id == "bidexpert.ru")
 
     class FakeService:
         def __init__(self, _session_factory):
@@ -333,11 +333,11 @@ def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> 
         lambda _sessions, _run_id, specs: captured.update(specs=specs) or {"status": "success", "sources": []},
     )
 
-    result = tasks.automatic_nationwide_source_retry_task.run("tbankrot.ru", "fast")
+    result = tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "fast")
 
     assert result["status"] == "success"
     assert len(captured["specs"]) == 1
-    assert captured["specs"][0].source_id == "tbankrot.ru"
+    assert captured["specs"][0].source_id == "bidexpert.ru"
     assert captured["specs"][0].reconcile_missing is False
     assert captured["specs"][0].max_batches == 1
 
@@ -442,3 +442,18 @@ def test_targeted_retry_skips_paused_source(monkeypatch) -> None:
         "reason": "source_paused",
         "source_system": "tbankrot.ru",
     }
+
+
+def test_tbankrot_is_paused_by_default_even_without_database_setting(monkeypatch) -> None:
+    captured = {}
+
+    def fake_get(key, default):
+        captured["key"] = key
+        captured["default"] = default
+        return default
+
+    monkeypatch.setattr(tasks, "get_app_setting", fake_get)
+
+    assert tasks._source_is_paused("tbankrot.ru") is True
+    assert captured == {"key": "source_paused:tbankrot.ru", "default": "true"}
+    assert tasks._source_is_paused("bidexpert.ru") is False

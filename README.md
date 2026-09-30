@@ -82,6 +82,11 @@ Desktop-поиск работает только с продажей недви�
 Phase 3 backup/restore thresholds и значения alert-классов остаются в
 [docs/phase3-lite-recovery.md](docs/phase3-lite-recovery.md).
 
+TBankrot работает как изолированный authenticated source: основной сценарий
+авторизации теперь выполняется внутри вкладки **TBankrot** в Web UI, а правила
+проверки сессии, хранения cookies и source-only reconciliation описаны в
+[docs/p5-tbankrot-auth-center.md](docs/p5-tbankrot-auth-center.md).
+
 Для текущего масштаба (до четырёх пользователей) приоритет — воспроизводимый
 fail-closed deploy и проверяемое восстановление, а не дополнительный enterprise-слой.
 После production reconciliation отдельный P1-контур сверяет текущие координаты и

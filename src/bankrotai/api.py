@@ -141,6 +141,8 @@ _READ_ONLY_EXACT_PATHS = {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/operations/progress",
+    "/api/tbankrot/auth/status",
+    "/api/tbankrot/auth/screenshot",
 }
 _EXPECTED_SCHEMA_REVISION = SCHEMA_REVISION
 _AUTH_EXECUTOR_WORKERS = max(2, settings.database_pool_size + settings.database_max_overflow)
@@ -195,6 +197,31 @@ class BulkTorgiSyncRequest(BaseModel):
     notice_status: str | None = Field(None, max_length=100)
     lot_status: str | None = Field(None, max_length=100)
     max_items: int = Field(10_000, ge=1, le=50_000)
+
+
+class TBankrotBrowserClickRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0, le=1280)
+    y: float = Field(ge=0, le=760)
+
+
+class TBankrotBrowserTypeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=512)
+
+
+class TBankrotBrowserKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=32)
+
+
+class TBankrotBrowserScrollRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delta_y: float = Field(ge=-2000, le=2000)
 
 
 class MaxBidRequest(BaseModel):
@@ -505,6 +532,14 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/sync/lots",
             "/api/operations/geocoding/pause",
             "/api/operations/geocoding/resume",
+            "/api/tbankrot/auth/start",
+            "/api/tbankrot/auth/click",
+            "/api/tbankrot/auth/type",
+            "/api/tbankrot/auth/key",
+            "/api/tbankrot/auth/scroll",
+            "/api/tbankrot/auth/verify",
+            "/api/tbankrot/auth/close",
+            "/api/tbankrot/sync",
         }:
             return True
         if path.startswith("/api/lots/"):
@@ -1209,6 +1244,117 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             "summary": summary,
             "journal": journal[:6],
         }
+
+
+@app.get("/api/tbankrot/auth/status", dependencies=[Depends(require_admin)])
+async def get_tbankrot_auth_status():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    return await tbankrot_auth_browser.status()
+
+
+@app.post("/api/tbankrot/auth/start", dependencies=[Depends(require_admin)])
+async def start_tbankrot_auth():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    try:
+        return await tbankrot_auth_browser.start()
+    except Exception as exc:
+        logger.warning("Could not start TBankrot auth browser: %s", exc)
+        raise HTTPException(status_code=503, detail="Не удалось открыть защищённую сессию TBankrot") from exc
+
+
+@app.get("/api/tbankrot/auth/screenshot", dependencies=[Depends(require_admin)])
+async def get_tbankrot_auth_screenshot():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    try:
+        payload = await tbankrot_auth_browser.screenshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Сессия TBankrot недоступна") from exc
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/tbankrot/auth/click", dependencies=[Depends(require_admin)])
+async def click_tbankrot_auth(request: TBankrotBrowserClickRequest):
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    return await tbankrot_auth_browser.click(request.x, request.y)
+
+
+@app.post("/api/tbankrot/auth/type", dependencies=[Depends(require_admin)])
+async def type_tbankrot_auth(request: TBankrotBrowserTypeRequest):
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    try:
+        return await tbankrot_auth_browser.type_text(request.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/tbankrot/auth/key", dependencies=[Depends(require_admin)])
+async def press_tbankrot_auth(request: TBankrotBrowserKeyRequest):
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    try:
+        return await tbankrot_auth_browser.press(request.key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/tbankrot/auth/scroll", dependencies=[Depends(require_admin)])
+async def scroll_tbankrot_auth(request: TBankrotBrowserScrollRequest):
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    return await tbankrot_auth_browser.scroll(request.delta_y)
+
+
+@app.post("/api/tbankrot/auth/verify", dependencies=[Depends(require_admin)])
+async def verify_tbankrot_auth():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    state = await tbankrot_auth_browser.verify_and_save()
+    if not state.get("authenticated"):
+        return {"auth": state, "sync": None}
+    sync: dict[str, Any]
+    try:
+        run_id = schedule_nationwide_lot_sync(triggered_by="tbankrot-auth-center", mode="source:tbankrot.ru")
+        sync = {"task_id": run_id, "status": "queued"}
+    except SyncAlreadyRunningError as exc:
+        sync = {"task_id": exc.run_id, "status": "already_running"}
+    except QueueUnavailableError:
+        sync = {"task_id": None, "status": "queue_unavailable"}
+    return {"auth": state, "sync": sync}
+
+
+@app.post("/api/tbankrot/auth/close", dependencies=[Depends(require_admin)])
+async def close_tbankrot_auth():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    return await tbankrot_auth_browser.close()
+
+
+@app.post("/api/tbankrot/sync", status_code=202, dependencies=[Depends(require_admin)])
+async def trigger_tbankrot_sync():
+    from bankrotai.services.tbankrot_auth import tbankrot_auth_browser
+
+    state = await tbankrot_auth_browser.status(force_probe=True)
+    if not state.get("authenticated"):
+        raise HTTPException(status_code=409, detail="Сначала авторизуйтесь в TBankrot")
+    try:
+        run_id = schedule_nationwide_lot_sync(triggered_by="tbankrot-auth-center", mode="source:tbankrot.ru")
+    except SyncAlreadyRunningError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"task_id": exc.run_id, "status": "already_running"},
+        )
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"task_id": run_id, "status": "queued"}
 
 
 @app.post("/api/operations/geocoding/pause")

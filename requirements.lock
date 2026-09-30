@@ -94,6 +94,10 @@ openpyxl==3.1.5
     # via bankrotai-finder (pyproject.toml)
 packaging==26.2
     # via kombu
+playwright==1.55.0
+    # via bankrotai-finder (pyproject.toml)
+pyee==13.0.0
+    # via playwright
 prompt-toolkit==3.0.52
     # via click-repl
 psycopg==3.3.4

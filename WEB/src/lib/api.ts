@@ -1,5 +1,5 @@
 export type SortMode = "recommended" | "price_asc" | "price_desc" | "discount" | "newest";
-export type MainView = "search" | "registry" | "map" | "deal" | "reliability";
+export type MainView = "search" | "registry" | "map" | "deal" | "reliability" | "tbankrot";
 export type SearchSource = "torgi-gov" | "tbankrot" | "lot-online";
 
 export type LotListItem = {
@@ -190,6 +190,26 @@ export type Participation = {
 };
 
 export type QualitySnapshot = Record<string, number>;
+export type TBankrotAuthStatus = {
+  state: "requires_auth" | "authenticated" | "browser_active" | "unavailable" | string;
+  browser_active: boolean;
+  authenticated: boolean;
+  requires_auth: boolean;
+  message: string;
+  checked_at: string;
+  page_url?: string | null;
+  page_title?: string | null;
+  saved_at?: string | null;
+  cookie_count: number;
+  source_total?: number | null;
+  viewport: { width: number; height: number };
+};
+
+export type TBankrotAuthVerifyResponse = {
+  auth: TBankrotAuthStatus;
+  sync: null | { task_id: string | null; status: string };
+};
+
 export type SourceHealth = {
   source_system: string;
   status: string;
@@ -320,6 +340,42 @@ export async function fetchServerTime(): Promise<ServerTime> {
   return { utc, moscow: utc, timezone: "Europe/Moscow", source: "http_date", synchronized: true, offset_seconds: 0 };
 }
 export const logout = () => requestJson<{ status: string }>("/api/auth/logout", undefined, { method: "POST" });
+export const fetchTBankrotAuthStatus = () =>
+  requestJson<TBankrotAuthStatus>("/api/tbankrot/auth/status");
+export const startTBankrotAuth = () =>
+  requestJson<TBankrotAuthStatus>("/api/tbankrot/auth/start", undefined, { method: "POST" });
+export const clickTBankrotAuth = (x: number, y: number) =>
+  requestJson<{ status: string }>("/api/tbankrot/auth/click", undefined, {
+    method: "POST", body: JSON.stringify({ x, y }),
+  });
+export const typeTBankrotAuth = (text: string) =>
+  requestJson<{ status: string }>("/api/tbankrot/auth/type", undefined, {
+    method: "POST", body: JSON.stringify({ text }),
+  });
+export const keyTBankrotAuth = (key: string) =>
+  requestJson<{ status: string }>("/api/tbankrot/auth/key", undefined, {
+    method: "POST", body: JSON.stringify({ key }),
+  });
+export const scrollTBankrotAuth = (deltaY: number) =>
+  requestJson<{ status: string }>("/api/tbankrot/auth/scroll", undefined, {
+    method: "POST", body: JSON.stringify({ delta_y: deltaY }),
+  });
+export const verifyTBankrotAuth = () =>
+  requestJson<TBankrotAuthVerifyResponse>("/api/tbankrot/auth/verify", undefined, { method: "POST" });
+export const closeTBankrotAuth = () =>
+  requestJson<{ status: string }>("/api/tbankrot/auth/close", undefined, { method: "POST" });
+export const triggerTBankrotSync = () =>
+  requestJson<{ task_id: string; status: string }>("/api/tbankrot/sync", undefined, { method: "POST" });
+export async function fetchTBankrotScreenshot(): Promise<Blob> {
+  const response = await fetchWithReadRetry(makeUrl("/api/tbankrot/auth/screenshot"), {
+    headers: { Accept: "image/jpeg" },
+    credentials: "same-origin",
+    cache: "no-store",
+  }, 1);
+  if (!response.ok) throw new ApiError(await response.text() || `HTTP ${response.status}`, response.status);
+  return response.blob();
+}
+
 
 export function fetchLots(query: LotQuery) {
   return requestJson<LotsResponse>("/api/lots", {

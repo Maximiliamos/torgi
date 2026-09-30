@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -24,7 +25,9 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.lock \
-    && pip install --no-cache-dir --no-deps .
+    && pip install --no-cache-dir --no-deps . \
+    && python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
 
 RUN chown -R bankrotai:bankrotai /app
 USER bankrotai
