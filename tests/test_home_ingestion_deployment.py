@@ -103,4 +103,14 @@ def test_home_deploy_recovers_runner_before_checkout_and_never_prunes_volumes() 
     assert "docker volume prune" not in workflow
     assert "Invoke-DockerCleanup" in workflow
     assert "less than 4 GB free" in workflow
-    assert "docker restart $env:CONTAINER_NAME" in workflow
+    assert "@('restart',$env:CONTAINER_NAME)" in workflow
+    assert "Invoke-DockerEmergency" in workflow
+
+
+def test_home_emergency_docker_probe_is_bounded_and_recovers_service() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Invoke-DockerEmergency" in workflow
+    assert "WaitForExit($TimeoutSeconds * 1000)" in workflow
+    assert "Restart-Service -Name 'com.docker.service' -Force" in workflow
+    assert "Docker daemon remains unavailable after bounded recovery" in workflow

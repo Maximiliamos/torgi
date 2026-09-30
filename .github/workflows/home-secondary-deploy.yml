@@ -121,11 +121,35 @@ jobs:
           Write-Output ("C: free after emergency file cleanup: {0:N2} GB ({1:N1}%)" -f
             ($drive.Free / 1GB), (($drive.Free / ($drive.Used + $drive.Free)) * 100))
 
-          $dockerResponsive = $false
-          try {
-            docker version --format '{{.Server.Version}}' *> $null
-            $dockerResponsive = $LASTEXITCODE -eq 0
-          } catch {}
+          function Invoke-DockerEmergency {
+            param([string[]]$Arguments, [int]$TimeoutSeconds = 20)
+            $argLine = ($Arguments | ForEach-Object {
+              if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+            }) -join ' '
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $argLine -PassThru -WindowStyle Hidden
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Write-Warning "Docker command timed out: docker $argLine"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              return $false
+            }
+            return $process.ExitCode -eq 0
+          }
+
+          $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 20
+          if (-not $dockerResponsive) {
+            $dockerService = Get-Service -Name 'com.docker.service' -ErrorAction SilentlyContinue
+            if ($null -ne $dockerService) {
+              Write-Warning "Docker daemon is unresponsive; restarting com.docker.service"
+              try {
+                Restart-Service -Name 'com.docker.service' -Force -ErrorAction Stop
+              } catch {
+                Write-Warning "Docker service restart failed: $($_.Exception.Message)"
+              }
+              Start-Sleep -Seconds 10
+              $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 30
+            }
+          }
+
           if ($dockerResponsive) {
             foreach ($name in @(
               $env:POSTGRES_CONTAINER,
@@ -135,20 +159,16 @@ jobs:
               $env:GEO_WORKER_CONTAINER,
               $env:MAP_WORKER_CONTAINER
             )) {
-              $exists = docker ps -a --filter "name=^/$name$" --format '{{.Names}}'
-              if ($exists -eq $name) { docker start $name *> $null }
+              [void](Invoke-DockerEmergency -Arguments @('start',$name) -TimeoutSeconds 30)
             }
             try {
               $ready = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri 'http://127.0.0.1:18000/health/live').StatusCode
             } catch { $ready = 0 }
             if ($ready -ne 200) {
-              $exists = docker ps -a --filter "name=^/$($env:CONTAINER_NAME)$" --format '{{.Names}}'
-              if ($exists -eq $env:CONTAINER_NAME) {
-                docker restart $env:CONTAINER_NAME *> $null
-              }
+              [void](Invoke-DockerEmergency -Arguments @('restart',$env:CONTAINER_NAME) -TimeoutSeconds 45)
             }
           } else {
-            Write-Warning "Docker daemon is not responsive yet; continuing with file-level recovery"
+            Write-Warning "Docker daemon remains unavailable after bounded recovery; continuing so checkout can complete and the next gate can fail explicitly"
           }
 
       - uses: actions/checkout@v7
