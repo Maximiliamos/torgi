@@ -614,6 +614,12 @@ jobs:
           if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
             throw "Local secondary stability gate failed"
           }
+          docker exec $env:CONTAINER_NAME python -c `
+            "import urllib.request; response=urllib.request.urlopen('http://bankrotai-tbankrot-auth:18443/health', timeout=10); assert response.status == 200"
+          if ($LASTEXITCODE -ne 0) {
+            docker logs --tail 100 $env:TBANKROT_AUTH_CONTAINER
+            throw "Production API cannot reach TBankrot auth broker"
+          }
           $workerGates = @(
             @{ Container = $env:WORKER_CONTAINER; Node = 'ingestion@bankrotai-home' },
             @{ Container = $env:GEO_WORKER_CONTAINER; Node = 'geocoding@bankrotai-home' },
@@ -627,7 +633,7 @@ jobs:
               throw "$($gate.Node) did not answer Celery ping"
             }
           }
-          foreach ($container in @($env:CONTAINER_NAME, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
+          foreach ($container in @($env:CONTAINER_NAME, $env:TBANKROT_AUTH_CONTAINER, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
             $logConfigJson = docker inspect --format '{{json .HostConfig.LogConfig}}' $container
             if ($LASTEXITCODE -ne 0 -or -not $logConfigJson) {
               throw "Could not inspect Docker log rotation for $container"
@@ -655,6 +661,7 @@ jobs:
             throw "Trusted ingestion worker cannot reach local Photon"
           }
           "Local secondary stability gate: 30/30 PASS"
+          "TBankrot auth broker connectivity gate: PASS"
           "Isolated ingestion/geocoding/map worker gates: PASS"
           "Local Photon connectivity gate: PASS"
 
