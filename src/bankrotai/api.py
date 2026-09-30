@@ -95,6 +95,7 @@ from bankrotai.logic import log_action
 from bankrotai.tasks import (
     QueueUnavailableError,
     schedule_bulk_torgi_sync,
+    schedule_deferred_tbankrot_sync,
     schedule_nationwide_lot_sync,
     schedule_region_sync,
 )
@@ -1397,8 +1398,11 @@ async def verify_tbankrot_auth(
             mode="source:tbankrot.ru",
         )
         return {**result, "sync": {"status": "queued", "task_id": task_id}}
-    except SyncAlreadyRunningError as exc:
-        return {**result, "sync": {"status": "already_running", "task_id": exc.run_id}}
+    except SyncAlreadyRunningError:
+        deferred_id = schedule_deferred_tbankrot_sync(
+            triggered_by=f"tbankrot-auth:{actor.id}",
+        )
+        return {**result, "sync": {"status": "deferred", "task_id": deferred_id}}
     except QueueUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -1428,8 +1432,11 @@ async def sync_tbankrot(actor: AuthenticatedUser = Depends(require_admin)):
             mode="source:tbankrot.ru",
         )
         return {"status": "queued", "task_id": task_id}
-    except SyncAlreadyRunningError as exc:
-        return {"status": "already_running", "task_id": exc.run_id}
+    except SyncAlreadyRunningError:
+        deferred_id = schedule_deferred_tbankrot_sync(
+            triggered_by=f"tbankrot-manual:{actor.id}",
+        )
+        return {"status": "deferred", "task_id": deferred_id}
     except QueueUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
