@@ -8,7 +8,7 @@ import {
 import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
-  fetchSavedSearches, fetchSources, fetchStats, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
+  fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
@@ -189,14 +189,25 @@ function ServerClock() {
   return <div className="globalClock" aria-label="Текущее московское время"><span>Москва · {value}</span><i className={anchor?.synchronized ? "online" : "fallback"} title={anchor?.synchronized ? "Время проверено по онлайн-источнику" : "Используются системные часы"} /></div>;
 }
 
-export function App({ username = "Пользователь", onLogout = () => undefined }: { username?: string; onLogout?: () => void }) {
+export function App({ username = "Пользователь", role = "reader", onLogout = () => undefined }: { username?: string; role?: string; onLogout?: () => void }) {
   const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true);
+  const [tbankrotNeedsAuth, setTbankrotNeedsAuth] = React.useState(false);
+  React.useEffect(() => {
+    if (role !== "admin") return;
+    let cancelled = false;
+    const check = () => fetchTBankrotAuthStatus()
+      .then((value) => { if (!cancelled) setTbankrotNeedsAuth(value.requires_auth); })
+      .catch(() => undefined);
+    void check();
+    const timer = window.setInterval(check, 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [role, refreshToken]);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
   const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
   return <main className="appShell">
     <nav className="appRail" aria-label="Основная навигация">
       <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
-      {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}</button>)}
+      {nav.map(([id, text, icon]) => <button key={id} title={id === "tbankrot" && tbankrotNeedsAuth ? "TBankrot — требуется авторизация" : text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}{id === "tbankrot" && tbankrotNeedsAuth && <span className="sourceAuthAlert" aria-label="Требуется авторизация" />}</button>)}
       <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
       <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
@@ -231,7 +242,7 @@ export function AuthenticatedApp() {
   if (checking) return <main className="authScreen"><Loader2 className="spin" /></main>;
   if (startupError) return <main className="authScreen"><section className="authCard" role="alert"><span className="eyebrow">BankrotAI Web</span><h1>Нет связи с сервисом</h1><State error>{startupError}</State><button className="primaryButton" onClick={() => void checkSession()}><RefreshCcw size={16} />Повторить</button></section></main>;
   if (!user) return <main className="authScreen"><form className="authCard" onSubmit={async (event) => { event.preventDefault(); setError(""); try { setUser(await login(username, password)); setPassword(""); } catch (err) { setError(err instanceof Error ? err.message : "Ошибка авторизации"); } }}><span className="eyebrow">BankrotAI Web</span><h1>Вход</h1><label className="field"><span>Логин</span><input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label><label className="field"><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>{error && <State error>{error}</State>}<button className="primaryButton">Войти</button></form></main>;
-  return <App username={user.username} onLogout={async () => { await logout(); await clearMapCache(); setUser(null); }} />;
+  return <App username={user.username} role={user.role} onLogout={async () => { await logout(); await clearMapCache(); setUser(null); }} />;
 }
 
 const root = document.getElementById("root"); if (root) createRoot(root).render(<AuthenticatedApp />);
