@@ -104,11 +104,11 @@ def cleanup_map_datasets(
             and dataset.status in {"ready", "failed", "rejected", "building"}
         ]
         candidate_ids = [dataset.id for dataset in candidates]
-        candidate_tiles = (
-            int(session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.in_(candidate_ids))) or 0)
-            if candidate_ids
-            else 0
-        )
+        # Retention diagnostics must stay cheap even when hundreds of historical
+        # datasets exist. MapDataset.tile_count is written at build time and is
+        # sufficient for planning/telemetry; counting millions of map_tiles here
+        # can exceed PostgreSQL statement_timeout and block maintenance.
+        candidate_tiles = sum(int(dataset.tile_count or 0) for dataset in candidates)
         result = {
             "dry_run": not apply,
             "retained_previous_ready": len(rollback_ids),

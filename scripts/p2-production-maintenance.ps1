@@ -3,8 +3,8 @@ param(
     [switch]$Apply,
     [string]$OutputPath = '',
     [string]$LogDirectory = 'C:\BankrotAI\logs\p2-maintenance',
-    [int]$CriticalFreePercent = 10,
-    [int]$WarningFreePercent = 15,
+    [int]$CriticalFreeGb = 15,
+    [int]$WarningFreeGb = 25,
     [int]$RetainLogDays = 14,
     [int]$DockerPruneAfterHours = 168
 )
@@ -29,10 +29,9 @@ function Add-Check {
     }
 }
 
-function Get-FreePercent {
+function Get-FreeGb {
     $drive = Get-PSDrive -Name C
-    if (($drive.Used + $drive.Free) -le 0) { return 0.0 }
-    return [math]::Round(($drive.Free / ($drive.Used + $drive.Free)) * 100, 1)
+    return [math]::Round($drive.Free / 1GB, 2)
 }
 
 
@@ -61,7 +60,7 @@ function Invoke-DockerCleanup {
     return $true
 }
 
-$beforeFree = Get-FreePercent
+$beforeFree = Get-FreeGb
 $dockerBefore = (docker system df 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
     Add-Check -Name 'docker-system-df' -Ok $false -Details @{ phase = 'before' }
@@ -93,7 +92,7 @@ foreach ($container in $runtimeContainers) {
 }
 
 if ($Apply) {
-    $criticalBeforeDockerCleanup = (Get-FreePercent) -lt $CriticalFreePercent
+    $criticalBeforeDockerCleanup = (Get-FreeGb) -lt $CriticalFreeGb
     if ($criticalBeforeDockerCleanup) {
         [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
         [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
@@ -141,7 +140,7 @@ if ($Apply) {
     }
 }
 
-if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
+if ($Apply -and (Get-FreeGb) -lt $CriticalFreeGb) {
     $drBackupRoot = 'C:\ProgramData\BankrotAI\dr-backups'
     if (Test-Path -LiteralPath $drBackupRoot) {
         $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
@@ -167,11 +166,11 @@ if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
             Remove-Item -LiteralPath $dump.FullName -Force
             $metadataPath = Join-Path $drBackupRoot "$stem.json"
             if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
-            if ((Get-FreePercent) -ge 12) { break }
+            if ((Get-FreeGb) -ge $WarningFreeGb) { break }
         }
     }
 
-    if ((Get-FreePercent) -lt $CriticalFreePercent) {
+    if ((Get-FreeGb) -lt $CriticalFreeGb) {
         $migrationRoot = 'C:\ProgramData\BankrotAI\db-backups'
         if (Test-Path -LiteralPath $migrationRoot) {
             Get-ChildItem -LiteralPath $migrationRoot -File -Filter 'pre-migration-*.dump' |
@@ -182,15 +181,15 @@ if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
     }
 }
 
-$afterFree = Get-FreePercent
+$afterFree = Get-FreeGb
 $dockerAfter = (docker system df 2>&1 | Out-String).Trim()
-Add-Check -Name 'disk-c-critical' -Ok ($afterFree -ge $CriticalFreePercent) -Details @{
-    percent_free = $afterFree
-    minimum_percent = $CriticalFreePercent
+Add-Check -Name 'disk-c-critical' -Ok ($afterFree -ge $CriticalFreeGb) -Details @{
+    free_gb = $afterFree
+    minimum_gb = $CriticalFreeGb
 }
-Add-Check -Name 'disk-c-headroom' -Ok ($afterFree -ge $WarningFreePercent) -Severity 'warning' -Details @{
-    percent_free = $afterFree
-    recommended_percent = $WarningFreePercent
+Add-Check -Name 'disk-c-headroom' -Ok ($afterFree -ge $WarningFreeGb) -Severity 'warning' -Details @{
+    free_gb = $afterFree
+    recommended_gb = $WarningFreeGb
 }
 
 $result = [ordered]@{
@@ -199,8 +198,8 @@ $result = [ordered]@{
     healthy = ($criticalFailures -eq 0)
     critical_failure_count = $criticalFailures
     warning_count = $warnings
-    disk_percent_free_before = $beforeFree
-    disk_percent_free_after = $afterFree
+    disk_free_gb_before = $beforeFree
+    disk_free_gb_after = $afterFree
     deleted_old_log_files = $deletedLogs
     map_retention = $mapRetention
     docker_system_df_before = $dockerBefore
