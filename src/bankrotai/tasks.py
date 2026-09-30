@@ -75,6 +75,7 @@ celery_app.conf.update(
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_lot_refresh_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_source_retry_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.deferred_tbankrot_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
@@ -419,6 +420,11 @@ def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
 
 
 def _source_is_paused(source_system: str) -> bool:
+    # P5 contract: TBankrot is always isolated from broad automatic refreshes.
+    # It may only run through an explicit source:tbankrot.ru targeted sync after
+    # a live authenticated-session probe.
+    if source_system == "tbankrot.ru":
+        return True
     value = get_app_setting(f"{_SOURCE_PAUSE_SETTING_PREFIX}{source_system}", "false")
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
@@ -798,6 +804,39 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
                 run.error_message = "Queue dispatch failed"
         raise QueueUnavailableError("Background task dispatch failed") from exc
     return run_id
+
+
+@celery_app.task(
+    bind=True,
+    name="bankrotai.tasks.deferred_tbankrot_sync_task",
+    max_retries=360,
+)
+def deferred_tbankrot_sync_task(self, triggered_by: str) -> dict[str, str]:
+    """Run authenticated TBankrot after the single ingestion lease becomes free."""
+    try:
+        task_id = schedule_nationwide_lot_sync(
+            triggered_by=triggered_by,
+            mode="source:tbankrot.ru",
+        )
+        return {"status": "queued", "task_id": task_id}
+    except (SyncAlreadyRunningError, QueueUnavailableError) as exc:
+        if self.request.retries >= 360:
+            raise
+        raise self.retry(exc=exc, countdown=60, max_retries=360) from exc
+
+
+def schedule_deferred_tbankrot_sync(*, triggered_by: str) -> str:
+    if not broker_is_available():
+        raise QueueUnavailableError("Background task queue is unavailable")
+    try:
+        queued = deferred_tbankrot_sync_task.apply_async(
+            args=[triggered_by],
+            countdown=15,
+            queue=_QUEUE_INGESTION,
+        )
+    except Exception as exc:
+        raise QueueUnavailableError("Background task dispatch failed") from exc
+    return str(queued.id)
 
 
 def schedule_region_sync(city_slug: str, force: bool = False, search: str | None = None) -> str:

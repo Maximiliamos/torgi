@@ -58,6 +58,7 @@ button:disabled {
 .appRail .favorite { margin-top:7px; }
 .appRail .favorite span { align-items:center;background:#159765;border:2px solid #fff;border-radius:999px;color:#fff;display:flex;font-size:9px;font-weight:800;height:19px;justify-content:center;min-width:19px;padding:0 3px;position:absolute;right:-2px;top:-3px; }
 .appRail .appRailLogout { margin-top:auto; }
+.appRailAlert { background:#d64545;border:2px solid #fff;border-radius:50%;height:9px;position:absolute;right:4px;top:4px;width:9px; }
 .appWorkspace { display:flex;flex-direction:column;min-height:100vh;min-width:0; }
 .globalClock { align-items:center;background:#fff;border-top:1px solid #d8dee4;color:#536174;display:flex;font-size:12px;gap:8px;justify-content:flex-end;margin-top:auto;min-height:28px;padding:4px 12px; }
 .globalClock i { background:#d18b18;border-radius:50%;height:7px;width:7px; }
@@ -815,6 +816,30 @@ textarea, input { font: inherit; }
 .checklist { display:flex;flex-direction:column; }.checklist label { align-items:center;display:flex;gap:9px;min-height:36px; }.checklist textarea { min-height:90px;resize:vertical; }
 .documentList,.notesList { display:grid;gap:9px; }.documentList article,.notesList article { align-items:center;border:1px solid #dce3e9;border-radius:7px;display:flex;gap:12px;padding:12px; }
 .documentList article div,.notesList article div { flex:1; }.documentList span,.notesList small { color:#667085;display:block;font-size:12px;margin-top:4px; }
+.tbankrotGlobalNotice { align-items:center;background:#fff7e7;border:1px solid #e4bd64;border-radius:9px;box-shadow:0 7px 22px #0002;color:#704d00;display:flex;gap:10px;max-width:520px;padding:10px 12px;position:fixed;right:18px;top:14px;z-index:40; }
+.tbankrotGlobalNotice>div { display:grid;gap:2px;min-width:0; }.tbankrotGlobalNotice strong { font-size:12px; }.tbankrotGlobalNotice span,.tbankrotGlobalNotice small { color:#7a620f;font-size:10px; }
+.tbankrotGlobalNotice button { background:#fff;border:1px solid #ba8b20;border-radius:6px;color:#6d4a00;font-size:11px;font-weight:700;min-height:32px;padding:0 9px;white-space:nowrap; }
+.tbankrotPage { display:grid;gap:14px; }
+.tbankrotStatusCard,.tbankrotSyncCard,.tbankrotBrowserCard { background:#fff;border:1px solid #dce3e9;border-radius:9px; }
+.tbankrotStatusCard { align-items:start;display:grid;gap:14px;grid-template-columns:auto minmax(0,1fr) minmax(220px,.45fr);padding:18px; }
+.tbankrotStatusCard h2 { margin:2px 0 5px; }.tbankrotStatusCard p { color:#667085;line-height:1.45;margin:7px 0 0;max-width:760px; }
+.tbankrotStatusIcon { align-items:center;background:#fff2f2;border-radius:12px;color:#c83c3c;display:flex;height:48px;justify-content:center;width:48px; }
+.tbankrotStatusIcon[data-ok="true"] { background:#e7f7ee;color:#16865f; }
+.tbankrotStatusMeta { display:grid;gap:5px;grid-template-columns:auto 1fr; }.tbankrotStatusMeta span { color:#7a8491;font-size:11px; }.tbankrotStatusMeta b { color:#334155;font-size:11px;text-align:right; }
+.tbankrotSyncCard { align-items:center;display:flex;gap:16px;justify-content:space-between;padding:16px 18px; }
+.tbankrotSyncCard>div { display:grid;gap:4px; }.tbankrotSyncCard h3 { margin:0 0 2px; }.tbankrotSyncCard span,.tbankrotSyncCard small { color:#667085; }
+.tbankrotWarning { color:#9a5f00!important;font-weight:600;max-width:900px;overflow-wrap:anywhere; }
+.tbankrotBrowserCard { overflow:hidden; }
+.tbankrotBrowserCard>header { align-items:center;background:#f7faf9;border-bottom:1px solid #dce3e9;display:flex;gap:12px;justify-content:space-between;padding:10px 12px; }
+.tbankrotBrowserCard>header>div:first-child { display:grid;gap:2px;min-width:0; }.tbankrotBrowserCard>header small { color:#7b8794;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.tbankrotBrowserCard>header>div:last-child { display:flex;gap:5px; }.tbankrotBrowserCard>header button { align-items:center;background:#fff;border:1px solid #cbd5df;border-radius:6px;display:flex;height:34px;justify-content:center;width:36px; }
+.tbankrotRemoteScreen { background:#111827;display:flex;justify-content:center;min-height:520px;outline:0;overflow:auto;position:relative;touch-action:none; }
+.tbankrotRemoteScreen:focus { box-shadow:inset 0 0 0 2px #146c5f; }
+.tbankrotRemoteScreen img { cursor:default;display:block;height:auto;max-width:100%;object-fit:contain;user-select:none;width:100%; }
+.tbankrotFrameLoading { align-items:center;color:#fff;display:flex;gap:8px;justify-content:center;min-height:520px; }
+.tbankrotBrowserCard>footer { align-items:center;background:#f7faf9;border-top:1px solid #dce3e9;display:flex;gap:12px;justify-content:space-between;padding:10px 12px; }
+.tbankrotBrowserCard>footer span { color:#667085;font-size:11px; }
+.tbankrotAuthShortcut { margin-top:8px; }
 .reliabilityGrid { display:grid;gap:14px;grid-template-columns:1fr 1fr; }.reliabilityGrid>div { padding:18px; }
 .metricGrid { display:grid;gap:9px;grid-template-columns:repeat(3,minmax(0,1fr)); }.metricGrid div { background:#f8fafb;border:1px solid #e1e7ec;border-radius:7px;padding:11px; }
 .metricGrid span { color:#667085;display:block;font-size:11px;text-transform:capitalize; }.metricGrid strong { display:block;font-size:21px;margin-top:5px; }
@@ -850,4 +875,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .logoutButton { align-items:center;display:flex;gap:6px; }
 
 @media (max-width:1100px) { .searchForm { grid-template-columns:repeat(3,1fr); }.onlineGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }.mapDesktopShell { grid-template-columns:330px minmax(0,1fr); }.toolGrid { grid-template-columns:1fr; } }
-@media (max-width:760px) { .appShell { grid-template-columns:48px minmax(0,1fr); }.appRail { padding:7px 3px; }.appRail button { height:39px;width:39px; }.pageHeader { padding:14px 12px; }.viewContainer { padding:0 12px 12px; }.viewContainer--map { padding:0; }.mainNav { overflow-x:auto; }.mainNav button { flex:0 0 auto; }.searchForm,.onlineGrid,.reliabilityGrid,.toolGrid,.formCard,.procedureGrid { grid-template-columns:1fr; }.mapDesktopShell { display:flex;flex-direction:column;height:auto; }.mapDesktopCanvas { height:58vh;min-height:430px;order:0; }.mapDesktopSidebar { border-bottom:1px solid #c9cfd6;border-right:0;max-height:620px;order:1; }.yandexDesktopFrame { height:100%; }.mapBottomStatus { font-size:10px; }.mapAppState { display:none; }.dealHeader { display:block; } }
+@media (max-width:760px) { .tbankrotGlobalNotice { left:56px;max-width:none;right:8px;top:8px; }.tbankrotStatusCard { grid-template-columns:1fr; }.tbankrotSyncCard,.tbankrotBrowserCard>footer { align-items:stretch;flex-direction:column; }.tbankrotRemoteScreen,.tbankrotFrameLoading { min-height:360px; }.appShell { grid-template-columns:48px minmax(0,1fr); }.appRail { padding:7px 3px; }.appRail button { height:39px;width:39px; }.pageHeader { padding:14px 12px; }.viewContainer { padding:0 12px 12px; }.viewContainer--map { padding:0; }.mainNav { overflow-x:auto; }.mainNav button { flex:0 0 auto; }.searchForm,.onlineGrid,.reliabilityGrid,.toolGrid,.formCard,.procedureGrid { grid-template-columns:1fr; }.mapDesktopShell { display:flex;flex-direction:column;height:auto; }.mapDesktopCanvas { height:58vh;min-height:430px;order:0; }.mapDesktopSidebar { border-bottom:1px solid #c9cfd6;border-right:0;max-height:620px;order:1; }.yandexDesktopFrame { height:100%; }.mapBottomStatus { font-size:10px; }.mapAppState { display:none; }.dealHeader { display:block; } }

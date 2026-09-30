@@ -1,4 +1,4 @@
-/* global Request, Response, console */
+/* global AbortSignal, Request, Response, console */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "./worker.mjs";
@@ -289,4 +289,59 @@ describe("API origin failover proxy", () => {
     expect(response.headers.get("x-map-cache")).toBeNull();
   });
 
+});
+
+
+describe("TBankrot Auth Center proxy contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("uses the extended mutation timeout for managed TBankrot browser actions", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ status: "ok" }));
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/tbankrot/auth/browser-1/verify",
+      { method: "POST", body: "{}" },
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+
+    expect(response.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(55_000);
+  });
+
+  it("uses a bounded longer safe-read timeout for browser frames", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("jpeg", { headers: { "content-type": "image/jpeg" } }),
+    );
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/tbankrot/auth/browser-1/frame",
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+    });
+
+    expect(response.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(20_000);
+  });
+
+  it("never falls TBankrot browser traffic back to the secondary API", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("home unavailable"));
+
+    const response = await worker.fetch(new Request(
+      "https://api.sterdez.online/api/tbankrot/status",
+    ), {
+      KOYEB_SERVICE_KEY: "bound-secret",
+      SECONDARY_API_ORIGIN: "https://secondary.example.test",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(502);
+  });
 });

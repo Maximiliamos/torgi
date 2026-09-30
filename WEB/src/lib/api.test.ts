@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchPublicYandexMapBundleTile, fetchMapReviewStatuses, makeUrl, requestJson, type LotQuery } from "./api";
+import { ApiError, controlTBankrotAuth, fetchLots, fetchMapLotsSWR, fetchMapTile, fetchYandexMapTile, fetchPublicYandexMapTile, fetchPublicYandexMapBundleTile, fetchMapReviewStatuses, fetchTBankrotFrame, makeUrl, requestJson, type LotQuery } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -328,4 +328,35 @@ describe("API client", () => {
     }, "bundle-escape", 12, 1, 1)).rejects.toThrow(/путь bundle/);
   });
 
+});
+
+
+describe("TBankrot Auth Center API client", () => {
+  it("loads browser frames through the authenticated same-origin API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Blob(["jpeg"]), { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+
+    const blob = await fetchTBankrotFrame("browser-session");
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/tbankrot/auth/browser-session/frame");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      credentials: "same-origin",
+    });
+  });
+
+  it("sends only bounded browser actions to the broker-facing API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ status: "ok" }),
+    );
+
+    await controlTBankrotAuth("browser-session", { type: "click", x: 100, y: 200 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/tbankrot/auth/browser-session/action");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      type: "click", x: 100, y: 200,
+    });
+  });
 });

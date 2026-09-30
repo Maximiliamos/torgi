@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 90
     env:
       IMAGE_NAME: bankrotai-home-api
+      TBANKROT_AUTH_IMAGE: bankrotai-tbankrot-auth
+      TBANKROT_AUTH_CONTAINER: bankrotai-tbankrot-auth
       CONTAINER_NAME: bankrotai-home-secondary
       WORKER_CONTAINER: bankrotai-home-ingestion-worker
       GEO_WORKER_CONTAINER: bankrotai-home-geocoding-worker
@@ -175,6 +177,20 @@ jobs:
           }
           if (!$built) { throw 'Could not build the current-main API image after four attempts' }
 
+          $brokerBuilt = $false
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            docker build --pull --file Dockerfile.tbankrot-auth --tag "${env:TBANKROT_AUTH_IMAGE}:${env:GITHUB_SHA}" .
+            if ($LASTEXITCODE -eq 0) {
+              $brokerBuilt = $true
+              break
+            }
+            if ($attempt -lt 4) {
+              Write-Warning "TBankrot auth broker image build failed on attempt $attempt/4; retrying in 20 seconds"
+              Start-Sleep -Seconds 20
+            }
+          }
+          if (!$brokerBuilt) { throw 'Could not build the TBankrot auth broker image after four attempts' }
+
       - name: Preserve and start local PostgreSQL
         shell: powershell
         run: |
@@ -232,6 +248,29 @@ jobs:
           $redisPassword = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'redis-password.txt')).Trim()
           Write-Output "::add-mask::$password"
           Write-Output "::add-mask::$redisPassword"
+
+          $tbankrotAuthRoot = Join-Path $env:CONFIG_ROOT 'tbankrot-auth'
+          New-Item -ItemType Directory -Path $tbankrotAuthRoot -Force | Out-Null
+          $legacyTbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
+          $tbankrotCookiePath = Join-Path $tbankrotAuthRoot 'tbankrot-cookies.json'
+          if ((Test-Path -LiteralPath $legacyTbankrotCookiePath) -and -not (Test-Path -LiteralPath $tbankrotCookiePath)) {
+            Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath
+          }
+          $brokerTokenPath = Join-Path $env:CONFIG_ROOT 'tbankrot-broker-token.txt'
+          if (-not (Test-Path -LiteralPath $brokerTokenPath)) {
+            $bytes = New-Object byte[] 48
+            [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            $brokerToken = ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+            [IO.File]::WriteAllText($brokerTokenPath, $brokerToken)
+          }
+          $brokerToken = [IO.File]::ReadAllText($brokerTokenPath).Trim()
+          if ($brokerToken.Length -lt 32) { throw 'TBankrot auth broker token is invalid' }
+          Write-Output "::add-mask::$brokerToken"
+          & icacls.exe $tbankrotAuthRoot /inheritance:r /grant:r `
+            'SYSTEM:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)M' | Out-Null
+          & icacls.exe $brokerTokenPath /inheritance:r /grant:r `
+            'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:R' | Out-Null
+
           $redisConfigPath = Join-Path $env:CONFIG_ROOT 'redis.conf'
           [System.IO.File]::WriteAllLines($redisConfigPath, @(
             'bind 0.0.0.0'
@@ -247,7 +286,9 @@ jobs:
             'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'ONLINE_SOURCE_CACHE_FIRST=true'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
-            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot/tbankrot-cookies.json'
+            'TBANKROT_AUTH_BROKER_URL=http://bankrotai-tbankrot-auth:18443'
+            "TBANKROT_AUTH_BROKER_TOKEN=$brokerToken"
             'API_RATE_LIMIT_PER_MINUTE=60'
             'DATABASE_POOL_SIZE=3'
             'DATABASE_MAX_OVERFLOW=2'
@@ -268,7 +309,7 @@ jobs:
             'DATABASE_TRUSTED_LOCAL=true'
             'TORGI_GOV_BASE_URL=https://api.sterdez.online/__public-source/torgi'
             'PHOTON_BASE_URL=http://bankrotai-photon:2322'
-            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot-cookies.json'
+            'TBANKROT_COOKIE_FILE=/run/secrets/tbankrot/tbankrot-cookies.json'
             "DATABASE_URL=postgresql+psycopg://bankrotai:${password}@${env:POSTGRES_CONTAINER}:5432/bankrotai"
             "REDIS_URL=redis://:${redisPassword}@${env:REDIS_CONTAINER}:6379/0"
             "BANKROTAI_API_KEY=$env:API_KEY"
@@ -294,9 +335,12 @@ jobs:
             & icacls.exe $protectedPath /inheritance:r /grant:r `
               'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
           }
-          $tbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
-          if (-not (Test-Path -LiteralPath $tbankrotCookiePath)) {
-            throw 'Protected TBankrot session is missing; run the local session capture first'
+          if (Test-Path -LiteralPath $tbankrotCookiePath) {
+            & icacls.exe $tbankrotCookiePath /inheritance:r /grant:r `
+              'SYSTEM:F' '*S-1-5-32-544:F' '*S-1-5-20:M' | Out-Null
+            Write-Output 'Existing protected TBankrot session preserved'
+          } else {
+            Write-Output 'No TBankrot session yet; web Auth Center will create it on first login'
           }
 
       - name: Backup and migrate database schema before replacing production containers
@@ -392,6 +436,35 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Private Redis did not become ready" }
 
+          $tbankrotAuthRoot = Join-Path $env:CONFIG_ROOT 'tbankrot-auth'
+          $brokerToken = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'tbankrot-broker-token.txt')).Trim()
+          Write-Output "::add-mask::$brokerToken"
+          $existingBroker = docker ps -a --filter "name=^/${env:TBANKROT_AUTH_CONTAINER}$" --format '{{.Names}}'
+          if ($existingBroker -eq $env:TBANKROT_AUTH_CONTAINER) {
+            docker rm --force $env:TBANKROT_AUTH_CONTAINER | Out-Null
+          }
+          docker run --detach --restart unless-stopped `
+            --log-opt max-size=20m --log-opt max-file=5 `
+            --name $env:TBANKROT_AUTH_CONTAINER `
+            --network $env:DOCKER_NETWORK `
+            --env "TBANKROT_AUTH_BROKER_TOKEN=$brokerToken" `
+            --env 'TBANKROT_COOKIE_FILE=/data/tbankrot-cookies.json' `
+            --mount "type=bind,source=$tbankrotAuthRoot,target=/data" `
+            --read-only `
+            --tmpfs /tmp:rw,noexec,nosuid,size=512m `
+            --shm-size 512m `
+            "${env:TBANKROT_AUTH_IMAGE}:${env:GITHUB_SHA}" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not start TBankrot auth broker' }
+          foreach ($attempt in 1..30) {
+            docker exec $env:TBANKROT_AUTH_CONTAINER node -e "fetch('http://127.0.0.1:18443/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) {
+            docker logs --tail 100 $env:TBANKROT_AUTH_CONTAINER
+            throw 'TBankrot auth broker did not become ready'
+          }
+
           $existing = docker ps -a --filter "name=^/${env:CONTAINER_NAME}$" --format '{{.Names}}'
           if ($existing -eq $env:CONTAINER_NAME) {
             docker rm --force $env:CONTAINER_NAME | Out-Null
@@ -401,7 +474,7 @@ jobs:
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
-            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
+            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-auth,target=/run/secrets/tbankrot,readonly" `
             --publish 127.0.0.1:18000:8000 `
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=64m `
@@ -451,7 +524,7 @@ jobs:
               --name $spec.Name `
               --network $env:DOCKER_NETWORK `
               --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
+              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-auth,target=/run/secrets/tbankrot,readonly" `
               --no-healthcheck `
               --read-only `
               --tmpfs /tmp:rw,noexec,nosuid,size=128m `
@@ -541,6 +614,12 @@ jobs:
           if ($statuses.Count -ne 30 -or $statuses.Where({ $_ -ne 'live=200,ready=200' }).Count -ne 0) {
             throw "Local secondary stability gate failed"
           }
+          docker exec $env:CONTAINER_NAME python -c `
+            "import urllib.request; response=urllib.request.urlopen('http://bankrotai-tbankrot-auth:18443/health', timeout=10); assert response.status == 200"
+          if ($LASTEXITCODE -ne 0) {
+            docker logs --tail 100 $env:TBANKROT_AUTH_CONTAINER
+            throw "Production API cannot reach TBankrot auth broker"
+          }
           $workerGates = @(
             @{ Container = $env:WORKER_CONTAINER; Node = 'ingestion@bankrotai-home' },
             @{ Container = $env:GEO_WORKER_CONTAINER; Node = 'geocoding@bankrotai-home' },
@@ -554,7 +633,7 @@ jobs:
               throw "$($gate.Node) did not answer Celery ping"
             }
           }
-          foreach ($container in @($env:CONTAINER_NAME, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
+          foreach ($container in @($env:CONTAINER_NAME, $env:TBANKROT_AUTH_CONTAINER, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
             $logConfigJson = docker inspect --format '{{json .HostConfig.LogConfig}}' $container
             if ($LASTEXITCODE -ne 0 -or -not $logConfigJson) {
               throw "Could not inspect Docker log rotation for $container"
@@ -582,6 +661,7 @@ jobs:
             throw "Trusted ingestion worker cannot reach local Photon"
           }
           "Local secondary stability gate: 30/30 PASS"
+          "TBankrot auth broker connectivity gate: PASS"
           "Isolated ingestion/geocoding/map worker gates: PASS"
           "Local Photon connectivity gate: PASS"
 

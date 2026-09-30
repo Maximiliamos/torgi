@@ -1,5 +1,5 @@
 export type SortMode = "recommended" | "price_asc" | "price_desc" | "discount" | "newest";
-export type MainView = "search" | "registry" | "map" | "deal" | "reliability";
+export type MainView = "search" | "registry" | "map" | "deal" | "reliability" | "tbankrot";
 export type SearchSource = "torgi-gov" | "tbankrot" | "lot-online";
 
 export type LotListItem = {
@@ -190,6 +190,47 @@ export type Participation = {
 };
 
 export type QualitySnapshot = Record<string, number>;
+export type TBankrotStatus = {
+  state: "ready" | "auth_required" | "syncing" | "source_unavailable" | "broker_unavailable";
+  paused_from_automatic_sync: boolean;
+  broker_available: boolean;
+  broker_error?: string | null;
+  source_validation_error?: string | null;
+  saved_session: boolean;
+  captured_at?: string | null;
+  validated_at?: string | null;
+  active_browser_session_id?: string | null;
+  browser_ready: boolean;
+  latest_sync: null | {
+    task_id: string;
+    status: string;
+    complete: boolean;
+    items_seen: number;
+    items_inserted: number;
+    items_updated: number;
+    items_archived: number;
+    started_at?: string | null;
+    finished_at?: string | null;
+    error?: string | null;
+    run_status?: string | null;
+  };
+};
+
+export type TBankrotBrowserSession = {
+  session_id: string;
+  viewport: { width: number; height: number };
+  url: string;
+  title: string;
+};
+
+export type TBankrotVerifyResult = {
+  ok: boolean;
+  state: "authenticated" | "auth_required";
+  cards?: number;
+  captured_at?: string;
+  sync?: { status: string; task_id: string };
+};
+
 export type SourceHealth = {
   source_system: string;
   status: string;
@@ -300,6 +341,20 @@ export async function requestJson<T>(
   return response.json() as Promise<T>;
 }
 
+export async function requestBlob(path: string): Promise<Blob> {
+  const response = await fetchWithReadRetry(makeUrl(path), {
+    headers: { Accept: "image/jpeg" },
+    credentials: "same-origin",
+  }, 1);
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `HTTP ${response.status}`;
+    try { message = JSON.parse(text).detail || message; } catch { /* plain text */ }
+    throw new ApiError(message, response.status);
+  }
+  return response.blob();
+}
+
 export async function login(username: string, password: string) {
   return requestJson<AuthUser>("/api/auth/login", undefined, {
     method: "POST",
@@ -335,6 +390,33 @@ export const fetchProcedure = (id: number) => requestJson<Procedure>(`/api/lots/
 
 export const searchOnline = (source: SearchSource, params: Record<string, string | number | boolean | undefined>) =>
   requestJson<OnlineSearchResponse>(`/api/search/${source}`, params);
+export const fetchTBankrotStatus = () => requestJson<TBankrotStatus>("/api/tbankrot/status");
+export const startTBankrotAuth = () => requestJson<TBankrotBrowserSession>("/api/tbankrot/auth/start", undefined, { method: "POST" });
+export const fetchTBankrotFrame = (sessionId: string) =>
+  requestBlob(`/api/tbankrot/auth/${encodeURIComponent(sessionId)}/frame`);
+export const controlTBankrotAuth = (
+  sessionId: string,
+  action: { type: string; x?: number; y?: number; value?: string; key?: string; delta_y?: number },
+) => requestJson<{ status: string; url?: string; title?: string }>(
+  `/api/tbankrot/auth/${encodeURIComponent(sessionId)}/action`,
+  undefined,
+  { method: "POST", body: JSON.stringify(action) },
+);
+export const verifyTBankrotAuth = (sessionId: string) =>
+  requestJson<TBankrotVerifyResult>(
+    `/api/tbankrot/auth/${encodeURIComponent(sessionId)}/verify`,
+    undefined,
+    { method: "POST" },
+  );
+export const closeTBankrotAuth = (sessionId: string) =>
+  requestJson<{ status: string }>(
+    `/api/tbankrot/auth/${encodeURIComponent(sessionId)}/close`,
+    undefined,
+    { method: "POST" },
+  );
+export const syncTBankrot = () =>
+  requestJson<{ status: string; task_id: string }>("/api/tbankrot/sync", undefined, { method: "POST" });
+
 export const importOnlineLot = (lot: OnlineLot) => requestJson<{ id: number }>("/api/search/import", undefined, {
   method: "POST",
   body: JSON.stringify({

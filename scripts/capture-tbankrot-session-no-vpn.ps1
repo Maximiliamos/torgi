@@ -1,4 +1,4 @@
-param([string]$Destination = 'C:\ProgramData\BankrotAI\tbankrot-cookies.json')
+param([string]$Destination = 'C:\ProgramData\BankrotAI\tbankrot-auth\tbankrot-cookies.json')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $node = (Get-Command node -ErrorAction Stop).Source
@@ -10,4 +10,4 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Ou
 & $node (Join-Path $PSScriptRoot 'capture-tbankrot-session.mjs') $Destination
 if ($LASTEXITCODE -ne 0) { throw 'Could not save the TBankrot session' }
 & icacls.exe $Destination /inheritance:r /grant:r 'SYSTEM:F' '*S-1-5-32-544:F' | Out-Null
-Write-Host 'Done. Cookie values were not printed. Enable VPN and reply: ready.'
+Write-Host 'Done. Cookie values were not printed. STERDEZ and the isolated TBankrot broker now use this same protected session file.'
