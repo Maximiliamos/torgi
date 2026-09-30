@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from bs4 import BeautifulSoup
+
 from bankrotai.scraper_contracts import TBankrotSearchFilters
 from bankrotai.scrapers import TBankrotClient
 
@@ -91,13 +93,25 @@ def probe_saved_tbankrot_session(path: Path | None = None) -> TBankrotAuthState:
         )
     try:
         client = TBankrotClient(cookie_file=str(cookie_path))
-        _lots, meta = client.search_filtered_lots(
+        lots, meta = client.search_filtered_lots(
             TBankrotSearchFilters(
                 category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
                 page=1,
                 page_size=20,
             )
         )
+        total = int(meta["total"]) if isinstance(meta.get("total"), int) else None
+        if total is None and not lots:
+            return TBankrotAuthState(
+                state="unavailable",
+                browser_active=False,
+                authenticated=False,
+                requires_auth=False,
+                message="TBankrot ответил, но сессию не удалось подтвердить",
+                checked_at=_utc_iso(),
+                saved_at=saved_at,
+                cookie_count=cookie_count,
+            )
         return TBankrotAuthState(
             state="authenticated",
             browser_active=False,
@@ -107,7 +121,7 @@ def probe_saved_tbankrot_session(path: Path | None = None) -> TBankrotAuthState:
             checked_at=_utc_iso(),
             saved_at=saved_at,
             cookie_count=cookie_count,
-            source_total=int(meta["total"]) if isinstance(meta.get("total"), int) else None,
+            source_total=total,
         )
     except Exception as exc:
         message = str(exc)
@@ -309,6 +323,11 @@ class TBankrotAuthBrowser:
                 return (await self._browser_state(message="Авторизация ещё не подтверждена TBankrot")).as_dict()
             total_parser = object.__new__(TBankrotClient)
             total = total_parser._extract_search_total(html)
+            listing_cards = len(BeautifulSoup(html, "lxml").select(".lot_container"))
+            if total is None and listing_cards == 0:
+                return (await self._browser_state(
+                    message="TBankrot открыл страницу, но успешный вход ещё не подтверждён"
+                )).as_dict()
             cookies = await self._context.cookies([TBANKROT_HOME_URL])
             cookies = [
                 cookie
