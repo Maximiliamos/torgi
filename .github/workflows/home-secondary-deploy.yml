@@ -94,7 +94,66 @@ jobs:
 
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          Write-Output "C: free after cleanup: $afterFreeGb GB"
+          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
+            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
+          } else { 0 }
+          Write-Output "C: free after normal cleanup: $afterFreeGb GB ($afterFreePercent%)"
+
+          # Emergency pressure relief: database volumes are never touched.
+          # Keep the two newest DR dumps plus the newest restore-verified dump;
+          # only retire older backup sets until a 12% recovery target is met.
+          if ($afterFreePercent -lt 10 -and (Test-Path -LiteralPath $drBackupRoot)) {
+            Write-Warning "C: is below 10%; thinning old DR backup sets while preserving recovery anchors"
+            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
+              Sort-Object LastWriteTimeUtc -Descending)
+            $protected = New-Object 'System.Collections.Generic.HashSet[string]'
+            foreach ($file in ($dumpFiles | Select-Object -First 2)) {
+              [void]$protected.Add($file.FullName)
+            }
+            $verifiedMetadata = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
+              Sort-Object LastWriteTimeUtc -Descending |
+              ForEach-Object {
+                try {
+                  $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
+                } catch {}
+              } | Select-Object -First 1)
+            if ($verifiedMetadata.Count -gt 0) {
+              [void]$protected.Add([string]$verifiedMetadata[0].backup_file)
+            }
+            foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
+              if ($protected.Contains($dump.FullName)) { continue }
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+              Remove-Item -LiteralPath $dump.FullName -Force
+              $metadataPath = Join-Path $drBackupRoot "$stem.json"
+              if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
+              $drive = Get-PSDrive -Name C
+              $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
+                ($drive.Free / ($drive.Used + $drive.Free)) * 100
+              } else { 0 }
+              if ($freePercent -ge 12) { break }
+            }
+          }
+
+          # If pressure remains critical, retain only the newest pre-migration
+          # dump. The normal restore-verified DR backups above remain protected.
+          $pressure = Get-PSDrive -Name C
+          $pressurePercent = if (($pressure.Used + $pressure.Free) -gt 0) {
+            ($pressure.Free / ($pressure.Used + $pressure.Free)) * 100
+          } else { 0 }
+          if ($pressurePercent -lt 10 -and (Test-Path -LiteralPath $migrationBackupRoot)) {
+            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
+              Sort-Object LastWriteTimeUtc -Descending |
+              Select-Object -Skip 1 |
+              Remove-Item -Force
+          }
+
+          $after = Get-PSDrive -Name C
+          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
+          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
+            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
+          } else { 0 }
+          Write-Output "C: free after adaptive cleanup: $afterFreeGb GB ($afterFreePercent%)"
           if ($after.Free -lt 2GB) {
             throw "C: still has less than 2 GB free after safe cleanup"
           }
@@ -148,6 +207,7 @@ jobs:
           $postgres = docker ps -a --filter "name=^/${env:POSTGRES_CONTAINER}$" --format '{{.Names}}'
           if ($postgres -ne $env:POSTGRES_CONTAINER) {
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $env:POSTGRES_CONTAINER --network $env:DOCKER_NETWORK `
               --env POSTGRES_USER=bankrotai --env POSTGRES_DB=bankrotai `
               --env "POSTGRES_PASSWORD=$password" `
@@ -313,6 +373,7 @@ jobs:
           $redis = docker ps -a --filter "name=^/${env:REDIS_CONTAINER}$" --format '{{.Names}}'
           if ($redis -ne $env:REDIS_CONTAINER) {
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $env:REDIS_CONTAINER `
               --network $env:DOCKER_NETWORK `
               --mount "type=bind,source=$env:CONFIG_ROOT\redis.conf,target=/usr/local/etc/redis/redis.conf,readonly" `
@@ -336,6 +397,7 @@ jobs:
             docker rm --force $env:CONTAINER_NAME | Out-Null
           }
           docker run --detach --restart unless-stopped `
+            --log-opt max-size=20m --log-opt max-file=5 `
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
@@ -385,6 +447,7 @@ jobs:
               $workerArgs += @('--beat', '--schedule', '/tmp/celerybeat-schedule')
             }
             docker run --detach --restart unless-stopped `
+              --log-opt max-size=20m --log-opt max-file=5 `
               --name $spec.Name `
               --network $env:DOCKER_NETWORK `
               --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
@@ -489,6 +552,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               docker logs --tail 100 $gate.Container
               throw "$($gate.Node) did not answer Celery ping"
+            }
+          }
+          foreach ($container in @($env:CONTAINER_NAME, $env:WORKER_CONTAINER, $env:GEO_WORKER_CONTAINER, $env:MAP_WORKER_CONTAINER)) {
+            $logConfigJson = docker inspect --format '{{json .HostConfig.LogConfig}}' $container
+            if ($LASTEXITCODE -ne 0 -or -not $logConfigJson) {
+              throw "Could not inspect Docker log rotation for $container"
+            }
+            $logConfig = $logConfigJson | ConvertFrom-Json
+            if (
+              $logConfig.Config.'max-size' -ne '20m' -or
+              $logConfig.Config.'max-file' -ne '5'
+            ) {
+              throw "Docker log rotation is not enforced for $container"
             }
           }
           $limitState = docker exec $env:WORKER_CONTAINER python -c "from bankrotai.tasks import nationwide_lot_sync_task, _DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS, _DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS; print(f'{nationwide_lot_sync_task.soft_time_limit},{nationwide_lot_sync_task.time_limit},{_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS},{_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS}')"

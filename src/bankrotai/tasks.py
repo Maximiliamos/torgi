@@ -290,15 +290,30 @@ def publish_dirty_map_dataset_task() -> dict[str, Any]:
 
 @celery_app.task(name="bankrotai.tasks.cleanup_old_map_datasets_task")
 def cleanup_old_map_datasets_task() -> dict[str, Any]:
-    """Apply the tested retention policy while preserving current and rollback versions."""
+    """Apply DB + S3 manifest retention while preserving current and rollback versions."""
     from bankrotai.services.map_builder import cleanup_map_datasets
+    from bankrotai.services.map_object_store import delete_retired_dataset_manifests
 
-    return cleanup_map_datasets(
+    plan = cleanup_map_datasets(
+        SessionLocal,
+        retain_previous_ready=1,
+        min_age_hours=24,
+        apply=False,
+    )
+    manifest_retention = delete_retired_dataset_manifests(
+        list(plan.get("candidate_versions") or []),
+    )
+    applied = cleanup_map_datasets(
         SessionLocal,
         retain_previous_ready=1,
         min_age_hours=24,
         apply=True,
     )
+    return {
+        **applied,
+        "planned_candidate_dataset_count": int(plan.get("candidate_dataset_count") or 0),
+        "manifest_retention": manifest_retention,
+    }
 
 
 @celery_app.task(name="bankrotai.tasks.daily_operational_quality_report_task")

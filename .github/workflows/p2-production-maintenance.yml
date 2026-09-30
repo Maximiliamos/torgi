@@ -1,0 +1,84 @@
+name: P2 production maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Apply safe retention and Docker cleanup'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_run:
+    workflows: ['Deploy home secondary origin']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: p2-production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 45
+    outputs:
+      warning_count: ${{ steps.maintenance.outputs.warning_count }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run P2 maintenance and audit
+        id: maintenance
+        shell: powershell
+        run: |
+          $apply = '${{ github.event_name }}' -eq 'schedule'
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.apply }}' -eq 'true') { $apply = $true }
+          if ($apply) {
+            .\scripts\p2-production-maintenance.ps1 -Apply -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
+          } else {
+            .\scripts\p2-production-maintenance.ps1 -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
+          }
+          $report = Get-Content -LiteralPath "$env:RUNNER_TEMP\p2-maintenance.json" -Raw | ConvertFrom-Json
+          "warning_count=$([int]$report.warning_count)" >> $env:GITHUB_OUTPUT
+      - name: Upload P2 maintenance report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p2-maintenance-${{ github.run_id }}
+          path: ${{ runner.temp }}\p2-maintenance.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  alert:
+    needs: maintain
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[P2] Production maintenance alert';
+            const body = `Production maintenance/disk/retention gate failed.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+            else await github.rest.issues.create({...context.repo, title, body});
+
+  recovery:
+    needs: maintain
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = '[P2] Production maintenance alert';
+            const {data: issues} = await github.rest.issues.listForRepo({...context.repo, state: 'open', per_page: 100});
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body: `Recovered on run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}.`});
+              await github.rest.issues.update({...context.repo, issue_number: existing.number, state: 'closed'});
+            }

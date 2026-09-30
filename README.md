@@ -84,6 +84,18 @@ Phase 3 backup/restore thresholds и значения alert-классов ос�
 
 Для текущего масштаба (до четырёх пользователей) приоритет — воспроизводимый
 fail-closed deploy и проверяемое восстановление, а не дополнительный enterprise-слой.
+После production reconciliation отдельный P1-контур сверяет текущие координаты и
+путь **PostgreSQL → MapDataset → REG.RU S3 manifest**. Исторический GEO snapshot
+не считается координатой карты, если `current_geo_*` не заполнен. GEO backlog
+классифицируется по наличию адреса/кадастрового номера, retry-состоянию и terminal
+ошибкам; автоматическая цепочка обработки ограничена восемью batch подряд, после
+чего управление возвращается Celery beat.
+
+P2-контур ежедневно выполняет ограниченное обслуживание home production:
+контролирует свободное место (warning <15%, hard fail <10%), ротацию Docker-логов
+`20 MB × 5`, 14-дневное хранение backup/health-логов и безопасный retention старых
+MapDataset. Для `regional-bundles-v1` удаляются только manifests выбывших версий;
+общие content-addressed bundles/index shards сохраняются.
 
 ## Локальная установка
 

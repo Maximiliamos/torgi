@@ -39,7 +39,7 @@ jobs:
           if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.verify_restore }}' -eq 'true') { $verify = $true }
           .\scripts\backup-home-postgres.ps1 `
             -Destination 'C:\ProgramData\BankrotAI\dr-backups' `
-            -RetainDays 7 `
+            -RetainDays 14 `
             -VerifyRestore:$verify
           $latest = Get-ChildItem 'C:\ProgramData\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1

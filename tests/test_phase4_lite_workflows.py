@@ -8,6 +8,10 @@ PRODUCTION_FUNCTIONAL = ROOT / ".github" / "workflows" / "production-functional.
 OPERATIONS = ROOT / "docs" / "phase4-lite-operations.md"
 P1_QUALITY = ROOT / ".github" / "workflows" / "p1-data-quality.yml"
 P1_AUDIT = ROOT / "scripts" / "p1-production-audit.ps1"
+P2_MAINTENANCE = ROOT / ".github" / "workflows" / "p2-production-maintenance.yml"
+P2_SCRIPT = ROOT / "scripts" / "p2-production-maintenance.ps1"
+HOME_DEPLOY = ROOT / ".github" / "workflows" / "home-secondary-deploy.yml"
+BACKUP_WORKFLOW = ROOT / ".github" / "workflows" / "phase3-lite-backup.yml"
 
 
 def test_python_runtime_dependencies_are_audited() -> None:
@@ -46,7 +50,7 @@ def test_phase4_operations_runbook_keeps_phase3_safety_contracts() -> None:
         "Prefer application rollback over database restore",
         "Never use an unverified dump directly against the live database",
         "Never bypass the single-active ingestion lock",
-        "55-minute soft / 60-minute hard",
+        "4-hour soft / 5-hour hard",
         "no more than four application users",
     ):
         assert text in runbook
@@ -63,3 +67,31 @@ def test_p1_data_quality_reconciles_db_map_and_public_s3() -> None:
     assert "map_delivery_reconciliation_report(s, verify_public_manifest=True)" in script
     assert "geocoding_diagnostic_report(s)" in script
     assert "if (-not $result.healthy) { exit 1 }" in script
+
+
+def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
+    workflow = P2_MAINTENANCE.read_text(encoding="utf-8")
+    script = P2_SCRIPT.read_text(encoding="utf-8")
+    deploy = HOME_DEPLOY.read_text(encoding="utf-8")
+    backup = BACKUP_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "17 5 * * *" in workflow
+    assert "Deploy home secondary origin" in workflow
+    assert "p2-production-maintenance.ps1" in workflow
+    assert "[P2] Production maintenance alert" in workflow
+    assert "docker image prune --force" in script
+    assert "docker builder prune --force" in script
+    assert "docker system prune" not in script
+    assert "disk-c-critical" in script
+    assert "disk-c-headroom" in script
+    assert "CriticalFreePercent = 10" in script
+    assert "WarningFreePercent = 15" in script
+    assert "cleanup_old_map_datasets_task" in script
+    assert "--log-opt max-size=20m --log-opt max-file=5" in deploy
+    assert "Docker log rotation is not enforced" in deploy
+    assert "-RetainDays 14" in backup
+    assert "preserving recovery anchors" in deploy
+    assert "Select-Object -First 2" in deploy
+    assert "restore_verification -eq 'passed'" in deploy
+    assert "Get-FreePercent) -lt $CriticalFreePercent" in script
+    assert "Select-Object -First 2" in script
