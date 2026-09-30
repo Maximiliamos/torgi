@@ -1051,7 +1051,7 @@ def _record_transient_geo_failure(
     previous_payload = _parse_failure_payload(failure.error_message if failure is not None else None)
     transient_count = int(previous_payload.get("transient_count") or 0) + 1
     category = str(classification.get("category") or "provider_unavailable")
-    network_category = category in {
+    network_like_category = category in {
         "dns_error",
         "connect_timeout",
         "read_timeout",
@@ -1059,7 +1059,11 @@ def _record_transient_geo_failure(
         "tls_error",
         "external_network_down",
     }
-    status = "waiting_network" if network_category else "waiting_provider"
+    network_state = str((resilience_snapshot().get("network") or {}).get("state") or "unknown")
+    confirmed_network_outage = category == "external_network_down" or (
+        network_like_category and network_state == "down"
+    )
+    status = "waiting_network" if confirmed_network_outage else "waiting_provider"
     now = utc_now()
     payload = {
         "error": classification.get("error"),
