@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import utc_now
 from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset
 from bankrotai.services.geo_backfill import geocoding_progress
+from bankrotai.services.geo_resilience import resilience_snapshot
 from bankrotai.services.ingestion import default_source_specs
 from bankrotai.services.quality import list_source_health
 
@@ -180,6 +181,40 @@ def build_phase3_health(
         percent=geo.get("percent"),
     )
 
+    resilience = resilience_snapshot()
+    network = resilience.get("network") or {}
+    network_state = str(network.get("state") or "unknown")
+    add(
+        "geo-external-network",
+        network_state not in {"down"},
+        severity="warning",
+        state=network_state,
+        failed_external_probes=int(network.get("failed_external_probes") or 0),
+        fingerprint_changed=bool(network.get("fingerprint_changed")),
+        updated_at=network.get("updated_at"),
+    )
+    provider_states = resilience.get("providers") or {}
+    open_providers = sorted(
+        name
+        for name, payload in provider_states.items()
+        if isinstance(payload, dict) and payload.get("state") == "open"
+    )
+    add(
+        "geo-provider-circuits",
+        not open_providers,
+        severity="warning",
+        open_providers=open_providers,
+        providers={
+            name: {
+                "state": payload.get("state"),
+                "last_error_category": payload.get("last_error_category"),
+                "last_latency_ms": payload.get("last_latency_ms"),
+            }
+            for name, payload in provider_states.items()
+            if isinstance(payload, dict)
+        },
+    )
+
     critical_failures = [
         check for check in checks if not check["ok"] and check["severity"] == "critical"
     ]
@@ -201,5 +236,9 @@ def build_phase3_health(
             "legacy_source_count": len(legacy_sources),
             "geo_percent": geo.get("percent"),
             "geo_actionable_remaining": actionable,
+            "geo_waiting_network": int(geo.get("waiting_network") or 0),
+            "geo_waiting_provider": int(geo.get("waiting_provider") or 0),
+            "geo_deferred_total": int(geo.get("deferred_total") or 0),
+            "geo_network_state": network_state,
         },
     }
