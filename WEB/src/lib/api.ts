@@ -191,10 +191,11 @@ export type Participation = {
 
 export type QualitySnapshot = Record<string, number>;
 export type TBankrotStatus = {
-  state: "ready" | "auth_required" | "syncing" | "broker_unavailable";
+  state: "ready" | "auth_required" | "syncing" | "source_unavailable" | "broker_unavailable";
   paused_from_automatic_sync: boolean;
   broker_available: boolean;
   broker_error?: string | null;
+  source_validation_error?: string | null;
   saved_session: boolean;
   captured_at?: string | null;
   validated_at?: string | null;
