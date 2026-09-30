@@ -90,6 +90,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "--log-opt max-size=20m --log-opt max-file=5" in deploy
     assert "Docker log rotation is not enforced" in deploy
     assert "-RetainDays 14" in backup
+    assert "Reclaim safe backup space under critical disk pressure" in backup
+    assert "Backup refused: C: remains below 10% free after safe cleanup" in backup
+    assert "restore_verification -eq 'passed'" in backup
     assert "preserving recovery anchors" in deploy
     assert "Select-Object -First 2" in deploy
     assert "restore_verification -eq 'passed'" in deploy
