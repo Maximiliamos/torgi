@@ -47,6 +47,7 @@ from bankrotai.db import (
     LotGeoSnapshot,
     MapDataset,
     MapTile,
+    AppSetting,
     LotNote,
     SavedMaxBidScenario,
     SavedSearch,
@@ -1067,6 +1068,66 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 )
 
         geocoding = geocoding_progress(session)
+
+        paused_settings = {
+            str(row.key).removeprefix("source_paused:"): str(row.value or "").strip().casefold() in {"1", "true", "yes", "on"}
+            for row in session.scalars(
+                select(AppSetting).where(AppSetting.key.like("source_paused:%"))
+            ).all()
+        }
+        source_health = list_source_health(session)
+        source_items: list[dict[str, Any]] = []
+        ready_sources = 0
+        active_source_total = 0
+        last_complete_updates: list[datetime] = []
+        for item in source_health:
+            paused = bool(paused_settings.get(item.source_system, False))
+            ready = item.coverage_status == "fresh"
+            if not paused:
+                active_source_total += 1
+                ready_sources += int(ready)
+                if item.last_complete_success_at is not None:
+                    last_complete_updates.append(item.last_complete_success_at)
+            source_items.append(
+                {
+                    "source_system": item.source_system,
+                    "paused": paused,
+                    "ready": ready,
+                    "status": item.status,
+                    "freshness_status": item.freshness_status,
+                    "coverage_status": item.coverage_status,
+                    "last_success_at": item.last_success_at,
+                    "last_complete_success_at": item.last_complete_success_at,
+                    "last_error_category": item.last_error_category,
+                    "items_seen": item.items_seen,
+                }
+            )
+        source_items.sort(key=lambda item: (bool(item["paused"]), str(item["source_system"])))
+
+        current_map = session.scalar(
+            select(MapDataset)
+            .where(MapDataset.is_current.is_(True))
+            .order_by(MapDataset.id.desc())
+            .limit(1)
+        )
+        latest_data_update = max(last_complete_updates) if last_complete_updates else None
+        summary = {
+            "sources": {
+                "ready": ready_sources,
+                "total": active_source_total,
+                "paused": sum(1 for item in source_items if item["paused"]),
+                "items": source_items,
+            },
+            "last_update_at": latest_data_update,
+            "map": None if current_map is None else {
+                "version": current_map.version,
+                "status": current_map.status,
+                "point_count": int(current_map.point_count or 0),
+                "tile_count": int(current_map.tile_count or 0),
+                "published_at": current_map.published_at,
+            },
+        }
+
         journal: list[dict[str, Any]] = []
         for source, payload in zip(source_rows, sources, strict=False):
             checkpoint = source.checkpoint_json or {}
@@ -1124,6 +1185,7 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 "sources": sources,
             },
             "geocoding": geocoding,
+            "summary": summary,
             "journal": journal[:6],
         }
 
