@@ -1295,7 +1295,11 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
     stale_auth_failure = "access_limited" in error_text.casefold() and (
         captured_at is None or failure_at is None or failure_at >= captured_at
     )
-    auth_required = not bool(broker.get("saved")) or stale_auth_failure
+    auth_required = (
+        not bool(broker.get("saved"))
+        or broker.get("session_valid") is False
+        or stale_auth_failure
+    )
     syncing = latest_source is not None and latest_source.status in {"queued", "running"}
     state = (
         "broker_unavailable"
@@ -1313,6 +1317,7 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
         "broker_error": broker_error,
         "saved_session": bool(broker.get("saved")),
         "captured_at": broker.get("captured_at"),
+        "validated_at": broker.get("validated_at"),
         "active_browser_session_id": broker.get("active_session_id"),
         "browser_ready": bool(broker.get("browser_ready")),
         "latest_sync": None
