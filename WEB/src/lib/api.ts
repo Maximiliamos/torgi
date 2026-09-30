@@ -197,6 +197,7 @@ export type TBankrotStatus = {
   broker_error?: string | null;
   saved_session: boolean;
   captured_at?: string | null;
+  validated_at?: string | null;
   active_browser_session_id?: string | null;
   browser_ready: boolean;
   latest_sync: null | {
