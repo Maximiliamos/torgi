@@ -84,3 +84,5 @@ def test_resilience_snapshot_does_not_expose_network_addresses(monkeypatch) -> N
     assert "providers" in snapshot
     assert snapshot["providers"]["photon"]["last_error_category"] == "local_service_unavailable"
     assert "provider_results" not in snapshot["providers"]["photon"]
+    assert "private detail" not in str(snapshot)
+    assert snapshot["providers"]["photon"]["last_error_fingerprint"] is not None
