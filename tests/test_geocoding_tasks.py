@@ -128,7 +128,7 @@ def test_heavy_tasks_use_isolated_queues() -> None:
     assert routes["bankrotai.tasks.nationwide_lot_sync_task"]["queue"] == "ingestion"
     assert routes["bankrotai.tasks.geocode_pending_lots_task"]["queue"] == "geocoding"
     assert routes["bankrotai.tasks.recover_ik12_geo_task"]["queue"] == "geocoding"
-    assert routes["bankrotai.tasks.probe_geo_network_task"]["queue"] == "geocoding"
+    assert routes["bankrotai.tasks.probe_geo_network_task"]["queue"] == "maintenance"
     assert routes["bankrotai.tasks.build_map_dataset_task"]["queue"] == "map"
     assert tasks.celery_app.conf.task_default_queue == "maintenance"
 
