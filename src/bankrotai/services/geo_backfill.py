@@ -737,7 +737,16 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
                 select(func.count())
                 .select_from(ProcessedLot)
                 .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
-                .where(*population, pending, GeoFailure.status == status)
+                .where(
+                    *population,
+                    pending,
+                    GeoFailure.status == status,
+                    *(
+                        (ProcessedLot.geo_input_hash.is_not(None),)
+                        if status in _DEFERRED_STATUSES
+                        else ()
+                    ),
+                )
             )
             or 0
         )
