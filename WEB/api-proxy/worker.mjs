@@ -7,6 +7,8 @@ const UPSTREAM_TIMEOUT_MS = 10_000;
 const MAP_ATTEMPT_TIMEOUT_MS = 10_000;
 const MAP_FALLBACK_TIMEOUT_MS = 8_000;
 const PUBLIC_SOURCE_TIMEOUT_MS = 4_000;
+const TBANKROT_SAFE_TIMEOUT_MS = 20_000;
+const TBANKROT_MUTATION_TIMEOUT_MS = 55_000;
 const TORGI_PROXY_PREFIX = "/__public-source/torgi";
 const TORGI_ALLOWED_PATHS = ["/new/api/public/", "/new/public/"];
 
@@ -139,13 +141,22 @@ export default {
     headers.set("x-forwarded-proto", "https");
     headers.set("x-request-id", requestId);
     const mapRead = request.method === "GET" && incoming.pathname === "/api/map/lots";
+    const tbankrotRequest = incoming.pathname.startsWith("/api/tbankrot/");
+    const tbankrotTimeout = SAFE_METHODS.has(request.method)
+      ? TBANKROT_SAFE_TIMEOUT_MS
+      : TBANKROT_MUTATION_TIMEOUT_MS;
+    const primaryTimeout = tbankrotRequest
+      ? tbankrotTimeout
+      : mapRead
+        ? MAP_ATTEMPT_TIMEOUT_MS
+        : UPSTREAM_TIMEOUT_MS;
     const retrySafeRead = mapRead
       || (SAFE_METHODS.has(request.method) && incoming.pathname.startsWith("/health/"));
 
     try {
       const primary = await completedResponse(
         request, incoming, primaryOrigin(env), headers,
-        mapRead ? MAP_ATTEMPT_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS,
+        primaryTimeout,
         SAFE_METHODS.has(request.method)
           && incoming.pathname === "/api/time"
           && Boolean(secondaryOrigin(env)),
@@ -181,7 +192,9 @@ export default {
           }));
         }
       }
-      const fallbackOrigin = SAFE_METHODS.has(request.method) ? secondaryOrigin(env) : null;
+      const fallbackOrigin = SAFE_METHODS.has(request.method) && !tbankrotRequest
+        ? secondaryOrigin(env)
+        : null;
       if (fallbackOrigin) {
         console.log(JSON.stringify({
           event: "fallback_activation", request_id: requestId, method: request.method, path: incoming.pathname,
