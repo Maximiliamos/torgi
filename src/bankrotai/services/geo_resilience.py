@@ -240,7 +240,12 @@ def record_provider_failure(
     state["consecutive_failures"] = failures
     state["consecutive_successes"] = 0
     state["last_error_category"] = category
-    state["last_error"] = str(detail or "")[:300] or None
+    detail_text = str(detail or "")
+    state["last_error_fingerprint"] = (
+        hashlib.sha256(detail_text.encode("utf-8", errors="replace")).hexdigest()[:16]
+        if detail_text
+        else None
+    )
     state["last_latency_ms"] = round(float(latency_ms), 1) if latency_ms is not None else state.get("last_latency_ms")
     if failures >= _PROVIDER_OPEN_AFTER:
         state["state"] = "open"
@@ -414,12 +419,34 @@ def probe_geo_network() -> dict[str, Any]:
 
 
 def resilience_snapshot() -> dict[str, Any]:
-    providers = {
+    raw_providers = {
         provider: _provider_state(provider)
         for provider in ("photon", "nspd", "ik12", "nominatim")
     }
+    providers = {
+        provider: {
+            "state": state.get("state"),
+            "consecutive_failures": int(state.get("consecutive_failures") or 0),
+            "consecutive_successes": int(state.get("consecutive_successes") or 0),
+            "opened_until_epoch": state.get("opened_until_epoch"),
+            "last_error_category": state.get("last_error_category"),
+            "last_error_fingerprint": state.get("last_error_fingerprint"),
+            "last_latency_ms": state.get("last_latency_ms"),
+            "updated_at": state.get("updated_at"),
+        }
+        for provider, state in raw_providers.items()
+    }
     network = _network_state()
+    safe_network = {
+        "state": network.get("state"),
+        "consecutive_successes": int(network.get("consecutive_successes") or 0),
+        "failed_external_probes": int(network.get("failed_external_probes") or 0),
+        "fingerprint": network.get("fingerprint"),
+        "fingerprint_changed": bool(network.get("fingerprint_changed")),
+        "provider_results": network.get("provider_results") or {},
+        "updated_at": network.get("updated_at"),
+    }
     return {
-        "network": network,
+        "network": safe_network,
         "providers": providers,
     }
