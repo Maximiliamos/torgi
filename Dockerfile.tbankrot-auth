@@ -7,4 +7,4 @@ COPY tbankrot-auth/server.mjs ./
 
 ENV PORT=18443
 EXPOSE 18443
-CMD ["node", "server.mjs"]
+CMD ["xvfb-run", "-a", "node", "server.mjs"]
