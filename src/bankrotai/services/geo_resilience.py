@@ -374,7 +374,17 @@ def probe_geo_network() -> dict[str, Any]:
         ok, category, latency = _probe_tcp_tls(host)
         if provider in {"nspd", "ik12"}:
             if ok:
-                record_provider_success(provider, latency_ms=latency)
+                current = _provider_state(provider)
+                # A TCP/TLS probe proves route recovery, but not that the
+                # application endpoint recovered from 429/5xx/read-timeout.
+                if current.get("state") == "unknown" or current.get("last_error_category") in {
+                    "dns_error",
+                    "connect_timeout",
+                    "connection_error",
+                    "tls_error",
+                    "external_network_down",
+                }:
+                    record_provider_success(provider, latency_ms=latency)
             else:
                 record_provider_failure(provider, category or "connection_error", latency_ms=latency)
         provider_results[provider] = {
