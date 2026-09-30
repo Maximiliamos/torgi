@@ -792,6 +792,36 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         )
         or 0
     )
+    waiting_network = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(*population, pending, GeoFailure.status == "waiting_network")
+        )
+        or 0
+    )
+    waiting_provider = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(*population, pending, GeoFailure.status == "waiting_provider")
+        )
+        or 0
+    )
+    deferred_counts = {
+        status: int(
+            session.scalar(
+                select(func.count())
+                .select_from(ProcessedLot)
+                .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                .where(*population, pending, GeoFailure.status == status)
+            )
+            or 0
+        )
+        for status in sorted(_DEFERRED_GEO_STATUSES)
+    }
     waiting_for_retry = int(
         session.scalar(
             select(func.count())
@@ -800,7 +830,8 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             .where(
                 *population,
                 pending,
-                GeoFailure.status != "terminal",
+                GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES)),
+                GeoFailure.status.not_in(("waiting_network", "waiting_provider")),
                 GeoFailure.next_retry_at.is_not(None),
                 GeoFailure.next_retry_at > now,
             )
@@ -814,7 +845,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         .where(
             *population,
             pending,
-            GeoFailure.status != "terminal",
+            GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES)),
             GeoFailure.next_retry_at.is_not(None),
             GeoFailure.next_retry_at > now,
         )
@@ -846,7 +877,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
     sample_seconds = sum(seconds for processed, seconds in samples if processed > 0 and seconds > 0)
     rate = sample_lots / sample_seconds if sample_lots and sample_seconds else None
 
-    actionable_remaining = eligible_now + waiting_for_retry
+    actionable_remaining = eligible_now + waiting_for_retry + waiting_network + waiting_provider
     if actionable_remaining == 0:
         eta_seconds = 0
     elif eligible_now > 0 and rate:
@@ -879,7 +910,8 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             elapsed_seconds = math.ceil(float((latest.result_json or {}).get("duration_seconds") or 0))
 
     paused = is_geocoding_paused(session)
-    resolved = min(total, geocoded + terminal)
+    deferred_total = sum(deferred_counts.values())
+    resolved = min(total, geocoded + terminal + deferred_total)
     return {
         "total": total,
         "geocoded": geocoded,
@@ -890,6 +922,10 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "actionable_remaining": actionable_remaining,
         "eligible_now": eligible_now,
         "waiting_for_retry": waiting_for_retry,
+        "waiting_network": waiting_network,
+        "waiting_provider": waiting_provider,
+        "deferred": deferred_counts,
+        "deferred_total": deferred_total,
         "next_retry_at": next_retry_at.isoformat() if next_retry_at is not None else None,
         "percent": round((geocoded / total * 100) if total else 100.0, 1),
         "paused": paused,
