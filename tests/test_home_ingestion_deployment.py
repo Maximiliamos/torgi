@@ -98,6 +98,7 @@ def test_home_deploy_recovers_runner_before_checkout_and_never_prunes_volumes() 
     assert recovery in workflow
     assert workflow.index(recovery) < workflow.index(checkout)
     assert "AUTO_MERGE.lock" in workflow
+    assert "packed-refs.lock" in workflow
     assert "runnerTemp" in workflow
     assert "docker system prune" not in workflow
     assert "docker volume prune" not in workflow
@@ -116,3 +117,13 @@ def test_home_emergency_docker_probe_is_bounded_and_recovers_service() -> None:
     assert "Docker daemon remains unavailable after service restart" in workflow
     assert "wsl.exe --shutdown" in workflow
     assert "Docker Desktop/WSL backend recovered successfully" in workflow
+
+
+def test_legacy_tbankrot_cookie_migration_cannot_block_home_deploy() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Legacy TBankrot session could not be migrated; Auth Center will request a fresh login" in workflow
+    assert "Copy-Item -LiteralPath $legacyTbankrotCookiePath" in workflow
+    assert "-ErrorAction Stop" in workflow
+    assert "try {" in workflow
+    assert "catch {" in workflow

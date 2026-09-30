@@ -47,10 +47,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $workRoot = Split-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) -Parent
           $repoGit = Join-Path $env:GITHUB_WORKSPACE '.git'
-          $staleAutoMergeLock = Join-Path $repoGit 'AUTO_MERGE.lock'
-          if (Test-Path -LiteralPath $staleAutoMergeLock) {
-            Remove-Item -LiteralPath $staleAutoMergeLock -Force -ErrorAction SilentlyContinue
-            Write-Output "Removed stale Git AUTO_MERGE lock"
+          foreach ($lockName in @('AUTO_MERGE.lock', 'packed-refs.lock')) {
+            $staleLock = Join-Path $repoGit $lockName
+            if (Test-Path -LiteralPath $staleLock) {
+              Remove-Item -LiteralPath $staleLock -Force -ErrorAction SilentlyContinue
+              Write-Output "Removed stale Git lock: $lockName"
+            }
           }
 
           $runnerTemp = Join-Path $workRoot '_temp'
@@ -402,7 +404,12 @@ jobs:
           $legacyTbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
           $tbankrotCookiePath = Join-Path $tbankrotAuthRoot 'cookies.json'
           if ((Test-Path -LiteralPath $legacyTbankrotCookiePath) -and -not (Test-Path -LiteralPath $tbankrotCookiePath)) {
-            Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath -Force
+            try {
+              Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath -Force -ErrorAction Stop
+              Write-Output "Migrated legacy TBankrot session into Auth Center storage"
+            } catch {
+              Write-Warning "Legacy TBankrot session could not be migrated; Auth Center will request a fresh login"
+            }
           }
           & icacls.exe $tbankrotAuthRoot /inheritance:r /grant:r `
             'SYSTEM:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)M' | Out-Null
