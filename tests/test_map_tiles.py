@@ -965,7 +965,7 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
             created_at=old - timedelta(days=1),
             published_at=old - timedelta(days=1),
         )
-        failed = MapDataset(version="old-failed", status="failed", is_current=False, created_at=old)
+        failed = MapDataset(version="old-failed", status="failed", is_current=False, tile_count=1, created_at=old)
         recent_failed = MapDataset(
             version="recent-failed",
             status="failed",
