@@ -12,6 +12,9 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 const TARGET_ORIGIN = "https://tbankrot.ru";
 const VERIFY_URL = "https://tbankrot.ru/?p=search&parent_cat=2&sub_cat=3%2C4%2C5";
 const sessions = new Map();
+const STATUS_PROBE_TTL_MS = 5 * 60 * 1000;
+let statusProbeCache = { at: 0, result: null };
+let statusProbePromise = null;
 
 if (TOKEN.length < 32) throw new Error("TBANKROT_AUTH_BROKER_TOKEN must contain at least 32 characters");
 
@@ -122,6 +125,7 @@ async function verifyContext(context) {
   const result = await inspectAccess(context);
   if (!result.ok) return result;
   const saved = await saveCookies(context);
+  statusProbeCache = { at: Date.now(), result: { ...result, saved: true } };
   return { ...result, ...saved };
 }
 
@@ -140,6 +144,21 @@ async function probeSavedSession() {
   } finally {
     await context.close().catch(() => undefined);
   }
+}
+
+async function cachedSavedSessionProbe() {
+  if (statusProbeCache.result && Date.now() - statusProbeCache.at < STATUS_PROBE_TTL_MS) {
+    return statusProbeCache.result;
+  }
+  if (!statusProbePromise) {
+    statusProbePromise = probeSavedSession()
+      .then((result) => {
+        statusProbeCache = { at: Date.now(), result };
+        return result;
+      })
+      .finally(() => { statusProbePromise = null; });
+  }
+  return statusProbePromise;
 }
 
 function guardTopLevelNavigation(page) {
@@ -255,11 +274,17 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/status" && request.method === "GET") {
       const metadata = await savedSessionMetadata();
       const active = [...sessions.values()][0];
+      const validation = metadata.saved
+        ? await cachedSavedSessionProbe()
+        : { ok: false, state: "auth_required", saved: false };
       return json(response, 200, {
         ...metadata,
         browser_ready: browser.isConnected(),
         active_session_id: active?.id || null,
         viewport: VIEWPORT,
+        session_state: validation.state,
+        session_valid: Boolean(validation.ok),
+        validated_at: statusProbeCache.at ? new Date(statusProbeCache.at).toISOString() : null,
       });
     }
     if (url.pathname === "/probe" && request.method === "GET") {
