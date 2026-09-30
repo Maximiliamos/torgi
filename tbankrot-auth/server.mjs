@@ -274,16 +274,24 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/status" && request.method === "GET") {
       const metadata = await savedSessionMetadata();
       const active = [...sessions.values()][0];
-      const validation = metadata.saved
-        ? await cachedSavedSessionProbe()
-        : { ok: false, state: "auth_required", saved: false };
+      let validation = { ok: false, state: "auth_required", saved: false };
+      let validationError = null;
+      if (metadata.saved) {
+        try {
+          validation = await cachedSavedSessionProbe();
+        } catch {
+          validation = statusProbeCache.result || { ok: null, state: "unknown", saved: true };
+          validationError = "TBankrot access probe is temporarily unavailable";
+        }
+      }
       return json(response, 200, {
         ...metadata,
         browser_ready: browser.isConnected(),
         active_session_id: active?.id || null,
         viewport: VIEWPORT,
         session_state: validation.state,
-        session_valid: Boolean(validation.ok),
+        session_valid: validation.ok === true ? true : validation.ok === false ? false : null,
+        validation_error: validationError,
         validated_at: statusProbeCache.at ? new Date(statusProbeCache.at).toISOString() : null,
       });
     }
