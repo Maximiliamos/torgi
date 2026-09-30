@@ -24,6 +24,11 @@ jobs:
     outputs:
       warning_count: ${{ steps.health.outputs.warning_count }}
     steps:
+      - name: Clear stale runner Git lock
+        shell: powershell
+        run: |
+          $lock = Join-Path $env:GITHUB_WORKSPACE '.git\AUTO_MERGE.lock'
+          if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue }
       - uses: actions/checkout@v7
       - name: Run Phase 3 production health
         id: health
