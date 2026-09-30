@@ -1069,8 +1069,8 @@ def _save_geo_item(session: Any, lot: ProcessedLot, value: Any) -> tuple[bool, s
         return True, (value.source or "unknown")
 
     lot.geo_input_hash = current_input_hash
-    label = _record_classified_failure(session, lot_id, value)
-    return False, label
+    _record_classified_failure(session, lot_id, value)
+    return False, _geocoding_failure_reason(value)
 
 def _save_geo_chunk(
     session_factory: Callable[[], Any],
