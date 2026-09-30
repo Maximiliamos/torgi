@@ -106,7 +106,7 @@ def test_verify_auth_saves_only_tbankrot_cookies_and_then_queues_sync(tmp_path, 
             return None
 
         async def content(self):
-            return "<html><div class='search_result_col'><b class='default'>321</b></div></html>"
+            return "<html><div class='search_result_col'><div><span>Найдено лотов:</span><b class='default'>321</b></div></div><div class='lot_container'></div></html>"
 
         async def title(self):
             return "TBankrot"
