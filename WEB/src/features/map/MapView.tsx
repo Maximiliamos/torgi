@@ -397,7 +397,7 @@ export function operationsSourceSummaryLabel(
   summary?: OperationsProgress["summary"],
 ) {
   if (!summary || summary.sources.total === 0) return "Источники ещё не проверены";
-  return \`\${summary.sources.ready}/\${summary.sources.total} источника готовы\`;
+  return summary.sources.ready + "/" + summary.sources.total + " источника готовы";
 }
 
 function OperationProgressCard({
