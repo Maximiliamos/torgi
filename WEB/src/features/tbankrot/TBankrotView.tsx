@@ -19,6 +19,7 @@ function stateLabel(status: TBankrotStatus | null) {
   if (status.state === "ready") return "Авторизация активна";
   if (status.state === "syncing") return "Синхронизация";
   if (status.state === "auth_required") return "Требуется авторизация";
+  if (status.state === "source_unavailable") return "Источник временно недоступен";
   return "Browser broker недоступен";
 }
 
@@ -211,6 +212,7 @@ export function TBankrotView({
     </div>
 
     {status?.broker_error && <div className="errorBox"><ShieldAlert size={18} /><span>{status.broker_error}</span></div>}
+    {status?.source_validation_error && <div className="errorBox"><ShieldAlert size={18} /><span>TBankrot временно не ответил на проверку. Сохранённая сессия не удалена; повторная авторизация пока не требуется.</span></div>}
     {error && <div className="errorBox"><ShieldAlert size={18} /><span>{error}</span></div>}
     {message && <div className="successBox"><CheckCircle2 size={16} />{message}</div>}
 
