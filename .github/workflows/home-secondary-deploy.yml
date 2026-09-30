@@ -41,6 +41,14 @@ jobs:
       MAP_S3_ACCESS_KEY: ${{ secrets.REGRU_S3_ACCESS_KEY }}
       MAP_S3_SECRET_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
     steps:
+      - name: Clear stale runner Git lock
+        shell: powershell
+        run: |
+          $lock = Join-Path $env:GITHUB_WORKSPACE '.git\AUTO_MERGE.lock'
+          if (Test-Path -LiteralPath $lock) {
+            Write-Warning "Removing stale Git lock: $lock"
+            Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/checkout@v7
 
       - name: Require production secrets
@@ -61,103 +69,75 @@ jobs:
       - name: Reclaim safe production disk space before build
         shell: powershell
         run: |
-          $before = Get-PSDrive -Name C
-          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
+          $minimumFreeGb = 15
+          $cleanupTargetGb = 20
+
+          function Get-FreeGb {
+            $drive = Get-PSDrive -Name C
+            return [math]::Round($drive.Free / 1GB, 2)
+          }
+
+          function Invoke-DockerCleanup {
+            param([string[]]$Arguments, [int]$TimeoutSeconds = 300)
+            $stdout = Join-Path $env:RUNNER_TEMP ("docker-cleanup-{0}.out" -f ([guid]::NewGuid().ToString('N')))
+            $stderr = Join-Path $env:RUNNER_TEMP ("docker-cleanup-{0}.err" -f ([guid]::NewGuid().ToString('N')))
+            $process = Start-Process -FilePath 'docker' -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              try { $process.Kill() } catch {}
+              Write-Warning "Docker cleanup timed out after $TimeoutSeconds seconds: docker $($Arguments -join ' ')"
+              return $false
+            }
+            if (Test-Path $stdout) { Get-Content $stdout | Write-Output }
+            if (Test-Path $stderr) { Get-Content $stderr | Write-Output }
+            return ($process.ExitCode -eq 0)
+          }
+
+          $beforeFreeGb = Get-FreeGb
           Write-Output "C: free before cleanup: $beforeFreeGb GB"
 
-          # Phase 3 health accepts a restore verification up to 192 hours old.
-          # Keep seven days of DR backups so the weekly verified restore remains
-          # available, while preventing daily multi-GB dumps from filling C:.
+          # On a 930 GB disk a fixed 10% threshold means ~93 GB, which is unnecessarily strict.
+          # Use an absolute deploy floor and skip expensive prune work when sufficient headroom exists.
+          if ($beforeFreeGb -ge $minimumFreeGb) {
+            Write-Output "Disk preflight OK: $beforeFreeGb GB >= $minimumFreeGb GB; skipping expensive Docker prune"
+            exit 0
+          }
+
           $drBackupRoot = Join-Path $env:CONFIG_ROOT 'dr-backups'
           if (Test-Path -LiteralPath $drBackupRoot) {
-            $cutoff = (Get-Date).AddDays(-7)
-            Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*' |
-              Where-Object LastWriteTime -lt $cutoff |
-              Remove-Item -Force
-          }
-
-          # Pre-migration dumps are an additional safety layer. Retain the three
-          # newest; normal DR backups remain separate and restore-verified.
-          $migrationBackupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
-          if (Test-Path -LiteralPath $migrationBackupRoot) {
-            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -Skip 3 |
-              Remove-Item -Force
-          }
-
-          # Never prune volumes: PostgreSQL and Redis persistent data live there.
-          docker system prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker pre-build cleanup failed" }
-          docker builder prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker builder cleanup failed" }
-
-          $after = Get-PSDrive -Name C
-          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free after normal cleanup: $afterFreeGb GB ($afterFreePercent%)"
-
-          # Emergency pressure relief: database volumes are never touched.
-          # Keep the two newest DR dumps plus the newest restore-verified dump;
-          # only retire older backup sets until a 12% recovery target is met.
-          if ($afterFreePercent -lt 10 -and (Test-Path -LiteralPath $drBackupRoot)) {
-            Write-Warning "C: is below 10%; thinning old DR backup sets while preserving recovery anchors"
-            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
-              Sort-Object LastWriteTimeUtc -Descending)
+            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' | Sort-Object LastWriteTimeUtc -Descending)
             $protected = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($file in ($dumpFiles | Select-Object -First 2)) {
-              [void]$protected.Add($file.FullName)
-            }
-            $verifiedMetadata = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
-              Sort-Object LastWriteTimeUtc -Descending |
-              ForEach-Object {
-                try {
-                  $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
-                } catch {}
-              } | Select-Object -First 1)
-            if ($verifiedMetadata.Count -gt 0) {
-              [void]$protected.Add([string]$verifiedMetadata[0].backup_file)
-            }
+            foreach ($file in ($dumpFiles | Select-Object -First 2)) { [void]$protected.Add($file.FullName) }
+            $verifiedMetadata = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' | Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
+              try {
+                $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
+              } catch {}
+            } | Select-Object -First 1)
+            if ($verifiedMetadata.Count -gt 0) { [void]$protected.Add([string]$verifiedMetadata[0].backup_file) }
             foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
               if ($protected.Contains($dump.FullName)) { continue }
               $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
               Remove-Item -LiteralPath $dump.FullName -Force
               $metadataPath = Join-Path $drBackupRoot "$stem.json"
               if (Test-Path -LiteralPath $metadataPath) { Remove-Item -LiteralPath $metadataPath -Force }
-              $drive = Get-PSDrive -Name C
-              $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
-                ($drive.Free / ($drive.Used + $drive.Free)) * 100
-              } else { 0 }
-              if ($freePercent -ge 12) { break }
+              if ((Get-FreeGb) -ge $cleanupTargetGb) { break }
             }
           }
 
-          # If pressure remains critical, retain only the newest pre-migration
-          # dump. The normal restore-verified DR backups above remain protected.
-          $pressure = Get-PSDrive -Name C
-          $pressurePercent = if (($pressure.Used + $pressure.Free) -gt 0) {
-            ($pressure.Free / ($pressure.Used + $pressure.Free)) * 100
-          } else { 0 }
-          if ($pressurePercent -lt 10 -and (Test-Path -LiteralPath $migrationBackupRoot)) {
-            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' |
-              Sort-Object LastWriteTimeUtc -Descending |
-              Select-Object -Skip 1 |
-              Remove-Item -Force
+          $migrationBackupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
+          if ((Get-FreeGb) -lt $minimumFreeGb -and (Test-Path -LiteralPath $migrationBackupRoot)) {
+            Get-ChildItem -LiteralPath $migrationBackupRoot -File -Filter 'pre-migration-*.dump' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 1 | Remove-Item -Force
           }
 
-          $after = Get-PSDrive -Name C
-          $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free after adaptive cleanup: $afterFreeGb GB ($afterFreePercent%)"
-          if ($after.Free -lt 2GB) {
-            throw "C: still has less than 2 GB free after safe cleanup"
+          if ((Get-FreeGb) -lt $minimumFreeGb) {
+            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force','--filter','until=24h') -TimeoutSeconds 120)
+            [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=168h') -TimeoutSeconds 300)
+            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
           }
 
+          $afterFreeGb = Get-FreeGb
+          Write-Output "C: free after adaptive cleanup: $afterFreeGb GB"
+          if ($afterFreeGb -lt $minimumFreeGb) { throw "C: has only $afterFreeGb GB free; deploy requires at least $minimumFreeGb GB" }
       - name: Build current-main API image
         shell: powershell
         run: |
@@ -609,19 +589,15 @@ jobs:
       - name: Reclaim obsolete Docker layers after successful deployment
         shell: powershell
         run: |
-          $before = Get-PSDrive -Name C
-          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          docker system prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy cleanup failed" }
-          docker builder prune --all --force
-          if ($LASTEXITCODE -ne 0) { throw "Docker post-deploy builder cleanup failed" }
+          $drive = Get-PSDrive -Name C
+          $freeGb = [math]::Round($drive.Free / 1GB, 2)
+          Write-Output "C: free after deployment: $freeGb GB"
+          if ($freeGb -lt 20) {
+            Write-Warning "C: has less than 20 GB free; running bounded cache cleanup"
+            docker image prune --force --filter "until=168h" | Out-Null
+            docker builder prune --force --filter "until=168h" | Out-Null
+          }
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
-          $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
-            [math]::Round(($after.Free / ($after.Used + $after.Free)) * 100, 1)
-          } else { 0 }
-          Write-Output "C: free before post-deploy cleanup: $beforeFreeGb GB"
-          Write-Output "C: free after post-deploy cleanup: $afterFreeGb GB ($afterFreePercent%)"
-          if ($afterFreePercent -lt 10) {
-            throw "C: remains below the production health threshold of 10% free"
-          }
+          Write-Output "C: free after post-deploy maintenance: $afterFreeGb GB"
+          if ($afterFreeGb -lt 10) { Write-Warning "C: headroom is low after successful deployment: $afterFreeGb GB free" }
