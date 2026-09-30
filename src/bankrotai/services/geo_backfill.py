@@ -1003,7 +1003,8 @@ def _record_classified_failure(session: Any, lot_id: int, value: Any) -> str:
     payload["classification"] = category
     message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
     failure = record_geo_failure(session, lot_id, message, retry_after_seconds=0)
-    delay = retry_delay_seconds(category, failure.attempt_count)
+    semantic_attempt = int(failure.attempt_count or 1)
+    delay = retry_delay_seconds(category, semantic_attempt)
     if delay is None:
         if category == "no_match":
             failure.status = "deferred_no_match"
@@ -1447,7 +1448,7 @@ def recover_nspd_failures_with_ik12(
                 ProcessedLot.duplicate_of_id.is_(None),
                 ProcessedLot.is_archived.is_(False),
                 ProcessedLot.cadastral_number.is_not(None),
-                GeoFailure.status.in_(("queued", "terminal")),
+                GeoFailure.status.in_(("queued", "terminal", "deferred_no_match")),
                 GeoFailure.attempt_count >= 2,
             )
             .order_by(GeoFailure.attempt_count.desc(), GeoFailure.last_failed_at.desc())
