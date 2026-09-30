@@ -78,7 +78,7 @@ celery_app.conf.update(
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
-        "bankrotai.tasks.probe_geo_network_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.probe_geo_network_task": {"queue": _QUEUE_MAINTENANCE},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
