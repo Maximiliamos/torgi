@@ -47,6 +47,7 @@ from bankrotai.db import (
     LotGeoSnapshot,
     MapDataset,
     MapTile,
+    AppSetting,
     LotNote,
     SavedMaxBidScenario,
     SavedSearch,
@@ -98,6 +99,16 @@ from bankrotai.tasks import (
     schedule_region_sync,
 )
 from bankrotai.services.ingestion import SyncAlreadyRunningError
+from bankrotai.services.tbankrot_auth import (
+    TBankrotAuthBrokerError,
+    broker_status as tbankrot_broker_status,
+    browser_action as tbankrot_browser_action,
+    browser_frame as tbankrot_browser_frame,
+    close_browser_session as close_tbankrot_browser_session,
+    probe_saved_session as probe_tbankrot_saved_session,
+    start_browser_session as start_tbankrot_browser_session,
+    verify_browser_session as verify_tbankrot_browser_session,
+)
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -271,6 +282,17 @@ class DocumentCompareRequest(BaseModel):
 
     from_version_id: int = Field(gt=0)
     to_version_id: int = Field(gt=0)
+
+
+class TBankrotBrowserActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(pattern="^(click|text|key|wheel|reload|back)$")
+    x: float | None = Field(None, ge=0, le=5000)
+    y: float | None = Field(None, ge=0, le=5000)
+    value: str | None = Field(None, max_length=4000)
+    key: str | None = Field(None, max_length=50)
+    delta_y: float | None = Field(None, ge=-2000, le=2000)
 
 
 class OnlineLotImportRequest(BaseModel):
@@ -459,6 +481,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path in {
             "/api/map/lots",
+            "/api/tbankrot/status",
             "/api/quality/geocoding",
             "/api/map/datasets/current",
             "/api/map/review-statuses",
@@ -472,6 +495,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/saved-searches",
         }:
             return True
+        if path.startswith("/api/tbankrot/auth/") and path.endswith("/frame"):
+            return True
         if path.startswith("/api/map/lots/"):
             return path.rsplit("/", 1)[-1].isdigit()
         if (
@@ -484,6 +509,10 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         if path.startswith("/api/search/"):
             return True
         if path.startswith("/api/sync/lots/"):
+            return True
+        if path.startswith("/api/tbankrot/auth/") and any(
+            path.endswith(suffix) for suffix in ("/action", "/verify", "/close")
+        ):
             return True
         if path.startswith("/api/lots/"):
             parts = path.split("/")
@@ -502,6 +531,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/saved-searches",
             "/api/search/import",
             "/api/sync/lots",
+            "/api/tbankrot/auth/start",
+            "/api/tbankrot/sync",
             "/api/operations/geocoding/pause",
             "/api/operations/geocoding/resume",
         }:
@@ -1126,6 +1157,167 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             "geocoding": geocoding,
             "journal": journal[:6],
         }
+
+
+@app.get("/api/tbankrot/status")
+async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
+    """Expose TBankrot auth/sync state without returning credentials or cookie values."""
+    try:
+        broker = await tbankrot_broker_status(settings)
+        broker_available = True
+        broker_error = None
+    except TBankrotAuthBrokerError as exc:
+        broker = {"saved": False, "captured_at": None, "active_session_id": None, "browser_ready": False}
+        broker_available = False
+        broker_error = str(exc)
+
+    with read_session_scope() as session:
+        paused_value = session.scalar(
+            select(AppSetting.value).where(AppSetting.key == "source_paused:tbankrot.ru")
+        )
+        paused = str(paused_value or "").strip().casefold() in {"1", "true", "yes", "on"}
+        latest_source = session.scalar(
+            select(LotSyncSourceRun)
+            .where(LotSyncSourceRun.source_system == "tbankrot.ru")
+            .order_by(LotSyncSourceRun.id.desc())
+            .limit(1)
+        )
+        latest_run = session.get(LotSyncRun, latest_source.sync_run_id) if latest_source is not None else None
+        health = session.scalar(
+            select(SourceHealthState).where(SourceHealthState.source_system == "tbankrot.ru")
+        )
+
+    error_text = ""
+    if latest_source is not None and latest_source.error_message:
+        error_text = latest_source.error_message
+    elif health is not None and health.last_error:
+        error_text = health.last_error
+    auth_required = not bool(broker.get("saved")) or "access_limited" in error_text.casefold()
+    syncing = latest_source is not None and latest_source.status in {"queued", "running"}
+    state = (
+        "broker_unavailable"
+        if not broker_available
+        else "syncing"
+        if syncing
+        else "auth_required"
+        if auth_required
+        else "ready"
+    )
+    return {
+        "state": state,
+        "paused_from_automatic_sync": paused,
+        "broker_available": broker_available,
+        "broker_error": broker_error,
+        "saved_session": bool(broker.get("saved")),
+        "captured_at": broker.get("captured_at"),
+        "active_browser_session_id": broker.get("active_session_id"),
+        "browser_ready": bool(broker.get("browser_ready")),
+        "latest_sync": None
+        if latest_source is None
+        else {
+            "task_id": latest_source.sync_run_id,
+            "status": latest_source.status,
+            "complete": latest_source.complete_source_run,
+            "items_seen": latest_source.items_seen,
+            "items_inserted": latest_source.items_inserted,
+            "items_updated": latest_source.items_updated,
+            "items_archived": latest_source.items_archived,
+            "started_at": latest_source.started_at,
+            "finished_at": latest_source.finished_at,
+            "error": latest_source.error_message,
+            "run_status": None if latest_run is None else latest_run.status,
+        },
+    }
+
+
+@app.post("/api/tbankrot/auth/start")
+async def start_tbankrot_auth(actor: AuthenticatedUser = Depends(require_admin)):
+    try:
+        return await start_tbankrot_browser_session(settings)
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/tbankrot/auth/{session_id}/frame")
+async def get_tbankrot_auth_frame(
+    session_id: str,
+    actor: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        frame = await tbankrot_browser_frame(settings, session_id)
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(
+        content=frame.content,
+        media_type=frame.content_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@app.post("/api/tbankrot/auth/{session_id}/action")
+async def control_tbankrot_auth(
+    session_id: str,
+    request: TBankrotBrowserActionRequest,
+    actor: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        return await tbankrot_browser_action(settings, session_id, request.model_dump(exclude_none=True))
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/tbankrot/auth/{session_id}/verify")
+async def verify_tbankrot_auth(
+    session_id: str,
+    actor: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        result = await verify_tbankrot_browser_session(settings, session_id)
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not result.get("ok"):
+        return result
+    try:
+        task_id = schedule_nationwide_lot_sync(
+            triggered_by=f"tbankrot-auth:{actor.id}",
+            mode="source:tbankrot.ru",
+        )
+        return {**result, "sync": {"status": "queued", "task_id": task_id}}
+    except SyncAlreadyRunningError as exc:
+        return {**result, "sync": {"status": "already_running", "task_id": exc.run_id}}
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/tbankrot/auth/{session_id}/close")
+async def close_tbankrot_auth(
+    session_id: str,
+    actor: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        return await close_tbankrot_browser_session(settings, session_id)
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/tbankrot/sync")
+async def sync_tbankrot(actor: AuthenticatedUser = Depends(require_admin)):
+    try:
+        probe = await probe_tbankrot_saved_session(settings)
+    except TBankrotAuthBrokerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not probe.get("ok"):
+        raise HTTPException(status_code=428, detail="TBankrot authentication required")
+    try:
+        task_id = schedule_nationwide_lot_sync(
+            triggered_by=f"tbankrot-manual:{actor.id}",
+            mode="source:tbankrot.ru",
+        )
+        return {"status": "queued", "task_id": task_id}
+    except SyncAlreadyRunningError as exc:
+        return {"status": "already_running", "task_id": exc.run_id}
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/operations/geocoding/pause")
