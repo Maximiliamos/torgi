@@ -66,11 +66,9 @@ jobs:
           $drBackupRoot = Join-Path $env:CONFIG_ROOT 'dr-backups'
           if (Test-Path -LiteralPath $drBackupRoot) {
             $drive = Get-PSDrive -Name C
-            $freePercent = if (($drive.Used + $drive.Free) -gt 0) {
-              ($drive.Free / ($drive.Used + $drive.Free)) * 100
-            } else { 0 }
-            if ($freePercent -lt 10) {
-              Write-Warning "Emergency disk pressure detected before checkout: $([math]::Round($freePercent,1))% free"
+            $freeGb = [math]::Round($drive.Free / 1GB, 2)
+            if ($freeGb -lt 15) {
+              Write-Warning "Emergency disk pressure detected before checkout: $freeGb GB free"
               $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
                 Sort-Object LastWriteTimeUtc -Descending)
               $protected = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -168,7 +166,42 @@ jobs:
               [void](Invoke-DockerEmergency -Arguments @('restart',$env:CONTAINER_NAME) -TimeoutSeconds 45)
             }
           } else {
-            Write-Warning "Docker daemon remains unavailable after bounded recovery; continuing so checkout can complete and the next gate can fail explicitly"
+            Write-Warning "Docker daemon remains unavailable after service restart; performing one safe Docker Desktop / WSL recovery"
+            foreach ($name in @('Docker Desktop','com.docker.backend','Docker Desktop Backend')) {
+              Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            try {
+              & wsl.exe --shutdown
+              Start-Sleep -Seconds 8
+            } catch {
+              Write-Warning "WSL shutdown failed: $($_.Exception.Message)"
+            }
+            $dockerService = Get-Service -Name 'com.docker.service' -ErrorAction SilentlyContinue
+            if ($null -ne $dockerService) {
+              try {
+                Stop-Service -Name 'com.docker.service' -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                Start-Service -Name 'com.docker.service' -ErrorAction Stop
+              } catch {
+                Write-Warning "Docker service cold restart failed: $($_.Exception.Message)"
+              }
+            }
+            $desktopExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+            if (Test-Path -LiteralPath $desktopExe) {
+              try { Start-Process -FilePath $desktopExe -WindowStyle Hidden | Out-Null } catch {
+                Write-Warning "Docker Desktop launch failed: $($_.Exception.Message)"
+              }
+            }
+            $deadline = (Get-Date).AddSeconds(120)
+            do {
+              Start-Sleep -Seconds 5
+              $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 15
+              if ($dockerResponsive) { break }
+            } while ((Get-Date) -lt $deadline)
+            if (-not $dockerResponsive) {
+              throw "Docker Desktop/WSL backend did not recover after cold restart"
+            }
+            Write-Output "Docker Desktop/WSL backend recovered successfully"
           }
 
       - uses: actions/checkout@v7
@@ -211,10 +244,10 @@ jobs:
           }
 
           $before = Get-PSDrive -Name C
-          $beforePercent = [math]::Round(($before.Free / ($before.Used + $before.Free)) * 100, 1)
-          Write-Output ("C: free before Docker cleanup: {0:N2} GB ({1:N1}%)" -f ($before.Free / 1GB), $beforePercent)
+          $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
+          Write-Output "C: free before Docker cleanup: $beforeFreeGb GB"
 
-          if ($beforePercent -lt 15) {
+          if ($beforeFreeGb -lt 20) {
             [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
             [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
             [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
