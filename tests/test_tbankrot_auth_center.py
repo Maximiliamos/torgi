@@ -230,3 +230,30 @@ def test_tbankrot_source_outage_is_not_misreported_as_auth_expiry(monkeypatch) -
     assert result["state"] == "source_unavailable"
     assert result["saved_session"] is True
     assert result["source_validation_error"]
+
+
+
+def test_successful_auth_defers_tbankrot_when_another_ingestion_run_is_active(monkeypatch) -> None:
+    async def verify(_settings, _session_id: str):
+        return {"ok": True, "state": "authenticated", "captured_at": "2026-09-30T01:00:00Z"}
+
+    monkeypatch.setattr(api, "verify_tbankrot_browser_session", verify)
+
+    def busy(**_kwargs):
+        raise api.SyncAlreadyRunningError("active-four-source-run")
+
+    deferred: list[str] = []
+    monkeypatch.setattr(api, "schedule_nationwide_lot_sync", busy)
+    monkeypatch.setattr(
+        api,
+        "schedule_deferred_tbankrot_sync",
+        lambda *, triggered_by: deferred.append(triggered_by) or "deferred-job-1",
+    )
+
+    result = asyncio.run(api.verify_tbankrot_auth(
+        "browser-1",
+        AuthenticatedUser(id=7, username="admin", role="admin"),
+    ))
+
+    assert result["sync"] == {"status": "deferred", "task_id": "deferred-job-1"}
+    assert deferred == ["tbankrot-auth:7"]
