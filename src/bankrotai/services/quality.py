@@ -135,12 +135,118 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
             != select(func.count()).select_from(MapTile).where(MapTile.dataset_id == MapDataset.id).scalar_subquery()
         )
     ) or 0
+
+    public_lot = (
+        ProcessedLot.duplicate_of_id.is_(None)
+        & ProcessedLot.is_archived.is_(False)
+    )
+    active_duplicate_lot = (
+        ProcessedLot.duplicate_of_id.isnot(None)
+        & ProcessedLot.is_archived.is_(False)
+    )
+    missing_title = public_lot & (func.trim(ProcessedLot.title) == "")
+    missing_region = public_lot & (
+        ProcessedLot.region_code.is_(None) | (func.trim(ProcessedLot.region_code) == "")
+    )
+    missing_url = public_lot & (
+        (ProcessedLot.lot_url.is_(None) | (func.trim(ProcessedLot.lot_url) == ""))
+        & (ProcessedLot.source_url.is_(None) | (func.trim(ProcessedLot.source_url) == ""))
+    )
+    missing_price = public_lot & (
+        ProcessedLot.current_price.is_(None) & ProcessedLot.start_price.is_(None)
+    )
+    non_positive_price = public_lot & (
+        (ProcessedLot.current_price.isnot(None) & (ProcessedLot.current_price <= 0))
+        | (ProcessedLot.start_price.isnot(None) & (ProcessedLot.start_price <= 0))
+    )
+    unknown_status = public_lot & (ProcessedLot.auction_status == "unknown")
+    has_current_geo = public_lot & (
+        ProcessedLot.current_geo_lat.isnot(None) & ProcessedLot.current_geo_lon.isnot(None)
+    )
+
+    first_seen_after_last_seen = SourceLot.first_seen_at > SourceLot.last_seen_at
+    application_start_after_deadline = (
+        SourceLot.application_start_at.isnot(None)
+        & SourceLot.application_deadline.isnot(None)
+        & (SourceLot.application_start_at > SourceLot.application_deadline)
+    )
+    archived_before_first_seen = (
+        SourceLot.archived_at.isnot(None)
+        & (SourceLot.archived_at < SourceLot.first_seen_at)
+    )
+
+    sample_limit = max(1, min(problem_limit, 1000))
+
+    def processed_count(condition: Any) -> int:
+        return int(
+            session.scalar(
+                select(func.count()).select_from(ProcessedLot).where(condition)
+            )
+            or 0
+        )
+
+    def source_count(condition: Any) -> int:
+        return int(
+            session.scalar(
+                select(func.count()).select_from(SourceLot).where(condition)
+            )
+            or 0
+        )
+
+    def processed_sample(condition: Any) -> list[int]:
+        return list(
+            session.scalars(
+                select(ProcessedLot.id)
+                .where(condition)
+                .order_by(ProcessedLot.id)
+                .limit(sample_limit)
+            ).all()
+        )
+
+    def source_sample(condition: Any) -> list[int]:
+        return list(
+            session.scalars(
+                select(SourceLot.id)
+                .where(condition)
+                .order_by(SourceLot.id)
+                .limit(sample_limit)
+            ).all()
+        )
+
+    lot_data_quality = {
+        "active_non_duplicate_lots": processed_count(public_lot),
+        "active_duplicate_lots": processed_count(active_duplicate_lot),
+        "missing_title": processed_count(missing_title),
+        "missing_region": processed_count(missing_region),
+        "missing_url": processed_count(missing_url),
+        "missing_price": processed_count(missing_price),
+        "non_positive_price": processed_count(non_positive_price),
+        "unknown_status": processed_count(unknown_status),
+        "problem_samples": {
+            "missing_title_lot_ids": processed_sample(missing_title),
+            "missing_region_lot_ids": processed_sample(missing_region),
+            "missing_url_lot_ids": processed_sample(missing_url),
+            "missing_price_lot_ids": processed_sample(missing_price),
+            "non_positive_price_lot_ids": processed_sample(non_positive_price),
+            "unknown_status_lot_ids": processed_sample(unknown_status),
+        },
+    }
+    source_date_quality = {
+        "first_seen_after_last_seen": source_count(first_seen_after_last_seen),
+        "application_start_after_deadline": source_count(application_start_after_deadline),
+        "archived_before_first_seen": source_count(archived_before_first_seen),
+        "problem_samples": {
+            "first_seen_after_last_seen_source_lot_ids": source_sample(first_seen_after_last_seen),
+            "application_start_after_deadline_source_lot_ids": source_sample(application_start_after_deadline),
+            "archived_before_first_seen_source_lot_ids": source_sample(archived_before_first_seen),
+        },
+    }
     return {
         "generated_at": now,
         "stale_after_days": max(1, stale_days),
         "sources": sources,
         "geocoding": {
-            "with_coordinates": session.scalar(select(func.count(func.distinct(LotGeoSnapshot.lot_id)))) or 0,
+            "with_coordinates": processed_count(has_current_geo),
             "needs_attention": session.scalar(
                 select(func.count()).where(ProcessedLot.needs_geo_check.is_(True))
             ) or 0,
@@ -154,6 +260,8 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
         "unknown_status_lots": session.scalar(
             select(func.count()).where(ProcessedLot.auction_status == "unknown")
         ) or 0,
+        "lot_data_quality": lot_data_quality,
+        "source_date_quality": source_date_quality,
         "integrity": {
             "source_without_processed": source_without_processed,
             "recoverable_source_links": recoverable_source_links,
