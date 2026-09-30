@@ -402,7 +402,13 @@ jobs:
           $legacyTbankrotCookiePath = Join-Path $env:CONFIG_ROOT 'tbankrot-cookies.json'
           $tbankrotCookiePath = Join-Path $tbankrotAuthRoot 'cookies.json'
           if ((Test-Path -LiteralPath $legacyTbankrotCookiePath) -and -not (Test-Path -LiteralPath $tbankrotCookiePath)) {
-            Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath -Force
+            try {
+              Copy-Item -LiteralPath $legacyTbankrotCookiePath -Destination $tbankrotCookiePath -Force -ErrorAction Stop
+              Write-Output 'Migrated legacy TBankrot cookies into Auth Center storage'
+            } catch {
+              Write-Warning "Legacy TBankrot cookie migration skipped: $($_.Exception.Message)"
+              Write-Output 'Auth Center will request interactive TBankrot login; production deploy continues'
+            }
           }
           & icacls.exe $tbankrotAuthRoot /inheritance:r /grant:r `
             'SYSTEM:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)M' | Out-Null
