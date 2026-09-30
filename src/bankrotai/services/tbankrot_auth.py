@@ -59,7 +59,7 @@ async def _request(
 
 
 async def broker_status(settings: AppSettings) -> dict[str, Any]:
-    response = await _request(settings, "GET", "/status", timeout=5.0)
+    response = await _request(settings, "GET", "/status", timeout=8.0)
     return dict(response.json())
 
 
