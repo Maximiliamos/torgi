@@ -419,6 +419,11 @@ def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
 
 
 def _source_is_paused(source_system: str) -> bool:
+    # P5 contract: TBankrot is always isolated from broad automatic refreshes.
+    # It may only run through an explicit source:tbankrot.ru targeted sync after
+    # a live authenticated-session probe.
+    if source_system == "tbankrot.ru":
+        return True
     value = get_app_setting(f"{_SOURCE_PAUSE_SETTING_PREFIX}{source_system}", "false")
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
