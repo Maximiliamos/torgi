@@ -794,6 +794,15 @@ def test_slow_source_request_renews_lease_before_page_completion(sessions, monke
     service = NationwideIngestionService(sessions, connector_factory=lambda _source: SlowConnector([[lot()]]))
     service._lease_heartbeat_interval_seconds = 0.01
     renewals: list[str] = []
+
+    # This test exercises event-loop heartbeat renewal around a slow upstream
+    # request. Keep the independent watchdog passive so SQLite StaticPool is
+    # not accessed concurrently from two threads, which would make the unit
+    # test timing-dependent even though production uses PostgreSQL.
+    def passive_watchdog(_run_id, stop_event, _stall_event) -> None:
+        stop_event.wait()
+
+    monkeypatch.setattr(service, "_lease_watchdog", passive_watchdog)
     monkeypatch.setattr(service, "_heartbeat", lambda run_id: renewals.append(run_id))
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
 
