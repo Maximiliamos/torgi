@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import requests
 from sqlalchemy import create_engine, select
@@ -182,3 +183,52 @@ def test_photon_outage_fails_over_to_nominatim(monkeypatch) -> None:
 
     assert result.source == "nominatim"
     assert result.lat == 57.6261
+
+
+def test_deferred_lots_are_not_counted_as_runnable_backlog(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(geo_backfill, "network_health_snapshot", lambda: {"external": {"circuit_open": False}})
+    with Session(engine) as session:
+        deferred = _lot()
+        deferred.external_id = "p6-deferred"
+        waiting = _lot()
+        waiting.external_id = "p6-network-wait"
+        session.add_all([deferred, waiting])
+        session.flush()
+        session.add_all([
+            GeoFailure(
+                lot_id=deferred.id,
+                status="deferred_no_match",
+                attempt_count=3,
+                error_message='{"classification":"no_match"}',
+                last_failed_at=utc_now(),
+                next_retry_at=None,
+            ),
+            GeoFailure(
+                lot_id=waiting.id,
+                status="network_wait",
+                attempt_count=0,
+                error_message='{"classification":"operational"}',
+                last_failed_at=utc_now(),
+                next_retry_at=utc_now() + timedelta(minutes=5),
+            ),
+        ])
+        session.commit()
+
+        progress = geo_backfill.geocoding_progress(session)
+
+        assert progress["deferred_no_match"] == 1
+        assert progress["network_wait"] == 1
+        assert progress["eligible_now"] == 0
+        assert progress["waiting_for_retry"] == 1
+        assert progress["actionable_remaining"] == 1
+        assert progress["classified"] == 1
+
+
+def test_p6_network_probe_runs_on_the_geocoding_queue_every_minute() -> None:
+    tasks = (Path(__file__).resolve().parents[1] / "src" / "bankrotai" / "tasks.py").read_text(encoding="utf-8")
+
+    assert '"bankrotai.tasks.probe_geo_network_health_task": {"queue": _QUEUE_GEOCODING}' in tasks
+    assert '"probe-geo-network-health"' in tasks
+    assert '"schedule": 60.0' in tasks
