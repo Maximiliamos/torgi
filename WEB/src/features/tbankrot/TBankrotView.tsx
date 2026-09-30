@@ -205,6 +205,7 @@ export function TBankrotView({
       <div className="tbankrotStatusMeta">
         <span>Сессия сохранена</span><b>{status?.saved_session ? "Да" : "Нет"}</b>
         <span>Последний вход</span><b>{dateTime(status?.captured_at)}</b>
+        <span>Последняя проверка</span><b>{dateTime(status?.validated_at)}</b>
         <span>Browser broker</span><b>{status?.broker_available ? "Готов" : "Недоступен"}</b>
       </div>
     </div>
