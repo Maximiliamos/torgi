@@ -37,10 +37,29 @@ if ($LASTEXITCODE -ne 0 -or -not $json) {
 $report = ($json | Select-Object -Last 1) | ConvertFrom-Json
 $quality = $report.geocoding.quality
 $backlog = $report.geocoding.backlog
+$lotQuality = $report.operational.lot_data_quality
+$sourceDateQuality = $report.operational.source_date_quality
 $warningCount = 0
 if ([int]$quality.invalid_coordinate_count -gt 0) { $warningCount++ }
 if ([int]$quality.locality_mismatch_count -gt 0) { $warningCount++ }
 if ([int]$backlog.retry_state.terminal -gt 0) { $warningCount++ }
+foreach ($name in @(
+    'missing_title',
+    'missing_region',
+    'missing_url',
+    'missing_price',
+    'non_positive_price',
+    'unknown_status'
+)) {
+    if ([int]$lotQuality.$name -gt 0) { $warningCount++ }
+}
+foreach ($name in @(
+    'first_seen_after_last_seen',
+    'application_start_after_deadline',
+    'archived_before_first_seen'
+)) {
+    if ([int]$sourceDateQuality.$name -gt 0) { $warningCount++ }
+}
 
 $result = [ordered]@{
     checked_at = (Get-Date).ToUniversalTime().ToString('o')
