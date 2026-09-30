@@ -13,6 +13,7 @@ from celery.utils import uuid
 from bankrotai.core import get_app_setting, get_region_sync_slug, get_settings
 from bankrotai.db import (
     BackgroundTaskState,
+    GeoFailure,
     LotSyncRun,
     LotSyncSourceRun,
     SessionLocal,
@@ -241,10 +242,25 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
 
 @celery_app.task(name="bankrotai.tasks.probe_geo_network_health_task")
 def probe_geo_network_health_task() -> dict[str, Any]:
-    """Continuously distinguish local GEO health from external DNS/route/provider failures."""
+    """Detect network/provider recovery and release operational waits without touching semantic retries."""
+    from sqlalchemy import update
+
     from bankrotai.services.geo_resilience import probe_geo_network_health
 
-    return probe_geo_network_health()
+    snapshot = probe_geo_network_health()
+    probes = snapshot.get("probes") or {}
+    all_healthy = bool(probes) and all(bool(value.get("ok")) for value in probes.values() if isinstance(value, dict))
+    released = 0
+    if all_healthy:
+        with session_scope() as session:
+            result = session.execute(
+                update(GeoFailure)
+                .where(GeoFailure.status == "network_wait")
+                .values(next_retry_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            )
+            released = int(result.rowcount or 0)
+    snapshot["released_network_wait"] = released
+    return snapshot
 
 def _schedule_geocode_continuation(continuation_depth: int) -> dict[str, str | int]:
     """Drain a bounded campaign while beat remains the long-term recovery watchdog."""
