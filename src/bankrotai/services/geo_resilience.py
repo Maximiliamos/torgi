@@ -344,9 +344,14 @@ def probe_geo_network_health() -> dict[str, Any]:
         record_provider_failure("photon", category, latency_ms=latency_ms)
         probes["photon"] = {"ok": False, "latency_ms": round(latency_ms, 1), "category": category}
 
+    previous = _load_json(_SNAPSHOT_KEY)
+    fingerprint = _network_fingerprint(resolved)
+    previous_fingerprint = previous.get("network_fingerprint") if isinstance(previous, dict) else None
     snapshot = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "network_fingerprint": _network_fingerprint(resolved),
+        "network_fingerprint": fingerprint,
+        "previous_network_fingerprint": previous_fingerprint,
+        "network_changed": bool(previous_fingerprint and previous_fingerprint != fingerprint),
         "probes": probes,
         "external": global_network_state(),
     }
