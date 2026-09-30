@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Activity, AlertCircle, Banknote, Bookmark, Building2, Calculator, CheckCircle2,
   ExternalLink, FileSearch, Files, Heart, ListFilter, Loader2, LogOut, Map,
-  NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
+  NotebookPen, RefreshCcw, Search, ShieldAlert, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
