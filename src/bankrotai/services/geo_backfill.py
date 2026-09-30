@@ -711,9 +711,9 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
             state = "terminal"
         elif status in _DEFERRED_GEO_STATUSES:
             state = str(status)
-        elif status == "waiting_network":
+        elif status == "waiting_network" and retry_at is not None and retry_at > now:
             state = "waiting_network"
-        elif status == "waiting_provider":
+        elif status == "waiting_provider" and retry_at is not None and retry_at > now:
             state = "waiting_provider"
         elif retry_at is not None and retry_at > now:
             state = "waiting_for_retry"
@@ -797,7 +797,13 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             select(func.count())
             .select_from(ProcessedLot)
             .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
-            .where(*population, pending, GeoFailure.status == "waiting_network")
+            .where(
+                *population,
+                pending,
+                GeoFailure.status == "waiting_network",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
         )
         or 0
     )
@@ -806,7 +812,13 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             select(func.count())
             .select_from(ProcessedLot)
             .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
-            .where(*population, pending, GeoFailure.status == "waiting_provider")
+            .where(
+                *population,
+                pending,
+                GeoFailure.status == "waiting_provider",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
         )
         or 0
     )
