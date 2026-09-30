@@ -1004,8 +1004,8 @@ def _record_classified_failure(session: Any, lot_id: int, value: Any) -> str:
     message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:2000]
     failure = record_geo_failure(session, lot_id, message, retry_after_seconds=0)
     semantic_attempt = int(failure.attempt_count or 1)
-    delay = retry_delay_seconds(category, semantic_attempt)
-    if delay is None:
+    semantic_delay = retry_delay_seconds(category, semantic_attempt)
+    if semantic_delay is None:
         if category == "no_match":
             failure.status = "deferred_no_match"
         elif category == "validation":
@@ -1015,7 +1015,7 @@ def _record_classified_failure(session: Any, lot_id: int, value: Any) -> str:
         failure.next_retry_at = None
     else:
         failure.status = "queued"
-        failure.next_retry_at = utc_now() + timedelta(seconds=delay)
+        failure.next_retry_at = utc_now() + timedelta(seconds=semantic_delay)
     return category
 
 
