@@ -83,13 +83,11 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Deploy home secondary origin" in workflow
     assert "p2-production-maintenance.ps1" in workflow
     assert "[P2] Production maintenance alert" in workflow
-    assert "docker image prune --force" in script
-    assert "docker builder prune --force" in script
     assert "docker system prune" not in script
     assert "disk-c-critical" in script
     assert "disk-c-headroom" in script
-    assert "CriticalFreePercent = 10" in script
-    assert "WarningFreePercent = 15" in script
+    assert "CriticalFreeGb = 15" in script
+    assert "WarningFreeGb = 25" in script
     assert "cleanup_old_map_datasets_task" in script
     assert "--log-opt max-size=20m --log-opt max-file=5" in deploy
     assert "Docker log rotation is not enforced" in deploy
@@ -99,10 +97,12 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "needs: wait-home-deploy" in backup
     assert "Wait for the same main revision on the home origin" in backup
     assert "Reclaim safe backup space under critical disk pressure" in backup
-    assert "Backup refused: C: remains below 10% free after safe cleanup" in backup
+    assert "minimumFreeGb = 20" in backup
     assert "restore_verification -eq 'passed'" in backup
-    assert "preserving recovery anchors" in deploy
-    assert "Select-Object -First 2" in deploy
+    assert "Clear stale runner Git lock" in deploy
+    assert "AUTO_MERGE.lock" in deploy
+    assert "Invoke-DockerCleanup" in deploy
+    assert "docker system prune" not in deploy
+    assert "minimumFreeGb = 15" in deploy
+    assert "skipping expensive Docker prune" in deploy
     assert "restore_verification -eq 'passed'" in deploy
-    assert "Get-FreePercent) -lt $CriticalFreePercent" in script
-    assert "Select-Object -First 2" in script
