@@ -32,6 +32,7 @@ $requiredContainers = @(
     'bankrotai-home-redis',
     'bankrotai-photon',
     'bankrotai-home-secondary',
+    'bankrotai-tbankrot-auth',
     'bankrotai-home-ingestion-worker',
     'bankrotai-home-geocoding-worker',
     'bankrotai-home-map-worker'
@@ -56,6 +57,11 @@ Add-Check -Name 'disk-c-headroom' -Ok ($diskPercentFree -ge 15) -Severity 'warni
 foreach ($url in @('http://127.0.0.1:18000/health/live', 'http://127.0.0.1:18000/health/ready')) {
     try { $statusCode = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Uri $url).StatusCode } catch { $statusCode = 0 }
     Add-Check -Name $url -Ok ($statusCode -eq 200) -Details @{ status = $statusCode }
+}
+
+$brokerHealth = docker exec bankrotai-tbankrot-auth node -e "fetch('http://127.0.0.1:18443/health').then(r=>{if(!r.ok)process.exit(1);console.log(r.status)}).catch(()=>process.exit(1))" 2>$null
+Add-Check -Name 'tbankrot-auth-broker' -Ok ($LASTEXITCODE -eq 0 -and ($brokerHealth | Select-Object -Last 1) -eq '200') -Details @{
+    status = if ($brokerHealth) { ($brokerHealth | Select-Object -Last 1) } else { 'unavailable' }
 }
 
 $appHealth = $null
