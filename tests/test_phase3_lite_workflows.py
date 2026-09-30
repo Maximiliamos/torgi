@@ -33,6 +33,7 @@ def test_phase3_health_covers_runtime_data_and_disaster_recovery() -> None:
         "bankrotai-home-redis",
         "bankrotai-photon",
         "bankrotai-home-secondary",
+        "bankrotai-tbankrot-auth",
         "bankrotai-home-ingestion-worker",
         "bankrotai-home-geocoding-worker",
         "bankrotai-home-map-worker",
