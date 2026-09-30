@@ -437,7 +437,7 @@ class CadastralGeocoder:
                     latency_ms=(time.monotonic() - started) * 1000,
                 )
                 logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
-                raise GeoProviderOperationalError("nspd", "tls_error", str(e)) from e
+                raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
             except requests.RequestException as e:
                 self._open_circuit("nspd")
                 category = classify_operational_exception(e)
