@@ -1320,6 +1320,7 @@ async def verify_tbankrot_auth():
     state = await tbankrot_auth_browser.verify_and_save()
     if not state.get("authenticated"):
         return {"auth": state, "sync": None}
+    sync: dict[str, Any]
     try:
         run_id = schedule_nationwide_lot_sync(triggered_by="tbankrot-auth-center", mode="source:tbankrot.ru")
         sync = {"task_id": run_id, "status": "queued"}
