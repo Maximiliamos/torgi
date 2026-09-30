@@ -271,10 +271,24 @@ class CadastralGeocoder:
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
-        result = PHOTON_GEOCODER.geocode(address)
+        photon_error: GeoProviderOperationalError | None = None
+        try:
+            result = PHOTON_GEOCODER.geocode(address)
+        except GeoProviderOperationalError as exc:
+            photon_error = exc
+            result = None
+
         source = "photon" if result else "nominatim"
         if not result and allow_nominatim:
-            result = NOMINATIM_GEOCODER.geocode(address)
+            try:
+                result = NOMINATIM_GEOCODER.geocode(address)
+            except GeoProviderOperationalError:
+                if photon_error is not None:
+                    raise photon_error
+                raise
+
+        if not result and photon_error is not None:
+            raise photon_error
 
         if not result:
             return CadastralObjectResult(
