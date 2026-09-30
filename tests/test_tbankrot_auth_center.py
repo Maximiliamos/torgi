@@ -204,3 +204,29 @@ def test_missing_saved_tbankrot_session_is_reported_as_auth_required(monkeypatch
         AuthenticatedUser(id=1, username="reader", role="reader")
     ))
     assert result["state"] == "auth_required"
+
+
+
+def test_tbankrot_source_outage_is_not_misreported_as_auth_expiry(monkeypatch) -> None:
+    scope = _scope_factory()
+
+    async def broker(_settings):
+        return {
+            "saved": True,
+            "captured_at": utc_now().isoformat().replace("+00:00", "Z"),
+            "validated_at": None,
+            "session_valid": None,
+            "validation_error": "TBankrot access probe is temporarily unavailable",
+            "active_session_id": None,
+            "browser_ready": True,
+        }
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    monkeypatch.setattr(api, "tbankrot_broker_status", broker)
+    result = asyncio.run(api.get_tbankrot_status(
+        AuthenticatedUser(id=1, username="reader", role="reader")
+    ))
+
+    assert result["state"] == "source_unavailable"
+    assert result["saved_session"] is True
+    assert result["source_validation_error"]
