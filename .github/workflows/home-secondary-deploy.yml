@@ -436,6 +436,35 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Private Redis did not become ready" }
 
+          $tbankrotAuthRoot = Join-Path $env:CONFIG_ROOT 'tbankrot-auth'
+          $brokerToken = [IO.File]::ReadAllText((Join-Path $env:CONFIG_ROOT 'tbankrot-broker-token.txt')).Trim()
+          Write-Output "::add-mask::$brokerToken"
+          $existingBroker = docker ps -a --filter "name=^/${env:TBANKROT_AUTH_CONTAINER}$" --format '{{.Names}}'
+          if ($existingBroker -eq $env:TBANKROT_AUTH_CONTAINER) {
+            docker rm --force $env:TBANKROT_AUTH_CONTAINER | Out-Null
+          }
+          docker run --detach --restart unless-stopped `
+            --log-opt max-size=20m --log-opt max-file=5 `
+            --name $env:TBANKROT_AUTH_CONTAINER `
+            --network $env:DOCKER_NETWORK `
+            --env "TBANKROT_AUTH_BROKER_TOKEN=$brokerToken" `
+            --env 'TBANKROT_COOKIE_FILE=/data/tbankrot-cookies.json' `
+            --mount "type=bind,source=$tbankrotAuthRoot,target=/data" `
+            --read-only `
+            --tmpfs /tmp:rw,noexec,nosuid,size=512m `
+            --shm-size 512m `
+            "${env:TBANKROT_AUTH_IMAGE}:${env:GITHUB_SHA}" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not start TBankrot auth broker' }
+          foreach ($attempt in 1..30) {
+            docker exec $env:TBANKROT_AUTH_CONTAINER node -e "fetch('http://127.0.0.1:18443/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($LASTEXITCODE -ne 0) {
+            docker logs --tail 100 $env:TBANKROT_AUTH_CONTAINER
+            throw 'TBankrot auth broker did not become ready'
+          }
+
           $existing = docker ps -a --filter "name=^/${env:CONTAINER_NAME}$" --format '{{.Names}}'
           if ($existing -eq $env:CONTAINER_NAME) {
             docker rm --force $env:CONTAINER_NAME | Out-Null
@@ -445,7 +474,7 @@ jobs:
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
-            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
+            --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-auth,target=/run/secrets/tbankrot,readonly" `
             --publish 127.0.0.1:18000:8000 `
             --read-only `
             --tmpfs /tmp:rw,noexec,nosuid,size=64m `
@@ -495,7 +524,7 @@ jobs:
               --name $spec.Name `
               --network $env:DOCKER_NETWORK `
               --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-cookies.json,target=/run/secrets/tbankrot-cookies.json,readonly" `
+              --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-auth,target=/run/secrets/tbankrot,readonly" `
               --no-healthcheck `
               --read-only `
               --tmpfs /tmp:rw,noexec,nosuid,size=128m `
