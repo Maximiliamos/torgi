@@ -135,18 +135,46 @@ jobs:
             return $process.ExitCode -eq 0
           }
 
+          function Invoke-ProcessEmergency {
+            param(
+              [string]$FilePath,
+              [string[]]$Arguments,
+              [int]$TimeoutSeconds = 30
+            )
+            $argLine = ($Arguments | ForEach-Object {
+              if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+            }) -join ' '
+            $process = Start-Process -FilePath $FilePath -ArgumentList $argLine -PassThru -WindowStyle Hidden
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              try { & taskkill.exe /PID $process.Id /T /F *> $null } catch {}
+              return $false
+            }
+            return $process.ExitCode -eq 0
+          }
+
           $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 20
           if (-not $dockerResponsive) {
-            $dockerService = Get-Service -Name 'com.docker.service' -ErrorAction SilentlyContinue
-            if ($null -ne $dockerService) {
-              Write-Warning "Docker daemon is unresponsive; restarting com.docker.service"
-              try {
-                Restart-Service -Name 'com.docker.service' -Force -ErrorAction Stop
-              } catch {
-                Write-Warning "Docker service restart failed: $($_.Exception.Message)"
+            Write-Warning "Docker daemon is unresponsive; resetting WSL before restarting Docker Desktop"
+            [void](Invoke-ProcessEmergency -FilePath 'wsl.exe' -Arguments @('--shutdown') -TimeoutSeconds 30)
+            Start-Sleep -Seconds 5
+            $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 30
+          }
+
+          if (-not $dockerResponsive) {
+            Write-Warning "Docker WSL reset was insufficient; recycling Docker Desktop user backend"
+            Get-Process -Name 'com.docker.backend','Docker Desktop' -ErrorAction SilentlyContinue |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+            [void](Invoke-ProcessEmergency -FilePath 'wsl.exe' -Arguments @('--shutdown') -TimeoutSeconds 30)
+            $dockerDesktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+            if (Test-Path -LiteralPath $dockerDesktop) {
+              Start-Process -FilePath $dockerDesktop | Out-Null
+              foreach ($attempt in 1..12) {
+                Start-Sleep -Seconds 10
+                if (Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 15) {
+                  $dockerResponsive = $true
+                  break
+                }
               }
-              Start-Sleep -Seconds 10
-              $dockerResponsive = Invoke-DockerEmergency -Arguments @('version','--format','{{.Server.Version}}') -TimeoutSeconds 30
             }
           }
 
@@ -214,10 +242,12 @@ jobs:
           $beforePercent = [math]::Round(($before.Free / ($before.Used + $before.Free)) * 100, 1)
           Write-Output ("C: free before Docker cleanup: {0:N2} GB ({1:N1}%)" -f ($before.Free / 1GB), $beforePercent)
 
-          if ($beforePercent -lt 15) {
-            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
-            [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
-            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+          if ($before.Free -lt 20GB) {
+            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 60)
+            [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 120)
+            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 120)
+          } else {
+            Write-Output "Skipping Docker prune because absolute free space is already >= 20 GB"
           }
 
           $after = Get-PSDrive -Name C
@@ -695,9 +725,13 @@ jobs:
 
           $before = Get-PSDrive -Name C
           $beforeFreeGb = [math]::Round($before.Free / 1GB, 2)
-          [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
-          [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
-          [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+          if ($before.Free -lt 20GB) {
+            [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 60)
+            [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 120)
+            [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 120)
+          } else {
+            Write-Output "Skipping post-deploy Docker prune because absolute free space is already >= 20 GB"
+          }
           $after = Get-PSDrive -Name C
           $afterFreeGb = [math]::Round($after.Free / 1GB, 2)
           $afterFreePercent = if (($after.Used + $after.Free) -gt 0) {
@@ -705,6 +739,6 @@ jobs:
           } else { 0 }
           Write-Output "C: free before post-deploy cleanup: $beforeFreeGb GB"
           Write-Output "C: free after post-deploy cleanup: $afterFreeGb GB ($afterFreePercent%)"
-          if ($afterFreePercent -lt 10) {
-            throw "C: remains below the production health threshold of 10% free"
+          if ($after.Free -lt 10GB) {
+            throw "C: remains below the production health threshold of 10 GB free"
           }
