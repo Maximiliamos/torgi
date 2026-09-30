@@ -57,6 +57,14 @@ jobs:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 240
     steps:
+      - name: Clear stale runner Git lock
+        shell: powershell
+        run: |
+          $lock = Join-Path $env:GITHUB_WORKSPACE '.git\AUTO_MERGE.lock'
+          if (Test-Path -LiteralPath $lock) {
+            Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+            Write-Output 'Removed stale Git AUTO_MERGE lock'
+          }
       - uses: actions/checkout@v7
       - name: Reclaim safe backup space under critical disk pressure
         shell: powershell
@@ -75,9 +83,6 @@ jobs:
             $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
               Sort-Object LastWriteTimeUtc -Descending)
             $protected = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($file in ($dumpFiles | Select-Object -First 2)) {
-              [void]$protected.Add($file.FullName)
-            }
             $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
               Sort-Object LastWriteTimeUtc -Descending |
               ForEach-Object {
@@ -86,8 +91,11 @@ jobs:
                   if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
                 } catch {}
               } | Select-Object -First 1)
-            if ($verified.Count -gt 0) {
+            if ($verified.Count -gt 0 -and
+                (Test-Path -LiteralPath ([string]$verified[0].backup_file))) {
               [void]$protected.Add([string]$verified[0].backup_file)
+            } elseif ($dumpFiles.Count -gt 0) {
+              [void]$protected.Add($dumpFiles[0].FullName)
             }
             foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
               if ($protected.Contains($dump.FullName)) { continue }
