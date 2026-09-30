@@ -1362,7 +1362,7 @@ def _geocode_pending_lots_unlocked(
                     GeoFailure.next_retry_at.is_(None),
                     GeoFailure.next_retry_at <= now,
                 ),
-                or_(GeoFailure.status.is_(None), GeoFailure.status != "terminal"),
+                or_(GeoFailure.status.is_(None), GeoFailure.status.not_in(tuple(_NON_RUNNABLE_GEO_STATUSES))),
             )
             .order_by(
                 case(
