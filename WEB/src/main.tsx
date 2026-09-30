@@ -190,12 +190,12 @@ function ServerClock() {
 }
 
 export function App({ username = "Пользователь", role = "reader", onLogout = () => undefined }: { username?: string; role?: string; onLogout?: () => void }) {
-  const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true); const [tbankrotNeedsAttention, setTbankrotNeedsAttention] = React.useState(false);
+  const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true); const [tbankrotNeedsAttention, setTbankrotNeedsAttention] = React.useState(false); const [tbankrotState, setTbankrotState] = React.useState<string | null>(null);
   React.useEffect(() => {
     let active = true;
     const refreshTBankrotState = () => fetchTBankrotStatus()
-      .then((status) => { if (active) setTbankrotNeedsAttention(["auth_required", "source_unavailable", "broker_unavailable"].includes(status.state)); })
-      .catch(() => { if (active) setTbankrotNeedsAttention(true); });
+      .then((status) => { if (active) { setTbankrotState(status.state); setTbankrotNeedsAttention(["auth_required", "source_unavailable", "broker_unavailable"].includes(status.state)); } })
+      .catch(() => { if (active) { setTbankrotState("broker_unavailable"); setTbankrotNeedsAttention(true); } });
     void refreshTBankrotState();
     const timer = window.setInterval(refreshTBankrotState, 30_000);
     return () => { active = false; window.clearInterval(timer); };
@@ -211,6 +211,13 @@ export function App({ username = "Пользователь", role = "reader", on
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
     </nav>
     <section className="appWorkspace">
+      {tbankrotState === "auth_required" && view !== "tbankrot" && <aside className="tbankrotGlobalNotice" role="alert">
+        <ShieldAlert size={18} />
+        <div><strong>TBankrot требует авторизацию</strong><span>Основные 4 источника продолжают работать независимо.</span></div>
+        {role === "admin"
+          ? <button type="button" onClick={() => openView("tbankrot")}>Войти в TBankrot</button>
+          : <small>Нужен администратор STERDEZ</small>}
+      </aside>}
       {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{nav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
       {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} onOpenTBankrot={() => openView("tbankrot")} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}{view === "tbankrot" && <TBankrotView refreshToken={refreshToken} isAdmin={role === "admin"} />}</div>}
       <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} statusContent={view === "map" ? <ServerClock /> : undefined} />}</div>
