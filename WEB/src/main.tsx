@@ -8,7 +8,7 @@ import {
 import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
-  fetchSavedSearches, fetchSources, fetchStats, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
+  fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
@@ -190,13 +190,22 @@ function ServerClock() {
 }
 
 export function App({ username = "Пользователь", role = "reader", onLogout = () => undefined }: { username?: string; role?: string; onLogout?: () => void }) {
-  const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true);
+  const [view, setView] = React.useState<MainView>("map"); const [refreshToken, setRefreshToken] = React.useState(0); const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null); const [mapFavorites, setMapFavorites] = React.useState(false); const [favoriteCount, setFavoriteCount] = React.useState(0); const [mapVisited, setMapVisited] = React.useState(true); const [tbankrotNeedsAttention, setTbankrotNeedsAttention] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    const refreshTBankrotState = () => fetchTBankrotStatus()
+      .then((status) => { if (active) setTbankrotNeedsAttention(["auth_required", "broker_unavailable"].includes(status.state)); })
+      .catch(() => { if (active) setTbankrotNeedsAttention(true); });
+    void refreshTBankrotState();
+    const timer = window.setInterval(refreshTBankrotState, 30_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [refreshToken]);
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
   const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
   return <main className="appShell">
     <nav className="appRail" aria-label="Основная навигация">
       <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
-      {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}</button>)}
+      {nav.map(([id, text, icon]) => <button key={id} title={text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}{id === "tbankrot" && tbankrotNeedsAttention && <span className="appRailAlert" aria-label="TBankrot требует внимания" />}</button>)}
       <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
       <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
