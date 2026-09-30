@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import socket
 import ssl
 import time
@@ -276,7 +277,7 @@ def _probe_tls(host: str, *, timeout: float = 2.0) -> tuple[str, float]:
                 raw.close()
             except Exception:
                 pass
-    return addresses[0][4][0], (time.monotonic() - started) * 1000
+    return str(addresses[0][4][0]), (time.monotonic() - started) * 1000
 
 
 def _network_fingerprint(resolved: dict[str, str | None]) -> str:
@@ -323,10 +324,7 @@ def probe_geo_network_health() -> dict[str, Any]:
                 "category": exc.category,
             }
 
-    photon_url = (get_settings().photon_base_url if hasattr(get_settings(), "photon_base_url") else "")
-    if not photon_url:
-        import os
-        photon_url = os.getenv("PHOTON_BASE_URL", "")
+    photon_url = os.getenv("PHOTON_BASE_URL", "")
     started = time.monotonic()
     try:
         if not photon_url:
@@ -372,13 +370,13 @@ def network_health_snapshot() -> dict[str, Any]:
 def retry_delay_seconds(category: str, attempt: int) -> int | None:
     attempt = max(1, int(attempt))
     if is_operational_category(category):
-        schedule = (60, 180, 300, 900)
-        return schedule[min(attempt - 1, len(schedule) - 1)]
+        operational_schedule: tuple[int, ...] = (60, 180, 300, 900)
+        return operational_schedule[min(attempt - 1, len(operational_schedule) - 1)]
     if category == "no_match":
-        schedule = (1800, 7200)
-        return schedule[attempt - 1] if attempt <= len(schedule) else None
+        no_match_schedule: tuple[int, ...] = (1800, 7200)
+        return no_match_schedule[attempt - 1] if attempt <= len(no_match_schedule) else None
     if category == "validation":
-        schedule = (300, 1800)
-        return schedule[attempt - 1] if attempt <= len(schedule) else None
-    schedule = (300, 1800, 7200)
-    return schedule[attempt - 1] if attempt <= len(schedule) else None
+        validation_schedule: tuple[int, ...] = (300, 1800)
+        return validation_schedule[attempt - 1] if attempt <= len(validation_schedule) else None
+    internal_schedule: tuple[int, ...] = (300, 1800, 7200)
+    return internal_schedule[attempt - 1] if attempt <= len(internal_schedule) else None
