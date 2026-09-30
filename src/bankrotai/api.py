@@ -901,7 +901,10 @@ async def search_auction_source(
         }
     except Exception as exc:
         logger.warning("Public search failed for %s: %s", source, exc)
-        if source == "tbankrot" and "access_limited" in str(exc).casefold():
+        if source == "tbankrot" and any(
+            marker in str(exc).casefold()
+            for marker in ("access_limited", "session cookie file", "no tbankrot cookies")
+        ):
             raise HTTPException(status_code=428, detail="TBankrot authentication required") from exc
         raise HTTPException(status_code=502, detail=f"Source {source} is temporarily unavailable") from exc
     return {
@@ -1194,7 +1197,23 @@ async def get_tbankrot_status(actor: AuthenticatedUser = Depends(require_user)):
         error_text = latest_source.error_message
     elif health is not None and health.last_error:
         error_text = health.last_error
-    auth_required = not bool(broker.get("saved")) or "access_limited" in error_text.casefold()
+    captured_at: datetime | None = None
+    if broker.get("captured_at"):
+        try:
+            captured_at = datetime.fromisoformat(str(broker["captured_at"]).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            captured_at = None
+    failure_at = (
+        latest_source.finished_at or latest_source.progress_at or latest_source.started_at
+        if latest_source is not None and latest_source.error_message
+        else health.last_failure_at
+        if health is not None
+        else None
+    )
+    stale_auth_failure = "access_limited" in error_text.casefold() and (
+        captured_at is None or failure_at is None or failure_at >= captured_at
+    )
+    auth_required = not bool(broker.get("saved")) or stale_auth_failure
     syncing = latest_source is not None and latest_source.status in {"queued", "running"}
     state = (
         "broker_unavailable"
