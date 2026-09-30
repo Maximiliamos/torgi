@@ -60,7 +60,6 @@ export function TBankrotView({ refreshToken }: { refreshToken: number }) {
   const [syncId, setSyncId] = React.useState<string | null>(null);
   const [syncState, setSyncState] = React.useState("");
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
-  const frameRef = React.useRef<HTMLImageElement | null>(null);
   const lastBlobUrl = React.useRef("");
 
   const publishFrame = React.useCallback((blob: Blob) => {
@@ -330,7 +329,6 @@ export function TBankrotView({ refreshToken }: { refreshToken: number }) {
           >
             {frameUrl
               ? <img
-                  ref={frameRef}
                   src={frameUrl}
                   alt="Интерактивная сессия TBankrot"
                   draggable={false}
