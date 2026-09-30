@@ -43,6 +43,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $runtimeContainers = @(
     'bankrotai-home-secondary',
+    'bankrotai-tbankrot-auth',
     'bankrotai-home-ingestion-worker',
     'bankrotai-home-geocoding-worker',
     'bankrotai-home-map-worker'
