@@ -83,8 +83,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Deploy home secondary origin" in workflow
     assert "p2-production-maintenance.ps1" in workflow
     assert "[P2] Production maintenance alert" in workflow
-    assert "docker image prune --force" in script
-    assert "docker builder prune --force" in script
+    assert "Invoke-DockerCleanup" in script
+    assert "@('image','prune','--all','--force'" in script
+    assert "@('builder','prune','--all','--force'" in script
     assert "docker system prune" not in script
     assert "disk-c-critical" in script
     assert "disk-c-headroom" in script
@@ -101,8 +102,12 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Reclaim safe backup space under critical disk pressure" in backup
     assert "Backup refused: C: remains below 10% free after safe cleanup" in backup
     assert "restore_verification -eq 'passed'" in backup
-    assert "preserving recovery anchors" in deploy
-    assert "Select-Object -First 2" in deploy
+    assert "Emergency runner recovery before checkout" in deploy
+    assert "AUTO_MERGE.lock" in deploy
+    assert "Invoke-DockerCleanup" in deploy
+    assert "docker system prune" not in deploy
+    assert "less than 4 GB free" in deploy
     assert "restore_verification -eq 'passed'" in deploy
     assert "Get-FreePercent) -lt $CriticalFreePercent" in script
-    assert "Select-Object -First 2" in script
+    assert "Invoke-DockerCleanup" in script
+    assert "docker system prune" not in script
