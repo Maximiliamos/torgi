@@ -102,12 +102,15 @@ async function inspectAccess(context) {
       const text = document.body?.innerText || "";
       const blocked = Boolean(document.querySelector(".lot_list_container.blur"));
       const prompt = /Для\s+просмотра\s+лотов/i.test(text);
+      const loginForm = Boolean(document.querySelector('input[type="password"]')) && /войти|авторизац/i.test(text);
       const cards = document.querySelectorAll(".lot_container").length;
-      return { blocked, prompt, cards, title: document.title || "" };
+      const hasSearchEvidence = cards > 0 || /Найдено\s+лотов/i.test(text);
+      return { blocked, prompt, loginForm, cards, hasSearchEvidence, title: document.title || "" };
     });
+    const ok = !(result.blocked && result.prompt) && !result.loginForm && result.hasSearchEvidence;
     return {
-      ok: !(result.blocked && result.prompt),
-      state: result.blocked && result.prompt ? "auth_required" : "authenticated",
+      ok,
+      state: ok ? "authenticated" : "auth_required",
       cards: result.cards,
     };
   } finally {
