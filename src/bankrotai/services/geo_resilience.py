@@ -58,6 +58,13 @@ class ProviderHealth:
 
 def classify_transport_exception(exc: BaseException) -> str:
     text = f"{exc.__class__.__name__}: {exc}".casefold()
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 429:
+            return "rate_limited"
+        if status is not None and status >= 500:
+            return "provider_5xx"
+        return "provider_protocol"
     if isinstance(exc, requests.exceptions.SSLError) or "ssl" in text or "tls" in text:
         return "tls_error"
     if isinstance(exc, requests.exceptions.ConnectTimeout):
@@ -185,6 +192,7 @@ def record_provider_failure(
 def _refresh_global_circuit(now: float | None = None) -> dict[str, Any]:
     now = now or time.time()
     degraded: list[str] = []
+    healthy_recent = 0
     for provider in sorted(EXTERNAL_PROVIDERS):
         state = provider_health(provider)
         if (
@@ -194,10 +202,18 @@ def _refresh_global_circuit(now: float | None = None) -> dict[str, Any]:
             and (not state.last_success_at or state.last_success_at < state.last_failure_at)
         ):
             degraded.append(provider)
+        elif (
+            state.last_success_at
+            and now - state.last_success_at <= _GLOBAL_FAILURE_WINDOW_SECONDS
+            and (not state.last_failure_at or state.last_success_at >= state.last_failure_at)
+        ):
+            healthy_recent += 1
     current = _load_json(_GLOBAL_KEY)
     open_until = float(current.get("circuit_open_until") or 0)
     if len(degraded) >= 2:
         open_until = max(open_until, now + _GLOBAL_CIRCUIT_SECONDS)
+    elif healthy_recent >= 2:
+        open_until = 0
     elif open_until <= now:
         open_until = 0
     payload = {
