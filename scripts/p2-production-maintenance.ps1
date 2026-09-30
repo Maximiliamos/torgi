@@ -35,6 +35,32 @@ function Get-FreePercent {
     return [math]::Round(($drive.Free / ($drive.Used + $drive.Free)) * 100, 1)
 }
 
+
+function Invoke-DockerCleanup {
+    param(
+        [string[]]$Arguments,
+        [int]$TimeoutSeconds = 300
+    )
+    $argLine = ($Arguments | ForEach-Object {
+        if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+    }) -join ' '
+    $process = Start-Process -FilePath 'docker.exe' -ArgumentList $argLine -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { & taskkill.exe /PID $process.Id /T /F *> $null } catch {}
+        Add-Check -Name ('docker-cleanup-timeout:' + ($Arguments -join '-')) -Ok $false -Severity 'warning' -Details @{
+            timeout_seconds = $TimeoutSeconds
+        }
+        return $false
+    }
+    if ($process.ExitCode -ne 0) {
+        Add-Check -Name ('docker-cleanup-exit:' + ($Arguments -join '-')) -Ok $false -Severity 'warning' -Details @{
+            exit_code = $process.ExitCode
+        }
+        return $false
+    }
+    return $true
+}
+
 $beforeFree = Get-FreePercent
 $dockerBefore = (docker system df 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
@@ -67,10 +93,15 @@ foreach ($container in $runtimeContainers) {
 }
 
 if ($Apply) {
-    docker image prune --force --filter "until=$($DockerPruneAfterHours)h" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Docker image prune failed' }
-    docker builder prune --force --filter "until=$($DockerPruneAfterHours)h" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Docker builder prune failed' }
+    $criticalBeforeDockerCleanup = (Get-FreePercent) -lt $CriticalFreePercent
+    if ($criticalBeforeDockerCleanup) {
+        [void](Invoke-DockerCleanup -Arguments @('container','prune','--force') -TimeoutSeconds 120)
+        [void](Invoke-DockerCleanup -Arguments @('image','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+        [void](Invoke-DockerCleanup -Arguments @('builder','prune','--all','--force','--filter','until=24h') -TimeoutSeconds 300)
+    } else {
+        [void](Invoke-DockerCleanup -Arguments @('image','prune','--force','--filter',"until=$($DockerPruneAfterHours)h") -TimeoutSeconds 180)
+        [void](Invoke-DockerCleanup -Arguments @('builder','prune','--force','--filter',"until=$($DockerPruneAfterHours)h") -TimeoutSeconds 180)
+    }
 }
 
 $mapCommand = if ($Apply) {
@@ -116,9 +147,6 @@ if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
         $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' |
             Sort-Object LastWriteTimeUtc -Descending)
         $protected = New-Object 'System.Collections.Generic.HashSet[string]'
-        foreach ($file in ($dumpFiles | Select-Object -First 2)) {
-            [void]$protected.Add($file.FullName)
-        }
         $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' |
             Sort-Object LastWriteTimeUtc -Descending |
             ForEach-Object {
@@ -127,8 +155,11 @@ if ($Apply -and (Get-FreePercent) -lt $CriticalFreePercent) {
                     if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
                 } catch {}
             } | Select-Object -First 1)
-        if ($verified.Count -gt 0) {
+        if ($verified.Count -gt 0 -and
+            (Test-Path -LiteralPath ([string]$verified[0].backup_file))) {
             [void]$protected.Add([string]$verified[0].backup_file)
+        } elseif ($dumpFiles.Count -gt 0) {
+            [void]$protected.Add($dumpFiles[0].FullName)
         }
         foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
             if ($protected.Contains($dump.FullName)) { continue }
