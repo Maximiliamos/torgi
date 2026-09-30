@@ -66,6 +66,10 @@ def test_p1_data_quality_reconciles_db_map_and_public_s3() -> None:
     assert "[P1] Data quality / map delivery alert" in workflow
     assert "map_delivery_reconciliation_report(s, verify_public_manifest=True)" in script
     assert "geocoding_diagnostic_report(s)" in script
+    assert "$report.operational.lot_data_quality" in script
+    assert "$report.operational.source_date_quality" in script
+    assert "'non_positive_price'" in script
+    assert "'application_start_after_deadline'" in script
     assert "if (-not $result.healthy) { exit 1 }" in script
 
 
