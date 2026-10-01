@@ -144,7 +144,7 @@ def _refresh_failures_for_current_strategy(session: Any) -> int:
     failures = session.scalars(
         select(GeoFailure).where(
             GeoFailure.lot_id.in_(eligible_lot_ids),
-            GeoFailure.status != "resolved",
+            GeoFailure.status.not_in(("resolved", "p7_queued")),
         )
     ).all()
     now = utc_now()
