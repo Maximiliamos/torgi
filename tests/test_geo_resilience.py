@@ -224,8 +224,8 @@ def test_deferred_lots_are_not_counted_as_runnable_backlog(monkeypatch) -> None:
         assert progress["deferred_no_match"] == 1
         assert progress["network_wait"] == 1
         assert progress["eligible_now"] == 0
-        assert progress["waiting_for_retry"] == 1
-        assert progress["actionable_remaining"] == 1
+        assert progress["waiting_for_retry"] == 0
+        assert progress["actionable_remaining"] == 0
         assert progress["classified"] == 1
 
 

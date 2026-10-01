@@ -144,7 +144,7 @@ def _refresh_failures_for_current_strategy(session: Any) -> int:
     failures = session.scalars(
         select(GeoFailure).where(
             GeoFailure.lot_id.in_(eligible_lot_ids),
-            GeoFailure.status != "resolved",
+            GeoFailure.status.not_in(("resolved", "p7_queued")),
         )
     ).all()
     now = utc_now()
@@ -661,6 +661,7 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
         "eligible_now": 0,
         "waiting_for_retry": 0,
         "network_wait": 0,
+        "p7_held": 0,
         "deferred_no_match": 0,
         "deferred_validation": 0,
         "terminal": 0,
@@ -693,6 +694,8 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
             state = str(status)
         elif status == "network_wait":
             state = "network_wait"
+        elif status == "p7_queued" and retry_at is not None and retry_at > now:
+            state = "p7_held"
         elif retry_at is not None and retry_at > now:
             state = "waiting_for_retry"
         else:
@@ -703,7 +706,7 @@ def geocoding_backlog_classification(session: Any) -> dict[str, Any]:
         if error_message:
             reasons[_failure_reason_from_message(str(error_message))] += 1
 
-    actionable = retry_state["eligible_now"] + retry_state["waiting_for_retry"] + retry_state["network_wait"]
+    actionable = retry_state["eligible_now"] + retry_state["waiting_for_retry"]
     return {
         "unmapped_active_lots": len(rows),
         "actionable_remaining": actionable,
@@ -755,6 +758,21 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
     deferred_no_match = _status_count("deferred_no_match")
     deferred_validation = _status_count("deferred_validation")
     network_wait = _status_count("network_wait")
+    p7_held = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+            .where(
+                *population,
+                pending,
+                GeoFailure.status == "p7_queued",
+                GeoFailure.next_retry_at.is_not(None),
+                GeoFailure.next_retry_at > now,
+            )
+        )
+        or 0
+    )
 
     eligible_now = int(
         session.scalar(
@@ -787,7 +805,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
             .where(
                 *population,
                 pending,
-                GeoFailure.status.not_in(excluded),
+                GeoFailure.status.not_in((*excluded, "network_wait", "p7_queued")),
                 GeoFailure.next_retry_at.is_not(None),
                 GeoFailure.next_retry_at > now,
             )
@@ -801,7 +819,7 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         .where(
             *population,
             pending,
-            GeoFailure.status.not_in(excluded),
+            GeoFailure.status.not_in((*excluded, "network_wait", "p7_queued")),
             GeoFailure.next_retry_at.is_not(None),
             GeoFailure.next_retry_at > now,
         )
@@ -860,6 +878,27 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         else:
             elapsed_seconds = math.ceil(float((latest.result_json or {}).get("duration_seconds") or 0))
 
+    deferred_bad_input = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProcessedLot)
+            .where(
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+                or_(ProcessedLot.current_geo_lat.is_(None), ProcessedLot.current_geo_lon.is_(None)),
+                ProcessedLot.cadastral_number.is_(None),
+                ProcessedLot.address.is_(None),
+            )
+        )
+        or 0
+    )
+    fast_drain_row = session.scalar(
+        select(BackgroundTaskState)
+        .where(BackgroundTaskState.task_type == "geocoding_fast_drain")
+        .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
+        .limit(1)
+    )
+
     paused = is_geocoding_paused(session)
     deferred = deferred_no_match + deferred_validation
     classified = min(total, geocoded + terminal + deferred)
@@ -872,6 +911,9 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "deferred_validation": deferred_validation,
         "deferred_total": deferred,
         "network_wait": network_wait,
+        "p7_held": p7_held,
+        "deferred_bad_input": deferred_bad_input,
+        "drain_remaining": actionable_remaining + p7_held,
         "classified": classified,
         "classified_percent": round((classified / total * 100) if total else 100.0, 1),
         "resolved": classified,
@@ -888,11 +930,27 @@ def geocoding_progress(session: Any) -> dict[str, Any]:
         "expected_completion_at": (datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)).isoformat()
         if eta_seconds is not None and eta_seconds > 0 and not paused
         else None,
+        "drain_eta_seconds": (
+            math.ceil((eligible_now + p7_held) / rate)
+            if rate and (eligible_now + p7_held) > 0 and not paused
+            else 0 if (eligible_now + p7_held) == 0 else None
+        ),
         "elapsed_seconds": elapsed_seconds,
         "estimated_total_seconds": (elapsed_seconds + eta_seconds)
         if elapsed_seconds is not None and eta_seconds is not None
         else None,
         "network": network_health_snapshot(),
+        "fast_drain": None
+        if fast_drain_row is None
+        else {
+            "task_id": fast_drain_row.task_id,
+            "status": fast_drain_row.status,
+            "progress": fast_drain_row.progress_json,
+            "result": fast_drain_row.result_json,
+            "error": fast_drain_row.error_message,
+            "started_at": fast_drain_row.started_at,
+            "finished_at": fast_drain_row.finished_at,
+        },
         "task": None
         if latest is None
         else {
