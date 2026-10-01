@@ -5,7 +5,7 @@ P6 separates transport/provider failures from real geocoding misses so transient
 ## Behavior
 
 - External provider health is tracked in Redis with per-provider circuit breakers.
-- A global external-network circuit opens when multiple independent external GEO probes fail in the same window.
+- A global external-network circuit opens only when multiple **independent external dependencies** fail in the same window; a provider and its own probe count as one dependency.
 - The probe task checks TLS reachability for NSPD, IK12 and torgi.gov.ru and checks local Photon separately.
 - Network/TLS/DNS/5xx/429 failures use short operational retries and **do not increment the lot semantic attempt counter**.
 - Real `no_coordinates` results get two bounded retries (30 min, then 2 h) and are then moved to `deferred_no_match`.
@@ -13,7 +13,8 @@ P6 separates transport/provider failures from real geocoding misses so transient
 - Deferred lots are automatically eligible again when their GEO input changes.
 - IK12 recovery may still recover `deferred_no_match` cadastral misses without consuming the normal retry budget.
 - Local Photon remains usable while the external-network circuit is open.
-- Provider circuits close automatically after successful health probes.
+- NSPD/IK12 provider circuits close automatically after their own successful health probe; local Photon recovers from its local probe.
+- `network_wait` lots are released provider-by-provider after that specific dependency has demonstrably recovered; one unrelated degraded provider cannot hold the whole queue.
 
 ## GEO states
 
