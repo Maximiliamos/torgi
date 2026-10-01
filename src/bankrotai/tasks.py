@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -242,23 +243,40 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
 
 @celery_app.task(name="bankrotai.tasks.probe_geo_network_health_task")
 def probe_geo_network_health_task() -> dict[str, Any]:
-    """Detect network/provider recovery and release operational waits without touching semantic retries."""
-    from sqlalchemy import update
-
-    from bankrotai.services.geo_resilience import probe_geo_network_health
+    """Release only waits whose own provider has demonstrably recovered."""
+    from bankrotai.services.geo_resilience import (
+        probe_geo_network_health,
+        provider_recovered_since,
+    )
 
     snapshot = probe_geo_network_health()
-    probes = snapshot.get("probes") or {}
-    all_healthy = bool(probes) and all(bool(value.get("ok")) for value in probes.values() if isinstance(value, dict))
     released = 0
-    if all_healthy:
-        with session_scope() as session:
-            result = session.execute(
-                update(GeoFailure)
-                .where(GeoFailure.status == "network_wait")
-                .values(next_retry_at=datetime.now(timezone.utc).replace(tzinfo=None))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as session:
+        failures = (
+            session.query(GeoFailure)
+            .filter(GeoFailure.status == "network_wait")
+            .all()
+        )
+        for failure in failures:
+            try:
+                payload = json.loads(failure.error_message or "")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            attempts = payload.get("attempts") if isinstance(payload, dict) else None
+            provider = next(
+                (
+                    str(item.get("source"))
+                    for item in reversed(attempts or [])
+                    if isinstance(item, dict)
+                    and item.get("operational")
+                    and item.get("source")
+                ),
+                None,
             )
-            released = int(result.rowcount or 0)
+            if provider and provider_recovered_since(provider, failure.last_failed_at):
+                failure.next_retry_at = now
+                released += 1
     snapshot["released_network_wait"] = released
     return snapshot
 

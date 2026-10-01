@@ -37,6 +37,16 @@ _SNAPSHOT_KEY = "bankrotai:geo:network-snapshot"
 
 EXTERNAL_PROVIDERS = frozenset({"nspd", "ik12", "nominatim", "probe:nspd", "probe:ik12", "probe:torgi"})
 LOCAL_PROVIDERS = frozenset({"photon"})
+_EXTERNAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "nspd": ("nspd", "probe:nspd"),
+    "ik12": ("ik12", "probe:ik12"),
+    "nominatim": ("nominatim",),
+    "torgi": ("probe:torgi",),
+}
+_PROBE_TO_PROVIDER = {
+    "probe:nspd": "nspd",
+    "probe:ik12": "ik12",
+}
 
 
 class GeoProviderUnavailable(RuntimeError):
@@ -190,23 +200,40 @@ def record_provider_failure(
     return state
 
 
+def _dependency_health(dependency: str) -> tuple[float | None, float | None, str | None]:
+    providers = _EXTERNAL_DEPENDENCIES.get(dependency, ())
+    states = [provider_health(provider) for provider in providers]
+    last_failure_at = max((state.last_failure_at or 0.0) for state in states) or None
+    last_success_at = max((state.last_success_at or 0.0) for state in states) or None
+    latest_failure = max(
+        (state for state in states if state.last_failure_at),
+        key=lambda state: float(state.last_failure_at or 0.0),
+        default=None,
+    )
+    return (
+        last_failure_at,
+        last_success_at,
+        latest_failure.last_category if latest_failure is not None else None,
+    )
+
+
 def _refresh_global_circuit(now: float | None = None) -> dict[str, Any]:
     now = now or time.time()
     degraded: list[str] = []
     healthy_recent = 0
-    for provider in sorted(EXTERNAL_PROVIDERS):
-        state = provider_health(provider)
+    for dependency in sorted(_EXTERNAL_DEPENDENCIES):
+        last_failure_at, last_success_at, last_category = _dependency_health(dependency)
         if (
-            state.last_failure_at
-            and now - state.last_failure_at <= _GLOBAL_FAILURE_WINDOW_SECONDS
-            and is_operational_category(state.last_category)
-            and (not state.last_success_at or state.last_success_at < state.last_failure_at)
+            last_failure_at
+            and now - last_failure_at <= _GLOBAL_FAILURE_WINDOW_SECONDS
+            and is_operational_category(last_category)
+            and (not last_success_at or last_success_at < last_failure_at)
         ):
-            degraded.append(provider)
+            degraded.append(dependency)
         elif (
-            state.last_success_at
-            and now - state.last_success_at <= _GLOBAL_FAILURE_WINDOW_SECONDS
-            and (not state.last_failure_at or state.last_success_at >= state.last_failure_at)
+            last_success_at
+            and now - last_success_at <= _GLOBAL_FAILURE_WINDOW_SECONDS
+            and (not last_failure_at or last_success_at >= last_failure_at)
         ):
             healthy_recent += 1
     current = _load_json(_GLOBAL_KEY)
@@ -236,6 +263,21 @@ def provider_allowed(provider: str, *, external: bool) -> bool:
         if float(global_state.get("circuit_open_until") or 0) > now:
             return False
     return True
+
+
+def provider_recovered_since(provider: str, failed_at: datetime | float | None) -> bool:
+    if failed_at is None:
+        return False
+    failed_epoch = (
+        failed_at.timestamp()
+        if isinstance(failed_at, datetime)
+        else float(failed_at)
+    )
+    external = provider in EXTERNAL_PROVIDERS and provider not in LOCAL_PROVIDERS
+    if not provider_allowed(provider, external=external):
+        return False
+    state = provider_health(provider)
+    return bool(state.last_success_at and state.last_success_at > failed_epoch)
 
 
 def require_provider(provider: str, *, external: bool) -> None:
@@ -309,6 +351,8 @@ def probe_geo_network_health() -> dict[str, Any]:
             address, latency_ms = _probe_tls(host)
             resolved[provider] = address
             record_provider_success(provider, latency_ms=latency_ms)
+            if mirrored := _PROBE_TO_PROVIDER.get(provider):
+                record_provider_success(mirrored, latency_ms=latency_ms)
             probes[provider] = {
                 "ok": True,
                 "latency_ms": round(latency_ms, 1),
@@ -318,6 +362,8 @@ def probe_geo_network_health() -> dict[str, Any]:
             latency_ms = (time.monotonic() - started) * 1000
             resolved[provider] = None
             record_provider_failure(provider, exc.category, latency_ms=latency_ms)
+            if mirrored := _PROBE_TO_PROVIDER.get(provider):
+                record_provider_failure(mirrored, exc.category, latency_ms=latency_ms)
             probes[provider] = {
                 "ok": False,
                 "latency_ms": round(latency_ms, 1),
