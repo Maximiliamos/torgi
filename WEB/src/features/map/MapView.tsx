@@ -422,6 +422,12 @@ function OperationProgressCard({
     : null;
   const eligibleNow = value.geocoding.eligible_now ?? value.geocoding.actionable_remaining ?? value.geocoding.remaining;
   const waitingForRetry = value.geocoding.waiting_for_retry ?? 0;
+  const p7Held = value.geocoding.p7_held ?? 0;
+  const deferredNoMatch = value.geocoding.deferred_no_match ?? 0;
+  const deferredValidation = value.geocoding.deferred_validation ?? 0;
+  const deferredBadInput = value.geocoding.deferred_bad_input ?? 0;
+  const fastDrain = value.geocoding.fast_drain;
+  const fastDrainProgress = fastDrain?.progress ?? null;
   const journal = value.journal ?? [];
   const summary = value.summary;
   const pausedSources = summary?.sources.items.filter((source) => source.paused) ?? [];
@@ -493,13 +499,29 @@ function OperationProgressCard({
         <progress max={100} value={value.geocoding.percent} />
         <span>{value.geocoding.geocoded} из {value.geocoding.total} с координатами · без координат {value.geocoding.remaining}</span>
         <small>
-          Доступно сейчас: {eligibleNow} · ждут повторной попытки: {waitingForRetry} · окончательных ошибок: {value.geocoding.terminal_failures}
+          Доступно сейчас: {eligibleNow} · ждут обычного retry: {waitingForRetry} · P7 очередь: {p7Held}
+        </small>
+        <small>
+          Отложено: no-match {deferredNoMatch} · validation {deferredValidation} · без GEO-входа {deferredBadInput} · terminal {value.geocoding.terminal_failures}
         </small>
         {value.geocoding.eta_seconds != null && value.geocoding.eta_seconds > 0 && eligibleNow > 0 && (
           <small>
             Текущая доступная очередь: ≈ {durationLabel(value.geocoding.eta_seconds)}
             {completionTime ? ` · завершение около ${completionTime}` : ""}
             {value.geocoding.rate_per_second ? ` · ${value.geocoding.rate_per_second.toFixed(2)} лота/с` : ""}
+          </small>
+        )}
+        {value.geocoding.drain_eta_seconds != null && value.geocoding.drain_eta_seconds > 0 && p7Held > 0 && (
+          <small>
+            P7 первичный проход: ≈ {durationLabel(value.geocoding.drain_eta_seconds)}
+            {value.geocoding.rate_per_second ? ` · ${value.geocoding.rate_per_second.toFixed(2)} лота/с` : ""}
+          </small>
+        )}
+        {fastDrain && ["queued", "running"].includes(fastDrain.status) && (
+          <small className="mapOperationProgressStatus">
+            P7 Fast Drain: {fastDrainProgress?.phase ?? fastDrain.status}
+            {fastDrainProgress?.processed != null ? ` · обработано ${fastDrainProgress.processed}` : ""}
+            {fastDrainProgress?.p7_held != null ? ` · осталось в held ${fastDrainProgress.p7_held}` : ""}
           </small>
         )}
         {eligibleNow === 0 && waitingForRetry > 0 && (
