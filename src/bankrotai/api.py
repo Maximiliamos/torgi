@@ -141,6 +141,7 @@ _READ_ONLY_EXACT_PATHS = {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/operations/progress",
+    "/api/operations/geocoding/fast-drain/plan",
     "/api/tbankrot/auth/status",
     "/api/tbankrot/auth/screenshot",
 }
@@ -532,6 +533,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/sync/lots",
             "/api/operations/geocoding/pause",
             "/api/operations/geocoding/resume",
+            "/api/operations/geocoding/fast-drain",
             "/api/tbankrot/auth/start",
             "/api/tbankrot/auth/click",
             "/api/tbankrot/auth/type",
@@ -1375,6 +1377,25 @@ def resume_geocoding(actor: AuthenticatedUser = Depends(require_admin)):
     with session_scope() as session:
         set_geocoding_paused(session, False)
     return {"status": "running", "effective": "next-runner-poll"}
+
+
+@app.get("/api/operations/geocoding/fast-drain/plan", dependencies=[Depends(require_admin)])
+def get_geo_fast_drain_plan():
+    from bankrotai.services.geo_fast_drain import geo_fast_drain_plan
+
+    with read_session_scope() as session:
+        return geo_fast_drain_plan(session)
+
+
+@app.post("/api/operations/geocoding/fast-drain", status_code=202, dependencies=[Depends(require_admin)])
+def start_geo_fast_drain():
+    from bankrotai.tasks import schedule_geo_fast_drain
+
+    try:
+        task_id = schedule_geo_fast_drain()
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"task_id": task_id, "status": "queued"}
 
 
 @app.get("/api/lots")
