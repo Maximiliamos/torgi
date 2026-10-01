@@ -61,7 +61,7 @@ def test_p7_reclassifies_old_no_match_into_held_queue_with_one_fresh_attempt_lef
         assert failure.status == P7_HOLD_STATUS
         assert failure.attempt_count == 2
         assert failure.next_retry_at is not None
-        assert failure.next_retry_at > utc_now()
+        assert failure.next_retry_at.replace(tzinfo=None) > utc_now().replace(tzinfo=None)
         assert '"p7_reclassified":true' in failure.error_message
         assert '"legacy_attempt_count":5' in failure.error_message
 
@@ -90,7 +90,9 @@ def test_p7_operational_history_does_not_consume_semantic_attempt_budget() -> No
         assert failure.status == "network_wait"
         assert failure.attempt_count == 0
         assert failure.next_retry_at is not None
-        assert failure.next_retry_at <= utc_now() + timedelta(minutes=2)
+        assert failure.next_retry_at.replace(tzinfo=None) <= (
+            utc_now().replace(tzinfo=None) + timedelta(minutes=2)
+        )
 
 
 def test_p7_release_wave_prioritizes_cfo() -> None:
@@ -114,8 +116,11 @@ def test_p7_release_wave_prioritizes_cfo() -> None:
         assert result["released_cfo"] == 1
         cfo_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == cfo.id))
         outside_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == outside.id))
-        assert cfo_failure is not None and cfo_failure.next_retry_at <= utc_now()
-        assert outside_failure is not None and outside_failure.next_retry_at > utc_now()
+        now = utc_now().replace(tzinfo=None)
+        assert cfo_failure is not None and cfo_failure.next_retry_at is not None
+        assert cfo_failure.next_retry_at.replace(tzinfo=None) <= now
+        assert outside_failure is not None and outside_failure.next_retry_at is not None
+        assert outside_failure.next_retry_at.replace(tzinfo=None) > now
 
 
 def test_p7_held_work_is_not_reported_as_runnable_retry(monkeypatch) -> None:
