@@ -224,9 +224,7 @@ def geo_fast_drain_task(self) -> dict[str, Any]:
     """Run the one-time P7 historical backlog migration and bounded fast drain."""
     from bankrotai.services.geo_fast_drain import run_geo_fast_drain
 
-    request_id = str(self.request.id or uuid())
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    task_id = f"geo-{stamp}-p7-{request_id[:8]}"
+    task_id = str(self.request.id or uuid())
     return run_geo_fast_drain(SessionLocal, task_id=task_id)
 
 
