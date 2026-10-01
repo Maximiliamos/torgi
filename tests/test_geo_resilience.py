@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import utc_now
 from bankrotai.db import Base, GeoFailure, ProcessedLot
 from bankrotai.geo import CADASTRAL_GEOCODER, CadastralObjectResult, NOMINATIM_GEOCODER, PHOTON_GEOCODER
-from bankrotai.services import geo_backfill
+from bankrotai.services import geo_backfill, geo_resilience
 from bankrotai.services.geo_resilience import (
     GeoProviderUnavailable,
     classify_transport_exception,
@@ -235,3 +235,112 @@ def test_p6_network_probe_runs_on_the_geocoding_queue_every_minute() -> None:
     assert '"bankrotai.tasks.probe_geo_network_health_task": {"queue": _QUEUE_GEOCODING}' in tasks
     assert '"probe-geo-network-health"' in tasks
     assert '"schedule": 60.0' in tasks
+
+
+def test_global_circuit_counts_independent_dependencies_not_probe_aliases(monkeypatch) -> None:
+    now = 1_000.0
+
+    def state(provider: str) -> geo_resilience.ProviderHealth:
+        if provider in {"nspd", "probe:nspd"}:
+            return geo_resilience.ProviderHealth(
+                provider=provider,
+                consecutive_failures=3,
+                last_category="read_timeout",
+                last_failure_at=now - 5,
+            )
+        return geo_resilience.ProviderHealth(provider=provider)
+
+    monkeypatch.setattr(geo_resilience, "provider_health", state)
+    monkeypatch.setattr(geo_resilience, "_load_json", lambda _key: {})
+    monkeypatch.setattr(geo_resilience, "_save_json", lambda *_args, **_kwargs: None)
+
+    result = geo_resilience._refresh_global_circuit(now)
+
+    assert result["degraded_providers"] == ["nspd"]
+    assert result["circuit_open_until"] is None
+
+
+def test_global_circuit_opens_for_two_independent_external_dependencies(monkeypatch) -> None:
+    now = 1_000.0
+
+    def state(provider: str) -> geo_resilience.ProviderHealth:
+        if provider in {"nspd", "probe:nspd", "ik12", "probe:ik12"}:
+            return geo_resilience.ProviderHealth(
+                provider=provider,
+                consecutive_failures=3,
+                last_category="dns_error",
+                last_failure_at=now - 5,
+            )
+        return geo_resilience.ProviderHealth(provider=provider)
+
+    monkeypatch.setattr(geo_resilience, "provider_health", state)
+    monkeypatch.setattr(geo_resilience, "_load_json", lambda _key: {})
+    monkeypatch.setattr(geo_resilience, "_save_json", lambda *_args, **_kwargs: None)
+
+    result = geo_resilience._refresh_global_circuit(now)
+
+    assert result["degraded_providers"] == ["ik12", "nspd"]
+    assert float(result["circuit_open_until"]) > now
+
+
+def test_successful_external_probe_recovers_matching_real_provider(monkeypatch) -> None:
+    recorded: list[str] = []
+
+    monkeypatch.setattr(
+        geo_resilience,
+        "_probe_tls",
+        lambda host, timeout=2.0: ("127.0.0.1", 10.0),
+    )
+    monkeypatch.setattr(
+        geo_resilience,
+        "record_provider_success",
+        lambda provider, latency_ms=None: recorded.append(provider)
+        or geo_resilience.ProviderHealth(provider=provider, last_success_at=1.0),
+    )
+    monkeypatch.setattr(
+        geo_resilience,
+        "record_provider_failure",
+        lambda provider, category, latency_ms=None: geo_resilience.ProviderHealth(provider=provider),
+    )
+    monkeypatch.setattr(geo_resilience, "global_network_state", lambda: {"circuit_open": False})
+    monkeypatch.setattr(geo_resilience, "_load_json", lambda _key: {})
+    monkeypatch.setattr(geo_resilience, "_save_json", lambda *_args, **_kwargs: None)
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(geo_resilience.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setenv("PHOTON_BASE_URL", "http://photon")
+
+    geo_resilience.probe_geo_network_health()
+
+    assert "probe:nspd" in recorded
+    assert "nspd" in recorded
+    assert "probe:ik12" in recorded
+    assert "ik12" in recorded
+    assert "photon" in recorded
+
+
+def test_provider_recovery_requires_success_newer_than_lot_failure(monkeypatch) -> None:
+    failed_at = utc_now()
+    monkeypatch.setattr(geo_resilience, "provider_allowed", lambda provider, external: True)
+    monkeypatch.setattr(
+        geo_resilience,
+        "provider_health",
+        lambda provider: geo_resilience.ProviderHealth(
+            provider=provider,
+            last_success_at=failed_at.timestamp() + 1,
+        ),
+    )
+    assert geo_resilience.provider_recovered_since("nspd", failed_at)
+
+    monkeypatch.setattr(
+        geo_resilience,
+        "provider_health",
+        lambda provider: geo_resilience.ProviderHealth(
+            provider=provider,
+            last_success_at=failed_at.timestamp() - 1,
+        ),
+    )
+    assert not geo_resilience.provider_recovered_since("nspd", failed_at)
