@@ -69,7 +69,8 @@ def _payload(error_message: str | None) -> dict[str, Any]:
 def _legacy_classification(error_message: str | None) -> str | None:
     """Classify only pre-P6 rows; already classified P6/P7 rows are left untouched."""
     payload = _payload(error_message)
-    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    raw_meta = payload.get("meta")
+    meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     if meta.get("p7_reclassified"):
         return None
     persisted = str(payload.get("classification") or "")
@@ -215,7 +216,8 @@ def reclassify_legacy_geo_backlog(session: Any, *, apply: bool) -> dict[str, Any
         payload = _payload(failure.error_message)
         old_attempt_count = int(failure.attempt_count or 0)
         old_retry_at = failure.next_retry_at.isoformat() if failure.next_retry_at is not None else None
-        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        raw_meta = payload.get("meta")
+        meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
         meta.update({
             "p7_reclassified": True,
             "legacy_attempt_count": old_attempt_count,
