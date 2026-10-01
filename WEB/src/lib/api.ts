@@ -616,10 +616,23 @@ export type OperationsProgress = {
     total: number; geocoded: number; remaining: number; actionable_remaining?: number;
     terminal_failures: number; resolved?: number; resolved_percent?: number;
     eligible_now?: number; waiting_for_retry?: number; next_retry_at?: string | null;
+    network_wait?: number; p7_held?: number; deferred_no_match?: number;
+    deferred_validation?: number; deferred_bad_input?: number; drain_remaining?: number;
     percent: number; paused?: boolean;
     rate_per_second?: number | null; eta_seconds?: number | null; eta_scope?: "eligible_now" | null;
+    drain_eta_seconds?: number | null;
     elapsed_seconds?: number | null; estimated_total_seconds?: number | null;
     expected_completion_at?: string | null;
+    fast_drain?: null | {
+      task_id: string; status: string; error?: string | null;
+      started_at?: string | null; finished_at?: string | null;
+      progress?: {
+        phase?: string; batches?: number; processed?: number; geocoded?: number; failed?: number;
+        p7_total?: number; p7_due?: number; p7_held?: number; p7_cfo?: number;
+        elapsed_seconds?: number; rate_per_second?: number; estimated_p7_seconds?: number;
+        stop_reason?: string; status?: string;
+      } | null;
+    };
     task: null | {
       task_id: string; status: string; error?: string | null;
       progress?: {
@@ -648,6 +661,15 @@ export const pauseGeocoding = () =>
   requestJson<{ status: string; effective: string }>("/api/operations/geocoding/pause", undefined, { method: "POST" });
 export const resumeGeocoding = () =>
   requestJson<{ status: string; effective: string }>("/api/operations/geocoding/resume", undefined, { method: "POST" });
+export const startGeoFastDrain = () =>
+  requestJson<{ task_id: string; status: string }>("/api/operations/geocoding/fast-drain", undefined, { method: "POST" });
+export const fetchGeoFastDrainPlan = () =>
+  requestJson<{
+    legacy_total: number;
+    legacy_by_classification: Record<string, number>;
+    legacy_cfo: number;
+    p7_held: number;
+  }>("/api/operations/geocoding/fast-drain/plan");
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>
