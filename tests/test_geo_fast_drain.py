@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bankrotai.core import utc_now
 from bankrotai.db import Base, GeoFailure, ProcessedLot
+from bankrotai.services import geo_backfill
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.geo_fast_drain import (
     P7_HOLD_STATUS,
@@ -166,3 +167,29 @@ def test_p7_plan_is_idempotent_after_reclassification() -> None:
         reclassify_legacy_geo_backlog(session, apply=True)
         assert geo_fast_drain_plan(session)["legacy_total"] == 0
         assert geo_fast_drain_plan(session)["p7_held"] == 1
+
+
+def test_strategy_refresh_cannot_bypass_p7_held_waves() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = _lot("held-refresh-guard")
+        session.add(lot)
+        session.flush()
+        failure = _legacy_no_match()
+        failure.lot_id = lot.id
+        session.add(failure)
+        session.commit()
+        reclassify_legacy_geo_backlog(session, apply=True)
+        session.refresh(failure)
+
+        held_retry = failure.next_retry_at
+        assert failure.status == P7_HOLD_STATUS
+
+        geo_backfill._refresh_failures_for_current_strategy(session)
+        session.commit()
+        session.refresh(failure)
+
+        assert failure.status == P7_HOLD_STATUS
+        assert failure.attempt_count == 2
+        assert failure.next_retry_at == held_retry
