@@ -1,0 +1,142 @@
+name: P7 GEO fast drain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/p7-geo-fast-drain.yml'
+      - 'src/bankrotai/services/geo_fast_drain.py'
+      - 'src/bankrotai/services/geo_backfill.py'
+      - 'src/bankrotai/services/geo_resilience.py'
+      - 'src/bankrotai/tasks.py'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: p7-geo-fast-drain
+  cancel-in-progress: false
+
+jobs:
+  wait-home-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact Home production revision
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 1120); do
+            state="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50" | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then exit 0; fi
+            case "$state" in
+              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for Home deploy of $GITHUB_SHA" >&2
+          exit 1
+
+  drain:
+    needs: wait-home-deploy
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - name: Checkout P7 diagnostics
+        uses: actions/checkout@v7
+
+      - name: Require GEO runtime and disk safety
+        shell: powershell
+        run: |
+          $geo = docker ps --filter 'name=^/bankrotai-home-geocoding-worker$' --format '{{.Names}}'
+          if ($geo -ne 'bankrotai-home-geocoding-worker') { throw 'Canonical GEO worker is not running' }
+          $drive = Get-PSDrive -Name C
+          $freeGb = [math]::Round($drive.Free / 1GB, 2)
+          Write-Output "P7 disk preflight: C: has $freeGb GB free"
+          if ($freeGb -lt 10) { throw "P7 refused: C: has only $freeGb GB free; hard start floor is 10 GB" }
+          if ($freeGb -lt 15) { Write-Warning "P7 starts in low-headroom mode: $freeGb GB free; drain will pause below 8 GB" }
+
+      - name: Inspect and queue one P7 campaign
+        id: start
+        shell: powershell
+        run: |
+          $script = @'
+          import json
+          from bankrotai.db import SessionLocal
+          from bankrotai.services.geo_fast_drain import geo_fast_drain_plan
+          from bankrotai.tasks import schedule_geo_fast_drain
+
+          session = SessionLocal()
+          try:
+              plan = geo_fast_drain_plan(session)
+          finally:
+              session.close()
+          task_id = schedule_geo_fast_drain()
+          print(json.dumps({"task_id": task_id, "plan": plan}, default=str))
+          '@
+          $json = $script | docker exec -i bankrotai-home-geocoding-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Could not queue P7 GEO fast drain' }
+          $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+          $state | ConvertTo-Json -Depth 8
+          "task_id=$($state.task_id)" >> $env:GITHUB_OUTPUT
+
+      - name: Monitor controlled GEO drain
+        shell: powershell
+        env:
+          P7_TASK_ID: ${{ steps.start.outputs.task_id }}
+        run: |
+          $deadline = (Get-Date).ToUniversalTime().AddHours(3.5)
+          do {
+            $drive = Get-PSDrive -Name C
+            $freeGb = [math]::Round($drive.Free / 1GB, 2)
+            if ($freeGb -lt 8) {
+              docker exec bankrotai-home-geocoding-worker python -c "from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import set_geocoding_paused; s=SessionLocal(); set_geocoding_paused(s, True); s.commit(); s.close()"
+              throw "P7 emergency stop: C: dropped to $freeGb GB; GEO paused between batches"
+            }
+
+            $json = docker exec --env "P7_TASK_ID=$env:P7_TASK_ID" bankrotai-home-geocoding-worker python -c "import json,os; from bankrotai.db import SessionLocal,BackgroundTaskState; s=SessionLocal(); r=s.query(BackgroundTaskState).filter_by(task_id=os.environ['P7_TASK_ID']).one_or_none(); print(json.dumps(None if r is None else {'status':r.status,'progress':r.progress_json,'result':r.result_json,'error':r.error_message,'started_at':r.started_at,'finished_at':r.finished_at}, default=str)); s.close()"
+            if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Could not read P7 campaign state' }
+            $state = ($json | Select-Object -Last 1) | ConvertFrom-Json
+            if ($null -eq $state) {
+              Write-Output "P7 state not persisted yet; disk_free_gb=$freeGb"
+              Start-Sleep -Seconds 10
+              continue
+            }
+            $progress = $state.progress
+            Write-Output ("P7 status={0} phase={1} processed={2} geocoded={3} held={4} rate={5} disk_free_gb={6}" -f $state.status, $progress.phase, $progress.processed, $progress.geocoded, $progress.p7_held, $progress.rate_per_second, $freeGb)
+
+            if ($state.status -eq 'failed') { throw "P7 failed: $($state.error)" }
+            if ($state.status -eq 'completed') {
+              $result = $state.result
+              $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath "$env:RUNNER_TEMP\p7-geo-fast-drain.json" -Encoding utf8
+              $remaining = if ($null -eq $result.p7_total) { 0 } else { [int]$result.p7_total }
+              if ($remaining -gt 0) { throw "P7 stopped with $remaining historical lots still pending; stop_reason=$($result.stop_reason)" }
+              exit 0
+            }
+            Start-Sleep -Seconds 20
+          } while ((Get-Date).ToUniversalTime() -lt $deadline)
+          throw 'P7 campaign exceeded the 3.5 hour monitoring window'
+
+      - name: Report final GEO state
+        shell: powershell
+        run: |
+          $json = docker exec bankrotai-home-geocoding-worker python -c "import json; from bankrotai.db import SessionLocal; from bankrotai.services.geo_backfill import geocoding_diagnostic_report; s=SessionLocal(); r=geocoding_diagnostic_report(s); print(json.dumps({'progress':r['progress'],'failures':r['failures'],'recent_batches':r['recent_batches'],'network':r['progress'].get('network')}, default=str)); s.close()"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read final GEO diagnostics' }
+          ($json | Select-Object -Last 1) | Set-Content -LiteralPath "$env:RUNNER_TEMP\p7-geo-final.json" -Encoding utf8
+          ($json | Select-Object -Last 1) | ConvertFrom-Json | ConvertTo-Json -Depth 12
+
+      - name: Upload P7 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p7-geo-fast-drain-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\p7-geo-fast-drain.json
+            ${{ runner.temp }}\p7-geo-final.json
+          if-no-files-found: ignore
+          retention-days: 30
