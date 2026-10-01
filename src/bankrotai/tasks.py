@@ -81,6 +81,7 @@ celery_app.conf.update(
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.probe_geo_network_health_task": {"queue": _QUEUE_GEOCODING},
+        "bankrotai.tasks.geo_fast_drain_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.build_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.publish_dirty_map_dataset_task": {"queue": _QUEUE_MAP},
         "bankrotai.tasks.cleanup_old_map_datasets_task": {"queue": _QUEUE_MAP},
@@ -211,6 +212,61 @@ def geocode_pending_lots_task(self, continuation_depth: int = 0) -> dict[str, An
                 "resume": "celery-beat",
             }
     return result
+
+
+@celery_app.task(
+    bind=True,
+    name="bankrotai.tasks.geo_fast_drain_task",
+    soft_time_limit=4 * 60 * 60,
+    time_limit=5 * 60 * 60,
+)
+def geo_fast_drain_task(self) -> dict[str, Any]:
+    """Run the one-time P7 historical backlog migration and bounded fast drain."""
+    from bankrotai.services.geo_fast_drain import run_geo_fast_drain
+
+    request_id = str(self.request.id or uuid())
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    task_id = f"geo-{stamp}-p7-{request_id[:8]}"
+    return run_geo_fast_drain(SessionLocal, task_id=task_id)
+
+
+def schedule_geo_fast_drain() -> str:
+    """Queue one P7 campaign and reject overlapping campaigns."""
+    if not broker_is_available():
+        raise QueueUnavailableError("Background task queue is unavailable")
+    with session_scope() as session:
+        existing = (
+            session.query(BackgroundTaskState)
+            .filter(
+                BackgroundTaskState.task_type == "geocoding_fast_drain",
+                BackgroundTaskState.status.in_(("queued", "running")),
+            )
+            .order_by(BackgroundTaskState.created_at.desc())
+            .first()
+        )
+        if existing is not None:
+            return existing.task_id
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        task_id = f"geo-{stamp}-p7-{uuid()[:8]}"
+        session.add(
+            BackgroundTaskState(
+                task_id=task_id,
+                task_type="geocoding_fast_drain",
+                status="queued",
+                progress_json={"phase": "queued"},
+            )
+        )
+    try:
+        geo_fast_drain_task.apply_async(task_id=task_id)
+    except Exception as exc:
+        with session_scope() as session:
+            state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one_or_none()
+            if state is not None:
+                state.status = "failed"
+                state.error_message = str(exc)[:2000]
+                state.finished_at = _utc_now()
+        raise QueueUnavailableError("Background task dispatch failed") from exc
+    return task_id
 
 
 @celery_app.task(bind=True, name="bankrotai.tasks.recover_ik12_geo_task")
