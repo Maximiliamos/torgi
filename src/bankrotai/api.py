@@ -1190,6 +1190,9 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             .limit(1)
         )
         latest_data_update = max(last_complete_updates) if last_complete_updates else None
+        from bankrotai.services.operations_status import operations_host_status
+
+        host_status = operations_host_status(session)
         summary = {
             "sources": {
                 "ready": ready_sources,
@@ -1199,6 +1202,7 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 "network": source_network,
             },
             "last_update_at": latest_data_update,
+            "host": host_status,
             "map": None if current_map is None else {
                 "version": current_map.version,
                 "status": current_map.status,
@@ -1268,6 +1272,55 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             "summary": summary,
             "journal": journal[:6],
         }
+
+
+@app.post("/api/operations/sources/{source_system}/probe", dependencies=[Depends(require_admin)])
+def probe_operations_source(source_system: str):
+    """Run a bounded source health probe and queue only that source when it recovered."""
+    configured = {
+        str(spec.source_id)
+        for spec in default_source_specs()
+        if str(spec.source_id) != "tbankrot.ru"
+    }
+    if source_system not in configured:
+        raise HTTPException(status_code=404, detail="Unknown configured source")
+
+    from bankrotai.services.source_resilience import probe_source_endpoint, record_source_probe
+
+    probe = probe_source_endpoint(source_system)
+    with session_scope() as session:
+        state = record_source_probe(
+            session,
+            source_system,
+            success=bool(probe.get("success")),
+            error=probe.get("error"),
+        )
+
+    retry = None
+    if probe.get("success"):
+        try:
+            from bankrotai.tasks import automatic_nationwide_source_retry_task
+
+            queued = automatic_nationwide_source_retry_task.apply_async(
+                args=[source_system, "fast"],
+                countdown=5,
+            )
+            retry = {
+                "status": "queued",
+                "task_id": str(queued.id),
+                "countdown_seconds": 5,
+            }
+        except Exception as exc:
+            logger.exception("Could not queue source retry after manual probe for %s", source_system)
+            retry = {"status": "schedule_failed", "error": str(exc)[:500]}
+
+    return {
+        "source_system": source_system,
+        "probe": probe,
+        "circuit_state": state.get("circuit_state"),
+        "next_retry_at": state.get("next_retry_at"),
+        "retry": retry,
+    }
 
 
 @app.get("/api/tbankrot/auth/status", dependencies=[Depends(require_admin)])
