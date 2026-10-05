@@ -1113,6 +1113,9 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
             ).all()
         }
         source_health = list_source_health(session)
+        from bankrotai.services.source_resilience import source_global_network_state
+
+        source_network = source_global_network_state(session)
         configured_source_systems = {str(spec.source_id) for spec in default_source_specs()}
         source_items: list[dict[str, Any]] = []
         ready_sources = 0
@@ -1193,6 +1196,7 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                 "total": active_source_total,
                 "paused": sum(1 for item in source_items if item["paused"]),
                 "items": source_items,
+                "network": source_network,
             },
             "last_update_at": latest_data_update,
             "map": None if current_map is None else {
