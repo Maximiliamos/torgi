@@ -956,16 +956,23 @@ def _run_automatic_nationwide_refresh(
 
     try:
         result = nationwide_lot_sync_task.run(run_id, mode)
-        if result.get("status") != "failed":
-            response = {"run_id": run_id, **result}
-            if result.get("status") == "partial":
-                source_retries = _schedule_partial_source_retries(result, source_mode="fast" if mode == "fast" else "full")
-                if source_retries:
-                    response["targeted_source_retries"] = source_retries
-            return response
-        raise RuntimeError("Nationwide source refresh completed with failed status")
+        response = {"run_id": run_id, **result}
+        if result.get("status") in {"partial", "failed"}:
+            source_mode = "fast" if mode == "fast" or mode.startswith("source-fast:") else "full"
+            source_retries = _schedule_partial_source_retries(
+                result,
+                source_mode=source_mode,
+            )
+            if source_retries:
+                response["targeted_source_retries"] = source_retries
+        return response
     except Exception as exc:
-        _retry_automatic_refresh(task, exc)
+        # Completed source failures are handled above by category-aware targeted
+        # retry/circuit logic. Only orchestration-level transient failures get a
+        # Celery retry; internal/database errors fail loudly.
+        if _is_transient_sync_error(exc):
+            _retry_automatic_refresh(task, exc)
+        raise
 
 
 def _retry_automatic_refresh(
