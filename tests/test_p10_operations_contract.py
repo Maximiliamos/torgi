@@ -24,3 +24,12 @@ def test_p10_runner_workflow_persists_status_without_checkout_dependency() -> No
     assert "record_operations_snapshot" in text
     assert "actions/checkout" not in text
     assert "bankrotai-home-map-worker" in text
+
+def test_p10_backup_snapshot_uses_canonical_d_drive_and_single_verified_copy() -> None:
+    text = (ROOT / "scripts" / "backup-home-postgres.ps1").read_text(encoding="utf-8")
+
+    assert "Destination = 'D:\\BankrotAI\\dr-backups'" in text
+    assert "RetainCount = 1" in text
+    assert "restoreStatus -ne 'passed'" in text
+    assert "Retention skipped because the new backup has not passed isolated restore verification." in text
+
