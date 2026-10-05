@@ -106,23 +106,28 @@ def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
     assert captured["specs"][0].reconcile_missing is True
 
 
-def test_completed_ingestion_survives_map_build_queue_failure(monkeypatch) -> None:
+def test_completed_ingestion_survives_map_dirty_mark_failure(monkeypatch) -> None:
+    class FakeRedis:
+        def close(self):
+            pass
+
     monkeypatch.setattr(
         tasks,
         "run_nationwide_sync",
         lambda *_args: {"status": "success", "sources": [{"items_inserted": 1}]},
     )
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_args, **_kwargs: FakeRedis())
     monkeypatch.setattr(
-        tasks.build_map_dataset_task,
-        "delay",
-        lambda: (_ for _ in ()).throw(ConnectionError("queue unavailable")),
+        tasks,
+        "_mark_map_dirty",
+        lambda _client: (_ for _ in ()).throw(ConnectionError("redis unavailable")),
     )
 
     result = tasks.nationwide_lot_sync_task.run("run-without-database-row", "source:bidexpert.ru")
 
     assert result["status"] == "success"
-    assert result["map_dataset_build"]["status"] == "schedule_failed"
-    assert "queue unavailable" in result["map_dataset_build"]["error"]
+    assert result["map_dataset_build"]["status"] == "dirty_mark_failed"
+    assert "redis unavailable" in result["map_dataset_build"]["error"]
 
 
 def test_source_only_schedule_uses_schema_safe_trigger_type(monkeypatch) -> None:
