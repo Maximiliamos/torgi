@@ -83,6 +83,7 @@ celery_app.conf.update(
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_lot_refresh_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_source_retry_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.probe_source_network_health_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
@@ -134,6 +135,11 @@ celery_app.conf.update(
             "schedule": crontab(hour=3, minute=7),
             "args": ("full",),
             "options": {"expires": 3_600},
+        },
+        "probe-source-network-health": {
+            "task": "bankrotai.tasks.probe_source_network_health_task",
+            "schedule": 60.0,
+            "options": {"expires": 45},
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
@@ -564,8 +570,26 @@ def _source_is_paused(source_system: str) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _source_is_circuit_blocked(source_system: str) -> bool:
+    try:
+        from bankrotai.services.source_resilience import source_circuit_blocks
+
+        with session_scope() as session:
+            return bool(source_circuit_blocks(session, source_system))
+    except Exception:
+        logger.exception("Could not read source circuit state for %s", source_system)
+        # Fail open here: the ingestion layer remains fail-closed for reconciliation,
+        # while a telemetry/storage problem must not silently disable all sources.
+        return False
+
+
 def _unpaused_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
-    return tuple(spec for spec in specs if not _source_is_paused(str(spec.source_id)))
+    return tuple(
+        spec
+        for spec in specs
+        if not _source_is_paused(str(spec.source_id))
+        and not _source_is_circuit_blocked(str(spec.source_id))
+    )
 
 
 def _failed_source_systems(result: dict[str, Any]) -> tuple[str, ...]:
@@ -584,24 +608,53 @@ def _schedule_partial_source_retries(
     result: dict[str, Any],
     *,
     source_mode: str,
-) -> list[dict[str, str | int]]:
-    """Retry failed sources in the originating scope; successful peers stay out."""
-    scheduled: list[dict[str, str | int]] = []
+) -> list[dict[str, Any]]:
+    """Retry only failed sources using the source-specific resilience decision."""
+    from bankrotai.services.source_resilience import source_retry_decision
+
+    scheduled: list[dict[str, Any]] = []
+    failed_records = {
+        str(source.get("source_system")): source
+        for source in result.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("status") == "failed"
+        and source.get("source_system")
+    }
     for source_system in _failed_source_systems(result):
         if _source_is_paused(source_system):
             scheduled.append({"source_system": source_system, "status": "skipped", "reason": "source_paused"})
             continue
+        source_record = failed_records.get(source_system) or {}
+        with session_scope() as session:
+            decision = source_retry_decision(
+                session,
+                source_system,
+                error=source_record.get("error"),
+            )
+        if not decision.get("schedule"):
+            scheduled.append(
+                {
+                    "source_system": source_system,
+                    "status": "skipped",
+                    "reason": str(decision.get("reason") or "not_retryable"),
+                    "circuit_state": decision.get("circuit_state"),
+                    "next_retry_at": decision.get("next_retry_at"),
+                }
+            )
+            continue
+        countdown = max(1, int(decision.get("countdown_seconds") or _PARTIAL_SOURCE_RETRY_DELAY_SECONDS))
         try:
             queued = automatic_nationwide_source_retry_task.apply_async(
                 args=[source_system, source_mode],
-                countdown=_PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+                countdown=countdown,
             )
             scheduled.append(
                 {
                     "source_system": source_system,
                     "status": "queued",
                     "task_id": str(queued.id),
-                    "countdown_seconds": _PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+                    "countdown_seconds": countdown,
+                    "error_category": decision.get("last_error_category"),
                 }
             )
         except Exception as exc:
@@ -786,6 +839,45 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         raise
 
 
+@celery_app.task(name="bankrotai.tasks.probe_source_network_health_task")
+def probe_source_network_health_task() -> dict[str, Any]:
+    """Probe only source circuits whose cooldown elapsed; never run a full sync."""
+    from bankrotai.services.source_resilience import (
+        probe_source_endpoint,
+        record_source_probe,
+        sources_due_for_probe,
+    )
+
+    with session_scope() as session:
+        due = sources_due_for_probe(session)
+
+    results: list[dict[str, Any]] = []
+    for source_system in due:
+        if _source_is_paused(source_system):
+            results.append(
+                {"source_system": source_system, "status": "skipped", "reason": "source_paused"}
+            )
+            continue
+        probe = probe_source_endpoint(source_system)
+        with session_scope() as session:
+            state = record_source_probe(
+                session,
+                source_system,
+                success=bool(probe.get("success")),
+                error=probe.get("error"),
+            )
+        results.append(
+            {
+                "source_system": source_system,
+                "status": "recovered" if probe.get("success") else "degraded",
+                "probe": probe,
+                "circuit_state": state.get("circuit_state"),
+                "next_retry_at": state.get("next_retry_at"),
+            }
+        )
+    return {"checked": len(due), "results": results}
+
+
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
@@ -815,6 +907,8 @@ def automatic_nationwide_source_retry_task(self, source_system: str, source_mode
     """Bound a retry of one failed source without re-running successful peers."""
     if _source_is_paused(source_system):
         return {"status": "skipped", "reason": "source_paused", "source_system": source_system}
+    if _source_is_circuit_blocked(source_system):
+        return {"status": "skipped", "reason": "source_circuit_open", "source_system": source_system}
     if source_mode == "fast":
         mode = f"source-fast:{source_system}"
         # Validation occurs in nationwide_lot_sync_task, after it computes the
