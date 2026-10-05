@@ -279,8 +279,8 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
             "status": "partial",
             "sources": [
                 {"source_system": "torgi.gov.ru", "status": "success"},
-                {"source_system": "bidexpert.ru", "status": "failed"},
-                {"source_system": "bidexpert.ru", "status": "failed"},
+                {"source_system": "bidexpert.ru", "status": "failed", "error": "HTTP 503 connection timeout"},
+                {"source_system": "bidexpert.ru", "status": "failed", "error": "HTTP 503 connection timeout"},
             ],
         },
     )
@@ -299,8 +299,21 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
             "status": "queued",
             "task_id": "source-retry-1",
             "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+            "error_category": "read_timeout",
         }
     ]
+
+
+def test_targeted_source_retry_skips_while_circuit_is_open(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_source_is_circuit_blocked", lambda source: source == "bidexpert.ru")
+
+    result = tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "fast")
+
+    assert result == {
+        "status": "skipped",
+        "reason": "source_circuit_open",
+        "source_system": "bidexpert.ru",
+    }
 
 
 def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) -> None:
