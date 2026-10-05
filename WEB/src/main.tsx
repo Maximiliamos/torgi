@@ -6,7 +6,7 @@ import {
   NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
-  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
+  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
   fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, fetchOperationsProgress, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, resumeGeocoding, saveParticipation, searchOnline,
@@ -179,15 +179,22 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
   const [sources, setSources] = React.useState<SourceHealth[]>([]);
   const [operations, setOperations] = React.useState<OperationsProgress | null>(null);
   const [diagnostics, setDiagnostics] = React.useState<Record<string, unknown> | null>(null);
+  const [backgroundJobs, setBackgroundJobs] = React.useState(false);
   const [error, setError] = React.useState("");
   const [action, setAction] = React.useState("");
 
   const load = React.useCallback(async () => {
     try {
-      const [q, s, o] = await Promise.all([fetchQuality(), fetchSources(), fetchOperationsProgress()]);
+      const [q, s, o, capabilities] = await Promise.all([
+        fetchQuality(),
+        fetchSources(),
+        fetchOperationsProgress(),
+        fetchCapabilities(),
+      ]);
       setQuality(q);
       setSources(s);
       setOperations(o);
+      setBackgroundJobs(Boolean(capabilities.background_jobs));
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -233,11 +240,14 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         <article data-health={backupHealthy ? "ok" : "bad"}><span>Backup</span><strong>{backupHealthy ? "OK" : "Требует внимания"}</strong><small>{host?.backup_age_hours != null ? `${host.backup_age_hours.toFixed(1)} ч назад` : "нет свежего статуса"}</small></article>
         <article data-health={runnerHealthy ? "ok" : "bad"}><span>Runner</span><strong>{runnerHealthy ? "Online" : "Нет свежей проверки"}</strong><small>{host?.runner_age_seconds != null ? `${Math.round(host.runner_age_seconds)} сек назад` : "диагностика не записана"}</small></article>
       </div>
-      {role === "admin" && <div className="operationsActions">
-        <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Пауза GEO</button>
-        <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
+      <div className="operationsActions">
+        {role === "admin" && backgroundJobs && <>
+          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Пауза GEO</button>
+          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
+        </>}
         <button className="secondaryButton" disabled={Boolean(action)} onClick={() => void load()}><RefreshCcw size={15} />Обновить</button>
-      </div>}
+        {role === "admin" && !backgroundJobs && <small className="operationsReadOnlyNote">Операционные действия скрыты: этот API работает в read-only режиме.</small>}
+      </div>
     </div>
 
     <div className="pageCard">
@@ -254,7 +264,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
             <small>Последний проход: {source.last_pages_scanned} стр. · +{source.last_items_inserted} / Δ{source.last_items_updated} / архив {source.last_items_archived} / ошибок {source.last_items_failed}</small>
             {source.last_error && <small>{source.last_error_category || "ошибка"}: {source.last_error}</small>}
           </div>
-          {role === "admin" && <button className="secondaryButton sourceProbeButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.source_system}`, () => probeSourceHealth(source.source_system))}>Probe</button>}
+          {role === "admin" && backgroundJobs && <button className="secondaryButton sourceProbeButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.source_system}`, () => probeSourceHealth(source.source_system))}>Probe</button>}
         </article>;
       })}</div>
     </div>
@@ -268,7 +278,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         <div><span>Network wait</span><strong>{geo?.network_wait ?? "—"}</strong></div>
       </div>
       <div className="operationsJournal">{operations?.journal?.map((item, index) => <article key={`${item.kind}-${item.title}-${index}`}><span className={item.status === "completed" || item.status === "success" ? "healthBadge ok" : "healthBadge"}>{item.status}</span><div><strong>{item.title}</strong><small>{item.detail}</small>{item.at && <small>{new Date(item.at).toLocaleString("ru-RU")}</small>}</div></article>)}</div>
-      <button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>
+      {role === "admin" && <button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>}
       {diagnostics && <pre className="diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>}
       {error && <State error>{error}</State>}
     </div>
