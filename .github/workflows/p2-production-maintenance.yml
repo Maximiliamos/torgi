@@ -36,8 +36,11 @@ jobs:
         run: |
           $apply = '${{ github.event_name }}' -eq 'schedule'
           if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.apply }}' -eq 'true') { $apply = $true }
+          $applyMapRetention = $apply -or ('${{ github.event_name }}' -eq 'workflow_run')
           if ($apply) {
             .\scripts\p2-production-maintenance.ps1 -Apply -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
+          } elseif ($applyMapRetention) {
+            .\scripts\p2-production-maintenance.ps1 -ApplyMapRetention -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
           } else {
             .\scripts\p2-production-maintenance.ps1 -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
           }
