@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pytest
 from celery.exceptions import Retry
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from bankrotai import api, tasks
+from bankrotai.db import Base, BackgroundTaskState
 from bankrotai.auth import AuthenticatedUser
 from bankrotai.services.ingestion import SyncAlreadyRunningError
 
