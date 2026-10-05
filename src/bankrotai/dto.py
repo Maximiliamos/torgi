@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,6 +20,15 @@ class SourceHealthDTO(AppDTO):
     last_failure_at: datetime | None = None
     last_error: str | None = None
     last_error_category: str | None = None
+    circuit_state: str = "closed"
+    circuit_open_until: datetime | None = None
+    next_retry_at: datetime | None = None
+    retryable: bool = False
+    operational_failure: bool = False
+    consecutive_operational_failures: int = 0
+    last_probe_at: datetime | None = None
+    last_probe_success_at: datetime | None = None
+    network_fingerprint: dict[str, Any] | None = None
     freshness_status: str = "unknown"
     coverage_status: str = "unknown"
     freshness_age_seconds: int | None = None
