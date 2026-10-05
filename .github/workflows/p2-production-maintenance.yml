@@ -25,7 +25,7 @@ jobs:
   maintain:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 45
+    timeout-minutes: 120
     outputs:
       warning_count: ${{ steps.maintenance.outputs.warning_count }}
     steps:
@@ -36,8 +36,11 @@ jobs:
         run: |
           $apply = '${{ github.event_name }}' -eq 'schedule'
           if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.apply }}' -eq 'true') { $apply = $true }
+          $applyMapRetention = $apply -or ('${{ github.event_name }}' -eq 'workflow_run')
           if ($apply) {
             .\scripts\p2-production-maintenance.ps1 -Apply -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
+          } elseif ($applyMapRetention) {
+            .\scripts\p2-production-maintenance.ps1 -ApplyMapRetention -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
           } else {
             .\scripts\p2-production-maintenance.ps1 -OutputPath "$env:RUNNER_TEMP\p2-maintenance.json"
           }

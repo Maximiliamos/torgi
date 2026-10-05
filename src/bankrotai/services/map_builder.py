@@ -6,7 +6,7 @@ import logging
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import delete, func, select, text, update
@@ -27,7 +27,7 @@ from bankrotai.services.map_bundle_store import (
     normalize_map_region_code,
     publish_dataset_to_regional_bundles,
 )
-from bankrotai.services.map_dataset_version import build_map_dataset_version
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -64,21 +64,74 @@ def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
     }
 
 
+
+def map_source_fingerprint(session: Session) -> str:
+    """Return a cheap durable signature for map-affecting source state.
+
+    The signature intentionally avoids scanning map_tiles. ProcessedLot.last_update
+    changes on ordinary ORM updates, while row count/id sum cover membership
+    changes. Geo observation time gives an additional guard for coordinate writes.
+    """
+    row = session.execute(
+        select(
+            func.count(ProcessedLot.id),
+            func.coalesce(func.sum(ProcessedLot.id), 0),
+            func.max(ProcessedLot.last_update),
+            func.max(ProcessedLot.current_geo_observed_at),
+        ).where(
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.is_archived.is_(False),
+            ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
+            ProcessedLot.current_geo_lon.between(-180.0, 180.0),
+        )
+    ).one()
+    count, id_sum, last_update, last_geo = row
+    settings = get_settings()
+    payload = "|".join(
+        (
+            MAP_DATASET_REVISION,
+            "1" if settings.map_object_store_enabled else "0",
+            settings.map_object_store_layout,
+            str(int(count or 0)),
+            str(int(id_sum or 0)),
+            last_update.isoformat() if last_update is not None else "",
+            last_geo.isoformat() if last_geo is not None else "",
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 def cleanup_map_datasets(
     session_factory: Callable[[], Session],
     *,
-    retain_previous_ready: int = 1,
-    min_age_hours: int = 168,
+    retain_previous_ready: int = 2,
+    min_age_hours: int = 1,
+    building_min_age_hours: int = 6,
     apply: bool = False,
     now: datetime | None = None,
 ) -> dict:
-    """Find or remove old non-current map versions under the publisher lock."""
+    """Find or remove obsolete non-current map versions under the publisher lock.
+
+    Ready versions are bounded by count (current + rollback copies), rather than
+    by age, so frequent publications cannot grow storage without bound. Failed
+    and rejected builds retain a short diagnostic grace period, while abandoned
+    building rows get a longer grace period to avoid racing a live build.
+    """
     if retain_previous_ready < 1:
         raise ValueError("retain_previous_ready must preserve at least one rollback dataset")
     if min_age_hours < 1:
         raise ValueError("min_age_hours must be positive")
-    reference_time = now or datetime.now(timezone.utc).replace(tzinfo=None)
-    cutoff = reference_time.timestamp() - min_age_hours * 3600
+    if building_min_age_hours < 1:
+        raise ValueError("building_min_age_hours must be positive")
+    # A caller may raise the general retention grace without also overriding the
+    # building grace. Never let an in-progress build become eligible earlier
+    # than failed/rejected datasets; clamp it upward instead of rejecting an
+    # otherwise safe legacy call.
+    building_min_age_hours = max(int(building_min_age_hours), int(min_age_hours))
+    reference_time = now or datetime.now(timezone.utc)
+    if reference_time.tzinfo is not None:
+        reference_time = reference_time.astimezone(timezone.utc).replace(tzinfo=None)
+    stale_cutoff = reference_time - timedelta(hours=min_age_hours)
+    building_cutoff = reference_time - timedelta(hours=building_min_age_hours)
     with session_factory() as session:
         if session.get_bind().dialect.name == "postgresql":
             session.execute(
@@ -90,31 +143,42 @@ def cleanup_map_datasets(
             .where(MapDataset.is_current.is_(False))
             .order_by(MapDataset.published_at.desc(), MapDataset.created_at.desc(), MapDataset.id.desc())
         ).all()
-        rollback_ids = {
-            dataset.id
-            for dataset in [item for item in datasets if item.status == "ready" and item.published_at is not None][
-                :retain_previous_ready
-            ]
-        }
-        candidates = [
-            dataset
-            for dataset in datasets
-            if dataset.id not in rollback_ids
-            and dataset.created_at.timestamp() <= cutoff
-            and dataset.status in {"ready", "failed", "rejected", "building"}
-        ]
+        rollback_ready = [
+            item for item in datasets
+            if item.status == "ready" and item.published_at is not None
+        ][:retain_previous_ready]
+        rollback_ids = {dataset.id for dataset in rollback_ready}
+
+        def is_candidate(dataset: MapDataset) -> bool:
+            if dataset.id in rollback_ids:
+                return False
+            if dataset.status == "ready":
+                # Count-based retention is the hard storage bound. Once a newer
+                # rollback set exists, older ready datasets are redundant.
+                return True
+            created = dataset.created_at
+            if created.tzinfo is not None:
+                created = created.astimezone(timezone.utc).replace(tzinfo=None)
+            if dataset.status in {"failed", "rejected"}:
+                return created <= stale_cutoff
+            if dataset.status == "building":
+                return created <= building_cutoff
+            return False
+
+        candidates = [dataset for dataset in datasets if is_candidate(dataset)]
         candidate_ids = [dataset.id for dataset in candidates]
-        # Retention diagnostics must stay cheap even when hundreds of historical
-        # datasets exist. MapDataset.tile_count is written at build time and is
-        # sufficient for planning/telemetry; counting millions of map_tiles here
-        # can exceed PostgreSQL statement_timeout and block maintenance.
         candidate_tiles = sum(int(dataset.tile_count or 0) for dataset in candidates)
         result = {
             "dry_run": not apply,
             "retained_previous_ready": len(rollback_ids),
+            "retained_previous_ready_versions": [dataset.version for dataset in rollback_ready],
             "candidate_dataset_count": len(candidates),
             "candidate_tile_count": candidate_tiles,
             "candidate_versions": [dataset.version for dataset in candidates],
+            "candidate_status_counts": {
+                status: sum(1 for dataset in candidates if dataset.status == status)
+                for status in ("ready", "failed", "rejected", "building")
+            },
         }
         if apply and candidate_ids:
             # A single DELETE for millions of tile rows exceeds the production
@@ -140,7 +204,6 @@ def cleanup_map_datasets(
         else:
             session.rollback()
         return result
-
 
 def tile_xy(lat: float, lon: float, zoom: int) -> tuple[int, int]:
     scale = 1 << zoom
