@@ -919,4 +919,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .operationsSources article { grid-template-columns:12px minmax(0,1fr); }
   .sourceProbeButton { grid-column:2;justify-self:start; }
 }
-
+.operationsReadOnlyNote { color:#667085;display:inline-flex;font-size:11px;line-height:1.35;max-width:360px; }
