@@ -103,8 +103,11 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Wait for the same main revision on the home origin" in backup
     assert "Verify C temp headroom and D backup capacity" in backup
     assert "Decide whether the 48-hour backup is due" in backup
-    assert "minimumFreeGb = 20" in backup
+    assert "$requiredGb = [math]::Max(30, $estimatedGb)" in backup
     assert "Backup refused: C: has only" in backup
+    assert "Backup refused: D: has only" in backup
+    assert "'${{ github.event_name }}' -eq 'schedule'" in backup
+    assert "'\\${{ github.event_name }}'" not in backup
     assert "restore_verification -eq 'passed'" in backup
     assert "Emergency runner recovery before checkout" in deploy
     assert "AUTO_MERGE.lock" in deploy
