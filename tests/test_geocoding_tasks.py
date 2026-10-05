@@ -152,8 +152,24 @@ def test_heavy_tasks_use_isolated_queues() -> None:
 def test_dirty_map_publication_is_coalesced(monkeypatch) -> None:
     import redis
 
-    FakeRedis.values = {tasks._MAP_DIRTY_KEY: "1"}
+    class EmptySession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalar(self, *_args, **_kwargs):
+            return None
+
+    FakeRedis.values = {
+        tasks._MAP_DIRTY_KEY: "1",
+        tasks._MAP_DIRTY_SINCE_KEY: "1",
+        tasks._MAP_DIRTY_LAST_CHANGE_KEY: "1",
+    }
     monkeypatch.setattr(redis, "Redis", FakeRedis)
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: EmptySession())
+    monkeypatch.setattr(tasks.time, "time", lambda: 10_000)
     monkeypatch.setattr(tasks, "_schedule_map_dataset_build", lambda: {"status": "queued", "task_id": "map-1"})
 
     assert tasks.publish_dirty_map_dataset_task.run()["status"] == "queued"
