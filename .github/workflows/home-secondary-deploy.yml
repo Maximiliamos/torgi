@@ -447,7 +447,10 @@ jobs:
           }
 
           if (-not $schemaAtHead) {
-          $backupRoot = Join-Path $env:CONFIG_ROOT 'db-backups'
+          $backupRoot = 'D:\BankrotAI\db-backups'
+          if (-not (Get-PSDrive -Name D -ErrorAction SilentlyContinue)) {
+            throw 'Pre-migration backup refused: D: drive is not available'
+          }
           New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
           $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
           docker exec $env:POSTGRES_CONTAINER pg_dump `
@@ -466,7 +469,7 @@ jobs:
 
           Get-ChildItem -LiteralPath $backupRoot -Filter 'pre-migration-*.dump' -File |
             Sort-Object LastWriteTime -Descending |
-            Select-Object -Skip 5 |
+            Select-Object -Skip 1 |
             Remove-Item -Force
 
           docker run --rm `

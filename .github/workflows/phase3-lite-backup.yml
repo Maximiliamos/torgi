@@ -121,6 +121,34 @@ jobs:
           if ($meta.restore_verification -ne 'passed') { throw "Latest D: backup is not restore-verified: $($meta.restore_verification)" }
           Copy-Item $latest.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force
 
+      - name: Remove superseded C backup roots after verified D backup
+        if: steps.cadence.outputs.due == 'true'
+        shell: powershell
+        run: |
+          $root = 'D:\BankrotAI\dr-backups'
+          $latest = Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $latest) { throw 'Refusing C backup cleanup: verified D metadata is missing' }
+          $meta = Get-Content -LiteralPath $latest.FullName -Raw | ConvertFrom-Json
+          if ($meta.restore_verification -ne 'passed' -or -not $meta.backup_file -or -not (Test-Path -LiteralPath ([string]$meta.backup_file))) {
+            throw 'Refusing C backup cleanup: latest D backup is not restore-verified'
+          }
+          $actual = (Get-FileHash -LiteralPath ([string]$meta.backup_file) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne ([string]$meta.sha256).ToLowerInvariant()) {
+            throw 'Refusing C backup cleanup: latest D backup checksum mismatch'
+          }
+          foreach ($legacy in @(
+            'C:\BankrotAI\backups\postgres',
+            'C:\ProgramData\BankrotAI\backups',
+            'C:\ProgramData\BankrotAI\dr-backups',
+            'C:\ProgramData\BankrotAI\db-backups'
+          )) {
+            if (Test-Path -LiteralPath $legacy) {
+              Write-Output "Removing superseded backup root: $legacy"
+              Remove-Item -LiteralPath $legacy -Recurse -Force
+            }
+          }
+
       - name: Upload backup metadata
         if: always()
         uses: actions/upload-artifact@v7

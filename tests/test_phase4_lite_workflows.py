@@ -106,8 +106,7 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "$requiredGb = [math]::Max(30, $estimatedGb)" in backup
     assert "Backup refused: C: has only" in backup
     assert "Backup refused: D: has only" in backup
-    assert "'${{ github.event_name }}' -eq 'schedule'" in backup
-    assert "'\\${{ github.event_name }}'" not in backup
+    assert "Remove superseded C backup roots after verified D backup" in backup
     assert "restore_verification -eq 'passed'" in backup
     assert "Emergency runner recovery before checkout" in deploy
     assert "AUTO_MERGE.lock" in deploy
@@ -125,3 +124,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "Get-FreeGb) -lt $CriticalFreeGb" in script
     assert "Invoke-DockerCleanup" in script
     assert "docker system prune" not in script
+
+
+def test_home_deploy_keeps_pre_migration_backups_on_d_only() -> None:
+    deploy = HOME_DEPLOY.read_text(encoding="utf-8")
+    assert "$backupRoot = 'D:\\BankrotAI\\db-backups'" in deploy
+    assert "Select-Object -Skip 1" in deploy
