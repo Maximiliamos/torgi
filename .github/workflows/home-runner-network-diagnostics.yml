@@ -11,16 +11,78 @@ jobs:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - name: Diagnose runner to GitHub Actions network path
+      - name: Diagnose GitHub Actions route without marketplace actions
         shell: powershell
         run: |
-          .\scripts\home-runner-network-diagnostics.ps1 -OutputPath "$env:RUNNER_TEMP\home-runner-network.json"
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: home-runner-network-${{ github.run_id }}
-          path: ${{ runner.temp }}\home-runner-network.json
-          if-no-files-found: ignore
-          retention-days: 14
+          $ErrorActionPreference = 'Continue'
+          $hosts = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+          @(
+            'github.com',
+            'api.github.com',
+            'codeload.github.com',
+            'pipelines.actions.githubusercontent.com',
+            'results-receiver.actions.githubusercontent.com',
+            'objects.githubusercontent.com'
+          ) | ForEach-Object { [void]$hosts.Add($_) }
+
+          $runnerRoot = 'C:\BankrotAI\actions-runner'
+          $latestLog = Get-ChildItem (Join-Path $runnerRoot '_diag\Runner_*.log') -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($latestLog) {
+            Get-Content -LiteralPath $latestLog.FullName -Tail 500 -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                foreach ($match in [regex]::Matches($_, 'https://([A-Za-z0-9.-]+\.actions\.githubusercontent\.com)')) {
+                  [void]$hosts.Add($match.Groups[1].Value)
+                }
+              }
+          }
+
+          $service = Get-Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'actions.runner*' -or $_.DisplayName -like '*GitHub Actions*' } |
+            Select-Object -First 1
+          $vpnHints = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            $_.Status -eq 'Up' -and (
+              $_.Name -match '(?i)(xray|vpn|tun|tap|wireguard|wintun|happ)' -or
+              $_.InterfaceDescription -match '(?i)(xray|vpn|tun|tap|wireguard|wintun|happ)'
+            )
+          } | Select-Object Name,InterfaceDescription,InterfaceIndex,Status)
+
+          $endpoints = @()
+          foreach ($hostName in ($hosts | Sort-Object)) {
+            $dnsOk = $false
+            try {
+              $dnsOk = @(Resolve-DnsName -Name $hostName -Type A -ErrorAction Stop | Where-Object IPAddress).Count -gt 0
+            } catch {}
+            $tcp = Test-NetConnection $hostName -Port 443 -WarningAction SilentlyContinue
+            $httpsOk = $false
+            $httpsError = $null
+            try {
+              Invoke-WebRequest -Uri ("https://{0}/" -f $hostName) -Method Head -TimeoutSec 20 -UseBasicParsing | Out-Null
+              $httpsOk = $true
+            } catch {
+              if ($_.Exception.Response) { $httpsOk = $true } else { $httpsError = $_.Exception.Message }
+            }
+            $endpoints += [ordered]@{
+              host = $hostName
+              dns_ok = $dnsOk
+              tcp_443_ok = [bool]$tcp.TcpTestSucceeded
+              interface_alias = $tcp.InterfaceAlias
+              source_address = [string]$tcp.SourceAddress
+              https_ok = $httpsOk
+              https_error = $httpsError
+            }
+          }
+
+          $failed = @($endpoints | Where-Object { -not $_.dns_ok -or -not $_.tcp_443_ok -or -not $_.https_ok })
+          [ordered]@{
+            checked_at = (Get-Date).ToUniversalTime().ToString('o')
+            healthy = $failed.Count -eq 0
+            service_status = if ($service) { [string]$service.Status } else { 'missing' }
+            vpn_hints = $vpnHints
+            endpoints = $endpoints
+            failed_endpoint_count = $failed.Count
+            likely_route_interference = [bool]($vpnHints.Count -gt 0 -and $failed.Count -gt 0)
+          } | ConvertTo-Json -Depth 8
+
+          if ($failed.Count -gt 0) { exit 2 }
