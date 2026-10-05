@@ -123,6 +123,7 @@ def build_phase3_health(
         source
         for source in sources
         if source.freshness_status in {"fresh", "running", "delayed"}
+        and source.circuit_state == "closed"
     ]
     add(
         "source-data-availability",
@@ -146,6 +147,21 @@ def build_phase3_health(
             freshness_age_seconds=source.freshness_age_seconds,
             last_success_at=source.last_success_at,
             last_error_category=source.last_error_category,
+            circuit_state=source.circuit_state,
+            circuit_open_until=source.circuit_open_until,
+            next_retry_at=source.next_retry_at,
+        )
+        add(
+            f"source-circuit:{source.source_system}",
+            source.circuit_state == "closed",
+            severity="warning",
+            circuit_state=source.circuit_state,
+            circuit_open_until=source.circuit_open_until,
+            next_retry_at=source.next_retry_at,
+            last_error_category=source.last_error_category,
+            consecutive_operational_failures=source.consecutive_operational_failures,
+            last_probe_at=source.last_probe_at,
+            last_probe_success_at=source.last_probe_success_at,
         )
         add(
             f"source-coverage:{source.source_system}",
