@@ -71,12 +71,15 @@ def cleanup_map_datasets(
     min_age_hours: int = 168,
     apply: bool = False,
     now: datetime | None = None,
+    tile_delete_chunk_size: int = 500,
 ) -> dict:
     """Find or remove old non-current map versions under the publisher lock."""
     if retain_previous_ready < 1:
         raise ValueError("retain_previous_ready must preserve at least one rollback dataset")
     if min_age_hours < 1:
         raise ValueError("min_age_hours must be positive")
+    if tile_delete_chunk_size < 1:
+        raise ValueError("tile_delete_chunk_size must be positive")
     reference_time = now or datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = reference_time.timestamp() - min_age_hours * 3600
     with session_factory() as session:
@@ -117,26 +120,52 @@ def cleanup_map_datasets(
             "candidate_versions": [dataset.version for dataset in candidates],
         }
         if apply and candidate_ids:
-            # A single DELETE for millions of tile rows exceeds the production
-            # statement timeout. Small transactions keep the API responsive and
-            # remain restartable: already removed candidates simply disappear
-            # from the next dry-run.
+            # A production timeout proved that deleting five complete datasets
+            # can still touch too many map_tiles in one statement. Delete one
+            # dataset at a time and bound every tile DELETE by primary-key
+            # chunks. Each chunk commits independently, so retention is
+            # restartable after interruption or statement_timeout.
             deleted_dataset_count = 0
             deleted_tile_count = 0
-            for offset in range(0, len(candidate_ids), 5):
-                batch_ids = candidate_ids[offset : offset + 5]
+            tile_delete_batches = 0
+            for dataset_id in candidate_ids:
+                while True:
+                    if session.get_bind().dialect.name == "postgresql":
+                        session.execute(
+                            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                            {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
+                        )
+                    tile_ids = list(
+                        session.scalars(
+                            select(MapTile.id)
+                            .where(MapTile.dataset_id == dataset_id)
+                            .order_by(MapTile.id)
+                            .limit(tile_delete_chunk_size)
+                        )
+                    )
+                    if not tile_ids:
+                        session.rollback()
+                        break
+                    deleted_tiles = (
+                        session.execute(delete(MapTile).where(MapTile.id.in_(tile_ids))).rowcount or 0
+                    )
+                    session.commit()
+                    deleted_tile_count += int(deleted_tiles)
+                    tile_delete_batches += 1
+
                 if session.get_bind().dialect.name == "postgresql":
                     session.execute(
                         text("SELECT pg_advisory_xact_lock(:lock_key)"),
                         {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
                     )
-                deleted_tiles = session.execute(delete(MapTile).where(MapTile.dataset_id.in_(batch_ids))).rowcount or 0
-                deleted_datasets = session.execute(delete(MapDataset).where(MapDataset.id.in_(batch_ids))).rowcount or 0
+                deleted_datasets = (
+                    session.execute(delete(MapDataset).where(MapDataset.id == dataset_id)).rowcount or 0
+                )
                 session.commit()
-                deleted_tile_count += int(deleted_tiles)
                 deleted_dataset_count += int(deleted_datasets)
             result["deleted_tile_count"] = deleted_tile_count
             result["deleted_dataset_count"] = deleted_dataset_count
+            result["tile_delete_batches"] = tile_delete_batches
         else:
             session.rollback()
         return result
