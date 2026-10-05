@@ -68,7 +68,7 @@ jobs:
         run: |
           $root = 'D:\BankrotAI\dr-backups'
           $due = $true
-          if ('\${{ github.event_name }}' -eq 'schedule' -and (Test-Path -LiteralPath $root)) {
+          if ('${{ github.event_name }}' -eq 'schedule' -and (Test-Path -LiteralPath $root)) {
             $latestVerified = Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
               Sort-Object LastWriteTimeUtc -Descending |
               ForEach-Object {
