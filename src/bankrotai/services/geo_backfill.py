@@ -24,6 +24,7 @@ from bankrotai.geo import (
     IK12_GEOCODER,
     apply_lot_geo_result,
     build_geocoding_address_candidates,
+    geocoding_result_quality_score,
     resolve_lot_geo,
     validate_geocoding_result,
 )
@@ -386,7 +387,14 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
         .label("position"),
     ).subquery()
     rows = session.execute(
-        select(ProcessedLot.id, ProcessedLot.address, LotGeoSnapshot)
+        select(
+            ProcessedLot.id,
+            ProcessedLot.address,
+            ProcessedLot.cadastral_number,
+            ProcessedLot.region_name,
+            ProcessedLot.region_code,
+            LotGeoSnapshot,
+        )
         .join(LotGeoSnapshot, LotGeoSnapshot.lot_id == ProcessedLot.id)
         .join(ranked, ranked.c.geo_id == LotGeoSnapshot.id)
         .where(
@@ -398,7 +406,9 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
     hotspots: dict[tuple[float, float], list[int]] = defaultdict(list)
     invalid_ids: list[int] = []
     locality_mismatch_ids: list[int] = []
-    for lot_id, address, snapshot in rows:
+    low_quality_ids: list[int] = []
+    quality_scores: list[int] = []
+    for lot_id, address, cadastral_number, region_name, region_code, snapshot in rows:
         lat, lon = float(snapshot.centroid_lat), float(snapshot.centroid_lon)
         if not (41.0 <= lat <= 82.0 and 19.0 <= lon <= 180.0):
             invalid_ids.append(lot_id)
@@ -407,6 +417,34 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
         observed = str((snapshot.metadata_json or {}).get("address") or "").casefold()
         if expected and observed and expected not in observed:
             locality_mismatch_ids.append(lot_id)
+
+        metadata = dict(snapshot.metadata_json or {})
+        score_value = metadata.get("quality_score")
+        if score_value is None:
+            reconstructed = CadastralObjectResult(
+                query=str(metadata.get("query") or ""),
+                cadastral_number=metadata.get("cadastral_number"),
+                lat=lat,
+                lon=lon,
+                source=str(snapshot.geo_source or metadata.get("source") or ""),
+                confidence=str(snapshot.geo_confidence or "unknown"),
+                address=metadata.get("address"),
+            )
+            score = geocoding_result_quality_score(
+                reconstructed,
+                cadastral_number=cadastral_number,
+                address=address,
+                region_name=region_name,
+                region_code=region_code,
+            )
+        else:
+            try:
+                score = int(score_value)
+            except (TypeError, ValueError):
+                score = 0
+        quality_scores.append(score)
+        if score < 60:
+            low_quality_ids.append(lot_id)
     hotspot_rows: list[dict[str, Any]] = [
         {"lat": key[0], "lon": key[1], "lot_count": len(ids), "sample_lot_ids": ids[:10]}
         for key, ids in hotspots.items()
@@ -419,6 +457,14 @@ def geocoding_quality_audit(session: Any, *, hotspot_min_lots: int = 5) -> dict[
         "invalid_coordinate_sample_lot_ids": invalid_ids[:50],
         "locality_mismatch_count": len(locality_mismatch_ids),
         "locality_mismatch_sample_lot_ids": locality_mismatch_ids[:50],
+        "quality_score_count": len(quality_scores),
+        "average_quality_score": (
+            round(sum(quality_scores) / len(quality_scores), 1)
+            if quality_scores
+            else None
+        ),
+        "low_quality_score_count": len(low_quality_ids),
+        "low_quality_score_sample_lot_ids": low_quality_ids[:50],
         "coordinate_hotspot_count": len(hotspot_rows),
         "coordinate_hotspots": hotspot_rows[:50],
     }
