@@ -28,8 +28,12 @@ def test_p7_task_is_isolated_on_geocoding_queue_and_long_bounded() -> None:
 
     assert '"bankrotai.tasks.geo_fast_drain_task": {"queue": _QUEUE_GEOCODING}' in tasks
     assert 'name="bankrotai.tasks.geo_fast_drain_task"' in tasks
-    assert "soft_time_limit=4 * 60 * 60" in tasks
-    assert "time_limit=5 * 60 * 60" in tasks
+    assert "_P7_TASK_SOFT_TIME_LIMIT_SECONDS = 4 * 60 * 60" in tasks
+    assert "_P7_TASK_HARD_TIME_LIMIT_SECONDS = 5 * 60 * 60" in tasks
+    assert "soft_time_limit=_P7_TASK_SOFT_TIME_LIMIT_SECONDS" in tasks
+    assert "time_limit=_P7_TASK_HARD_TIME_LIMIT_SECONDS" in tasks
+    assert "_p7_campaign_is_stale" in tasks
+    assert 'progress["phase"] = "stale_recovered"' in tasks
     assert "schedule_geo_fast_drain" in tasks
     assert 'BackgroundTaskState.task_type == "geocoding_fast_drain"' in tasks
 
