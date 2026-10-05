@@ -292,16 +292,27 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
 
     result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
 
-    assert queued == [("bidexpert.ru", "fast", tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS)]
-    assert result["targeted_source_retries"] == [
-        {
-            "source_system": "bidexpert.ru",
-            "status": "queued",
-            "task_id": "source-retry-1",
-            "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
-            "error_category": "http_5xx",
-        }
-    ]
+    assert len(queued) == 1
+    assert queued[0][0:2] == ("bidexpert.ru", "fast")
+    assert 60 <= queued[0][2] <= 66
+    retry = result["targeted_source_retries"][0]
+    assert retry["source_system"] == "bidexpert.ru"
+    assert retry["status"] == "queued"
+    assert retry["task_id"] == "source-retry-1"
+    assert retry["countdown_seconds"] == queued[0][2]
+    assert retry["error_category"] == "http_5xx"
+
+
+def test_automatic_refresh_skips_while_global_source_network_circuit_is_open(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: True)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
+
+    assert result == {
+        "status": "skipped",
+        "reason": "global_source_network_circuit",
+        "mode": "fast",
+    }
 
 
 def test_targeted_source_retry_skips_while_circuit_is_open(monkeypatch) -> None:
@@ -365,7 +376,9 @@ def test_targeted_source_retry_uses_one_source_and_category_aware_requeue(monkey
         "total_sources": 1,
     }
     assert result["status"] == "failed"
-    assert queued == [("bidexpert.ru", "full", 60)]
+    assert len(queued) == 1
+    assert queued[0][0:2] == ("bidexpert.ru", "full")
+    assert 60 <= queued[0][2] <= 66
     assert result["targeted_source_retries"][0]["source_system"] == "bidexpert.ru"
     assert result["targeted_source_retries"][0]["error_category"] == "http_5xx"
 
