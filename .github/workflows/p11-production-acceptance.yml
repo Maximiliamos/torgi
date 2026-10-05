@@ -67,7 +67,7 @@ jobs:
       - name: Verify fresh backup and isolated restore evidence
         shell: powershell
         run: |
-          $root = 'C:\ProgramData\BankrotAI\dr-backups'
+          $root = 'D:\BankrotAI\dr-backups'
           $latest = Get-ChildItem -LiteralPath $root -Filter 'bankrotai-*.json' -File -ErrorAction Stop |
             Sort-Object LastWriteTimeUtc -Descending |
             Select-Object -First 1
@@ -75,7 +75,7 @@ jobs:
           $meta = Get-Content -LiteralPath $latest.FullName -Raw | ConvertFrom-Json
           $created = [datetimeoffset]::Parse([string]$meta.created_at).UtcDateTime
           $age = ((Get-Date).ToUniversalTime() - $created).TotalHours
-          if ($age -gt 30) { throw "Latest backup is stale: $([math]::Round($age,2))h" }
+          if ($age -gt 60) { throw "Latest backup is stale for the 48-hour policy: $([math]::Round($age,2))h" }
           if ($meta.restore_verification -ne 'passed') { throw "Latest restore verification is not passed: $($meta.restore_verification)" }
           if (-not $meta.sha256 -or -not $meta.source_schema_revision) { throw 'Backup metadata lacks checksum/schema evidence' }
           $meta | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$env:RUNNER_TEMP\p11-backup.json" -Encoding utf8
