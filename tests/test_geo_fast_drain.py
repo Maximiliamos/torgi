@@ -14,6 +14,7 @@ from bankrotai.services.geo_fast_drain import (
     geo_fast_drain_plan,
     reclassify_legacy_geo_backlog,
     release_geo_fast_drain_wave,
+    run_geo_fast_drain,
 )
 
 
@@ -40,6 +41,29 @@ def _legacy_no_match(attempts: int = 5) -> GeoFailure:
         last_failed_at=utc_now(),
         next_retry_at=utc_now() + timedelta(days=4),
     )
+
+
+def test_p7_empty_plan_completes_without_network_probe(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.network_health_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("empty P7 must not probe network")),
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geocoding_progress",
+        lambda _session: {"actionable_remaining": 0, "drain_remaining": 0},
+    )
+
+    result = run_geo_fast_drain(SessionLocal, task_id="p7-empty")
+
+    assert result["status"] == "completed"
+    assert result["stop_reason"] == "nothing_to_drain"
+    assert result["processed"] == 0
+    assert result["geocoded"] == 0
+    assert result["p7_total"] == 0
 
 
 def test_p7_reclassifies_old_no_match_into_held_queue_with_one_fresh_attempt_left() -> None:
