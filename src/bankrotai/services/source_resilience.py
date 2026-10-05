@@ -333,6 +333,10 @@ def source_retry_decision(
         }
 
     classification = classify_source_error(error) if error is not None else None
+    if classification is not None and not status.get("last_error_category"):
+        status["last_error_category"] = classification.category
+        status["retryable"] = classification.retryable
+        status["operational_failure"] = classification.operational
     retryable = (
         classification.retryable
         if classification is not None
