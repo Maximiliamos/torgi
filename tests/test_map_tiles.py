@@ -22,6 +22,7 @@ from bankrotai.services.map_builder import (
     build_map_dataset,
     cleanup_map_datasets,
     map_dataset_storage_statistics,
+    map_source_fingerprint,
 )
 
 
@@ -65,6 +66,19 @@ def _database():
         )
         session.commit()
     return factory
+
+
+def test_map_source_fingerprint_changes_when_map_input_changes():
+    factory = _database()
+    with factory() as session:
+        before = map_source_fingerprint(session)
+        lot = session.scalar(select(ProcessedLot))
+        assert lot is not None
+        lot.current_price = Decimal("850000")
+        session.commit()
+    with factory() as session:
+        after = map_source_fingerprint(session)
+    assert before != after
 
 
 def test_builder_publishes_cluster_and_point_tiles_atomically(monkeypatch):
@@ -994,12 +1008,17 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
         retain_previous_ready=1,
         min_age_hours=24,
     )
-    assert dry_run == {
-        "dry_run": True,
-        "retained_previous_ready": 1,
-        "candidate_dataset_count": 2,
-        "candidate_tile_count": 2,
-        "candidate_versions": ["older-ready", "old-failed"],
+    assert dry_run["dry_run"] is True
+    assert dry_run["retained_previous_ready"] == 1
+    assert dry_run["retained_previous_ready_versions"] == ["previous-ready"]
+    assert dry_run["candidate_dataset_count"] == 2
+    assert dry_run["candidate_tile_count"] == 2
+    assert dry_run["candidate_versions"] == ["older-ready", "old-failed"]
+    assert dry_run["candidate_status_counts"] == {
+        "ready": 1,
+        "failed": 1,
+        "rejected": 0,
+        "building": 0,
     }
     with factory() as session:
         assert session.query(MapDataset).count() == 5
