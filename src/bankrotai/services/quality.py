@@ -601,6 +601,7 @@ def list_source_health(
             .limit(1)
         )
         state = states.get(name)
+        resilience_metadata = dict(state.metadata_json or {}) if state is not None else {}
         resilience = source_resilience_status(session, name, now=now)
         last_success_at = (
             latest_success.finished_at
@@ -674,7 +675,8 @@ def list_source_health(
                 last_error=last_error,
                 last_error_category=(
                     resilience.get("last_error_category")
-                    or _source_error_category(last_error)
+                    if "last_error_category" in resilience_metadata
+                    else _source_error_category(last_error)
                 ),
                 circuit_state=str(resilience.get("circuit_state") or "closed"),
                 circuit_open_until=resilience.get("circuit_open_until"),
