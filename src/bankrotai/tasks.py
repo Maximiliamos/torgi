@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, NoReturn
 
@@ -42,10 +43,15 @@ from bankrotai.scrapers import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 _MAP_DIRTY_KEY = "bankrotai:map-dataset-dirty"
+_MAP_DIRTY_SINCE_KEY = "bankrotai:map-dataset-dirty-since"
+_MAP_DIRTY_LAST_CHANGE_KEY = "bankrotai:map-dataset-dirty-last-change"
+_MAP_SOURCE_FINGERPRINT_KEY = "bankrotai:map-source-fingerprint"
 _GEO_BATCH_LIMIT = settings.geo_batch_limit
 _GEO_CONTINUATION_DELAY_SECONDS = 2
 _GEO_CONTINUATION_MAX_BATCHES = 8
-_MAP_PUBLICATION_DEBOUNCE_SECONDS = 60
+_MAP_PUBLICATION_QUIET_SECONDS = 180
+_MAP_PUBLICATION_MIN_INTERVAL_SECONDS = 600
+_MAP_PUBLICATION_MAX_DELAY_SECONDS = 900
 _FAST_NATIONWIDE_REFRESH_SECONDS = 900
 _FULL_NATIONWIDE_REFRESH_SECONDS = 86_400
 _NATIONWIDE_REFRESH_MAX_RETRIES = 3
@@ -137,12 +143,12 @@ celery_app.conf.update(
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
-            "schedule": 300.0,
-            "options": {"expires": 240},
+            "schedule": crontab(minute="*"),
+            "options": {"expires": 55},
         },
         "cleanup-old-map-datasets": {
             "task": "bankrotai.tasks.cleanup_old_map_datasets_task",
-            "schedule": 86400.0,
+            "schedule": crontab(hour=4, minute=37),
             "options": {"expires": 3600},
         },
         "daily-operational-quality-report": {
@@ -193,7 +199,7 @@ def recalculate_public_offer_prices_task() -> dict[str, int]:
             from redis import Redis
 
             client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
-            client.set(_MAP_DIRTY_KEY, "1")
+            _mark_map_dirty(client)
             client.close()
         except Exception:
             logger.exception("Could not mark map dataset dirty after public-offer price update")
@@ -215,9 +221,13 @@ def geocode_pending_lots_task(self, continuation_depth: int = 0) -> dict[str, An
             from redis import Redis
 
             client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
-            client.set(_MAP_DIRTY_KEY, "1")
+            _mark_map_dirty(client)
             client.close()
-            result["map_dataset_build"] = _schedule_dirty_map_publication()
+            result["map_dataset_build"] = {
+                "status": "dirty",
+                "quiet_seconds": _MAP_PUBLICATION_QUIET_SECONDS,
+                "maximum_delay_seconds": _MAP_PUBLICATION_MAX_DELAY_SECONDS,
+            }
         except Exception as exc:
             logger.exception("Could not mark map dataset dirty")
             result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
@@ -317,9 +327,13 @@ def recover_ik12_geo_task(self) -> dict[str, Any]:
             from redis import Redis
 
             client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
-            client.set(_MAP_DIRTY_KEY, "1")
+            _mark_map_dirty(client)
             client.close()
-            result["map_dataset_build"] = _schedule_dirty_map_publication()
+            result["map_dataset_build"] = {
+                "status": "dirty",
+                "quiet_seconds": _MAP_PUBLICATION_QUIET_SECONDS,
+                "maximum_delay_seconds": _MAP_PUBLICATION_MAX_DELAY_SECONDS,
+            }
         except Exception as exc:
             logger.exception("Could not mark map dataset dirty after IK12 recovery")
             result["map_dataset_build"] = {
@@ -388,41 +402,86 @@ def _schedule_geocode_continuation(continuation_depth: int) -> dict[str, str | i
         return {"status": "schedule_failed", "error": str(exc)[:500]}
 
 
-def _schedule_dirty_map_publication() -> dict[str, str | int]:
-    """Debounce publication without making completed geocoding fail."""
+def _mark_map_dirty(client) -> None:
+    """Record a map-affecting change without queueing duplicate build tasks."""
+    now = int(time.time())
+    pipe = client.pipeline(transaction=True)
+    pipe.set(_MAP_DIRTY_KEY, "1")
+    pipe.setnx(_MAP_DIRTY_SINCE_KEY, str(now))
+    pipe.set(_MAP_DIRTY_LAST_CHANGE_KEY, str(now))
+    pipe.execute()
+
+
+def _redis_timestamp(client, key: str, fallback: int) -> int:
+    raw = client.get(key)
+    if raw is None:
+        return fallback
     try:
-        queued = publish_dirty_map_dataset_task.apply_async(
-            countdown=_MAP_PUBLICATION_DEBOUNCE_SECONDS,
-        )
-        return {
-            "status": "deferred",
-            "task_id": str(queued.id),
-            "maximum_delay_seconds": _MAP_PUBLICATION_DEBOUNCE_SECONDS,
-        }
-    except Exception as exc:
-        logger.exception("Could not schedule debounced map publication")
-        return {
-            "status": "deferred_to_watchdog",
-            "maximum_delay_seconds": 300,
-            "error": str(exc)[:500],
-        }
+        return int(raw)
+    except (TypeError, ValueError):
+        return fallback
 
 
 @celery_app.task(name="bankrotai.tasks.publish_dirty_map_dataset_task")
 def publish_dirty_map_dataset_task() -> dict[str, Any]:
-    """Coalesce many geo batches into at most one map publication per interval."""
+    """Publish only after a quiet window, with bounded freshness and cadence."""
     from redis import Redis
+    from sqlalchemy import select
+
+    from bankrotai.db import MapDataset
 
     client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
-    dirty = client.getdel(_MAP_DIRTY_KEY)
-    if not dirty:
+    try:
+        if not client.get(_MAP_DIRTY_KEY):
+            return {"status": "skipped", "reason": "map-not-dirty"}
+
+        now = int(time.time())
+        dirty_since = _redis_timestamp(client, _MAP_DIRTY_SINCE_KEY, now)
+        last_change = _redis_timestamp(client, _MAP_DIRTY_LAST_CHANGE_KEY, dirty_since)
+        with SessionLocal() as session:
+            current_published_at = session.scalar(
+                select(MapDataset.published_at)
+                .where(MapDataset.is_current.is_(True), MapDataset.status == "ready")
+            )
+        last_publication = int(current_published_at.timestamp()) if current_published_at is not None else 0
+
+        quiet_due = last_change + _MAP_PUBLICATION_QUIET_SECONDS
+        freshness_deadline = dirty_since + _MAP_PUBLICATION_MAX_DELAY_SECONDS
+        cadence_due = last_publication + _MAP_PUBLICATION_MIN_INTERVAL_SECONDS
+        due_at = max(cadence_due, min(quiet_due, freshness_deadline))
+        if now < due_at:
+            return {
+                "status": "deferred",
+                "reason": "debounce-window",
+                "retry_after_seconds": max(1, due_at - now),
+                "quiet_seconds": _MAP_PUBLICATION_QUIET_SECONDS,
+                "minimum_interval_seconds": _MAP_PUBLICATION_MIN_INTERVAL_SECONDS,
+                "maximum_delay_seconds": _MAP_PUBLICATION_MAX_DELAY_SECONDS,
+            }
+
+        # Consume the dirty generation atomically. A change that lands after
+        # this script sets the keys again and is picked up by the next minute
+        # watchdog tick, so no update is lost while a build is running.
+        consumed = client.eval(
+            "local d=redis.call('GET',KEYS[1]);"
+            "local s=redis.call('GET',KEYS[2]);"
+            "local l=redis.call('GET',KEYS[3]);"
+            "redis.call('DEL',KEYS[1],KEYS[2],KEYS[3]);"
+            "return {d,s,l}",
+            3,
+            _MAP_DIRTY_KEY,
+            _MAP_DIRTY_SINCE_KEY,
+            _MAP_DIRTY_LAST_CHANGE_KEY,
+        )
+        if not consumed or not consumed[0]:
+            return {"status": "skipped", "reason": "map-dirty-generation-already-consumed"}
+
+        result = _schedule_map_dataset_build()
+        if result.get("status") != "queued":
+            _mark_map_dirty(client)
+        return result
+    finally:
         client.close()
-        return {"status": "skipped", "reason": "map-not-dirty"}
-    result = _schedule_map_dataset_build()
-    if result.get("status") != "queued":
-        client.set(_MAP_DIRTY_KEY, "1")
-    client.close()
-    return result
 
 
 @celery_app.task(name="bankrotai.tasks.cleanup_old_map_datasets_task")
@@ -433,8 +492,9 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
 
     plan = cleanup_map_datasets(
         SessionLocal,
-        retain_previous_ready=1,
-        min_age_hours=24,
+        retain_previous_ready=2,
+        min_age_hours=1,
+        building_min_age_hours=6,
         apply=False,
     )
     manifest_retention = delete_retired_dataset_manifests(
@@ -442,8 +502,9 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
     )
     applied = cleanup_map_datasets(
         SessionLocal,
-        retain_previous_ready=1,
-        min_age_hours=24,
+        retain_previous_ready=2,
+        min_age_hours=1,
+        building_min_age_hours=6,
         apply=True,
     )
     return {
@@ -475,19 +536,46 @@ def build_map_dataset_task() -> dict:
     """Publish a new immutable map version after source or geo changes."""
     from redis import Redis
 
-    from bankrotai.services.map_builder import build_map_dataset
+    from bankrotai.services.map_builder import build_map_dataset, map_source_fingerprint
 
     client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
     lock = client.lock("bankrotai:map-dataset-build", timeout=1800, blocking_timeout=0)
     if not lock.acquire(blocking=False):
+        client.close()
         return {"status": "skipped", "reason": "build-already-running"}
     try:
-        return {"status": "published", **build_map_dataset(SessionLocal)}
+        with SessionLocal() as session:
+            source_fingerprint = map_source_fingerprint(session)
+        previous_fingerprint = client.get(_MAP_SOURCE_FINGERPRINT_KEY)
+        if previous_fingerprint is not None:
+            previous_fingerprint = (
+                previous_fingerprint.decode("utf-8")
+                if isinstance(previous_fingerprint, bytes)
+                else str(previous_fingerprint)
+            )
+        if previous_fingerprint == source_fingerprint:
+            return {
+                "status": "skipped",
+                "reason": "map-source-unchanged",
+                "source_fingerprint": source_fingerprint,
+            }
+
+        result = build_map_dataset(SessionLocal)
+        if result.get("promotion_status") == "published":
+            client.set(_MAP_SOURCE_FINGERPRINT_KEY, source_fingerprint)
+            try:
+                cleanup_old_map_datasets_task.delay()
+                result["retention"] = {"status": "queued"}
+            except Exception as exc:
+                logger.exception("Could not queue map retention after publication")
+                result["retention"] = {"status": "schedule_failed", "error": str(exc)[:500]}
+        return {"status": str(result.get("status") or "published"), **result}
     finally:
         try:
             lock.release()
         except Exception:
             logger.warning("Map dataset lock expired before release")
+        client.close()
 
 
 def _schedule_map_dataset_build() -> dict[str, str]:
@@ -746,11 +834,26 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
             raise ValueError(f"Unsupported nationwide sync mode: {mode}")
         result = run_nationwide_sync(SessionLocal, run_id, specs)
         if result.get("status") in {"success", "partial"}:
-            result["map_dataset_build"] = (
-                _schedule_map_dataset_build()
-                if _sync_changed_map_membership(result)
-                else {"status": "skipped", "reason": "no-map-affecting-source-changes"}
-            )
+            if _sync_changed_map_membership(result):
+                try:
+                    from redis import Redis
+
+                    client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+                    _mark_map_dirty(client)
+                    client.close()
+                    result["map_dataset_build"] = {
+                        "status": "dirty",
+                        "quiet_seconds": _MAP_PUBLICATION_QUIET_SECONDS,
+                        "maximum_delay_seconds": _MAP_PUBLICATION_MAX_DELAY_SECONDS,
+                    }
+                except Exception as exc:
+                    logger.exception("Could not mark map dirty after nationwide sync")
+                    result["map_dataset_build"] = {"status": "dirty_mark_failed", "error": str(exc)[:500]}
+            else:
+                result["map_dataset_build"] = {
+                    "status": "skipped",
+                    "reason": "no-map-affecting-source-changes",
+                }
             try:
                 with session_scope() as session:
                     run = session.get(LotSyncRun, run_id)
