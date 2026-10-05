@@ -536,7 +536,11 @@ def build_map_dataset_task() -> dict:
     """Publish a new immutable map version after source or geo changes."""
     from redis import Redis
 
+    from sqlalchemy import select
+
+    from bankrotai.db import MapDataset
     from bankrotai.services.map_builder import build_map_dataset, map_source_fingerprint
+    from bankrotai.services.map_dataset_version import dataset_matches_current_pipeline
 
     client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
     lock = client.lock("bankrotai:map-dataset-build", timeout=1800, blocking_timeout=0)
@@ -546,6 +550,10 @@ def build_map_dataset_task() -> dict:
     try:
         with SessionLocal() as session:
             source_fingerprint = map_source_fingerprint(session)
+            current_version = session.scalar(
+                select(MapDataset.version)
+                .where(MapDataset.is_current.is_(True), MapDataset.status == "ready")
+            )
         previous_fingerprint = client.get(_MAP_SOURCE_FINGERPRINT_KEY)
         if previous_fingerprint is not None:
             previous_fingerprint = (
@@ -553,11 +561,20 @@ def build_map_dataset_task() -> dict:
                 if isinstance(previous_fingerprint, bytes)
                 else str(previous_fingerprint)
             )
-        if previous_fingerprint == source_fingerprint:
+        current_pipeline_matches = bool(
+            current_version
+            and dataset_matches_current_pipeline(
+                current_version,
+                object_store_enabled=settings.map_object_store_enabled,
+                object_store_layout=settings.map_object_store_layout,
+            )
+        )
+        if previous_fingerprint == source_fingerprint and current_pipeline_matches:
             return {
                 "status": "skipped",
                 "reason": "map-source-unchanged",
                 "source_fingerprint": source_fingerprint,
+                "current_version": current_version,
             }
 
         result = build_map_dataset(SessionLocal)
