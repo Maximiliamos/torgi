@@ -61,6 +61,14 @@ _RETRYABLE_STRATEGY_ERRORS = frozenset({
     "No validated geocoding result",
 })
 
+_P9_CANARY_VERSION = "2026-10-05-address-cadastral-quality-v1"
+_P9_CANARY_SETTING_KEY = f"geocoding_quality_canary:{_P9_CANARY_VERSION}"
+_P9_ADDRESS_SIGNAL = re.compile(
+    r"\b(?:корп\.|корпус|стр\.|строение|вл\.|владение|лит\.|литера|"
+    r"пом\.|помещение|кв\.|квартира|комната|офис|пр-т|пер\.)\b",
+    re.IGNORECASE,
+)
+
 
 def _elapsed_seconds_since(value: datetime) -> int:
     """Treat persisted naive task timestamps as UTC on every SQL dialect."""
@@ -169,6 +177,171 @@ def _refresh_failures_for_current_strategy(session: Any) -> int:
         )
     session.commit()
     return requeued
+
+
+def _p9_canary_seen_ids(session: Any) -> set[int]:
+    marker = session.scalar(select(AppSetting).where(AppSetting.key == _P9_CANARY_SETTING_KEY))
+    if marker is None or not marker.value:
+        return set()
+    try:
+        payload = json.loads(marker.value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    ids = payload.get("lot_ids") if isinstance(payload, dict) else None
+    return {int(value) for value in ids or [] if str(value).isdigit()}
+
+
+def _p9_quality_signal(
+    *,
+    cadastral_number: str | None,
+    address: str | None,
+    title: str | None,
+    description: str | None,
+    error_message: str | None,
+) -> str | None:
+    text = " ".join(part for part in (address, title, description) if part)
+    if _P9_ADDRESS_SIGNAL.search(text):
+        return "russian_address_structure"
+    if cadastral_number and _has_nspd_no_coordinate_attempt(error_message):
+        return "cadastral_provider_address"
+    return None
+
+
+def geo_quality_canary_plan(
+    session: Any,
+    *,
+    limit: int = 200,
+    cfo_only: bool = True,
+) -> dict[str, Any]:
+    """Plan a bounded P9 retry sample without releasing the deferred backlog."""
+    batch_limit = max(1, min(int(limit), 500))
+    conditions = [
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.is_archived.is_(False),
+        ProcessedLot.auction_status.in_(("active", "scheduled")),
+        ProcessedLot.current_geo_lat.is_(None),
+        ProcessedLot.current_geo_lon.is_(None),
+        GeoFailure.status.in_(_DEFERRED_STATUSES),
+    ]
+    if cfo_only:
+        conditions.append(ProcessedLot.region_code.in_(_CFO_REGION_CODES))
+
+    rows = session.execute(
+        select(
+            ProcessedLot.id,
+            ProcessedLot.region_code,
+            ProcessedLot.cadastral_number,
+            ProcessedLot.address,
+            ProcessedLot.title,
+            ProcessedLot.description,
+            GeoFailure.status,
+            GeoFailure.error_message,
+            GeoFailure.last_failed_at,
+        )
+        .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+        .where(*conditions)
+        .order_by(
+            case((ProcessedLot.region_code.in_(_CFO_REGION_CODES), 0), else_=1),
+            GeoFailure.last_failed_at.asc(),
+            ProcessedLot.id.asc(),
+        )
+        .limit(max(batch_limit * 20, 1000))
+    ).all()
+    already_seen = _p9_canary_seen_ids(session)
+    selected: list[dict[str, Any]] = []
+    by_signal: Counter[str] = Counter()
+    by_status: Counter[str] = Counter()
+    by_region: Counter[str] = Counter()
+    for row in rows:
+        lot_id = int(row.id)
+        if lot_id in already_seen:
+            continue
+        signal = _p9_quality_signal(
+            cadastral_number=row.cadastral_number,
+            address=row.address,
+            title=row.title,
+            description=row.description,
+            error_message=row.error_message,
+        )
+        if signal is None:
+            continue
+        selected.append(
+            {
+                "lot_id": lot_id,
+                "region_code": str(row.region_code or ""),
+                "status": str(row.status),
+                "signal": signal,
+            }
+        )
+        by_signal[signal] += 1
+        by_status[str(row.status)] += 1
+        by_region[str(row.region_code or "unknown")] += 1
+        if len(selected) >= batch_limit:
+            break
+
+    return {
+        "version": _P9_CANARY_VERSION,
+        "limit": batch_limit,
+        "cfo_only": bool(cfo_only),
+        "eligible": len(selected),
+        "already_requeued": len(already_seen),
+        "by_signal": dict(by_signal),
+        "by_status": dict(by_status),
+        "by_region": dict(by_region.most_common()),
+        "sample_lot_ids": [item["lot_id"] for item in selected[:25]],
+        "lot_ids": [item["lot_id"] for item in selected],
+    }
+
+
+def requeue_geo_quality_canary(
+    session: Any,
+    *,
+    limit: int = 200,
+    cfo_only: bool = True,
+) -> dict[str, Any]:
+    """Release only the bounded P9 canary selected by geo_quality_canary_plan."""
+    plan = geo_quality_canary_plan(session, limit=limit, cfo_only=cfo_only)
+    ids = [int(value) for value in plan.pop("lot_ids")]
+    if not ids:
+        return {**plan, "requeued": 0}
+
+    now = utc_now()
+    failures = session.scalars(
+        select(GeoFailure).where(
+            GeoFailure.lot_id.in_(ids),
+            GeoFailure.status.in_(_DEFERRED_STATUSES),
+        )
+    ).all()
+    requeued_ids: list[int] = []
+    for failure in failures:
+        failure.status = "queued"
+        failure.attempt_count = 0
+        failure.next_retry_at = now
+        requeued_ids.append(int(failure.lot_id))
+
+    seen = _p9_canary_seen_ids(session)
+    seen.update(requeued_ids)
+    marker = session.scalar(select(AppSetting).where(AppSetting.key == _P9_CANARY_SETTING_KEY))
+    payload = json.dumps(
+        {
+            "version": _P9_CANARY_VERSION,
+            "updated_at": now.isoformat(),
+            "lot_ids": sorted(seen),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if marker is None:
+        marker = AppSetting(key=_P9_CANARY_SETTING_KEY, value=payload)
+        session.add(marker)
+    else:
+        marker.value = payload
+    session.commit()
+    return {
+        **plan,
+        "requeued": len(requeued_ids),
+        "requeued_sample_lot_ids": sorted(requeued_ids)[:25],
+    }
 
 
 @dataclass(frozen=True, slots=True)
