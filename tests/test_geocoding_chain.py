@@ -2,7 +2,12 @@ from __future__ import annotations
 
 # Keep fallback coverage deterministic across provider-chain changes.
 
-from bankrotai.geo import CadastralObjectResult, resolve_lot_geo, validate_geocoding_result
+from bankrotai.geo import (
+    CadastralObjectResult,
+    geocoding_result_quality_score,
+    resolve_lot_geo,
+    validate_geocoding_result,
+)
 
 
 CAD = "76:23:050309:1108"
@@ -240,3 +245,40 @@ def test_canonical_region_code_keeps_valid_address_only_coordinate() -> None:
 
     assert valid is True
     assert reason == "validated"
+
+def test_quality_score_rewards_valid_cadastral_coordinate() -> None:
+    value = result("nspd")
+    value.address = "Ярославль, улица Свердлова, 5а, Ярославская область"
+
+    score = geocoding_result_quality_score(
+        value,
+        cadastral_number=CAD,
+        address=ADDRESS,
+        region_name="Ярославская область",
+        region_code="76",
+    )
+
+    assert 85 <= score <= 100
+
+
+def test_quality_score_caps_invalid_region_coordinate_below_acceptance_band() -> None:
+    value = CadastralObjectResult(
+        query="bad",
+        cadastral_number=CAD,
+        lat=55.7558,
+        lon=37.6176,
+        source="photon",
+        confidence="high",
+        address="Москва",
+    )
+
+    score = geocoding_result_quality_score(
+        value,
+        cadastral_number=CAD,
+        address=ADDRESS,
+        region_name="Ярославская область",
+        region_code="76",
+    )
+
+    assert score < 50
+
