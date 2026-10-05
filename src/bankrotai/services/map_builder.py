@@ -27,7 +27,7 @@ from bankrotai.services.map_bundle_store import (
     normalize_map_region_code,
     publish_dataset_to_regional_bundles,
 )
-from bankrotai.services.map_dataset_version import build_map_dataset_version
+from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -86,8 +86,12 @@ def map_source_fingerprint(session: Session) -> str:
         )
     ).one()
     count, id_sum, last_update, last_geo = row
+    settings = get_settings()
     payload = "|".join(
         (
+            MAP_DATASET_REVISION,
+            "1" if settings.map_object_store_enabled else "0",
+            settings.map_object_store_layout,
             str(int(count or 0)),
             str(int(id_sum or 0)),
             last_update.isoformat() if last_update is not None else "",
