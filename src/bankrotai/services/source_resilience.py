@@ -225,7 +225,7 @@ def source_circuit_blocks(
     *,
     now: datetime | None = None,
 ) -> bool:
-    return source_resilience_status(session, source_system, now=now)["circuit_state"] == "open"
+    return source_resilience_status(session, source_system, now=now)["circuit_state"] in {"open", "half_open"}
 
 
 def _retry_delay(classification: SourceFailureClassification, consecutive_failures: int) -> int | None:
