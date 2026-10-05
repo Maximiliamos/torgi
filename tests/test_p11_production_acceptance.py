@@ -41,3 +41,12 @@ def test_p11_restart_is_opt_in_and_never_prunes_volumes() -> None:
     assert "docker volume prune" not in text
     assert "shutdown" not in text
     assert "restart-computer" not in text
+
+def test_p11_acceptance_requires_current_d_drive_backup_policy() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "D:\\BankrotAI\\dr-backups" in text
+    assert "48-hour policy" in text
+    assert "$age -gt 60" in text
+    assert "C:\\ProgramData\\BankrotAI\\dr-backups" not in text
+
