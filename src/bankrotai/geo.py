@@ -1417,6 +1417,66 @@ def validate_geocoding_result(
     return True, "validated"
 
 
+def geocoding_result_quality_score(
+    result: CadastralObjectResult | None,
+    *,
+    cadastral_number: str | None,
+    address: str | None,
+    region_name: str | None,
+    region_code: str | None = None,
+) -> int:
+    """Score an accepted coordinate for audit/ranking without weakening validation."""
+    if result is None or result.lat is None or result.lon is None:
+        return 0
+
+    confidence_scores = {
+        "high": 45,
+        "medium": 35,
+        "low": 15,
+        "none": 0,
+        "unknown": 0,
+    }
+    score = confidence_scores.get(str(result.confidence or "").casefold(), 20)
+    source = str(result.source or "").casefold()
+    if source.startswith("nspd") or source.startswith("ik12"):
+        score += 20
+    elif source in {"photon", "nominatim", "address_geocoder"}:
+        score += 10
+
+    expected_cad = re.sub(r"\s+", "", str(cadastral_number or ""))
+    observed_cad = re.sub(r"\s+", "", str(result.cadastral_number or ""))
+    if expected_cad and observed_cad:
+        score += 15 if expected_cad == observed_cad else -30
+
+    expected_locality = expected_locality_name(address)
+    observed_address = str(result.address or "").casefold()
+    if expected_locality and observed_address:
+        score += 10 if expected_locality in observed_address else -15
+
+    from bankrotai.regions import normalize_region_code, region_code_from_text
+
+    expected_region = normalize_region_code(region_code)
+    if expected_region is None and region_name:
+        expected_region = normalize_region_code(region_name)
+    if expected_region and observed_address:
+        observed_region = region_code_from_text(result.address)
+        if observed_region:
+            score += 10 if observed_region == expected_region else -20
+
+    valid, _reason = validate_geocoding_result(
+        result,
+        cadastral_number=cadastral_number,
+        address=address,
+        region_name=region_name,
+        region_code=region_code,
+    )
+    if valid:
+        score += 15
+    else:
+        score = min(score, 49)
+    return max(0, min(100, int(score)))
+
+
 def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: CadastralObjectResult | None) -> bool:
     if not final_result or not final_result.lat or not final_result.lon:
         lot.needs_geo_check = True
@@ -1444,6 +1504,13 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
             "error": final_result.error,
             "status": final_result.status,
             "attempts": final_result.attempts,
+            "quality_score": geocoding_result_quality_score(
+                final_result,
+                cadastral_number=lot.cadastral_number,
+                address=lot.address,
+                region_name=lot.region_name,
+                region_code=lot.region_code,
+            ),
         },
         trace_reason=(f"{final_result.source}: {'границы получены' if final_result.has_boundary else 'без границ'}"),
     )
