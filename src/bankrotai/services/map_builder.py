@@ -120,8 +120,13 @@ def cleanup_map_datasets(
         raise ValueError("retain_previous_ready must preserve at least one rollback dataset")
     if min_age_hours < 1:
         raise ValueError("min_age_hours must be positive")
-    if building_min_age_hours < min_age_hours:
-        raise ValueError("building_min_age_hours must be >= min_age_hours")
+    if building_min_age_hours < 1:
+        raise ValueError("building_min_age_hours must be positive")
+    # A caller may raise the general retention grace without also overriding the
+    # building grace. Never let an in-progress build become eligible earlier
+    # than failed/rejected datasets; clamp it upward instead of rejecting an
+    # otherwise safe legacy call.
+    building_min_age_hours = max(int(building_min_age_hours), int(min_age_hours))
     reference_time = now or datetime.now(timezone.utc)
     if reference_time.tzinfo is not None:
         reference_time = reference_time.astimezone(timezone.utc).replace(tzinfo=None)
