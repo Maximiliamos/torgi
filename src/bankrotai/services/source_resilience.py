@@ -84,6 +84,8 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
         marker in message for marker in ("unauthorized", "forbidden", "authentication required")
     ):
         return SourceFailureClassification("authentication", False, False, raw[:1000], status)
+    if status is not None and 500 <= status <= 599:
+        return SourceFailureClassification("http_5xx", True, True, raw[:1000], status)
     if any(
         marker in message
         for marker in (
@@ -113,8 +115,6 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
         return SourceFailureClassification("read_timeout", True, True, raw[:1000], status)
     if "timeout" in message or "timed out" in message:
         return SourceFailureClassification("read_timeout", True, True, raw[:1000], status)
-    if status is not None and 500 <= status <= 599:
-        return SourceFailureClassification("http_5xx", True, True, raw[:1000], status)
     if any(
         marker in message
         for marker in (
