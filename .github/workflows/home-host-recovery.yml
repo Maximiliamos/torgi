@@ -21,7 +21,7 @@ jobs:
         with:
           ref: main
 
-      - name: Safe Docker cleanup without volumes
+      - name: Safe Docker cleanup without volumes (all unused cache/images)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -29,8 +29,8 @@ jobs:
           Write-Output "C: free before: $before GB"
           docker system df
           docker container prune -f | Out-Host
-          docker image prune -a -f --filter "until=24h" | Out-Host
-          docker builder prune -a -f --filter "until=24h" | Out-Host
+          docker image prune -a -f | Out-Host
+          docker builder prune -a -f | Out-Host
           $after = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
           Write-Output "C: free after: $after GB"
           docker system df
