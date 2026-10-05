@@ -898,6 +898,24 @@ def probe_source_network_health_task() -> dict[str, Any]:
                 success=bool(probe.get("success")),
                 error=probe.get("error"),
             )
+
+        recovery_retry: dict[str, Any] | None = None
+        if probe.get("success"):
+            try:
+                queued = automatic_nationwide_source_retry_task.apply_async(
+                    args=[source_system, "fast"],
+                    countdown=5,
+                )
+                recovery_retry = {
+                    "status": "queued",
+                    "task_id": str(queued.id),
+                    "countdown_seconds": 5,
+                    "mode": "fast",
+                }
+            except Exception as exc:
+                logger.exception("Could not queue recovered source %s", source_system)
+                recovery_retry = {"status": "schedule_failed", "error": str(exc)[:500]}
+
         results.append(
             {
                 "source_system": source_system,
@@ -905,6 +923,7 @@ def probe_source_network_health_task() -> dict[str, Any]:
                 "probe": probe,
                 "circuit_state": state.get("circuit_state"),
                 "next_retry_at": state.get("next_retry_at"),
+                "recovery_retry": recovery_retry,
             }
         )
     return {"checked": len(due), "results": results}
