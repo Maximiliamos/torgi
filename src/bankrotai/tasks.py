@@ -497,9 +497,9 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
         building_min_age_hours=6,
         apply=False,
     )
-    manifest_retention = delete_retired_dataset_manifests(
-        list(plan.get("candidate_versions") or []),
-    )
+    # Database retention is the safety-critical part of this task. Do it before
+    # external object-store housekeeping so an S3 timeout cannot allow local
+    # map_tiles growth to continue indefinitely.
     applied = cleanup_map_datasets(
         SessionLocal,
         retain_previous_ready=2,
@@ -507,6 +507,16 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
         building_min_age_hours=6,
         apply=True,
     )
+    retired_versions = list(applied.get("candidate_versions") or [])
+    try:
+        manifest_retention = delete_retired_dataset_manifests(retired_versions)
+    except Exception as exc:
+        logger.exception("Map DB retention succeeded but retired S3 manifest cleanup failed")
+        manifest_retention = {
+            "status": "failed",
+            "error": str(exc)[:500],
+            "versions": retired_versions,
+        }
     return {
         **applied,
         "planned_candidate_dataset_count": int(plan.get("candidate_dataset_count") or 0),
