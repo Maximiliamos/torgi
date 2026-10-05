@@ -880,3 +880,160 @@ def test_geocoding_batch_prioritizes_cfo_before_newer_non_cfo(monkeypatch) -> No
     with scope() as session:
         assert session.get(ProcessedLot, cfo_id).current_geo_lat == 57.6261
         assert session.get(ProcessedLot, other_id).current_geo_lat is None
+
+def test_p9_canary_plan_is_bounded_cfo_first_and_non_mutating() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lots = [
+            ProcessedLot(
+                external_id="p9-cfo-address",
+                source="test",
+                source_system="test",
+                title="Помещение",
+                description="",
+                category="commercial",
+                region_code="76",
+                region_name="Ярославская область",
+                address="г. Ярославль, ул. Свободы, д. 10, корп. 2, пом. 15",
+                auction_status="active",
+            ),
+            ProcessedLot(
+                external_id="p9-cfo-cad",
+                source="test",
+                source_system="test",
+                title="Участок",
+                description="",
+                category="land",
+                region_code="76",
+                region_name="Ярославская область",
+                cadastral_number="76:23:010101:77",
+                address="Ярославская область",
+                auction_status="active",
+            ),
+            ProcessedLot(
+                external_id="p9-noncfo",
+                source="test",
+                source_system="test",
+                title="Помещение",
+                description="",
+                category="commercial",
+                region_code="16",
+                region_name="Республика Татарстан",
+                address="г. Казань, ул. Баумана, д. 1, корп. 2",
+                auction_status="active",
+            ),
+        ]
+        session.add_all(lots)
+        session.flush()
+        session.add_all(
+            [
+                GeoFailure(
+                    lot_id=lots[0].id,
+                    status="deferred_validation",
+                    attempt_count=3,
+                    error_message="No validated coordinates",
+                    last_failed_at=utc_now(),
+                ),
+                GeoFailure(
+                    lot_id=lots[1].id,
+                    status="deferred_no_match",
+                    attempt_count=3,
+                    error_message=json.dumps(
+                        {
+                            "error": "No validated geocoding result",
+                            "attempts": [
+                                {
+                                    "source": "nspd_cadastral",
+                                    "valid": False,
+                                    "reason": "no_coordinates",
+                                }
+                            ],
+                        }
+                    ),
+                    last_failed_at=utc_now(),
+                ),
+                GeoFailure(
+                    lot_id=lots[2].id,
+                    status="deferred_no_match",
+                    attempt_count=3,
+                    error_message="No validated coordinates",
+                    last_failed_at=utc_now(),
+                ),
+            ]
+        )
+        session.commit()
+
+        plan = geo_backfill.geo_quality_canary_plan(session, limit=1, cfo_only=True)
+        statuses = list(session.scalars(select(GeoFailure.status)).all())
+
+    assert plan["eligible"] == 1
+    assert plan["cfo_only"] is True
+    assert len(plan["sample_lot_ids"]) == 1
+    assert set(statuses) == {"deferred_no_match", "deferred_validation"}
+
+
+def test_p9_canary_requeue_is_idempotent_and_preserves_other_deferred_rows() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        chosen = ProcessedLot(
+            external_id="p9-chosen",
+            source="test",
+            source_system="test",
+            title="Помещение",
+            description="",
+            category="commercial",
+            region_code="76",
+            region_name="Ярославская область",
+            address="г. Ярославль, ул. Свободы, д. 10, стр. 2",
+            auction_status="active",
+        )
+        untouched = ProcessedLot(
+            external_id="p9-untouched",
+            source="test",
+            source_system="test",
+            title="Неизвестный объект",
+            description="",
+            category="commercial",
+            region_code="76",
+            region_name="Ярославская область",
+            address="Ярославская область",
+            auction_status="active",
+        )
+        session.add_all([chosen, untouched])
+        session.flush()
+        session.add_all(
+            [
+                GeoFailure(
+                    lot_id=chosen.id,
+                    status="deferred_no_match",
+                    attempt_count=8,
+                    error_message="No validated coordinates",
+                    last_failed_at=utc_now(),
+                ),
+                GeoFailure(
+                    lot_id=untouched.id,
+                    status="deferred_no_match",
+                    attempt_count=8,
+                    error_message="No validated coordinates",
+                    last_failed_at=utc_now(),
+                ),
+            ]
+        )
+        session.commit()
+
+        first = geo_backfill.requeue_geo_quality_canary(session, limit=50, cfo_only=True)
+        second = geo_backfill.requeue_geo_quality_canary(session, limit=50, cfo_only=True)
+        chosen_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == chosen.id))
+        untouched_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == untouched.id))
+
+    assert first["requeued"] == 1
+    assert second["requeued"] == 0
+    assert chosen_failure is not None
+    assert chosen_failure.status == "queued"
+    assert chosen_failure.attempt_count == 0
+    assert chosen_failure.next_retry_at is not None
+    assert untouched_failure is not None
+    assert untouched_failure.status == "deferred_no_match"
+
