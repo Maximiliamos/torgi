@@ -7,9 +7,12 @@ from types import SimpleNamespace
 import pytest
 from celery.exceptions import Retry
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from bankrotai import api, tasks
 from bankrotai.auth import AuthenticatedUser
+from bankrotai.db import Base, BackgroundTaskState
 from bankrotai.services.ingestion import SyncAlreadyRunningError
 
 
@@ -106,23 +109,28 @@ def test_source_only_sync_mode_uses_a_single_source_spec(monkeypatch) -> None:
     assert captured["specs"][0].reconcile_missing is True
 
 
-def test_completed_ingestion_survives_map_build_queue_failure(monkeypatch) -> None:
+def test_completed_ingestion_survives_map_dirty_mark_failure(monkeypatch) -> None:
+    class FakeRedis:
+        def close(self):
+            pass
+
     monkeypatch.setattr(
         tasks,
         "run_nationwide_sync",
         lambda *_args: {"status": "success", "sources": [{"items_inserted": 1}]},
     )
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_args, **_kwargs: FakeRedis())
     monkeypatch.setattr(
-        tasks.build_map_dataset_task,
-        "delay",
-        lambda: (_ for _ in ()).throw(ConnectionError("queue unavailable")),
+        tasks,
+        "_mark_map_dirty",
+        lambda _client: (_ for _ in ()).throw(ConnectionError("redis unavailable")),
     )
 
     result = tasks.nationwide_lot_sync_task.run("run-without-database-row", "source:bidexpert.ru")
 
     assert result["status"] == "success"
-    assert result["map_dataset_build"]["status"] == "schedule_failed"
-    assert "queue unavailable" in result["map_dataset_build"]["error"]
+    assert result["map_dataset_build"]["status"] == "dirty_mark_failed"
+    assert "redis unavailable" in result["map_dataset_build"]["error"]
 
 
 def test_source_only_schedule_uses_schema_safe_trigger_type(monkeypatch) -> None:
@@ -166,7 +174,7 @@ def test_transient_errors_are_classified_for_retry() -> None:
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 401"))
 
 
-def test_p7_running_campaign_becomes_stale_only_after_hard_limit_plus_grace() -> None:
+def test_p7_running_campaign_becomes_stale_after_acceptance_monitor_plus_grace() -> None:
     now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
     stale = SimpleNamespace(
         status="running",
@@ -187,6 +195,113 @@ def test_p7_running_campaign_becomes_stale_only_after_hard_limit_plus_grace() ->
     assert tasks._p7_campaign_is_stale(stale, now=now)
     assert not tasks._p7_campaign_is_stale(fresh, now=now)
     assert not tasks._p7_campaign_is_stale(queued, now=now)
+
+    assert tasks._P7_RUNNING_STALE_AFTER < timedelta(seconds=tasks._P7_TASK_SOFT_TIME_LIMIT_SECONDS)
+    assert tasks._P7_RUNNING_STALE_AFTER == timedelta(
+        seconds=tasks._P7_WORKFLOW_MONITOR_SECONDS + tasks._P7_STALE_GRACE_SECONDS
+    )
+
+
+
+def test_schedule_p7_completes_existing_running_campaign_when_plan_is_empty(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(
+            BackgroundTaskState(
+                task_id="p7-existing-empty",
+                task_type="geocoding_fast_drain",
+                status="running",
+                started_at=now,
+                progress_json={"phase": "draining", "processed": 0, "geocoded": 0},
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def scope():
+        with SessionLocal() as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(tasks, "session_scope", scope)
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geo_fast_drain_plan",
+        lambda _session: {
+            "legacy_total": 0,
+            "legacy_by_classification": {},
+            "legacy_cfo": 0,
+            "p7_held": 0,
+        },
+    )
+    monkeypatch.setattr(
+        tasks.geo_fast_drain_task,
+        "apply_async",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no task should be queued")),
+    )
+
+    task_id = tasks.schedule_geo_fast_drain()
+
+    with SessionLocal() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one()
+
+    assert task_id == "p7-existing-empty"
+    assert state.status == "completed"
+    assert state.finished_at is not None
+    assert state.error_message is None
+    assert state.progress_json["phase"] == "completed"
+    assert state.progress_json["stop_reason"] == "nothing_to_drain"
+    assert state.progress_json["p7_total"] == 0
+    assert state.result_json["p7_total"] == 0
+
+
+def test_schedule_p7_keeps_fresh_running_campaign_when_plan_has_work(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(
+            BackgroundTaskState(
+                task_id="p7-existing-work",
+                task_type="geocoding_fast_drain",
+                status="running",
+                started_at=now,
+                progress_json={"phase": "draining"},
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def scope():
+        with SessionLocal() as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(tasks, "session_scope", scope)
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geo_fast_drain_plan",
+        lambda _session: {
+            "legacy_total": 1,
+            "legacy_by_classification": {"network": 1},
+            "legacy_cfo": 0,
+            "p7_held": 0,
+        },
+    )
+
+    task_id = tasks.schedule_geo_fast_drain()
+
+    with SessionLocal() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one()
+
+    assert task_id == "p7-existing-work"
+    assert state.status == "running"
 
 
 def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> None:

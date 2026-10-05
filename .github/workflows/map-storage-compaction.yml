@@ -1,0 +1,51 @@
+name: Map storage compaction
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Run VACUUM FULL after all safety preconditions pass'
+        type: boolean
+        default: false
+      confirm:
+        description: 'When apply=true, type COMPACT_MAP_TILES'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: map-storage-compaction
+  cancel-in-progress: false
+
+jobs:
+  compact:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate explicit compaction confirmation
+        if: ${{ inputs.apply }}
+        shell: powershell
+        run: |
+          if ('${{ inputs.confirm }}' -ne 'COMPACT_MAP_TILES') {
+            throw 'Refusing compaction: confirmation must equal COMPACT_MAP_TILES'
+          }
+      - name: Inspect or compact map storage
+        shell: powershell
+        run: |
+          if ('${{ inputs.apply }}' -eq 'true') {
+            .\scripts\compact-map-storage.ps1 -Apply -OutputPath "$env:RUNNER_TEMP\map-storage-compaction.json"
+          } else {
+            .\scripts\compact-map-storage.ps1 -OutputPath "$env:RUNNER_TEMP\map-storage-compaction.json"
+          }
+      - name: Upload compaction report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: map-storage-compaction-${{ github.run_id }}
+          path: ${{ runner.temp }}\map-storage-compaction.json
+          if-no-files-found: ignore
+          retention-days: 30

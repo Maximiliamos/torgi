@@ -1,10 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$Destination = 'C:\BankrotAI\backups\postgres',
+    [string]$Destination = 'D:\BankrotAI\dr-backups',
     [switch]$VerifyRestore,
-    [int]$RetainDays = 14,
+    [ValidateRange(0, 10)]
+    [int]$RetainCount = 1,
     [ValidateRange(0, 9)]
-    [int]$CompressionLevel = 1
+    [int]$CompressionLevel = 1,
+    [int]$MaxMapDatasetCountWarning = 5,
+    [long]$MaxNonCurrentMapTilesWarning = 500000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +28,26 @@ $pgUser = (docker exec $databaseContainer printenv POSTGRES_USER).Trim()
 $pgDatabase = (docker exec $databaseContainer printenv POSTGRES_DB).Trim()
 $countSql = "SELECT concat_ws(',',(SELECT count(*) FROM processed_lots),(SELECT count(*) FROM lot_geo_snapshots),(SELECT count(*) FROM app_users),(SELECT count(*) FROM lot_sync_runs),(SELECT count(*) FROM map_datasets))"
 $schemaSql = "SELECT version_num FROM alembic_version LIMIT 1"
+$mapStorageSql = "SELECT concat_ws(',',count(*),count(*) FILTER (WHERE is_current),coalesce(sum(tile_count) FILTER (WHERE NOT is_current),0),coalesce(sum(tile_count),0)) FROM map_datasets"
+$mapStorageRaw = docker exec $databaseContainer psql -U $pgUser -d $pgDatabase -Atc $mapStorageSql
+if ($LASTEXITCODE -ne 0 -or -not $mapStorageRaw) { throw 'Could not read map storage guard before backup' }
+$mapStorageParts = $mapStorageRaw.Trim().Split(',')
+if ($mapStorageParts.Count -ne 4) { throw "Unexpected map storage guard result: $mapStorageRaw" }
+$mapStorage = [ordered]@{
+    dataset_count = [int]$mapStorageParts[0]
+    current_dataset_count = [int]$mapStorageParts[1]
+    non_current_tile_count = [long]$mapStorageParts[2]
+    declared_tile_count = [long]$mapStorageParts[3]
+}
+$mapStorageAnomaly = (
+    $mapStorage.current_dataset_count -ne 1 -or
+    $mapStorage.dataset_count -gt $MaxMapDatasetCountWarning -or
+    $mapStorage.non_current_tile_count -gt $MaxNonCurrentMapTilesWarning
+)
+if ($mapStorageAnomaly) {
+    Write-Warning ("Map storage anomaly before backup: datasets={0}, current={1}, non_current_tiles={2}. Backup will continue but metadata will flag the condition." -f $mapStorage.dataset_count, $mapStorage.current_dataset_count, $mapStorage.non_current_tile_count)
+}
+
 $sourceCounts = docker exec $databaseContainer psql -U $pgUser -d $pgDatabase -Atc $countSql
 if ($LASTEXITCODE -ne 0) { throw 'Could not read source row counts before backup' }
 $sourceSchema = docker exec $databaseContainer psql -U $pgUser -d $pgDatabase -Atc $schemaSql
@@ -108,6 +131,8 @@ $details = [ordered]@{
     source_counts_before = $sourceCounts.Trim()
     source_counts_after = $sourceCountsAfter.Trim()
     source_changed_during_backup = $sourceChangedDuringBackup
+    map_storage = $mapStorage
+    map_storage_anomaly = $mapStorageAnomaly
     compression_level = $CompressionLevel
     backup_duration_seconds = $backupDurationSeconds
     restored_counts = if ($VerifyRestore) { $restoredCounts.Trim() } else { $null }
@@ -119,11 +144,24 @@ $details = [ordered]@{
 }
 $details | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding utf8
 
-if ($RetainDays -gt 0) {
-    $cutoff = (Get-Date).AddDays(-$RetainDays)
-    Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
-        Where-Object LastWriteTime -lt $cutoff |
-        Remove-Item -Force
+if ($RetainCount -gt 0) {
+    if ($restoreStatus -ne 'passed') {
+        Write-Warning "Retention skipped because the new backup has not passed isolated restore verification."
+    } else {
+        $dumpFiles = @(
+            Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.dump' |
+                Sort-Object LastWriteTimeUtc -Descending
+        )
+        $protected = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($dump in ($dumpFiles | Select-Object -First $RetainCount)) {
+            [void]$protected.Add($dump.FullName)
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+            [void]$protected.Add((Join-Path $resolvedDestination "$stem.json"))
+        }
+        Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
+            Where-Object { -not $protected.Contains($_.FullName) } |
+            Remove-Item -Force
+    }
 }
 
 $details | ConvertTo-Json

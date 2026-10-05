@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$BackupDirectory = 'C:\ProgramData\BankrotAI\dr-backups',
+    [string]$BackupDirectory = 'D:\BankrotAI\dr-backups',
     [string]$LogDirectory = 'C:\BankrotAI\logs\phase3-health',
     [string]$OutputPath = '',
-    [int]$MaxBackupAgeHours = 30,
-    [int]$MaxVerifiedRestoreAgeHours = 192
+    [int]$MaxBackupAgeHours = 60,
+    [int]$MaxVerifiedRestoreAgeHours = 60,
+    [int]$MaxMapDatasetCountWarning = 5,
+    [long]$MaxNonCurrentMapTilesWarning = 500000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,6 +72,33 @@ try {
     Add-Check -Name 'application-data-health' -Ok $false -Details @{ error = $_.Exception.Message }
 }
 
+$mapStorage = $null
+try {
+    $mapStorageRaw = docker exec bankrotai-home-postgres psql -U bankrotai -d bankrotai -Atc "SELECT concat_ws(',',count(*),count(*) FILTER (WHERE is_current),coalesce(sum(tile_count) FILTER (WHERE NOT is_current),0),coalesce(sum(tile_count),0)) FROM map_datasets"
+    if ($LASTEXITCODE -ne 0 -or -not $mapStorageRaw) { throw 'Map storage query failed' }
+    $parts = $mapStorageRaw.Trim().Split(',')
+    if ($parts.Count -ne 4) { throw "Unexpected map storage result: $mapStorageRaw" }
+    $mapStorage = [ordered]@{
+        dataset_count = [int]$parts[0]
+        current_dataset_count = [int]$parts[1]
+        non_current_tile_count = [long]$parts[2]
+        declared_tile_count = [long]$parts[3]
+    }
+    Add-Check -Name 'map-current-dataset' -Ok ($mapStorage.current_dataset_count -eq 1) -Details @{
+        current_dataset_count = $mapStorage.current_dataset_count
+    }
+    Add-Check -Name 'map-storage-dataset-count' -Ok ($mapStorage.dataset_count -le $MaxMapDatasetCountWarning) -Severity 'warning' -Details @{
+        dataset_count = $mapStorage.dataset_count
+        recommended_max = $MaxMapDatasetCountWarning
+    }
+    Add-Check -Name 'map-storage-non-current-tiles' -Ok ($mapStorage.non_current_tile_count -le $MaxNonCurrentMapTilesWarning) -Severity 'warning' -Details @{
+        non_current_tile_count = $mapStorage.non_current_tile_count
+        recommended_max = $MaxNonCurrentMapTilesWarning
+    }
+} catch {
+    Add-Check -Name 'map-storage' -Ok $false -Severity 'warning' -Details @{ error = $_.Exception.Message }
+}
+
 $now = (Get-Date).ToUniversalTime()
 if (-not (Test-Path -LiteralPath $BackupDirectory)) {
     Add-Check -Name 'backup-recent' -Ok $false -Details @{ reason = 'backup-directory-missing' }
@@ -121,6 +150,7 @@ $result = [ordered]@{
     warning_count = $warnings
     checks = $checks
     application = $appHealth
+    map_storage = $mapStorage
 }
 
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null

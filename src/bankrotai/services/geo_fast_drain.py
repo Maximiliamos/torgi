@@ -381,12 +381,13 @@ def run_geo_fast_drain(
                     counts = {key: int(released[key]) for key in ("p7_total", "p7_due", "p7_held", "p7_cfo")}
                     aggregate["last_release"] = released
 
+            if counts["p7_total"] == 0:
+                stop_reason = "nothing_to_drain"
+                break
+
             network = network_health_snapshot()
             if bool((network.get("external") or {}).get("circuit_open")):
                 stop_reason = "external_network_degraded"
-                break
-
-            if counts["p7_total"] == 0:
                 break
 
             batch_task_id = f"{task_id}-batch-{batch_index + 1:03d}"
