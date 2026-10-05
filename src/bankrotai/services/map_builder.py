@@ -6,7 +6,7 @@ import logging
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import delete, func, select, text, update
@@ -122,9 +122,11 @@ def cleanup_map_datasets(
         raise ValueError("min_age_hours must be positive")
     if building_min_age_hours < min_age_hours:
         raise ValueError("building_min_age_hours must be >= min_age_hours")
-    reference_time = now or datetime.now(timezone.utc).replace(tzinfo=None)
-    stale_cutoff = reference_time.timestamp() - min_age_hours * 3600
-    building_cutoff = reference_time.timestamp() - building_min_age_hours * 3600
+    reference_time = now or datetime.now(timezone.utc)
+    if reference_time.tzinfo is not None:
+        reference_time = reference_time.astimezone(timezone.utc).replace(tzinfo=None)
+    stale_cutoff = reference_time - timedelta(hours=min_age_hours)
+    building_cutoff = reference_time - timedelta(hours=building_min_age_hours)
     with session_factory() as session:
         if session.get_bind().dialect.name == "postgresql":
             session.execute(
@@ -149,7 +151,9 @@ def cleanup_map_datasets(
                 # Count-based retention is the hard storage bound. Once a newer
                 # rollback set exists, older ready datasets are redundant.
                 return True
-            created = dataset.created_at.timestamp()
+            created = dataset.created_at
+            if created.tzinfo is not None:
+                created = created.astimezone(timezone.utc).replace(tzinfo=None)
             if dataset.status in {"failed", "rejected"}:
                 return created <= stale_cutoff
             if dataset.status == "building":
