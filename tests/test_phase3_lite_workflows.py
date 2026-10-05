@@ -73,6 +73,10 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "docker volume prune" not in backup
     assert "[Phase 3] Backup/restore alert" in backup
     assert "cancel-in-progress: false" in backup
+    assert "wait-map-retention:" in backup
+    assert "P2 production maintenance" in backup
+    assert "Wait for map retention on the same main revision" in backup
+    assert "needs: wait-map-retention" in backup
 
     full_reconcile = (ROOT / ".github" / "workflows" / "phase3-lite-full-reconcile.yml").read_text(encoding="utf-8")
     home_deploy = (ROOT / ".github" / "workflows" / "home-secondary-deploy.yml").read_text(encoding="utf-8")
