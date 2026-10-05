@@ -561,6 +561,12 @@ def build_geocoding_address_candidates(
         (r"\bс\.(?=\s)", "село "),
         (r"\bд\.(?=\s)", "дом "),
         (r"\bул\.(?=\s)", "улица "),
+        (r"\bкорп\.(?=\s*\w)", "корпус "),
+        (r"\bстр\.(?=\s*\w)", "строение "),
+        (r"\bвл\.(?=\s*\w)", "владение "),
+        (r"\bлит\.(?=\s*\w)", "литера "),
+        (r"\bпр-т\b", "проспект"),
+        (r"\bпер\.(?=\s)", "переулок "),
     )
     for pattern, replacement in replacements:
         value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
@@ -590,11 +596,37 @@ def build_geocoding_address_candidates(
         locality,
         flags=re.IGNORECASE,
     )
-    street = next((part for part in parts if re.search(r"\b(?:улица|проспект|шоссе|переулок)\b", part, re.I)), "")
-    house = next((part for part in parts if re.search(r"\bдом\s*\d", part, re.IGNORECASE)), "")
-    house_number = re.sub(r"^дом\s*", "", house, flags=re.IGNORECASE) if house else ""
+    street = next(
+        (
+            part
+            for part in parts
+            if re.search(
+                r"\b(?:улица|проспект|шоссе|переулок|проезд|набережная|площадь|тракт)\b",
+                part,
+                re.I,
+            )
+        ),
+        "",
+    )
+    house = next(
+        (
+            part
+            for part in parts
+            if re.search(r"\b(?:дом|владение)\s*\d", part, re.IGNORECASE)
+        ),
+        "",
+    )
+    house_number = re.sub(r"^(?:дом|владение)\s*", "", house, flags=re.IGNORECASE) if house else ""
 
     candidates = [value]
+    unit_stripped = re.sub(
+        r",?\s*(?:помещение|пом\.|квартира|кв\.|комната|офис)\s*[№#]?\s*[\w/-]+.*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;")
+    if unit_stripped and unit_stripped.casefold() != value.casefold():
+        candidates.append(unit_stripped)
     if street and locality_query:
         candidates.append(", ".join(part for part in (house_number, street, locality_query, district, region) if part))
     if locality_query and district:
@@ -819,12 +851,12 @@ class PhotonGeocoder:
         last_operational_category = "connection_error"
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
         street_match = re.search(
-            r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок)\s*([^,;]+)",
+            r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок|пер\.|шоссе|проезд|набережная|площадь|тракт)\s*([^,;]+)",
             address,
             re.IGNORECASE,
         )
         expected_street = street_match.group(1).strip().casefold() if street_match else ""
-        house_match = re.search(r"(?:д\.|дом)\s*([0-9]+[а-яa-z]?)", address, re.IGNORECASE)
+        house_match = re.search(r"(?:д\.|дом|вл\.|владение)\s*([0-9]+[а-яa-z]?)", address, re.IGNORECASE)
 
         def normalize_house(value: str) -> str:
             confusables = str.maketrans(
@@ -1132,6 +1164,25 @@ def resolve_lot_geo(
         description=description,
         region_name=region_name,
     )
+    provider_address_fallbacks: list[str] = []
+
+    def remember_provider_address(
+        result: CadastralObjectResult | None,
+        expected_cadastral_number: str | None,
+    ) -> None:
+        if result is None or not result.address:
+            return
+        expected = re.sub(r"\s+", "", str(expected_cadastral_number or ""))
+        observed = re.sub(r"\s+", "", str(result.cadastral_number or ""))
+        if expected and observed and expected != observed:
+            return
+        for candidate in build_geocoding_address_candidates(
+            result.address,
+            region_name=region_name,
+        )[:2]:
+            key = candidate.casefold()
+            if key not in {item.casefold() for item in provider_address_fallbacks}:
+                provider_address_fallbacks.append(candidate)
 
     def note_operational(
         exc: GeoProviderUnavailable,
@@ -1197,6 +1248,8 @@ def resolve_lot_geo(
                 expected_cadastral_number=candidate,
                 candidate_index=candidate_index,
             )
+            if not nspd_result:
+                remember_provider_address(nspd_candidate, candidate)
         if nspd_result:
             return nspd_result
         if not bulk or get_settings().geo_bulk_ik12_fallback:
@@ -1213,6 +1266,8 @@ def resolve_lot_geo(
                     expected_cadastral_number=candidate,
                     candidate_index=candidate_index,
                 )
+                if not ik12_result:
+                    remember_provider_address(ik12_candidate, candidate)
             if ik12_result:
                 return ik12_result
 
@@ -1223,11 +1278,14 @@ def resolve_lot_geo(
     # geocodable lot. Nominatim remains disabled in bulk unless explicitly
     # configured, so this adds no public-provider fan-out.
     address_attempt_limit = 3 if bulk else 2
-    address_attempts: list[str] = (
-        list(address_candidates[:address_attempt_limit])
-        if bulk
-        else list(address_candidates[:1])
-    )
+    address_attempts: list[str] = []
+    for candidate in [*provider_address_fallbacks, *address_candidates]:
+        if candidate.casefold() in {item.casefold() for item in address_attempts}:
+            continue
+        address_attempts.append(candidate)
+        if len(address_attempts) >= address_attempt_limit:
+            break
+    provider_address_keys = {item.casefold() for item in provider_address_fallbacks}
     source_text = " ".join(part for part in (title, description) if part)
     supplemental = extract_best_numbered_address(source_text) if source_text else None
     if supplemental:
@@ -1243,7 +1301,10 @@ def resolve_lot_geo(
                 address_attempts[-1] = supplemental
 
     for candidate_index, candidate in enumerate(address_attempts):
-        address_source = "address_geocoder" if candidate_index == 0 else "address_geocoder_alt"
+        if candidate.casefold() in provider_address_keys:
+            address_source = "address_geocoder_cadastral_hint"
+        else:
+            address_source = "address_geocoder" if candidate_index == 0 else "address_geocoder_alt"
         try:
             addr_result = CADASTRAL_GEOCODER.search_by_address(
                 candidate,
