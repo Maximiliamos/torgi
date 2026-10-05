@@ -101,7 +101,8 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "wait-home-deploy:" in backup
     assert "needs: wait-home-deploy" in backup
     assert "Wait for the same main revision on the home origin" in backup
-    assert "Reclaim safe backup space under critical disk pressure" in backup
+    assert "Verify C temp headroom and D backup capacity" in backup
+    assert "Decide whether the 48-hour backup is due" in backup
     assert "minimumFreeGb = 20" in backup
     assert "Backup refused: C: has only" in backup
     assert "restore_verification -eq 'passed'" in backup
