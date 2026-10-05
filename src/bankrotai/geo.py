@@ -1277,7 +1277,7 @@ def resolve_lot_geo(
     # bounded set so malformed auction-card prose does not strand an otherwise
     # geocodable lot. Nominatim remains disabled in bulk unless explicitly
     # configured, so this adds no public-provider fan-out.
-    address_attempt_limit = 3 if bulk else 2
+    address_attempt_limit = 3 if bulk else 1
     address_attempts: list[str] = []
     for candidate in [*provider_address_fallbacks, *address_candidates]:
         if candidate.casefold() in {item.casefold() for item in address_attempts}:
