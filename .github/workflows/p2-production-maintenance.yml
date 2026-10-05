@@ -25,7 +25,7 @@ jobs:
   maintain:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 45
+    timeout-minutes: 120
     outputs:
       warning_count: ${{ steps.maintenance.outputs.warning_count }}
     steps:
