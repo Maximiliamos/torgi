@@ -99,7 +99,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "-VerifyRestore" in backup
     assert "actions: read" in backup
     assert "wait-home-deploy:" in backup
-    assert "needs: wait-home-deploy" in backup
+    assert "wait-map-retention:" in backup
+    assert "P2 production maintenance" in backup
+    assert "needs: wait-map-retention" in backup
     assert "Wait for the same main revision on the home origin" in backup
     assert "Verify C temp headroom and D backup capacity" in backup
     assert "Decide whether the 48-hour backup is due" in backup
