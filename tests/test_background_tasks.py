@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from celery.exceptions import Retry
@@ -162,6 +164,29 @@ def test_transient_errors_are_classified_for_retry() -> None:
     assert tasks._is_transient_sync_error(TimeoutError("read timeout"))
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 400 invalid filter"))
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 401"))
+
+
+def test_p7_running_campaign_becomes_stale_only_after_hard_limit_plus_grace() -> None:
+    now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+    stale = SimpleNamespace(
+        status="running",
+        started_at=(now - tasks._P7_RUNNING_STALE_AFTER - timedelta(seconds=1)).replace(tzinfo=None),
+        created_at=(now - timedelta(days=1)).replace(tzinfo=None),
+    )
+    fresh = SimpleNamespace(
+        status="running",
+        started_at=(now - tasks._P7_RUNNING_STALE_AFTER + timedelta(seconds=1)).replace(tzinfo=None),
+        created_at=(now - timedelta(days=1)).replace(tzinfo=None),
+    )
+    queued = SimpleNamespace(
+        status="queued",
+        started_at=None,
+        created_at=(now - timedelta(days=1)).replace(tzinfo=None),
+    )
+
+    assert tasks._p7_campaign_is_stale(stale, now=now)
+    assert not tasks._p7_campaign_is_stale(fresh, now=now)
+    assert not tasks._p7_campaign_is_stale(queued, now=now)
 
 
 def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> None:
