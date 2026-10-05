@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
+    [switch]$ApplyMapRetention,
     [string]$OutputPath = '',
     [string]$LogDirectory = 'C:\BankrotAI\logs\p2-maintenance',
     [int]$CriticalFreeGb = 15,
@@ -103,20 +104,21 @@ if ($Apply) {
     }
 }
 
-$mapCommand = if ($Apply) {
+$mapApply = [bool]($Apply -or $ApplyMapRetention)
+$mapCommand = if ($mapApply) {
     "import json; from bankrotai.tasks import cleanup_old_map_datasets_task; print(json.dumps(cleanup_old_map_datasets_task.run(), default=str))"
 } else {
-    "import json; from bankrotai.db import SessionLocal; from bankrotai.services.map_builder import cleanup_map_datasets; print(json.dumps(cleanup_map_datasets(SessionLocal, retain_previous_ready=1, min_age_hours=24, apply=False), default=str))"
+    "import json; from bankrotai.db import SessionLocal; from bankrotai.services.map_builder import cleanup_map_datasets; print(json.dumps(cleanup_map_datasets(SessionLocal, retain_previous_ready=2, min_age_hours=1, building_min_age_hours=6, apply=False), default=str))"
 }
 $mapJson = docker exec bankrotai-home-map-worker python -c $mapCommand
 if ($LASTEXITCODE -ne 0 -or -not $mapJson) {
-    Add-Check -Name 'map-retention' -Ok $false -Details @{ apply = [bool]$Apply }
+    Add-Check -Name 'map-retention' -Ok $false -Details @{ apply = $mapApply }
     $mapRetention = $null
 } else {
     $mapRetention = ($mapJson | Select-Object -Last 1) | ConvertFrom-Json
     $candidateCount = if ($null -ne $mapRetention.candidate_dataset_count) { [int]$mapRetention.candidate_dataset_count } else { 0 }
     Add-Check -Name 'map-retention' -Ok $true -Details @{
-        apply = [bool]$Apply
+        apply = $mapApply
         candidate_dataset_count = $candidateCount
     }
 }
