@@ -988,7 +988,12 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
             )
         session.commit()
 
-    dry_run = cleanup_map_datasets(factory, now=now)
+    dry_run = cleanup_map_datasets(
+        factory,
+        now=now,
+        retain_previous_ready=1,
+        min_age_hours=24,
+    )
     assert dry_run == {
         "dry_run": True,
         "retained_previous_ready": 1,
@@ -999,7 +1004,13 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
     with factory() as session:
         assert session.query(MapDataset).count() == 5
 
-    applied = cleanup_map_datasets(factory, now=now, apply=True)
+    applied = cleanup_map_datasets(
+        factory,
+        now=now,
+        retain_previous_ready=1,
+        min_age_hours=24,
+        apply=True,
+    )
     assert applied["dry_run"] is False
     with factory() as session:
         versions = set(session.scalars(select(MapDataset.version)))
@@ -1008,6 +1019,77 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
         assert "recent-failed" in versions
         assert "older-ready" not in versions
         assert "old-failed" not in versions
+
+
+def test_map_dataset_cleanup_bounds_ready_versions_by_count_without_waiting_for_age():
+    factory = _database()
+    now = datetime(2026, 10, 5, 18, 0, 0)
+    with factory() as session:
+        current = MapDataset(
+            version="current-ready",
+            status="ready",
+            is_current=True,
+            point_count=1,
+            tile_count=1,
+            created_at=now,
+            published_at=now,
+        )
+        previous_one = MapDataset(
+            version="previous-one",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=now - timedelta(minutes=1),
+            published_at=now - timedelta(minutes=1),
+        )
+        previous_two = MapDataset(
+            version="previous-two",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=now - timedelta(minutes=2),
+            published_at=now - timedelta(minutes=2),
+        )
+        excess_ready = MapDataset(
+            version="excess-ready",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=now - timedelta(minutes=3),
+            published_at=now - timedelta(minutes=3),
+        )
+        session.add_all([current, previous_one, previous_two, excess_ready])
+        session.flush()
+        for dataset in (current, previous_one, previous_two, excess_ready):
+            session.add(
+                MapTile(
+                    dataset_id=dataset.id,
+                    z=0,
+                    x=0,
+                    y=0,
+                    feature_count=0,
+                    etag=f"etag-{dataset.id}",
+                    payload_json={"features": []},
+                )
+            )
+        session.commit()
+
+    dry_run = cleanup_map_datasets(factory, now=now)
+
+    assert dry_run["retained_previous_ready"] == 2
+    assert dry_run["retained_previous_ready_versions"] == ["previous-one", "previous-two"]
+    assert dry_run["candidate_versions"] == ["excess-ready"]
+    assert dry_run["candidate_status_counts"]["ready"] == 1
+
+    applied = cleanup_map_datasets(factory, now=now, apply=True)
+    assert applied["deleted_dataset_count"] == 1
+    assert applied["deleted_tile_count"] == 1
+    with factory() as session:
+        versions = set(session.scalars(select(MapDataset.version)))
+    assert versions == {"current-ready", "previous-one", "previous-two"}
         assert (
             session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.not_in(select(MapDataset.id)))) == 0
         )
