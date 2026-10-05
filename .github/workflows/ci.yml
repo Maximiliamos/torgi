@@ -133,7 +133,13 @@ jobs:
             exit 0
           fi
           advisories="$(printf '%s\n' "$full_audit" | grep -oE 'GHSA-[a-z0-9-]+' | sort -u || true)"
-          unexpected="$(printf '%s\n' "$advisories" | grep -v '^GHSA-vfj7-8cjw-p6xm      - run: npm run typecheck
+          unexpected="$(printf '%s\n' "$advisories" | grep -vx 'GHSA-vfj7-8cjw-p6xm' || true)"
+          if ! printf '%s\n' "$advisories" | grep -qx 'GHSA-vfj7-8cjw-p6xm' || test -n "$unexpected"; then
+            echo "Unexpected high/critical npm advisory set: $advisories" >&2
+            exit "$full_status"
+          fi
+          echo "::warning::Allowing unpatched dev-only GHSA-vfj7-8cjw-p6xm; runtime npm audit is clean."
+      - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
       - name: Build production WEB bundle with direct map tiles
