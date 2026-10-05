@@ -166,7 +166,7 @@ def test_transient_errors_are_classified_for_retry() -> None:
     assert not tasks._is_transient_sync_error(RuntimeError("HTTP 401"))
 
 
-def test_p7_running_campaign_becomes_stale_only_after_hard_limit_plus_grace() -> None:
+def test_p7_running_campaign_becomes_stale_after_acceptance_monitor_plus_grace() -> None:
     now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
     stale = SimpleNamespace(
         status="running",
@@ -187,6 +187,11 @@ def test_p7_running_campaign_becomes_stale_only_after_hard_limit_plus_grace() ->
     assert tasks._p7_campaign_is_stale(stale, now=now)
     assert not tasks._p7_campaign_is_stale(fresh, now=now)
     assert not tasks._p7_campaign_is_stale(queued, now=now)
+
+    assert tasks._P7_RUNNING_STALE_AFTER < timedelta(seconds=tasks._P7_TASK_SOFT_TIME_LIMIT_SECONDS)
+    assert tasks._P7_RUNNING_STALE_AFTER == timedelta(
+        seconds=tasks._P7_WORKFLOW_MONITOR_SECONDS + tasks._P7_STALE_GRACE_SECONDS
+    )
 
 
 def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> None:

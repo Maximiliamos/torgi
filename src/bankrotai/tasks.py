@@ -67,9 +67,10 @@ _QUEUE_MAP = "map"
 _QUEUE_MAINTENANCE = "maintenance"
 _P7_TASK_SOFT_TIME_LIMIT_SECONDS = 4 * 60 * 60
 _P7_TASK_HARD_TIME_LIMIT_SECONDS = 5 * 60 * 60
-_P7_STALE_GRACE_SECONDS = 15 * 60
+_P7_WORKFLOW_MONITOR_SECONDS = 3 * 60 * 60 + 30 * 60
+_P7_STALE_GRACE_SECONDS = 5 * 60
 _P7_RUNNING_STALE_AFTER = timedelta(
-    seconds=_P7_TASK_HARD_TIME_LIMIT_SECONDS + _P7_STALE_GRACE_SECONDS
+    seconds=_P7_WORKFLOW_MONITOR_SECONDS + _P7_STALE_GRACE_SECONDS
 )
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
@@ -163,7 +164,7 @@ def _utc_now() -> datetime:
 
 
 def _p7_campaign_is_stale(state: BackgroundTaskState, *, now: datetime | None = None) -> bool:
-    """Return True only when a running P7 row outlived the Celery hard limit plus grace."""
+    """Return True when a running P7 row outlived the acceptance monitor plus grace."""
     if state.status != "running":
         return False
     reference = state.started_at or state.created_at
@@ -271,7 +272,7 @@ def schedule_geo_fast_drain() -> str:
             existing.finished_at = recovered_at
             existing.error_message = (
                 "Recovered stale P7 campaign before reschedule: running state exceeded "
-                f"{int(_P7_RUNNING_STALE_AFTER.total_seconds())} seconds"
+                f"the acceptance monitor window ({int(_P7_RUNNING_STALE_AFTER.total_seconds())} seconds)"
             )
             progress = dict(existing.progress_json or {})
             progress["phase"] = "stale_recovered"
