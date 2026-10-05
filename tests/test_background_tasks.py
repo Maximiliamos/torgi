@@ -299,7 +299,7 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
             "status": "queued",
             "task_id": "source-retry-1",
             "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
-            "error_category": "read_timeout",
+            "error_category": "http_5xx",
         }
     ]
 
