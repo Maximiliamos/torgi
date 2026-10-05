@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pytest
 from celery.exceptions import Retry
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from bankrotai import api, tasks
+from bankrotai.db import Base, BackgroundTaskState
 from bankrotai.auth import AuthenticatedUser
 from bankrotai.services.ingestion import SyncAlreadyRunningError
 
@@ -192,6 +195,108 @@ def test_p7_running_campaign_becomes_stale_after_acceptance_monitor_plus_grace()
     assert tasks._P7_RUNNING_STALE_AFTER == timedelta(
         seconds=tasks._P7_WORKFLOW_MONITOR_SECONDS + tasks._P7_STALE_GRACE_SECONDS
     )
+
+
+
+def test_schedule_p7_completes_existing_running_campaign_when_plan_is_empty(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(
+            BackgroundTaskState(
+                task_id="p7-existing-empty",
+                task_type="geocoding_fast_drain",
+                status="running",
+                started_at=now,
+                progress_json={"phase": "draining", "processed": 0, "geocoded": 0},
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def scope():
+        with SessionLocal() as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(tasks, "session_scope", scope)
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geo_fast_drain_plan",
+        lambda _session: {
+            "legacy_total": 0,
+            "legacy_by_classification": {},
+            "legacy_cfo": 0,
+            "p7_held": 0,
+        },
+    )
+    monkeypatch.setattr(
+        tasks.geo_fast_drain_task,
+        "apply_async",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no task should be queued")),
+    )
+
+    task_id = tasks.schedule_geo_fast_drain()
+
+    with SessionLocal() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one()
+
+    assert task_id == "p7-existing-empty"
+    assert state.status == "completed"
+    assert state.finished_at is not None
+    assert state.error_message is None
+    assert state.progress_json["phase"] == "completed"
+    assert state.progress_json["stop_reason"] == "nothing_to_drain"
+    assert state.progress_json["p7_total"] == 0
+    assert state.result_json["p7_total"] == 0
+
+
+def test_schedule_p7_keeps_fresh_running_campaign_when_plan_has_work(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(
+            BackgroundTaskState(
+                task_id="p7-existing-work",
+                task_type="geocoding_fast_drain",
+                status="running",
+                started_at=now,
+                progress_json={"phase": "draining"},
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def scope():
+        with SessionLocal() as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(tasks, "session_scope", scope)
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geo_fast_drain_plan",
+        lambda _session: {
+            "legacy_total": 1,
+            "legacy_by_classification": {"network": 1},
+            "legacy_cfo": 0,
+            "p7_held": 0,
+        },
+    )
+
+    task_id = tasks.schedule_geo_fast_drain()
+
+    with SessionLocal() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one()
+
+    assert task_id == "p7-existing-work"
+    assert state.status == "running"
 
 
 def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> None:
