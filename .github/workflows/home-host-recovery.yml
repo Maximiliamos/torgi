@@ -1,0 +1,55 @@
+name: Home disk and backup recovery
+
+on:
+  push:
+    branches:
+      - ops/host-recovery
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-host-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Safe Docker cleanup without volumes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          Write-Output "C: free before: $before GB"
+          docker system df
+          docker container prune -f | Out-Host
+          docker image prune -a -f --filter "until=24h" | Out-Host
+          docker builder prune -a -f --filter "until=24h" | Out-Host
+          $after = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          Write-Output "C: free after: $after GB"
+          docker system df
+          if ($after -lt 20) { throw "Safe cleanup left only $after GB; refusing backup below 20 GB" }
+          if ($after -lt 25) { Write-Warning "Disk is above backup floor but below recommended 25 GB: $after GB" }
+
+      - name: Fresh PostgreSQL backup and isolated restore
+        shell: powershell
+        run: |
+          .\scripts\backup-home-postgres.ps1 -Destination 'C:\ProgramData\BankrotAI\dr-backups' -VerifyRestore -RetainDays 14 -CompressionLevel 1
+
+      - name: Verify resulting host health facts
+        shell: powershell
+        run: |
+          $free = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          if ($free -lt 15) { throw "Disk below critical floor after recovery: $free GB" }
+          $latest = Get-ChildItem 'C:\ProgramData\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $latest) { throw 'No backup metadata found after recovery' }
+          $meta = Get-Content $latest.FullName -Raw | ConvertFrom-Json
+          if ($meta.restore_verification -ne 'passed') { throw "Restore verification did not pass: $($meta.restore_verification)" }
+          if (-not $meta.sha256 -or -not $meta.source_schema_revision) { throw 'Backup metadata lacks checksum/schema evidence' }
+          [ordered]@{ disk_free_gb=$free; backup_metadata=$latest.FullName; backup_created_at=$meta.created_at; backup_size_bytes=$meta.size_bytes; restore_verification=$meta.restore_verification; schema_revision=$meta.source_schema_revision; sha256=$meta.sha256 } | ConvertTo-Json -Depth 5
