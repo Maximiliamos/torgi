@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
-    [string]$BackupDirectory = 'C:\ProgramData\BankrotAI\dr-backups',
-    [int]$MaxBackupAgeHours = 48,
+    [string]$BackupDirectory = 'D:\BankrotAI\dr-backups',
+    [int]$MaxBackupAgeHours = 60,
     [double]$FreeSpaceMultiplier = 1.35,
     [int]$ExtraFreeGb = 10,
     [string]$OutputPath = ''

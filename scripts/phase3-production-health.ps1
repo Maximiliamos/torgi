@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$BackupDirectory = 'C:\ProgramData\BankrotAI\dr-backups',
+    [string]$BackupDirectory = 'D:\BankrotAI\dr-backups',
     [string]$LogDirectory = 'C:\BankrotAI\logs\phase3-health',
     [string]$OutputPath = '',
-    [int]$MaxBackupAgeHours = 30,
-    [int]$MaxVerifiedRestoreAgeHours = 192,
+    [int]$MaxBackupAgeHours = 60,
+    [int]$MaxVerifiedRestoreAgeHours = 60,
     [int]$MaxMapDatasetCountWarning = 5,
     [long]$MaxNonCurrentMapTilesWarning = 500000
 )

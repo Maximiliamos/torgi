@@ -127,3 +127,10 @@ def test_legacy_tbankrot_cookie_migration_cannot_block_home_deploy() -> None:
     assert "-ErrorAction Stop" in workflow
     assert "try {" in workflow
     assert "catch {" in workflow
+
+
+def test_home_deploy_pre_migration_backup_uses_d_drive() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "$backupRoot = 'D:\\BankrotAI\\db-backups'" in workflow
+    assert "Pre-migration backup refused: D: drive is not available" in workflow
+    assert "Select-Object -Skip 1" in workflow
