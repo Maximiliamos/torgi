@@ -722,7 +722,8 @@ def update_source_health(
     now = utc_now()
     state.status = status
     state.updated_at = now
-    state.metadata_json = metadata
+    if metadata is not None:
+        state.metadata_json = {**(state.metadata_json or {}), **metadata}
     if status in {"running", "queued"}:
         state.last_started_at = now
     elif status == "healthy":
