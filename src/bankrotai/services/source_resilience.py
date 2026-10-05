@@ -251,6 +251,13 @@ def _retry_delay(classification: SourceFailureClassification, consecutive_failur
     index = min(max(consecutive_failures, 1) - 1, len(_SOURCE_RETRY_STEPS_SECONDS) - 1)
     return _SOURCE_RETRY_STEPS_SECONDS[index]
 
+def source_retry_delay_seconds(
+    classification: SourceFailureClassification,
+    consecutive_failures: int = 1,
+) -> int | None:
+    """Pure retry-delay helper for callers that cannot read persisted health state."""
+    return _retry_delay(classification, consecutive_failures)
+
 
 def record_source_outcome(
     session: Session,
