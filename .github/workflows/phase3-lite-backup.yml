@@ -2,14 +2,8 @@ name: Phase 3 Lite backup and restore drill
 
 on:
   workflow_dispatch:
-    inputs:
-      verify_restore:
-        description: 'Restore the backup into an isolated PostgreSQL container'
-        type: boolean
-        default: true
   schedule:
-    - cron: '17 2 * * 1-6'
-    - cron: '47 2 * * 0'
+    - cron: '17 2 * * *'
   push:
     branches: [main]
     paths:
@@ -68,71 +62,65 @@ jobs:
             }
           }
       - uses: actions/checkout@v7
-      - name: Reclaim safe backup space under critical disk pressure
+      - name: Decide whether the 48-hour backup is due
+        id: cadence
         shell: powershell
         run: |
-          $minimumFreeGb = 20
-          $targetFreeGb = 25
-          function Get-FreeGb {
-            $drive = Get-PSDrive -Name C
-            return [math]::Round($drive.Free / 1GB, 2)
-          }
-
-          $freeGb = Get-FreeGb
-          if ($freeGb -ge $minimumFreeGb) {
-            Write-Output "C: backup preflight OK: $freeGb GB free"
-            exit 0
-          }
-
-          $drBackupRoot = 'C:\ProgramData\BankrotAI\dr-backups'
-          if (Test-Path -LiteralPath $drBackupRoot) {
-            $dumpFiles = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.dump' | Sort-Object LastWriteTimeUtc -Descending)
-            $protected = New-Object 'System.Collections.Generic.HashSet[string]'
-            $verified = @(Get-ChildItem -LiteralPath $drBackupRoot -File -Filter 'bankrotai-*.json' | Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
-              try {
-                $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-                if ($meta.restore_verification -eq 'passed' -and $meta.backup_file) { $meta }
-              } catch {}
-            } | Select-Object -First 1)
-            if ($verified.Count -gt 0 -and (Test-Path -LiteralPath ([string]$verified[0].backup_file))) {
-              [void]$protected.Add([string]$verified[0].backup_file)
-            } elseif ($dumpFiles.Count -gt 0) {
-              [void]$protected.Add($dumpFiles[0].FullName)
-            }
-            foreach ($dump in ($dumpFiles | Sort-Object LastWriteTimeUtc)) {
-              if ($protected.Contains($dump.FullName)) { continue }
-              $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
-              Remove-Item -LiteralPath $dump.FullName -Force
-              $metaPath = Join-Path $drBackupRoot "$stem.json"
-              if (Test-Path -LiteralPath $metaPath) { Remove-Item -LiteralPath $metaPath -Force }
-              if ((Get-FreeGb) -ge $targetFreeGb) { break }
+          $root = 'D:\BankrotAI\dr-backups'
+          $due = $true
+          if ('\${{ github.event_name }}' -eq 'schedule' -and (Test-Path -LiteralPath $root)) {
+            $latestVerified = Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
+              Sort-Object LastWriteTimeUtc -Descending |
+              ForEach-Object {
+                try {
+                  $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file -and (Test-Path -LiteralPath ([string]$meta.backup_file))) {
+                    [pscustomobject]@{ File = $_; Metadata = $meta }
+                  }
+                } catch {}
+              } |
+              Select-Object -First 1
+            if ($latestVerified) {
+              $ageHours = ((Get-Date).ToUniversalTime() - $latestVerified.File.LastWriteTimeUtc).TotalHours
+              Write-Output "Latest verified D: backup age: $([math]::Round($ageHours,2)) hours"
+              if ($ageHours -lt 46) { $due = $false }
             }
           }
+          "due=$($due.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          Write-Output "Backup due=$due"
 
-          if ((Get-FreeGb) -lt $minimumFreeGb) {
-            $migrationRoot = 'C:\ProgramData\BankrotAI\db-backups'
-            if (Test-Path -LiteralPath $migrationRoot) {
-              Get-ChildItem -LiteralPath $migrationRoot -File -Filter 'pre-migration-*.dump' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 1 | Remove-Item -Force
-            }
-          }
-
-          $freeGb = Get-FreeGb
-          Write-Output "C: backup preflight after cleanup: $freeGb GB free"
-          if ($freeGb -lt $minimumFreeGb) { throw "Backup refused: C: has only $freeGb GB free; minimum is $minimumFreeGb GB" }
-      - name: Create backup and run scheduled restore drill
+      - name: Verify C temp headroom and D backup capacity
+        if: steps.cadence.outputs.due == 'true'
         shell: powershell
         run: |
-          $verify = $false
-          if ('${{ github.event_name }}' -eq 'push') { $verify = $true }
-          if ('${{ github.event.schedule }}' -eq '47 2 * * 0') { $verify = $true }
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.verify_restore }}' -eq 'true') { $verify = $true }
-          .\scripts\backup-home-postgres.ps1 `
-            -Destination 'C:\ProgramData\BankrotAI\dr-backups' `
-            -RetainDays 14 `
-            -VerifyRestore:$verify
-          $latest = Get-ChildItem 'C:\ProgramData\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File |
+          if (-not (Get-PSDrive -Name D -ErrorAction SilentlyContinue)) {
+            throw 'Backup refused: D: drive is not available'
+          }
+          $root = 'D:\BankrotAI\dr-backups'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $latestDump = Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.dump' |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          $estimatedGb = if ($latestDump) { [math]::Ceiling(($latestDump.Length / 1GB) * 1.25) } else { 30 }
+          $requiredGb = [math]::Max(30, $estimatedGb)
+          $cFree = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          $dFree = [math]::Round((Get-PSDrive -Name D).Free / 1GB, 2)
+          Write-Output "Backup preflight: C temp headroom=$cFree GB; D destination headroom=$dFree GB; required=$requiredGb GB"
+          if ($cFree -lt $requiredGb) { throw "Backup refused: C: has only $cFree GB free; temporary pg_dump needs about $requiredGb GB" }
+          if ($dFree -lt $requiredGb) { throw "Backup refused: D: has only $dFree GB free; destination needs about $requiredGb GB" }
+
+      - name: Create verified backup and keep only the newest pair
+        if: steps.cadence.outputs.due == 'true'
+        shell: powershell
+        run: |
+          .\scripts\backup-home-postgres.ps1 -Destination 'D:\BankrotAI\dr-backups' -RetainCount 1 -VerifyRestore
+          $latest = Get-ChildItem 'D:\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-          if ($latest) { Copy-Item $latest.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force }
+          if (-not $latest) { throw 'Verified backup metadata was not created on D:' }
+          $meta = Get-Content -LiteralPath $latest.FullName -Raw | ConvertFrom-Json
+          if ($meta.restore_verification -ne 'passed') { throw "Latest D: backup is not restore-verified: $($meta.restore_verification)" }
+          Copy-Item $latest.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force
+
       - name: Upload backup metadata
         if: always()
         uses: actions/upload-artifact@v7
