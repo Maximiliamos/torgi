@@ -197,6 +197,7 @@ Add-Check -Name 'disk-c-headroom' -Ok ($afterFree -ge $WarningFreeGb) -Severity 
 $result = [ordered]@{
     checked_at = (Get-Date).ToUniversalTime().ToString('o')
     applied = [bool]$Apply
+    map_retention_applied = $mapApply
     healthy = ($criticalFailures -eq 0)
     critical_failure_count = $criticalFailures
     warning_count = $warnings
