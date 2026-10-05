@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import socket
@@ -17,6 +18,9 @@ from bankrotai.db import SourceHealthState, utc_now
 
 SOURCE_CIRCUIT_FAILURE_THRESHOLD = 3
 SOURCE_CIRCUIT_COOLDOWN_SECONDS = 15 * 60
+SOURCE_GLOBAL_FAILURE_WINDOW_SECONDS = 2 * 60
+SOURCE_GLOBAL_CIRCUIT_SECONDS = 90
+SOURCE_GLOBAL_FAILURE_THRESHOLD = 2
 _SOURCE_RETRY_STEPS_SECONDS = (60, 180, 300, 900)
 
 _SOURCE_PROBE_URLS = {
@@ -170,8 +174,22 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
 
 
 def source_network_fingerprint() -> dict[str, Any]:
-    """Return non-secret runtime network facts useful for grouping incidents."""
+    """Return a non-secret route/DNS fingerprint useful for grouping incidents."""
+    parts = [
+        f"hostname={socket.gethostname()}",
+        f"http_proxy={bool(os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy'))}",
+        f"https_proxy={bool(os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy'))}",
+        f"no_proxy={bool(os.environ.get('NO_PROXY') or os.environ.get('no_proxy'))}",
+    ]
+    for filename in ("/etc/resolv.conf", "/proc/net/route"):
+        try:
+            with open(filename, "r", encoding="utf-8", errors="ignore") as handle:
+                parts.append(handle.read(4096))
+        except OSError:
+            continue
+    fingerprint = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
     return {
+        "fingerprint": fingerprint,
         "hostname": socket.gethostname(),
         "http_proxy_configured": bool(os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")),
         "https_proxy_configured": bool(os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")),
@@ -254,9 +272,19 @@ def _retry_delay(classification: SourceFailureClassification, consecutive_failur
 def source_retry_delay_seconds(
     classification: SourceFailureClassification,
     consecutive_failures: int = 1,
+    *,
+    jitter_key: str | None = None,
 ) -> int | None:
-    """Pure retry-delay helper for callers that cannot read persisted health state."""
-    return _retry_delay(classification, consecutive_failures)
+    """Return bounded delay with deterministic jitter to avoid synchronized retries."""
+    base = _retry_delay(classification, consecutive_failures)
+    if base is None or classification.retry_after_seconds is not None or not jitter_key:
+        return base
+    # Stable 0..10% additive jitter avoids test flakiness and retry stampedes.
+    digest = hashlib.sha256(
+        f"{jitter_key}:{classification.category}:{max(1, consecutive_failures)}".encode("utf-8")
+    ).digest()
+    jitter_cap = max(1, int(base * 0.10))
+    return base + (int.from_bytes(digest[:2], "big") % (jitter_cap + 1))
 
 
 def record_source_outcome(
@@ -301,7 +329,11 @@ def record_source_outcome(
         metadata["last_operational_failure_at"] = now.isoformat()
     else:
         consecutive = 0
-    delay = _retry_delay(classification, consecutive)
+    delay = source_retry_delay_seconds(
+        classification,
+        consecutive,
+        jitter_key=source_system,
+    )
     circuit_open = (
         classification.operational
         and consecutive >= SOURCE_CIRCUIT_FAILURE_THRESHOLD
@@ -374,7 +406,7 @@ def source_retry_decision(
     if next_retry is not None:
         delay = max(1, int((next_retry - current).total_seconds()))
     else:
-        delay = _retry_delay(
+        delay = source_retry_delay_seconds(
             classification or SourceFailureClassification(
                 str(status.get("last_error_category") or "unknown_upstream"),
                 bool(status.get("operational_failure")),
@@ -382,6 +414,7 @@ def source_retry_decision(
                 "",
             ),
             int(status.get("consecutive_operational_failures") or 1),
+            jitter_key=source_system,
         ) or 60
     return {
         "schedule": True,
@@ -391,13 +424,66 @@ def source_retry_decision(
     }
 
 
+def source_global_network_state(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Open a short global circuit only when independent sources fail operationally together."""
+    current = (now or utc_now()).replace(tzinfo=None)
+    cutoff = current - timedelta(seconds=SOURCE_GLOBAL_FAILURE_WINDOW_SECONDS)
+    degraded: list[tuple[str, datetime]] = []
+    fingerprints: set[str] = set()
+    for state in session.scalars(select(SourceHealthState)).all():
+        if state.source_system == "tbankrot.ru":
+            continue
+        metadata = dict(state.metadata_json or {})
+        if not metadata.get("operational_failure"):
+            continue
+        failed_at = _parse_timestamp(metadata.get("last_operational_failure_at"))
+        if failed_at is None or failed_at < cutoff:
+            continue
+        degraded.append((state.source_system, failed_at))
+        fingerprint = (metadata.get("network_fingerprint") or {}).get("fingerprint")
+        if fingerprint:
+            fingerprints.add(str(fingerprint))
+
+    degraded.sort(key=lambda item: item[1])
+    latest_failure_at = max((item[1] for item in degraded), default=None)
+    open_until = (
+        latest_failure_at + timedelta(seconds=SOURCE_GLOBAL_CIRCUIT_SECONDS)
+        if latest_failure_at is not None and len(degraded) >= SOURCE_GLOBAL_FAILURE_THRESHOLD
+        else None
+    )
+    circuit_open = bool(open_until is not None and open_until > current)
+    return {
+        "circuit_open": circuit_open,
+        "circuit_open_until": open_until,
+        "degraded_sources": [item[0] for item in degraded],
+        "degraded_source_count": len(degraded),
+        "network_fingerprints": sorted(fingerprints),
+    }
+
+
+def source_global_network_blocks(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    return bool(source_global_network_state(session, now=now)["circuit_open"])
+
+
 def sources_due_for_probe(session: Session, *, now: datetime | None = None) -> list[str]:
     current = (now or utc_now()).replace(tzinfo=None)
-    values: list[str] = []
+    values: set[str] = set()
+    global_state = source_global_network_state(session, now=current)
+    globally_degraded = set(global_state["degraded_sources"]) if global_state["circuit_open"] else set()
     for state in session.scalars(select(SourceHealthState)).all():
+        if state.source_system == "tbankrot.ru":
+            continue
         status = source_resilience_status(session, state.source_system, now=current)
-        if status["circuit_state"] == "half_open":
-            values.append(state.source_system)
+        if status["circuit_state"] == "half_open" or state.source_system in globally_degraded:
+            values.add(state.source_system)
     return sorted(values)
 
 
