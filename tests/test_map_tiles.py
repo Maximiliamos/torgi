@@ -1023,6 +1023,60 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
     assert response.json()["version"] == current_result["version"]
 
 
+def test_map_dataset_cleanup_deletes_tiles_in_bounded_restartable_chunks():
+    factory = _database()
+    build_map_dataset(factory)
+    now = datetime(2030, 1, 1, 12, 0, 0)
+    old = now - timedelta(days=30)
+    with factory() as session:
+        previous = MapDataset(
+            version="chunk-rollback",
+            status="ready",
+            is_current=False,
+            point_count=1,
+            tile_count=1,
+            created_at=old,
+            published_at=old,
+        )
+        candidate = MapDataset(
+            version="chunk-candidate",
+            status="failed",
+            is_current=False,
+            point_count=0,
+            tile_count=5,
+            created_at=old - timedelta(days=1),
+        )
+        session.add_all([previous, candidate])
+        session.flush()
+        for index in range(5):
+            session.add(
+                MapTile(
+                    dataset_id=candidate.id,
+                    z=0,
+                    x=index,
+                    y=0,
+                    feature_count=0,
+                    etag=f"chunk-etag-{index}",
+                    payload_json={"features": []},
+                )
+            )
+        session.commit()
+        candidate_id = candidate.id
+
+    applied = cleanup_map_datasets(
+        factory,
+        now=now,
+        apply=True,
+        tile_delete_chunk_size=2,
+    )
+
+    assert applied["deleted_dataset_count"] == 1
+    assert applied["deleted_tile_count"] == 5
+    assert applied["tile_delete_batches"] == 3
+    with factory() as session:
+        assert session.get(MapDataset, candidate_id) is None
+        assert session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id == candidate_id)) == 0
+
 
 def test_storage_statistics_use_dataset_metadata_without_scanning_tiles():
     factory = _database()
