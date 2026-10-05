@@ -73,9 +73,10 @@ _QUEUE_MAP = "map"
 _QUEUE_MAINTENANCE = "maintenance"
 _P7_TASK_SOFT_TIME_LIMIT_SECONDS = 4 * 60 * 60
 _P7_TASK_HARD_TIME_LIMIT_SECONDS = 5 * 60 * 60
-_P7_STALE_GRACE_SECONDS = 15 * 60
+_P7_WORKFLOW_MONITOR_SECONDS = 3 * 60 * 60 + 30 * 60
+_P7_STALE_GRACE_SECONDS = 5 * 60
 _P7_RUNNING_STALE_AFTER = timedelta(
-    seconds=_P7_TASK_HARD_TIME_LIMIT_SECONDS + _P7_STALE_GRACE_SECONDS
+    seconds=_P7_WORKFLOW_MONITOR_SECONDS + _P7_STALE_GRACE_SECONDS
 )
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
@@ -274,6 +275,33 @@ def schedule_geo_fast_drain() -> str:
             .first()
         )
         if existing is not None and not _p7_campaign_is_stale(existing):
+            from bankrotai.services.geo_fast_drain import geo_fast_drain_plan
+
+            plan = geo_fast_drain_plan(session)
+            if int(plan.get("legacy_total") or 0) == 0 and int(plan.get("p7_held") or 0) == 0:
+                completed_at = _utc_now()
+                progress = dict(existing.progress_json or {})
+                progress.update(
+                    {
+                        "phase": "completed",
+                        "status": "completed",
+                        "stop_reason": "nothing_to_drain",
+                        "p7_total": 0,
+                        "p7_due": 0,
+                        "p7_held": 0,
+                        "processed": int(progress.get("processed") or 0),
+                        "geocoded": int(progress.get("geocoded") or 0),
+                        "scheduler_noop_completed_at": completed_at.isoformat(),
+                        "plan_before": plan,
+                    }
+                )
+                existing.status = "completed"
+                existing.progress_json = progress
+                existing.result_json = dict(progress)
+                existing.error_message = None
+                existing.finished_at = completed_at
+                session.flush()
+                return existing.task_id
             return existing.task_id
         if existing is not None:
             recovered_at = _utc_now()
@@ -281,7 +309,7 @@ def schedule_geo_fast_drain() -> str:
             existing.finished_at = recovered_at
             existing.error_message = (
                 "Recovered stale P7 campaign before reschedule: running state exceeded "
-                f"{int(_P7_RUNNING_STALE_AFTER.total_seconds())} seconds"
+                f"the acceptance monitor window ({int(_P7_RUNNING_STALE_AFTER.total_seconds())} seconds)"
             )
             progress = dict(existing.progress_json or {})
             progress["phase"] = "stale_recovered"

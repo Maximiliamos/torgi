@@ -19,3 +19,10 @@ def test_unpatched_dev_advisory_exception_is_exact_and_runtime_stays_strict() ->
     assert "grep -vx 'GHSA-vfj7-8cjw-p6xm'" in workflow
     assert "Unexpected high/critical npm advisory set" in workflow
     assert "runtime npm audit is clean" in workflow
+
+def test_feature_branches_use_single_pull_request_ci_run() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'push:\n    branches: [main]' in workflow
+    assert 'pull_request:\n    branches: [main]' in workflow
+    assert 'branches: ["**"]' not in workflow
+
