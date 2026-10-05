@@ -1,0 +1,99 @@
+name: P9 GEO quality canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Release the bounded P9 canary into normal GEO processing'
+        type: boolean
+        default: false
+      limit:
+        description: 'Maximum lots to preview/requeue (1-500)'
+        type: number
+        default: 200
+      cfo_only:
+        description: 'Restrict the canary to Central Federal District regions'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-geo-quality-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require deployed P9 runtime and bounded inputs
+        shell: powershell
+        run: |
+          $geo = docker ps --filter 'name=^/bankrotai-home-geocoding-worker$' --format '{{.Names}}'
+          if ($geo -ne 'bankrotai-home-geocoding-worker') { throw 'Canonical GEO worker is not running' }
+          $limit = [int]'\${{ inputs.limit }}'
+          if ($limit -lt 1 -or $limit -gt 500) { throw "P9 canary limit must be between 1 and 500; got $limit" }
+          docker exec bankrotai-home-geocoding-worker python -c "from bankrotai.services.geo_backfill import geo_quality_canary_plan; print('p9-runtime-ok')"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployed GEO worker does not contain P9 canary runtime' }
+
+      - name: Preview or release bounded P9 canary
+        id: canary
+        shell: powershell
+        run: |
+          $limit = [int]'\${{ inputs.limit }}'
+          $cfoOnly = '\${{ inputs.cfo_only }}' -eq 'true'
+          $apply = '\${{ inputs.apply }}' -eq 'true'
+          $env:P9_LIMIT = [string]$limit
+          $env:P9_CFO_ONLY = if ($cfoOnly) { '1' } else { '0' }
+          $env:P9_APPLY = if ($apply) { '1' } else { '0' }
+
+          $script = @'
+          import json
+          import os
+          from bankrotai.db import SessionLocal
+          from bankrotai.services.geo_backfill import geo_quality_canary_plan, requeue_geo_quality_canary
+
+          limit = max(1, min(int(os.environ["P9_LIMIT"]), 500))
+          cfo_only = os.environ["P9_CFO_ONLY"] == "1"
+          apply = os.environ["P9_APPLY"] == "1"
+          session = SessionLocal()
+          try:
+              result = requeue_geo_quality_canary(session, limit=limit, cfo_only=cfo_only) if apply else geo_quality_canary_plan(session, limit=limit, cfo_only=cfo_only)
+          finally:
+              session.close()
+          result["apply"] = apply
+          print(json.dumps(result, ensure_ascii=False, default=str))
+          '@
+          $json = $script | docker exec --env "P9_LIMIT=$env:P9_LIMIT" --env "P9_CFO_ONLY=$env:P9_CFO_ONLY" --env "P9_APPLY=$env:P9_APPLY" -i bankrotai-home-geocoding-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Could not evaluate P9 canary' }
+          $payload = ($json | Select-Object -Last 1) | ConvertFrom-Json
+          $payload | ConvertTo-Json -Depth 8 | Tee-Object -FilePath "$env:RUNNER_TEMP\p9-geo-canary.json"
+          $requeued = 0
+          if ($null -ne $payload.requeued) { $requeued = [int]$payload.requeued }
+          "eligible=$([int]$payload.eligible)" >> $env:GITHUB_OUTPUT
+          "requeued=$requeued" >> $env:GITHUB_OUTPUT
+
+      - name: Queue normal GEO worker after canary release
+        if: \${{ inputs.apply }}
+        shell: powershell
+        run: |
+          $requeued = [int]'\${{ steps.canary.outputs.requeued }}'
+          if ($requeued -le 0) {
+            Write-Output 'No P9 candidates were released; no GEO task queued.'
+            exit 0
+          }
+          $taskId = docker exec bankrotai-home-geocoding-worker python -c "from bankrotai.tasks import geocode_pending_lots_task; r=geocode_pending_lots_task.apply_async(kwargs={'continuation_depth': 0}); print(r.id)"
+          if ($LASTEXITCODE -ne 0 -or -not $taskId) { throw 'Could not queue P9 GEO canary processing' }
+          Write-Output "Queued P9 GEO task: $($taskId | Select-Object -Last 1)"
+
+      - name: Upload canary evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p9-geo-quality-canary-\${{ github.run_id }}
+          path: \${{ runner.temp }}\p9-geo-canary.json
+          if-no-files-found: ignore
+          retention-days: 30
