@@ -1,0 +1,26 @@
+name: Home runner network diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Diagnose runner to GitHub Actions network path
+        shell: powershell
+        run: |
+          .\scripts\home-runner-network-diagnostics.ps1 -OutputPath "$env:RUNNER_TEMP\home-runner-network.json"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: home-runner-network-${{ github.run_id }}
+          path: ${{ runner.temp }}\home-runner-network.json
+          if-no-files-found: ignore
+          retention-days: 14
