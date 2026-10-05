@@ -1038,6 +1038,19 @@ def test_map_dataset_cleanup_is_dry_run_and_preserves_current_and_rollback(monke
         assert "recent-failed" in versions
         assert "older-ready" not in versions
         assert "old-failed" not in versions
+        assert (
+            session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.not_in(select(MapDataset.id)))) == 0
+        )
+
+    @contextmanager
+    def scope():
+        with factory() as session:
+            yield session
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    response = TestClient(api.app).get("/api/map/datasets/current")
+    assert response.status_code == 200
+    assert response.json()["version"] == current_result["version"]
 
 
 def test_map_dataset_cleanup_bounds_ready_versions_by_count_without_waiting_for_age():
@@ -1109,19 +1122,6 @@ def test_map_dataset_cleanup_bounds_ready_versions_by_count_without_waiting_for_
     with factory() as session:
         versions = set(session.scalars(select(MapDataset.version)))
     assert versions == {"current-ready", "previous-one", "previous-two"}
-        assert (
-            session.scalar(select(func.count(MapTile.id)).where(MapTile.dataset_id.not_in(select(MapDataset.id)))) == 0
-        )
-
-    @contextmanager
-    def scope():
-        with factory() as session:
-            yield session
-
-    monkeypatch.setattr(api, "read_session_scope", scope)
-    response = TestClient(api.app).get("/api/map/datasets/current")
-    assert response.status_code == 200
-    assert response.json()["version"] == current_result["version"]
 
 
 
