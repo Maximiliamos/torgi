@@ -92,7 +92,7 @@ if ($Apply) {
             if ($LASTEXITCODE -ne 0) { throw "Could not stop $mapWorker before compaction" }
         }
 
-        docker exec $postgres psql -v ON_ERROR_STOP=1 -U $pgUser -d $pgDatabase -c "SET statement_timeout = 0; VACUUM (FULL, ANALYZE) map_tiles;"
+        docker exec -e "PGOPTIONS=-c statement_timeout=0" $postgres psql -v ON_ERROR_STOP=1 -U $pgUser -d $pgDatabase -c "VACUUM (FULL, ANALYZE) map_tiles;"
         if ($LASTEXITCODE -ne 0) { throw 'VACUUM FULL map_tiles failed' }
 
         $afterRaw = docker exec $postgres psql -U $pgUser -d $pgDatabase -Atc "SELECT concat_ws(',',pg_total_relation_size('map_tiles'),pg_relation_size('map_tiles'),pg_indexes_size('map_tiles'))"
