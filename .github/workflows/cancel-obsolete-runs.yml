@@ -1,4 +1,4 @@
-name: Cancel obsolete queued runs
+name: Force cancel obsolete reconciliation
 
 on:
   push:
@@ -15,25 +15,24 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
+      TARGET_RUN: "37383423088"
     steps:
-      - name: Cancel obsolete workflow runs
+      - name: Force cancel obsolete reconciliation
         shell: bash
         run: |
           set -euo pipefail
-          for run_id in 37383423088 37385627616; do
-            status="$(curl --fail --silent --show-error \
+          status="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN" \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+          echo "target status=$status"
+          if [ "$status" != "completed" ]; then
+            curl --fail --silent --show-error \
+              -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
-              | python -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
-            echo "$run_id status=$status"
-            if [ "$status" != "completed" ]; then
-              curl --fail --silent --show-error \
-                -X POST \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H 'Accept: application/vnd.github+json' \
-                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" \
-                >/dev/null
-              echo "Cancellation requested for $run_id"
-            fi
-          done
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN/force-cancel" \
+              >/dev/null
+            echo "Force cancellation requested for $TARGET_RUN"
+          fi
