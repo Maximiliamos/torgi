@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$Destination = 'C:\BankrotAI\backups\postgres',
+    [string]$Destination = 'D:\BankrotAI\dr-backups',
     [switch]$VerifyRestore,
-    [int]$RetainDays = 14,
+    [ValidateRange(0, 10)]
+    [int]$RetainCount = 1,
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 1
 )
@@ -119,11 +120,25 @@ $details = [ordered]@{
 }
 $details | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding utf8
 
-if ($RetainDays -gt 0) {
-    $cutoff = (Get-Date).AddDays(-$RetainDays)
-    Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
-        Where-Object LastWriteTime -lt $cutoff |
-        Remove-Item -Force
+if ($RetainCount -gt 0) {
+    if ($restoreStatus -ne 'passed') {
+        Write-Warning "Retention skipped because the new backup has not passed isolated restore verification."
+    } else {
+        $dumpFiles = @(
+            Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.dump' |
+                Sort-Object LastWriteTimeUtc -Descending
+        )
+        $protected = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($dump in ($dumpFiles | Select-Object -First $RetainCount)) {
+            [void]$protected.Add($dump.FullName)
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+            [void]$protected.Add((Join-Path $resolvedDestination "$stem.json"))
+        }
+
+        Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
+            Where-Object { -not $protected.Contains($_.FullName) } |
+            Remove-Item -Force
+    }
 }
 
 $details | ConvertTo-Json
