@@ -316,8 +316,9 @@ def test_targeted_source_retry_skips_while_circuit_is_open(monkeypatch) -> None:
     }
 
 
-def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) -> None:
+def test_targeted_source_retry_uses_one_source_and_category_aware_requeue(monkeypatch) -> None:
     created: dict = {}
+    queued: list[tuple[str, str, int]] = []
 
     class FakeService:
         def __init__(self, _session_factory):
@@ -327,29 +328,46 @@ def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) 
             created.update(kwargs)
             return "retry-run"
 
-    captured: dict = {}
-
-    def retry(**kwargs):
-        captured.update(kwargs)
-        raise Retry()
+    class Queued:
+        id = "retry-again"
 
     monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
     monkeypatch.setattr(
         tasks.nationwide_lot_sync_task,
         "run",
-        lambda _run_id, _mode: {"status": "failed", "sources": [{"source_system": "bidexpert.ru", "status": "failed"}]},
+        lambda _run_id, _mode: {
+            "status": "failed",
+            "sources": [
+                {
+                    "source_system": "bidexpert.ru",
+                    "status": "failed",
+                    "error": "HTTP 503 upstream unavailable",
+                }
+            ],
+        },
     )
-    monkeypatch.setattr(tasks.automatic_nationwide_source_retry_task, "retry", retry)
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args[0], args[1], countdown)) or Queued(),
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "retry",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("generic retry must not run")),
+    )
 
-    with pytest.raises(Retry):
-        tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "full")
+    result = tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "full")
 
     assert created == {
         "triggered_by": "celery-beat",
         "trigger_type": "scheduled_retry",
         "total_sources": 1,
     }
-    assert captured["max_retries"] == tasks._NATIONWIDE_REFRESH_MAX_RETRIES
+    assert result["status"] == "failed"
+    assert queued == [("bidexpert.ru", "full", 60)]
+    assert result["targeted_source_retries"][0]["source_system"] == "bidexpert.ru"
+    assert result["targeted_source_retries"][0]["error_category"] == "http_5xx"
 
 
 def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:
