@@ -90,3 +90,27 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "stalled: no durable source progress" in full_reconcile
     assert "did not reach a terminal state within 85 minutes" not in full_reconcile
     assert "did not reach success within retry deadline" not in full_reconcile
+
+def test_backup_policy_uses_d_drive_single_verified_copy_and_safe_migration() -> None:
+    backup_script = BACKUP.read_text(encoding="utf-8")
+    workflow = BACKUP_WORKFLOW.read_text(encoding="utf-8")
+    migration = (ROOT / "scripts" / "migrate-backups-to-d.ps1").read_text(encoding="utf-8")
+
+    assert "Destination = 'D:\\BankrotAI\\dr-backups'" in backup_script
+    assert "RetainCount = 1" in backup_script
+    assert "Retention skipped because the new backup has not passed isolated restore verification." in backup_script
+    assert "restoreStatus -ne 'passed'" in backup_script
+
+    assert "17 2 * * *" in workflow
+    assert "$ageHours -lt 46" in workflow
+    assert "D:\\BankrotAI\\dr-backups" in workflow
+    assert "-RetainCount 1" in workflow
+    assert "-VerifyRestore" in workflow
+    assert "docker volume prune" not in workflow
+
+    assert migration.index("C:\\BankrotAI\\backups\\postgres") < migration.index("Phase 2: create and verify")
+    assert migration.index("Phase 2: create and verify") < migration.index("C:\\ProgramData\\BankrotAI\\dr-backups")
+    assert "D: backup SHA-256 mismatch" in migration
+    assert "restore_verification -ne 'passed'" in migration
+    assert "docker volume prune" not in migration
+
