@@ -173,6 +173,13 @@ def test_probe_recovery_closes_circuit_without_claiming_data_freshness():
     assert after is not None and after.last_success_at is None
 
 
+def test_rate_limit_honors_retry_after_hint():
+    classified = classify_source_error("HTTP 429 Too Many Requests; Retry-After: 420")
+
+    assert classified.category == "http_429"
+    assert classified.retry_after_seconds == 420
+
+
 def test_retry_decision_separates_network_and_operator_action_errors():
     factory = _sessions()
     with factory() as session:
@@ -189,7 +196,7 @@ def test_retry_decision_separates_network_and_operator_action_errors():
 
     assert timeout["schedule"] is True
     assert timeout["countdown_seconds"] == 60
-    assert timeout["last_error_category"] == "read_timeout"
+    assert timeout["last_error_category"] == "http_5xx"
     assert auth["schedule"] is False
     assert auth["reason"] == "non_retryable"
     assert auth["last_error_category"] == "authentication"
