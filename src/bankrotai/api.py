@@ -1139,6 +1139,15 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                     "last_success_at": item.last_success_at,
                     "last_complete_success_at": item.last_complete_success_at,
                     "last_error_category": item.last_error_category,
+                    "circuit_state": item.circuit_state,
+                    "circuit_open_until": item.circuit_open_until,
+                    "next_retry_at": item.next_retry_at,
+                    "retryable": item.retryable,
+                    "operational_failure": item.operational_failure,
+                    "consecutive_operational_failures": item.consecutive_operational_failures,
+                    "last_probe_at": item.last_probe_at,
+                    "last_probe_success_at": item.last_probe_success_at,
+                    "network_fingerprint": item.network_fingerprint or {},
                     "items_seen": item.items_seen,
                 }
             )
@@ -1157,6 +1166,15 @@ def get_operations_progress(actor: AuthenticatedUser = Depends(require_user)):
                     "last_success_at": None,
                     "last_complete_success_at": None,
                     "last_error_category": None,
+                    "circuit_state": "closed",
+                    "circuit_open_until": None,
+                    "next_retry_at": None,
+                    "retryable": False,
+                    "operational_failure": False,
+                    "consecutive_operational_failures": 0,
+                    "last_probe_at": None,
+                    "last_probe_success_at": None,
+                    "network_fingerprint": {},
                     "items_seen": 0,
                 }
             )
