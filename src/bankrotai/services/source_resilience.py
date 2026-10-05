@@ -34,6 +34,7 @@ class SourceFailureClassification:
     retryable: bool
     reason: str
     http_status: int | None = None
+    retry_after_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,7 +56,12 @@ def _error_text(error: BaseException | str | None) -> str:
 
 
 def _http_status(message: str) -> int | None:
-    match = re.search(r"(?<!\\d)([45]\\d{2})(?!\\d)", message)
+    match = re.search(r"(?<!\d)([45]\d{2})(?!\d)", message)
+    return int(match.group(1)) if match else None
+
+
+def _retry_after_seconds(message: str) -> int | None:
+    match = re.search(r"retry[- ]after\s*[:=]?\s*(\d{1,6})", message, flags=re.IGNORECASE)
     return int(match.group(1)) if match else None
 
 
@@ -79,7 +85,14 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
     if "access_limited" in message or "access limited" in message:
         return SourceFailureClassification("access_limited", False, False, raw[:1000], status)
     if status == 429 or "rate limit" in message or "too many requests" in message:
-        return SourceFailureClassification("http_429", True, True, raw[:1000], 429)
+        return SourceFailureClassification(
+            "http_429",
+            True,
+            True,
+            raw[:1000],
+            429,
+            _retry_after_seconds(raw),
+        )
     if status in {401, 403} or any(
         marker in message for marker in ("unauthorized", "forbidden", "authentication required")
     ):
@@ -234,7 +247,7 @@ def _retry_delay(classification: SourceFailureClassification, consecutive_failur
     if classification.category in {"coverage_guard", "parser_contract", "validation"}:
         return 30 * 60
     if classification.category == "http_429":
-        return 5 * 60
+        return classification.retry_after_seconds or 5 * 60
     index = min(max(consecutive_failures, 1) - 1, len(_SOURCE_RETRY_STEPS_SECONDS) - 1)
     return _SOURCE_RETRY_STEPS_SECONDS[index]
 
