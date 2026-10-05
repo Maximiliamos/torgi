@@ -65,6 +65,12 @@ _QUEUE_INGESTION = "ingestion"
 _QUEUE_GEOCODING = "geocoding"
 _QUEUE_MAP = "map"
 _QUEUE_MAINTENANCE = "maintenance"
+_P7_TASK_SOFT_TIME_LIMIT_SECONDS = 4 * 60 * 60
+_P7_TASK_HARD_TIME_LIMIT_SECONDS = 5 * 60 * 60
+_P7_STALE_GRACE_SECONDS = 15 * 60
+_P7_RUNNING_STALE_AFTER = timedelta(
+    seconds=_P7_TASK_HARD_TIME_LIMIT_SECONDS + _P7_STALE_GRACE_SECONDS
+)
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
     task_track_started=True,
@@ -156,6 +162,21 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _p7_campaign_is_stale(state: BackgroundTaskState, *, now: datetime | None = None) -> bool:
+    """Return True only when a running P7 row outlived the Celery hard limit plus grace."""
+    if state.status != "running":
+        return False
+    reference = state.started_at or state.created_at
+    if reference is None:
+        return False
+    current = now or _utc_now()
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    if reference.tzinfo is not None:
+        reference = reference.astimezone(timezone.utc).replace(tzinfo=None)
+    return current - reference >= _P7_RUNNING_STALE_AFTER
+
+
 @celery_app.task(name="bankrotai.tasks.expire_ended_lots_task")
 def expire_ended_lots_task() -> dict[str, int]:
     service = NationwideIngestionService(SessionLocal)
@@ -217,8 +238,8 @@ def geocode_pending_lots_task(self, continuation_depth: int = 0) -> dict[str, An
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.geo_fast_drain_task",
-    soft_time_limit=4 * 60 * 60,
-    time_limit=5 * 60 * 60,
+    soft_time_limit=_P7_TASK_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=_P7_TASK_HARD_TIME_LIMIT_SECONDS,
 )
 def geo_fast_drain_task(self) -> dict[str, Any]:
     """Run the one-time P7 historical backlog migration and bounded fast drain."""
@@ -229,7 +250,7 @@ def geo_fast_drain_task(self) -> dict[str, Any]:
 
 
 def schedule_geo_fast_drain() -> str:
-    """Queue one P7 campaign and reject overlapping campaigns."""
+    """Queue one P7 campaign, recovering a stale running row before rescheduling."""
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     with session_scope() as session:
@@ -242,8 +263,22 @@ def schedule_geo_fast_drain() -> str:
             .order_by(BackgroundTaskState.created_at.desc())
             .first()
         )
-        if existing is not None:
+        if existing is not None and not _p7_campaign_is_stale(existing):
             return existing.task_id
+        if existing is not None:
+            recovered_at = _utc_now()
+            existing.status = "failed"
+            existing.finished_at = recovered_at
+            existing.error_message = (
+                "Recovered stale P7 campaign before reschedule: running state exceeded "
+                f"{int(_P7_RUNNING_STALE_AFTER.total_seconds())} seconds"
+            )
+            progress = dict(existing.progress_json or {})
+            progress["phase"] = "stale_recovered"
+            progress["stale_recovered_at"] = recovered_at.isoformat()
+            existing.progress_json = progress
+            session.flush()
+
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         task_id = f"geo-{stamp}-p7-{uuid()[:8]}"
         session.add(
