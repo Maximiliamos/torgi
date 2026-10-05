@@ -383,6 +383,53 @@ def test_targeted_source_retry_uses_one_source_and_category_aware_requeue(monkey
     assert result["targeted_source_retries"][0]["error_category"] == "http_5xx"
 
 
+def test_recovery_probe_queues_safe_fast_retry(monkeypatch) -> None:
+    from bankrotai.services import source_resilience
+
+    @contextmanager
+    def fake_scope():
+        yield object()
+
+    class Queued:
+        id = "recovered-fast-retry"
+
+    queued: list[tuple[list[str], int]] = []
+    monkeypatch.setattr(tasks, "session_scope", fake_scope)
+    monkeypatch.setattr(tasks, "_source_is_paused", lambda _source: False)
+    monkeypatch.setattr(source_resilience, "sources_due_for_probe", lambda _session: ["bidexpert.ru"])
+    monkeypatch.setattr(
+        source_resilience,
+        "probe_source_endpoint",
+        lambda source: {"success": True, "source_system": source, "http_status": 200},
+    )
+    monkeypatch.setattr(
+        source_resilience,
+        "record_source_probe",
+        lambda _session, source, **_kwargs: {
+            "source_system": source,
+            "circuit_state": "closed",
+            "next_retry_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args, countdown)) or Queued(),
+    )
+
+    result = tasks.probe_source_network_health_task.run()
+
+    assert queued == [(["bidexpert.ru", "fast"], 5)]
+    assert result["checked"] == 1
+    assert result["results"][0]["status"] == "recovered"
+    assert result["results"][0]["recovery_retry"] == {
+        "status": "queued",
+        "task_id": "recovered-fast-retry",
+        "countdown_seconds": 5,
+        "mode": "fast",
+    }
+
+
 def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:
     captured: dict = {}
     bounded_spec = next(spec for spec in tasks.fast_source_specs(gis_publish_date_from="2026-09-25") if spec.source_id == "bidexpert.ru")
