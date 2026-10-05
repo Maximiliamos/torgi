@@ -14,8 +14,10 @@ from bankrotai.services.source_resilience import (
     record_source_outcome,
     record_source_probe,
     source_circuit_blocks,
+    source_global_network_state,
     source_resilience_status,
     source_retry_decision,
+    source_retry_delay_seconds,
     sources_due_for_probe,
 )
 
@@ -173,6 +175,43 @@ def test_probe_recovery_closes_circuit_without_claiming_data_freshness():
     assert after is not None and after.last_success_at is None
 
 
+def test_two_independent_operational_failures_open_short_global_circuit():
+    factory = _sessions()
+    with factory() as session:
+        record_source_outcome(
+            session,
+            "bidexpert.ru",
+            success=False,
+            error="HTTP 503 upstream unavailable",
+        )
+        record_source_outcome(
+            session,
+            "lot-online.ru",
+            success=False,
+            error="TLS handshake failed",
+        )
+        session.commit()
+
+        state = source_global_network_state(session)
+        due = sources_due_for_probe(session)
+
+    assert state["circuit_open"] is True
+    assert state["degraded_source_count"] == 2
+    assert set(state["degraded_sources"]) == {"bidexpert.ru", "lot-online.ru"}
+    assert set(due) == {"bidexpert.ru", "lot-online.ru"}
+
+
+def test_retry_jitter_is_bounded_and_stable_per_source():
+    classification = classify_source_error("HTTP 503 upstream unavailable")
+
+    first = source_retry_delay_seconds(classification, 1, jitter_key="bidexpert.ru")
+    second = source_retry_delay_seconds(classification, 1, jitter_key="bidexpert.ru")
+
+    assert first == second
+    assert first is not None
+    assert 60 <= first <= 66
+
+
 def test_rate_limit_honors_retry_after_hint():
     classified = classify_source_error("HTTP 429 Too Many Requests; Retry-After: 420")
 
@@ -195,7 +234,7 @@ def test_retry_decision_separates_network_and_operator_action_errors():
         )
 
     assert timeout["schedule"] is True
-    assert timeout["countdown_seconds"] == 60
+    assert 60 <= timeout["countdown_seconds"] <= 66
     assert timeout["last_error_category"] == "http_5xx"
     assert auth["schedule"] is False
     assert auth["reason"] == "non_retryable"
