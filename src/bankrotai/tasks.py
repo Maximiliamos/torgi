@@ -583,6 +583,17 @@ def _source_is_circuit_blocked(source_system: str) -> bool:
         return False
 
 
+def _global_source_network_blocked() -> bool:
+    try:
+        from bankrotai.services.source_resilience import source_global_network_blocks
+
+        with session_scope() as session:
+            return bool(source_global_network_blocks(session))
+    except Exception:
+        logger.exception("Could not read global source network circuit")
+        return False
+
+
 def _unpaused_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
     return tuple(
         spec
@@ -909,6 +920,8 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     """Run one beat-triggered nationwide refresh under the durable run lease."""
     if mode not in {"fast", "full"}:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
+    if _global_source_network_blocked():
+        return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
@@ -928,6 +941,12 @@ def automatic_nationwide_source_retry_task(self, source_system: str, source_mode
     """Bound a retry of one failed source without re-running successful peers."""
     if _source_is_paused(source_system):
         return {"status": "skipped", "reason": "source_paused", "source_system": source_system}
+    if _global_source_network_blocked():
+        return {
+            "status": "skipped",
+            "reason": "global_source_network_circuit",
+            "source_system": source_system,
+        }
     if _source_is_circuit_blocked(source_system):
         return {"status": "skipped", "reason": "source_circuit_open", "source_system": source_system}
     if source_mode == "fast":
