@@ -625,12 +625,33 @@ def _schedule_partial_source_retries(
             scheduled.append({"source_system": source_system, "status": "skipped", "reason": "source_paused"})
             continue
         source_record = failed_records.get(source_system) or {}
-        with session_scope() as session:
-            decision = source_retry_decision(
-                session,
-                source_system,
-                error=source_record.get("error"),
+        try:
+            with session_scope() as session:
+                decision = source_retry_decision(
+                    session,
+                    source_system,
+                    error=source_record.get("error"),
+                )
+        except Exception:
+            # Resilience state is auxiliary. During bootstrap/tests or a partial
+            # migration the source_health_states table may be unavailable; fall
+            # back to the pure classifier instead of blocking ingestion.
+            logger.exception("Could not read source retry state for %s", source_system)
+            from bankrotai.services.source_resilience import (
+                classify_source_error,
+                source_retry_delay_seconds,
             )
+
+            classification = classify_source_error(source_record.get("error"))
+            fallback_delay = source_retry_delay_seconds(classification)
+            decision = {
+                "schedule": bool(classification.retryable and fallback_delay is not None),
+                "reason": "retry_state_unavailable" if classification.retryable else "non_retryable",
+                "countdown_seconds": fallback_delay,
+                "last_error_category": classification.category,
+                "circuit_state": "unknown",
+                "next_retry_at": None,
+            }
         if not decision.get("schedule"):
             scheduled.append(
                 {
