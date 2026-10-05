@@ -94,7 +94,9 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "cleanup_old_map_datasets_task" in script
     assert "--log-opt max-size=20m --log-opt max-file=5" in deploy
     assert "Docker log rotation is not enforced" in deploy
-    assert "-RetainDays 14" in backup
+    assert "-Destination 'D:\\BankrotAI\\dr-backups'" in backup
+    assert "-RetainCount 1" in backup
+    assert "-VerifyRestore" in backup
     assert "actions: read" in backup
     assert "wait-home-deploy:" in backup
     assert "needs: wait-home-deploy" in backup
