@@ -12,10 +12,32 @@ class FakeRedis:
         return cls()
 
     def set(self, key: str, value: str) -> None:
-        self.values[key] = value
+        self.values[key] = str(value)
+
+    def setnx(self, key: str, value: str) -> bool:
+        if key in self.values:
+            return False
+        self.values[key] = str(value)
+        return True
+
+    def get(self, key: str):
+        return self.values.get(key)
 
     def getdel(self, key: str):
         return self.values.pop(key, None)
+
+    def pipeline(self, transaction: bool = True):
+        del transaction
+        return self
+
+    def execute(self):
+        return []
+
+    def eval(self, _script: str, _numkeys: int, *keys: str):
+        values = [self.values.get(key) for key in keys]
+        for key in keys:
+            self.values.pop(key, None)
+        return values
 
     def close(self) -> None:
         return None
@@ -39,11 +61,6 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
     monkeypatch.setattr(redis, "Redis", FakeRedis)
     monkeypatch.setattr(
         tasks,
-        "_schedule_dirty_map_publication",
-        lambda: {"status": "deferred", "maximum_delay_seconds": 60},
-    )
-    monkeypatch.setattr(
-        tasks,
         "_schedule_geocode_continuation",
         lambda depth: {
             "status": "queued",
@@ -57,8 +74,9 @@ def test_scheduled_geocoding_uses_visible_progress_and_defers_map_build(monkeypa
 
     assert captured["limit"] == tasks._GEO_BATCH_LIMIT == 500
     assert captured["progress_task_id"].startswith("celery-")
-    assert result["map_dataset_build"]["status"] == "deferred"
-    assert result["map_dataset_build"]["maximum_delay_seconds"] == 60
+    assert result["map_dataset_build"]["status"] == "dirty"
+    assert result["map_dataset_build"]["quiet_seconds"] == tasks._MAP_PUBLICATION_QUIET_SECONDS
+    assert result["map_dataset_build"]["maximum_delay_seconds"] == tasks._MAP_PUBLICATION_MAX_DELAY_SECONDS
     assert result["continuation"]["status"] == "queued"
     assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
 
@@ -102,12 +120,15 @@ def test_partial_geocoding_batch_does_not_schedule_continuation(monkeypatch) -> 
     assert "continuation" not in result
 
 
-def test_beat_keeps_five_minute_watchdogs_but_publication_latency_is_bounded() -> None:
+def test_beat_keeps_geo_watchdogs_and_minute_map_publication_watchdog() -> None:
     schedule = tasks.celery_app.conf.beat_schedule
     assert schedule["geocode-pending-lots"]["schedule"] == 300.0
     assert schedule["recover-ik12-cadastral-misses"]["schedule"] == 300.0
-    assert schedule["publish-dirty-map-dataset"]["schedule"] == 300.0
-    assert tasks._MAP_PUBLICATION_DEBOUNCE_SECONDS == 60
+    map_schedule = schedule["publish-dirty-map-dataset"]["schedule"]
+    assert map_schedule.minute == set(range(60))
+    assert tasks._MAP_PUBLICATION_QUIET_SECONDS == 180
+    assert tasks._MAP_PUBLICATION_MIN_INTERVAL_SECONDS == 600
+    assert tasks._MAP_PUBLICATION_MAX_DELAY_SECONDS == 900
     assert tasks._GEO_CONTINUATION_MAX_BATCHES == 8
     fast_schedule = schedule["refresh-nationwide-sources-fast"]["schedule"]
     full_schedule = schedule["refresh-nationwide-sources-full"]["schedule"]
@@ -159,8 +180,18 @@ def test_automatic_cleanup_keeps_safe_retention_arguments(monkeypatch) -> None:
     result = tasks.cleanup_old_map_datasets_task.run()
 
     assert calls == [
-        {"retain_previous_ready": 1, "min_age_hours": 24, "apply": False},
-        {"retain_previous_ready": 1, "min_age_hours": 24, "apply": True},
+        {
+            "retain_previous_ready": 2,
+            "min_age_hours": 1,
+            "building_min_age_hours": 6,
+            "apply": False,
+        },
+        {
+            "retain_previous_ready": 2,
+            "min_age_hours": 1,
+            "building_min_age_hours": 6,
+            "apply": True,
+        },
     ]
     assert deleted == [["old-r6-bundle-s3"]]
     assert result["manifest_retention"]["status"] == "deleted"
@@ -182,14 +213,10 @@ def test_ik12_recovery_marks_map_dirty_only_when_it_recovers(monkeypatch) -> Non
         },
     )
     monkeypatch.setattr(redis, "Redis", FakeRedis)
-    monkeypatch.setattr(
-        tasks,
-        "_schedule_dirty_map_publication",
-        lambda: {"status": "deferred", "maximum_delay_seconds": 60},
-    )
-
     result = tasks.recover_ik12_geo_task.run()
 
     assert result["recovered"] == 2
-    assert result["map_dataset_build"]["status"] == "deferred"
+    assert result["map_dataset_build"]["status"] == "dirty"
+    assert result["map_dataset_build"]["quiet_seconds"] == tasks._MAP_PUBLICATION_QUIET_SECONDS
+    assert result["map_dataset_build"]["maximum_delay_seconds"] == tasks._MAP_PUBLICATION_MAX_DELAY_SECONDS
     assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
