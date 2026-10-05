@@ -46,8 +46,32 @@ jobs:
           echo "Timed out waiting for home deployment of $GITHUB_SHA" >&2
           exit 1
 
-  backup:
+  wait-map-retention:
     needs: wait-home-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for map retention on the same main revision
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 720); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=workflow_run&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="P2 production maintenance"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            echo "P2 map-retention state=$state"
+            if [ "$state" = "completed:success" ]; then exit 0; fi
+            case "$state" in
+              completed:*) echo "P2 map retention failed: $state" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for P2 map retention of $GITHUB_SHA" >&2
+          exit 1
+
+  backup:
+    needs: wait-map-retention
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 240
     steps:
