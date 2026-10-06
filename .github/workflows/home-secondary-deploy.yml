@@ -267,38 +267,119 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+
+          function Invoke-BoundedDockerBuild {
+            param(
+              [string[]]$Arguments,
+              [int]$TimeoutSeconds,
+              [string]$Label
+            )
+            Write-Output "Starting $Label with a $TimeoutSeconds second timeout"
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $Arguments -PassThru -NoNewWindow
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Write-Warning "$Label timed out after $TimeoutSeconds seconds; terminating the process tree"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              try { $process.WaitForExit(10000) | Out-Null } catch {}
+              return -1
+            }
+            return $process.ExitCode
+          }
+
           $built = $false
-          for ($attempt = 1; $attempt -le 4; $attempt++) {
-            $usePull = $attempt -eq 1
-            $timeoutSeconds = if ($usePull) { 300 } else { 1200 }
-            $mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }
-            Write-Output "Starting Docker build attempt $attempt/4 mode=$mode timeout=$timeoutSeconds seconds"
+          $attempts = @(
+            [pscustomobject]@{ Pull = $true;  Timeout = 180; Mode = 'refresh-base' },
+            [pscustomobject]@{ Pull = $false; Timeout = 240; Mode = 'cached-base' }
+          )
+          $attemptNumber = 0
+          foreach ($attempt in $attempts) {
+            $attemptNumber += 1
             $arguments = @('build')
-            if ($usePull) { $arguments += '--pull' }
+            if ($attempt.Pull) { $arguments += '--pull' }
             $arguments += @(
               '--tag',
               "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
               '.'
             )
-            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $arguments -PassThru -NoNewWindow
-            if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
-              Write-Warning "Docker build attempt $attempt/4 mode=$mode timed out after $timeoutSeconds seconds; terminating the process tree"
-              & taskkill.exe /PID $process.Id /T /F *> $null
-              try { $process.WaitForExit(10000) | Out-Null } catch {}
-              $exitCode = -1
-            } else {
-              $exitCode = $process.ExitCode
-            }
+            $exitCode = Invoke-BoundedDockerBuild -Arguments $arguments -TimeoutSeconds $attempt.Timeout -Label "Docker build attempt $attemptNumber/$($attempts.Count) mode=$($attempt.Mode)"
             if ($exitCode -eq 0) {
               $built = $true
               break
             }
-            if ($attempt -lt 4) {
-              Write-Warning "Docker build attempt $attempt/4 mode=$mode failed with exit code $exitCode; retrying in 20 seconds"
-              Start-Sleep -Seconds 20
+            Write-Warning "Docker build mode=$($attempt.Mode) failed with exit code $exitCode"
+          }
+
+          if (-not $built) {
+            Write-Warning 'Full Home image build did not complete; evaluating offline source-overlay fallback'
+
+            $baseImageRef = (docker inspect $env:CONTAINER_NAME --format '{{.Config.Image}}' 2>$null | Select-Object -Last 1)
+            $baseImageId = (docker inspect $env:CONTAINER_NAME --format '{{.Image}}' 2>$null | Select-Object -Last 1)
+            if ($LASTEXITCODE -ne 0 -or -not $baseImageRef -or -not $baseImageId) {
+              throw 'Offline source-overlay fallback refused: current production API image could not be identified'
+            }
+            $baseImageRef = ([string]$baseImageRef).Trim()
+            $baseImageId = ([string]$baseImageId).Trim()
+            if ($baseImageRef -notmatch ':([0-9a-f]{40})$') {
+              throw "Offline source-overlay fallback refused: production image tag does not expose a deploy SHA: $baseImageRef"
+            }
+            $baseSha = $Matches[1]
+            Write-Output "Offline source-overlay candidate base SHA: $baseSha"
+
+            git cat-file -e "$baseSha^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              git fetch --no-tags --depth=1 origin $baseSha
+              if ($LASTEXITCODE -ne 0) {
+                throw "Offline source-overlay fallback refused: could not fetch deployed base commit $baseSha"
+              }
+            }
+
+            git diff --quiet $baseSha $env:GITHUB_SHA -- requirements.lock pyproject.toml certs
+            $foundationDiff = $LASTEXITCODE
+            if ($foundationDiff -eq 1) {
+              throw 'Offline source-overlay fallback refused: Python dependencies or trusted CA inputs changed since the deployed image'
+            }
+            if ($foundationDiff -ne 0) {
+              throw "Offline source-overlay fallback refused: could not compare dependency inputs (git diff exit $foundationDiff)"
+            }
+
+            $pythonLine = (Select-String -LiteralPath 'Dockerfile' -Pattern '^FROM python:([0-9]+\.[0-9]+)-slim$' | Select-Object -First 1)
+            if (-not $pythonLine -or $pythonLine.Matches.Count -eq 0) {
+              throw 'Offline source-overlay fallback refused: current Dockerfile Python runtime could not be determined'
+            }
+            $expectedPython = $pythonLine.Matches[0].Groups[1].Value
+            $actualPython = (docker run --rm $baseImageId python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" | Select-Object -Last 1)
+            if ($LASTEXITCODE -ne 0 -or -not $actualPython) {
+              throw 'Offline source-overlay fallback refused: deployed Python runtime could not be inspected'
+            }
+            $actualPython = ([string]$actualPython).Trim()
+            if ($actualPython -ne $expectedPython) {
+              throw "Offline source-overlay fallback refused: deployed Python $actualPython != required $expectedPython"
+            }
+
+            $overlayBaseTag = "${env:IMAGE_NAME}:overlay-base-${env:GITHUB_RUN_ID}"
+            docker tag $baseImageId $overlayBaseTag
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Offline source-overlay fallback refused: could not tag the deployed runtime image'
+            }
+            try {
+              $overlayArguments = @(
+                'build',
+                '--file', 'Dockerfile.home-overlay',
+                '--build-arg', "BASE_IMAGE=$overlayBaseTag",
+                '--tag', "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+                '.'
+              )
+              $overlayExit = Invoke-BoundedDockerBuild -Arguments $overlayArguments -TimeoutSeconds 240 -Label 'offline source-overlay Docker build'
+              if ($overlayExit -ne 0) {
+                throw "Offline source-overlay Docker build failed with exit code $overlayExit"
+              }
+              $built = $true
+              Write-Output 'Offline source-overlay Docker build: PASS'
+            } finally {
+              docker image rm $overlayBaseTag *> $null
             }
           }
-          if (!$built) { throw 'Could not build the current-main API image after four bounded attempts' }
+
+          if (!$built) { throw 'Could not build the current-main API image' }
 
       - name: Preserve and start local PostgreSQL
         shell: powershell
