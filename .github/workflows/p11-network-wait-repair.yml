@@ -21,6 +21,7 @@ jobs:
           $script = @'
           import json
           from sqlalchemy import or_, select
+          from bankrotai.core import utc_now
           from bankrotai.db import GeoFailure, ProcessedLot, SessionLocal
           from bankrotai.services.geo_backfill import geocode_pending_lots, geocoding_progress
 
@@ -69,6 +70,17 @@ jobs:
               ]
               if len(retry_ids) > 50:
                   raise RuntimeError(f"refusing unbounded network-wait retry: {len(retry_ids)} rows")
+              if retry_ids:
+                  retry_rows = s.scalars(
+                      select(GeoFailure).where(
+                          GeoFailure.lot_id.in_(retry_ids),
+                          GeoFailure.status == "network_wait",
+                      )
+                  ).all()
+                  now = utc_now()
+                  for failure in retry_rows:
+                      failure.next_retry_at = now
+                  s.commit()
           finally:
               s.close()
 
