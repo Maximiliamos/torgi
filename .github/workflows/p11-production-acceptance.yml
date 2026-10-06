@@ -29,10 +29,10 @@ jobs:
       - name: Require main and bounded inputs
         shell: powershell
         run: |
-          if ('\${{ github.ref }}' -ne 'refs/heads/main') {
+          if ('${{ github.ref }}' -ne 'refs/heads/main') {
             throw 'P11 acceptance may run only from main'
           }
-          $minutes = [int]'\${{ inputs.soak_minutes }}'
+          $minutes = [int]'${{ inputs.soak_minutes }}'
           if ($minutes -lt 0 -or $minutes -gt 60) {
             throw "soak_minutes must be between 0 and 60; got $minutes"
           }
@@ -179,7 +179,7 @@ jobs:
           .\scripts\home-runner-network-diagnostics.ps1 -OutputPath "$env:RUNNER_TEMP\p11-runner.json"
 
       - name: Optional controlled container restart drill
-        if: \${{ inputs.restart_drill }}
+        if: ${{ inputs.restart_drill }}
         shell: powershell
         run: |
           $targets = @(
@@ -209,7 +209,7 @@ jobs:
       - name: Read-only production soak
         shell: powershell
         run: |
-          $minutes = [int]'\${{ inputs.soak_minutes }}'
+          $minutes = [int]'${{ inputs.soak_minutes }}'
           $deadline = (Get-Date).ToUniversalTime().AddMinutes($minutes)
           $samples = @()
           do {
@@ -238,13 +238,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: p11-production-acceptance-\${{ github.run_id }}
+          name: p11-production-acceptance-${{ github.run_id }}
           path: |
-            \${{ runner.temp }}\p11-health.json
-            \${{ runner.temp }}\p11-backup.json
-            \${{ runner.temp }}\p11-map.json
-            \${{ runner.temp }}\p11-resilience.json
-            \${{ runner.temp }}\p11-runner.json
-            \${{ runner.temp }}\p11-soak.json
+            ${{ runner.temp }}\p11-health.json
+            ${{ runner.temp }}\p11-backup.json
+            ${{ runner.temp }}\p11-map.json
+            ${{ runner.temp }}\p11-resilience.json
+            ${{ runner.temp }}\p11-runner.json
+            ${{ runner.temp }}\p11-soak.json
           if-no-files-found: warn
           retention-days: 30
