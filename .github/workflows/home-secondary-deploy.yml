@@ -269,6 +269,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $targetImage = "${env:IMAGE_NAME}:${env:GITHUB_SHA}"
 
+          function Test-DockerImage {
+            param([string]$Image)
+            $previousErrorAction = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'SilentlyContinue'
+              & docker.exe image inspect $Image *> $null
+              return $LASTEXITCODE -eq 0
+            } finally {
+              $ErrorActionPreference = $previousErrorAction
+            }
+          }
+
           function Invoke-BoundedDockerBuild {
             param(
               [string[]]$Arguments,
@@ -296,8 +308,7 @@ jobs:
               return [int]$exitCode
             }
 
-            docker image inspect $TargetImage *> $null
-            if ($LASTEXITCODE -eq 0) {
+            if (Test-DockerImage -Image $TargetImage) {
               Write-Warning "$Label completed with an unavailable process ExitCode; target image exists, accepting the build"
               return 0
             }
@@ -306,8 +317,7 @@ jobs:
           }
 
           $built = $false
-          docker image inspect $targetImage *> $null
-          if ($LASTEXITCODE -eq 0) {
+          if (Test-DockerImage -Image $targetImage) {
             Write-Output "Current SHA image already exists locally: $targetImage"
             $built = $true
           } else {
@@ -315,8 +325,7 @@ jobs:
             if ($LASTEXITCODE -eq 0 -and $parentSha) {
               $parentSha = ([string]$parentSha).Trim()
               $parentImage = "${env:IMAGE_NAME}:$parentSha"
-              docker image inspect $parentImage *> $null
-              if ($LASTEXITCODE -eq 0) {
+              if (Test-DockerImage -Image $parentImage) {
                 git diff --quiet $parentSha $env:GITHUB_SHA -- src alembic alembic.ini Dockerfile Dockerfile.home-overlay pyproject.toml README.md requirements.lock certs
                 $runtimeDiff = $LASTEXITCODE
                 if ($runtimeDiff -eq 0) {
