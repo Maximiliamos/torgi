@@ -657,7 +657,6 @@ function CadastrePanel({
         <button className="mapCadastrePreview" onClick={onOpenDetails}>
           <strong>{number}</strong>
           {value.address && <span>{value.address}</span>}
-          {value.object_type && <small>{value.object_type}</small>}
         </button>
         {value.error && <MapState error>{value.error}</MapState>}
       </section>
