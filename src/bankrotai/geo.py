@@ -1531,33 +1531,123 @@ def normalize_nspd_props(props: dict, cadastral_number: str) -> dict[str, Any]:
     options = props.get("options") if isinstance(props.get("options"), dict) else {}
 
     def pick(*keys):
-        for source in (props, options):
+        for source in (options, props):
             for key in keys:
                 val = source.get(key) if isinstance(source, dict) else None
                 if val not in (None, ""):
                     return val
         return None
 
+    observed_number = pick(
+        "cad_num",
+        "cadNum",
+        "cadastralNumber",
+        "cadastral_number",
+        "cn",
+        "label",
+        "descr",
+    )
+    observed_number = str(observed_number or "").replace(" ", "")
+    if not CADASTRAL_RE.match(observed_number):
+        observed_number = cadastral_number or None
+
+    object_name = pick("name", "objectName", "object_name")
+    if object_name is not None and observed_number and str(object_name).replace(" ", "") == observed_number:
+        object_name = None
+
+    object_type = pick(
+        "categoryName",
+        "category_name",
+        "objectType",
+        "typeName",
+        "type",
+        "land_record_type",
+        "build_record_type",
+        "construction_record_type",
+    )
+
     return {
-        "Вид объекта недвижимости": pick("categoryName", "category_name", "objectType", "typeName", "type"),
-        "Дата присвоения": pick("date_create", "assignDate", "assign_date", "cadRecordDate", "cad_record_date"),
-        "Кадастровый номер": pick("cad_num", "cadNum", "cadastralNumber", "cn", "label") or cadastral_number or None,
-        "Кадастровый квартал": pick("quarter", "cadQuarter", "cad_quarter", "kvartal"),
-        "Адрес": pick("address", "readableAddress", "location", "addr"),
-        "Наименование": pick("name", "objectName", "object_name", "descr"),
-        "Назначение": pick("purpose", "util_by_doc", "assignation"),
-        "Площадь общая": pick("area", "area_value", "readableArea"),
-        "Статус": pick("status", "state", "readableStatus", "cadRecordStatus"),
-        "Форма собственности": pick("ownership", "ownershipType", "right_type", "fp"),
-        "Кадастровая стоимость": pick("cad_cost", "cadCost", "cost", "readableCadCost"),
-        "Удельный показатель кадастровой стоимости": pick("ud_cost", "unitCost", "unit_cost"),
+        "Вид объекта недвижимости": object_type,
+        "Дата присвоения": pick(
+            "date_create",
+            "assignDate",
+            "assign_date",
+            "cadRecordDate",
+            "cad_record_date",
+            "registration_date",
+        ),
+        "Кадастровый номер": observed_number,
+        "Кадастровый квартал": pick(
+            "quarter",
+            "cadQuarter",
+            "cad_quarter",
+            "kvartal",
+            "quarter_cad_number",
+        ),
+        "Адрес": pick(
+            "readable_address",
+            "readableAddress",
+            "address",
+            "object_address",
+            "address_note",
+            "location",
+            "addr",
+        ),
+        "Наименование": object_name,
+        "Назначение": pick(
+            "purpose",
+            "util_by_doc",
+            "assignation",
+            "building_purpose",
+            "purpose_name",
+        ),
+        "Площадь общая": pick(
+            "specified_area",
+            "declared_area",
+            "area",
+            "area_value",
+            "readableArea",
+            "readable_area",
+        ),
+        "Статус": pick(
+            "status",
+            "state",
+            "readableStatus",
+            "readable_status",
+            "cadRecordStatus",
+            "cad_record_status",
+        ),
+        "Форма собственности": pick("ownership", "ownershipType", "ownership_type", "right_type", "fp"),
+        "Кадастровая стоимость": pick(
+            "cost_value",
+            "cad_cost",
+            "cadCost",
+            "cost",
+            "readableCadCost",
+            "readable_cad_cost",
+        ),
+        "Удельный показатель кадастровой стоимости": pick(
+            "cost_value_per_square_meter",
+            "ud_cost",
+            "unitCost",
+            "unit_cost",
+        ),
         "Количество этажей": pick("floors", "floorCount", "floor_count"),
-        "Количество подземных этажей": pick("undergroundFloors", "underground_floors", "underground_floor_count"),
+        "Количество подземных этажей": pick(
+            "undergroundFloors",
+            "underground_floors",
+            "underground_floor_count",
+        ),
         "Материал стен": pick("wallMaterial", "wall_material"),
         "Завершение строительства": pick("yearBuilt", "year_built", "buildYear", "build_year"),
-        "Ввод в эксплуатацию": pick("commissioningYear", "commissioning_year", "year_commissioning"),
+        "Ввод в эксплуатацию": pick(
+            "commissioningYear",
+            "commissioning_year",
+            "year_commissioning",
+        ),
         "ОКН": pick("culturalHeritage", "cultural_heritage", "heritage", "oks_flag"),
-        "Категория НСПД": pick("category", "categoryId"),
+        "Без координат границ": pick("no_coords"),
+        "Категория НСПД": pick("category", "categoryId", "category_id"),
     }
 
 
