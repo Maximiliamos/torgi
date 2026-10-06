@@ -225,7 +225,7 @@ describe("tile map startup", () => {
         geometry: {
           type: "Polygon",
           coordinates: [[[39.778, 57.690], [39.780, 57.690], [39.780, 57.692], [39.778, 57.690]]],
-        },
+        } as GeoJSON.Polygon,
         has_boundary: true,
         source: "nspd",
         confidence: "high",
