@@ -1,0 +1,49 @@
+name: NSPD response diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/nspd-response-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect normalized NSPD feature properties
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import ssl
+          import urllib.parse
+          import urllib.request
+
+          query = '76:23:011401:8268'
+          params = urllib.parse.urlencode({'thematicSearchId': 1, 'query': query})
+          url = 'https://nspd.gov.ru/api/geoportal/v2/search/geoportal?' + params
+          req = urllib.request.Request(url, headers={
+              'Referer': 'https://nspd.gov.ru/map?thematic=PKK',
+              'User-Agent': 'Mozilla/5.0 BankrotAI/1.0',
+              'Accept': 'application/json,text/plain,*/*',
+          })
+          with urllib.request.urlopen(req, timeout=15, context=ssl.create_default_context()) as r:
+              data = json.load(r)
+          features = (data.get('data') or {}).get('features') or data.get('features') or []
+          print('feature_count=', len(features))
+          for index, feature in enumerate(features[:5]):
+              props = feature.get('properties') or {}
+              options = props.get('options') if isinstance(props.get('options'), dict) else {}
+              safe = {
+                  'index': index,
+                  'props': {k: v for k, v in props.items() if k != 'options'},
+                  'options': options,
+                  'geometry_type': (feature.get('geometry') or {}).get('type'),
+              }
+              print(json.dumps(safe, ensure_ascii=False, default=str))
+          PY
