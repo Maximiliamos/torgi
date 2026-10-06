@@ -137,7 +137,7 @@ def test_interactive_cadastral_search_falls_back_to_ik12_when_nspd_tls_fails(mon
     )
     monkeypatch.setattr(
         "bankrotai.geo.IK12_GEOCODER.search_by_cadastral_number",
-        lambda _query: expected,
+        lambda _query, **_kwargs: expected,
     )
 
     result = geocoder.search_by_cadastral_number("76:23:011401:8268")
@@ -157,7 +157,7 @@ def test_interactive_cadastral_search_reports_failure_only_after_ik12_fallback(m
         lambda _query, **_kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
     )
 
-    def ik12_search(query: str):
+    def ik12_search(query: str, **_kwargs):
         calls.append(query)
         return None
 
@@ -297,7 +297,29 @@ def test_nspd_point_lookup_keeps_tls_verification_and_building_priority(monkeypa
     assert calls[0]["verify"] == "/trusted/ca.pem"
 
 
-def test_interactive_nspd_retries_once_without_disabling_bulk_contract(monkeypatch) -> None:
+def test_interactive_nspd_connect_failure_does_not_retry(monkeypatch) -> None:
+    import requests
+    from bankrotai.services.geo_resilience import GeoProviderUnavailable
+
+    calls = 0
+    monkeypatch.setattr("bankrotai.geo.require_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bankrotai.geo.record_provider_failure", lambda *_args, **_kwargs: None)
+
+    def get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise requests.ConnectTimeout("transient")
+
+    monkeypatch.setattr("bankrotai.geo.requests.get", get)
+    geocoder = CadastralGeocoder()
+
+    with pytest.raises(GeoProviderUnavailable):
+        geocoder._search_nspd_geoportal("76:23:011401:8268", interactive=True)
+
+    assert calls == 1
+
+
+def test_interactive_nspd_retries_read_timeout_once_when_budget_remains(monkeypatch) -> None:
     import requests
 
     class Response:
@@ -329,7 +351,7 @@ def test_interactive_nspd_retries_once_without_disabling_bulk_contract(monkeypat
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise requests.ConnectTimeout("transient")
+            raise requests.ReadTimeout("transient")
         return Response()
 
     monkeypatch.setattr("bankrotai.geo.requests.get", get)
