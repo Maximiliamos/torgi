@@ -1,4 +1,4 @@
-name: Force cancel obsolete reconciliation
+name: Force cancel obsolete run
 
 on:
   push:
@@ -15,9 +15,9 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      TARGET_RUN: "37387148605"
+      TARGET_RUN: "37447195236"
     steps:
-      - name: Force cancel obsolete reconciliation
+      - name: Force cancel obsolete run
         shell: bash
         run: |
           set -euo pipefail
