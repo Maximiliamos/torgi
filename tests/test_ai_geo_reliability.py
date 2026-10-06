@@ -230,6 +230,8 @@ def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkey
 
     monkeypatch.setattr(api, "_CADASTRAL_CAPACITY", threading.BoundedSemaphore(1))
     monkeypatch.setattr(api, "_CADASTRAL_DEADLINE_SECONDS", 0.02)
+    monkeypatch.setattr(api, "get_cached_cadastre_object", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "upsert_cadastre_cache", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(api._CADASTRAL_GEOCODER, "search_by_cadastral_number", stalled_search)
 
     async def run_requests():
@@ -245,8 +247,9 @@ def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkey
     assert calls == ["76:23:010101:10"]
 
 
-def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> None:
+def test_nspd_tls_error_uses_safe_interactive_fallback_before_failure(monkeypatch) -> None:
     geocoder = CadastralGeocoder()
+    calls: list[str] = []
     monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         geocoder,
@@ -254,12 +257,19 @@ def test_nspd_tls_error_does_not_abort_public_cadastral_search(monkeypatch) -> N
         lambda *args, **kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("bad cert")),
     )
 
+    def ik12_search(query: str):
+        calls.append(query)
+        return None
+
+    monkeypatch.setattr("bankrotai.geo.IK12_GEOCODER.search_by_cadastral_number", ik12_search)
+
     result = geocoder.search_by_cadastral_number("76:23:010101:10")
 
-    assert result.source == "nspd"
+    assert calls == ["76:23:010101:10"]
+    assert result.source == "nspd/ik12"
     assert result.confidence == "none"
     assert result.error is not None
-    assert "ручной проверки" in result.error
+    assert "резервный кадастровый источник" in result.error
 
 
 def test_same_normalized_address_uses_geocoder_cache(monkeypatch) -> None:

@@ -263,8 +263,28 @@ describe("tile map startup", () => {
     expect(screen.getByText("76:23:011401")).toBeInTheDocument();
   });
 
-  it("shows address choices first and opens details after the user selects one", async () => {
+  it("shows address choices, then cadastral objects, then full details", async () => {
     vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-address-cadastre"));
+    const candidate = {
+      query: "Ярославль, Ленинградский проспект, д 105",
+      cadastral_number: "76:23:010101:15008",
+      object_type: "Здание",
+      title: "Многоквартирный дом",
+      address: "Ярославль, Ленинградский проспект, д 105",
+      lat: 57.691848,
+      lon: 39.771867,
+      geometry: null,
+      has_boundary: false,
+      source: "nspd_wms",
+      confidence: "high",
+      info: {
+        "Вид объекта недвижимости": "Здание",
+        "Кадастровый номер": "76:23:010101:15008",
+      },
+      error: null,
+      status: "GEOCODED",
+      attempts: [],
+    };
     vi.mocked(searchCadastre)
       .mockResolvedValueOnce({
         kind: "address_suggestions",
@@ -276,28 +296,23 @@ describe("tile map startup", () => {
         ],
       })
       .mockResolvedValueOnce({
-        kind: "object",
+        kind: "cadastral_objects",
         query: "Ярославль, Ленинградский проспект, д 105",
+        lat: 57.691848,
+        lon: 39.771867,
+        error: null,
+        items: [candidate],
+      })
+      .mockResolvedValueOnce({
+        kind: "object",
+        query: "76:23:010101:15008",
         object: {
-          query: "Ярославль, Ленинградский проспект, д 105",
-          cadastral_number: "76:23:010101:15008",
-          object_type: "Здание",
-          title: "Многоквартирный дом",
-          address: "Ярославль, Ленинградский проспект, д 105",
-          lat: 57.691848,
-          lon: 39.771867,
-          geometry: null,
-          has_boundary: false,
+          ...candidate,
           source: "nspd",
-          confidence: "high",
           info: {
-            "Вид объекта недвижимости": "Здание",
+            ...candidate.info,
             "Дата присвоения": "01.07.2012",
-            "Кадастровый номер": "76:23:010101:15008",
           },
-          error: null,
-          status: "GEOCODED",
-          attempts: [],
         },
       });
 
@@ -313,13 +328,21 @@ describe("tile map startup", () => {
 
     fireEvent.click(yaroslavl);
 
-    expect(await screen.findByText("Здание: 76:23:010101:15008")).toBeInTheDocument();
-    expect(screen.getByText("Без координат границ")).toBeInTheDocument();
+    expect(await screen.findByText("Кадастровые объекты")).toBeInTheDocument();
+    const cadastralObject = screen.getByRole("button", { name: /76:23:010101:15008/ });
+    expect(cadastralObject).toHaveTextContent("Здание");
     expect(searchCadastre).toHaveBeenNthCalledWith(
       2,
       "Ярославль, Ленинградский проспект, д 105",
       true,
+      { lat: 57.691848, lon: 39.771867 },
     );
+
+    fireEvent.click(cadastralObject);
+
+    expect(await screen.findByText("Здание: 76:23:010101:15008")).toBeInTheDocument();
+    expect(screen.getByText("Без координат границ")).toBeInTheDocument();
+    expect(searchCadastre).toHaveBeenNthCalledWith(3, "76:23:010101:15008");
   });
 
   it("lets only an admin pause geocoding and refreshes durable state", async () => {
