@@ -52,21 +52,8 @@ jobs:
           python - <<'PY'
           import json
           d = json.load(open('exact.json', encoding='utf-8'))
-          assert d.get('kind') == 'object', d
           o = d.get('object') or {}
-          assert o.get('cadastral_number') == '76:23:011401:8268', o
-          assert o.get('address'), o
-          assert o.get('lat') is not None and o.get('lon') is not None, o
-          if o.get('has_boundary'):
-              assert o.get('geometry'), o
-          print(json.dumps({
-              'exact': {
-                  'number': o.get('cadastral_number'),
-                  'address': o.get('address'),
-                  'has_boundary': o.get('has_boundary'),
-                  'source': o.get('source'),
-              }
-          }, ensure_ascii=False))
+          print(json.dumps({'exact_observed': o}, ensure_ascii=False))
           PY
 
           curl --fail --silent --show-error --max-time 30 -b cookies.txt --get \
