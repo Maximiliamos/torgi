@@ -1,0 +1,66 @@
+name: NSPD WMS point diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/nspd-wms-point-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe OKS and land layers at selected address point
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, subprocess, urllib.parse
+
+          lat=57.6919301
+          lon=39.7720143
+          radius=35.0
+          R=6378137.0
+          x=R*math.radians(lon)
+          y=R*math.log(math.tan(math.pi/4+math.radians(lat)/2))
+          bbox=f"{x-radius},{y-radius},{x+radius},{y+radius}"
+
+          for label,layer in [('oks','36049'),('land','36048')]:
+              params={
+                  'REQUEST':'GetFeatureInfo','QUERY_LAYERS':layer,'SERVICE':'WMS','VERSION':'1.3.0',
+                  'FORMAT':'image/png','STYLES':'','TRANSPARENT':'true','LAYERS':layer,
+                  'INFO_FORMAT':'application/json','FEATURE_COUNT':'10',
+                  'I':'256','J':'256','WIDTH':'512','HEIGHT':'512','CRS':'EPSG:3857','BBOX':bbox,
+              }
+              url=f"https://nspd.gov.ru/api/aeggis/v3/{layer}/wms?"+urllib.parse.urlencode(params)
+              cmd=['curl','--fail','--silent','--show-error','--max-time','12',
+                   '-A','Mozilla/5.0 BankrotAI/1.0',
+                   '-H',f'Referer: https://nspd.gov.ru/map?thematic=PKK&active_layers={layer}',
+                   url]
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+              verified=(p.returncode==0)
+              if not verified:
+                  cmd.insert(1,'--insecure')
+                  p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+              print(label,'verified_tls=',verified,'curl_exit=',p.returncode,'stderr=',p.stderr.decode(errors='replace')[:300])
+              if p.returncode:
+                  continue
+              data=json.loads(p.stdout)
+              features=data.get('features') or []
+              safe=[]
+              for f in features[:10]:
+                  props=f.get('properties') or {}
+                  options=props.get('options') if isinstance(props.get('options'),dict) else {}
+                  safe.append({
+                      'id':f.get('id'),
+                      'cad_num':options.get('cad_num') or options.get('cadNumber') or options.get('cad_number'),
+                      'props':{k:v for k,v in props.items() if k!='options'},
+                      'options':options,
+                  })
+              print(label,json.dumps({'count':len(features),'features':safe},ensure_ascii=False,default=str))
+          PY
