@@ -11,25 +11,28 @@ WORKDIR /app
 RUN addgroup --system bankrotai && adduser --system --ingroup bankrotai --home /app bankrotai
 
 COPY pyproject.toml README.md requirements.lock ./
-COPY src ./src
-COPY tests ./tests
-COPY alembic ./alembic
-COPY alembic.ini ./
 COPY certs/russian_trusted_root_ca.crt certs/russian_trusted_sub_ca.crt certs/russian_trusted_sub_ca_2024.crt /usr/local/share/ca-certificates/
 
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update \
     && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends ca-certificates \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.lock \
-    && pip install --no-cache-dir --no-deps . \
+    && pip install --upgrade pip \
+    && pip install -r requirements.lock \
     && python -m playwright install --with-deps chromium \
     && chmod -R a+rX /ms-playwright
 
-RUN chown -R bankrotai:bankrotai /app
+COPY src ./src
+COPY tests ./tests
+COPY alembic ./alembic
+COPY alembic.ini ./
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps . \
+    && chown -R bankrotai:bankrotai /app
 USER bankrotai
 
 EXPOSE 8000
