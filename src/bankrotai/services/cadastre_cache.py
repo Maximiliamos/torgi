@@ -88,6 +88,8 @@ def find_cached_cadastre_candidates(
     stmt = select(CadastreObjectCache).where(or_(*conditions))
     if fresh_only:
         stmt = stmt.where(CadastreObjectCache.expires_at > now)
+    else:
+        stmt = stmt.where(CadastreObjectCache.fetched_at > now - CADASTRE_STALE_MAX_AGE)
     rows = list(session.scalars(stmt).all())
 
     result: list[CadastreObjectCache] = []
