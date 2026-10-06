@@ -207,6 +207,8 @@ jobs:
           }
 
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 20
 
       - name: Require production secrets
         shell: powershell
@@ -321,22 +323,28 @@ jobs:
             Write-Output "Current SHA image already exists locally: $targetImage"
             $built = $true
           } else {
-            $parentSha = (git rev-parse "$($env:GITHUB_SHA)^1" 2>$null | Select-Object -Last 1)
-            if ($LASTEXITCODE -eq 0 -and $parentSha) {
-              $parentSha = ([string]$parentSha).Trim()
-              $parentImage = "${env:IMAGE_NAME}:$parentSha"
-              if (Test-DockerImage -Image $parentImage) {
-                git diff --quiet $parentSha $env:GITHUB_SHA -- src alembic alembic.ini Dockerfile Dockerfile.home-overlay pyproject.toml README.md requirements.lock certs
-                $runtimeDiff = $LASTEXITCODE
-                if ($runtimeDiff -eq 0) {
-                  docker tag $parentImage $targetImage
-                  if ($LASTEXITCODE -eq 0) {
-                    Write-Output "Reused first-parent runtime image: $parentImage -> $targetImage"
-                    $built = $true
-                  }
-                } elseif ($runtimeDiff -ne 1) {
-                  throw "Could not compare first-parent runtime inputs (git diff exit $runtimeDiff)"
+            $ancestorShas = @(git rev-list --first-parent --max-count=20 $env:GITHUB_SHA | Select-Object -Skip 1)
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Could not enumerate first-parent history for Home image reuse'
+            }
+            foreach ($candidateShaRaw in $ancestorShas) {
+              if ($built) { break }
+              $candidateSha = ([string]$candidateShaRaw).Trim()
+              if (-not $candidateSha) { continue }
+              $candidateImage = "${env:IMAGE_NAME}:$candidateSha"
+              if (-not (Test-DockerImage -Image $candidateImage)) { continue }
+
+              git diff --quiet $candidateSha $env:GITHUB_SHA -- src alembic alembic.ini Dockerfile Dockerfile.home-overlay pyproject.toml README.md requirements.lock certs
+              $runtimeDiff = $LASTEXITCODE
+              if ($runtimeDiff -eq 0) {
+                docker tag $candidateImage $targetImage
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Output "Reused unchanged ancestor runtime image: $candidateImage -> $targetImage"
+                  $built = $true
+                  break
                 }
+              } elseif ($runtimeDiff -ne 1) {
+                throw "Could not compare ancestor runtime inputs for $candidateSha (git diff exit $runtimeDiff)"
               }
             }
           }
