@@ -1,0 +1,261 @@
+name: P12 production acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/cadastre-production-smoke.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: p12-production-acceptance
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 75
+    env:
+      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Wait for exact main Home deploy
+        shell: powershell
+        run: |
+          $expected = ((git ls-remote origin refs/heads/main) -split "\t")[0].Trim()
+          if (-not $expected) { throw 'Could not resolve current main SHA' }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+          }
+          $ok = $false
+          foreach ($attempt in 1..240) {
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs?head_sha=$expected&event=push&per_page=50"
+            $runs = (Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 30).workflow_runs
+            $deploy = $runs | Where-Object { $_.name -eq 'Deploy home secondary origin' } | Select-Object -First 1
+            if ($deploy -and $deploy.status -eq 'completed') {
+              if ($deploy.conclusion -ne 'success') {
+                throw "Home deploy $($deploy.id) failed: $($deploy.conclusion)"
+              }
+              $ok = $true
+              Write-Output "Exact Home deploy PASS: sha=$expected run=$($deploy.id)"
+              break
+            }
+            Start-Sleep -Seconds 15
+          }
+          if (-not $ok) { throw "Timed out waiting for exact Home deploy of $expected" }
+
+      - name: Run authenticated public cadastral scenarios
+        shell: powershell
+        run: |
+          $script = @'
+          import http.cookiejar
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          WEB = "https://sterdez.online"
+          username = os.environ.get("E2E_USERNAME", "").strip()
+          password = os.environ.get("E2E_PASSWORD", "")
+          assert username and password, "Production acceptance credentials are unavailable"
+
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          login = urllib.request.Request(
+              WEB + "/api/auth/login",
+              data=json.dumps({"username": username, "password": password}).encode(),
+              headers={"Accept": "application/json", "Content-Type": "application/json"},
+              method="POST",
+          )
+          with opener.open(login, timeout=30) as response:
+              assert response.status == 200
+              json.load(response)
+          assert list(jar), "Login did not set a session cookie"
+
+          timings = {}
+          def get_json(path, label, timeout=30):
+              started = time.monotonic()
+              request = urllib.request.Request(
+                  WEB + path,
+                  headers={
+                      "Accept": "application/json",
+                      "Cache-Control": "no-cache",
+                      "User-Agent": "STERDEZ-P12-production-acceptance/1.0",
+                  },
+              )
+              with opener.open(request, timeout=timeout) as response:
+                  assert response.status == 200, (path, response.status)
+                  payload = json.load(response)
+              timings[label] = round((time.monotonic() - started) * 1000, 1)
+              return payload
+
+          def search(params, label):
+              return get_json(
+                  "/api/cadastre/search?" + urllib.parse.urlencode(params),
+                  label,
+              )
+
+          first_kn = "76:23:011401:8268"
+          first = search({"query": first_kn}, "known_kn_first_ms")
+          assert first.get("kind") == "object", first
+          first_obj = first.get("object") or {}
+          assert first_obj.get("cadastral_number") == first_kn, first_obj
+          assert first_obj.get("confidence") != "none", first_obj
+          assert first_obj.get("has_boundary") is True, first_obj
+          assert (first_obj.get("geometry") or {}).get("type") in {"Polygon", "MultiPolygon"}, first_obj
+          assert (first_obj.get("info") or {}).get("Кадастровый номер") == first_kn, first_obj
+
+          repeated = search({"query": first_kn}, "cache_hit_ms")
+          repeated_obj = repeated.get("object") or {}
+          assert repeated_obj.get("cadastral_number") == first_kn, repeated_obj
+          assert str(repeated_obj.get("source") or "").startswith("cache"), repeated_obj
+
+          suggestions = search({"query": "Ленинградский 105"}, "address_suggestions_ms")
+          assert suggestions.get("kind") == "address_suggestions", suggestions
+          choices = suggestions.get("items") or []
+          selected_address = next(
+              (item for item in choices if "ярослав" in str(item.get("label", "")).casefold()),
+              None,
+          )
+          assert selected_address, choices
+
+          flow_started = time.monotonic()
+          candidates = search(
+              {
+                  "query": selected_address["label"],
+                  "resolve_address": "true",
+                  "lat": selected_address["lat"],
+                  "lon": selected_address["lon"],
+              },
+              "selected_address_wms_ms",
+          )
+          assert candidates.get("kind") == "cadastral_objects", candidates
+          candidate_items = candidates.get("items") or []
+          assert candidate_items, candidates
+          assert all(item.get("cadastral_number") for item in candidate_items), candidate_items
+
+          candidate = next(
+              (item for item in candidate_items if item.get("cadastral_number") != first_kn),
+              candidate_items[0],
+          )
+          second_kn = candidate["cadastral_number"]
+          second = search({"query": second_kn}, "candidate_full_card_ms")
+          second_obj = second.get("object") or {}
+          assert second.get("kind") == "object", second
+          assert second_obj.get("cadastral_number") == second_kn, second_obj
+          assert second_obj.get("confidence") != "none", second_obj
+          assert second_obj.get("info"), second_obj
+          timings["full_address_flow_ms"] = round((time.monotonic() - flow_started) * 1000, 1)
+
+          evidence = {
+              "first_kn": first_kn,
+              "first_source": first_obj.get("source"),
+              "second_kn": second_kn,
+              "second_source": second_obj.get("source"),
+              "candidate_count": len(candidate_items),
+              "timings": timings,
+          }
+          print("P12_PUBLIC_EVIDENCE=" + json.dumps(evidence, ensure_ascii=False, sort_keys=True))
+          '@
+          $script | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticated public P12 scenarios failed' }
+
+      - name: Measure NSPD and bounded failure failover on production image
+        shell: powershell
+        run: |
+          $script = @'
+          import asyncio
+          import json
+          import time
+
+          import requests
+
+          from bankrotai import api
+          from bankrotai.geo import CadastralGeocoder, CadastralObjectResult
+          from bankrotai.services.geo_resilience import GeoProviderUnavailable
+
+          kn = "76:23:011401:8268"
+          evidence = {}
+
+          direct = CadastralGeocoder()
+          started = time.monotonic()
+          nspd = direct._search_nspd_geoportal(kn, interactive=True)
+          evidence["nspd_success_ms"] = round((time.monotonic() - started) * 1000, 1)
+          assert nspd is not None and nspd.cadastral_number == kn, nspd
+
+          original_geocoder = api._CADASTRAL_GEOCODER
+          original_cache_lookup = api.get_cached_cadastre_object
+          original_upsert = api.upsert_cadastre_cache
+
+          def no_fresh_cache(session, number, *, require_complete=False, fresh_only=True):
+              if fresh_only:
+                  return None
+              return original_cache_lookup(
+                  session,
+                  number,
+                  require_complete=require_complete,
+                  fresh_only=False,
+              )
+
+          try:
+              failover = CadastralGeocoder()
+
+              def connect_failure(*_args, **_kwargs):
+                  raise GeoProviderUnavailable("nspd", "connect_timeout", "simulated connect failure")
+
+              failover._search_nspd_geoportal = connect_failure
+              api._CADASTRAL_GEOCODER = failover
+              api.get_cached_cadastre_object = no_fresh_cache
+
+              started = time.monotonic()
+              result = asyncio.run(api.search_cadastre(kn, False, None, None))
+              evidence["nspd_failure_to_ik12_or_stale_ms"] = round(
+                  (time.monotonic() - started) * 1000, 1
+              )
+              obj = result.get("object") or {}
+              assert result.get("kind") == "object", result
+              assert obj.get("cadastral_number") == kn, obj
+              assert (
+                  str(obj.get("source") or "").startswith("ik12")
+                  or str(obj.get("source") or "").startswith("cache_stale")
+              ), obj
+              assert evidence["nspd_failure_to_ik12_or_stale_ms"] < 9000, evidence
+
+              stale_only = CadastralGeocoder()
+              stale_only.search_by_cadastral_number = lambda number: CadastralObjectResult(
+                  query=number,
+                  cadastral_number=number,
+                  source="nspd/ik12",
+                  confidence="none",
+                  error="simulated provider outage",
+              )
+              api._CADASTRAL_GEOCODER = stale_only
+              api.upsert_cadastre_cache = lambda *_args, **_kwargs: None
+
+              started = time.monotonic()
+              stale = asyncio.run(api.search_cadastre(kn, False, None, None))
+              evidence["stale_cache_fallback_ms"] = round(
+                  (time.monotonic() - started) * 1000, 1
+              )
+              stale_obj = stale.get("object") or {}
+              assert str(stale_obj.get("source") or "").startswith("cache_stale"), stale_obj
+              assert stale_obj.get("cadastral_number") == kn, stale_obj
+              assert evidence["stale_cache_fallback_ms"] < 9000, evidence
+          finally:
+              api._CADASTRAL_GEOCODER = original_geocoder
+              api.get_cached_cadastre_object = original_cache_lookup
+              api.upsert_cadastre_cache = original_upsert
+
+          print("P12_FAILOVER_EVIDENCE=" + json.dumps(evidence, sort_keys=True))
+          '@
+          $script | docker exec -i bankrotai-home-secondary python -
+          if ($LASTEXITCODE -ne 0) { throw 'Production-image P12 failover scenarios failed' }
