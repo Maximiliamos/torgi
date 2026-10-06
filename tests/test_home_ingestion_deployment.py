@@ -8,6 +8,9 @@ def test_home_image_build_is_bounded_and_has_offline_source_overlay_fallback() -
     workflow = WORKFLOW.read_text(encoding="utf-8")
     overlay = Path("Dockerfile.home-overlay").read_text(encoding="utf-8")
 
+    assert "Test-DockerImage" in workflow
+    assert "$ErrorActionPreference = 'SilentlyContinue'" in workflow
+    assert "& docker.exe image inspect $Image *> $null" in workflow
     assert "Invoke-BoundedDockerBuild" in workflow
     assert 'Write-Host "Starting $Label with a $TimeoutSeconds second timeout"' in workflow
     assert 'Write-Output "Starting $Label with a $TimeoutSeconds second timeout"' not in workflow
