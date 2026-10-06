@@ -59,7 +59,7 @@ jobs:
             done
           done
 
-          sleep 5
+          sleep 35
           for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
             remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             stale_remaining="$(
