@@ -43,7 +43,7 @@ Disk thresholds shown by the dashboard:
 - critical below 15 GB;
 - recommended 25 GB.
 
-Backup is healthy only when restore verification passed and the snapshot is at most 30 hours old.
+Backup is healthy only when restore verification passed and the snapshot is at most 60 hours old, matching the 48-hour cadence with a 12-hour scheduling grace.
 
 Runner status is considered fresh for one hour.
 
