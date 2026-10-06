@@ -238,7 +238,8 @@ jobs:
       - name: Read-only production soak
         shell: powershell
         run: |
-          $minutes = [int]'${{ inputs.soak_minutes }}'
+          $pushRun = '${{ github.event_name }}' -eq 'push'
+          $minutes = if ($pushRun) { 30 } else { [int]'${{ inputs.soak_minutes }}' }
           $deadline = (Get-Date).ToUniversalTime().AddMinutes($minutes)
           $samples = @()
           do {
