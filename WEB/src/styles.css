@@ -886,3 +886,37 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
 .sourceAuthAlert { background:#d64545;border:2px solid #fff;border-radius:50%;height:9px;position:absolute;right:5px;top:5px;width:9px; }
 .appRail button { position:relative; }
+
+/* P10 operations dashboard */
+.operationsDashboard { display:grid;gap:16px; }
+.operationsOverview { display:grid;gap:16px; }
+.operationsTitle { align-items:flex-start;display:flex;gap:16px;justify-content:space-between; }
+.operationsTitle h2 { margin:4px 0 0; }
+.operationsMetricGrid { display:grid;gap:10px;grid-template-columns:repeat(3,minmax(0,1fr)); }
+.operationsMetricGrid article { background:#f8fafb;border:1px solid #dce3e9;border-radius:9px;display:grid;gap:4px;min-height:92px;padding:13px; }
+.operationsMetricGrid article[data-health="bad"] { background:#fff7f7;border-color:#efc4c4; }
+.operationsMetricGrid article[data-health="ok"] { background:#f5fbf8;border-color:#c7e8d8; }
+.operationsMetricGrid span { color:#667085;font-size:12px; }
+.operationsMetricGrid strong { font-size:21px; }
+.operationsMetricGrid small { color:#667085;font-size:11px;overflow-wrap:anywhere; }
+.operationsActions { display:flex;flex-wrap:wrap;gap:8px; }
+.healthBadge { align-items:center;background:#eef2f6;border-radius:999px;color:#566274;display:inline-flex;font-size:11px;font-weight:750;line-height:1;padding:5px 8px;white-space:nowrap; }
+.healthBadge.ok { background:#e6f7ef;color:#16724e; }
+.healthBadge.bad { background:#fff0f0;color:#b33636; }
+.operationsSources article { align-items:flex-start;grid-template-columns:12px minmax(0,1fr) auto; }
+.sourceHeading { align-items:center;display:flex;gap:8px;justify-content:flex-start; }
+.sourceProbeButton { min-width:72px; }
+.operationsJournal { display:grid;gap:7px;margin:14px 0; }
+.operationsJournal article { align-items:flex-start;border-top:1px solid #e4e8ee;display:grid;gap:9px;grid-template-columns:auto 1fr;padding-top:9px; }
+.operationsJournal article div { display:grid;gap:2px; }
+.operationsJournal small { color:#667085; }
+@media (max-width: 980px) {
+  .operationsMetricGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 640px) {
+  .operationsMetricGrid { grid-template-columns:1fr; }
+  .operationsTitle { align-items:flex-start;flex-direction:column; }
+  .operationsSources article { grid-template-columns:12px minmax(0,1fr); }
+  .sourceProbeButton { grid-column:2;justify-self:start; }
+}
+.operationsReadOnlyNote { color:#667085;display:inline-flex;font-size:11px;line-height:1.35;max-width:360px; }

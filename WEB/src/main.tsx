@@ -6,10 +6,10 @@ import {
   NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
-  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
+  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
   fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
-  clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
+  clearMapCache, fetchOperationsProgress, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, resumeGeocoding, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
@@ -174,10 +174,120 @@ function DealView({ selectedLotId }: { selectedLotId: number | null }) {
   </section>;
 }
 
-function ReliabilityView({ refreshToken }: { refreshToken: number }) {
-  const [quality, setQuality] = React.useState<Record<string, number>>({}); const [sources, setSources] = React.useState<SourceHealth[]>([]); const [diagnostics, setDiagnostics] = React.useState<Record<string, unknown> | null>(null); const [error, setError] = React.useState("");
-  const load = React.useCallback(async () => { try { const [q, s] = await Promise.all([fetchQuality(), fetchSources()]); setQuality(q); setSources(s); } catch (err) { setError(String(err)); } }, []); React.useEffect(() => { void load(); }, [load, refreshToken]);
-  return <section className="reliabilityGrid"><div className="pageCard"><h2>Полнота данных</h2><div className="metricGrid">{Object.entries(quality).map(([key, value]) => <div key={key}><span>{key.split("_").join(" ")}</span><strong>{value}</strong></div>)}</div></div><div className="pageCard"><h2>Состояние источников</h2><div className="sourceList">{sources.map((source) => <article key={source.source_system}><i className={source.freshness_status === "fresh" && source.coverage_status === "fresh" ? "ok" : "warn"} /><div><strong>{source.source_system}</strong><span>{source.status} · свежесть {source.freshness_status} · полный снимок {source.coverage_status} · {source.items_seen} записей</span>{source.last_success_at && <small>Последнее успешное обновление: {new Date(source.last_success_at).toLocaleString("ru-RU")}</small>}<small>Последний проход: {source.last_pages_scanned} стр. · +{source.last_items_inserted} / Δ{source.last_items_updated} / архив {source.last_items_archived} / ошибок {source.last_items_failed}{source.last_duration_ms !== null ? ` · ${Math.round(source.last_duration_ms / 1000)} c` : ""}</small>{source.last_error && <small>{source.last_error_category || "ошибка"}: {source.last_error}</small>}</div></article>)}</div><button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>{diagnostics && <pre className="diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>}{error && <State error>{error}</State>}</div></section>;
+function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: string }) {
+  const [quality, setQuality] = React.useState<Record<string, number>>({});
+  const [sources, setSources] = React.useState<SourceHealth[]>([]);
+  const [operations, setOperations] = React.useState<OperationsProgress | null>(null);
+  const [diagnostics, setDiagnostics] = React.useState<Record<string, unknown> | null>(null);
+  const [backgroundJobs, setBackgroundJobs] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [action, setAction] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    try {
+      const [q, s, o, capabilities] = await Promise.all([
+        fetchQuality(),
+        fetchSources(),
+        fetchOperationsProgress(),
+        fetchCapabilities(),
+      ]);
+      setQuality(q);
+      setSources(s);
+      setOperations(o);
+      setBackgroundJobs(Boolean(capabilities.background_jobs));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [load, refreshToken]);
+
+  const host = operations?.summary?.host;
+  const sourceSummary = operations?.summary?.sources;
+  const geo = operations?.geocoding;
+  const map = operations?.summary?.map;
+  const networkOpen = Boolean(sourceSummary?.network?.circuit_open);
+  const diskFree = host?.disk?.free_gb;
+  const diskHealthy = host?.disk?.healthy === true;
+  const backupHealthy = host?.backup_healthy === true;
+  const runnerHealthy = host?.runner_healthy === true;
+
+  const runAction = async (label: string, operation: () => Promise<unknown>) => {
+    setAction(label);
+    try {
+      await operation();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAction("");
+    }
+  };
+
+  return <section className="operationsDashboard">
+    <div className="pageCard operationsOverview">
+      <div className="operationsTitle"><div><span className="eyebrow">Production</span><h2>Состояние системы</h2></div><span className={networkOpen ? "healthBadge bad" : "healthBadge ok"}>{networkOpen ? "Сеть источников ограничена" : "Сеть источников стабильна"}</span></div>
+      <div className="operationsMetricGrid">
+        <article><span>Источники</span><strong>{sourceSummary ? `${sourceSummary.ready}/${sourceSummary.total}` : "—"}</strong><small>готовых полных снимков</small></article>
+        <article><span>GEO</span><strong>{geo ? `${geo.percent.toFixed(1)}%` : "—"}</strong><small>actionable {geo?.actionable_remaining ?? "—"} · deferred {(geo?.deferred_no_match ?? 0) + (geo?.deferred_validation ?? 0)}</small></article>
+        <article><span>Карта</span><strong>{map?.point_count?.toLocaleString("ru-RU") ?? "—"}</strong><small>{map?.status || "нет данных"} · {map?.version || "—"}</small></article>
+        <article data-health={diskHealthy ? "ok" : "bad"}><span>Диск C:</span><strong>{typeof diskFree === "number" ? `${diskFree.toFixed(1)} ГБ` : "—"}</strong><small>рекомендуется ≥ {host?.disk?.recommended_gb ?? 25} ГБ</small></article>
+        <article data-health={backupHealthy ? "ok" : "bad"}><span>Backup</span><strong>{backupHealthy ? "OK" : "Требует внимания"}</strong><small>{host?.backup_age_hours != null ? `${host.backup_age_hours.toFixed(1)} ч назад` : "нет свежего статуса"}</small></article>
+        <article data-health={runnerHealthy ? "ok" : "bad"}><span>Runner</span><strong>{runnerHealthy ? "Online" : "Нет свежей проверки"}</strong><small>{host?.runner_age_seconds != null ? `${Math.round(host.runner_age_seconds)} сек назад` : "диагностика не записана"}</small></article>
+      </div>
+      <div className="operationsActions">
+        {role === "admin" && backgroundJobs && <>
+          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Пауза GEO</button>
+          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
+        </>}
+        <button className="secondaryButton" disabled={Boolean(action)} onClick={() => void load()}><RefreshCcw size={15} />Обновить</button>
+        {role === "admin" && !backgroundJobs && <small className="operationsReadOnlyNote">Операционные действия скрыты: этот API работает в read-only режиме.</small>}
+      </div>
+    </div>
+
+    <div className="pageCard">
+      <h2>Состояние источников</h2>
+      <div className="sourceList operationsSources">{sources.map((source) => {
+        const circuit = source.circuit_state || "closed";
+        const healthy = source.freshness_status === "fresh" && circuit === "closed";
+        return <article key={source.source_system}>
+          <i className={healthy ? "ok" : "warn"} />
+          <div>
+            <div className="sourceHeading"><strong>{source.source_system}</strong><span className={circuit === "closed" ? "healthBadge ok" : "healthBadge bad"}>{circuit}</span></div>
+            <span>{source.status} · свежесть {source.freshness_status} · полный снимок {source.coverage_status} · {source.items_seen} записей</span>
+            {source.next_retry_at && <small>Следующая попытка: {new Date(source.next_retry_at).toLocaleString("ru-RU")}</small>}
+            <small>Последний проход: {source.last_pages_scanned} стр. · +{source.last_items_inserted} / Δ{source.last_items_updated} / архив {source.last_items_archived} / ошибок {source.last_items_failed}</small>
+            {source.last_error && <small>{source.last_error_category || "ошибка"}: {source.last_error}</small>}
+          </div>
+          {role === "admin" && backgroundJobs && <button className="secondaryButton sourceProbeButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.source_system}`, () => probeSourceHealth(source.source_system))}>Probe</button>}
+        </article>;
+      })}</div>
+    </div>
+
+    <div className="pageCard">
+      <h2>GEO и журнал</h2>
+      <div className="metricGrid">
+        <div><span>С координатами</span><strong>{geo?.geocoded ?? "—"}</strong></div>
+        <div><span>Deferred no match</span><strong>{geo?.deferred_no_match ?? "—"}</strong></div>
+        <div><span>Deferred validation</span><strong>{geo?.deferred_validation ?? "—"}</strong></div>
+        <div><span>Network wait</span><strong>{geo?.network_wait ?? "—"}</strong></div>
+      </div>
+      <div className="operationsJournal">{operations?.journal?.map((item, index) => <article key={`${item.kind}-${item.title}-${index}`}><span className={item.status === "completed" || item.status === "success" ? "healthBadge ok" : "healthBadge"}>{item.status}</span><div><strong>{item.title}</strong><small>{item.detail}</small>{item.at && <small>{new Date(item.at).toLocaleString("ru-RU")}</small>}</div></article>)}</div>
+      {role === "admin" && <button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>}
+      {diagnostics && <pre className="diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>}
+      {error && <State error>{error}</State>}
+    </div>
+
+    <div className="pageCard">
+      <h2>Полнота данных</h2>
+      <div className="metricGrid">{Object.entries(quality).map(([key, value]) => <div key={key}><span>{key.split("_").join(" ")}</span><strong>{value}</strong></div>)}</div>
+    </div>
+  </section>;
 }
 
 const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["tbankrot", "TBankrot", <ShieldCheck />], ["reliability", "Надёжность", <Activity />]];
@@ -215,7 +325,7 @@ export function App({ username = "Пользователь", role = "reader", on
     </nav>
     <section className="appWorkspace">
       {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{visibleNav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
-      {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "tbankrot" && <TBankrotView refreshToken={refreshToken} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} />}</div>}
+      {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "tbankrot" && <TBankrotView refreshToken={refreshToken} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} role={role} />}</div>}
       <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} statusContent={view === "map" ? <ServerClock /> : undefined} />}</div>
       {view !== "map" && <ServerClock />}
     </section>

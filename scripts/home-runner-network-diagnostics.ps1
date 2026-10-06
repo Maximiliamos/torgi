@@ -142,4 +142,10 @@ if ($OutputPath) {
     $json | Set-Content -LiteralPath $OutputPath -Encoding utf8
 }
 
+$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.load(sys.stdin); s=SessionLocal(); record_operations_snapshot(s,'runner',p); s.commit(); s.close()"
+$json | docker exec -i bankrotai-home-map-worker python -c $persistCommand *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning 'Could not persist runner network snapshot for Operations UX.'
+}
+
 if ($failed.Count -gt 0) { exit 2 }
