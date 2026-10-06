@@ -66,7 +66,7 @@ from bankrotai.scrapers import (
     TorgiGovSearchFilters,
 )
 from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters
-from bankrotai.geo import CADASTRAL_RE, PHOTON_GEOCODER, CadastralGeocoder, CadastralObjectResult
+from bankrotai.geo import CADASTRAL_RE, PHOTON_GEOCODER, CadastralGeocoder, CadastralObjectResult, NSPDTLSVerificationError
 from bankrotai.services.cadastre_cache import (
     cache_results,
     cached_row_to_result,
@@ -75,6 +75,7 @@ from bankrotai.services.cadastre_cache import (
     merge_cadastre_result,
     upsert_cadastre_cache,
 )
+from bankrotai.services.geo_resilience import GeoProviderUnavailable
 from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
 from bankrotai.services.operations import (
     add_lot_note,
@@ -2376,7 +2377,7 @@ async def search_cadastre(
                     point_lon,
                     fallback_address=point_address,
                 )
-            except (Exception,) as exc:
+            except (NSPDTLSVerificationError, GeoProviderUnavailable) as exc:
                 # Provider exceptions are already classified/logged inside the
                 # geocoder. Use a bounded stale-cache fallback before surfacing
                 # the temporary outage to the user.
