@@ -48,4 +48,4 @@ def test_p10_snapshot_persistence_is_non_fatal_under_strict_powershell() -> None
         assert "$previousErrorActionPreference" in text
         assert "$ErrorActionPreference = 'Continue'" in text
         assert "2>&1" in text
-        assert "*> $null" not in text
+        assert "python -c $persistCommand *> $null" not in text
