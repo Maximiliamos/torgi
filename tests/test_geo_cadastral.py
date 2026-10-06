@@ -298,6 +298,7 @@ def test_nspd_point_lookup_keeps_tls_verification_and_building_priority(monkeypa
 
 
 def test_interactive_nspd_connect_failure_does_not_retry(monkeypatch) -> None:
+    import pytest
     import requests
     from bankrotai.services.geo_resilience import GeoProviderUnavailable
 
@@ -478,6 +479,7 @@ def test_exact_search_does_not_start_ik12_when_nspd_wins_before_hedge(monkeypatc
     result = CadastralObjectResult(
         query="76:23:011401:8268",
         cadastral_number="76:23:011401:8268",
+        address="Ярославль",
         lat=57.69,
         lon=39.77,
         source="nspd",
@@ -521,6 +523,7 @@ def test_exact_search_hedges_ik12_when_nspd_is_slow(monkeypatch) -> None:
     ik12 = CadastralObjectResult(
         query="76:23:011401:8268",
         cadastral_number="76:23:011401:8268",
+        address="Ярославль",
         lat=57.69,
         lon=39.77,
         source="ik12_cadastral",
