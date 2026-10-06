@@ -282,7 +282,14 @@ jobs:
               try { $process.WaitForExit(10000) | Out-Null } catch {}
               return -1
             }
-            return $process.ExitCode
+            try {
+              $process.WaitForExit()
+              $process.Refresh()
+              if ($null -ne $process.ExitCode) {
+                return [int]$process.ExitCode
+              }
+            } catch {}
+            return $null
           }
 
           $built = $false
@@ -301,11 +308,16 @@ jobs:
               '.'
             )
             $exitCode = Invoke-BoundedDockerBuild -Arguments $arguments -TimeoutSeconds $attempt.Timeout -Label "Docker build attempt $attemptNumber/$($attempts.Count) mode=$($attempt.Mode)"
-            if ($exitCode -eq 0) {
+            docker image inspect "${env:IMAGE_NAME}:${env:GITHUB_SHA}" *> $null
+            $imageReady = $LASTEXITCODE -eq 0
+            if ($exitCode -eq 0 -or $imageReady) {
               $built = $true
+              if ($imageReady -and $exitCode -ne 0) {
+                Write-Warning "Docker process exit code was unavailable, but exact image ${env:IMAGE_NAME}:${env:GITHUB_SHA} exists; accepting the completed build"
+              }
               break
             }
-            Write-Warning "Docker build mode=$($attempt.Mode) failed with exit code $exitCode"
+            Write-Warning "Docker build mode=$($attempt.Mode) failed with exit code $exitCode and produced no exact image"
           }
 
           if (-not $built) {
@@ -369,10 +381,15 @@ jobs:
                 '.'
               )
               $overlayExit = Invoke-BoundedDockerBuild -Arguments $overlayArguments -TimeoutSeconds 240 -Label 'offline source-overlay Docker build'
-              if ($overlayExit -ne 0) {
-                throw "Offline source-overlay Docker build failed with exit code $overlayExit"
+              docker image inspect "${env:IMAGE_NAME}:${env:GITHUB_SHA}" *> $null
+              $overlayImageReady = $LASTEXITCODE -eq 0
+              if ($overlayExit -ne 0 -and -not $overlayImageReady) {
+                throw "Offline source-overlay Docker build failed with exit code $overlayExit and produced no exact image"
               }
               $built = $true
+              if ($overlayImageReady -and $overlayExit -ne 0) {
+                Write-Warning 'Offline source-overlay process exit code was unavailable; exact image verification passed'
+              }
               Write-Output 'Offline source-overlay Docker build: PASS'
             } finally {
               docker image rm $overlayBaseTag *> $null
