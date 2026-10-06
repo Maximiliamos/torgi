@@ -447,13 +447,13 @@ class CadastralGeocoder:
         props = feature.get("properties") or {}
         expected_cadastral = query if CADASTRAL_RE.match(query.replace(" ", "")) else ""
         info = normalize_nspd_props(props, expected_cadastral)
-        observed_cadastral = str(info.get("Кадастровый номер") or "").replace(" ", "")
-        if not CADASTRAL_RE.match(observed_cadastral):
-            observed_cadastral = expected_cadastral or None
-            if not observed_cadastral:
-                info["Кадастровый номер"] = None
-        else:
-            info["Кадастровый номер"] = observed_cadastral
+        observed_text = str(info.get("Кадастровый номер") or "").replace(" ", "")
+        observed_cadastral: str | None = (
+            observed_text
+            if CADASTRAL_RE.match(observed_text)
+            else (expected_cadastral or None)
+        )
+        info["Кадастровый номер"] = observed_cadastral
         geometry = geometry_to_wgs84(feature.get("geometry"))
         lat, lon = centroid_from_geometry(geometry)
 
