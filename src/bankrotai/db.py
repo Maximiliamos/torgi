@@ -562,6 +562,27 @@ class GeoQueryCache(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class CadastreObjectCache(Base):
+    """Persistent cadastral object cache, independent from auction lots."""
+
+    __tablename__ = "cadastre_object_cache"
+    cadastral_number: Mapped[str] = mapped_column(String(50), primary_key=True)
+    address: Mapped[str | None] = mapped_column(Text)
+    address_normalized: Mapped[str | None] = mapped_column(Text, index=True)
+    object_type: Mapped[str | None] = mapped_column(String(100), index=True)
+    title: Mapped[str | None] = mapped_column(Text)
+    attributes_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    geometry_json: Mapped[dict | None] = mapped_column(JSON)
+    centroid_lat: Mapped[float | None] = mapped_column(Float, index=True)
+    centroid_lon: Mapped[float | None] = mapped_column(Float, index=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    is_complete: Mapped[bool] = mapped_column(nullable=False, default=False, index=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class DuplicateReview(Base):
     __tablename__ = "duplicate_reviews"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -763,7 +784,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "2bc3d4e5f6a7"
+SCHEMA_REVISION = "3dc4e5f6a7b8"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
