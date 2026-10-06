@@ -24,7 +24,6 @@ jobs:
       - name: Force-cancel stale production deploy runs
         env:
           GH_TOKEN: ${{ github.token }}
-          CURRENT_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
@@ -95,11 +94,12 @@ jobs:
       - name: Ensure REG.RU deploy exists for current main
         env:
           GH_TOKEN: ${{ github.token }}
-          CURRENT_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
+          CURRENT_SHA="$(gh api -X GET "repos/$REPOSITORY/commits/main" --jq '.sha')"
+          echo "Resolved current main SHA for REG.RU dispatch: $CURRENT_SHA"
           payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/regru-deploy.yml/runs?per_page=50")"
           matching="$(
             jq -r --arg current "$CURRENT_SHA" '
