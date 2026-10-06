@@ -69,7 +69,7 @@ def test_operations_host_status_marks_stale_or_low_headroom_snapshots_unhealthy(
             session,
             "backup",
             {
-                "created_at": (now - timedelta(hours=31)).isoformat(),
+                "created_at": (now - timedelta(hours=61)).isoformat(),
                 "restore_verification": "passed",
             },
         )
