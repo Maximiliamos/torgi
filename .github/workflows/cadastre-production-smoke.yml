@@ -25,8 +25,6 @@ jobs:
           web='https://sterdez.online'
           test -n "$E2E_PASSWORD"
 
-          curl --fail --silent --show-error --max-time 20 "$web/api/../health/live" >/dev/null || true
-
           python - <<'PY' > login.json
           import json, os
           print(json.dumps({
@@ -39,23 +37,55 @@ jobs:
             -H 'Content-Type: application/json' \
             --data-binary @login.json \
             "$web/api/auth/login" > login-response.json
-          python - <<'PY'
-          import json
-          d = json.load(open('login-response.json', encoding='utf-8'))
-          assert d.get('username'), d
-          print(json.dumps({'login': d.get('username'), 'role': d.get('role')}, ensure_ascii=False))
-          PY
 
-          curl --fail --silent --show-error --max-time 40 -b cookies.txt --get \
+          # 1. Exact cadastral number -> full object + geometry.
+          curl --fail --silent --show-error --max-time 45 -b cookies.txt --get \
             --data-urlencode 'query=76:23:011401:8268' \
-            "$web/api/cadastre/search" > exact.json
+            "$web/api/cadastre/search" > exact-8268.json
           python - <<'PY'
           import json
-          d = json.load(open('exact.json', encoding='utf-8'))
+          d = json.load(open('exact-8268.json', encoding='utf-8'))
+          assert d.get('kind') == 'object', d
           o = d.get('object') or {}
-          print(json.dumps({'exact_observed': o}, ensure_ascii=False))
+          assert o.get('cadastral_number') == '76:23:011401:8268', o
+          assert o.get('lat') is not None and o.get('lon') is not None, o
+          assert o.get('has_boundary') is True and o.get('geometry'), o
+          assert o.get('address'), o
+          assert o.get('confidence') != 'none', o
+          print(json.dumps({
+              'exact': {
+                  'number': o.get('cadastral_number'),
+                  'address': o.get('address'),
+                  'source': o.get('source'),
+                  'has_boundary': o.get('has_boundary'),
+              }
+          }, ensure_ascii=False))
           PY
 
+          # Warm the known building from the document through the normal exact-number
+          # path. This also verifies persistent cache writes before the address flow.
+          curl --fail --silent --show-error --max-time 45 -b cookies.txt --get \
+            --data-urlencode 'query=76:23:010101:15008' \
+            "$web/api/cadastre/search" > exact-15008.json
+          python - <<'PY'
+          import json
+          d = json.load(open('exact-15008.json', encoding='utf-8'))
+          assert d.get('kind') == 'object', d
+          o = d.get('object') or {}
+          assert o.get('cadastral_number') == '76:23:010101:15008', o
+          assert o.get('lat') is not None and o.get('lon') is not None, o
+          assert o.get('confidence') != 'none', o
+          print(json.dumps({
+              'warm': {
+                  'number': o.get('cadastral_number'),
+                  'address': o.get('address'),
+                  'source': o.get('source'),
+                  'has_boundary': o.get('has_boundary'),
+              }
+          }, ensure_ascii=False))
+          PY
+
+          # 2. Address -> Photon suggestions.
           curl --fail --silent --show-error --max-time 30 -b cookies.txt --get \
             --data-urlencode 'query=Ленинградский 105' \
             "$web/api/cadastre/search" > suggestions.json
@@ -67,30 +97,61 @@ jobs:
           assert items, d
           match = next((x for x in items if 'ярослав' in (x.get('label') or '').casefold()), None)
           assert match, items
-          open('selected-address.txt', 'w', encoding='utf-8').write(match['label'])
-          print(json.dumps({'suggestions': len(items), 'selected': match['label']}, ensure_ascii=False))
+          with open('selected.json', 'w', encoding='utf-8') as fh:
+              json.dump(match, fh, ensure_ascii=False)
+          print(json.dumps({'suggestions': len(items), 'selected': match}, ensure_ascii=False))
           PY
 
-          selected="$(cat selected-address.txt)"
-          curl --fail --silent --show-error --max-time 40 -b cookies.txt --get \
+          selected="$(python -c "import json; print(json.load(open('selected.json', encoding='utf-8'))['label'])")"
+          lat="$(python -c "import json; print(json.load(open('selected.json', encoding='utf-8'))['lat'])")"
+          lon="$(python -c "import json; print(json.load(open('selected.json', encoding='utf-8'))['lon'])")"
+
+          # 3. Selected Photon coordinates -> NSPD WMS/cache -> cadastral candidates.
+          curl --fail --silent --show-error --max-time 45 -b cookies.txt --get \
             --data-urlencode "query=$selected" \
             --data-urlencode 'resolve_address=true' \
-            "$web/api/cadastre/search" > resolved.json
+            --data-urlencode "lat=$lat" \
+            --data-urlencode "lon=$lon" \
+            "$web/api/cadastre/search" > candidates.json
           python - <<'PY'
           import json
-          import re
-          d = json.load(open('resolved.json', encoding='utf-8'))
+          d = json.load(open('candidates.json', encoding='utf-8'))
+          assert d.get('kind') == 'cadastral_objects', d
+          items = d.get('items') or []
+          assert items, d
+          match = next((x for x in items if x.get('cadastral_number') == '76:23:010101:15008'), None)
+          assert match, items
+          assert match.get('address'), match
+          assert match.get('source'), match
+          print(json.dumps({
+              'candidates': len(items),
+              'selected_object': {
+                  'number': match.get('cadastral_number'),
+                  'type': match.get('object_type'),
+                  'address': match.get('address'),
+                  'source': match.get('source'),
+              },
+          }, ensure_ascii=False))
+          PY
+
+          # 4. Candidate click -> exact full card again (normally cache-first now).
+          curl --fail --silent --show-error --max-time 45 -b cookies.txt --get \
+            --data-urlencode 'query=76:23:010101:15008' \
+            "$web/api/cadastre/search" > final-card.json
+          python - <<'PY'
+          import json
+          d = json.load(open('final-card.json', encoding='utf-8'))
           assert d.get('kind') == 'object', d
           o = d.get('object') or {}
-          number = o.get('cadastral_number') or ''
-          assert re.fullmatch(r'\d{2}:\d{2}:\d{6,7}:\d+', number), o
+          assert o.get('cadastral_number') == '76:23:010101:15008', o
           assert o.get('address'), o
+          assert o.get('confidence') != 'none', o
           print(json.dumps({
-              'resolved': {
-                  'number': number,
+              'final_card': {
+                  'number': o.get('cadastral_number'),
                   'address': o.get('address'),
-                  'has_boundary': o.get('has_boundary'),
                   'source': o.get('source'),
+                  'has_boundary': o.get('has_boundary'),
               }
           }, ensure_ascii=False))
           PY
