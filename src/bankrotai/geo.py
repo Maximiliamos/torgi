@@ -555,24 +555,24 @@ class CadastralGeocoder:
         )
 
         if nspd_error is not None and ik12_error is not None:
-            error = (
+            final_error = (
                 "НСПД и резервный кадастровый источник временно недоступны. "
                 "Проверка завершена в ограниченный срок."
             )
         elif nspd_error is not None:
-            error = (
+            final_error = (
                 "НСПД временно недоступна, а резервный кадастровый источник "
                 "не вернул точный объект в отведённый срок."
             )
         else:
-            error = "Объект не найден в доступных кадастровых источниках."
+            final_error = "Объект не найден в доступных кадастровых источниках."
 
         return CadastralObjectResult(
             query=normalized,
             cadastral_number=normalized,
             source="nspd/ik12",
             confidence="none",
-            error=error,
+            error=final_error,
             attempts=attempts,
         )
 
