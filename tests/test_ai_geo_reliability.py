@@ -257,7 +257,7 @@ def test_nspd_tls_error_uses_safe_interactive_fallback_before_failure(monkeypatc
         lambda *args, **kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("bad cert")),
     )
 
-    def ik12_search(query: str):
+    def ik12_search(query: str, **_kwargs):
         calls.append(query)
         return None
 
