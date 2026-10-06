@@ -1,0 +1,58 @@
+name: NSPD raw response diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/nspd-raw-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect exact-number and address NSPD responses
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://nspd.gov.ru/api/geoportal/v2/search/geoportal'
+          ua='Mozilla/5.0 BankrotAI/1.0'
+          ref='https://nspd.gov.ru/map?thematic=PKK'
+
+          fetch() {
+            local query="$1"
+            local out="$2"
+            if ! curl --fail --silent --show-error --max-time 12               -A "$ua" -H "Referer: $ref" --get               --data-urlencode 'thematicSearchId=1'               --data-urlencode "query=$query"               "$base" -o "$out"; then
+              echo "verified TLS fetch failed for $query; using insecure transport only for public-response diagnostics" >&2
+              curl --insecure --fail --silent --show-error --max-time 12                 -A "$ua" -H "Referer: $ref" --get                 --data-urlencode 'thematicSearchId=1'                 --data-urlencode "query=$query"                 "$base" -o "$out"
+            fi
+          }
+
+          fetch '76:23:011401:8268' exact.json
+          fetch 'Ярославль, Ленинградский проспект, д 105, Ярославская область' address.json
+
+          python - <<'PY'
+          import json
+
+          def summarize(path):
+              data=json.load(open(path,encoding='utf-8'))
+              features=(data.get('data') or {}).get('features') or data.get('features') or []
+              result=[]
+              for i,f in enumerate(features[:10]):
+                  props=f.get('properties') or {}
+                  options=props.get('options') if isinstance(props.get('options'),dict) else {}
+                  result.append({
+                      'index':i,
+                      'props':{k:v for k,v in props.items() if k!='options'},
+                      'options':options,
+                      'geometry_type':(f.get('geometry') or {}).get('type'),
+                  })
+              return {'feature_count':len(features),'features':result}
+
+          print('EXACT',json.dumps(summarize('exact.json'),ensure_ascii=False,default=str))
+          print('ADDRESS',json.dumps(summarize('address.json'),ensure_ascii=False,default=str))
+          PY
