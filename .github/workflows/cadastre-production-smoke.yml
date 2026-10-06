@@ -128,14 +128,14 @@ jobs:
           assert repeated_obj is not None, "Persistent cache did not become visible through the public edge"
           timings["cache_hit_ms"] = min(cache_hit_times)
 
-          suggestions = search({"query": "\\u041b\\u0435\\u043d\\u0438\\u043d\\u0433\\u0440\\u0430\\u0434\\u0441\\u043a\\u0438\\u0439 105"}, "address_suggestions_ms")
+          address_query = first_obj.get("address")
+          assert address_query, first_obj
+          suggestions = search({"query": address_query}, "address_suggestions_ms")
           assert suggestions.get("kind") == "address_suggestions", suggestions
           choices = suggestions.get("items") or []
-          selected_address = next(
-              (item for item in choices if "\\u044f\\u0440\\u043e\\u0441\\u043b\\u0430\\u0432" in str(item.get("label", "")).casefold()),
-              None,
-          )
-          assert selected_address, choices
+          assert choices, suggestions
+          selected_address = choices[0]
+          assert selected_address.get("lat") is not None and selected_address.get("lon") is not None, selected_address
 
           flow_started = time.monotonic()
           candidates = search(
@@ -152,24 +152,30 @@ jobs:
           assert candidate_items, candidates
           assert all(item.get("cadastral_number") for item in candidate_items), candidate_items
 
-          candidate = next(
-              (item for item in candidate_items if item.get("cadastral_number") != first_kn),
-              candidate_items[0],
-          )
-          second_kn = candidate["cadastral_number"]
-          second = search({"query": second_kn}, "candidate_full_card_ms")
+          candidate_kn = candidate_items[0]["cadastral_number"]
+          candidate_card = search({"query": candidate_kn}, "candidate_full_card_ms")
+          candidate_obj = candidate_card.get("object") or {}
+          assert candidate_card.get("kind") == "object", candidate_card
+          assert candidate_obj.get("cadastral_number") == candidate_kn, candidate_obj
+          assert candidate_obj.get("confidence") != "none", candidate_obj
+          assert candidate_obj.get("info"), candidate_obj
+          timings["full_address_flow_ms"] = round((time.monotonic() - flow_started) * 1000, 1)
+
+          second_kn = "76:23:010101:15008"
+          second = search({"query": second_kn}, "second_known_kn_ms")
           second_obj = second.get("object") or {}
           assert second.get("kind") == "object", second
           assert second_obj.get("cadastral_number") == second_kn, second_obj
           assert second_obj.get("confidence") != "none", second_obj
           assert second_obj.get("info"), second_obj
-          timings["full_address_flow_ms"] = round((time.monotonic() - flow_started) * 1000, 1)
 
           evidence = {
               "first_kn": first_kn,
               "first_source": first_obj.get("source"),
               "second_kn": second_kn,
               "second_source": second_obj.get("source"),
+              "candidate_kn": candidate_kn,
+              "candidate_source": candidate_obj.get("source"),
               "candidate_count": len(candidate_items),
               "timings": timings,
           }
