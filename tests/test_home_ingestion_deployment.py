@@ -4,18 +4,26 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/home-secondary-deploy.yml")
 
 
-def test_home_image_build_retries_transient_registry_tls_failures() -> None:
+def test_home_image_build_is_bounded_and_has_offline_source_overlay_fallback() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "for ($attempt = 1; $attempt -le 4; $attempt++)" in workflow
-    assert "$usePull = $attempt -eq 1" in workflow
-    assert "$timeoutSeconds = if ($usePull) { 300 } else { 1200 }" in workflow
-    assert "$mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }" in workflow
-    assert "Start-Process -FilePath 'docker.exe'" in workflow
-    assert "$arguments = @('build')" in workflow
-    assert "if ($usePull) { $arguments += '--pull' }" in workflow
-    assert "$process.WaitForExit($timeoutSeconds * 1000)" in workflow
+    overlay = Path("Dockerfile.home-overlay").read_text(encoding="utf-8")
+
+    assert "Invoke-BoundedDockerBuild" in workflow
+    assert "Timeout = 180; Mode = 'refresh-base'" in workflow
+    assert "Timeout = 240; Mode = 'cached-base'" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
-    assert "Could not build the current-main API image after four bounded attempts" in workflow
+    assert "Offline source-overlay Docker build: PASS" in workflow
+    assert "requirements.lock pyproject.toml certs" in workflow
+    assert "production image tag does not expose a deploy SHA" in workflow
+    assert "deployed Python $actualPython != required $expectedPython" in workflow
+    assert "'--file', 'Dockerfile.home-overlay'" in workflow
+    assert "BASE_IMAGE=$overlayBaseTag" in workflow
+
+    assert "ARG BASE_IMAGE" in overlay
+    assert "FROM ${BASE_IMAGE}" in overlay
+    assert "pip install --no-deps ." in overlay
+    assert "pip install -r requirements.lock" not in overlay
+    assert "playwright install" not in overlay
 
 
 def test_home_dockerfile_caches_dependency_layer_before_app_source() -> None:
