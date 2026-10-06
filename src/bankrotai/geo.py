@@ -431,13 +431,14 @@ class CadastralGeocoder:
                 fallback_address=point.address or address,
             )
 
-        if cadastral is not None and cadastral.cadastral_number:
+        cadastral_number = cadastral.cadastral_number if cadastral is not None else None
+        if cadastral is not None and cadastral_number:
             cadastral = self._fill_result_address(
                 cadastral,
                 fallback_address=point.address or address,
             )
             self._cache_put(address_key, cadastral)
-            self._cache_put(self._cache_key("cad", cadastral.cadastral_number), cadastral)
+            self._cache_put(self._cache_key("cad", cadastral_number), cadastral)
             return cadastral
 
         return point
