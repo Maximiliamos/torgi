@@ -430,6 +430,21 @@ class CadastralGeocoder:
             str,
         ] = {}
 
+        def call_ik12() -> CadastralObjectResult | None:
+            try:
+                return IK12_GEOCODER.search_by_cadastral_number(
+                    normalized,
+                    deadline_monotonic=hard_deadline,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with injected/test adapters that still
+                # implement the historical one-argument contract. The failed
+                # keyword binding happens before provider work, so this cannot
+                # duplicate a network request.
+                if "deadline_monotonic" not in str(exc):
+                    raise
+                return IK12_GEOCODER.search_by_cadastral_number(normalized)
+
         def submit_ik12() -> None:
             nonlocal ik12_started
             if ik12_started or time.monotonic() >= hard_deadline - 0.25:
@@ -438,10 +453,7 @@ class CadastralGeocoder:
             future = executor.submit(
                 provider_call,
                 "ik12",
-                lambda: IK12_GEOCODER.search_by_cadastral_number(
-                    normalized,
-                    deadline_monotonic=hard_deadline,
-                ),
+                call_ik12,
             )
             pending[future] = "ik12"
 
