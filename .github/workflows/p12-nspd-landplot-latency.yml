@@ -1,0 +1,61 @@
+name: P12 NSPD landplot latency diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/p12-nspd-landplot-latency.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - name: Measure NSPD exact Search latency from Home
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          import time
+          import requests
+          from bankrotai.geo import NSPD_REFERER, nspd_tls_verify
+
+          url="https://nspd.gov.ru/api/geoportal/v2/search/geoportal"
+          headers={
+              "Referer":NSPD_REFERER,
+              "User-Agent":"Mozilla/5.0 BankrotAI/1.0",
+              "Accept":"application/json,text/plain,*/*",
+          }
+          for kn in ("76:23:011304:30","76:23:011401:8268"):
+              for read in (1.55,2.2,3.0):
+                  started=time.monotonic()
+                  try:
+                      r=requests.get(
+                          url,
+                          params={"thematicSearchId":1,"query":kn},
+                          headers=headers,
+                          timeout=(0.65,read),
+                          verify=nspd_tls_verify(),
+                      )
+                      elapsed=time.monotonic()-started
+                      features=(r.json().get("data") or {}).get("features") or []
+                      print("P12_NSPD_LATENCY",json.dumps({
+                          "kn":kn,"read_timeout":read,"seconds":round(elapsed,4),
+                          "status":r.status_code,"features":len(features),"ok":r.ok
+                      }))
+                      if r.ok and features:
+                          break
+                  except Exception as exc:
+                      elapsed=time.monotonic()-started
+                      print("P12_NSPD_LATENCY",json.dumps({
+                          "kn":kn,"read_timeout":read,"seconds":round(elapsed,4),
+                          "error":type(exc).__name__+":"+str(exc)
+                      }))
+          '@
+          $script | docker exec -i bankrotai-home-secondary python -
+          if ($LASTEXITCODE -ne 0) { throw 'NSPD latency diagnostic failed' }
