@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from copy import deepcopy
-from typing import Any
+from typing import Any, Callable
 import concurrent.futures
 import hashlib
 import logging
@@ -389,10 +389,11 @@ class CadastralGeocoder:
         attempts: list[dict[str, Any]] = []
         nspd_error: Exception | None = None
         ik12_error: Exception | None = None
+        ik12_started = False
 
         def provider_call(
             provider: str,
-            call,
+            call: Callable[[], CadastralObjectResult | None],
         ) -> tuple[str, CadastralObjectResult | None, Exception | None, float]:
             call_started = time.monotonic()
             try:
@@ -430,10 +431,10 @@ class CadastralGeocoder:
         ] = {}
 
         def submit_ik12() -> None:
-            if any(provider == "ik12" for provider in pending.values()):
+            nonlocal ik12_started
+            if ik12_started or time.monotonic() >= hard_deadline - 0.25:
                 return
-            if time.monotonic() >= hard_deadline - 0.25:
-                return
+            ik12_started = True
             future = executor.submit(
                 provider_call,
                 "ik12",
