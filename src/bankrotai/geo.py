@@ -86,6 +86,7 @@ class CadastralObjectResult:
 
 IK12_API_BASE = "https://api.roscadastres.com/pkk_files"
 IK12_MAX_NONCE = 5_000_000
+INTERACTIVE_IK12_BUDGET_SECONDS = 3.0
 CITY_SANITY_ANCHORS = {
     "ярославл": (57.6261, 39.8845, 45.0),
     "москв": (55.7558, 37.6176, 90.0),
@@ -99,26 +100,56 @@ class IK12Geocoder:
         self.session = requests.Session()
 
     @staticmethod
-    def _solve_pow(timestamp: int, query: str, threshold: int) -> int:
+    def _solve_pow(
+        timestamp: int,
+        query: str,
+        threshold: int,
+        *,
+        deadline_at: float | None = None,
+    ) -> int:
         prefix = f"{timestamp}{query}".encode()
         for nonce in range(IK12_MAX_NONCE):
+            if deadline_at is not None and nonce % 4096 == 0 and time.monotonic() >= deadline_at:
+                raise RuntimeError("IK12 interactive deadline exceeded during proof-of-work")
             digest = hashlib.sha256(prefix + str(nonce).encode()).digest()
             if int.from_bytes(digest[:4], "big") < threshold:
                 return nonce
         raise RuntimeError("IK12 proof-of-work limit exceeded")
 
-    def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult | None:
+    @staticmethod
+    def _request_timeout(deadline_at: float | None) -> tuple[float, float]:
+        if deadline_at is None:
+            return CADASTRAL_REQUEST_TIMEOUT
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0.20:
+            raise RuntimeError("IK12 interactive deadline exhausted")
+        connect = min(0.40, max(0.10, remaining / 4.0))
+        read = min(0.80, max(0.10, remaining - connect - 0.10))
+        return connect, read
+
+    def search_by_cadastral_number(
+        self,
+        cadastral_number: str,
+        *,
+        deadline_seconds: float | None = None,
+    ) -> CadastralObjectResult | None:
         require_provider("ik12", external=True)
         started = time.monotonic()
+        deadline_at = started + deadline_seconds if deadline_seconds is not None else None
         try:
             token_response = self.session.get(
                 f"{IK12_API_BASE}/token.php",
                 params={"query": cadastral_number, "action": "search"},
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=self._request_timeout(deadline_at),
             )
             token_response.raise_for_status()
             token = token_response.json()
-            nonce = self._solve_pow(int(token["timestamp"]), cadastral_number, int(token["threshold"]))
+            nonce = self._solve_pow(
+                int(token["timestamp"]),
+                cadastral_number,
+                int(token["threshold"]),
+                deadline_at=deadline_at,
+            )
             elapsed = max(1, round((time.monotonic() - started) * 1000))
             response = self.session.get(
                 f"{IK12_API_BASE}/search3.php",
@@ -133,7 +164,7 @@ class IK12Geocoder:
                     "nonce": nonce,
                     "elapsed": elapsed,
                 },
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=self._request_timeout(deadline_at),
             )
             response.raise_for_status()
             payload = response.json()
@@ -330,7 +361,10 @@ class CadastralGeocoder:
             return nspd_result
 
         try:
-            ik12_result = IK12_GEOCODER.search_by_cadastral_number(normalized)
+            ik12_result = IK12_GEOCODER.search_by_cadastral_number(
+                normalized,
+                deadline_seconds=INTERACTIVE_IK12_BUDGET_SECONDS,
+            )
         except GeoProviderUnavailable as exc:
             logger.warning("IK12 fallback failed for %s: %s", normalized, exc)
             ik12_result = None
@@ -751,7 +785,14 @@ class CadastralGeocoder:
                 except requests.RequestException as e:
                     category = classify_transport_exception(e)
                     record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
-                    if interactive and attempt + 1 < attempts:
+                    # A full connect/read timeout already consumed the useful
+                    # interactive budget. Do not repeat it before trying the
+                    # independent bounded fallback.
+                    if (
+                        interactive
+                        and attempt + 1 < attempts
+                        and category == "provider_5xx"
+                    ):
                         time.sleep(0.1)
                         continue
                     self._open_circuit("nspd")
