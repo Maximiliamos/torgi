@@ -57,3 +57,10 @@ def test_p11_acceptance_requires_current_d_drive_backup_policy() -> None:
     assert "48-hour policy" in text
     assert "$age -gt 60" in text
     assert "C:\\ProgramData\\BankrotAI\\dr-backups" not in text
+
+
+def test_p11_acceptance_uses_canonical_photon_container_name() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "'bankrotai-photon'" in text
+    assert "'bankrotai-home-photon'" not in text

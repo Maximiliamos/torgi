@@ -72,7 +72,7 @@ jobs:
           $required = @(
             'bankrotai-home-postgres',
             'bankrotai-home-redis',
-            'bankrotai-home-photon',
+            'bankrotai-photon',
             'bankrotai-home-secondary',
             'bankrotai-home-ingestion-worker',
             'bankrotai-home-geocoding-worker',
