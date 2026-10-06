@@ -67,8 +67,8 @@ def test_selected_address_resolves_photon_point_to_cadastral_object(monkeypatch)
     monkeypatch.setattr(geocoder, "search_by_address", lambda _query, **_kwargs: point)
     monkeypatch.setattr(
         geocoder,
-        "_search_nspd_by_point",
-        lambda lat, lon, **_kwargs: expected if (lat, lon) == (57.691848, 39.771867) else None,
+        "search_objects_by_point",
+        lambda lat, lon, **_kwargs: [expected] if (lat, lon) == (57.691848, 39.771867) else [],
     )
 
     result = geocoder.search_selected_address(address)
@@ -167,8 +167,8 @@ def test_interactive_cadastral_search_reports_failure_only_after_ik12_fallback(m
 
     assert calls == ["76:23:011401:8268"]
     assert result.confidence == "none"
-    assert result.source == "nspd/pkk/ik12"
-    assert "резервные кадастровые источники" in str(result.error)
+    assert result.source == "nspd/ik12"
+    assert "резервный кадастровый источник" in str(result.error)
 
 
 
@@ -345,7 +345,7 @@ def test_interactive_nspd_retries_once_without_disabling_bulk_contract(monkeypat
 
 
 
-def test_selected_address_falls_back_to_pkk_point_when_nspd_point_is_unavailable(monkeypatch) -> None:
+def test_selected_address_does_not_use_legacy_pkk_when_nspd_wms_is_unavailable(monkeypatch) -> None:
     geocoder = CadastralGeocoder()
     address = "Ярославль, Ленинградский проспект, д 105"
     point = CadastralObjectResult(
@@ -357,26 +357,92 @@ def test_selected_address_falls_back_to_pkk_point_when_nspd_point_is_unavailable
         source="photon",
         confidence="high",
     )
-    expected = CadastralObjectResult(
-        query=address,
-        cadastral_number="76:23:010101:15008",
-        object_type="Здание",
-        address=address,
-        lat=57.6919301,
-        lon=39.7720143,
-        source="pkk_point",
-        confidence="high",
-        info={"Кадастровый номер": "76:23:010101:15008", "Адрес": address},
-    )
     monkeypatch.setattr(geocoder, "search_by_address", lambda _query, **_kwargs: point)
     monkeypatch.setattr(
         geocoder,
-        "_search_nspd_by_point",
+        "search_objects_by_point",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
     )
-    monkeypatch.setattr(geocoder, "_search_pkk_by_point", lambda *_args, **_kwargs: expected)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_pkk_by_point",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy PKK must not run")),
+    )
 
     result = geocoder.search_selected_address(address)
 
-    assert result.cadastral_number == "76:23:010101:15008"
-    assert result.source == "pkk_point"
+    assert result.cadastral_number is None
+    assert result.source == "photon"
+
+
+
+def test_normalize_nspd_props_supports_current_snake_case_options() -> None:
+    from bankrotai.geo import normalize_nspd_props
+
+    info = normalize_nspd_props(
+        {
+            "category_name": "Здания",
+            "options": {
+                "cad_num": "76:23:011401:8268",
+                "readable_address": "г. Ярославль, Ленинградский проспект, д. 54а",
+                "specified_area": 19513.2,
+                "cost_value": 670868499.17,
+                "floors": 3,
+                "year_built": 2018,
+                "no_coords": False,
+            },
+        },
+        "76:23:011401:8268",
+    )
+
+    assert info["Кадастровый номер"] == "76:23:011401:8268"
+    assert info["Адрес"] == "г. Ярославль, Ленинградский проспект, д. 54а"
+    assert info["Площадь общая"] == 19513.2
+    assert info["Кадастровая стоимость"] == 670868499.17
+    assert info["Количество этажей"] == 3
+    assert info["Завершение строительства"] == 2018
+
+
+def test_nspd_wms_returns_all_unique_cadastral_objects(monkeypatch) -> None:
+    class Response:
+        def __init__(self, layer: str):
+            self.layer = layer
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            number = "76:23:010101:15008" if self.layer == "36049" else "76:23:010101:123"
+            return {
+                "features": [
+                    {
+                        "properties": {
+                            "category_name": "Здания" if self.layer == "36049" else "Земельные участки из ЕГРН",
+                            "options": {"cad_num": number},
+                        },
+                        "geometry": {"type": "Point", "coordinates": [39.7720143, 57.6919301]},
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("bankrotai.geo.require_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bankrotai.geo.record_provider_success", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bankrotai.geo.nspd_tls_verify", lambda: True)
+
+    def get(url, **_kwargs):
+        return Response("36049" if "/36049/" in url else "36048")
+
+    monkeypatch.setattr("bankrotai.geo.requests.get", get)
+    geocoder = CadastralGeocoder()
+
+    result = geocoder.search_objects_by_point(
+        57.6919301,
+        39.7720143,
+        fallback_address="Ярославль, Ленинградский проспект, д 105",
+    )
+
+    assert [item.cadastral_number for item in result] == [
+        "76:23:010101:15008",
+        "76:23:010101:123",
+    ]
+    assert all(item.address == "Ярославль, Ленинградский проспект, д 105" for item in result)
