@@ -270,7 +270,7 @@ jobs:
           $built = $false
           for ($attempt = 1; $attempt -le 4; $attempt++) {
             $usePull = $attempt -eq 1
-            $timeoutSeconds = if ($usePull) { 300 } else { 600 }
+            $timeoutSeconds = if ($usePull) { 300 } else { 1200 }
             $mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }
             Write-Output "Starting Docker build attempt $attempt/4 mode=$mode timeout=$timeoutSeconds seconds"
             $arguments = @('build')
