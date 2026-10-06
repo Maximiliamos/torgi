@@ -152,20 +152,52 @@ class IK12Geocoder:
         )
         if feature is None:
             return None
+
+        attrs = feature.get("attrs") or {}
+        raw_type = str(
+            payload.get("object_type")
+            or attrs.get("type_name")
+            or attrs.get("type")
+            or attrs.get("obj_type")
+            or ""
+        ).casefold()
+        kind = "building" if raw_type == "5" or "здан" in raw_type or "building" in raw_type else "land_plot"
+        info = normalize_pkk_attrs(attrs, expected, kind)
+
         center = feature.get("center") or {}
-        if "x" not in center or "y" not in center:
-            return None
-        lon, lat = web_mercator_to_wgs84(float(center["x"]), float(center["y"]))
+        geometry = geometry_to_wgs84(feature.get("geometry"))
+        lat, lon = centroid_from_geometry(geometry)
+        if "x" in center and "y" in center:
+            lon, lat = web_mercator_to_wgs84(float(center["x"]), float(center["y"]))
+        if lat is None or lon is None:
+            return CadastralObjectResult(
+                query=cadastral_number,
+                cadastral_number=expected,
+                object_type=info.get("Вид объекта недвижимости"),
+                title=info.get("Наименование") or info.get("Назначение"),
+                address=info.get("Адрес"),
+                source="ik12_cadastral",
+                confidence="low",
+                raw=feature,
+                info=info,
+                error="Объект найден в резервном кадастровом источнике, но координаты не получены",
+            )
+
+        geometry_json = geometry if geometry and geometry.get("type") != "Point" else None
         return CadastralObjectResult(
             query=cadastral_number,
             cadastral_number=expected,
-            object_type=str(payload.get("object_type") or ""),
+            object_type=info.get("Вид объекта недвижимости"),
+            title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
+            address=info.get("Адрес"),
             lat=lat,
             lon=lon,
+            geometry_json=geometry_json,
+            has_boundary=bool(geometry_json),
             source="ik12_cadastral",
             confidence="high",
             raw=feature,
-            info={"Кадастровый номер": expected},
+            info=info,
         )
 
 
@@ -223,37 +255,48 @@ class CadastralGeocoder:
         return self.search_by_address(q)
 
     def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult:
+        normalized = cadastral_number.replace(" ", "")
         for kind, feature_type in self.FEATURE_TYPES.items():
-            result = self._search_pkk_feature(cadastral_number, feature_type, kind)
+            result = self._search_pkk_feature(normalized, feature_type, kind)
             if result and result.lat and result.lon:
                 return result
 
+        nspd_error: Exception | None = None
         try:
-            nspd_result = self._search_nspd_geoportal(cadastral_number)
-        except (NSPDTLSVerificationError, GeoProviderUnavailable):
+            nspd_result = self._search_nspd_geoportal(normalized)
+        except (NSPDTLSVerificationError, GeoProviderUnavailable) as exc:
+            nspd_error = exc
+            nspd_result = None
             logger.warning(
-                "NSPD TLS verification failed for %s; leaving the lot for manual GEO review",
-                cadastral_number,
-            )
-            return CadastralObjectResult(
-                query=cadastral_number,
-                cadastral_number=cadastral_number,
-                source="nspd",
-                confidence="none",
-                error=(
-                    "Не удалось установить защищённое соединение с НСПД. "
-                    "Проверка сертификата не отключалась; объект оставлен для ручной проверки."
-                ),
+                "NSPD unavailable for interactive cadastral search %s; trying the verified IK12 fallback: %s",
+                normalized,
+                exc,
             )
         if nspd_result and nspd_result.lat and nspd_result.lon:
             return nspd_result
 
+        try:
+            ik12_result = IK12_GEOCODER.search_by_cadastral_number(normalized)
+        except GeoProviderUnavailable as exc:
+            logger.warning("IK12 fallback failed for %s: %s", normalized, exc)
+            ik12_result = None
+        if ik12_result and ik12_result.lat is not None and ik12_result.lon is not None:
+            return ik12_result
+
+        if nspd_error is not None:
+            error = (
+                "НСПД временно недоступна через защищённое соединение, "
+                "а резервный кадастровый источник не вернул объект."
+            )
+        else:
+            error = "Объект не найден в доступных кадастровых источниках."
+
         return CadastralObjectResult(
-            query=cadastral_number,
-            cadastral_number=cadastral_number,
-            source="pkk/nspd",
+            query=normalized,
+            cadastral_number=normalized,
+            source="pkk/nspd/ik12",
             confidence="none",
-            error="Объект не найден в кадастровом API или API недоступен. Старый PKK часто отключен, НСПД может быть недоступен из текущей сети.",
+            error=error,
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
