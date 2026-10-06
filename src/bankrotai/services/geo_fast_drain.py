@@ -56,6 +56,17 @@ _NETWORK_MARKERS = (
 )
 
 
+def _json_safe(value: Any) -> Any:
+    """Normalize persisted P7 evidence into values accepted by PostgreSQL JSON."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _payload(error_message: str | None) -> dict[str, Any]:
     try:
         value = json.loads(error_message or "")
@@ -133,8 +144,8 @@ def _campaign_state(
             state = BackgroundTaskState(task_id=task_id, task_type=P7_TASK_TYPE, status=status)
             session.add(state)
         state.status = status
-        state.progress_json = progress
-        state.result_json = result
+        state.progress_json = _json_safe(progress)
+        state.result_json = _json_safe(result) if result is not None else None
         state.error_message = error
         state.started_at = state.started_at or utc_now()
         if status in {"completed", "failed"}:

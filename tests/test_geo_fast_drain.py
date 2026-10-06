@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from bankrotai.core import utc_now
-from bankrotai.db import Base, GeoFailure, ProcessedLot
+from bankrotai.db import BackgroundTaskState, Base, GeoFailure, ProcessedLot
 from bankrotai.services import geo_backfill
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.geo_fast_drain import (
@@ -64,6 +64,34 @@ def test_p7_empty_plan_completes_without_network_probe(monkeypatch) -> None:
     assert result["processed"] == 0
     assert result["geocoded"] == 0
     assert result["p7_total"] == 0
+
+
+def test_p7_final_state_serializes_datetime_evidence(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    evidence_time = utc_now()
+
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.network_health_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("empty P7 must not probe network")),
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geocoding_progress",
+        lambda _session: {"actionable_remaining": 0, "next_retry_at": evidence_time},
+    )
+
+    result = run_geo_fast_drain(SessionLocal, task_id="p7-json-safe")
+
+    assert result["status"] == "completed"
+    with SessionLocal() as session:
+        state = session.scalar(
+            select(BackgroundTaskState).where(BackgroundTaskState.task_id == "p7-json-safe")
+        )
+        assert state is not None
+        assert state.status == "completed"
+        assert state.result_json is not None
+        assert state.result_json["progress_after"]["next_retry_at"] == evidence_time.isoformat()
 
 
 def test_p7_reclassifies_old_no_match_into_held_queue_with_one_fresh_attempt_left() -> None:
