@@ -166,7 +166,7 @@ def geo_fast_drain_plan(session: Any) -> dict[str, Any]:
         if str(region_code or "") in CFO_REGION_CODES:
             cfo_legacy += 1
 
-    held = int(
+    total = int(
         session.scalar(
             select(func.count())
             .select_from(GeoFailure)
@@ -175,11 +175,27 @@ def geo_fast_drain_plan(session: Any) -> dict[str, Any]:
         )
         or 0
     )
+    now = utc_now()
+    due = int(
+        session.scalar(
+            select(func.count())
+            .select_from(GeoFailure)
+            .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+            .where(
+                *_active_unmapped_filters(),
+                GeoFailure.status == P7_HOLD_STATUS,
+                or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
+            )
+        )
+        or 0
+    )
     return {
         "legacy_total": legacy_total,
         "legacy_by_classification": dict(categories),
         "legacy_cfo": cfo_legacy,
-        "p7_held": held,
+        "p7_total": total,
+        "p7_due": due,
+        "p7_held": max(0, total - due),
     }
 
 

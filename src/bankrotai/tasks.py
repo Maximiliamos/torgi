@@ -280,21 +280,26 @@ def schedule_geo_fast_drain() -> str:
             .order_by(BackgroundTaskState.created_at.desc())
             .first()
         )
-        if existing is not None and not _p7_campaign_is_stale(existing):
+        if existing is not None:
             from bankrotai.services.geo_fast_drain import geo_fast_drain_plan
 
             plan = geo_fast_drain_plan(session)
-            if int(plan.get("legacy_total") or 0) == 0 and int(plan.get("p7_held") or 0) == 0:
+            # Held rows are intentionally not runnable until their bounded retry
+            # date. They must not keep a campaign in `running` forever when
+            # there is no legacy or due P7 work left.
+            if int(plan.get("legacy_total") or 0) == 0 and int(plan.get("p7_due") or 0) == 0:
                 completed_at = _utc_now()
                 progress = dict(existing.progress_json or {})
+                p7_total = int(plan.get("p7_total") or plan.get("p7_held") or 0)
+                p7_held = int(plan.get("p7_held") or 0)
                 progress.update(
                     {
                         "phase": "completed",
                         "status": "completed",
-                        "stop_reason": "nothing_to_drain",
-                        "p7_total": 0,
+                        "stop_reason": "nothing_due" if p7_held else "nothing_to_drain",
+                        "p7_total": p7_total,
                         "p7_due": 0,
-                        "p7_held": 0,
+                        "p7_held": p7_held,
                         "processed": int(progress.get("processed") or 0),
                         "geocoded": int(progress.get("geocoded") or 0),
                         "scheduler_noop_completed_at": completed_at.isoformat(),
@@ -308,8 +313,8 @@ def schedule_geo_fast_drain() -> str:
                 existing.finished_at = completed_at
                 session.flush()
                 return existing.task_id
-            return existing.task_id
-        if existing is not None:
+            if not _p7_campaign_is_stale(existing):
+                return existing.task_id
             recovered_at = _utc_now()
             existing.status = "failed"
             existing.finished_at = recovered_at

@@ -114,8 +114,8 @@ jobs:
             if ($state.status -eq 'completed') {
               $result = $state.result
               $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath "$env:RUNNER_TEMP\p7-geo-fast-drain.json" -Encoding utf8
-              $remaining = if ($null -eq $result.p7_total) { 0 } else { [int]$result.p7_total }
-              if ($remaining -gt 0) { throw "P7 stopped with $remaining historical lots still pending; stop_reason=$($result.stop_reason)" }
+              $due = if ($null -eq $result.p7_due) { 0 } else { [int]$result.p7_due }
+              if ($due -gt 0) { throw "P7 stopped with $due due historical lots still pending; stop_reason=$($result.stop_reason)" }
               exit 0
             }
             Start-Sleep -Seconds 20

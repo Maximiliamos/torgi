@@ -235,6 +235,8 @@ def test_schedule_p7_completes_existing_running_campaign_when_plan_is_empty(monk
             "legacy_total": 0,
             "legacy_by_classification": {},
             "legacy_cfo": 0,
+            "p7_total": 0,
+            "p7_due": 0,
             "p7_held": 0,
         },
     )
@@ -257,6 +259,62 @@ def test_schedule_p7_completes_existing_running_campaign_when_plan_is_empty(monk
     assert state.progress_json["stop_reason"] == "nothing_to_drain"
     assert state.progress_json["p7_total"] == 0
     assert state.result_json["p7_total"] == 0
+
+
+def test_schedule_p7_completes_existing_campaign_when_only_held_work_remains(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(
+            BackgroundTaskState(
+                task_id="p7-existing-held",
+                task_type="geocoding_fast_drain",
+                status="running",
+                started_at=now - tasks._P7_RUNNING_STALE_AFTER - timedelta(minutes=5),
+                progress_json={"phase": "draining", "processed": 0, "geocoded": 0},
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def scope():
+        with SessionLocal() as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(tasks, "session_scope", scope)
+    monkeypatch.setattr(tasks, "broker_is_available", lambda: True)
+    monkeypatch.setattr(
+        "bankrotai.services.geo_fast_drain.geo_fast_drain_plan",
+        lambda _session: {
+            "legacy_total": 0,
+            "legacy_by_classification": {},
+            "legacy_cfo": 0,
+            "p7_total": 46,
+            "p7_due": 0,
+            "p7_held": 46,
+        },
+    )
+    monkeypatch.setattr(
+        tasks.geo_fast_drain_task,
+        "apply_async",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("held work must not be released")),
+    )
+
+    task_id = tasks.schedule_geo_fast_drain()
+
+    with SessionLocal() as session:
+        state = session.query(BackgroundTaskState).filter_by(task_id=task_id).one()
+
+    assert task_id == "p7-existing-held"
+    assert state.status == "completed"
+    assert state.progress_json["stop_reason"] == "nothing_due"
+    assert state.result_json["p7_total"] == 46
+    assert state.result_json["p7_due"] == 0
+    assert state.result_json["p7_held"] == 46
 
 
 def test_schedule_p7_keeps_fresh_running_campaign_when_plan_has_work(monkeypatch) -> None:
@@ -291,6 +349,8 @@ def test_schedule_p7_keeps_fresh_running_campaign_when_plan_has_work(monkeypatch
             "legacy_total": 1,
             "legacy_by_classification": {"network": 1},
             "legacy_cfo": 0,
+            "p7_total": 0,
+            "p7_due": 0,
             "p7_held": 0,
         },
     )

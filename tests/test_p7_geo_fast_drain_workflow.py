@@ -20,6 +20,8 @@ def test_p7_workflow_waits_for_exact_home_deploy_and_monitors_disk() -> None:
     assert "$freeGb -lt 8" in workflow
     assert "set_geocoding_paused" in workflow
     assert "Monitor controlled GEO drain" in workflow
+    assert '$result.p7_due' in workflow
+    assert "due historical lots still pending" in workflow
     assert "p7-geo-fast-drain.json" in workflow
 
 
