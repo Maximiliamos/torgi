@@ -158,6 +158,9 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
     assert payload["summary"]["map"]["point_count"] == 39705
     assert payload["summary"]["map"]["status"] == "ready"
     assert payload["summary"]["last_update_at"] is not None
+    assert payload["summary"]["host"]["disk"]["free_gb"] is None
+    assert payload["summary"]["host"]["backup_healthy"] is False
+    assert payload["summary"]["host"]["runner_healthy"] is False
 
 
 def test_geocoding_pause_controls_require_admin_and_persist(monkeypatch) -> None:
@@ -292,3 +295,73 @@ def test_geocoding_progress_does_not_claim_eta_for_future_retry(monkeypatch) -> 
     assert geo["rate_per_second"] == 2.0
     assert geo["eta_seconds"] is None
     assert geo["expected_completion_at"] is None
+
+def test_source_probe_requires_admin_and_never_accepts_unconfigured_source(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api.settings, "api_read_only", False)
+    client = TestClient(api.app)
+
+    api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(id=1, username="reader", role="reader")
+    try:
+        assert client.post("/api/operations/sources/bidexpert.ru/probe").status_code == 403
+    finally:
+        api.app.dependency_overrides.pop(api.require_user, None)
+
+    api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(id=2, username="admin", role="admin")
+    try:
+        assert client.post("/api/operations/sources/tbankrot.ru/probe").status_code == 404
+    finally:
+        api.app.dependency_overrides.pop(api.require_user, None)
+
+
+def test_source_probe_records_recovery_and_queues_only_that_source(monkeypatch) -> None:
+    from bankrotai.services import source_resilience
+    from bankrotai import tasks
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            yield session
+            session.commit()
+
+    class Queued:
+        id = "manual-source-probe-retry"
+
+    queued: list[tuple[list[str], int]] = []
+    monkeypatch.setattr(api, "session_scope", scope)
+    monkeypatch.setattr(api.settings, "api_read_only", False)
+    monkeypatch.setattr(
+        source_resilience,
+        "probe_source_endpoint",
+        lambda source: {"success": True, "source_system": source, "http_status": 200},
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args, countdown)) or Queued(),
+    )
+
+    client = TestClient(api.app)
+    api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(id=2, username="admin", role="admin")
+    try:
+        response = client.post("/api/operations/sources/bidexpert.ru/probe")
+    finally:
+        api.app.dependency_overrides.pop(api.require_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["circuit_state"] == "closed"
+    assert response.json()["retry"]["task_id"] == "manual-source-probe-retry"
+    assert queued == [(["bidexpert.ru", "fast"], 5)]
+
