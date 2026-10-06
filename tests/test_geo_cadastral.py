@@ -629,3 +629,16 @@ def test_exact_search_hard_deadline_bounds_both_providers(monkeypatch) -> None:
     assert observed.confidence == "none"
     assert observed.source == "nspd/ik12"
     assert observed.attempts[-1]["provider"] == "exact_chain"
+
+
+
+def test_interactive_nspd_primary_read_cap_covers_measured_home_latency() -> None:
+    import bankrotai.geo as geo
+
+    # Production Home diagnostics observed valid NSPD exact responses around
+    # 1.24-1.66s. Keep the primary read cap above that measured envelope while
+    # the 1.1s hedge and 7.5s hard deadline remain unchanged.
+    assert geo.INTERACTIVE_NSPD_READ_TIMEOUT >= 2.2
+    assert geo.INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS < geo.INTERACTIVE_NSPD_READ_TIMEOUT
+    assert geo.INTERACTIVE_NSPD_READ_TIMEOUT < geo.INTERACTIVE_NSPD_BUDGET_SECONDS
+    assert geo.INTERACTIVE_NSPD_BUDGET_SECONDS < geo.INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS
