@@ -305,7 +305,7 @@ class CadastralGeocoder:
             result = self._search_nspd_geoportal(address)
         except (NSPDTLSVerificationError, GeoProviderUnavailable):
             result = None
-        if result is not None and (result.cadastral_number or result.info):
+        if result is not None and result.cadastral_number:
             return result
         return self.search_by_address(address)
 
@@ -447,7 +447,13 @@ class CadastralGeocoder:
         props = feature.get("properties") or {}
         expected_cadastral = query if CADASTRAL_RE.match(query.replace(" ", "")) else ""
         info = normalize_nspd_props(props, expected_cadastral)
-        observed_cadastral = info.get("Кадастровый номер") or (expected_cadastral or None)
+        observed_cadastral = str(info.get("Кадастровый номер") or "").replace(" ", "")
+        if not CADASTRAL_RE.match(observed_cadastral):
+            observed_cadastral = expected_cadastral or None
+            if not observed_cadastral:
+                info["Кадастровый номер"] = None
+        else:
+            info["Кадастровый номер"] = observed_cadastral
         geometry = geometry_to_wgs84(feature.get("geometry"))
         lat, lon = centroid_from_geometry(geometry)
 
