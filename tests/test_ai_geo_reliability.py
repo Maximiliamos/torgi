@@ -230,7 +230,7 @@ def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkey
 
     monkeypatch.setattr(api, "_CADASTRAL_CAPACITY", threading.BoundedSemaphore(1))
     monkeypatch.setattr(api, "_CADASTRAL_DEADLINE_SECONDS", 0.02)
-    monkeypatch.setattr(api._CADASTRAL_GEOCODER, "search", stalled_search)
+    monkeypatch.setattr(api._CADASTRAL_GEOCODER, "search_by_cadastral_number", stalled_search)
 
     async def run_requests():
         first = asyncio.create_task(api.search_cadastre("76:23:010101:10"))
@@ -240,8 +240,8 @@ def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkey
 
     first, second = asyncio.run(run_requests())
 
-    assert first["confidence"] == "none"
-    assert second["confidence"] == "none"
+    assert first["object"]["confidence"] == "none"
+    assert second["object"]["confidence"] == "none"
     assert calls == ["76:23:010101:10"]
 
 
