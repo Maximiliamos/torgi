@@ -28,6 +28,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CURRENT_SHA="$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          echo "Canonical main HEAD: $CURRENT_SHA"
           for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
             payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             mapfile -t stale_ids < <(
@@ -91,33 +93,42 @@ jobs:
           done
           echo "All stale production deploy runs are cleared."
 
-      - name: Ensure REG.RU deploy exists for current main
+      - name: Ensure production deploys exist for current main
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          CURRENT_SHA="$(gh api -X GET "repos/$REPOSITORY/commits/main" --jq '.sha')"
-          echo "Resolved current main SHA for REG.RU dispatch: $CURRENT_SHA"
-          payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/regru-deploy.yml/runs?per_page=50")"
-          matching="$(
-            jq -r --arg current "$CURRENT_SHA" '
-              [
-                .workflow_runs[]
-                | select(
-                    .head_sha == $current
-                    and (
-                      .status != "completed"
-                      or .conclusion == "success"
+          CURRENT_SHA="$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          echo "Canonical main HEAD: $CURRENT_SHA"
+
+          ensure_deploy() {
+            local workflow="$1"
+            local label="$2"
+            local payload matching
+            payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
+            matching="$(
+              jq -r --arg current "$CURRENT_SHA" '
+                [
+                  .workflow_runs[]
+                  | select(
+                      .head_sha == $current
+                      and (
+                        .status != "completed"
+                        or .conclusion == "success"
+                      )
                     )
-                  )
-              ] | length
-            ' <<<"$payload"
-          )"
-          if [[ "$matching" != "0" ]]; then
-            echo "REG.RU deploy already exists for $CURRENT_SHA"
-            exit 0
-          fi
-          echo "Dispatching REG.RU deploy for main at $CURRENT_SHA"
-          gh workflow run regru-deploy.yml --repo "$REPOSITORY" --ref main
+                ] | length
+              ' <<<"$payload"
+            )"
+            if [[ "$matching" != "0" ]]; then
+              echo "$label deploy already exists for $CURRENT_SHA"
+              return 0
+            fi
+            echo "Dispatching $label deploy for main at $CURRENT_SHA"
+            gh workflow run "$workflow" --repo "$REPOSITORY" --ref main
+          }
+
+          ensure_deploy home-secondary-deploy.yml "Home"
+          ensure_deploy regru-deploy.yml "REG.RU"
