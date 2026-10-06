@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from copy import deepcopy
-from typing import Any
+from typing import Any, Callable
+import concurrent.futures
 import hashlib
 import logging
 import math
@@ -43,6 +44,16 @@ CADASTRAL_MIN_REQUEST_INTERVAL = 0.35
 CADASTRAL_CIRCUIT_BREAK_SECONDS = 300.0
 INTERACTIVE_CADASTRAL_CACHE_SECONDS = 21_600.0
 INTERACTIVE_CADASTRAL_CACHE_MAX_ENTRIES = 2_048
+INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS = 7.5
+INTERACTIVE_NSPD_BUDGET_SECONDS = 3.2
+INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS = 1.1
+INTERACTIVE_NSPD_CONNECT_TIMEOUT = 0.65
+INTERACTIVE_NSPD_READ_TIMEOUT = 1.55
+INTERACTIVE_NSPD_RETRY_READ_TIMEOUT = 0.9
+INTERACTIVE_IK12_BUDGET_SECONDS = 4.8
+INTERACTIVE_IK12_CONNECT_TIMEOUT = 0.7
+INTERACTIVE_IK12_READ_TIMEOUT = 1.2
+INTERACTIVE_IK12_POW_BUDGET_SECONDS = 2.2
 NSPD_WMS_LAYERS = (("building", "36049"), ("land_plot", "36048"))
 
 
@@ -58,6 +69,20 @@ def nspd_tls_verify() -> bool | str:
         logger.warning("NSPD TLS verification is disabled by explicit local debug configuration")
         return False
     return settings.nspd_ca_bundle or True
+
+
+def _bounded_request_timeout(
+    deadline_monotonic: float,
+    *,
+    connect_cap: float,
+    read_cap: float,
+) -> tuple[float, float]:
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0.2:
+        raise TimeoutError("provider deadline exhausted")
+    connect_timeout = min(connect_cap, max(0.1, min(remaining * 0.35, remaining - 0.1)))
+    read_timeout = min(read_cap, max(0.1, remaining - connect_timeout - 0.05))
+    return (connect_timeout, read_timeout)
 
 
 @dataclass
@@ -99,27 +124,67 @@ class IK12Geocoder:
         self.session = requests.Session()
 
     @staticmethod
-    def _solve_pow(timestamp: int, query: str, threshold: int) -> int:
+    def _solve_pow(
+        timestamp: int,
+        query: str,
+        threshold: int,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> int:
         prefix = f"{timestamp}{query}".encode()
         for nonce in range(IK12_MAX_NONCE):
+            if (
+                deadline_monotonic is not None
+                and nonce % 4096 == 0
+                and time.monotonic() >= deadline_monotonic
+            ):
+                raise TimeoutError("IK12 proof-of-work deadline exhausted")
             digest = hashlib.sha256(prefix + str(nonce).encode()).digest()
             if int.from_bytes(digest[:4], "big") < threshold:
                 return nonce
         raise RuntimeError("IK12 proof-of-work limit exceeded")
 
-    def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult | None:
+    def search_by_cadastral_number(
+        self,
+        cadastral_number: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> CadastralObjectResult | None:
         require_provider("ik12", external=True)
         started = time.monotonic()
+        hard_deadline = deadline_monotonic or (started + INTERACTIVE_IK12_BUDGET_SECONDS)
+        hard_deadline = min(hard_deadline, started + INTERACTIVE_IK12_BUDGET_SECONDS)
         try:
+            token_timeout = _bounded_request_timeout(
+                hard_deadline,
+                connect_cap=INTERACTIVE_IK12_CONNECT_TIMEOUT,
+                read_cap=INTERACTIVE_IK12_READ_TIMEOUT,
+            )
             token_response = self.session.get(
                 f"{IK12_API_BASE}/token.php",
                 params={"query": cadastral_number, "action": "search"},
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=token_timeout,
             )
             token_response.raise_for_status()
             token = token_response.json()
-            nonce = self._solve_pow(int(token["timestamp"]), cadastral_number, int(token["threshold"]))
+
+            pow_deadline = min(
+                hard_deadline,
+                time.monotonic() + INTERACTIVE_IK12_POW_BUDGET_SECONDS,
+            )
+            nonce = self._solve_pow(
+                int(token["timestamp"]),
+                cadastral_number,
+                int(token["threshold"]),
+                deadline_monotonic=pow_deadline,
+            )
             elapsed = max(1, round((time.monotonic() - started) * 1000))
+
+            response_timeout = _bounded_request_timeout(
+                hard_deadline,
+                connect_cap=INTERACTIVE_IK12_CONNECT_TIMEOUT,
+                read_cap=INTERACTIVE_IK12_READ_TIMEOUT,
+            )
             response = self.session.get(
                 f"{IK12_API_BASE}/search3.php",
                 params={
@@ -133,11 +198,15 @@ class IK12Geocoder:
                     "nonce": nonce,
                     "elapsed": elapsed,
                 },
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=response_timeout,
             )
             response.raise_for_status()
             payload = response.json()
             record_provider_success("ik12", latency_ms=(time.monotonic() - started) * 1000)
+        except TimeoutError as exc:
+            record_provider_failure("ik12", "read_timeout", latency_ms=(time.monotonic() - started) * 1000)
+            logger.warning("IK12 deadline exhausted for %s: %s", cadastral_number, exc)
+            raise GeoProviderUnavailable("ik12", "read_timeout", str(exc)) from exc
         except requests.RequestException as exc:
             category = classify_transport_exception(exc)
             record_provider_failure("ik12", category, latency_ms=(time.monotonic() - started) * 1000)
@@ -305,54 +374,218 @@ class CadastralGeocoder:
         return self.search_by_address(q)
 
     def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult:
-        """Interactive cadastral-number lookup: memory cache -> NSPD Search -> IK12."""
+        """Interactive exact lookup with an NSPD-first hedged IK12 fallback."""
         normalized = cadastral_number.replace(" ", "")
         cache_key = self._cache_key("cad", normalized)
         cached = self._cache_get(cache_key)
         if cached is not None:
+            cached.attempts.append(
+                {"provider": "memory_cache", "outcome": "hit", "elapsed_ms": 0}
+            )
             return cached
 
+        started = time.monotonic()
+        hard_deadline = started + INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS
+        attempts: list[dict[str, Any]] = []
         nspd_error: Exception | None = None
-        try:
-            nspd_result = self._search_nspd_geoportal(normalized, interactive=True)
-        except (NSPDTLSVerificationError, GeoProviderUnavailable) as exc:
-            nspd_error = exc
-            nspd_result = None
-            logger.warning(
-                "NSPD unavailable for interactive cadastral search %s; trying bounded IK12 fallback: %s",
-                normalized,
-                exc,
+        ik12_error: Exception | None = None
+        ik12_started = False
+
+        def provider_call(
+            provider: str,
+            call: Callable[[], CadastralObjectResult | None],
+        ) -> tuple[str, CadastralObjectResult | None, Exception | None, float]:
+            call_started = time.monotonic()
+            try:
+                result = call()
+                return (
+                    provider,
+                    result,
+                    None,
+                    (time.monotonic() - call_started) * 1000,
+                )
+            except Exception as exc:
+                return (
+                    provider,
+                    None,
+                    exc,
+                    (time.monotonic() - call_started) * 1000,
+                )
+
+        def valid_exact(result: CadastralObjectResult | None) -> bool:
+            return bool(
+                result is not None
+                and result.cadastral_number == normalized
+                and result.confidence != "none"
             )
 
-        if nspd_result and nspd_result.cadastral_number:
-            nspd_result = self._fill_result_address(nspd_result)
-            self._cache_put(cache_key, nspd_result)
-            return nspd_result
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="cadastre-hedge",
+        )
+        pending: dict[
+            concurrent.futures.Future[
+                tuple[str, CadastralObjectResult | None, Exception | None, float]
+            ],
+            str,
+        ] = {}
+
+        def call_ik12() -> CadastralObjectResult | None:
+            try:
+                return IK12_GEOCODER.search_by_cadastral_number(
+                    normalized,
+                    deadline_monotonic=hard_deadline,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with injected/test adapters that still
+                # implement the historical one-argument contract. The failed
+                # keyword binding happens before provider work, so this cannot
+                # duplicate a network request.
+                if "deadline_monotonic" not in str(exc):
+                    raise
+                return IK12_GEOCODER.search_by_cadastral_number(normalized)
+
+        def submit_ik12() -> None:
+            nonlocal ik12_started
+            if ik12_started or time.monotonic() >= hard_deadline - 0.25:
+                return
+            ik12_started = True
+            future = executor.submit(
+                provider_call,
+                "ik12",
+                call_ik12,
+            )
+            pending[future] = "ik12"
+
+        def record_outcome(
+            provider: str,
+            result: CadastralObjectResult | None,
+            error: Exception | None,
+            elapsed_ms: float,
+        ) -> None:
+            if error is not None:
+                outcome = f"error:{type(error).__name__}"
+            elif valid_exact(result):
+                outcome = "success"
+            else:
+                outcome = "not_found"
+            attempts.append(
+                {
+                    "provider": provider,
+                    "outcome": outcome,
+                    "elapsed_ms": round(elapsed_ms, 1),
+                }
+            )
 
         try:
-            ik12_result = IK12_GEOCODER.search_by_cadastral_number(normalized)
-        except GeoProviderUnavailable as exc:
-            logger.warning("IK12 fallback failed for %s: %s", normalized, exc)
-            ik12_result = None
-        if ik12_result and ik12_result.cadastral_number:
-            ik12_result = self._fill_result_address(ik12_result)
-            self._cache_put(cache_key, ik12_result)
-            return ik12_result
+            nspd_future = executor.submit(
+                provider_call,
+                "nspd",
+                lambda: self._search_nspd_geoportal(
+                    normalized,
+                    interactive=True,
+                    deadline_monotonic=hard_deadline,
+                ),
+            )
+            pending[nspd_future] = "nspd"
 
-        if nspd_error is not None:
-            error = (
-                "НСПД временно недоступна через защищённое соединение, "
-                "а резервный кадастровый источник не вернул объект."
+            first_wait = min(
+                INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS,
+                max(0.0, hard_deadline - time.monotonic()),
+            )
+            try:
+                provider, result, error, elapsed_ms = nspd_future.result(
+                    timeout=first_wait
+                )
+                pending.pop(nspd_future, None)
+                record_outcome(provider, result, error, elapsed_ms)
+                if error is not None:
+                    nspd_error = error
+                if valid_exact(result):
+                    assert result is not None
+                    result.attempts.extend(attempts)
+                    result = self._fill_result_address(result)
+                    self._cache_put(cache_key, result)
+                    return result
+                # Fast NSPD failure/not-found: start fallback immediately.
+                submit_ik12()
+            except concurrent.futures.TimeoutError:
+                # NSPD is still pending after the hedge delay. Start IK12 in
+                # parallel rather than waiting for the full NSPD budget.
+                submit_ik12()
+
+            while pending and time.monotonic() < hard_deadline:
+                remaining = hard_deadline - time.monotonic()
+                done, _ = concurrent.futures.wait(
+                    tuple(pending),
+                    timeout=max(0.0, remaining),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+
+                for future in done:
+                    provider = pending.pop(future)
+                    try:
+                        name, result, error, elapsed_ms = future.result()
+                    except Exception as exc:
+                        name, result, error, elapsed_ms = provider, None, exc, 0.0
+                    record_outcome(name, result, error, elapsed_ms)
+                    if name == "nspd" and error is not None:
+                        nspd_error = error
+                        submit_ik12()
+                    elif name == "ik12" and error is not None:
+                        ik12_error = error
+
+                    if valid_exact(result):
+                        assert result is not None
+                        result.attempts.extend(attempts)
+                        if time.monotonic() < hard_deadline - 0.25:
+                            result = self._fill_result_address(result)
+                        self._cache_put(cache_key, result)
+                        for loser in pending:
+                            loser.cancel()
+                        return result
+
+                    if name == "nspd":
+                        # NSPD returned no exact object; ensure bounded fallback
+                        # still gets a chance within the shared hard deadline.
+                        submit_ik12()
+
+            for future in pending:
+                future.cancel()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        attempts.append(
+            {
+                "provider": "exact_chain",
+                "outcome": "deadline_or_exhausted",
+                "elapsed_ms": elapsed_ms,
+            }
+        )
+
+        if nspd_error is not None and ik12_error is not None:
+            final_error = (
+                "НСПД и резервный кадастровый источник временно недоступны. "
+                "Проверка завершена в ограниченный срок."
+            )
+        elif nspd_error is not None:
+            final_error = (
+                "НСПД временно недоступна, а резервный кадастровый источник "
+                "не вернул точный объект в отведённый срок."
             )
         else:
-            error = "Объект не найден в доступных кадастровых источниках."
+            final_error = "Объект не найден в доступных кадастровых источниках."
 
         return CadastralObjectResult(
             query=normalized,
             cadastral_number=normalized,
             source="nspd/ik12",
             confidence="none",
-            error=error,
+            error=final_error,
+            attempts=attempts,
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
@@ -704,9 +937,23 @@ class CadastralGeocoder:
             raw=feature,
         )
 
-    def _search_nspd_geoportal(self, query: str, *, interactive: bool = False) -> CadastralObjectResult | None:
+    def _search_nspd_geoportal(
+        self,
+        query: str,
+        *,
+        interactive: bool = False,
+        deadline_monotonic: float | None = None,
+    ) -> CadastralObjectResult | None:
         require_provider("nspd", external=True)
-        started = time.monotonic()
+        request_started = time.monotonic()
+        nspd_deadline = (
+            min(
+                deadline_monotonic or (request_started + INTERACTIVE_NSPD_BUDGET_SECONDS),
+                request_started + INTERACTIVE_NSPD_BUDGET_SECONDS,
+            )
+            if interactive
+            else None
+        )
         headers = {
             "Referer": NSPD_REFERER,
             "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
@@ -722,12 +969,26 @@ class CadastralGeocoder:
         with self._nspd_request_lock:
             if not interactive and not self._circuit_available("nspd"):
                 return None
-            attempts = 2 if interactive else 1
-            request_timeout = (1.0, 1.75) if interactive else CADASTRAL_REQUEST_TIMEOUT
             data = None
-            for attempt in range(attempts):
-                started = time.monotonic()
+            max_attempts = 2 if interactive else 1
+            for attempt in range(max_attempts):
+                attempt_started = time.monotonic()
                 try:
+                    if interactive:
+                        assert nspd_deadline is not None
+                        read_cap = (
+                            INTERACTIVE_NSPD_READ_TIMEOUT
+                            if attempt == 0
+                            else INTERACTIVE_NSPD_RETRY_READ_TIMEOUT
+                        )
+                        request_timeout = _bounded_request_timeout(
+                            nspd_deadline,
+                            connect_cap=INTERACTIVE_NSPD_CONNECT_TIMEOUT,
+                            read_cap=read_cap,
+                        )
+                    else:
+                        request_timeout = CADASTRAL_REQUEST_TIMEOUT
+
                     resp = requests.get(
                         self.nspd_search_url,
                         params=params,
@@ -738,29 +999,78 @@ class CadastralGeocoder:
                     resp.raise_for_status()
                     data = resp.json()
                     self._nspd_disabled_until = 0.0
-                    record_provider_success("nspd", latency_ms=(time.monotonic() - started) * 1000)
+                    record_provider_success(
+                        "nspd",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
                     break
-                except SSLError as e:
-                    record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
-                    if interactive and attempt + 1 < attempts:
-                        time.sleep(0.1)
+                except TimeoutError as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "read_timeout",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    raise GeoProviderUnavailable("nspd", "read_timeout", str(exc)) from exc
+                except SSLError as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "tls_error",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    self._open_circuit("nspd")
+                    logger.error("NSPD TLS verification failed for %s: %s", query, exc)
+                    # TLS verification failure is not retryable inside the
+                    # user-facing request. Hedge/fallback should start now.
+                    raise NSPDTLSVerificationError(
+                        "NSPD TLS certificate verification failed"
+                    ) from exc
+                except requests.RequestException as exc:
+                    category = classify_transport_exception(exc)
+                    record_provider_failure(
+                        "nspd",
+                        category,
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    remaining = (
+                        (nspd_deadline - time.monotonic())
+                        if interactive and nspd_deadline is not None
+                        else 0.0
+                    )
+                    retryable = category in {
+                        "read_timeout",
+                        "provider_5xx",
+                        "rate_limited",
+                    }
+                    enough_budget = remaining >= 1.2
+                    if (
+                        interactive
+                        and attempt + 1 < max_attempts
+                        and retryable
+                        and enough_budget
+                    ):
+                        time.sleep(min(0.08, max(0.0, remaining - 1.1)))
                         continue
                     self._open_circuit("nspd")
-                    logger.error("NSPD TLS verification failed for %s: %s", query, e)
-                    raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
-                except requests.RequestException as e:
-                    category = classify_transport_exception(e)
-                    record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
-                    if interactive and attempt + 1 < attempts:
-                        time.sleep(0.1)
-                        continue
-                    self._open_circuit("nspd")
-                    logger.warning("NSPD request failed for %s; pausing batch NSPD requests: %s", query, e)
-                    raise GeoProviderUnavailable("nspd", category, str(e)) from e
-                except Exception as e:
-                    record_provider_failure("nspd", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
-                    logger.warning("NSPD response failed for %s: %s", query, e)
-                    raise GeoProviderUnavailable("nspd", "provider_protocol", str(e)) from e
+                    logger.warning(
+                        "NSPD request failed for %s; category=%s remaining=%.3fs: %s",
+                        query,
+                        category,
+                        remaining,
+                        exc,
+                    )
+                    raise GeoProviderUnavailable("nspd", category, str(exc)) from exc
+                except Exception as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "provider_protocol",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    logger.warning("NSPD response failed for %s: %s", query, exc)
+                    raise GeoProviderUnavailable(
+                        "nspd",
+                        "provider_protocol",
+                        str(exc),
+                    ) from exc
             if data is None:
                 return None
 
