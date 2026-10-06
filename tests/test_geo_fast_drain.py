@@ -139,6 +139,7 @@ def test_p7_release_wave_prioritizes_cfo() -> None:
 
         assert result["released"] == 1
         assert result["released_cfo"] == 1
+        assert result["released_lot_ids"] == [cfo.id]
         cfo_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == cfo.id))
         outside_failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == outside.id))
         now = utc_now().replace(tzinfo=None)

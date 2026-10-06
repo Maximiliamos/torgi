@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1189,11 +1189,15 @@ def _geocode_pending_lots_unlocked(
     limit: int = 250,
     re_geocode_existing: bool = False,
     progress_task_id: str | None = None,
+    lot_ids: Sequence[int] | None = None,
+    allow_when_paused: bool = False,
+    refresh_strategy: bool = True,
 ) -> dict[str, Any]:
     """Geocode a bounded production batch without holding a DB transaction during the whole run."""
     started_at = time.monotonic()
+    target_lot_ids = tuple(sorted({int(value) for value in (lot_ids or ()) if int(value) > 0}))
     with session_factory() as session:
-        if is_geocoding_paused(session):
+        if is_geocoding_paused(session) and not allow_when_paused:
             paused_result = {
                 "status": "paused",
                 "paused": True,
@@ -1217,7 +1221,11 @@ def _geocode_pending_lots_unlocked(
     batch_limit = max(1, min(limit, 1000))
     now = utc_now()
     with session_factory() as session:
-        strategy_requeued = _refresh_failures_for_current_strategy(session)
+        strategy_requeued = (
+            _refresh_failures_for_current_strategy(session)
+            if refresh_strategy and not target_lot_ids
+            else 0
+        )
         latest_geo_id = (
             select(func.max(LotGeoSnapshot.id))
             .where(LotGeoSnapshot.lot_id == ProcessedLot.id)
@@ -1261,6 +1269,11 @@ def _geocode_pending_lots_unlocked(
             .where(
                 ProcessedLot.duplicate_of_id.is_(None),
                 ProcessedLot.is_archived.is_(False),
+                *(
+                    (ProcessedLot.id.in_(target_lot_ids),)
+                    if target_lot_ids
+                    else ()
+                ),
                 or_(
                     ProcessedLot.cadastral_number.isnot(None),
                     ProcessedLot.address.isnot(None),
@@ -1435,6 +1448,9 @@ def geocode_pending_lots(
     limit: int = 250,
     re_geocode_existing: bool = False,
     progress_task_id: str | None = None,
+    lot_ids: Sequence[int] | None = None,
+    allow_when_paused: bool = False,
+    refresh_strategy: bool = True,
 ) -> dict[str, Any]:
     """Run one serialized batch; SQLite unit tests do not require the production Redis lock."""
     with session_factory() as session:
@@ -1447,6 +1463,9 @@ def geocode_pending_lots(
                 limit=limit,
                 re_geocode_existing=re_geocode_existing,
                 progress_task_id=progress_task_id,
+                lot_ids=lot_ids,
+                allow_when_paused=allow_when_paused,
+                refresh_strategy=refresh_strategy,
             )
         with _distributed_geo_lock():
             return _geocode_pending_lots_unlocked(
@@ -1454,6 +1473,9 @@ def geocode_pending_lots(
                 limit=limit,
                 re_geocode_existing=re_geocode_existing,
                 progress_task_id=progress_task_id,
+                lot_ids=lot_ids,
+                allow_when_paused=allow_when_paused,
+                refresh_strategy=refresh_strategy,
             )
     except Exception as exc:
         _mark_progress_failed(session_factory, progress_task_id, exc)

@@ -43,6 +43,86 @@ def test_paused_geocoding_does_not_start_provider_work(monkeypatch) -> None:
         assert state.status == "paused"
 
 
+def test_targeted_geocoding_can_bypass_global_pause_without_touching_other_lots(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    @contextmanager
+    def scope():
+        with Session(engine) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    with scope() as session:
+        session.add(AppSetting(key="geocoding_paused", value="true"))
+        target = ProcessedLot(
+            external_id="geo-targeted-paused",
+            source="test",
+            source_system="test",
+            title="Target",
+            description="",
+            category="land",
+            region_name="Ярославская область",
+            region_code="76",
+            address="Ярославль, улица Свободы, 1",
+            auction_status="active",
+        )
+        untouched = ProcessedLot(
+            external_id="geo-untouched-paused",
+            source="test",
+            source_system="test",
+            title="Untouched",
+            description="",
+            category="land",
+            region_name="Ярославская область",
+            region_code="76",
+            address="Ярославль, улица Свободы, 2",
+            auction_status="active",
+        )
+        session.add_all([target, untouched])
+        session.flush()
+        target_id = target.id
+        untouched_id = untouched.id
+
+    monkeypatch.setattr(
+        geo_backfill,
+        "_refresh_failures_for_current_strategy",
+        lambda _session: (_ for _ in ()).throw(AssertionError("targeted batch must not refresh the full backlog")),
+    )
+    monkeypatch.setattr(
+        geo_backfill,
+        "resolve_lot_geo",
+        lambda *_args, **_kwargs: CadastralObjectResult(
+            query="target",
+            lat=57.6261,
+            lon=39.8845,
+            source="photon",
+            confidence="high",
+        ),
+    )
+
+    result = geo_backfill.geocode_pending_lots(
+        scope,
+        limit=10,
+        progress_task_id="geo-targeted-paused",
+        lot_ids=[target_id],
+        allow_when_paused=True,
+        refresh_strategy=False,
+    )
+
+    assert result["queued"] == 1
+    assert result["processed"] == 1
+    with scope() as session:
+        target = session.get(ProcessedLot, target_id)
+        untouched = session.get(ProcessedLot, untouched_id)
+        assert target is not None and target.current_geo_lat is not None
+        assert untouched is not None and untouched.current_geo_lat is None
+
+
 def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
     engine = create_engine(
         "sqlite:///:memory:",

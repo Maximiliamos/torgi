@@ -298,6 +298,28 @@ def _p7_counts(session: Any) -> dict[str, int]:
     return {"p7_total": total, "p7_due": due, "p7_held": max(0, total - due), "p7_cfo": cfo}
 
 
+def _p7_due_lot_ids(session: Any, *, limit: int) -> list[int]:
+    now = utc_now()
+    return [
+        int(lot_id)
+        for lot_id in session.scalars(
+            select(GeoFailure.lot_id)
+            .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+            .where(
+                *_active_unmapped_filters(),
+                GeoFailure.status == P7_HOLD_STATUS,
+                or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
+            )
+            .order_by(
+                case((ProcessedLot.region_code.in_(CFO_REGION_CODES), 0), else_=1),
+                GeoFailure.last_failed_at.asc(),
+                GeoFailure.id.asc(),
+            )
+            .limit(max(1, int(limit)))
+        ).all()
+    ]
+
+
 def release_geo_fast_drain_wave(session: Any, *, limit: int = P7_DEFAULT_WAVE_SIZE) -> dict[str, Any]:
     now = utc_now()
     rows = session.execute(
@@ -316,12 +338,19 @@ def release_geo_fast_drain_wave(session: Any, *, limit: int = P7_DEFAULT_WAVE_SI
         .limit(max(1, int(limit)))
     ).all()
     cfo = 0
+    released_lot_ids: list[int] = []
     for failure, region_code in rows:
         failure.next_retry_at = now
+        released_lot_ids.append(int(failure.lot_id))
         if str(region_code or "") in CFO_REGION_CODES:
             cfo += 1
     session.commit()
-    return {"released": len(rows), "released_cfo": cfo, **_p7_counts(session)}
+    return {
+        "released": len(rows),
+        "released_cfo": cfo,
+        "released_lot_ids": released_lot_ids,
+        **_p7_counts(session),
+    }
 
 
 def _mark_map_dirty() -> bool:
@@ -371,18 +400,36 @@ def run_geo_fast_drain(
             if time.monotonic() - started >= max_runtime_seconds:
                 stop_reason = "runtime_limit"
                 break
+            target_limit = max(1, min(int(batch_limit), 1000))
+            target_lot_ids: list[int] = []
             with session_factory() as session:
-                if is_geocoding_paused(session):
-                    stop_reason = "paused"
-                    break
+                aggregate["global_geocoding_paused"] = is_geocoding_paused(session)
                 counts = _p7_counts(session)
                 if counts["p7_due"] == 0 and counts["p7_held"] > 0:
-                    released = release_geo_fast_drain_wave(session, limit=wave_size)
-                    counts = {key: int(released[key]) for key in ("p7_total", "p7_due", "p7_held", "p7_cfo")}
-                    aggregate["last_release"] = released
+                    released = release_geo_fast_drain_wave(
+                        session,
+                        limit=min(max(1, int(wave_size)), target_limit),
+                    )
+                    counts = {
+                        key: int(released[key])
+                        for key in ("p7_total", "p7_due", "p7_held", "p7_cfo")
+                    }
+                    target_lot_ids = [
+                        int(value) for value in released.get("released_lot_ids") or []
+                    ]
+                    aggregate["last_release"] = {
+                        key: value
+                        for key, value in released.items()
+                        if key != "released_lot_ids"
+                    }
+                elif counts["p7_due"] > 0:
+                    target_lot_ids = _p7_due_lot_ids(session, limit=target_limit)
 
             if counts["p7_total"] == 0:
                 stop_reason = "nothing_to_drain"
+                break
+            if not target_lot_ids:
+                stop_reason = "no_runnable_items"
                 break
 
             network = network_health_snapshot()
@@ -393,8 +440,11 @@ def run_geo_fast_drain(
             batch_task_id = f"{task_id}-batch-{batch_index + 1:03d}"
             result = geocode_pending_lots(
                 session_factory,
-                limit=max(1, min(int(batch_limit), 1000)),
+                limit=target_limit,
                 progress_task_id=batch_task_id,
+                lot_ids=target_lot_ids,
+                allow_when_paused=True,
+                refresh_strategy=False,
             )
             aggregate["batches"] += 1
             aggregate["processed"] += int(result.get("processed") or 0)
