@@ -66,7 +66,7 @@ from bankrotai.scrapers import (
     TorgiGovSearchFilters,
 )
 from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters
-from bankrotai.geo import CadastralGeocoder, CadastralObjectResult
+from bankrotai.geo import CADASTRAL_RE, PHOTON_GEOCODER, CadastralGeocoder, CadastralObjectResult
 from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
 from bankrotai.services.operations import (
     add_lot_note,
@@ -2200,77 +2200,69 @@ def get_map_lot(lot_id: int):
 
 
 @app.get("/api/cadastre/search")
-async def search_cadastre(query: str = Query(min_length=3, max_length=500)):
-    normalized_query = query.strip()
-    normalized_cadastral = normalized_query.replace(" ", "") if ":" in normalized_query else None
-    try:
-        with read_session_scope() as session:
-            database_query = select(ProcessedLot).where(ProcessedLot.duplicate_of_id.is_(None))
-            if normalized_cadastral:
-                database_query = database_query.where(
-                    func.replace(ProcessedLot.cadastral_number, " ", "") == normalized_cadastral
-                )
-            else:
-                database_query = database_query.where(ProcessedLot.address.ilike(f"%{normalized_query}%"))
-            stored_lot = session.scalar(
-                database_query.order_by(ProcessedLot.is_archived, ProcessedLot.last_update.desc())
-            )
-            if stored_lot is not None:
-                snapshot = session.scalar(
-                    select(LotGeoSnapshot)
-                    .where(LotGeoSnapshot.lot_id == stored_lot.id)
-                    .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
-                )
-                return asdict(
-                    CadastralObjectResult(
-                        query=normalized_query,
-                        cadastral_number=stored_lot.cadastral_number,
-                        object_type=stored_lot.category,
-                        title=stored_lot.title,
-                        address=stored_lot.address,
-                        lat=snapshot.centroid_lat if snapshot else None,
-                        lon=snapshot.centroid_lon if snapshot else None,
-                        geometry_json=snapshot.geometry_json if snapshot else None,
-                        has_boundary=bool(snapshot and snapshot.geometry_json),
-                        source="bankrotai_database",
-                        confidence=snapshot.geo_confidence if snapshot else "medium",
-                        info={"lot_id": stored_lot.id, "is_archived": stored_lot.is_archived},
-                    )
-                )
-    except SQLAlchemyError as exc:
-        logger.warning("Cadastre database-first lookup unavailable: %s", exc)
+async def search_cadastre(
+    query: str = Query(min_length=3, max_length=500),
+    resolve_address: bool = Query(False),
+):
+    normalized_query = " ".join(query.strip().split())
+    normalized_cadastral = normalized_query.replace(" ", "")
+    is_cadastral = bool(CADASTRAL_RE.match(normalized_cadastral))
 
-    def unavailable_result() -> dict[str, Any]:
-        cadastral_number = query if ":" in query else None
-        return asdict(
-            CadastralObjectResult(
-                query=query,
-                cadastral_number=cadastral_number,
-                source="pkk/nspd",
-                confidence="none",
-                error="Кадастровые API временно недоступны; повторите проверку позже.",
-            )
+    def object_payload(result: CadastralObjectResult) -> dict[str, Any]:
+        payload = asdict(result)
+        payload["geometry"] = payload.pop("geometry_json", None)
+        # Provider raw payloads are intentionally kept server-side. The UI gets
+        # only normalized cadastral fields, coordinates and geometry.
+        payload.pop("raw", None)
+        return payload
+
+    def unavailable_payload() -> dict[str, Any]:
+        if not is_cadastral and not resolve_address:
+            return {
+                "kind": "address_suggestions",
+                "query": normalized_query,
+                "items": [],
+                "error": "Поиск адресов временно недоступен; повторите позже.",
+            }
+        result = CadastralObjectResult(
+            query=normalized_query,
+            cadastral_number=normalized_cadastral if is_cadastral else None,
+            source="pkk/nspd",
+            confidence="none",
+            error="Кадастровые API временно недоступны; повторите проверку позже.",
         )
+        return {"kind": "object", "query": normalized_query, "object": object_payload(result)}
 
     if not _CADASTRAL_CAPACITY.acquire(blocking=False):
-        return unavailable_result()
+        return unavailable_payload()
 
-    def bounded_search() -> CadastralObjectResult:
+    def bounded_search() -> dict[str, Any]:
         try:
-            return _CADASTRAL_GEOCODER.search(query)
+            if not is_cadastral and not resolve_address:
+                return {
+                    "kind": "address_suggestions",
+                    "query": normalized_query,
+                    "items": PHOTON_GEOCODER.suggest_addresses(normalized_query, limit=10),
+                    "error": None,
+                }
+            result = (
+                _CADASTRAL_GEOCODER.search_by_cadastral_number(normalized_cadastral)
+                if is_cadastral
+                else _CADASTRAL_GEOCODER.search_selected_address(normalized_query)
+            )
+            return {"kind": "object", "query": normalized_query, "object": object_payload(result)}
         finally:
             _CADASTRAL_CAPACITY.release()
 
     task = asyncio.create_task(asyncio.to_thread(bounded_search))
     try:
-        result = await asyncio.wait_for(asyncio.shield(task), timeout=_CADASTRAL_DEADLINE_SECONDS)
+        return await asyncio.wait_for(asyncio.shield(task), timeout=_CADASTRAL_DEADLINE_SECONDS)
     except TimeoutError:
         task.add_done_callback(lambda completed: completed.exception() if not completed.cancelled() else None)
-        return unavailable_result()
+        return unavailable_payload()
     except Exception as exc:
         logger.warning("Cadastre search failed: %s", exc)
         raise HTTPException(status_code=502, detail="Cadastre service is temporarily unavailable") from exc
-    return asdict(result)
 
 
 @app.get("/api/saved-searches")
