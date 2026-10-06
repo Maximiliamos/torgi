@@ -31,7 +31,7 @@ jobs:
           for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
             payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             mapfile -t stale_ids < <(
-              jq -r --arg current "$CURRENT_SHA" '
+              jq -r --arg current "$CURRENT_SHA" --arg workflow "$workflow" '
                 .workflow_runs[]
                 | select(
                     (.status == "queued"
@@ -39,7 +39,14 @@ jobs:
                      or .status == "pending"
                      or .status == "waiting"
                      or .status == "requested")
-                    and .head_sha != $current
+                    and (
+                      .head_sha != $current
+                      or (
+                        $workflow == "home-secondary-deploy.yml"
+                        and .status == "in_progress"
+                        and (now - (.created_at | fromdateiso8601)) > 600
+                      )
+                    )
                   )
                 | .id
               ' <<<"$payload"
@@ -56,7 +63,7 @@ jobs:
           for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
             remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             stale_remaining="$(
-              jq -r --arg current "$CURRENT_SHA" '
+              jq -r --arg current "$CURRENT_SHA" --arg workflow "$workflow" '
                 [
                   .workflow_runs[]
                   | select(
@@ -65,7 +72,14 @@ jobs:
                        or .status == "pending"
                        or .status == "waiting"
                        or .status == "requested")
-                      and .head_sha != $current
+                      and (
+                        .head_sha != $current
+                        or (
+                          $workflow == "home-secondary-deploy.yml"
+                          and .status == "in_progress"
+                          and (now - (.created_at | fromdateiso8601)) > 600
+                        )
+                      )
                     )
                 ] | length
               ' <<<"$remaining"
