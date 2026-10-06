@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   recover:
+    # Hosted recovery remains available even when the self-hosted Home runner is wedged.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
