@@ -17,7 +17,7 @@ def test_home_image_build_is_bounded_and_has_offline_source_overlay_fallback() -
     assert "$process.WaitForExit()" in workflow
     assert "$process.Refresh()" in workflow
     assert "completed with an unavailable process ExitCode; target image exists" in workflow
-    assert "docker image inspect $TargetImage" in workflow
+    assert "if (Test-DockerImage -Image $TargetImage)" in workflow
     assert "Reused first-parent runtime image:" in workflow
     assert "git diff --quiet $parentSha $env:GITHUB_SHA -- src alembic alembic.ini Dockerfile Dockerfile.home-overlay pyproject.toml README.md requirements.lock certs" in workflow
     assert "Timeout = 180; Mode = 'refresh-base'" in workflow
