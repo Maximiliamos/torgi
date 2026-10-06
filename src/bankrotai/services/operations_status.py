@@ -124,7 +124,7 @@ def operations_host_status(session: Any, *, now: datetime | None = None) -> dict
             backup
             and str(backup.get("restore_verification") or "") == "passed"
             and backup_age_hours is not None
-            and backup_age_hours <= 30
+            and backup_age_hours <= 60
         ),
         "runner_age_seconds": runner_age_seconds,
         "runner_healthy": bool(
