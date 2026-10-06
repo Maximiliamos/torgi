@@ -1,4 +1,4 @@
-name: Recover stale Home deploy
+name: Recover stale production deploys
 
 on:
   workflow_dispatch:
@@ -16,11 +16,11 @@ permissions:
   contents: read
 
 jobs:
-  cancel-stale-home-deploys:
+  recover:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Force-cancel stale Home deploy workflow runs
+      - name: Force-cancel stale production deploy runs
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
@@ -28,39 +28,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
-          mapfile -t stale_ids < <(
-            jq -r --arg current "$CURRENT_SHA" '
-              .workflow_runs[]
-              | select(
-                  (.status == "queued"
-                   or .status == "in_progress"
-                   or .status == "pending"
-                   or .status == "waiting"
-                   or .status == "requested")
-                  and .head_sha != $current
-                )
-              | .id
-            ' <<<"$payload"
-          )
-
-          if (( ${#stale_ids[@]} == 0 )); then
-            echo "No stale Home deploy runs found."
-            exit 0
-          fi
-
-          for run_id in "${stale_ids[@]}"; do
-            echo "Force-cancelling stale Home deploy run $run_id"
-            if ! gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1; then
-              gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
-            fi
-          done
-
-          sleep 5
-          remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
-          stale_remaining="$(
-            jq -r --arg current "$CURRENT_SHA" '
-              [
+          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
+            payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
+            mapfile -t stale_ids < <(
+              jq -r --arg current "$CURRENT_SHA" '
                 .workflow_runs[]
                 | select(
                     (.status == "queued"
@@ -70,11 +41,68 @@ jobs:
                      or .status == "requested")
                     and .head_sha != $current
                   )
+                | .id
+              ' <<<"$payload"
+            )
+            for run_id in "${stale_ids[@]}"; do
+              echo "Force-cancelling stale $workflow run $run_id"
+              if ! gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1; then
+                gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+              fi
+            done
+          done
+
+          sleep 5
+          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
+            remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
+            stale_remaining="$(
+              jq -r --arg current "$CURRENT_SHA" '
+                [
+                  .workflow_runs[]
+                  | select(
+                      (.status == "queued"
+                       or .status == "in_progress"
+                       or .status == "pending"
+                       or .status == "waiting"
+                       or .status == "requested")
+                      and .head_sha != $current
+                    )
+                ] | length
+              ' <<<"$remaining"
+            )"
+            if [[ "$stale_remaining" != "0" ]]; then
+              echo "Stale $workflow runs still active: $stale_remaining" >&2
+              exit 1
+            fi
+          done
+          echo "All stale production deploy runs are cleared."
+
+      - name: Ensure REG.RU deploy exists for current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/regru-deploy.yml/runs?per_page=50")"
+          matching="$(
+            jq -r --arg current "$CURRENT_SHA" '
+              [
+                .workflow_runs[]
+                | select(
+                    .head_sha == $current
+                    and (
+                      .status != "completed"
+                      or .conclusion == "success"
+                    )
+                  )
               ] | length
-            ' <<<"$remaining"
+            ' <<<"$payload"
           )"
-          if [[ "$stale_remaining" != "0" ]]; then
-            echo "Stale Home deploy runs still active: $stale_remaining" >&2
-            exit 1
+          if [[ "$matching" != "0" ]]; then
+            echo "REG.RU deploy already exists for $CURRENT_SHA"
+            exit 0
           fi
-          echo "All stale Home deploy runs are cleared."
+          echo "Dispatching REG.RU deploy for main at $CURRENT_SHA"
+          gh workflow run regru-deploy.yml --repo "$REPOSITORY" --ref main
