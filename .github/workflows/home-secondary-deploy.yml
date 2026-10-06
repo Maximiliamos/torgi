@@ -268,19 +268,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $built = $false
-          $timeoutSeconds = 600
           for ($attempt = 1; $attempt -le 4; $attempt++) {
-            Write-Output "Starting Docker build attempt $attempt/4 with a $timeoutSeconds second timeout"
-            $arguments = @(
-              'build',
-              '--pull',
+            $usePull = $attempt -eq 1
+            $timeoutSeconds = if ($usePull) { 300 } else { 600 }
+            $mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }
+            Write-Output "Starting Docker build attempt $attempt/4 mode=$mode timeout=$timeoutSeconds seconds"
+            $arguments = @('build')
+            if ($usePull) { $arguments += '--pull' }
+            $arguments += @(
               '--tag',
               "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
               '.'
             )
             $process = Start-Process -FilePath 'docker.exe' -ArgumentList $arguments -PassThru -NoNewWindow
             if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
-              Write-Warning "Docker build attempt $attempt/4 timed out after $timeoutSeconds seconds; terminating the process tree"
+              Write-Warning "Docker build attempt $attempt/4 mode=$mode timed out after $timeoutSeconds seconds; terminating the process tree"
               & taskkill.exe /PID $process.Id /T /F *> $null
               try { $process.WaitForExit(10000) | Out-Null } catch {}
               $exitCode = -1
@@ -292,7 +294,7 @@ jobs:
               break
             }
             if ($attempt -lt 4) {
-              Write-Warning "Docker build attempt $attempt/4 failed with exit code $exitCode; retrying in 20 seconds"
+              Write-Warning "Docker build attempt $attempt/4 mode=$mode failed with exit code $exitCode; retrying in 20 seconds"
               Start-Sleep -Seconds 20
             }
           }

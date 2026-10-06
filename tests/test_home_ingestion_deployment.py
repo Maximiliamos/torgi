@@ -7,10 +7,12 @@ WORKFLOW = Path(".github/workflows/home-secondary-deploy.yml")
 def test_home_image_build_retries_transient_registry_tls_failures() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "for ($attempt = 1; $attempt -le 4; $attempt++)" in workflow
-    assert "$timeoutSeconds = 600" in workflow
+    assert "$usePull = $attempt -eq 1" in workflow
+    assert "$timeoutSeconds = if ($usePull) { 300 } else { 600 }" in workflow
+    assert "$mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }" in workflow
     assert "Start-Process -FilePath 'docker.exe'" in workflow
-    assert "'build'," in workflow
-    assert "'--pull'," in workflow
+    assert "$arguments = @('build')" in workflow
+    assert "if ($usePull) { $arguments += '--pull' }" in workflow
     assert "$process.WaitForExit($timeoutSeconds * 1000)" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
     assert "Could not build the current-main API image after four bounded attempts" in workflow
