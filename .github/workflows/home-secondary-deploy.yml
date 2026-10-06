@@ -274,7 +274,7 @@ jobs:
               [int]$TimeoutSeconds,
               [string]$Label
             )
-            Write-Output "Starting $Label with a $TimeoutSeconds second timeout"
+            Write-Host "Starting $Label with a $TimeoutSeconds second timeout"
             $process = Start-Process -FilePath 'docker.exe' -ArgumentList $Arguments -PassThru -NoNewWindow
             if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
               Write-Warning "$Label timed out after $TimeoutSeconds seconds; terminating the process tree"
