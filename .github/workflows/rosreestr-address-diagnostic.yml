@@ -1,0 +1,67 @@
+name: Rosreestr address API diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/rosreestr-address-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe official Rosreestr online address search
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.parse
+          import urllib.request
+
+          BASE='https://rosreestr.gov.ru/api/online'
+          HEADERS={'User-Agent':'Mozilla/5.0 BankrotAI/1.0','Accept':'application/json'}
+
+          def get(path, params=None):
+              url=BASE+path
+              if params:
+                  url+='?'+urllib.parse.urlencode(params)
+              req=urllib.request.Request(url,headers=HEADERS)
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  print('GET',path,'status',r.status)
+                  return json.load(r)
+
+          macros=get('/macro_regions/')
+          print('macro_count',len(macros) if isinstance(macros,list) else type(macros).__name__)
+          macro=next((x for x in macros if 'ярослав' in str(x.get('name','')).casefold()),None)
+          print('macro',json.dumps(macro,ensure_ascii=False))
+          assert macro
+
+          regions=get(f"/regions/{macro['id']}/")
+          print('region_count',len(regions) if isinstance(regions,list) else type(regions).__name__)
+          region=next((x for x in regions if 'ярослав' in str(x.get('name','')).casefold()),None)
+          print('region',json.dumps(region,ensure_ascii=False))
+          assert region
+
+          objects=get('/address/fir_objects/',{
+              'macroRegionId':macro['id'],
+              'regionId':region['id'],
+              'street':'Ленинградский проспект',
+              'house':'105',
+              'building':'',
+              'structure':'',
+              'apartment':'',
+          })
+          print('objects_count',len(objects) if isinstance(objects,list) else type(objects).__name__)
+          if isinstance(objects,list):
+              for obj in objects[:10]:
+                  safe={k:v for k,v in obj.items() if k in {
+                      'objectId','objectType','cadNum','cadastralNumber','address','name',
+                      'regionKey','source','firActualDate','objectData'
+                  }}
+                  print(json.dumps(safe,ensure_ascii=False,default=str))
+          PY
