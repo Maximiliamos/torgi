@@ -145,7 +145,7 @@ $details = [ordered]@{
 $details | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding utf8
 
 $snapshotJson = $details | ConvertTo-Json -Depth 8 -Compress
-$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.load(sys.stdin); s=SessionLocal(); record_operations_snapshot(s,'backup',p); s.commit(); s.close()"
+$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.loads(sys.stdin.buffer.read().decode('utf-8-sig')); s=SessionLocal(); record_operations_snapshot(s,'backup',p); s.commit(); s.close()"
 $persistExitCode = 0
 $persistOutput = @()
 $previousErrorActionPreference = $ErrorActionPreference
@@ -163,6 +163,7 @@ if ($persistExitCode -ne 0) {
     $persistDetails = ($persistOutput | Out-String).Trim()
     Write-Warning ("Could not persist backup snapshot for Operations UX; backup remains valid. {0}" -f $persistDetails)
 }
+$global:LASTEXITCODE = 0
 
 if ($RetainCount -gt 0) {
     if ($restoreStatus -ne 'passed') {

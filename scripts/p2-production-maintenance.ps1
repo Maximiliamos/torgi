@@ -211,7 +211,7 @@ $result = [ordered]@{
 }
 
 $snapshotJson = $result | ConvertTo-Json -Depth 14 -Compress
-$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.load(sys.stdin); s=SessionLocal(); record_operations_snapshot(s,'maintenance',p); s.commit(); s.close()"
+$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.loads(sys.stdin.buffer.read().decode('utf-8-sig')); s=SessionLocal(); record_operations_snapshot(s,'maintenance',p); s.commit(); s.close()"
 $persistExitCode = 0
 $persistOutput = @()
 $previousErrorActionPreference = $ErrorActionPreference
@@ -229,6 +229,7 @@ if ($persistExitCode -ne 0) {
     $persistDetails = ($persistOutput | Out-String).Trim()
     Write-Warning ("Could not persist maintenance snapshot for Operations UX; maintenance result remains valid. {0}" -f $persistDetails)
 }
+$global:LASTEXITCODE = 0
 
 $logPath = Join-Path $LogDirectory ("maintenance-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $result | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $logPath -Encoding utf8
