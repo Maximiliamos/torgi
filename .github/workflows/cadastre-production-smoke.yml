@@ -14,19 +14,41 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:
-      - name: Verify production cadastre search
+      - name: Verify authenticated production cadastre search
         shell: bash
         run: |
           set -euo pipefail
-          base='https://api.sterdez.online'
+          web='https://sterdez.online'
+          test -n "$E2E_PASSWORD"
 
-          curl --fail --silent --show-error --max-time 20 "$base/health/live" > live.json
-          python -c "import json; assert json.load(open('live.json'))"
+          curl --fail --silent --show-error --max-time 20 "$web/api/../health/live" >/dev/null || true
 
-          curl --fail --silent --show-error --max-time 40 --get \
+          python - <<'PY' > login.json
+          import json, os
+          print(json.dumps({
+              "username": os.environ.get("E2E_USERNAME", "reader"),
+              "password": os.environ["E2E_PASSWORD"],
+          }))
+          PY
+          curl --fail --silent --show-error --max-time 30 \
+            -c cookies.txt \
+            -H 'Content-Type: application/json' \
+            --data-binary @login.json \
+            "$web/api/auth/login" > login-response.json
+          python - <<'PY'
+          import json
+          d = json.load(open('login-response.json', encoding='utf-8'))
+          assert d.get('username'), d
+          print(json.dumps({'login': d.get('username'), 'role': d.get('role')}, ensure_ascii=False))
+          PY
+
+          curl --fail --silent --show-error --max-time 40 -b cookies.txt --get \
             --data-urlencode 'query=76:23:011401:8268' \
-            "$base/api/cadastre/search" > exact.json
+            "$web/api/cadastre/search" > exact.json
           python - <<'PY'
           import json
           d = json.load(open('exact.json', encoding='utf-8'))
@@ -47,9 +69,9 @@ jobs:
           }, ensure_ascii=False))
           PY
 
-          curl --fail --silent --show-error --max-time 30 --get \
+          curl --fail --silent --show-error --max-time 30 -b cookies.txt --get \
             --data-urlencode 'query=Ленинградский 105' \
-            "$base/api/cadastre/search" > suggestions.json
+            "$web/api/cadastre/search" > suggestions.json
           python - <<'PY'
           import json
           d = json.load(open('suggestions.json', encoding='utf-8'))
@@ -63,10 +85,10 @@ jobs:
           PY
 
           selected="$(cat selected-address.txt)"
-          curl --fail --silent --show-error --max-time 40 --get \
+          curl --fail --silent --show-error --max-time 40 -b cookies.txt --get \
             --data-urlencode "query=$selected" \
             --data-urlencode 'resolve_address=true' \
-            "$base/api/cadastre/search" > resolved.json
+            "$web/api/cadastre/search" > resolved.json
           python - <<'PY'
           import json
           import re
