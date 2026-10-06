@@ -61,6 +61,32 @@ jobs:
             done
           done
 
+          # Temporary/verification workflows can also occupy the only Home
+          # runner while waiting for a production deploy. Clear stale P12
+          # acceptance runs by workflow name so they cannot deadlock deploy.
+          acceptance_payload="$(gh api -X GET "repos/$REPOSITORY/actions/runs?per_page=100")"
+          mapfile -t stale_acceptance_ids < <(
+            jq -r --arg current "$CURRENT_SHA" '
+              .workflow_runs[]
+              | select(
+                  .name == "P12 production acceptance"
+                  and (.status == "queued"
+                       or .status == "in_progress"
+                       or .status == "pending"
+                       or .status == "waiting"
+                       or .status == "requested")
+                  and .head_sha != $current
+                )
+              | .id
+            ' <<<"$acceptance_payload"
+          )
+          for run_id in "${stale_acceptance_ids[@]}"; do
+            echo "Force-cancelling stale P12 acceptance run $run_id"
+            if ! gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1; then
+              gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+            fi
+          done
+
           sleep 35
           for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml phase3-lite-health.yml; do
             remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
