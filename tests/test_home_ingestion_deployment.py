@@ -11,6 +11,9 @@ def test_home_image_build_is_bounded_and_has_offline_source_overlay_fallback() -
     assert "Invoke-BoundedDockerBuild" in workflow
     assert 'Write-Host "Starting $Label with a $TimeoutSeconds second timeout"' in workflow
     assert 'Write-Output "Starting $Label with a $TimeoutSeconds second timeout"' not in workflow
+    assert 'docker image inspect "${env:IMAGE_NAME}:${env:GITHUB_SHA}"' in workflow
+    assert "exact image" in workflow
+    assert "$process.Refresh()" in workflow
     assert "Timeout = 180; Mode = 'refresh-base'" in workflow
     assert "Timeout = 240; Mode = 'cached-base'" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
