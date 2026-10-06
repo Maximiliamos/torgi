@@ -446,3 +446,161 @@ def test_nspd_wms_returns_all_unique_cadastral_objects(monkeypatch) -> None:
         "76:23:010101:123",
     ]
     assert all(item.address == "Ярославль, Ленинградский проспект, д 105" for item in result)
+
+
+
+def test_exact_search_does_not_start_ik12_when_nspd_wins_before_hedge(monkeypatch) -> None:
+    import bankrotai.geo as geo
+
+    geocoder = CadastralGeocoder()
+    result = CadastralObjectResult(
+        query="76:23:011401:8268",
+        cadastral_number="76:23:011401:8268",
+        lat=57.69,
+        lon=39.77,
+        source="nspd",
+        confidence="high",
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(geo, "INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS", 0.2)
+    monkeypatch.setattr(geo, "INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS", 0.5)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_geoportal",
+        lambda *_args, **_kwargs: result,
+    )
+    monkeypatch.setattr(
+        geo.IK12_GEOCODER,
+        "search_by_cadastral_number",
+        lambda *_args, **_kwargs: calls.append("ik12"),
+    )
+
+    observed = geocoder.search_by_cadastral_number("76:23:011401:8268")
+
+    assert observed.source == "nspd"
+    assert calls == []
+    assert observed.attempts[0]["provider"] == "nspd"
+    assert observed.attempts[0]["outcome"] == "success"
+
+
+def test_exact_search_hedges_ik12_when_nspd_is_slow(monkeypatch) -> None:
+    import time
+    import bankrotai.geo as geo
+
+    geocoder = CadastralGeocoder()
+    nspd = CadastralObjectResult(
+        query="76:23:011401:8268",
+        cadastral_number="76:23:011401:8268",
+        lat=57.69,
+        lon=39.77,
+        source="nspd",
+        confidence="high",
+    )
+    ik12 = CadastralObjectResult(
+        query="76:23:011401:8268",
+        cadastral_number="76:23:011401:8268",
+        lat=57.69,
+        lon=39.77,
+        source="ik12_cadastral",
+        confidence="high",
+    )
+    monkeypatch.setattr(geo, "INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(geo, "INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS", 0.4)
+
+    def slow_nspd(*_args, **_kwargs):
+        time.sleep(0.12)
+        return nspd
+
+    def fast_ik12(*_args, **_kwargs):
+        time.sleep(0.01)
+        return ik12
+
+    monkeypatch.setattr(geocoder, "_search_nspd_geoportal", slow_nspd)
+    monkeypatch.setattr(geo.IK12_GEOCODER, "search_by_cadastral_number", fast_ik12)
+
+    started = time.monotonic()
+    observed = geocoder.search_by_cadastral_number("76:23:011401:8268")
+    elapsed = time.monotonic() - started
+
+    assert observed.source == "ik12_cadastral"
+    assert elapsed < 0.11
+    assert any(item["provider"] == "ik12" and item["outcome"] == "success" for item in observed.attempts)
+
+
+def test_exact_search_starts_ik12_immediately_after_nspd_tls_failure(monkeypatch) -> None:
+    import time
+    import bankrotai.geo as geo
+
+    geocoder = CadastralGeocoder()
+    ik12 = CadastralObjectResult(
+        query="76:23:011401:8268",
+        cadastral_number="76:23:011401:8268",
+        lat=57.69,
+        lon=39.77,
+        source="ik12_cadastral",
+        confidence="high",
+    )
+    monkeypatch.setattr(geo, "INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS", 0.3)
+    monkeypatch.setattr(geo, "INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS", 0.5)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_geoportal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
+    )
+    monkeypatch.setattr(
+        geo.IK12_GEOCODER,
+        "search_by_cadastral_number",
+        lambda *_args, **_kwargs: ik12,
+    )
+
+    started = time.monotonic()
+    observed = geocoder.search_by_cadastral_number("76:23:011401:8268")
+    elapsed = time.monotonic() - started
+
+    assert observed.source == "ik12_cadastral"
+    assert elapsed < 0.2
+    assert observed.attempts[0]["provider"] == "nspd"
+    assert observed.attempts[0]["outcome"].startswith("error:")
+
+
+def test_ik12_pow_respects_deadline() -> None:
+    import time
+    import pytest
+    from bankrotai.geo import IK12Geocoder
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="proof-of-work deadline"):
+        IK12Geocoder._solve_pow(
+            123,
+            "76:23:011401:8268",
+            0,
+            deadline_monotonic=time.monotonic() + 0.02,
+        )
+    assert time.monotonic() - started < 0.25
+
+
+def test_exact_search_hard_deadline_bounds_both_providers(monkeypatch) -> None:
+    import time
+    import bankrotai.geo as geo
+    from bankrotai.services.geo_resilience import GeoProviderUnavailable
+
+    geocoder = CadastralGeocoder()
+    monkeypatch.setattr(geo, "INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(geo, "INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS", 0.08)
+
+    def bounded_failure(*_args, deadline_monotonic=None, **_kwargs):
+        while deadline_monotonic is not None and time.monotonic() < deadline_monotonic:
+            time.sleep(0.005)
+        raise GeoProviderUnavailable("test", "read_timeout", "deadline")
+
+    monkeypatch.setattr(geocoder, "_search_nspd_geoportal", bounded_failure)
+    monkeypatch.setattr(geo.IK12_GEOCODER, "search_by_cadastral_number", bounded_failure)
+
+    started = time.monotonic()
+    observed = geocoder.search_by_cadastral_number("76:23:011401:8268")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert observed.confidence == "none"
+    assert observed.source == "nspd/ik12"
+    assert observed.attempts[-1]["provider"] == "exact_chain"
