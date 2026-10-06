@@ -1,0 +1,144 @@
+name: P9 GEO quality canary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/p9-geo-quality-canary.yml'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Release the bounded P9 canary into normal GEO processing'
+        type: boolean
+        default: false
+      limit:
+        description: 'Maximum lots to preview/requeue (1-500)'
+        type: number
+        default: 200
+      cfo_only:
+        description: 'Restrict the canary to Central Federal District regions'
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: p9-geo-quality-canary
+  cancel-in-progress: false
+
+jobs:
+  wait-home-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact Home production revision
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 1120); do
+            state="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50" | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then exit 0; fi
+            case "$state" in
+              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for Home deploy of $GITHUB_SHA" >&2
+          exit 1
+
+  canary:
+    needs: wait-home-deploy
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require deployed P9 runtime and bounded inputs
+        shell: powershell
+        run: |
+          $geo = docker ps --filter 'name=^/bankrotai-home-geocoding-worker$' --format '{{.Names}}'
+          if ($geo -ne 'bankrotai-home-geocoding-worker') { throw 'Canonical GEO worker is not running' }
+          $pushRun = '${{ github.event_name }}' -eq 'push'
+          $limit = if ($pushRun) { 50 } else { [int]'${{ inputs.limit }}' }
+          if ($limit -lt 1 -or $limit -gt 500) { throw "P9 canary limit must be between 1 and 500; got $limit" }
+          docker exec bankrotai-home-geocoding-worker python -c "from bankrotai.services.geo_backfill import geo_quality_canary_plan; print('p9-runtime-ok')"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployed GEO worker does not contain P9 canary runtime' }
+
+      - name: Preview, release and process bounded P9 canary
+        id: canary
+        shell: powershell
+        run: |
+          $pushRun = '${{ github.event_name }}' -eq 'push'
+          $limit = if ($pushRun) { 50 } else { [int]'${{ inputs.limit }}' }
+          $cfoOnly = if ($pushRun) { $true } else { '${{ inputs.cfo_only }}' -eq 'true' }
+          $apply = if ($pushRun) { $true } else { '${{ inputs.apply }}' -eq 'true' }
+          $env:P9_LIMIT = [string]$limit
+          $env:P9_CFO_ONLY = if ($cfoOnly) { '1' } else { '0' }
+          $env:P9_APPLY = if ($apply) { '1' } else { '0' }
+
+          $script = @'
+          import json
+          import os
+          from bankrotai.db import SessionLocal
+          from bankrotai.services.geo_backfill import (
+              geocode_pending_lots,
+              geo_quality_canary_plan,
+              requeue_geo_quality_canary,
+          )
+
+          limit = max(1, min(int(os.environ["P9_LIMIT"]), 500))
+          cfo_only = os.environ["P9_CFO_ONLY"] == "1"
+          apply = os.environ["P9_APPLY"] == "1"
+          session = SessionLocal()
+          try:
+              result = requeue_geo_quality_canary(session, limit=limit, cfo_only=cfo_only) if apply else geo_quality_canary_plan(session, limit=limit, cfo_only=cfo_only)
+          finally:
+              session.close()
+
+          target_ids = [int(value) for value in result.pop("requeued_lot_ids", [])]
+          if apply and target_ids:
+              processed = geocode_pending_lots(
+                  SessionLocal,
+                  limit=len(target_ids),
+                  progress_task_id="p9-bounded-canary",
+                  lot_ids=target_ids,
+                  allow_when_paused=True,
+                  refresh_strategy=False,
+              )
+              result["processing"] = {
+                  key: processed.get(key)
+                  for key in (
+                      "queued",
+                      "processed",
+                      "geocoded",
+                      "failed",
+                      "duration_seconds",
+                      "provider_counts",
+                      "failure_reasons",
+                  )
+              }
+          result["apply"] = apply
+          result["targeted_processing"] = bool(apply and target_ids)
+          print(json.dumps(result, ensure_ascii=False, default=str))
+          '@
+          $json = $script | docker exec --env "P9_LIMIT=$env:P9_LIMIT" --env "P9_CFO_ONLY=$env:P9_CFO_ONLY" --env "P9_APPLY=$env:P9_APPLY" -i bankrotai-home-geocoding-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Could not evaluate or process P9 canary' }
+          $payload = ($json | Select-Object -Last 1) | ConvertFrom-Json
+          $payload | ConvertTo-Json -Depth 8 | Tee-Object -FilePath "$env:RUNNER_TEMP\p9-geo-canary.json"
+          $requeued = 0
+          if ($null -ne $payload.requeued) { $requeued = [int]$payload.requeued }
+          "eligible=$([int]$payload.eligible)" >> $env:GITHUB_OUTPUT
+          "requeued=$requeued" >> $env:GITHUB_OUTPUT
+
+      - name: Upload canary evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p9-geo-quality-canary-${{ github.run_id }}
+          path: ${{ runner.temp }}\p9-geo-canary.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -169,3 +169,95 @@ def test_alternate_address_candidate_still_rejects_wrong_region(monkeypatch) -> 
         or attempt["valid"] is False
         for attempt in result.attempts
     )
+
+def test_address_candidates_expand_building_parts_and_strip_unit_tail() -> None:
+    candidates = build_geocoding_address_candidates(
+        "г. Ярославль, ул. Свободы, д. 10, корп. 2, стр. 1, пом. 15",
+        region_name="Ярославская область",
+    )
+
+    assert candidates
+    assert "корпус 2" in candidates[0]
+    assert "строение 1" in candidates[0]
+    assert any("пом" not in candidate.casefold() and "дом 10" in candidate.casefold() for candidate in candidates)
+
+
+def test_bulk_resolver_uses_cadastral_provider_address_when_geometry_is_missing(monkeypatch) -> None:
+    cad = "76:23:010101:77"
+    calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER,
+        "_search_nspd_geoportal",
+        lambda query: CadastralObjectResult(
+            query=query,
+            cadastral_number=cad,
+            address="Ярославская область, город Ярославль, улица Свободы, дом 10",
+            source="nspd",
+            confidence="high",
+        ),
+    )
+
+    def address_search(address: str, *, allow_nominatim: bool = True):
+        calls.append((address, allow_nominatim))
+        if "Свободы" not in address:
+            return None
+        return CadastralObjectResult(
+            query=address,
+            address="Ярославль, улица Свободы, 10, Ярославская область",
+            lat=57.6261,
+            lon=39.8845,
+            source="photon",
+            confidence="high",
+        )
+
+    monkeypatch.setattr(geo.CADASTRAL_GEOCODER, "search_by_address", address_search)
+
+    resolved = resolve_lot_geo(
+        cad,
+        "Ярославская область, город Ярославль",
+        region_name="Ярославская область",
+        region_code="76",
+        bulk=True,
+    )
+
+    assert resolved is not None
+    assert resolved.lat == 57.6261
+    assert resolved.lon == 39.8845
+    assert calls[0][1] is False
+    assert "Свободы" in calls[0][0]
+    assert resolved.attempts[-1]["source"] == "address_geocoder_cadastral_hint"
+    assert resolved.attempts[-1]["valid"] is True
+
+
+def test_cadastral_provider_address_hint_is_ignored_for_wrong_cadastral_number(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER,
+        "_search_nspd_geoportal",
+        lambda query: CadastralObjectResult(
+            query=query,
+            cadastral_number="50:01:000000:1",
+            address="Московская область, город Химки, улица Молодежная, дом 12",
+            source="nspd",
+            confidence="high",
+        ),
+    )
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER,
+        "search_by_address",
+        lambda address, **_kwargs: (calls.append(address), None)[1],
+    )
+
+    result = resolve_lot_geo(
+        "76:23:010101:77",
+        "Ярославская область, город Ярославль",
+        region_name="Ярославская область",
+        region_code="76",
+        bulk=True,
+    )
+
+    assert result is not None
+    assert result.status == "GEOCODING_FAILED"
+    assert all("Молодежная" not in call for call in calls)
+
