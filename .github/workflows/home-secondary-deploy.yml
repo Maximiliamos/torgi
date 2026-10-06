@@ -266,19 +266,37 @@ jobs:
       - name: Build current-main API image
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           $built = $false
+          $timeoutSeconds = 600
           for ($attempt = 1; $attempt -le 4; $attempt++) {
-            docker build --pull --tag "${env:IMAGE_NAME}:${env:GITHUB_SHA}" .
-            if ($LASTEXITCODE -eq 0) {
+            Write-Output "Starting Docker build attempt $attempt/4 with a $timeoutSeconds second timeout"
+            $arguments = @(
+              'build',
+              '--pull',
+              '--tag',
+              "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+              '.'
+            )
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $arguments -PassThru -NoNewWindow
+            if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+              Write-Warning "Docker build attempt $attempt/4 timed out after $timeoutSeconds seconds; terminating the process tree"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              try { $process.WaitForExit(10000) | Out-Null } catch {}
+              $exitCode = -1
+            } else {
+              $exitCode = $process.ExitCode
+            }
+            if ($exitCode -eq 0) {
               $built = $true
               break
             }
             if ($attempt -lt 4) {
-              Write-Warning "Docker registry request failed on attempt $attempt/4; retrying in 20 seconds"
+              Write-Warning "Docker build attempt $attempt/4 failed with exit code $exitCode; retrying in 20 seconds"
               Start-Sleep -Seconds 20
             }
           }
-          if (!$built) { throw 'Could not build the current-main API image after four attempts' }
+          if (!$built) { throw 'Could not build the current-main API image after four bounded attempts' }
 
       - name: Preserve and start local PostgreSQL
         shell: powershell
