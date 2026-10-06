@@ -1,0 +1,69 @@
+name: Recover stale Home deploy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/home-stale-deploy-recovery.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/home-stale-deploy-recovery.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stale-home-deploys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Force-cancel stale Home deploy workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
+          mapfile -t stale_ids < <(
+            CURRENT_SHA="$CURRENT_SHA" python -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+current = os.environ["CURRENT_SHA"]
+active = {"queued", "in_progress", "pending", "waiting", "requested"}
+for run in payload.get("workflow_runs", []):
+    if run.get("status") in active and run.get("head_sha") != current:
+        print(run["id"])
+' <<<"$payload"
+          )
+
+          if (( ${#stale_ids[@]} == 0 )); then
+            echo "No stale Home deploy runs found."
+            exit 0
+          fi
+
+          for run_id in "${stale_ids[@]}"; do
+            echo "Force-cancelling stale Home deploy run $run_id"
+            gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1 ||               gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+          done
+
+          sleep 5
+          remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
+          CURRENT_SHA="$CURRENT_SHA" python -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+current = os.environ["CURRENT_SHA"]
+active = {"queued", "in_progress", "pending", "waiting", "requested"}
+stale = [
+    (run.get("id"), run.get("status"), run.get("head_sha"))
+    for run in payload.get("workflow_runs", [])
+    if run.get("status") in active and run.get("head_sha") != current
+]
+if stale:
+    raise SystemExit(f"Stale Home deploy runs still active: {stale}")
+print("All stale Home deploy runs are cleared.")
+' <<<"$remaining"
