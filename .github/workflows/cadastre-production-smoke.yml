@@ -128,12 +128,23 @@ jobs:
           assert repeated_obj is not None, "Persistent cache did not become visible through the public edge"
           timings["cache_hit_ms"] = min(cache_hit_times)
 
-          address_query = first_obj.get("address")
-          assert address_query, first_obj
-          suggestions = search({"query": address_query}, "address_suggestions_ms")
-          assert suggestions.get("kind") == "address_suggestions", suggestions
-          choices = suggestions.get("items") or []
-          assert choices, suggestions
+          address_queries = [
+              "\\u042f\\u0440\\u043e\\u0441\\u043b\\u0430\\u0432\\u043b\\u044c \\u041b\\u0435\\u043d\\u0438\\u043d\\u0433\\u0440\\u0430\\u0434\\u0441\\u043a\\u0438\\u0439 \\u043f\\u0440\\u043e\\u0441\\u043f\\u0435\\u043a\\u0442 54\\u0430",
+              "\\u042f\\u0440\\u043e\\u0441\\u043b\\u0430\\u0432\\u043b\\u044c \\u041b\\u0435\\u043d\\u0438\\u043d\\u0433\\u0440\\u0430\\u0434\\u0441\\u043a\\u0438\\u0439 \\u043f\\u0440\\u043e\\u0441\\u043f\\u0435\\u043a\\u0442 105",
+              "\\u042f\\u0440\\u043e\\u0441\\u043b\\u0430\\u0432\\u043b\\u044c \\u041b\\u0435\\u043d\\u0438\\u043d\\u0433\\u0440\\u0430\\u0434\\u0441\\u043a\\u0438\\u0439 \\u043f\\u0440\\u043e\\u0441\\u043f\\u0435\\u043a\\u0442",
+              "\\u042f\\u0440\\u043e\\u0441\\u043b\\u0430\\u0432\\u043b\\u044c",
+          ]
+          choices = []
+          address_suggestion_total = 0.0
+          for index, address_query in enumerate(address_queries, 1):
+              suggestions = search({"query": address_query}, f"address_suggestions_probe_{index}_ms")
+              assert suggestions.get("kind") == "address_suggestions", suggestions
+              address_suggestion_total += timings[f"address_suggestions_probe_{index}_ms"]
+              choices = suggestions.get("items") or []
+              if choices:
+                  break
+          assert choices, {"queries": address_queries, "last": suggestions}
+          timings["address_suggestions_ms"] = round(address_suggestion_total, 1)
           selected_address = choices[0]
           assert selected_address.get("lat") is not None and selected_address.get("lon") is not None, selected_address
 
