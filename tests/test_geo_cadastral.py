@@ -342,3 +342,41 @@ def test_interactive_nspd_retries_once_without_disabling_bulk_contract(monkeypat
     assert result is not None
     assert result.cadastral_number == "76:23:011401:8268"
     assert geocoder._nspd_disabled_until == 0.0
+
+
+
+def test_selected_address_falls_back_to_pkk_point_when_nspd_point_is_unavailable(monkeypatch) -> None:
+    geocoder = CadastralGeocoder()
+    address = "Ярославль, Ленинградский проспект, д 105"
+    point = CadastralObjectResult(
+        query=address,
+        title="Адрес найден",
+        address=address,
+        lat=57.6919301,
+        lon=39.7720143,
+        source="photon",
+        confidence="high",
+    )
+    expected = CadastralObjectResult(
+        query=address,
+        cadastral_number="76:23:010101:15008",
+        object_type="Здание",
+        address=address,
+        lat=57.6919301,
+        lon=39.7720143,
+        source="pkk_point",
+        confidence="high",
+        info={"Кадастровый номер": "76:23:010101:15008", "Адрес": address},
+    )
+    monkeypatch.setattr(geocoder, "search_by_address", lambda _query, **_kwargs: point)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_by_point",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
+    )
+    monkeypatch.setattr(geocoder, "_search_pkk_by_point", lambda *_args, **_kwargs: expected)
+
+    result = geocoder.search_selected_address(address)
+
+    assert result.cadastral_number == "76:23:010101:15008"
+    assert result.source == "pkk_point"
