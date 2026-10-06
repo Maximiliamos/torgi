@@ -14,30 +14,36 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Inspect live P7 state
+      - name: Inspect P7 Celery result
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $script=@'
           import json
-          from sqlalchemy import func, select
-          from bankrotai.core import utc_now
-          from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, SessionLocal
+          from sqlalchemy import select
+          from bankrotai.db import BackgroundTaskState, SessionLocal
+          from bankrotai.tasks import celery_app
           s=SessionLocal()
           try:
-              paused=s.scalar(select(AppSetting).where(AppSetting.key=="geocoding_paused"))
-              p7=s.scalars(select(BackgroundTaskState).where(BackgroundTaskState.task_type=="geocoding_fast_drain").order_by(BackgroundTaskState.created_at.desc()).limit(5)).all()
-              batches=s.scalars(select(BackgroundTaskState).where(BackgroundTaskState.task_type=="geocoding").order_by(BackgroundTaskState.created_at.desc()).limit(8)).all()
-              counts=dict(s.execute(select(GeoFailure.status,func.count()).group_by(GeoFailure.status)).all())
-              def row(x):
-                  return {"task_id":x.task_id,"status":x.status,"created_at":x.created_at,"started_at":x.started_at,"finished_at":x.finished_at,"progress":x.progress_json,"result":x.result_json,"error":x.error_message}
-              print(json.dumps({"now":utc_now(),"paused":None if paused is None else paused.value,"failure_counts":{str(k):int(v) for k,v in counts.items()},"p7":[row(x) for x in p7],"geo_batches":[row(x) for x in batches]},default=str,ensure_ascii=False))
+              rows=s.scalars(select(BackgroundTaskState).where(BackgroundTaskState.task_type=="geocoding_fast_drain").order_by(BackgroundTaskState.created_at.desc()).limit(3)).all()
+              out=[]
+              for row in rows:
+                  ar=celery_app.AsyncResult(row.task_id)
+                  try:
+                      info=repr(ar.info)
+                  except Exception as exc:
+                      info=f"<info-error {exc!r}>"
+                  out.append({
+                    "task_id":row.task_id,
+                    "db_status":row.status,
+                    "db_progress":row.progress_json,
+                    "db_result":row.result_json,
+                    "db_error":row.error_message,
+                    "celery_state":ar.state,
+                    "celery_info":info[:4000],
+                    "celery_traceback":(ar.traceback or "")[-8000:],
+                  })
+              print(json.dumps(out,default=str,ensure_ascii=False))
           finally:s.close()
           '@
           $script | docker exec -i bankrotai-home-geocoding-worker python -
-          Write-Output '=== CELERY ACTIVE ==='
-          docker exec bankrotai-home-geocoding-worker celery -A bankrotai.tasks.celery_app inspect active --timeout=5
-          Write-Output '=== GEO LOCK ==='
-          $redisPassword=[IO.File]::ReadAllText('C:\ProgramData\BankrotAI\redis-password.txt').Trim()
-          docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning EXISTS bankrotai:geocoding:batch
-          docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning PTTL bankrotai:geocoding:batch
