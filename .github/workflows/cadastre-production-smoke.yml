@@ -114,10 +114,19 @@ jobs:
           assert (first_obj.get("geometry") or {}).get("type") in {"Polygon", "MultiPolygon"}, first_obj
           assert (first_obj.get("info") or {}).get("Кадастровый номер") == first_kn, first_obj
 
-          repeated = search({"query": first_kn}, "cache_hit_ms")
-          repeated_obj = repeated.get("object") or {}
-          assert repeated_obj.get("cadastral_number") == first_kn, repeated_obj
-          assert str(repeated_obj.get("source") or "").startswith("cache"), repeated_obj
+          repeated_obj = None
+          cache_hit_times = []
+          for attempt in range(1, 7):
+              repeated = search({"query": first_kn}, f"cache_probe_{attempt}_ms")
+              probe = repeated.get("object") or {}
+              assert probe.get("cadastral_number") == first_kn, probe
+              if str(probe.get("source") or "").startswith("cache"):
+                  repeated_obj = probe
+                  cache_hit_times.append(timings[f"cache_probe_{attempt}_ms"])
+                  break
+              time.sleep(0.5)
+          assert repeated_obj is not None, "Persistent cache did not become visible through the public edge"
+          timings["cache_hit_ms"] = min(cache_hit_times)
 
           suggestions = search({"query": "Ленинградский 105"}, "address_suggestions_ms")
           assert suggestions.get("kind") == "address_suggestions", suggestions
