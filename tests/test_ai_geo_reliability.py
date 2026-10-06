@@ -230,6 +230,8 @@ def test_cadastre_api_deadline_and_single_flight_return_controlled_result(monkey
 
     monkeypatch.setattr(api, "_CADASTRAL_CAPACITY", threading.BoundedSemaphore(1))
     monkeypatch.setattr(api, "_CADASTRAL_DEADLINE_SECONDS", 0.02)
+    monkeypatch.setattr(api, "get_cached_cadastre_object", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "upsert_cadastre_cache", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(api._CADASTRAL_GEOCODER, "search_by_cadastral_number", stalled_search)
 
     async def run_requests():
