@@ -1,4 +1,4 @@
-from bankrotai.geo import CadastralGeocoder
+from bankrotai.geo import CadastralGeocoder, CadastralObjectResult, PhotonGeocoder
 
 
 def test_parse_pkk_feature_returns_result() -> None:
@@ -38,3 +38,62 @@ def test_parse_pkk_feature_returns_result() -> None:
     assert result.lat == 57.6261
     assert result.lon == 39.8845
     assert result.has_boundary is True
+
+
+
+def test_selected_address_prefers_cadastral_nspd_result(monkeypatch) -> None:
+    geocoder = CadastralGeocoder()
+    expected = CadastralObjectResult(
+        query="Ярославль, Ленинградский проспект, д 105",
+        cadastral_number="76:23:010101:15008",
+        object_type="Здание",
+        address="Ярославль, Ленинградский проспект, д 105",
+        lat=57.691848,
+        lon=39.771867,
+        source="nspd",
+        confidence="high",
+        info={"Кадастровый номер": "76:23:010101:15008"},
+    )
+    monkeypatch.setattr(geocoder, "_search_nspd_geoportal", lambda _query: expected)
+    monkeypatch.setattr(
+        geocoder,
+        "search_by_address",
+        lambda _query: (_ for _ in ()).throw(AssertionError("fallback must not run")),
+    )
+
+    result = geocoder.search_selected_address("Ярославль, Ленинградский проспект, д 105")
+
+    assert result is expected
+    assert result.cadastral_number == "76:23:010101:15008"
+
+
+def test_photon_address_suggestions_are_deduplicated(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            feature = {
+                "geometry": {"coordinates": [39.771867, 57.691848]},
+                "properties": {
+                    "city": "Ярославль",
+                    "street": "Ленинградский проспект",
+                    "housenumber": "105",
+                    "state": "Ярославская область",
+                },
+            }
+            return {"features": [feature, feature]}
+
+    monkeypatch.setattr("bankrotai.geo.require_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bankrotai.geo.requests.get", lambda *_args, **_kwargs: Response())
+    geocoder = PhotonGeocoder("http://photon")
+
+    result = geocoder.suggest_addresses("Ленинградский 105")
+
+    assert result == [
+        {
+            "label": "Ярославль, Ленинградский проспект, д 105, Ярославская область",
+            "lat": 57.691848,
+            "lon": 39.771867,
+        }
+    ]
