@@ -206,3 +206,58 @@ def test_selected_address_uses_cached_candidates_before_wms(monkeypatch) -> None
     assert result["kind"] == "cadastral_objects"
     assert result["items"][0]["source"] == "cache:nspd_wms"
     assert result["items"][0]["cadastral_number"] == "76:23:010101:15008"
+
+
+
+def test_cadastral_number_falls_back_to_stale_complete_cache_after_provider_failure(monkeypatch) -> None:
+    now = utc_now()
+    stale = CadastreObjectCache(
+        cadastral_number="76:23:011401:8268",
+        address="Ярославль, Ленинградский проспект, 54а",
+        address_normalized="ярославль, ленинградский проспект, 54а",
+        object_type="Здание",
+        title="Сохранённая карточка",
+        attributes_json={
+            "Кадастровый номер": "76:23:011401:8268",
+            "Адрес": "Ярославль, Ленинградский проспект, 54а",
+        },
+        geometry_json={
+            "type": "Polygon",
+            "coordinates": [[[39.77, 57.69], [39.78, 57.69], [39.77, 57.69]]],
+        },
+        centroid_lat=57.69072,
+        centroid_lon=39.77901,
+        source="nspd",
+        is_complete=True,
+        fetched_at=now - timedelta(days=8),
+        expires_at=now - timedelta(days=1),
+        created_at=now - timedelta(days=8),
+        updated_at=now - timedelta(days=8),
+    )
+
+    def cache_lookup(_session, _number, *, require_complete=False, fresh_only=True):
+        if fresh_only:
+            return None
+        return stale
+
+    monkeypatch.setattr(api, "get_cached_cadastre_object", cache_lookup)
+    _disable_cache_writes(monkeypatch)
+    monkeypatch.setattr(
+        api._CADASTRAL_GEOCODER,
+        "search_by_cadastral_number",
+        lambda query: CadastralObjectResult(
+            query=query,
+            cadastral_number=query,
+            source="nspd/ik12",
+            confidence="none",
+            error="providers unavailable",
+        ),
+    )
+
+    result = asyncio.run(api.search_cadastre("76:23:011401:8268", False, None, None))
+
+    assert result["kind"] == "object"
+    assert result["object"]["source"] == "cache_stale:nspd"
+    assert result["object"]["cadastral_number"] == "76:23:011401:8268"
+    assert result["object"]["has_boundary"] is True
+    assert "последние сохранённые" in result["object"]["error"]
