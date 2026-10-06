@@ -424,6 +424,13 @@ class CadastralGeocoder:
             logger.warning("NSPD point lookup failed for selected address '%s': %s", address, exc)
             cadastral = None
 
+        if cadastral is None or not cadastral.cadastral_number:
+            cadastral = self._search_pkk_by_point(
+                point.lat,
+                point.lon,
+                fallback_address=point.address or address,
+            )
+
         if cadastral is not None and cadastral.cadastral_number:
             cadastral = self._fill_result_address(
                 cadastral,
@@ -531,6 +538,83 @@ class CadastralGeocoder:
                     raw=feature,
                 )
 
+        return None
+
+    def _search_pkk_by_point(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        fallback_address: str | None = None,
+    ) -> CadastralObjectResult | None:
+        """Bounded legacy PKK fallback for a user-selected address point."""
+        if not self._circuit_available("pkk"):
+            return None
+        with self._pkk_request_lock:
+            if not self._circuit_available("pkk"):
+                return None
+            for kind, feature_type in (("building", 5), ("land_plot", 1)):
+                try:
+                    response = requests.get(
+                        f"{self.base_url}/{feature_type}",
+                        params={
+                            "text": f"{float(lat)} {float(lon)}",
+                            "limit": 10,
+                            "tolerance": 2,
+                        },
+                        timeout=(0.75, 1.25),
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                except requests.RequestException as exc:
+                    self._open_circuit("pkk")
+                    logger.warning(
+                        "PKK point lookup failed for %.6f, %.6f: %s",
+                        lat,
+                        lon,
+                        exc,
+                    )
+                    return None
+                except (ValueError, AttributeError) as exc:
+                    logger.warning(
+                        "PKK point response failed for %.6f, %.6f: %s",
+                        lat,
+                        lon,
+                        exc,
+                    )
+                    return None
+
+                features = data.get("features") or []
+                for feature in features:
+                    attrs = feature.get("attrs") or {}
+                    number = str(
+                        attrs.get("cn")
+                        or attrs.get("cad_num")
+                        or attrs.get("cadastralNumber")
+                        or ""
+                    ).replace(" ", "")
+                    if not CADASTRAL_RE.match(number):
+                        continue
+                    info = normalize_pkk_attrs(attrs, number, kind)
+                    if fallback_address and not info.get("Адрес"):
+                        info["Адрес"] = fallback_address
+                    geometry = geometry_to_wgs84(feature.get("geometry"))
+                    geometry_json = geometry if geometry and geometry.get("type") != "Point" else None
+                    return CadastralObjectResult(
+                        query=fallback_address or number,
+                        cadastral_number=number,
+                        object_type=info.get("Вид объекта недвижимости"),
+                        title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
+                        address=info.get("Адрес") or fallback_address,
+                        lat=float(lat),
+                        lon=float(lon),
+                        geometry_json=geometry_json,
+                        has_boundary=bool(geometry_json),
+                        source="pkk_point",
+                        confidence="high",
+                        info=info,
+                        raw=feature,
+                    )
         return None
 
     def _search_pkk_feature(
