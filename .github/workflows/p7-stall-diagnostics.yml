@@ -11,130 +11,45 @@ permissions:
 jobs:
   diagnose:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Inspect P7 state and GEO locks
+      - name: Inspect P7 runtime
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Output '=== containers ==='
-          docker ps --format 'table {{.Names}}	{{.Status}}' | Select-String 'bankrotai-home-(geocoding-worker|postgres|redis)'
-
-          Write-Output '=== P7 and GEO task state ==='
+          Write-Output '=== P7 DB state ==='
           $script = @'
           import json
           from sqlalchemy import func, select
           from bankrotai.core import utc_now
-          from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, ProcessedLot, SessionLocal
-
-          s = SessionLocal()
+          from bankrotai.db import AppSetting, BackgroundTaskState, GeoFailure, SessionLocal
+          s=SessionLocal()
           try:
-              paused = s.scalar(select(AppSetting).where(AppSetting.key == "geocoding_paused"))
-              p7 = s.scalars(
-                  select(BackgroundTaskState)
-                  .where(BackgroundTaskState.task_type == "geocoding_fast_drain")
-                  .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
-                  .limit(5)
-              ).all()
-              geo = s.scalars(
-                  select(BackgroundTaskState)
-                  .where(BackgroundTaskState.task_type == "geocoding")
-                  .order_by(BackgroundTaskState.created_at.desc(), BackgroundTaskState.id.desc())
-                  .limit(10)
-              ).all()
-              counts = dict(s.execute(
-                  select(GeoFailure.status, func.count()).group_by(GeoFailure.status)
-              ).all())
-              now = utc_now()
-              p7_due = s.scalar(
-                  select(func.count())
-                  .select_from(GeoFailure)
-                  .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
-                  .where(
-                      GeoFailure.status == "p7_queued",
-                      (GeoFailure.next_retry_at.is_(None)) | (GeoFailure.next_retry_at <= now),
-                  )
-              ) or 0
-              p7_held = s.scalar(
-                  select(func.count())
-                  .select_from(GeoFailure)
-                  .where(
-                      GeoFailure.status == "p7_queued",
-                      GeoFailure.next_retry_at > now,
-                  )
-              ) or 0
-              def task(row):
-                  return {
-                      "task_id": row.task_id,
-                      "status": row.status,
-                      "created_at": row.created_at,
-                      "started_at": row.started_at,
-                      "finished_at": row.finished_at,
-                      "progress": row.progress_json,
-                      "result": row.result_json,
-                      "error": row.error_message,
-                  }
+              paused=s.scalar(select(AppSetting).where(AppSetting.key=="geocoding_paused"))
+              p7=s.scalars(select(BackgroundTaskState).where(BackgroundTaskState.task_type=="geocoding_fast_drain").order_by(BackgroundTaskState.created_at.desc()).limit(3)).all()
+              counts=dict(s.execute(select(GeoFailure.status,func.count()).group_by(GeoFailure.status)).all())
               print(json.dumps({
-                  "paused": None if paused is None else paused.value,
-                  "p7_due": int(p7_due),
-                  "p7_held": int(p7_held),
-                  "failure_status_counts": {str(k): int(v) for k,v in counts.items()},
-                  "p7_tasks": [task(x) for x in p7],
-                  "geo_tasks": [task(x) for x in geo],
-              }, ensure_ascii=False, default=str))
-          finally:
-              s.close()
+                "paused": None if paused is None else paused.value,
+                "failure_status_counts": {str(k):int(v) for k,v in counts.items()},
+                "p7":[{"task_id":x.task_id,"status":x.status,"created_at":x.created_at,"started_at":x.started_at,"finished_at":x.finished_at,"progress":x.progress_json,"error":x.error_message} for x in p7]
+              }, default=str, ensure_ascii=False))
+          finally:s.close()
           '@
           $script | docker exec -i bankrotai-home-geocoding-worker python -
 
-          Write-Output '=== Redis GEO lock ==='
-          $redisPassword = [IO.File]::ReadAllText('C:\ProgramData\BankrotAI\redis-password.txt').Trim()
-          Write-Output 'lock_exists:'
-          docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning EXISTS bankrotai:geocoding:batch
-          Write-Output 'lock_ttl_ms:'
-          docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning PTTL bankrotai:geocoding:batch
+          Write-Output '=== Celery active/reserved/scheduled ==='
+          docker exec bankrotai-home-geocoding-worker celery -A bankrotai.tasks.celery_app inspect active --timeout=5
+          docker exec bankrotai-home-geocoding-worker celery -A bankrotai.tasks.celery_app inspect reserved --timeout=5
+          docker exec bankrotai-home-geocoding-worker celery -A bankrotai.tasks.celery_app inspect scheduled --timeout=5
 
-          Write-Output '=== PostgreSQL active/waiting queries ==='
-          $sql = @'
-          SELECT pid, state, wait_event_type, wait_event,
-                 now() - query_start AS runtime,
-                 left(regexp_replace(query, E'\\s+', ' ', 'g'), 240) AS query
-          FROM pg_stat_activity
-          WHERE datname = 'bankrotai'
-            AND pid <> pg_backend_pid()
-            AND state <> 'idle'
-          ORDER BY query_start;
-          '@
-          $sql | docker exec -i bankrotai-home-postgres psql -U bankrotai -d bankrotai -P pager=off
+          Write-Output '=== Redis queue/lock state ==='
+          $redisPassword=[IO.File]::ReadAllText('C:\ProgramData\BankrotAI\redis-password.txt').Trim()
+          foreach ($key in @('bankrotai:geocoding:batch','geocoding','celery')) {
+            Write-Output "KEY=$key TYPE=$(docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning TYPE $key | Select-Object -Last 1)"
+            docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning PTTL $key
+            docker exec bankrotai-home-redis redis-cli -a $redisPassword --no-auth-warning LLEN $key
+          }
 
-          Write-Output '=== blocked sessions ==='
-          $blocked = @'
-          SELECT blocked.pid AS blocked_pid,
-                 blocking.pid AS blocking_pid,
-                 blocked.wait_event_type,
-                 blocked.wait_event,
-                 now() - blocked.query_start AS blocked_for,
-                 left(regexp_replace(blocked.query, E'\\s+', ' ', 'g'), 180) AS blocked_query,
-                 left(regexp_replace(blocking.query, E'\\s+', ' ', 'g'), 180) AS blocking_query
-          FROM pg_stat_activity blocked
-          JOIN pg_locks bl ON bl.pid = blocked.pid AND NOT bl.granted
-          JOIN pg_locks kl
-            ON kl.locktype = bl.locktype
-           AND kl.database IS NOT DISTINCT FROM bl.database
-           AND kl.relation IS NOT DISTINCT FROM bl.relation
-           AND kl.page IS NOT DISTINCT FROM bl.page
-           AND kl.tuple IS NOT DISTINCT FROM bl.tuple
-           AND kl.virtualxid IS NOT DISTINCT FROM bl.virtualxid
-           AND kl.transactionid IS NOT DISTINCT FROM bl.transactionid
-           AND kl.classid IS NOT DISTINCT FROM bl.classid
-           AND kl.objid IS NOT DISTINCT FROM bl.objid
-           AND kl.objsubid IS NOT DISTINCT FROM bl.objsubid
-           AND kl.pid <> bl.pid
-           AND kl.granted
-          JOIN pg_stat_activity blocking ON blocking.pid = kl.pid;
-          '@
-          $blocked | docker exec -i bankrotai-home-postgres psql -U bankrotai -d bankrotai -P pager=off
-
-          Write-Output '=== GEO worker tail ==='
-          docker logs --tail 250 bankrotai-home-geocoding-worker 2>&1
+          Write-Output '=== Worker processes ==='
+          docker top bankrotai-home-geocoding-worker
