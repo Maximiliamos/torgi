@@ -71,6 +71,20 @@ def nspd_tls_verify() -> bool | str:
     return settings.nspd_ca_bundle or True
 
 
+def _bounded_request_timeout(
+    deadline_monotonic: float,
+    *,
+    connect_cap: float,
+    read_cap: float,
+) -> tuple[float, float]:
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0.2:
+        raise TimeoutError("provider deadline exhausted")
+    connect_timeout = min(connect_cap, max(0.1, min(remaining * 0.35, remaining - 0.1)))
+    read_timeout = min(read_cap, max(0.1, remaining - connect_timeout - 0.05))
+    return (connect_timeout, read_timeout)
+
+
 @dataclass
 class CadastralObjectResult:
     query: str
