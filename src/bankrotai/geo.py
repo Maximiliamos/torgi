@@ -124,27 +124,67 @@ class IK12Geocoder:
         self.session = requests.Session()
 
     @staticmethod
-    def _solve_pow(timestamp: int, query: str, threshold: int) -> int:
+    def _solve_pow(
+        timestamp: int,
+        query: str,
+        threshold: int,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> int:
         prefix = f"{timestamp}{query}".encode()
         for nonce in range(IK12_MAX_NONCE):
+            if (
+                deadline_monotonic is not None
+                and nonce % 4096 == 0
+                and time.monotonic() >= deadline_monotonic
+            ):
+                raise TimeoutError("IK12 proof-of-work deadline exhausted")
             digest = hashlib.sha256(prefix + str(nonce).encode()).digest()
             if int.from_bytes(digest[:4], "big") < threshold:
                 return nonce
         raise RuntimeError("IK12 proof-of-work limit exceeded")
 
-    def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult | None:
+    def search_by_cadastral_number(
+        self,
+        cadastral_number: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> CadastralObjectResult | None:
         require_provider("ik12", external=True)
         started = time.monotonic()
+        hard_deadline = deadline_monotonic or (started + INTERACTIVE_IK12_BUDGET_SECONDS)
+        hard_deadline = min(hard_deadline, started + INTERACTIVE_IK12_BUDGET_SECONDS)
         try:
+            token_timeout = _bounded_request_timeout(
+                hard_deadline,
+                connect_cap=INTERACTIVE_IK12_CONNECT_TIMEOUT,
+                read_cap=INTERACTIVE_IK12_READ_TIMEOUT,
+            )
             token_response = self.session.get(
                 f"{IK12_API_BASE}/token.php",
                 params={"query": cadastral_number, "action": "search"},
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=token_timeout,
             )
             token_response.raise_for_status()
             token = token_response.json()
-            nonce = self._solve_pow(int(token["timestamp"]), cadastral_number, int(token["threshold"]))
+
+            pow_deadline = min(
+                hard_deadline,
+                time.monotonic() + INTERACTIVE_IK12_POW_BUDGET_SECONDS,
+            )
+            nonce = self._solve_pow(
+                int(token["timestamp"]),
+                cadastral_number,
+                int(token["threshold"]),
+                deadline_monotonic=pow_deadline,
+            )
             elapsed = max(1, round((time.monotonic() - started) * 1000))
+
+            response_timeout = _bounded_request_timeout(
+                hard_deadline,
+                connect_cap=INTERACTIVE_IK12_CONNECT_TIMEOUT,
+                read_cap=INTERACTIVE_IK12_READ_TIMEOUT,
+            )
             response = self.session.get(
                 f"{IK12_API_BASE}/search3.php",
                 params={
@@ -158,11 +198,15 @@ class IK12Geocoder:
                     "nonce": nonce,
                     "elapsed": elapsed,
                 },
-                timeout=CADASTRAL_REQUEST_TIMEOUT,
+                timeout=response_timeout,
             )
             response.raise_for_status()
             payload = response.json()
             record_provider_success("ik12", latency_ms=(time.monotonic() - started) * 1000)
+        except TimeoutError as exc:
+            record_provider_failure("ik12", "read_timeout", latency_ms=(time.monotonic() - started) * 1000)
+            logger.warning("IK12 deadline exhausted for %s: %s", cadastral_number, exc)
+            raise GeoProviderUnavailable("ik12", "read_timeout", str(exc)) from exc
         except requests.RequestException as exc:
             category = classify_transport_exception(exc)
             record_provider_failure("ik12", category, latency_ms=(time.monotonic() - started) * 1000)
