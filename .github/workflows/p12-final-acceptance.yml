@@ -1,0 +1,245 @@
+name: P12 final production acceptance
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/p12-final-acceptance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  public:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+    steps:
+      - name: Verify public cadastral flows and timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          web='https://sterdez.online'
+          test -n "$E2E_PASSWORD"
+
+          python - <<'PY' > login.json
+          import json, os
+          print(json.dumps({
+              "username": os.environ.get("E2E_USERNAME", "reader"),
+              "password": os.environ["E2E_PASSWORD"],
+          }))
+          PY
+          login_s="$(curl --fail --silent --show-error --max-time 20 -w '%{time_total}' -o login-response.json -c cookies.txt -H 'Content-Type: application/json' --data-binary @login.json "$web/api/auth/login")"
+          python - <<'PY'
+          import json
+          d=json.load(open('login-response.json',encoding='utf-8'))
+          assert d.get('username'), d
+          PY
+
+          exact1_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o exact1.json -b cookies.txt --get --data-urlencode 'query=76:23:011401:8268' "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('exact1.json',encoding='utf-8'))
+          assert d.get('kind')=='object', d
+          o=d.get('object') or {}
+          assert o.get('cadastral_number')=='76:23:011401:8268', o
+          assert o.get('confidence')!='none', o
+          assert o.get('lat') is not None and o.get('lon') is not None, o
+          assert o.get('has_boundary') is True and o.get('geometry'), o
+          print('P12_EXACT_8268',json.dumps({
+              'source':o.get('source'),'address':o.get('address'),
+              'attempts':o.get('attempts'),'has_boundary':o.get('has_boundary')
+          },ensure_ascii=False))
+          PY
+
+          cache_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o cache.json -b cookies.txt --get --data-urlencode 'query=76:23:011401:8268' "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('cache.json',encoding='utf-8'))
+          o=d.get('object') or {}
+          assert o.get('cadastral_number')=='76:23:011401:8268', o
+          assert str(o.get('source') or '').startswith('cache:'), o
+          assert o.get('has_boundary') is True and o.get('geometry'), o
+          print('P12_CACHE_HIT',json.dumps({'source':o.get('source')},ensure_ascii=False))
+          PY
+
+          suggestions_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o suggestions.json -b cookies.txt --get --data-urlencode 'query=Ленинградский 105' "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('suggestions.json',encoding='utf-8'))
+          assert d.get('kind')=='address_suggestions', d
+          items=d.get('items') or []
+          assert items, d
+          chosen=next((x for x in items if 'ярослав' in (x.get('label') or '').casefold()),None)
+          assert chosen, items
+          json.dump(chosen,open('chosen-address.json','w',encoding='utf-8'),ensure_ascii=False)
+          print('P12_PHOTON',json.dumps({'count':len(items),'chosen':chosen},ensure_ascii=False))
+          PY
+          selected="$(python -c "import json; print(json.load(open('chosen-address.json',encoding='utf-8'))['label'])")"
+          lat="$(python -c "import json; print(json.load(open('chosen-address.json',encoding='utf-8'))['lat'])")"
+          lon="$(python -c "import json; print(json.load(open('chosen-address.json',encoding='utf-8'))['lon'])")"
+
+          wms_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o candidates.json -b cookies.txt --get --data-urlencode "query=$selected" --data-urlencode 'resolve_address=true' --data-urlencode "lat=$lat" --data-urlencode "lon=$lon" "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('candidates.json',encoding='utf-8'))
+          assert d.get('kind')=='cadastral_objects', d
+          items=d.get('items') or []
+          assert items, d
+          chosen=next((x for x in items if x.get('cadastral_number')=='76:23:010101:15008'),items[0])
+          number=chosen.get('cadastral_number')
+          assert number, chosen
+          open('chosen-number.txt','w',encoding='utf-8').write(number)
+          print('P12_WMS_CANDIDATES',json.dumps({
+              'count':len(items),'chosen':number,'source':chosen.get('source'),
+              'types':[x.get('object_type') for x in items]
+          },ensure_ascii=False))
+          PY
+          number="$(cat chosen-number.txt)"
+
+          card_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o chosen-card.json -b cookies.txt --get --data-urlencode "query=$number" "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('chosen-card.json',encoding='utf-8'))
+          o=d.get('object') or {}
+          assert o.get('cadastral_number'), o
+          assert o.get('confidence')!='none', o
+          assert o.get('lat') is not None and o.get('lon') is not None, o
+          print('P12_SELECTED_CARD',json.dumps({
+              'number':o.get('cadastral_number'),'source':o.get('source'),
+              'address':o.get('address'),'has_boundary':o.get('has_boundary'),
+              'attempts':o.get('attempts')
+          },ensure_ascii=False))
+          PY
+
+          second_s="$(curl --fail --silent --show-error --max-time 12 -w '%{time_total}' -o second.json -b cookies.txt --get --data-urlencode 'query=76:23:010101:15008' "$web/api/cadastre/search")"
+          python - <<'PY'
+          import json
+          d=json.load(open('second.json',encoding='utf-8'))
+          o=d.get('object') or {}
+          assert o.get('cadastral_number')=='76:23:010101:15008', o
+          assert o.get('confidence')!='none', o
+          print('P12_SECOND_KN',json.dumps({'source':o.get('source'),'has_boundary':o.get('has_boundary')},ensure_ascii=False))
+          PY
+
+          python - "$login_s" "$exact1_s" "$cache_s" "$suggestions_s" "$wms_s" "$card_s" "$second_s" <<'PY'
+          import json,sys
+          names=['login','exact_8268','cache_hit','photon_suggestions','wms_candidates','selected_card','second_kn']
+          values=[float(x) for x in sys.argv[1:]]
+          out=dict(zip(names,values))
+          out['full_address_flow']=out['photon_suggestions']+out['wms_candidates']+out['selected_card']
+          print('P12_PUBLIC_TIMINGS_SECONDS',json.dumps(out,sort_keys=True))
+          assert out['cache_hit'] < 2.0, out
+          assert out['exact_8268'] < 9.0, out
+          assert out['full_address_flow'] < 15.0, out
+          PY
+
+  home:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - name: Verify deployed provider budgets and simulated fallback timings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import asyncio
+          import json
+          import time
+          from datetime import timedelta
+
+          import bankrotai.api as api
+          import bankrotai.geo as geo
+          from bankrotai.db import CadastreObjectCache, session_scope, utc_now
+          from bankrotai.geo import CadastralGeocoder, CadastralObjectResult, NSPDTLSVerificationError
+
+          KN='76:23:011401:8268'
+
+          # Direct NSPD Search bypasses persistent/memory cache and measures the
+          # deployed primary provider contract itself.
+          primary=CadastralGeocoder()
+          t=time.monotonic()
+          primary_result=primary._search_nspd_geoportal(
+              KN,
+              interactive=True,
+              deadline_monotonic=time.monotonic()+geo.INTERACTIVE_NSPD_BUDGET_SECONDS,
+          )
+          nspd_s=time.monotonic()-t
+          assert primary_result is not None and primary_result.cadastral_number==KN, primary_result
+          assert primary_result.geometry_json, primary_result
+          assert nspd_s < geo.INTERACTIVE_NSPD_BUDGET_SECONDS+0.5, nspd_s
+          print('P12_NSPD_SUCCESS',json.dumps({
+              'seconds':round(nspd_s,4),'source':primary_result.source,
+              'has_boundary':primary_result.has_boundary
+          }))
+
+          # Simulate immediate NSPD TLS failure and let the real bounded IK12
+          # adapter run. IK12 is allowed to fail; the requirement here is that
+          # the hedge starts and returns control inside the hard deadline.
+          hedged=CadastralGeocoder()
+          hedged._search_nspd_geoportal=lambda *_a,**_k: (_ for _ in ()).throw(NSPDTLSVerificationError('simulated'))
+          t=time.monotonic()
+          hedged_result=hedged.search_by_cadastral_number(KN)
+          hedge_s=time.monotonic()-t
+          providers=[x.get('provider') for x in hedged_result.attempts]
+          assert 'nspd' in providers and 'ik12' in providers, hedged_result.attempts
+          assert hedge_s < geo.INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS+0.5, hedge_s
+          print('P12_NSPD_FAIL_TO_IK12',json.dumps({
+              'seconds':round(hedge_s,4),'source':hedged_result.source,
+              'confidence':hedged_result.confidence,'attempts':hedged_result.attempts
+          }))
+
+          # Real DB stale-cache fallback. Use a synthetic cache-only cadastral
+          # number and clean it in finally; it is never linked to auction lots.
+          fake='76:23:999999:987654321'
+          now=utc_now()
+          with session_scope() as session:
+              old=session.get(CadastreObjectCache,fake)
+              if old is not None:
+                  session.delete(old)
+              session.add(CadastreObjectCache(
+                  cadastral_number=fake,
+                  address='P12 diagnostic stale cache',
+                  address_normalized='p12 diagnostic stale cache',
+                  object_type='Здание',
+                  title='P12 diagnostic',
+                  attributes_json={'Кадастровый номер':fake,'Адрес':'P12 diagnostic stale cache'},
+                  geometry_json={'type':'Polygon','coordinates':[[[39.0,57.0],[39.1,57.0],[39.0,57.0]]]},
+                  centroid_lat=57.0,
+                  centroid_lon=39.0,
+                  source='diagnostic',
+                  is_complete=True,
+                  fetched_at=now-timedelta(days=2),
+                  expires_at=now-timedelta(hours=1),
+                  created_at=now-timedelta(days=2),
+                  updated_at=now-timedelta(days=2),
+              ))
+          original=api._CADASTRAL_GEOCODER.search_by_cadastral_number
+          try:
+              api._CADASTRAL_GEOCODER.search_by_cadastral_number=lambda query: CadastralObjectResult(
+                  query=query,cadastral_number=query,source='nspd/ik12',
+                  confidence='none',error='simulated external outage'
+              )
+              t=time.monotonic()
+              stale=asyncio.run(api.search_cadastre(fake,False,None,None))
+              stale_s=time.monotonic()-t
+              obj=stale.get('object') or {}
+              assert obj.get('source')=='cache_stale:diagnostic', obj
+              assert obj.get('has_boundary') is True, obj
+              assert stale_s < 1.0, stale_s
+              print('P12_STALE_CACHE_FALLBACK',json.dumps({
+                  'seconds':round(stale_s,4),'source':obj.get('source'),
+                  'has_boundary':obj.get('has_boundary')
+              }))
+          finally:
+              api._CADASTRAL_GEOCODER.search_by_cadastral_number=original
+              with session_scope() as session:
+                  row=session.get(CadastreObjectCache,fake)
+                  if row is not None:
+                      session.delete(row)
+          '@
+          $script | docker exec -i bankrotai-home-secondary python -
+          if ($LASTEXITCODE -ne 0) { throw 'P12 deployed-code timing acceptance failed' }
