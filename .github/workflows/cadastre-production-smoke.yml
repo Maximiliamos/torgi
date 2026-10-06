@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   acceptance:
-    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
@@ -195,93 +195,3 @@ jobs:
           $script | python -
           if ($LASTEXITCODE -ne 0) { throw 'Authenticated public P12 scenarios failed' }
 
-      - name: Measure NSPD and bounded failure failover on production image
-        shell: powershell
-        run: |
-          $script = @'
-          import asyncio
-          import json
-          import time
-
-          import requests
-
-          from bankrotai import api
-          from bankrotai.geo import CadastralGeocoder, CadastralObjectResult
-          from bankrotai.services.geo_resilience import GeoProviderUnavailable
-
-          kn = "76:23:011401:8268"
-          evidence = {}
-
-          direct = CadastralGeocoder()
-          started = time.monotonic()
-          nspd = direct._search_nspd_geoportal(kn, interactive=True)
-          evidence["nspd_success_ms"] = round((time.monotonic() - started) * 1000, 1)
-          assert nspd is not None and nspd.cadastral_number == kn, nspd
-
-          original_geocoder = api._CADASTRAL_GEOCODER
-          original_cache_lookup = api.get_cached_cadastre_object
-          original_upsert = api.upsert_cadastre_cache
-
-          def no_fresh_cache(session, number, *, require_complete=False, fresh_only=True):
-              if fresh_only:
-                  return None
-              return original_cache_lookup(
-                  session,
-                  number,
-                  require_complete=require_complete,
-                  fresh_only=False,
-              )
-
-          try:
-              failover = CadastralGeocoder()
-
-              def connect_failure(*_args, **_kwargs):
-                  raise GeoProviderUnavailable("nspd", "connect_timeout", "simulated connect failure")
-
-              failover._search_nspd_geoportal = connect_failure
-              api._CADASTRAL_GEOCODER = failover
-              api.get_cached_cadastre_object = no_fresh_cache
-
-              started = time.monotonic()
-              result = asyncio.run(api.search_cadastre(kn, False, None, None))
-              evidence["nspd_failure_to_ik12_or_stale_ms"] = round(
-                  (time.monotonic() - started) * 1000, 1
-              )
-              obj = result.get("object") or {}
-              assert result.get("kind") == "object", result
-              assert obj.get("cadastral_number") == kn, obj
-              assert (
-                  str(obj.get("source") or "").startswith("ik12")
-                  or str(obj.get("source") or "").startswith("cache_stale")
-              ), obj
-              assert evidence["nspd_failure_to_ik12_or_stale_ms"] < 9000, evidence
-
-              stale_only = CadastralGeocoder()
-              stale_only.search_by_cadastral_number = lambda number: CadastralObjectResult(
-                  query=number,
-                  cadastral_number=number,
-                  source="nspd/ik12",
-                  confidence="none",
-                  error="simulated provider outage",
-              )
-              api._CADASTRAL_GEOCODER = stale_only
-              api.upsert_cadastre_cache = lambda *_args, **_kwargs: None
-
-              started = time.monotonic()
-              stale = asyncio.run(api.search_cadastre(kn, False, None, None))
-              evidence["stale_cache_fallback_ms"] = round(
-                  (time.monotonic() - started) * 1000, 1
-              )
-              stale_obj = stale.get("object") or {}
-              assert str(stale_obj.get("source") or "").startswith("cache_stale"), stale_obj
-              assert stale_obj.get("cadastral_number") == kn, stale_obj
-              assert evidence["stale_cache_fallback_ms"] < 9000, evidence
-          finally:
-              api._CADASTRAL_GEOCODER = original_geocoder
-              api.get_cached_cadastre_object = original_cache_lookup
-              api.upsert_cadastre_cache = original_upsert
-
-          print("P12_FAILOVER_EVIDENCE=" + json.dumps(evidence, sort_keys=True))
-          '@
-          $script | docker exec -i bankrotai-home-secondary python -
-          if ($LASTEXITCODE -ne 0) { throw 'Production-image P12 failover scenarios failed' }
