@@ -374,44 +374,194 @@ class CadastralGeocoder:
         return self.search_by_address(q)
 
     def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult:
-        """Interactive cadastral-number lookup: memory cache -> NSPD Search -> IK12."""
+        """Interactive exact lookup with an NSPD-first hedged IK12 fallback."""
         normalized = cadastral_number.replace(" ", "")
         cache_key = self._cache_key("cad", normalized)
         cached = self._cache_get(cache_key)
         if cached is not None:
+            cached.attempts.append(
+                {"provider": "memory_cache", "outcome": "hit", "elapsed_ms": 0}
+            )
             return cached
 
+        started = time.monotonic()
+        hard_deadline = started + INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS
+        attempts: list[dict[str, Any]] = []
         nspd_error: Exception | None = None
-        try:
-            nspd_result = self._search_nspd_geoportal(normalized, interactive=True)
-        except (NSPDTLSVerificationError, GeoProviderUnavailable) as exc:
-            nspd_error = exc
-            nspd_result = None
-            logger.warning(
-                "NSPD unavailable for interactive cadastral search %s; trying bounded IK12 fallback: %s",
-                normalized,
-                exc,
+        ik12_error: Exception | None = None
+
+        def provider_call(
+            provider: str,
+            call,
+        ) -> tuple[str, CadastralObjectResult | None, Exception | None, float]:
+            call_started = time.monotonic()
+            try:
+                result = call()
+                return (
+                    provider,
+                    result,
+                    None,
+                    (time.monotonic() - call_started) * 1000,
+                )
+            except Exception as exc:
+                return (
+                    provider,
+                    None,
+                    exc,
+                    (time.monotonic() - call_started) * 1000,
+                )
+
+        def valid_exact(result: CadastralObjectResult | None) -> bool:
+            return bool(
+                result is not None
+                and result.cadastral_number == normalized
+                and result.confidence != "none"
             )
 
-        if nspd_result and nspd_result.cadastral_number:
-            nspd_result = self._fill_result_address(nspd_result)
-            self._cache_put(cache_key, nspd_result)
-            return nspd_result
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="cadastre-hedge",
+        )
+        pending: dict[
+            concurrent.futures.Future[
+                tuple[str, CadastralObjectResult | None, Exception | None, float]
+            ],
+            str,
+        ] = {}
+
+        def submit_ik12() -> None:
+            if any(provider == "ik12" for provider in pending.values()):
+                return
+            if time.monotonic() >= hard_deadline - 0.25:
+                return
+            future = executor.submit(
+                provider_call,
+                "ik12",
+                lambda: IK12_GEOCODER.search_by_cadastral_number(
+                    normalized,
+                    deadline_monotonic=hard_deadline,
+                ),
+            )
+            pending[future] = "ik12"
+
+        def record_outcome(
+            provider: str,
+            result: CadastralObjectResult | None,
+            error: Exception | None,
+            elapsed_ms: float,
+        ) -> None:
+            if error is not None:
+                outcome = f"error:{type(error).__name__}"
+            elif valid_exact(result):
+                outcome = "success"
+            else:
+                outcome = "not_found"
+            attempts.append(
+                {
+                    "provider": provider,
+                    "outcome": outcome,
+                    "elapsed_ms": round(elapsed_ms, 1),
+                }
+            )
 
         try:
-            ik12_result = IK12_GEOCODER.search_by_cadastral_number(normalized)
-        except GeoProviderUnavailable as exc:
-            logger.warning("IK12 fallback failed for %s: %s", normalized, exc)
-            ik12_result = None
-        if ik12_result and ik12_result.cadastral_number:
-            ik12_result = self._fill_result_address(ik12_result)
-            self._cache_put(cache_key, ik12_result)
-            return ik12_result
+            nspd_future = executor.submit(
+                provider_call,
+                "nspd",
+                lambda: self._search_nspd_geoportal(
+                    normalized,
+                    interactive=True,
+                    deadline_monotonic=hard_deadline,
+                ),
+            )
+            pending[nspd_future] = "nspd"
 
-        if nspd_error is not None:
+            first_wait = min(
+                INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS,
+                max(0.0, hard_deadline - time.monotonic()),
+            )
+            try:
+                provider, result, error, elapsed_ms = nspd_future.result(
+                    timeout=first_wait
+                )
+                pending.pop(nspd_future, None)
+                record_outcome(provider, result, error, elapsed_ms)
+                if error is not None:
+                    nspd_error = error
+                if valid_exact(result):
+                    assert result is not None
+                    result.attempts.extend(attempts)
+                    result = self._fill_result_address(result)
+                    self._cache_put(cache_key, result)
+                    return result
+                # Fast NSPD failure/not-found: start fallback immediately.
+                submit_ik12()
+            except concurrent.futures.TimeoutError:
+                # NSPD is still pending after the hedge delay. Start IK12 in
+                # parallel rather than waiting for the full NSPD budget.
+                submit_ik12()
+
+            while pending and time.monotonic() < hard_deadline:
+                remaining = hard_deadline - time.monotonic()
+                done, _ = concurrent.futures.wait(
+                    tuple(pending),
+                    timeout=max(0.0, remaining),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+
+                for future in done:
+                    provider = pending.pop(future)
+                    try:
+                        name, result, error, elapsed_ms = future.result()
+                    except Exception as exc:
+                        name, result, error, elapsed_ms = provider, None, exc, 0.0
+                    record_outcome(name, result, error, elapsed_ms)
+                    if name == "nspd" and error is not None:
+                        nspd_error = error
+                        submit_ik12()
+                    elif name == "ik12" and error is not None:
+                        ik12_error = error
+
+                    if valid_exact(result):
+                        assert result is not None
+                        result.attempts.extend(attempts)
+                        if time.monotonic() < hard_deadline - 0.25:
+                            result = self._fill_result_address(result)
+                        self._cache_put(cache_key, result)
+                        for loser in pending:
+                            loser.cancel()
+                        return result
+
+                    if name == "nspd":
+                        # NSPD returned no exact object; ensure bounded fallback
+                        # still gets a chance within the shared hard deadline.
+                        submit_ik12()
+
+            for future in pending:
+                future.cancel()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        attempts.append(
+            {
+                "provider": "exact_chain",
+                "outcome": "deadline_or_exhausted",
+                "elapsed_ms": elapsed_ms,
+            }
+        )
+
+        if nspd_error is not None and ik12_error is not None:
             error = (
-                "НСПД временно недоступна через защищённое соединение, "
-                "а резервный кадастровый источник не вернул объект."
+                "НСПД и резервный кадастровый источник временно недоступны. "
+                "Проверка завершена в ограниченный срок."
+            )
+        elif nspd_error is not None:
+            error = (
+                "НСПД временно недоступна, а резервный кадастровый источник "
+                "не вернул точный объект в отведённый срок."
             )
         else:
             error = "Объект не найден в доступных кадастровых источниках."
@@ -422,6 +572,7 @@ class CadastralGeocoder:
             source="nspd/ik12",
             confidence="none",
             error=error,
+            attempts=attempts,
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
