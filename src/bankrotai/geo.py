@@ -773,9 +773,23 @@ class CadastralGeocoder:
             raw=feature,
         )
 
-    def _search_nspd_geoportal(self, query: str, *, interactive: bool = False) -> CadastralObjectResult | None:
+    def _search_nspd_geoportal(
+        self,
+        query: str,
+        *,
+        interactive: bool = False,
+        deadline_monotonic: float | None = None,
+    ) -> CadastralObjectResult | None:
         require_provider("nspd", external=True)
-        started = time.monotonic()
+        request_started = time.monotonic()
+        nspd_deadline = (
+            min(
+                deadline_monotonic or (request_started + INTERACTIVE_NSPD_BUDGET_SECONDS),
+                request_started + INTERACTIVE_NSPD_BUDGET_SECONDS,
+            )
+            if interactive
+            else None
+        )
         headers = {
             "Referer": NSPD_REFERER,
             "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
@@ -791,12 +805,26 @@ class CadastralGeocoder:
         with self._nspd_request_lock:
             if not interactive and not self._circuit_available("nspd"):
                 return None
-            attempts = 2 if interactive else 1
-            request_timeout = (1.0, 1.75) if interactive else CADASTRAL_REQUEST_TIMEOUT
             data = None
-            for attempt in range(attempts):
-                started = time.monotonic()
+            max_attempts = 2 if interactive else 1
+            for attempt in range(max_attempts):
+                attempt_started = time.monotonic()
                 try:
+                    if interactive:
+                        assert nspd_deadline is not None
+                        read_cap = (
+                            INTERACTIVE_NSPD_READ_TIMEOUT
+                            if attempt == 0
+                            else INTERACTIVE_NSPD_RETRY_READ_TIMEOUT
+                        )
+                        request_timeout = _bounded_request_timeout(
+                            nspd_deadline,
+                            connect_cap=INTERACTIVE_NSPD_CONNECT_TIMEOUT,
+                            read_cap=read_cap,
+                        )
+                    else:
+                        request_timeout = CADASTRAL_REQUEST_TIMEOUT
+
                     resp = requests.get(
                         self.nspd_search_url,
                         params=params,
@@ -807,29 +835,78 @@ class CadastralGeocoder:
                     resp.raise_for_status()
                     data = resp.json()
                     self._nspd_disabled_until = 0.0
-                    record_provider_success("nspd", latency_ms=(time.monotonic() - started) * 1000)
+                    record_provider_success(
+                        "nspd",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
                     break
-                except SSLError as e:
-                    record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
-                    if interactive and attempt + 1 < attempts:
-                        time.sleep(0.1)
+                except TimeoutError as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "read_timeout",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    raise GeoProviderUnavailable("nspd", "read_timeout", str(exc)) from exc
+                except SSLError as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "tls_error",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    self._open_circuit("nspd")
+                    logger.error("NSPD TLS verification failed for %s: %s", query, exc)
+                    # TLS verification failure is not retryable inside the
+                    # user-facing request. Hedge/fallback should start now.
+                    raise NSPDTLSVerificationError(
+                        "NSPD TLS certificate verification failed"
+                    ) from exc
+                except requests.RequestException as exc:
+                    category = classify_transport_exception(exc)
+                    record_provider_failure(
+                        "nspd",
+                        category,
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    remaining = (
+                        (nspd_deadline - time.monotonic())
+                        if interactive and nspd_deadline is not None
+                        else 0.0
+                    )
+                    retryable = category in {
+                        "read_timeout",
+                        "provider_5xx",
+                        "rate_limited",
+                    }
+                    enough_budget = remaining >= 1.2
+                    if (
+                        interactive
+                        and attempt + 1 < max_attempts
+                        and retryable
+                        and enough_budget
+                    ):
+                        time.sleep(min(0.08, max(0.0, remaining - 1.1)))
                         continue
                     self._open_circuit("nspd")
-                    logger.error("NSPD TLS verification failed for %s: %s", query, e)
-                    raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
-                except requests.RequestException as e:
-                    category = classify_transport_exception(e)
-                    record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
-                    if interactive and attempt + 1 < attempts:
-                        time.sleep(0.1)
-                        continue
-                    self._open_circuit("nspd")
-                    logger.warning("NSPD request failed for %s; pausing batch NSPD requests: %s", query, e)
-                    raise GeoProviderUnavailable("nspd", category, str(e)) from e
-                except Exception as e:
-                    record_provider_failure("nspd", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
-                    logger.warning("NSPD response failed for %s: %s", query, e)
-                    raise GeoProviderUnavailable("nspd", "provider_protocol", str(e)) from e
+                    logger.warning(
+                        "NSPD request failed for %s; category=%s remaining=%.3fs: %s",
+                        query,
+                        category,
+                        remaining,
+                        exc,
+                    )
+                    raise GeoProviderUnavailable("nspd", category, str(exc)) from exc
+                except Exception as exc:
+                    record_provider_failure(
+                        "nspd",
+                        "provider_protocol",
+                        latency_ms=(time.monotonic() - attempt_started) * 1000,
+                    )
+                    logger.warning("NSPD response failed for %s: %s", query, exc)
+                    raise GeoProviderUnavailable(
+                        "nspd",
+                        "provider_protocol",
+                        str(exc),
+                    ) from exc
             if data is None:
                 return None
 
