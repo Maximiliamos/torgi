@@ -1,0 +1,73 @@
+name: IK12 temporary diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/ik12-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Probe public IK12 search response shape
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.parse
+          import urllib.request
+
+          BASE='https://api.roscadastres.com/pkk_files'
+
+          def get_json(path, params):
+              url=BASE+'/'+path+'?'+urllib.parse.urlencode(params)
+              req=urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  return json.load(r)
+
+          def search(query):
+              token=get_json('token.php', {'query':query,'action':'search'})
+              ts=int(token['timestamp'])
+              threshold=int(token['threshold'])
+              prefix=f'{ts}{query}'.encode()
+              nonce=None
+              started=time.monotonic()
+              for n in range(5_000_000):
+                  digest=hashlib.sha256(prefix+str(n).encode()).digest()
+                  if int.from_bytes(digest[:4],'big') < threshold:
+                      nonce=n
+                      break
+              assert nonce is not None
+              elapsed=max(1,round((time.monotonic()-started)*1000))
+              payload=get_json('search3.php',{
+                  'query':query,'action':'search','type':1,
+                  'timestamp':token['timestamp'],'hash':token['hash'],
+                  'threshold':token['threshold'],'version':token['version'],
+                  'nonce':nonce,'elapsed':elapsed,
+              })
+              features=(payload.get('object_data') or {}).get('features') or []
+              print(json.dumps({
+                  'query':query,
+                  'object_type':payload.get('object_type'),
+                  'feature_count':len(features),
+                  'features':[{
+                      'attrs':f.get('attrs'),
+                      'center':f.get('center'),
+                      'geometry_type':(f.get('geometry') or {}).get('type'),
+                  } for f in features[:5]],
+              },ensure_ascii=False,default=str))
+
+          search('76:23:011401:8268')
+          search('Ярославль, Ленинградский проспект, д 105, Ярославская область')
+          PY
