@@ -8,7 +8,7 @@ def test_home_image_build_retries_transient_registry_tls_failures() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "for ($attempt = 1; $attempt -le 4; $attempt++)" in workflow
     assert "$usePull = $attempt -eq 1" in workflow
-    assert "$timeoutSeconds = if ($usePull) { 300 } else { 600 }" in workflow
+    assert "$timeoutSeconds = if ($usePull) { 300 } else { 1200 }" in workflow
     assert "$mode = if ($usePull) { 'refresh-base' } else { 'cached-base' }" in workflow
     assert "Start-Process -FilePath 'docker.exe'" in workflow
     assert "$arguments = @('build')" in workflow
@@ -16,6 +16,20 @@ def test_home_image_build_retries_transient_registry_tls_failures() -> None:
     assert "$process.WaitForExit($timeoutSeconds * 1000)" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
     assert "Could not build the current-main API image after four bounded attempts" in workflow
+
+
+def test_home_dockerfile_caches_dependency_layer_before_app_source() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    requirements_copy = "COPY pyproject.toml README.md requirements.lock ./"
+    dependency_install = "pip install -r requirements.lock"
+    source_copy = "COPY src ./src"
+    package_install = "pip install --no-deps ."
+
+    assert "RUN --mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert dockerfile.index(requirements_copy) < dockerfile.index(dependency_install)
+    assert dockerfile.index(dependency_install) < dockerfile.index(source_copy)
+    assert dockerfile.index(source_copy) < dockerfile.index(package_install)
 
 
 def test_home_deploy_keeps_public_api_read_only_and_runs_private_worker() -> None:
