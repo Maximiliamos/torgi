@@ -30,7 +30,7 @@ jobs:
           set -euo pipefail
           CURRENT_SHA="$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
           echo "Canonical main HEAD: $CURRENT_SHA"
-          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
+          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml phase3-lite-health.yml; do
             payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             mapfile -t stale_ids < <(
               jq -r --arg current "$CURRENT_SHA" --arg workflow "$workflow" '
@@ -62,7 +62,7 @@ jobs:
           done
 
           sleep 35
-          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml; do
+          for workflow in home-secondary-deploy.yml regru-deploy.yml cloudflare-edge-deploy.yml phase3-lite-health.yml; do
             remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/$workflow/runs?per_page=50")"
             stale_remaining="$(
               jq -r --arg current "$CURRENT_SHA" --arg workflow "$workflow" '
