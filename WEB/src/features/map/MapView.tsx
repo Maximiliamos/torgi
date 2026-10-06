@@ -622,19 +622,21 @@ function CadastrePanel({
   loading,
   onOpenDetails,
   onSelectAddress,
+  onSelectObject,
 }: {
   result: CadastreSearchResponse;
   detailsOpen: boolean;
   loading: boolean;
   onOpenDetails: () => void;
   onSelectAddress: (value: CadastreAddressSuggestion) => void;
+  onSelectObject: (value: CadastreObject) => void;
 }) {
   if (result.kind === "address_suggestions") {
     return (
       <section className="mapCadastrePanel" aria-label="Результаты поиска по адресу">
         <h2>По адресу</h2>
         {result.error && <MapState error>{result.error}</MapState>}
-        {loading && <MapState>Поиск кадастрового объекта…</MapState>}
+        {loading && <MapState>Поиск кадастровых объектов…</MapState>}
         {!loading && result.items.length === 0 && !result.error && (
           <MapState>Адреса не найдены</MapState>
         )}
@@ -642,6 +644,32 @@ function CadastrePanel({
           {result.items.map((item) => (
             <button key={`${item.label}:${item.lat}:${item.lon}`} onClick={() => onSelectAddress(item)}>
               {item.label}
+            </button>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (result.kind === "cadastral_objects") {
+    return (
+      <section className="mapCadastrePanel" aria-label="Кадастровые объекты по адресу">
+        <h2>Кадастровые объекты</h2>
+        {result.error && <MapState error>{result.error}</MapState>}
+        {loading && <MapState>Загрузка кадастровой карточки…</MapState>}
+        {!loading && result.items.length === 0 && !result.error && (
+          <MapState>Кадастровые объекты не найдены</MapState>
+        )}
+        <div className="mapCadastreAddressList">
+          {result.items.map((item) => (
+            <button
+              key={item.cadastral_number || `${item.lat}:${item.lon}:${item.object_type}`}
+              onClick={() => onSelectObject(item)}
+              disabled={!item.cadastral_number}
+            >
+              <strong>{item.cadastral_number || "Без кадастрового номера"}</strong>
+              {item.object_type && <small>{item.object_type}</small>}
+              {item.address && <span>{item.address}</span>}
             </button>
           ))}
         </div>
@@ -1665,8 +1693,30 @@ export function MapView({
     setCadLoading(true);
     setError("");
     setCadQuery(item.label);
+    setCad(null);
+    setCadDetailsOpen(false);
     try {
-      const result = await searchCadastre(item.label, true);
+      const result = await searchCadastre(item.label, true, { lat: item.lat, lon: item.lon });
+      setCadSearch(result);
+      if (result.kind === "object") {
+        setCad(result.object);
+        setCadDetailsOpen(true);
+      }
+      setShowCadastre(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCadLoading(false);
+    }
+  }, []);
+
+  const selectCadastreObject = React.useCallback(async (item: CadastreObject) => {
+    const number = item.cadastral_number;
+    if (!number) return;
+    setCadLoading(true);
+    setError("");
+    try {
+      const result = await searchCadastre(number);
       setCadSearch(result);
       if (result.kind === "object") {
         setCad(result.object);
@@ -1783,6 +1833,7 @@ export function MapView({
             loading={cadLoading}
             onOpenDetails={() => setCadDetailsOpen(true)}
             onSelectAddress={(item) => void selectCadastreAddress(item)}
+            onSelectObject={(item) => void selectCadastreObject(item)}
           />
         ) : selectedLot ? (
           <>
