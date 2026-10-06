@@ -18,6 +18,7 @@ def test_p11_acceptance_is_main_only_deploy_gated_and_bounded() -> None:
     assert "Deploy home secondary origin" in text
     assert "head_sha=$GITHUB_SHA" in text
     assert "$minutes = if ($pushRun) { 30 }" in text
+    assert text.count("$minutes = if ($pushRun) { 30 }") >= 2
     assert "P11 acceptance may run only from main" in text
     assert "soak_minutes must be between 0 and 60" in text
     assert "timeout-minutes: 150" in text
