@@ -14,6 +14,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     pauseGeocoding: vi.fn(),
     resumeGeocoding: vi.fn(),
     fetchRegions: vi.fn(),
+    searchCadastre: vi.fn(),
     setReviewStatus: vi.fn(),
   };
 });
@@ -28,6 +29,7 @@ import {
   pauseGeocoding,
   resumeGeocoding,
   fetchRegions,
+  searchCadastre,
   setReviewStatus,
   type MapDataset,
   type MapLot,
