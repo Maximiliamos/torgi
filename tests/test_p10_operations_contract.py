@@ -33,3 +33,19 @@ def test_p10_backup_snapshot_uses_canonical_d_drive_and_single_verified_copy() -
     assert "restoreStatus -ne 'passed'" in text
     assert "Retention skipped because the new backup has not passed isolated restore verification." in text
 
+
+
+def test_p10_snapshot_persistence_is_non_fatal_under_strict_powershell() -> None:
+    paths = [
+        ROOT / "scripts" / "p2-production-maintenance.ps1",
+        ROOT / "scripts" / "backup-home-postgres.ps1",
+        ROOT / "scripts" / "home-runner-network-diagnostics.ps1",
+        ROOT / ".github" / "workflows" / "home-runner-network-diagnostics.yml",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "$persistExitCode" in text
+        assert "$previousErrorActionPreference" in text
+        assert "$ErrorActionPreference = 'Continue'" in text
+        assert "2>&1" in text
+        assert "*> $null" not in text
