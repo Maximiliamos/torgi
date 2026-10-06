@@ -692,7 +692,7 @@ textarea, input { font: inherit; }
 .viewContainer--map { max-width:none;padding:0; }
 .srOnly { clip:rect(0,0,0,0);clip-path:inset(50%);height:1px;overflow:hidden;position:absolute;white-space:nowrap;width:1px; }
 .mapDesktopShell { background:#fff;display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;min-height:680px;overflow:hidden; }
-.mapDesktopShell:has(.mapLotPreview) { grid-template-columns:380px minmax(0,1fr); }
+.mapDesktopShell:has(.mapLotPreview),.mapDesktopShell:has(.mapCadastreDetails) { grid-template-columns:380px minmax(0,1fr); }
 .mapDesktopSidebar { background:#fff;border-right:1px solid #c9cfd6;min-width:0;overflow:auto;position:relative;z-index:3; }
 .mapDesktopCanvas { display:grid;grid-template-rows:42px minmax(0,1fr) 30px;min-width:0;position:relative; }
 .mapTopToolbar { align-items:center;background:#fff;border-bottom:1px solid #c9cfd6;display:flex;gap:6px;padding:5px 8px;z-index:4; }
@@ -755,6 +755,27 @@ textarea, input { font: inherit; }
 .mapFilterHint { color:#667085;display:block;font-size:11px;line-height:1.3;margin-top:7px; }
 .mapFilterHint--pending { color:#9a6700;font-weight:700; }
 .mapCadastreResult { background:#fff;border:1px solid #949aa1;box-sizing:border-box;color:#5e6570;font:12px/1.45 Arial,sans-serif;height:240px;margin:2px 0 0;overflow:auto;padding:8px;white-space:pre-wrap; }
+.mapCadastrePanel { color:#263441;font:13px Arial,sans-serif;padding:14px; }
+.mapCadastrePanel h2 { font-size:16px;margin:0 0 10px; }
+.mapCadastreAddressList { display:grid; }
+.mapCadastreAddressList button { background:#fff;border:0;border-bottom:1px solid #dde3e8;color:#253649;line-height:1.35;padding:11px 5px;text-align:left; }
+.mapCadastreAddressList button:hover { background:#f3f6f8; }
+.mapCadastrePreview { background:#fff;border:0;border-bottom:1px solid #d9e0e6;color:#253649;display:grid;gap:6px;padding:10px 5px;text-align:left;width:100%; }
+.mapCadastrePreview:hover { background:#f4f7f9; }
+.mapCadastrePreview strong { color:#1e4e78;font-size:14px; }
+.mapCadastrePreview span { line-height:1.4; }
+.mapCadastrePreview small { color:#6b7785; }
+.mapCadastreDetails { color:#253649;font:13px Arial,sans-serif;padding:16px 14px 28px; }
+.mapCadastreDetails h2 { font-size:17px;line-height:1.3;margin:0 0 10px;overflow-wrap:anywhere; }
+.mapCadastreDetails h3 { border-top:1px solid #dfe4e9;font-size:15px;margin:18px 0 8px;padding-top:13px; }
+.mapCadastreDetails p { line-height:1.45;margin:10px 0; }
+.mapCadastreNumber { display:block;font-size:14px;margin-bottom:8px;overflow-wrap:anywhere; }
+.mapCadastreCoordinates { color:#596879;font-variant-numeric:tabular-nums;margin:6px 0; }
+.mapCadastreBoundaryMissing { color:#7b5c00;margin:7px 0; }
+.mapCadastreInfo { border-top:1px solid #dfe4e9;display:grid;grid-template-columns:minmax(105px,42%) minmax(0,1fr);margin:0; }
+.mapCadastreInfo dt,.mapCadastreInfo dd { border-bottom:1px solid #dfe4e9;line-height:1.35;margin:0;padding:8px 7px;overflow-wrap:anywhere; }
+.mapCadastreInfo dt { background:#f6f8fa;color:#475667; }
+.mapCadastreInfo dd { background:#fff; }
 .mapSyncButton { margin-top:2px; }
 .mapDesktopMessage { background:#eef8f3;border:1px solid #a7d9c2;color:#176c4c;font-size:12px;padding:7px; }
 .mapDesktopMessage--error { background:#fff1f1;border-color:#e5aaaa;color:#a52626; }

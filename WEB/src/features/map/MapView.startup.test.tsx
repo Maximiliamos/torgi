@@ -14,6 +14,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     pauseGeocoding: vi.fn(),
     resumeGeocoding: vi.fn(),
     fetchRegions: vi.fn(),
+    searchCadastre: vi.fn(),
     setReviewStatus: vi.fn(),
   };
 });
@@ -28,6 +29,7 @@ import {
   pauseGeocoding,
   resumeGeocoding,
   fetchRegions,
+  searchCadastre,
   setReviewStatus,
   type MapDataset,
   type MapLot,
@@ -205,6 +207,119 @@ describe("tile map startup", () => {
 
     expect(await screen.findByText("1 из 2 площадок завершено")).toBeInTheDocument();
     expect(screen.getByText("Не завершено: tbankrot.ru")).toBeInTheDocument();
+  });
+
+  it("shows a cadastral preview, then detailed cadastral information and geometry", async () => {
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-cadastre"));
+    vi.mocked(searchCadastre).mockResolvedValue({
+      kind: "object",
+      query: "76:23:011401:8268",
+      object: {
+        query: "76:23:011401:8268",
+        cadastral_number: "76:23:011401:8268",
+        object_type: "Здание",
+        title: "Многофункциональный торговый комплекс",
+        address: "Ярославль, Ленинградский проспект, 54а",
+        lat: 57.69072,
+        lon: 39.77901,
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[39.778, 57.690], [39.780, 57.690], [39.780, 57.692], [39.778, 57.690]]],
+        } as GeoJSON.Polygon,
+        has_boundary: true,
+        source: "nspd",
+        confidence: "high",
+        info: {
+          "Вид объекта недвижимости": "Здание",
+          "Дата присвоения": "20.06.2018",
+          "Кадастровый номер": "76:23:011401:8268",
+          "Кадастровый квартал": "76:23:011401",
+        },
+        error: null,
+        status: "GEOCODED",
+        attempts: [],
+      },
+    });
+
+    render(<MapView refreshToken={0} />);
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    act(() => sendMapMessage(frame, "bankrotai-ready", { instanceId: "cadastre-test" }));
+
+    fireEvent.change(screen.getByLabelText("Кадастровый номер или адрес"), {
+      target: { value: "76:23:011401:8268" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+
+    const preview = await screen.findByRole("button", { name: /76:23:011401:8268/ });
+    expect(preview).toHaveTextContent("Ярославль, Ленинградский проспект, 54а");
+    await waitFor(() => expect(postMessage.mock.calls.some(([message]) =>
+      (message as { type?: string }).type === "show-cadastre-result"
+    )).toBe(true));
+
+    fireEvent.click(preview);
+    expect(await screen.findByText("Информация")).toBeInTheDocument();
+    expect(screen.getByText("Кадастровый квартал")).toBeInTheDocument();
+    expect(screen.getByText("76:23:011401")).toBeInTheDocument();
+  });
+
+  it("shows address choices first and opens details after the user selects one", async () => {
+    vi.mocked(fetchCurrentMapDataset).mockResolvedValue(dataset("v-address-cadastre"));
+    vi.mocked(searchCadastre)
+      .mockResolvedValueOnce({
+        kind: "address_suggestions",
+        query: "Ленинградский 105",
+        error: null,
+        items: [
+          { label: "Ярославль, Ленинградский проспект, д 105", lat: 57.691848, lon: 39.771867 },
+          { label: "Нижний Тагил, Ленинградский проспект, д 105", lat: 57.9, lon: 59.9 },
+        ],
+      })
+      .mockResolvedValueOnce({
+        kind: "object",
+        query: "Ярославль, Ленинградский проспект, д 105",
+        object: {
+          query: "Ярославль, Ленинградский проспект, д 105",
+          cadastral_number: "76:23:010101:15008",
+          object_type: "Здание",
+          title: "Многоквартирный дом",
+          address: "Ярославль, Ленинградский проспект, д 105",
+          lat: 57.691848,
+          lon: 39.771867,
+          geometry: null,
+          has_boundary: false,
+          source: "nspd",
+          confidence: "high",
+          info: {
+            "Вид объекта недвижимости": "Здание",
+            "Дата присвоения": "01.07.2012",
+            "Кадастровый номер": "76:23:010101:15008",
+          },
+          error: null,
+          status: "GEOCODED",
+          attempts: [],
+        },
+      });
+
+    render(<MapView refreshToken={0} />);
+    fireEvent.change(screen.getByLabelText("Кадастровый номер или адрес"), {
+      target: { value: "Ленинградский 105" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+
+    expect(await screen.findByText("По адресу")).toBeInTheDocument();
+    const yaroslavl = screen.getByRole("button", { name: "Ярославль, Ленинградский проспект, д 105" });
+    expect(screen.getByRole("button", { name: "Нижний Тагил, Ленинградский проспект, д 105" })).toBeInTheDocument();
+
+    fireEvent.click(yaroslavl);
+
+    expect(await screen.findByText("Здание: 76:23:010101:15008")).toBeInTheDocument();
+    expect(screen.getByText("Без координат границ")).toBeInTheDocument();
+    expect(searchCadastre).toHaveBeenNthCalledWith(
+      2,
+      "Ярославль, Ленинградский проспект, д 105",
+      true,
+    );
   });
 
   it("lets only an admin pause geocoding and refreshes durable state", async () => {

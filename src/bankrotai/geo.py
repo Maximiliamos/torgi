@@ -299,6 +299,17 @@ class CadastralGeocoder:
             },
         )
 
+    def search_selected_address(self, address: str) -> CadastralObjectResult:
+        """Resolve a user-selected address to cadastral data, then fall back to a map point."""
+        try:
+            result = self._search_nspd_geoportal(address)
+        except (NSPDTLSVerificationError, GeoProviderUnavailable):
+            result = None
+        if result is not None and result.cadastral_number:
+            return result
+        return self.search_by_address(address)
+
+
     def _search_pkk_feature(
         self,
         cadastral_number: str,
@@ -383,7 +394,7 @@ class CadastralGeocoder:
             raw=feature,
         )
 
-    def _search_nspd_geoportal(self, cadastral_number: str) -> CadastralObjectResult | None:
+    def _search_nspd_geoportal(self, query: str) -> CadastralObjectResult | None:
         require_provider("nspd", external=True)
         started = time.monotonic()
         headers = {
@@ -393,7 +404,7 @@ class CadastralGeocoder:
         }
         params: dict[str, str | int] = {
             "thematicSearchId": 1,
-            "query": cadastral_number,
+            "query": query,
         }
 
         if not self._circuit_available("nspd"):
@@ -415,45 +426,55 @@ class CadastralGeocoder:
             except SSLError as e:
                 self._open_circuit("nspd")
                 record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
-                logger.error("NSPD TLS verification failed for %s: %s", cadastral_number, e)
+                logger.error("NSPD TLS verification failed for %s: %s", query, e)
                 raise NSPDTLSVerificationError("NSPD TLS certificate verification failed") from e
             except requests.RequestException as e:
                 self._open_circuit("nspd")
                 category = classify_transport_exception(e)
                 record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
-                logger.warning("NSPD request failed for %s; pausing NSPD requests: %s", cadastral_number, e)
+                logger.warning("NSPD request failed for %s; pausing NSPD requests: %s", query, e)
                 raise GeoProviderUnavailable("nspd", category, str(e)) from e
             except Exception as e:
                 record_provider_failure("nspd", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
-                logger.warning("NSPD response failed for %s: %s", cadastral_number, e)
+                logger.warning("NSPD response failed for %s: %s", query, e)
                 raise GeoProviderUnavailable("nspd", "provider_protocol", str(e)) from e
 
         features = (data.get("data") or {}).get("features") or data.get("features") or []
         if not features:
             return None
 
-        feature = self._pick_nspd_feature(features, cadastral_number)
+        feature = self._pick_nspd_feature(features, query)
         props = feature.get("properties") or {}
+        expected_cadastral = query if CADASTRAL_RE.match(query.replace(" ", "")) else ""
+        info = normalize_nspd_props(props, expected_cadastral)
+        observed_text = str(info.get("Кадастровый номер") or "").replace(" ", "")
+        observed_cadastral: str | None = (
+            observed_text
+            if CADASTRAL_RE.match(observed_text)
+            else (expected_cadastral or None)
+        )
+        info["Кадастровый номер"] = observed_cadastral
         geometry = geometry_to_wgs84(feature.get("geometry"))
         lat, lon = centroid_from_geometry(geometry)
 
         if lat is None or lon is None:
             return CadastralObjectResult(
-                query=cadastral_number,
-                cadastral_number=cadastral_number,
+                query=query,
+                cadastral_number=observed_cadastral,
+                object_type=info.get("Вид объекта недвижимости"),
+                title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
+                address=info.get("Адрес"),
                 source="nspd",
                 confidence="low",
-                info=normalize_nspd_props(props, cadastral_number),
+                info=info,
                 raw=feature,
                 error="Объект найден в НСПД, но координаты не получены",
             )
 
-        info = normalize_nspd_props(props, cadastral_number)
         geometry_json = geometry if geometry and geometry.get("type") != "Point" else None
-
         return CadastralObjectResult(
-            query=cadastral_number,
-            cadastral_number=info.get("Кадастровый номер") or cadastral_number,
+            query=query,
+            cadastral_number=observed_cadastral,
             object_type=info.get("Вид объекта недвижимости"),
             title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
             address=info.get("Адрес"),
@@ -842,6 +863,81 @@ class PhotonGeocoder:
     def __init__(self, base_url: str | None = None):
         self.base_url = (base_url if base_url is not None else os.getenv("PHOTON_BASE_URL", "")).rstrip("/")
 
+    @staticmethod
+    def _feature_address_label(feature: dict[str, Any]) -> str:
+        props = feature.get("properties") or {}
+        locality = (
+            props.get("city")
+            or props.get("town")
+            or props.get("village")
+            or props.get("hamlet")
+            or props.get("locality")
+            or props.get("district")
+            or props.get("municipality")
+        )
+        street = props.get("street")
+        house = props.get("housenumber")
+        name = props.get("name")
+        state = props.get("state")
+        parts: list[str] = []
+        if locality:
+            parts.append(str(locality))
+        if street:
+            parts.append(str(street))
+        elif name and str(name) != str(locality or ""):
+            parts.append(str(name))
+        if house:
+            parts.append(f"д {house}")
+        if state and str(state) not in parts:
+            parts.append(str(state))
+        return ", ".join(part for part in parts if part).strip()
+
+    def suggest_addresses(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return deterministic address candidates for the interactive cadastre search."""
+        value = (query or "").strip()
+        if not self.base_url or len(value) < 3:
+            return []
+        require_provider("photon", external=False)
+        started = time.monotonic()
+        try:
+            response = requests.get(
+                f"{self.base_url}/api",
+                params={"q": value, "limit": max(1, min(int(limit), 20)), "lang": "ru", "countrycode": "RU"},
+                timeout=(2, 5),
+            )
+            response.raise_for_status()
+            features = response.json().get("features") or []
+            record_provider_success("photon", latency_ms=(time.monotonic() - started) * 1000)
+        except requests.RequestException as exc:
+            category = classify_transport_exception(exc)
+            record_provider_failure("photon", category, latency_ms=(time.monotonic() - started) * 1000)
+            raise GeoProviderUnavailable("photon", category, str(exc)) from exc
+        except (ValueError, AttributeError) as exc:
+            record_provider_failure("photon", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
+            raise GeoProviderUnavailable("photon", "provider_protocol", str(exc)) from exc
+
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for feature in features:
+            label = self._feature_address_label(feature)
+            coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+            if not label or len(coordinates) < 2:
+                continue
+            key = " ".join(label.casefold().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(
+                {
+                    "label": label,
+                    "lat": float(coordinates[1]),
+                    "lon": float(coordinates[0]),
+                }
+            )
+            if len(result) >= limit:
+                break
+        return result
+
     def geocode(self, address: str) -> dict[str, Any] | None:
         if not self.base_url or len(address.strip()) < 5:
             return None
@@ -1090,13 +1186,23 @@ def normalize_nspd_props(props: dict, cadastral_number: str) -> dict[str, Any]:
 
     return {
         "Вид объекта недвижимости": pick("categoryName", "category_name", "objectType", "typeName", "type"),
-        "Кадастровый номер": pick("cad_num", "cadNum", "cadastralNumber", "cn", "label") or cadastral_number,
+        "Дата присвоения": pick("date_create", "assignDate", "assign_date", "cadRecordDate", "cad_record_date"),
+        "Кадастровый номер": pick("cad_num", "cadNum", "cadastralNumber", "cn", "label") or cadastral_number or None,
+        "Кадастровый квартал": pick("quarter", "cadQuarter", "cad_quarter", "kvartal"),
         "Адрес": pick("address", "readableAddress", "location", "addr"),
-        "Наименование": pick("name", "label", "descr"),
+        "Наименование": pick("name", "objectName", "object_name", "descr"),
         "Назначение": pick("purpose", "util_by_doc", "assignation"),
         "Площадь общая": pick("area", "area_value", "readableArea"),
-        "Статус": pick("status", "state", "readableStatus"),
-        "Кадастровая стоимость": pick("cad_cost", "cost", "readableCadCost"),
+        "Статус": pick("status", "state", "readableStatus", "cadRecordStatus"),
+        "Форма собственности": pick("ownership", "ownershipType", "right_type", "fp"),
+        "Кадастровая стоимость": pick("cad_cost", "cadCost", "cost", "readableCadCost"),
+        "Удельный показатель кадастровой стоимости": pick("ud_cost", "unitCost", "unit_cost"),
+        "Количество этажей": pick("floors", "floorCount", "floor_count"),
+        "Количество подземных этажей": pick("undergroundFloors", "underground_floors", "underground_floor_count"),
+        "Материал стен": pick("wallMaterial", "wall_material"),
+        "Завершение строительства": pick("yearBuilt", "year_built", "buildYear", "build_year"),
+        "Ввод в эксплуатацию": pick("commissioningYear", "commissioning_year", "year_commissioning"),
+        "ОКН": pick("culturalHeritage", "cultural_heritage", "heritage", "oks_flag"),
         "Категория НСПД": pick("category", "categoryId"),
     }
 

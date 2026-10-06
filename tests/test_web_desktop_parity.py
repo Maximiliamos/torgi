@@ -321,23 +321,41 @@ def test_browser_gis_search_bounds_both_fallback_attempts(monkeypatch) -> None:
     assert captured["base_url"] == api.settings.torgi_gov_base_url
 
 
-def test_cadastre_search_uses_persisted_database_before_external_provider(monkeypatch) -> None:
-    client, lot_id = _authenticated_client(monkeypatch)
+def test_cadastre_search_does_not_mix_in_persisted_auction_lots(monkeypatch) -> None:
+    client, _lot_id = _authenticated_client(monkeypatch)
     monkeypatch.setattr(
         api._CADASTRAL_GEOCODER,
-        "search",
-        lambda _query: (_ for _ in ()).throw(AssertionError("external provider must not run")),
+        "search_by_cadastral_number",
+        lambda query: api.CadastralObjectResult(
+            query=query,
+            cadastral_number=query,
+            object_type="Здание",
+            address="Кадастровый источник, отдельный от торгов",
+            lat=57.69072,
+            lon=39.77901,
+            source="nspd",
+            confidence="high",
+            info={"Кадастровый номер": query},
+        ),
+    )
+    monkeypatch.setattr(
+        api.PHOTON_GEOCODER,
+        "suggest_addresses",
+        lambda _query, limit=10: [
+            {"label": "Ярославль, ул. Свободы, д. 1", "lat": 57.6261, "lon": 39.8845}
+        ],
     )
 
     by_number = client.get("/api/cadastre/search", params={"query": "76:23:010101:10"})
     by_address = client.get("/api/cadastre/search", params={"query": "ул. Свободы, д. 1"})
 
     assert by_number.status_code == 200
-    assert by_number.json()["source"] == "bankrotai_database"
-    assert by_number.json()["info"]["lot_id"] == lot_id
-    assert by_number.json()["lat"] == 57.6261
+    assert by_number.json()["kind"] == "object"
+    assert by_number.json()["object"]["source"] == "nspd"
+    assert "lot_id" not in by_number.json()["object"]["info"]
     assert by_address.status_code == 200
-    assert by_address.json()["source"] == "bankrotai_database"
+    assert by_address.json()["kind"] == "address_suggestions"
+    assert by_address.json()["items"][0]["label"] == "Ярославль, ул. Свободы, д. 1"
 
 
 def test_cache_first_public_source_does_not_call_unavailable_live_site(monkeypatch) -> None:

@@ -107,6 +107,43 @@ export type OnlineLot = {
 export type OnlineSearchResponse = { source: SearchSource; items: OnlineLot[]; meta: Record<string, unknown> };
 export type RegionOption = { code: string; name: string };
 
+export type CadastreAddressSuggestion = {
+  label: string;
+  lat: number;
+  lon: number;
+};
+
+export type CadastreObject = {
+  query: string;
+  cadastral_number: string | null;
+  object_type: string | null;
+  title: string | null;
+  address: string | null;
+  lat: number | null;
+  lon: number | null;
+  geometry: GeoJSON.GeoJsonObject | null;
+  has_boundary: boolean;
+  source: string;
+  confidence: string;
+  info: Record<string, unknown>;
+  error: string | null;
+  status: string;
+  attempts: Array<Record<string, unknown>>;
+};
+
+export type CadastreSearchResponse =
+  | {
+      kind: "address_suggestions";
+      query: string;
+      items: CadastreAddressSuggestion[];
+      error: string | null;
+    }
+  | {
+      kind: "object";
+      query: string;
+      object: CadastreObject;
+    };
+
 export type MapMarkerLot = {
   id: number;
   title: string;
@@ -1076,7 +1113,11 @@ export async function fetchMapLotsSWR(
     throw error;
   }
 }
-export const searchCadastre = (query: string) => requestJson<Record<string, unknown>>("/api/cadastre/search", { query });
+export const searchCadastre = (query: string, resolveAddress = false) =>
+  requestJson<CadastreSearchResponse>("/api/cadastre/search", {
+    query,
+    resolve_address: resolveAddress || undefined,
+  });
 export const setReviewStatus = (lotId: number, status: string | null) =>
   requestJson(`/api/lots/${lotId}/review-status`, undefined, { method: "PUT", body: JSON.stringify({ status }) });
 

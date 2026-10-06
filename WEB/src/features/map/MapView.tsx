@@ -39,6 +39,9 @@ import {
   PublicMapBundleSource,
   OperationsProgress,
   RegionOption,
+  CadastreAddressSuggestion,
+  CadastreObject,
+  CadastreSearchResponse,
   searchCadastre,
   setReviewStatus,
   splitLot,
@@ -606,6 +609,90 @@ function CoincidentLotsPanel({
   );
 }
 
+
+function cadastreValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function CadastrePanel({
+  result,
+  detailsOpen,
+  loading,
+  onOpenDetails,
+  onSelectAddress,
+}: {
+  result: CadastreSearchResponse;
+  detailsOpen: boolean;
+  loading: boolean;
+  onOpenDetails: () => void;
+  onSelectAddress: (value: CadastreAddressSuggestion) => void;
+}) {
+  if (result.kind === "address_suggestions") {
+    return (
+      <section className="mapCadastrePanel" aria-label="Результаты поиска по адресу">
+        <h2>По адресу</h2>
+        {result.error && <MapState error>{result.error}</MapState>}
+        {loading && <MapState>Поиск кадастрового объекта…</MapState>}
+        {!loading && result.items.length === 0 && !result.error && (
+          <MapState>Адреса не найдены</MapState>
+        )}
+        <div className="mapCadastreAddressList">
+          {result.items.map((item) => (
+            <button key={`${item.label}:${item.lat}:${item.lon}`} onClick={() => onSelectAddress(item)}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  const value = result.object;
+  const number = value.cadastral_number || result.query;
+  if (!detailsOpen) {
+    return (
+      <section className="mapCadastrePanel" aria-label="Кадастровый результат">
+        <button className="mapCadastrePreview" onClick={onOpenDetails}>
+          <strong>{number}</strong>
+          {value.address && <span>{value.address}</span>}
+        </button>
+        {value.error && <MapState error>{value.error}</MapState>}
+      </section>
+    );
+  }
+
+  const info = Object.entries(value.info || {})
+    .filter(([key, raw]) => key !== "Категория НСПД" && cadastreValue(raw));
+
+  return (
+    <aside className="mapCadastreDetails" aria-label="Кадастровая информация">
+      <h2>{value.object_type ? `${value.object_type}: ${number}` : number}</h2>
+      <strong className="mapCadastreNumber">{number}</strong>
+      {Number.isFinite(value.lat) && Number.isFinite(value.lon) && (
+        <div className="mapCadastreCoordinates">{value.lat} {value.lon}</div>
+      )}
+      {!value.has_boundary && <div className="mapCadastreBoundaryMissing">Без координат границ</div>}
+      {value.address && <p>{value.address}</p>}
+      {value.error && <MapState error>{value.error}</MapState>}
+      {info.length > 0 && (
+        <>
+          <h3>Информация</h3>
+          <dl className="mapCadastreInfo">
+            {info.map(([key, raw]) => (
+              <React.Fragment key={key}>
+                <dt>{key}</dt>
+                <dd>{cadastreValue(raw)}</dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </>
+      )}
+    </aside>
+  );
+}
+
 function YandexDesktopMap({
   lots,
   tileEntries,
@@ -629,7 +716,7 @@ function YandexDesktopMap({
   directTileMode: boolean;
   directFilters: DirectMapFilterQuery;
   reviewMarkerUpdate: { lotId: number; status: string; revision: number } | null;
-  selectedCadastre: Record<string, unknown> | null;
+  selectedCadastre: CadastreObject | null;
   showCadastre: boolean;
   selectedLotId: number | null;
   selectedLotGeometry: GeoJSON.GeoJsonObject | null;
@@ -857,8 +944,9 @@ function feature(l){const cluster=l.kind==='cluster';return{type:'Feature',id:cl
 function clusterSelection(clusterId,objects){const entries=Array.isArray(objects)?objects:[];const lotIds=entries.map(item=>Number(item.id??item.properties?.lotId)).filter(Number.isFinite);const coords=entries.map(item=>item.geometry?.coordinates).filter(value=>Array.isArray(value)&&value.length===2);const samePoint=coords.length>1&&coords.every(value=>Math.abs(Number(value[0])-Number(coords[0][0]))<1e-9&&Math.abs(Number(value[1])-Number(coords[0][1]))<1e-9);if(lotIds.length>1&&(samePoint||map.getZoom()>=18)){send('bankrotai-cluster-select',{clusterId,lotIds,zoom:map.getZoom()});return true;}return false;}
 function clearOverlays(){overlayObjects.forEach(item=>map.geoObjects.remove(item));overlayObjects=[];}
 function activateManager(next){if(manager===next)return;if(manager)map.geoObjects.remove(manager);manager=next;map.geoObjects.add(manager);}
-function addGeometry(value,style){if(!value||!value.type||!value.coordinates)return;const sets=value.type==='MultiPolygon'?value.coordinates:[value.coordinates];sets.forEach(coords=>{const polygon=new ymaps.Polygon(convert(coords),{},style);map.geoObjects.add(polygon);overlayObjects.push(polygon);});}
-function renderOverlays(focus=false){if(!map)return;clearOverlays();if(cad&&Number.isFinite(cad.lat)&&Number.isFinite(cad.lon)){const point=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(point);overlayObjects.push(point);if(showCad&&cad.geometry)addGeometry(cad.geometry,{strokeColor:'#7c3aed',strokeWidth:3,fillColor:'#7c3aed22'});if(focus)map.setCenter([cad.lat,cad.lon],Math.max(map.getZoom(),16));}if(showCad&&selectedGeometry)addGeometry(selectedGeometry,{strokeColor:'#2468d8',strokeWidth:3,fillColor:'#2468d822'});}
+function addGeometry(value,style){if(!value||!value.type||!value.coordinates)return[];const sets=value.type==='MultiPolygon'?value.coordinates:[value.coordinates],created=[];sets.forEach(coords=>{const polygon=new ymaps.Polygon(convert(coords),{},style);map.geoObjects.add(polygon);overlayObjects.push(polygon);created.push(polygon);});return created;}
+function mergeBounds(items){const values=items.map(item=>item.geometry?.getBounds?.()).filter(Boolean);if(!values.length)return null;return values.reduce((acc,b)=>[[Math.min(acc[0][0],b[0][0]),Math.min(acc[0][1],b[0][1])],[Math.max(acc[1][0],b[1][0]),Math.max(acc[1][1],b[1][1])]]);}
+function renderOverlays(focus=false){if(!map)return;clearOverlays();let cadPolygons=[];if(cad&&Number.isFinite(cad.lat)&&Number.isFinite(cad.lon)){const point=new ymaps.Placemark([cad.lat,cad.lon],{balloonContent:esc(cad.cadastral_number||cad.address||'Кадастровый объект')},{preset:'islands#violetDotIcon'});map.geoObjects.add(point);overlayObjects.push(point);if(showCad&&cad.geometry)cadPolygons=addGeometry(cad.geometry,{strokeColor:'#7c3aed',strokeWidth:3,fillColor:'#7c3aed22'});if(focus){const bounds=mergeBounds(cadPolygons);if(bounds)map.setBounds(bounds,{checkZoomRange:true,zoomMargin:44});else map.setCenter([cad.lat,cad.lon],Math.max(map.getZoom(),16));}}if(showCad&&selectedGeometry)addGeometry(selectedGeometry,{strokeColor:'#2468d8',strokeWidth:3,fillColor:'#2468d822'});}
 ${MAP_SELECTION_SCRIPT}
 function renderLots(){if(!map||!legacyManager)return;const started=performance.now();activateManager(legacyManager);manager.removeAll();manager.add({type:'FeatureCollection',features:lots.filter(l=>Number.isFinite(l.lat)&&Number.isFinite(l.lon)).map(feature)});if(selectedId!=null)updateSelection(selectedId);requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:lots.length}));}
 function syncTiles(entries){if(!map||!tileManager)return;const started=performance.now();if(!entries.length){if(mode==='tiles'){tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='legacy';renderLots();}return;}if(mode!=='tiles'){activateManager(tileManager);tileManager.removeAll();tileObjects.clear();tileLots.clear();mode='tiles';}const wanted=new Set(entries.map(entry=>entry.key));for(const[key,ids]of tileObjects){if(!wanted.has(key)){tileManager.remove(ids);ids.forEach(id=>tileLots.delete(Number(id)));tileObjects.delete(key);}}for(const entry of entries){if(tileObjects.has(entry.key))continue;const raw=entry.features||[];const features=raw.map(feature);tileManager.add({type:'FeatureCollection',features});raw.forEach(item=>{if(item.kind==='lot')tileLots.set(Number(item.id),item);});tileObjects.set(entry.key,features.map(item=>item.id));}requestAnimationFrame(()=>send('bankrotai-rendered',{durationMs:performance.now()-started,count:[...tileObjects.values()].reduce((n,ids)=>n+ids.length,0)}));}
@@ -1221,7 +1309,10 @@ export function MapView({
   const [loading, setLoading] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [cadQuery, setCadQuery] = React.useState("");
-  const [cad, setCad] = React.useState<Record<string, unknown> | null>(null);
+  const [cadSearch, setCadSearch] = React.useState<CadastreSearchResponse | null>(null);
+  const [cad, setCad] = React.useState<CadastreObject | null>(null);
+  const [cadDetailsOpen, setCadDetailsOpen] = React.useState(false);
+  const [cadLoading, setCadLoading] = React.useState(false);
   const [showCadastre, setShowCadastre] = React.useState(true);
   const [selectedLotId, setSelectedLotId] = React.useState<number | null>(null);
   const [coincidentLotIds, setCoincidentLotIds] = React.useState<number[]>([]);
@@ -1544,15 +1635,51 @@ export function MapView({
   }, [favoriteLots.length, favoritesOnly, onFavoriteCount, statistics.exact, statistics.total]);
   const cadText = cad
     ? [
-        cad.cadastral_number &&
-          `Кадастровый номер: ${String(cad.cadastral_number)}`,
-        cad.address && `Адрес: ${String(cad.address)}`,
-        cad.area && `Площадь: ${String(cad.area)}`,
-        cad.category && `Категория: ${String(cad.category)}`,
+        cad.cadastral_number && `Кадастровый номер: ${cad.cadastral_number}`,
+        cad.address && `Адрес: ${cad.address}`,
+        cad.object_type && `Вид объекта: ${cad.object_type}`,
       ]
         .filter(Boolean)
         .join("\n")
     : "Введите кадастровый номер или адрес";
+
+  const runCadastreSearch = React.useCallback(async () => {
+    const query = cadQuery.trim();
+    if (query.length < 3) return;
+    setCadLoading(true);
+    setError("");
+    try {
+      const result = await searchCadastre(query);
+      setCadSearch(result);
+      setCadDetailsOpen(false);
+      setCad(result.kind === "object" ? result.object : null);
+      setShowCadastre(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCadLoading(false);
+    }
+  }, [cadQuery]);
+
+  const selectCadastreAddress = React.useCallback(async (item: CadastreAddressSuggestion) => {
+    setCadLoading(true);
+    setError("");
+    setCadQuery(item.label);
+    try {
+      const result = await searchCadastre(item.label, true);
+      setCadSearch(result);
+      if (result.kind === "object") {
+        setCad(result.object);
+        setCadDetailsOpen(true);
+        setShowCadastre(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCadLoading(false);
+    }
+  }, []);
+
 
   const handleViewport = React.useCallback(
     (bounds: [number, number, number, number], zoom: number) => {
@@ -1577,6 +1704,9 @@ export function MapView({
 
   const selectLot = React.useCallback(
     (lotId: number, preview?: MapTileFeature | null) => {
+      setCadSearch(null);
+      setCad(null);
+      setCadDetailsOpen(false);
       const marker = lots.find((lot) => lot.id === lotId);
       if (marker) {
         setSelectedLot(markerPreview(marker));
@@ -1646,7 +1776,15 @@ export function MapView({
   return (
     <section className="mapDesktopShell">
       <div className="mapDesktopSidebar">
-        {selectedLot ? (
+        {cadSearch ? (
+          <CadastrePanel
+            result={cadSearch}
+            detailsOpen={cadDetailsOpen}
+            loading={cadLoading}
+            onOpenDetails={() => setCadDetailsOpen(true)}
+            onSelectAddress={(item) => void selectCadastreAddress(item)}
+          />
+        ) : selectedLot ? (
           <>
           {coincidentLots.length > 1 && (
             <CoincidentLotsPanel
@@ -1801,14 +1939,27 @@ export function MapView({
       </div>
       <div className="mapDesktopCanvas">
         <div className="mapTopToolbar">
-          <form className="mapCadastreSearch" onSubmit={async (event) => {
+          <form className="mapCadastreSearch" onSubmit={(event) => {
             event.preventDefault();
-            if (cadQuery.trim().length < 3) return;
-            try { setError(""); setCad(await searchCadastre(cadQuery)); setShowCadastre(true); }
-            catch (err) { setError(String(err)); }
+            void runCadastreSearch();
           }}>
-            <input value={cadQuery} onChange={(event) => setCadQuery(event.target.value)} placeholder="Кадастровый номер или адрес" aria-label="Кадастровый номер или адрес" />
-            <button type="submit" disabled={cadQuery.trim().length < 3}><Search size={14} />Найти</button>
+            <input
+              value={cadQuery}
+              onChange={(event) => {
+                const value = event.target.value;
+                setCadQuery(value);
+                if (!value.trim()) {
+                  setCadSearch(null);
+                  setCad(null);
+                  setCadDetailsOpen(false);
+                }
+              }}
+              placeholder="Кадастровый номер или адрес"
+              aria-label="Кадастровый номер или адрес"
+            />
+            <button type="submit" disabled={cadLoading || cadQuery.trim().length < 3}>
+              <Search size={14} />{cadLoading ? "Поиск…" : "Найти"}
+            </button>
           </form>
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
           <button onClick={() => (tileMode || directTileMode) ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
