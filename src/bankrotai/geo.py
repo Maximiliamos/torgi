@@ -305,6 +305,7 @@ class CadastralGeocoder:
         return self.search_by_address(q)
 
     def search_by_cadastral_number(self, cadastral_number: str) -> CadastralObjectResult:
+        """Interactive cadastral-number lookup: memory cache -> NSPD Search -> IK12."""
         normalized = cadastral_number.replace(" ", "")
         cache_key = self._cache_key("cad", normalized)
         cached = self._cache_get(cache_key)
@@ -318,28 +319,22 @@ class CadastralGeocoder:
             nspd_error = exc
             nspd_result = None
             logger.warning(
-                "NSPD unavailable for interactive cadastral search %s; trying safe fallbacks: %s",
+                "NSPD unavailable for interactive cadastral search %s; trying bounded IK12 fallback: %s",
                 normalized,
                 exc,
             )
-        if nspd_result and nspd_result.lat is not None and nspd_result.lon is not None:
+
+        if nspd_result and nspd_result.cadastral_number:
             nspd_result = self._fill_result_address(nspd_result)
             self._cache_put(cache_key, nspd_result)
             return nspd_result
-
-        for kind, feature_type in self.FEATURE_TYPES.items():
-            result = self._search_pkk_feature(normalized, feature_type, kind)
-            if result and result.lat is not None and result.lon is not None:
-                result = self._fill_result_address(result)
-                self._cache_put(cache_key, result)
-                return result
 
         try:
             ik12_result = IK12_GEOCODER.search_by_cadastral_number(normalized)
         except GeoProviderUnavailable as exc:
             logger.warning("IK12 fallback failed for %s: %s", normalized, exc)
             ik12_result = None
-        if ik12_result and ik12_result.lat is not None and ik12_result.lon is not None:
+        if ik12_result and ik12_result.cadastral_number:
             ik12_result = self._fill_result_address(ik12_result)
             self._cache_put(cache_key, ik12_result)
             return ik12_result
@@ -347,7 +342,7 @@ class CadastralGeocoder:
         if nspd_error is not None:
             error = (
                 "НСПД временно недоступна через защищённое соединение, "
-                "а резервные кадастровые источники не вернули объект."
+                "а резервный кадастровый источник не вернул объект."
             )
         else:
             error = "Объект не найден в доступных кадастровых источниках."
@@ -355,7 +350,7 @@ class CadastralGeocoder:
         return CadastralObjectResult(
             query=normalized,
             cadastral_number=normalized,
-            source="nspd/pkk/ik12",
+            source="nspd/ik12",
             confidence="none",
             error=error,
         )
@@ -404,56 +399,31 @@ class CadastralGeocoder:
         )
 
     def search_selected_address(self, address: str) -> CadastralObjectResult:
-        """Resolve a user-selected address to a cadastral object, then fall back to its map point."""
-        address_key = self._cache_key("addr", address)
-        cached = self._cache_get(address_key)
-        if cached is not None:
-            return cached
-
+        """Compatibility wrapper for callers that still expect one selected-address result."""
         point = self.search_by_address(address, allow_nominatim=False)
         if point.lat is None or point.lon is None:
             return point
-
         try:
-            cadastral = self._search_nspd_by_point(
+            objects = self.search_objects_by_point(
                 point.lat,
                 point.lon,
                 fallback_address=point.address or address,
             )
         except (NSPDTLSVerificationError, GeoProviderUnavailable) as exc:
             logger.warning("NSPD point lookup failed for selected address '%s': %s", address, exc)
-            cadastral = None
+            return point
+        return objects[0] if objects else point
 
-        if cadastral is None or not cadastral.cadastral_number:
-            cadastral = self._search_pkk_by_point(
-                point.lat,
-                point.lon,
-                fallback_address=point.address or address,
-            )
-
-        cadastral_number = cadastral.cadastral_number if cadastral is not None else None
-        if cadastral is not None and cadastral_number:
-            cadastral = self._fill_result_address(
-                cadastral,
-                fallback_address=point.address or address,
-            )
-            self._cache_put(address_key, cadastral)
-            self._cache_put(self._cache_key("cad", cadastral_number), cadastral)
-            return cadastral
-
-        return point
-
-
-    def _search_nspd_by_point(
+    def search_objects_by_point(
         self,
         lat: float,
         lon: float,
         *,
         fallback_address: str | None = None,
-    ) -> CadastralObjectResult | None:
-        """Resolve the cadastral object under a selected address point using NSPD WMS."""
+    ) -> list[CadastralObjectResult]:
+        """Return all cadastral buildings/land plots at a Photon-selected point via NSPD WMS."""
         require_provider("nspd", external=True)
-        radius = 35.0
+        radius = 100.0
         mercator_radius = 6_378_137.0
         safe_lat = max(-85.05112878, min(85.05112878, float(lat)))
         x = mercator_radius * math.radians(float(lon))
@@ -461,14 +431,20 @@ class CadastralGeocoder:
             math.tan(math.pi / 4.0 + math.radians(safe_lat) / 2.0)
         )
         bbox = f"{x-radius},{y-radius},{x+radius},{y+radius}"
-        headers = {
-            "Referer": NSPD_REFERER,
-            "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
-            "Accept": "application/json,text/plain,*/*",
-        }
+
+        results: list[CadastralObjectResult] = []
+        seen: set[str] = set()
+        successful_layers = 0
+        provider_errors: list[GeoProviderUnavailable] = []
 
         for kind, layer_id in NSPD_WMS_LAYERS:
             started = time.monotonic()
+            headers = {
+                "Referer": f"https://nspd.gov.ru/map?thematic=PKK&active_layers={layer_id}",
+                "Origin": "https://nspd.gov.ru",
+                "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
+                "Accept": "application/json,text/plain,*/*",
+            }
             try:
                 response = requests.get(
                     f"https://nspd.gov.ru/api/aeggis/v3/{layer_id}/wms",
@@ -479,23 +455,23 @@ class CadastralGeocoder:
                         "VERSION": "1.3.0",
                         "FORMAT": "image/png",
                         "STYLES": "",
-                        "TRANSPARENT": "true",
                         "LAYERS": layer_id,
                         "INFO_FORMAT": "application/json",
-                        "FEATURE_COUNT": 10,
-                        "I": 256,
-                        "J": 256,
-                        "WIDTH": 512,
-                        "HEIGHT": 512,
+                        "FEATURE_COUNT": 25,
+                        "I": 400,
+                        "J": 400,
+                        "WIDTH": 800,
+                        "HEIGHT": 800,
                         "CRS": "EPSG:3857",
                         "BBOX": bbox,
                     },
                     headers=headers,
-                    timeout=(1.0, 2.0),
+                    timeout=(1.5, 2.5),
                     verify=nspd_tls_verify(),
                 )
                 response.raise_for_status()
                 payload = response.json()
+                successful_layers += 1
                 record_provider_success("nspd", latency_ms=(time.monotonic() - started) * 1000)
             except SSLError as exc:
                 record_provider_failure("nspd", "tls_error", latency_ms=(time.monotonic() - started) * 1000)
@@ -503,43 +479,69 @@ class CadastralGeocoder:
             except requests.RequestException as exc:
                 category = classify_transport_exception(exc)
                 record_provider_failure("nspd", category, latency_ms=(time.monotonic() - started) * 1000)
-                raise GeoProviderUnavailable("nspd", category, str(exc)) from exc
+                provider_errors.append(GeoProviderUnavailable("nspd", category, str(exc)))
+                continue
             except (ValueError, AttributeError) as exc:
                 record_provider_failure("nspd", "provider_protocol", latency_ms=(time.monotonic() - started) * 1000)
-                raise GeoProviderUnavailable("nspd", "provider_protocol", str(exc)) from exc
+                provider_errors.append(GeoProviderUnavailable("nspd", "provider_protocol", str(exc)))
+                continue
 
-            features = payload.get("features") or []
-            for feature in features:
+            for feature in payload.get("features") or []:
                 props = feature.get("properties") or {}
                 info = normalize_nspd_props(props, "")
                 number = str(info.get("Кадастровый номер") or "").replace(" ", "")
-                if not CADASTRAL_RE.match(number):
+                if not CADASTRAL_RE.match(number) or number in seen:
                     continue
+
                 geometry = geometry_to_wgs84(feature.get("geometry"))
                 geometry_json = geometry if geometry and geometry.get("type") != "Point" else None
+                feature_lat, feature_lon = centroid_from_geometry(geometry)
                 if kind == "building" and not info.get("Вид объекта недвижимости"):
                     info["Вид объекта недвижимости"] = "Здание"
                 elif kind == "land_plot" and not info.get("Вид объекта недвижимости"):
                     info["Вид объекта недвижимости"] = "Земельный участок"
                 if fallback_address and not info.get("Адрес"):
                     info["Адрес"] = fallback_address
-                return CadastralObjectResult(
-                    query=fallback_address or number,
-                    cadastral_number=number,
-                    object_type=info.get("Вид объекта недвижимости"),
-                    title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
-                    address=info.get("Адрес") or fallback_address,
-                    lat=float(lat),
-                    lon=float(lon),
-                    geometry_json=geometry_json,
-                    has_boundary=bool(geometry_json),
-                    source="nspd_wms",
-                    confidence="high",
-                    info=info,
-                    raw=feature,
+
+                seen.add(number)
+                results.append(
+                    CadastralObjectResult(
+                        query=fallback_address or number,
+                        cadastral_number=number,
+                        object_type=info.get("Вид объекта недвижимости"),
+                        title=info.get("Наименование") or info.get("Назначение") or info.get("Вид объекта недвижимости"),
+                        address=info.get("Адрес") or fallback_address,
+                        lat=feature_lat if feature_lat is not None else float(lat),
+                        lon=feature_lon if feature_lon is not None else float(lon),
+                        geometry_json=geometry_json,
+                        has_boundary=bool(geometry_json),
+                        source="nspd_wms",
+                        confidence="high",
+                        info=info,
+                        raw=feature,
+                    )
                 )
 
-        return None
+        if results:
+            return results
+        if successful_layers == 0 and provider_errors:
+            raise provider_errors[0]
+        return []
+
+    def _search_nspd_by_point(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        fallback_address: str | None = None,
+    ) -> CadastralObjectResult | None:
+        """Backward-compatible single-result NSPD WMS lookup."""
+        results = self.search_objects_by_point(
+            lat,
+            lon,
+            fallback_address=fallback_address,
+        )
+        return results[0] if results else None
 
     def _search_pkk_by_point(
         self,
