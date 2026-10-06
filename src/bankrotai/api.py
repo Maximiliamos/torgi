@@ -67,6 +67,14 @@ from bankrotai.scrapers import (
 )
 from bankrotai.scraper_contracts import LotOnlineSearchFilters, TBankrotSearchFilters
 from bankrotai.geo import CADASTRAL_RE, PHOTON_GEOCODER, CadastralGeocoder, CadastralObjectResult
+from bankrotai.services.cadastre_cache import (
+    cache_results,
+    cached_row_to_result,
+    find_cached_cadastre_candidates,
+    get_cached_cadastre_object,
+    merge_cadastre_result,
+    upsert_cadastre_cache,
+)
 from bankrotai.services.duplicates import manual_merge_lots, manual_split_lot
 from bankrotai.services.operations import (
     add_lot_note,
@@ -130,7 +138,7 @@ _MAP_BOOTSTRAP_ZOOM = 7
 _MAP_BOOTSTRAP_RADIUS = 1
 _CADASTRAL_GEOCODER = CadastralGeocoder()
 _CADASTRAL_CAPACITY = threading.BoundedSemaphore(1)
-_CADASTRAL_DEADLINE_SECONDS = 7.0
+_CADASTRAL_DEADLINE_SECONDS = 9.0
 _PUBLIC_HEALTH_PATHS = {"/health", "/health/live", "/health/ready"}
 _SESSION_COOKIE = "bankrotai_session"
 _LOGIN_PATHS = {"/api/auth/login", "/api/auth/logout"}
@@ -2203,6 +2211,8 @@ def get_map_lot(lot_id: int):
 async def search_cadastre(
     query: str = Query(min_length=3, max_length=500),
     resolve_address: bool = Query(False),
+    lat: float | None = Query(None, ge=-90, le=90),
+    lon: float | None = Query(None, ge=-180, le=180),
 ):
     normalized_query = " ".join(query.strip().split())
     normalized_cadastral = normalized_query.replace(" ", "")
@@ -2211,10 +2221,24 @@ async def search_cadastre(
     def object_payload(result: CadastralObjectResult) -> dict[str, Any]:
         payload = asdict(result)
         payload["geometry"] = payload.pop("geometry_json", None)
-        # Provider raw payloads are intentionally kept server-side. The UI gets
-        # only normalized cadastral fields, coordinates and geometry.
         payload.pop("raw", None)
         return payload
+
+    def candidates_payload(
+        items: list[CadastralObjectResult],
+        *,
+        error: str | None = None,
+        point_lat: float | None = None,
+        point_lon: float | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "kind": "cadastral_objects",
+            "query": normalized_query,
+            "lat": point_lat,
+            "lon": point_lon,
+            "items": [object_payload(item) for item in items],
+            "error": error,
+        }
 
     def unavailable_payload() -> dict[str, Any]:
         if not is_cadastral and not resolve_address:
@@ -2224,10 +2248,17 @@ async def search_cadastre(
                 "items": [],
                 "error": "Поиск адресов временно недоступен; повторите позже.",
             }
+        if not is_cadastral:
+            return candidates_payload(
+                [],
+                error="Кадастровые объекты временно недоступны; повторите позже.",
+                point_lat=lat,
+                point_lon=lon,
+            )
         result = CadastralObjectResult(
             query=normalized_query,
-            cadastral_number=normalized_cadastral if is_cadastral else None,
-            source="pkk/nspd",
+            cadastral_number=normalized_cadastral,
+            source="nspd/ik12",
             confidence="none",
             error="Кадастровые API временно недоступны; повторите проверку позже.",
         )
@@ -2245,12 +2276,156 @@ async def search_cadastre(
                     "items": PHOTON_GEOCODER.suggest_addresses(normalized_query, limit=10),
                     "error": None,
                 }
-            result = (
-                _CADASTRAL_GEOCODER.search_by_cadastral_number(normalized_cadastral)
-                if is_cadastral
-                else _CADASTRAL_GEOCODER.search_selected_address(normalized_query)
+
+            if is_cadastral:
+                with read_session_scope() as session:
+                    fresh_complete = get_cached_cadastre_object(
+                        session,
+                        normalized_cadastral,
+                        require_complete=True,
+                        fresh_only=True,
+                    )
+                    cached_any = get_cached_cadastre_object(
+                        session,
+                        normalized_cadastral,
+                        require_complete=False,
+                        fresh_only=False,
+                    )
+                    stale_complete = get_cached_cadastre_object(
+                        session,
+                        normalized_cadastral,
+                        require_complete=True,
+                        fresh_only=False,
+                    )
+
+                if fresh_complete is not None:
+                    return {
+                        "kind": "object",
+                        "query": normalized_query,
+                        "object": object_payload(
+                            cached_row_to_result(fresh_complete, source_prefix="cache")
+                        ),
+                    }
+
+                result = _CADASTRAL_GEOCODER.search_by_cadastral_number(normalized_cadastral)
+                result = merge_cadastre_result(result, cached_any)
+                if result.cadastral_number and result.confidence != "none":
+                    with session_scope() as session:
+                        upsert_cadastre_cache(session, result, complete=True)
+                    return {
+                        "kind": "object",
+                        "query": normalized_query,
+                        "object": object_payload(result),
+                    }
+
+                if stale_complete is not None:
+                    stale = cached_row_to_result(stale_complete, source_prefix="cache_stale")
+                    stale.error = "Показаны последние сохранённые кадастровые сведения; внешний источник временно недоступен."
+                    return {
+                        "kind": "object",
+                        "query": normalized_query,
+                        "object": object_payload(stale),
+                    }
+
+                return {
+                    "kind": "object",
+                    "query": normalized_query,
+                    "object": object_payload(result),
+                }
+
+            point_lat = lat
+            point_lon = lon
+            point_address = normalized_query
+            if point_lat is None or point_lon is None:
+                point = _CADASTRAL_GEOCODER.search_by_address(
+                    normalized_query,
+                    allow_nominatim=False,
+                )
+                point_lat = point.lat
+                point_lon = point.lon
+                point_address = point.address or normalized_query
+
+            if point_lat is None or point_lon is None:
+                return candidates_payload(
+                    [],
+                    error="Не удалось определить координаты выбранного адреса.",
+                )
+
+            with read_session_scope() as session:
+                cached_rows = find_cached_cadastre_candidates(
+                    session,
+                    address=point_address,
+                    lat=point_lat,
+                    lon=point_lon,
+                    fresh_only=True,
+                )
+            if cached_rows:
+                cached_items = [
+                    cached_row_to_result(row, source_prefix="cache")
+                    for row in cached_rows
+                ]
+                return candidates_payload(
+                    cached_items,
+                    point_lat=point_lat,
+                    point_lon=point_lon,
+                )
+
+            try:
+                objects = _CADASTRAL_GEOCODER.search_objects_by_point(
+                    point_lat,
+                    point_lon,
+                    fallback_address=point_address,
+                )
+            except (Exception,) as exc:
+                # Provider exceptions are already classified/logged inside the
+                # geocoder. Use a bounded stale-cache fallback before surfacing
+                # the temporary outage to the user.
+                logger.warning(
+                    "Cadastre point lookup failed for %.6f, %.6f: %s",
+                    point_lat,
+                    point_lon,
+                    exc,
+                )
+                with read_session_scope() as session:
+                    stale_rows = find_cached_cadastre_candidates(
+                        session,
+                        address=point_address,
+                        lat=point_lat,
+                        lon=point_lon,
+                        fresh_only=False,
+                    )
+                if stale_rows:
+                    stale_items = [
+                        cached_row_to_result(row, source_prefix="cache_stale")
+                        for row in stale_rows
+                    ]
+                    return candidates_payload(
+                        stale_items,
+                        error="Показаны последние сохранённые кадастровые объекты; НСПД временно недоступна.",
+                        point_lat=point_lat,
+                        point_lon=point_lon,
+                    )
+                return candidates_payload(
+                    [],
+                    error="НСПД временно недоступна для поиска объектов в выбранной точке.",
+                    point_lat=point_lat,
+                    point_lon=point_lon,
+                )
+
+            if objects:
+                with session_scope() as session:
+                    cache_results(
+                        session,
+                        objects,
+                        complete=False,
+                        address_hint=point_address,
+                    )
+            return candidates_payload(
+                objects,
+                error=None if objects else "Кадастровые объекты в выбранной точке не найдены.",
+                point_lat=point_lat,
+                point_lon=point_lon,
             )
-            return {"kind": "object", "query": normalized_query, "object": object_payload(result)}
         finally:
             _CADASTRAL_CAPACITY.release()
 
