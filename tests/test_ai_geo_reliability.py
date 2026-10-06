@@ -264,7 +264,7 @@ def test_nspd_tls_error_uses_safe_interactive_fallback_before_failure(monkeypatc
     result = geocoder.search_by_cadastral_number("76:23:010101:10")
 
     assert calls == ["76:23:010101:10"]
-    assert result.source == "pkk/nspd/ik12"
+    assert result.source == "nspd/pkk/ik12"
     assert result.confidence == "none"
     assert result.error is not None
     assert "резервный кадастровый источник" in result.error
