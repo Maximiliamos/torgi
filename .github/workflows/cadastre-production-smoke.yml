@@ -1,7 +1,9 @@
 name: Cadastre production smoke
 
 on:
-  pull_request:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
     paths:
       - '.github/workflows/cadastre-production-smoke.yml'
 
@@ -19,46 +21,67 @@ jobs:
           set -euo pipefail
           base='https://api.sterdez.online'
 
-          live="$(curl --fail --silent --show-error --max-time 20 "$base/health/live")"
-          printf '%s\n' "$live" | python -c "import json,sys; d=json.load(sys.stdin); assert d"
+          curl --fail --silent --show-error --max-time 20 "$base/health/live" > live.json
+          python -c "import json; assert json.load(open('live.json'))"
 
-          exact="$(curl --fail --silent --show-error --max-time 40 --get             --data-urlencode 'query=76:23:011401:8268'             "$base/api/cadastre/search")"
-          printf '%s\n' "$exact" | python -c "
-import json,sys
-d=json.load(sys.stdin)
-assert d.get('kind') == 'object', d
-o=d.get('object') or {}
-assert o.get('cadastral_number') == '76:23:011401:8268', o
-assert o.get('address'), o
-assert o.get('lat') is not None and o.get('lon') is not None, o
-if o.get('has_boundary'):
-    assert o.get('geometry'), o
-print(json.dumps({'exact': {'number': o.get('cadastral_number'), 'address': o.get('address'), 'has_boundary': o.get('has_boundary'), 'source': o.get('source')}}, ensure_ascii=False))
-"
-
-          suggestions="$(curl --fail --silent --show-error --max-time 30 --get             --data-urlencode 'query=Ленинградский 105'             "$base/api/cadastre/search")"
-          printf '%s\n' "$suggestions" > suggestions.json
+          curl --fail --silent --show-error --max-time 40 --get \
+            --data-urlencode 'query=76:23:011401:8268' \
+            "$base/api/cadastre/search" > exact.json
           python - <<'PY'
-import json
-d=json.load(open('suggestions.json', encoding='utf-8'))
-assert d.get('kind') == 'address_suggestions', d
-items=d.get('items') or []
-assert items, d
-match=next((x for x in items if 'ярослав' in (x.get('label') or '').casefold()), None)
-assert match, items
-open('selected-address.txt','w',encoding='utf-8').write(match['label'])
-print(json.dumps({'suggestions': len(items), 'selected': match['label']}, ensure_ascii=False))
-PY
+          import json
+          d = json.load(open('exact.json', encoding='utf-8'))
+          assert d.get('kind') == 'object', d
+          o = d.get('object') or {}
+          assert o.get('cadastral_number') == '76:23:011401:8268', o
+          assert o.get('address'), o
+          assert o.get('lat') is not None and o.get('lon') is not None, o
+          if o.get('has_boundary'):
+              assert o.get('geometry'), o
+          print(json.dumps({
+              'exact': {
+                  'number': o.get('cadastral_number'),
+                  'address': o.get('address'),
+                  'has_boundary': o.get('has_boundary'),
+                  'source': o.get('source'),
+              }
+          }, ensure_ascii=False))
+          PY
+
+          curl --fail --silent --show-error --max-time 30 --get \
+            --data-urlencode 'query=Ленинградский 105' \
+            "$base/api/cadastre/search" > suggestions.json
+          python - <<'PY'
+          import json
+          d = json.load(open('suggestions.json', encoding='utf-8'))
+          assert d.get('kind') == 'address_suggestions', d
+          items = d.get('items') or []
+          assert items, d
+          match = next((x for x in items if 'ярослав' in (x.get('label') or '').casefold()), None)
+          assert match, items
+          open('selected-address.txt', 'w', encoding='utf-8').write(match['label'])
+          print(json.dumps({'suggestions': len(items), 'selected': match['label']}, ensure_ascii=False))
+          PY
 
           selected="$(cat selected-address.txt)"
-          resolved="$(curl --fail --silent --show-error --max-time 40 --get             --data-urlencode "query=$selected"             --data-urlencode 'resolve_address=true'             "$base/api/cadastre/search")"
-          printf '%s\n' "$resolved" | python -c "
-import json,re,sys
-d=json.load(sys.stdin)
-assert d.get('kind') == 'object', d
-o=d.get('object') or {}
-number=o.get('cadastral_number') or ''
-assert re.fullmatch(r'\\d{2}:\\d{2}:\\d{6,7}:\\d+', number), o
-assert o.get('address'), o
-print(json.dumps({'resolved': {'number': number, 'address': o.get('address'), 'has_boundary': o.get('has_boundary'), 'source': o.get('source')}}, ensure_ascii=False))
-"
+          curl --fail --silent --show-error --max-time 40 --get \
+            --data-urlencode "query=$selected" \
+            --data-urlencode 'resolve_address=true' \
+            "$base/api/cadastre/search" > resolved.json
+          python - <<'PY'
+          import json
+          import re
+          d = json.load(open('resolved.json', encoding='utf-8'))
+          assert d.get('kind') == 'object', d
+          o = d.get('object') or {}
+          number = o.get('cadastral_number') or ''
+          assert re.fullmatch(r'\d{2}:\d{2}:\d{6,7}:\d+', number), o
+          assert o.get('address'), o
+          print(json.dumps({
+              'resolved': {
+                  'number': number,
+                  'address': o.get('address'),
+                  'has_boundary': o.get('has_boundary'),
+                  'source': o.get('source'),
+              }
+          }, ensure_ascii=False))
+          PY
