@@ -1,0 +1,102 @@
+name: Home NSPD TLS diagnostic
+
+on:
+  push:
+    branches:
+      - verify/cadastre-production-smoke
+    paths:
+      - '.github/workflows/home-nspd-tls-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect NSPD TLS from production API container
+        shell: powershell
+        run: |
+          $script = @'
+          import json
+          import os
+          import ssl
+          import traceback
+          import requests
+
+          from bankrotai.core import get_settings
+          from bankrotai.geo import NSPD_REFERER, nspd_tls_verify
+
+          settings = get_settings()
+          verify = nspd_tls_verify()
+          payload = {
+              "REQUESTS_CA_BUNDLE": os.getenv("REQUESTS_CA_BUNDLE"),
+              "SSL_CERT_FILE": os.getenv("SSL_CERT_FILE"),
+              "settings_nspd_ca_bundle": settings.nspd_ca_bundle,
+              "verify_value": verify,
+              "ssl_default_paths": str(ssl.get_default_verify_paths()),
+              "requests_ca_where": requests.certs.where(),
+              "ca_exists": os.path.exists(str(verify)) if isinstance(verify, str) else None,
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+
+          try:
+              response = requests.get(
+                  "https://nspd.gov.ru/api/geoportal/v2/search/geoportal",
+                  params={"thematicSearchId": 1, "query": "76:23:011401:8268"},
+                  headers={
+                      "Referer": NSPD_REFERER,
+                      "User-Agent": "Mozilla/5.0 BankrotAI/1.0",
+                      "Accept": "application/json,text/plain,*/*",
+                  },
+                  timeout=(3, 8),
+                  verify=verify,
+              )
+              print(json.dumps({
+                  "request_ok": True,
+                  "status": response.status_code,
+                  "content_type": response.headers.get("content-type"),
+                  "bytes": len(response.content),
+              }))
+          except Exception as exc:
+              print(json.dumps({
+                  "request_ok": False,
+                  "exception_type": type(exc).__name__,
+                  "exception": str(exc),
+                  "cause_type": type(exc.__cause__).__name__ if exc.__cause__ else None,
+                  "cause": str(exc.__cause__) if exc.__cause__ else None,
+              }, ensure_ascii=False))
+          '@
+          $script | docker exec -i bankrotai-home-secondary python -
+          if ($LASTEXITCODE -ne 0) { throw 'NSPD Python TLS diagnostic failed to execute' }
+
+      - name: Inspect certificate chain with OpenSSL
+        shell: powershell
+        run: |
+          $script = @'
+          import subprocess
+          result = subprocess.run(
+              ["openssl", "s_client", "-connect", "nspd.gov.ru:443", "-servername", "nspd.gov.ru", "-showcerts", "-verify_return_error"],
+              input=b"",
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              timeout=15,
+          )
+          text = result.stdout.decode("utf-8", errors="replace")
+          keep = [
+              line for line in text.splitlines()
+              if (
+                  "subject=" in line.lower()
+                  or "issuer=" in line.lower()
+                  or "verify return code" in line.lower()
+                  or "verify error" in line.lower()
+                  or "verification error" in line.lower()
+                  or "depth=" in line.lower()
+              )
+          ]
+          print("\n".join(keep[-40:]))
+          print("openssl_exit=", result.returncode)
+          '@
+          $script | docker exec -i bankrotai-home-secondary python -
+          if ($LASTEXITCODE -ne 0) { throw 'OpenSSL NSPD diagnostic failed to execute' }
