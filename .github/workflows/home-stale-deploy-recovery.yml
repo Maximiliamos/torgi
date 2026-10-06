@@ -30,15 +30,18 @@ jobs:
           set -euo pipefail
           payload="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
           mapfile -t stale_ids < <(
-            CURRENT_SHA="$CURRENT_SHA" python -c '
-import json, os, sys
-payload = json.load(sys.stdin)
-current = os.environ["CURRENT_SHA"]
-active = {"queued", "in_progress", "pending", "waiting", "requested"}
-for run in payload.get("workflow_runs", []):
-    if run.get("status") in active and run.get("head_sha") != current:
-        print(run["id"])
-' <<<"$payload"
+            jq -r --arg current "$CURRENT_SHA" '
+              .workflow_runs[]
+              | select(
+                  (.status == "queued"
+                   or .status == "in_progress"
+                   or .status == "pending"
+                   or .status == "waiting"
+                   or .status == "requested")
+                  and .head_sha != $current
+                )
+              | .id
+            ' <<<"$payload"
           )
 
           if (( ${#stale_ids[@]} == 0 )); then
@@ -48,22 +51,30 @@ for run in payload.get("workflow_runs", []):
 
           for run_id in "${stale_ids[@]}"; do
             echo "Force-cancelling stale Home deploy run $run_id"
-            gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1 ||               gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+            if ! gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" >/dev/null 2>&1; then
+              gh api -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+            fi
           done
 
           sleep 5
           remaining="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?per_page=50")"
-          CURRENT_SHA="$CURRENT_SHA" python -c '
-import json, os, sys
-payload = json.load(sys.stdin)
-current = os.environ["CURRENT_SHA"]
-active = {"queued", "in_progress", "pending", "waiting", "requested"}
-stale = [
-    (run.get("id"), run.get("status"), run.get("head_sha"))
-    for run in payload.get("workflow_runs", [])
-    if run.get("status") in active and run.get("head_sha") != current
-]
-if stale:
-    raise SystemExit(f"Stale Home deploy runs still active: {stale}")
-print("All stale Home deploy runs are cleared.")
-' <<<"$remaining"
+          stale_remaining="$(
+            jq -r --arg current "$CURRENT_SHA" '
+              [
+                .workflow_runs[]
+                | select(
+                    (.status == "queued"
+                     or .status == "in_progress"
+                     or .status == "pending"
+                     or .status == "waiting"
+                     or .status == "requested")
+                    and .head_sha != $current
+                  )
+              ] | length
+            ' <<<"$remaining"
+          )"
+          if [[ "$stale_remaining" != "0" ]]; then
+            echo "Stale Home deploy runs still active: $stale_remaining" >&2
+            exit 1
+          fi
+          echo "All stale Home deploy runs are cleared."
