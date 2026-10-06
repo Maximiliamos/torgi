@@ -220,6 +220,15 @@ export type SourceHealth = {
   last_failure_at: string | null;
   last_error: string | null;
   last_error_category: string | null;
+  circuit_state?: "closed" | "open" | "half_open" | string;
+  circuit_open_until?: string | null;
+  next_retry_at?: string | null;
+  retryable?: boolean;
+  operational_failure?: boolean;
+  consecutive_operational_failures?: number;
+  last_probe_at?: string | null;
+  last_probe_success_at?: string | null;
+  network_fingerprint?: Record<string, unknown> | null;
   freshness_status: string;
   coverage_status: string;
   freshness_age_seconds: number | null;
@@ -605,7 +614,26 @@ export type OperationsProgress = {
         freshness_status: string; coverage_status: string;
         last_success_at?: string | null; last_complete_success_at?: string | null;
         last_error_category?: string | null; items_seen: number;
+        circuit_state?: string; circuit_open_until?: string | null; next_retry_at?: string | null;
+        retryable?: boolean; operational_failure?: boolean; consecutive_operational_failures?: number;
+        last_probe_at?: string | null; last_probe_success_at?: string | null;
+        network_fingerprint?: Record<string, unknown>;
       }>;
+      network?: {
+        circuit_open?: boolean; circuit_open_until?: string | null;
+        degraded_sources?: string[]; degraded_source_count?: number;
+        network_fingerprints?: string[];
+      };
+    };
+    host?: {
+      maintenance?: null | Record<string, unknown>;
+      backup?: null | Record<string, unknown>;
+      runner?: null | Record<string, unknown>;
+      disk?: { free_gb?: number | null; critical_below_gb?: number; recommended_gb?: number; checked_at?: string | null; healthy?: boolean };
+      backup_age_hours?: number | null;
+      backup_healthy?: boolean;
+      runner_age_seconds?: number | null;
+      runner_healthy?: boolean;
     };
     last_update_at?: string | null;
     map: null | {
@@ -670,6 +698,14 @@ export const fetchGeoFastDrainPlan = () =>
     legacy_cfo: number;
     p7_held: number;
   }>("/api/operations/geocoding/fast-drain/plan");
+export const probeSourceHealth = (sourceSystem: string) =>
+  requestJson<{
+    source_system: string;
+    probe: Record<string, unknown>;
+    circuit_state?: string | null;
+    next_retry_at?: string | null;
+    retry?: Record<string, unknown> | null;
+  }>(`/api/operations/sources/${encodeURIComponent(sourceSystem)}/probe`, undefined, { method: "POST" });
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>

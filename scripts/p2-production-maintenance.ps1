@@ -210,6 +210,13 @@ $result = [ordered]@{
     checks = $checks
 }
 
+$snapshotJson = $result | ConvertTo-Json -Depth 14 -Compress
+$persistCommand = "import json,sys; from bankrotai.db import SessionLocal; from bankrotai.services.operations_status import record_operations_snapshot; p=json.load(sys.stdin); s=SessionLocal(); record_operations_snapshot(s,'maintenance',p); s.commit(); s.close()"
+$snapshotJson | docker exec -i bankrotai-home-map-worker python -c $persistCommand *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning 'Could not persist maintenance snapshot for Operations UX; maintenance result remains valid.'
+}
+
 $logPath = Join-Path $LogDirectory ("maintenance-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $result | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $logPath -Encoding utf8
 if ($OutputPath) {
