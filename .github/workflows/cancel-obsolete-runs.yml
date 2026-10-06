@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      TARGET_RUN: "37383423088"
+      TARGET_RUN: "37387148605"
     steps:
       - name: Force cancel obsolete reconciliation
         shell: bash
