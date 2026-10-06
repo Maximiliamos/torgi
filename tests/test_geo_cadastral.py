@@ -1,4 +1,4 @@
-from bankrotai.geo import CadastralGeocoder, CadastralObjectResult, PhotonGeocoder
+from bankrotai.geo import CadastralGeocoder, CadastralObjectResult, NSPDTLSVerificationError, PhotonGeocoder
 
 
 def test_parse_pkk_feature_returns_result() -> None:
@@ -97,3 +97,64 @@ def test_photon_address_suggestions_are_deduplicated(monkeypatch) -> None:
             "lon": 39.771867,
         }
     ]
+
+
+
+def test_interactive_cadastral_search_falls_back_to_ik12_when_nspd_tls_fails(monkeypatch) -> None:
+    geocoder = CadastralGeocoder()
+    expected = CadastralObjectResult(
+        query="76:23:011401:8268",
+        cadastral_number="76:23:011401:8268",
+        object_type="Здание",
+        address="г. Ярославль, Ленинградский проспект, д. 54а",
+        lat=57.69072,
+        lon=39.77901,
+        source="ik12_cadastral",
+        confidence="high",
+        info={
+            "Вид объекта недвижимости": "Здание",
+            "Кадастровый номер": "76:23:011401:8268",
+            "Адрес": "г. Ярославль, Ленинградский проспект, д. 54а",
+        },
+    )
+
+    monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *_args: None)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_geoportal",
+        lambda _query: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
+    )
+    monkeypatch.setattr(
+        "bankrotai.geo.IK12_GEOCODER.search_by_cadastral_number",
+        lambda _query: expected,
+    )
+
+    result = geocoder.search_by_cadastral_number("76:23:011401:8268")
+
+    assert result is expected
+    assert result.address == "г. Ярославль, Ленинградский проспект, д. 54а"
+
+
+def test_interactive_cadastral_search_reports_failure_only_after_ik12_fallback(monkeypatch) -> None:
+    geocoder = CadastralGeocoder()
+    calls: list[str] = []
+
+    monkeypatch.setattr(geocoder, "_search_pkk_feature", lambda *_args: None)
+    monkeypatch.setattr(
+        geocoder,
+        "_search_nspd_geoportal",
+        lambda _query: (_ for _ in ()).throw(NSPDTLSVerificationError("tls")),
+    )
+
+    def ik12_search(query: str):
+        calls.append(query)
+        return None
+
+    monkeypatch.setattr("bankrotai.geo.IK12_GEOCODER.search_by_cadastral_number", ik12_search)
+
+    result = geocoder.search_by_cadastral_number("76:23:011401:8268")
+
+    assert calls == ["76:23:011401:8268"]
+    assert result.confidence == "none"
+    assert result.source == "pkk/nspd/ik12"
+    assert "резервный кадастровый источник" in str(result.error)
