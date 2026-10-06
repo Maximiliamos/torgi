@@ -1,0 +1,109 @@
+name: P11 network-wait repair
+
+on:
+  push:
+    branches:
+      - ops/p11-network-wait-repair-20261006
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-and-repair:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inspect and retry bounded non-TBankrot network-wait GEO rows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          from sqlalchemy import or_, select
+          from bankrotai.db import GeoFailure, ProcessedLot, SessionLocal
+          from bankrotai.services.geo_backfill import geocode_pending_lots, geocoding_progress
+
+          s = SessionLocal()
+          try:
+              pending = or_(
+                  ProcessedLot.current_geo_lat.is_(None),
+                  ProcessedLot.current_geo_lon.is_(None),
+                  ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None),
+              )
+              rows = s.execute(
+                  select(
+                      ProcessedLot.id,
+                      ProcessedLot.source_system,
+                      ProcessedLot.region_code,
+                      GeoFailure.error_message,
+                  )
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      ProcessedLot.duplicate_of_id.is_(None),
+                      ProcessedLot.is_archived.is_(False),
+                      or_(ProcessedLot.cadastral_number.isnot(None), ProcessedLot.address.isnot(None)),
+                      pending,
+                      GeoFailure.status == "network_wait",
+                  )
+                  .order_by(ProcessedLot.id)
+              ).all()
+              print("NETWORK_WAIT_ROWS=" + json.dumps([
+                  {
+                      "lot_id": int(lot_id),
+                      "source_system": str(source_system or ""),
+                      "region_code": str(region_code or ""),
+                      "error": str(error_message or "")[:500],
+                  }
+                  for lot_id, source_system, region_code, error_message in rows
+              ], ensure_ascii=False))
+              retry_ids = [
+                  int(lot_id)
+                  for lot_id, source_system, _region_code, _error_message in rows
+                  if str(source_system or "") != "tbankrot.ru"
+              ]
+              skipped_tbankrot = [
+                  int(lot_id)
+                  for lot_id, source_system, _region_code, _error_message in rows
+                  if str(source_system or "") == "tbankrot.ru"
+              ]
+              if len(retry_ids) > 50:
+                  raise RuntimeError(f"refusing unbounded network-wait retry: {len(retry_ids)} rows")
+          finally:
+              s.close()
+
+          result = {
+              "retried": 0,
+              "skipped_tbankrot": skipped_tbankrot,
+              "before": None,
+              "after": None,
+              "batch": None,
+          }
+          s = SessionLocal()
+          try:
+              result["before"] = geocoding_progress(s)
+          finally:
+              s.close()
+
+          if retry_ids:
+              result["batch"] = geocode_pending_lots(
+                  SessionLocal,
+                  limit=len(retry_ids),
+                  progress_task_id="p11-network-wait-repair",
+                  lot_ids=retry_ids,
+                  allow_when_paused=True,
+                  refresh_strategy=False,
+              )
+              result["retried"] = len(retry_ids)
+
+          s = SessionLocal()
+          try:
+              result["after"] = geocoding_progress(s)
+          finally:
+              s.close()
+
+          print("RESULT=" + json.dumps(result, ensure_ascii=False, default=str))
+          if int((result["after"] or {}).get("network_wait") or 0) != len(skipped_tbankrot):
+              raise RuntimeError("bounded network-wait retry did not converge as expected")
+          '@
+          $script | docker exec -i bankrotai-home-geocoding-worker python -
