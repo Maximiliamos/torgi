@@ -139,6 +139,14 @@ export type CadastreSearchResponse =
       error: string | null;
     }
   | {
+      kind: "cadastral_objects";
+      query: string;
+      lat: number | null;
+      lon: number | null;
+      items: CadastreObject[];
+      error: string | null;
+    }
+  | {
       kind: "object";
       query: string;
       object: CadastreObject;
@@ -1113,10 +1121,16 @@ export async function fetchMapLotsSWR(
     throw error;
   }
 }
-export const searchCadastre = (query: string, resolveAddress = false) =>
+export const searchCadastre = (
+  query: string,
+  resolveAddress = false,
+  point?: { lat: number; lon: number },
+) =>
   requestJson<CadastreSearchResponse>("/api/cadastre/search", {
     query,
     resolve_address: resolveAddress || undefined,
+    lat: point?.lat,
+    lon: point?.lon,
   });
 export const setReviewStatus = (lotId: number, status: string | null) =>
   requestJson(`/api/lots/${lotId}/review-status`, undefined, { method: "PUT", body: JSON.stringify({ status }) });
