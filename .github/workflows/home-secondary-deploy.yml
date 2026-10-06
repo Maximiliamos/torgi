@@ -267,12 +267,14 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $targetImage = "${env:IMAGE_NAME}:${env:GITHUB_SHA}"
 
           function Invoke-BoundedDockerBuild {
             param(
               [string[]]$Arguments,
               [int]$TimeoutSeconds,
-              [string]$Label
+              [string]$Label,
+              [string]$TargetImage
             )
             Write-Host "Starting $Label with a $TimeoutSeconds second timeout"
             $process = Start-Process -FilePath 'docker.exe' -ArgumentList $Arguments -PassThru -NoNewWindow
@@ -282,30 +284,76 @@ jobs:
               try { $process.WaitForExit(10000) | Out-Null } catch {}
               return -1
             }
-            return $process.ExitCode
+
+            try {
+              $process.WaitForExit()
+              $process.Refresh()
+              $exitCode = $process.ExitCode
+            } catch {
+              $exitCode = $null
+            }
+            if ($null -ne $exitCode) {
+              return [int]$exitCode
+            }
+
+            docker image inspect $TargetImage *> $null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Warning "$Label completed with an unavailable process ExitCode; target image exists, accepting the build"
+              return 0
+            }
+            Write-Warning "$Label completed with an unavailable process ExitCode and no target image"
+            return 255
           }
 
           $built = $false
-          $attempts = @(
-            [pscustomobject]@{ Pull = $true;  Timeout = 180; Mode = 'refresh-base' },
-            [pscustomobject]@{ Pull = $false; Timeout = 240; Mode = 'cached-base' }
-          )
-          $attemptNumber = 0
-          foreach ($attempt in $attempts) {
-            $attemptNumber += 1
-            $arguments = @('build')
-            if ($attempt.Pull) { $arguments += '--pull' }
-            $arguments += @(
-              '--tag',
-              "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
-              '.'
-            )
-            $exitCode = Invoke-BoundedDockerBuild -Arguments $arguments -TimeoutSeconds $attempt.Timeout -Label "Docker build attempt $attemptNumber/$($attempts.Count) mode=$($attempt.Mode)"
-            if ($exitCode -eq 0) {
-              $built = $true
-              break
+          docker image inspect $targetImage *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "Current SHA image already exists locally: $targetImage"
+            $built = $true
+          } else {
+            $parentSha = (git rev-parse "$($env:GITHUB_SHA)^1" 2>$null | Select-Object -Last 1)
+            if ($LASTEXITCODE -eq 0 -and $parentSha) {
+              $parentSha = ([string]$parentSha).Trim()
+              $parentImage = "${env:IMAGE_NAME}:$parentSha"
+              docker image inspect $parentImage *> $null
+              if ($LASTEXITCODE -eq 0) {
+                git diff --quiet $parentSha $env:GITHUB_SHA -- src alembic alembic.ini Dockerfile Dockerfile.home-overlay pyproject.toml README.md requirements.lock certs
+                $runtimeDiff = $LASTEXITCODE
+                if ($runtimeDiff -eq 0) {
+                  docker tag $parentImage $targetImage
+                  if ($LASTEXITCODE -eq 0) {
+                    Write-Output "Reused first-parent runtime image: $parentImage -> $targetImage"
+                    $built = $true
+                  }
+                } elseif ($runtimeDiff -ne 1) {
+                  throw "Could not compare first-parent runtime inputs (git diff exit $runtimeDiff)"
+                }
+              }
             }
-            Write-Warning "Docker build mode=$($attempt.Mode) failed with exit code $exitCode"
+          }
+
+          if (-not $built) {
+            $attempts = @(
+              [pscustomobject]@{ Pull = $true;  Timeout = 180; Mode = 'refresh-base' },
+              [pscustomobject]@{ Pull = $false; Timeout = 240; Mode = 'cached-base' }
+            )
+            $attemptNumber = 0
+            foreach ($attempt in $attempts) {
+              $attemptNumber += 1
+              $arguments = @('build')
+              if ($attempt.Pull) { $arguments += '--pull' }
+              $arguments += @(
+                '--tag',
+                $targetImage,
+                '.'
+              )
+              $exitCode = Invoke-BoundedDockerBuild -Arguments $arguments -TimeoutSeconds $attempt.Timeout -Label "Docker build attempt $attemptNumber/$($attempts.Count) mode=$($attempt.Mode)" -TargetImage $targetImage
+              if ($exitCode -eq 0) {
+                $built = $true
+                break
+              }
+              Write-Warning "Docker build mode=$($attempt.Mode) failed with exit code $exitCode"
+            }
           }
 
           if (-not $built) {
@@ -365,10 +413,10 @@ jobs:
                 'build',
                 '--file', 'Dockerfile.home-overlay',
                 '--build-arg', "BASE_IMAGE=$overlayBaseTag",
-                '--tag', "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+                '--tag', $targetImage,
                 '.'
               )
-              $overlayExit = Invoke-BoundedDockerBuild -Arguments $overlayArguments -TimeoutSeconds 240 -Label 'offline source-overlay Docker build'
+              $overlayExit = Invoke-BoundedDockerBuild -Arguments $overlayArguments -TimeoutSeconds 240 -Label 'offline source-overlay Docker build' -TargetImage $targetImage
               if ($overlayExit -ne 0) {
                 throw "Offline source-overlay Docker build failed with exit code $overlayExit"
               }
