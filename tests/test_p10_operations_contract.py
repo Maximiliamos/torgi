@@ -47,5 +47,7 @@ def test_p10_snapshot_persistence_is_non_fatal_under_strict_powershell() -> None
         assert "$persistExitCode" in text
         assert "$previousErrorActionPreference" in text
         assert "$ErrorActionPreference = 'Continue'" in text
+        assert "decode('utf-8-sig')" in text
+        assert "$global:LASTEXITCODE = 0" in text
         assert "2>&1" in text
         assert "python -c $persistCommand *> $null" not in text
