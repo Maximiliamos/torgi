@@ -498,6 +498,7 @@ class NationwideIngestionService:
                 result.phase = "complete"
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
+                self._record_source_resilience_outcome(result)
                 return result
             result.complete_source_run = reached_source_end
             if not reached_source_end:
@@ -552,7 +553,28 @@ class NationwideIngestionService:
             result.error = str(exc)
         result.elapsed_seconds = time.perf_counter() - wall_started
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
+        self._record_source_resilience_outcome(result)
         return result
+
+    def _record_source_resilience_outcome(self, result: SourceSyncResult) -> None:
+        """Persist operational resilience state without making ingestion depend on telemetry."""
+        try:
+            from bankrotai.services.source_resilience import record_source_outcome
+
+            with self.session_factory() as session:
+                record_source_outcome(
+                    session,
+                    result.source_system,
+                    success=result.status == "success",
+                    error=result.error,
+                    items_seen=result.items_seen,
+                )
+                session.commit()
+        except Exception:
+            logger.exception(
+                "Could not persist source resilience state for %s",
+                result.source_system,
+            )
 
     def _active_source_count(self, source_id: str, *, region_code: str | None) -> int:
         with self.session_factory() as session:

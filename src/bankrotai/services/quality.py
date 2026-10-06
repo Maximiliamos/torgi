@@ -23,6 +23,7 @@ from bankrotai.db import (
     SourceLot,
 )
 from bankrotai.dto import DataQualityDTO, SourceHealthDTO
+from bankrotai.services.source_resilience import source_resilience_status
 
 
 def data_quality_snapshot(session: Session) -> DataQualityDTO:
@@ -600,6 +601,8 @@ def list_source_health(
             .limit(1)
         )
         state = states.get(name)
+        resilience_metadata = dict(state.metadata_json or {}) if state is not None else {}
+        resilience = source_resilience_status(session, name, now=now)
         last_success_at = (
             latest_success.finished_at
             if latest_success is not None
@@ -670,7 +673,22 @@ def list_source_health(
                 last_complete_success_at=latest_complete.finished_at if latest_complete is not None else None,
                 last_failure_at=last_failure_at,
                 last_error=last_error,
-                last_error_category=_source_error_category(last_error),
+                last_error_category=(
+                    resilience.get("last_error_category")
+                    if "last_error_category" in resilience_metadata
+                    else _source_error_category(last_error)
+                ),
+                circuit_state=str(resilience.get("circuit_state") or "closed"),
+                circuit_open_until=resilience.get("circuit_open_until"),
+                next_retry_at=resilience.get("next_retry_at"),
+                retryable=bool(resilience.get("retryable")),
+                operational_failure=bool(resilience.get("operational_failure")),
+                consecutive_operational_failures=int(
+                    resilience.get("consecutive_operational_failures") or 0
+                ),
+                last_probe_at=resilience.get("last_probe_at"),
+                last_probe_success_at=resilience.get("last_probe_success_at"),
+                network_fingerprint=dict(resilience.get("network_fingerprint") or {}),
                 freshness_status=freshness_status,
                 coverage_status=coverage_status,
                 freshness_age_seconds=freshness_age,
@@ -704,7 +722,8 @@ def update_source_health(
     now = utc_now()
     state.status = status
     state.updated_at = now
-    state.metadata_json = metadata
+    if metadata is not None:
+        state.metadata_json = {**(state.metadata_json or {}), **metadata}
     if status in {"running", "queued"}:
         state.last_started_at = now
     elif status == "healthy":

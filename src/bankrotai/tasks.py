@@ -90,6 +90,7 @@ celery_app.conf.update(
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_lot_refresh_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_source_retry_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.probe_source_network_health_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.sync_public_region_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.geocode_pending_lots_task": {"queue": _QUEUE_GEOCODING},
         "bankrotai.tasks.recover_ik12_geo_task": {"queue": _QUEUE_GEOCODING},
@@ -141,6 +142,11 @@ celery_app.conf.update(
             "schedule": crontab(hour=3, minute=7),
             "args": ("full",),
             "options": {"expires": 3_600},
+        },
+        "probe-source-network-health": {
+            "task": "bankrotai.tasks.probe_source_network_health_task",
+            "schedule": 60.0,
+            "options": {"expires": 45},
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
@@ -707,8 +713,37 @@ def _source_is_paused(source_system: str) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _source_is_circuit_blocked(source_system: str) -> bool:
+    try:
+        from bankrotai.services.source_resilience import source_circuit_blocks
+
+        with session_scope() as session:
+            return bool(source_circuit_blocks(session, source_system))
+    except Exception:
+        logger.exception("Could not read source circuit state for %s", source_system)
+        # Fail open here: the ingestion layer remains fail-closed for reconciliation,
+        # while a telemetry/storage problem must not silently disable all sources.
+        return False
+
+
+def _global_source_network_blocked() -> bool:
+    try:
+        from bankrotai.services.source_resilience import source_global_network_blocks
+
+        with session_scope() as session:
+            return bool(source_global_network_blocks(session))
+    except Exception:
+        logger.exception("Could not read global source network circuit")
+        return False
+
+
 def _unpaused_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
-    return tuple(spec for spec in specs if not _source_is_paused(str(spec.source_id)))
+    return tuple(
+        spec
+        for spec in specs
+        if not _source_is_paused(str(spec.source_id))
+        and not _source_is_circuit_blocked(str(spec.source_id))
+    )
 
 
 def _failed_source_systems(result: dict[str, Any]) -> tuple[str, ...]:
@@ -727,24 +762,74 @@ def _schedule_partial_source_retries(
     result: dict[str, Any],
     *,
     source_mode: str,
-) -> list[dict[str, str | int]]:
-    """Retry failed sources in the originating scope; successful peers stay out."""
-    scheduled: list[dict[str, str | int]] = []
+) -> list[dict[str, Any]]:
+    """Retry only failed sources using the source-specific resilience decision."""
+    from bankrotai.services.source_resilience import source_retry_decision
+
+    scheduled: list[dict[str, Any]] = []
+    failed_records = {
+        str(source.get("source_system")): source
+        for source in result.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("status") == "failed"
+        and source.get("source_system")
+    }
     for source_system in _failed_source_systems(result):
         if _source_is_paused(source_system):
             scheduled.append({"source_system": source_system, "status": "skipped", "reason": "source_paused"})
             continue
+        source_record = failed_records.get(source_system) or {}
+        try:
+            with session_scope() as session:
+                decision = source_retry_decision(
+                    session,
+                    source_system,
+                    error=source_record.get("error"),
+                )
+        except Exception:
+            # Resilience state is auxiliary. During bootstrap/tests or a partial
+            # migration the source_health_states table may be unavailable; fall
+            # back to the pure classifier instead of blocking ingestion.
+            logger.exception("Could not read source retry state for %s", source_system)
+            from bankrotai.services.source_resilience import (
+                classify_source_error,
+                source_retry_delay_seconds,
+            )
+
+            classification = classify_source_error(source_record.get("error"))
+            fallback_delay = source_retry_delay_seconds(classification)
+            decision = {
+                "schedule": bool(classification.retryable and fallback_delay is not None),
+                "reason": "retry_state_unavailable" if classification.retryable else "non_retryable",
+                "countdown_seconds": fallback_delay,
+                "last_error_category": classification.category,
+                "circuit_state": "unknown",
+                "next_retry_at": None,
+            }
+        if not decision.get("schedule"):
+            scheduled.append(
+                {
+                    "source_system": source_system,
+                    "status": "skipped",
+                    "reason": str(decision.get("reason") or "not_retryable"),
+                    "circuit_state": decision.get("circuit_state"),
+                    "next_retry_at": decision.get("next_retry_at"),
+                }
+            )
+            continue
+        countdown = max(1, int(decision.get("countdown_seconds") or _PARTIAL_SOURCE_RETRY_DELAY_SECONDS))
         try:
             queued = automatic_nationwide_source_retry_task.apply_async(
                 args=[source_system, source_mode],
-                countdown=_PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+                countdown=countdown,
             )
             scheduled.append(
                 {
                     "source_system": source_system,
                     "status": "queued",
                     "task_id": str(queued.id),
-                    "countdown_seconds": _PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
+                    "countdown_seconds": countdown,
+                    "error_category": decision.get("last_error_category"),
                 }
             )
         except Exception as exc:
@@ -944,6 +1029,64 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         raise
 
 
+@celery_app.task(name="bankrotai.tasks.probe_source_network_health_task")
+def probe_source_network_health_task() -> dict[str, Any]:
+    """Probe only source circuits whose cooldown elapsed; never run a full sync."""
+    from bankrotai.services.source_resilience import (
+        probe_source_endpoint,
+        record_source_probe,
+        sources_due_for_probe,
+    )
+
+    with session_scope() as session:
+        due = sources_due_for_probe(session)
+
+    results: list[dict[str, Any]] = []
+    for source_system in due:
+        if _source_is_paused(source_system):
+            results.append(
+                {"source_system": source_system, "status": "skipped", "reason": "source_paused"}
+            )
+            continue
+        probe = probe_source_endpoint(source_system)
+        with session_scope() as session:
+            state = record_source_probe(
+                session,
+                source_system,
+                success=bool(probe.get("success")),
+                error=probe.get("error"),
+            )
+
+        recovery_retry: dict[str, Any] | None = None
+        if probe.get("success"):
+            try:
+                queued = automatic_nationwide_source_retry_task.apply_async(
+                    args=[source_system, "fast"],
+                    countdown=5,
+                )
+                recovery_retry = {
+                    "status": "queued",
+                    "task_id": str(queued.id),
+                    "countdown_seconds": 5,
+                    "mode": "fast",
+                }
+            except Exception as exc:
+                logger.exception("Could not queue recovered source %s", source_system)
+                recovery_retry = {"status": "schedule_failed", "error": str(exc)[:500]}
+
+        results.append(
+            {
+                "source_system": source_system,
+                "status": "recovered" if probe.get("success") else "degraded",
+                "probe": probe,
+                "circuit_state": state.get("circuit_state"),
+                "next_retry_at": state.get("next_retry_at"),
+                "recovery_retry": recovery_retry,
+            }
+        )
+    return {"checked": len(due), "results": results}
+
+
 @celery_app.task(
     bind=True,
     name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
@@ -954,6 +1097,8 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     """Run one beat-triggered nationwide refresh under the durable run lease."""
     if mode not in {"fast", "full"}:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
+    if _global_source_network_blocked():
+        return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
@@ -973,6 +1118,14 @@ def automatic_nationwide_source_retry_task(self, source_system: str, source_mode
     """Bound a retry of one failed source without re-running successful peers."""
     if _source_is_paused(source_system):
         return {"status": "skipped", "reason": "source_paused", "source_system": source_system}
+    if _global_source_network_blocked():
+        return {
+            "status": "skipped",
+            "reason": "global_source_network_circuit",
+            "source_system": source_system,
+        }
+    if _source_is_circuit_blocked(source_system):
+        return {"status": "skipped", "reason": "source_circuit_open", "source_system": source_system}
     if source_mode == "fast":
         mode = f"source-fast:{source_system}"
         # Validation occurs in nationwide_lot_sync_task, after it computes the
@@ -1020,16 +1173,23 @@ def _run_automatic_nationwide_refresh(
 
     try:
         result = nationwide_lot_sync_task.run(run_id, mode)
-        if result.get("status") != "failed":
-            response = {"run_id": run_id, **result}
-            if result.get("status") == "partial":
-                source_retries = _schedule_partial_source_retries(result, source_mode="fast" if mode == "fast" else "full")
-                if source_retries:
-                    response["targeted_source_retries"] = source_retries
-            return response
-        raise RuntimeError("Nationwide source refresh completed with failed status")
+        response = {"run_id": run_id, **result}
+        if result.get("status") in {"partial", "failed"}:
+            source_mode = "fast" if mode == "fast" or mode.startswith("source-fast:") else "full"
+            source_retries = _schedule_partial_source_retries(
+                result,
+                source_mode=source_mode,
+            )
+            if source_retries:
+                response["targeted_source_retries"] = source_retries
+        return response
     except Exception as exc:
-        _retry_automatic_refresh(task, exc)
+        # Completed source failures are handled above by category-aware targeted
+        # retry/circuit logic. Only orchestration-level transient failures get a
+        # Celery retry; internal/database errors fail loudly.
+        if _is_transient_sync_error(exc):
+            _retry_automatic_refresh(task, exc)
+        raise
 
 
 def _retry_automatic_refresh(

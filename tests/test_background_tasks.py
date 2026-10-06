@@ -394,8 +394,8 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
             "status": "partial",
             "sources": [
                 {"source_system": "torgi.gov.ru", "status": "success"},
-                {"source_system": "bidexpert.ru", "status": "failed"},
-                {"source_system": "bidexpert.ru", "status": "failed"},
+                {"source_system": "bidexpert.ru", "status": "failed", "error": "HTTP 503 connection timeout"},
+                {"source_system": "bidexpert.ru", "status": "failed", "error": "HTTP 503 connection timeout"},
             ],
         },
     )
@@ -407,19 +407,44 @@ def test_partial_refresh_schedules_only_failed_source_retries(monkeypatch) -> No
 
     result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
 
-    assert queued == [("bidexpert.ru", "fast", tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS)]
-    assert result["targeted_source_retries"] == [
-        {
-            "source_system": "bidexpert.ru",
-            "status": "queued",
-            "task_id": "source-retry-1",
-            "countdown_seconds": tasks._PARTIAL_SOURCE_RETRY_DELAY_SECONDS,
-        }
-    ]
+    assert len(queued) == 1
+    assert queued[0][0:2] == ("bidexpert.ru", "fast")
+    assert 60 <= queued[0][2] <= 66
+    retry = result["targeted_source_retries"][0]
+    assert retry["source_system"] == "bidexpert.ru"
+    assert retry["status"] == "queued"
+    assert retry["task_id"] == "source-retry-1"
+    assert retry["countdown_seconds"] == queued[0][2]
+    assert retry["error_category"] == "http_5xx"
 
 
-def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) -> None:
+def test_automatic_refresh_skips_while_global_source_network_circuit_is_open(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: True)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("fast")
+
+    assert result == {
+        "status": "skipped",
+        "reason": "global_source_network_circuit",
+        "mode": "fast",
+    }
+
+
+def test_targeted_source_retry_skips_while_circuit_is_open(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_source_is_circuit_blocked", lambda source: source == "bidexpert.ru")
+
+    result = tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "fast")
+
+    assert result == {
+        "status": "skipped",
+        "reason": "source_circuit_open",
+        "source_system": "bidexpert.ru",
+    }
+
+
+def test_targeted_source_retry_uses_one_source_and_category_aware_requeue(monkeypatch) -> None:
     created: dict = {}
+    queued: list[tuple[str, str, int]] = []
 
     class FakeService:
         def __init__(self, _session_factory):
@@ -429,29 +454,95 @@ def test_targeted_source_retry_uses_one_source_and_bounded_retries(monkeypatch) 
             created.update(kwargs)
             return "retry-run"
 
-    captured: dict = {}
-
-    def retry(**kwargs):
-        captured.update(kwargs)
-        raise Retry()
+    class Queued:
+        id = "retry-again"
 
     monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
     monkeypatch.setattr(
         tasks.nationwide_lot_sync_task,
         "run",
-        lambda _run_id, _mode: {"status": "failed", "sources": [{"source_system": "bidexpert.ru", "status": "failed"}]},
+        lambda _run_id, _mode: {
+            "status": "failed",
+            "sources": [
+                {
+                    "source_system": "bidexpert.ru",
+                    "status": "failed",
+                    "error": "HTTP 503 upstream unavailable",
+                }
+            ],
+        },
     )
-    monkeypatch.setattr(tasks.automatic_nationwide_source_retry_task, "retry", retry)
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args[0], args[1], countdown)) or Queued(),
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "retry",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("generic retry must not run")),
+    )
 
-    with pytest.raises(Retry):
-        tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "full")
+    result = tasks.automatic_nationwide_source_retry_task.run("bidexpert.ru", "full")
 
     assert created == {
         "triggered_by": "celery-beat",
         "trigger_type": "scheduled_retry",
         "total_sources": 1,
     }
-    assert captured["max_retries"] == tasks._NATIONWIDE_REFRESH_MAX_RETRIES
+    assert result["status"] == "failed"
+    assert len(queued) == 1
+    assert queued[0][0:2] == ("bidexpert.ru", "full")
+    assert 60 <= queued[0][2] <= 66
+    assert result["targeted_source_retries"][0]["source_system"] == "bidexpert.ru"
+    assert result["targeted_source_retries"][0]["error_category"] == "http_5xx"
+
+
+def test_recovery_probe_queues_safe_fast_retry(monkeypatch) -> None:
+    from bankrotai.services import source_resilience
+
+    @contextmanager
+    def fake_scope():
+        yield object()
+
+    class Queued:
+        id = "recovered-fast-retry"
+
+    queued: list[tuple[list[str], int]] = []
+    monkeypatch.setattr(tasks, "session_scope", fake_scope)
+    monkeypatch.setattr(tasks, "_source_is_paused", lambda _source: False)
+    monkeypatch.setattr(source_resilience, "sources_due_for_probe", lambda _session: ["bidexpert.ru"])
+    monkeypatch.setattr(
+        source_resilience,
+        "probe_source_endpoint",
+        lambda source: {"success": True, "source_system": source, "http_status": 200},
+    )
+    monkeypatch.setattr(
+        source_resilience,
+        "record_source_probe",
+        lambda _session, source, **_kwargs: {
+            "source_system": source,
+            "circuit_state": "closed",
+            "next_retry_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        tasks.automatic_nationwide_source_retry_task,
+        "apply_async",
+        lambda *, args, countdown: queued.append((args, countdown)) or Queued(),
+    )
+
+    result = tasks.probe_source_network_health_task.run()
+
+    assert queued == [(["bidexpert.ru", "fast"], 5)]
+    assert result["checked"] == 1
+    assert result["results"][0]["status"] == "recovered"
+    assert result["results"][0]["recovery_retry"] == {
+        "status": "queued",
+        "task_id": "recovered-fast-retry",
+        "countdown_seconds": 5,
+        "mode": "fast",
+    }
 
 
 def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:

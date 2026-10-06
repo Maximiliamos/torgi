@@ -145,6 +145,14 @@ def test_operations_progress_reports_search_and_geocoding_counts(monkeypatch) ->
     assert payload["summary"]["sources"]["ready"] == 1
     assert payload["summary"]["sources"]["total"] == 1
     assert payload["summary"]["sources"]["paused"] == 1
+    active_source = next(
+        item for item in payload["summary"]["sources"]["items"]
+        if item["source_system"] == "torgi-russia.ru"
+    )
+    assert active_source["circuit_state"] == "closed"
+    assert active_source["next_retry_at"] is None
+    assert active_source["consecutive_operational_failures"] == 0
+    assert active_source["network_fingerprint"] == {}
     assert payload["summary"]["sources"]["items"][-1]["source_system"] == "tbankrot.ru"
     assert payload["summary"]["sources"]["items"][-1]["paused"] is True
     assert payload["summary"]["map"]["point_count"] == 39705

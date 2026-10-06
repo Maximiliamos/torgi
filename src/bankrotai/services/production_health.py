@@ -11,6 +11,7 @@ from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.ingestion import default_source_specs
 from bankrotai.services.quality import list_source_health
+from bankrotai.services.source_resilience import source_global_network_state
 
 
 _GEO_STALL_AFTER = timedelta(hours=24)
@@ -123,7 +124,18 @@ def build_phase3_health(
         source
         for source in sources
         if source.freshness_status in {"fresh", "running", "delayed"}
+        and source.circuit_state == "closed"
     ]
+    source_network = source_global_network_state(session, now=now)
+    add(
+        "source-global-network",
+        not bool(source_network.get("circuit_open")),
+        severity="warning",
+        circuit_open=bool(source_network.get("circuit_open")),
+        circuit_open_until=source_network.get("circuit_open_until"),
+        degraded_sources=source_network.get("degraded_sources") or [],
+        network_fingerprints=source_network.get("network_fingerprints") or [],
+    )
     add(
         "source-data-availability",
         not sources or bool(operational_sources),
@@ -146,6 +158,21 @@ def build_phase3_health(
             freshness_age_seconds=source.freshness_age_seconds,
             last_success_at=source.last_success_at,
             last_error_category=source.last_error_category,
+            circuit_state=source.circuit_state,
+            circuit_open_until=source.circuit_open_until,
+            next_retry_at=source.next_retry_at,
+        )
+        add(
+            f"source-circuit:{source.source_system}",
+            source.circuit_state == "closed",
+            severity="warning",
+            circuit_state=source.circuit_state,
+            circuit_open_until=source.circuit_open_until,
+            next_retry_at=source.next_retry_at,
+            last_error_category=source.last_error_category,
+            consecutive_operational_failures=source.consecutive_operational_failures,
+            last_probe_at=source.last_probe_at,
+            last_probe_success_at=source.last_probe_success_at,
         )
         add(
             f"source-coverage:{source.source_system}",
@@ -209,6 +236,8 @@ def build_phase3_health(
             "map_version": current.version if current is not None else None,
             "source_count": len(sources),
             "legacy_source_count": len(legacy_sources),
+            "source_global_network_degraded": bool(source_network.get("circuit_open")),
+            "source_global_network_degraded_sources": source_network.get("degraded_sources") or [],
             "geo_percent": geo.get("percent"),
             "geo_classified_percent": geo.get("classified_percent"),
             "geo_actionable_remaining": actionable,

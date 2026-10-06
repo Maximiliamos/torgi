@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from bankrotai.core import utc_now
-from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun
+from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun, SourceHealthState
 from bankrotai.services.quality import list_source_health
 
 
@@ -189,3 +189,63 @@ def test_missing_or_old_success_is_stale_without_breaking_source_contract() -> N
 
     assert health.freshness_status == "stale"
     assert health.coverage_status == "stale"
+
+def test_source_health_exposes_first_class_circuit_metadata() -> None:
+    factory = _sessions()
+    now = utc_now()
+    with factory() as session:
+        failed = LotSyncRun(
+            id="circuit-failure",
+            triggered_by="test",
+            trigger_type="scheduled_fast",
+            status="failed",
+            total_sources=1,
+            started_at=now - timedelta(minutes=5),
+            finished_at=now - timedelta(minutes=4),
+        )
+        session.add(failed)
+        session.flush()
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id=failed.id,
+                source_system="bidexpert.ru",
+                status="failed",
+                complete_source_run=False,
+                error_message="HTTP 503 upstream unavailable",
+                started_at=failed.started_at,
+                finished_at=failed.finished_at,
+            )
+        )
+        session.add(
+            SourceHealthState(
+                source_system="bidexpert.ru",
+                status="failed",
+                last_failure_at=failed.finished_at,
+                last_error="HTTP 503 upstream unavailable",
+                metadata_json={
+                    "circuit_state": "open",
+                    "circuit_open_until": (now + timedelta(minutes=10)).isoformat(),
+                    "next_retry_at": (now + timedelta(minutes=10)).isoformat(),
+                    "last_error_category": "http_5xx",
+                    "retryable": True,
+                    "operational_failure": True,
+                    "consecutive_operational_failures": 3,
+                    "last_probe_at": (now - timedelta(minutes=1)).isoformat(),
+                    "network_fingerprint": {"hostname": "test-runner"},
+                },
+            )
+        )
+        session.commit()
+
+        [health] = list_source_health(session, now=now)
+
+    assert health.circuit_state == "open"
+    assert health.last_error_category == "http_5xx"
+    assert health.retryable is True
+    assert health.operational_failure is True
+    assert health.consecutive_operational_failures == 3
+    assert health.circuit_open_until is not None
+    assert health.next_retry_at is not None
+    assert health.last_probe_at is not None
+    assert health.network_fingerprint == {"hostname": "test-runner"}
+

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun, MapDataset
+from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun, MapDataset, SourceHealthState
 from bankrotai.services.production_health import build_phase3_health
 
 
@@ -407,3 +407,52 @@ def test_phase3_health_keeps_internal_source_failure_critical() -> None:
     assert checks["source-data-availability"]["ok"] is True
     assert checks["source-freshness:lot-online.ru"]["last_error_category"] == "database_integrity"
     assert checks["source-freshness:lot-online.ru"]["severity"] == "critical"
+
+def test_phase3_health_treats_open_source_circuit_as_unavailable() -> None:
+    factory = _factory()
+    now = datetime(2026, 10, 5, 16, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+                published_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        session.add(
+            SourceHealthState(
+                source_system="torgi.gov.ru",
+                status="failed",
+                last_failure_at=(now - timedelta(minutes=5)).replace(tzinfo=None),
+                last_error="HTTP 503 upstream unavailable",
+                metadata_json={
+                    "circuit_state": "open",
+                    "circuit_open_until": (now + timedelta(minutes=10)).isoformat(),
+                    "next_retry_at": (now + timedelta(minutes=10)).isoformat(),
+                    "last_error_category": "http_5xx",
+                    "retryable": True,
+                    "operational_failure": True,
+                    "consecutive_operational_failures": 3,
+                },
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now,
+            expected_sources={"torgi.gov.ru"},
+        )
+
+    checks = {item["name"]: item for item in health["checks"]}
+    assert health["healthy"] is False
+    assert checks["source-data-availability"]["ok"] is False
+    assert checks["source-circuit:torgi.gov.ru"]["ok"] is False
+    assert checks["source-circuit:torgi.gov.ru"]["severity"] == "warning"
+    assert checks["source-circuit:torgi.gov.ru"]["last_error_category"] == "http_5xx"
+
