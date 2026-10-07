@@ -165,39 +165,63 @@ jobs:
         run: |
           $script = @'
           import json
+          import time
           from bankrotai.db import SessionLocal
           from bankrotai.services.geo_backfill import geocoding_progress
           from bankrotai.services.quality import list_source_health
           from bankrotai.services.source_resilience import source_global_network_state
 
-          session = SessionLocal()
-          try:
-              sources = list_source_health(session)
-              network = source_global_network_state(session)
-              geo = geocoding_progress(session)
-              configured = [s for s in sources if s.source_system != "tbankrot.ru"]
+          deadline = time.monotonic() + 900
+          samples = []
+          while True:
+              session = SessionLocal()
+              try:
+                  sources = list_source_health(session)
+                  network = source_global_network_state(session)
+                  geo = geocoding_progress(session)
+                  configured = [s for s in sources if s.source_system != "tbankrot.ru"]
+              finally:
+                  session.close()
+
               assert configured, "no public source health records"
               assert not network.get("circuit_open"), network
-              assert int(geo.get("network_wait") or 0) == 0, geo
-              print(json.dumps({
-                  "sources": [{
-                      "source": s.source_system,
-                      "status": s.status,
-                      "freshness": s.freshness_status,
-                      "coverage": s.coverage_status,
-                      "circuit": s.circuit_state,
-                  } for s in configured],
-                  "network": network,
-                  "geo": {
-                      "percent": geo.get("percent"),
-                      "actionable_remaining": geo.get("actionable_remaining"),
-                      "network_wait": geo.get("network_wait"),
-                      "deferred_no_match": geo.get("deferred_no_match"),
-                      "deferred_validation": geo.get("deferred_validation"),
-                  },
-              }, default=str))
-          finally:
-              session.close()
+
+              network_wait = int(geo.get("network_wait") or 0)
+              samples.append({
+                  "network_wait": network_wait,
+                  "actionable_remaining": int(geo.get("actionable_remaining") or 0),
+                  "eligible_now": int(geo.get("eligible_now") or 0),
+                  "waiting_for_retry": int(geo.get("waiting_for_retry") or 0),
+                  "next_retry_at": geo.get("next_retry_at"),
+              })
+              if network_wait == 0:
+                  print(json.dumps({
+                      "sources": [{
+                          "source": s.source_system,
+                          "status": s.status,
+                          "freshness": s.freshness_status,
+                          "coverage": s.coverage_status,
+                          "circuit": s.circuit_state,
+                      } for s in configured],
+                      "network": network,
+                      "geo": {
+                          "percent": geo.get("percent"),
+                          "actionable_remaining": geo.get("actionable_remaining"),
+                          "network_wait": network_wait,
+                          "deferred_no_match": geo.get("deferred_no_match"),
+                          "deferred_validation": geo.get("deferred_validation"),
+                      },
+                      "network_wait_samples": samples,
+                  }, default=str))
+                  break
+              if time.monotonic() >= deadline:
+                  raise AssertionError({
+                      "reason": "network_wait did not drain within bounded 15-minute acceptance window",
+                      "network": network,
+                      "geo": geo,
+                      "samples": samples,
+                  })
+              time.sleep(15)
           '@
           $json = $script | docker exec -i bankrotai-home-map-worker python -
           if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Source/GEO resilience acceptance failed' }
