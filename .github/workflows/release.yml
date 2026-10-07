@@ -8,6 +8,9 @@ on:
 permissions:
   actions: read
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 concurrency:
   group: accepted-release
@@ -131,6 +134,30 @@ jobs:
           npm ci
           npm sbom --sbom-format=cyclonedx > ../sbom-web.json
 
+      - name: Build release checksums
+        if: env.RELEASE_CURRENT == 'true'
+        shell: bash
+        run: sha256sum requirements.lock WEB/package-lock.json sbom-python.json sbom-web.json > SHA256SUMS
+
+      - name: Attest release evidence with GitHub OIDC and Sigstore
+        if: env.RELEASE_CURRENT == 'true'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-path: |
+            sbom-python.json
+            sbom-web.json
+            SHA256SUMS
+
+      - name: Verify signed release evidence against accepted commit
+        if: env.RELEASE_CURRENT == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact in sbom-python.json sbom-web.json SHA256SUMS; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" --source-digest "$ACCEPTED_SHA" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          done
+
       - name: Create accepted GitHub Release
         if: env.RELEASE_CURRENT == 'true'
         shell: bash
@@ -151,6 +178,5 @@ jobs:
 
           The attached CycloneDX SBOMs and SHA-256 checksums are generated from this accepted commit.
           EOF
-          sha256sum requirements.lock WEB/package-lock.json sbom-python.json sbom-web.json > SHA256SUMS
           gh release create "$TAG" --target "$ACCEPTED_SHA" --title "STERDEZ $TAG" --notes-file release-evidence.md \
             sbom-python.json sbom-web.json SHA256SUMS
