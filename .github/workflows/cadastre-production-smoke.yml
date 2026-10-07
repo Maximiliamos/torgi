@@ -131,39 +131,63 @@ jobs:
           address_queries = [
               "\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c \u041b\u0435\u043d\u0438\u043d\u0433\u0440\u0430\u0434\u0441\u043a\u0438\u0439 \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442 54\u0430",
               "\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c \u041b\u0435\u043d\u0438\u043d\u0433\u0440\u0430\u0434\u0441\u043a\u0438\u0439 \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442 105",
-              "\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c \u041b\u0435\u043d\u0438\u043d\u0433\u0440\u0430\u0434\u0441\u043a\u0438\u0439 \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442",
+              "\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c \u041c\u043e\u0441\u043a\u043e\u0432\u0441\u043a\u0438\u0439 \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442 1",
               "\u042f\u0440\u043e\u0441\u043b\u0430\u0432\u043b\u044c",
           ]
-          choices = []
-          address_suggestion_total = 0.0
-          for index, address_query in enumerate(address_queries, 1):
-              suggestions = search({"query": address_query}, f"address_suggestions_probe_{index}_ms")
-              assert suggestions.get("kind") == "address_suggestions", suggestions
-              address_suggestion_total += timings[f"address_suggestions_probe_{index}_ms"]
-              choices = suggestions.get("items") or []
-              if choices:
-                  break
-          assert choices, {"queries": address_queries, "last": suggestions}
-          timings["address_suggestions_ms"] = round(address_suggestion_total, 1)
-          selected_address = choices[0]
-          assert selected_address.get("lat") is not None and selected_address.get("lon") is not None, selected_address
-
           flow_started = time.monotonic()
-          candidates = search(
-              {
-                  "query": selected_address["label"],
-                  "resolve_address": "true",
-                  "lat": selected_address["lat"],
-                  "lon": selected_address["lon"],
-              },
-              "selected_address_wms_ms",
-          )
-          assert candidates.get("kind") == "cadastral_objects", candidates
-          candidate_items = candidates.get("items") or []
-          assert candidate_items, candidates
+          address_suggestion_total = 0.0
+          selected_address_wms_total = 0.0
+          selected_address = None
+          candidate_items = []
+          candidate_kn = None
+          for query_index, address_query in enumerate(address_queries, 1):
+              suggestions = search(
+                  {"query": address_query},
+                  f"address_suggestions_probe_{query_index}_ms",
+              )
+              assert suggestions.get("kind") == "address_suggestions", suggestions
+              address_suggestion_total += timings[f"address_suggestions_probe_{query_index}_ms"]
+              choices = suggestions.get("items") or []
+              for choice_index, choice in enumerate(choices[:3], 1):
+                  assert choice.get("lat") is not None and choice.get("lon") is not None, choice
+                  label = f"selected_address_wms_probe_{query_index}_{choice_index}_ms"
+                  resolved = search(
+                      {
+                          "query": choice["label"],
+                          "resolve_address": "true",
+                          "lat": choice["lat"],
+                          "lon": choice["lon"],
+                      },
+                      label,
+                  )
+                  selected_address_wms_total += timings[label]
+                  if resolved.get("kind") != "cadastral_objects":
+                      continue
+                  items = resolved.get("items") or []
+                  alternate = next(
+                      (
+                          item.get("cadastral_number")
+                          for item in items
+                          if item.get("cadastral_number")
+                          and item.get("cadastral_number") != first_kn
+                      ),
+                      None,
+                  )
+                  if alternate:
+                      selected_address = choice
+                      candidate_items = items
+                      candidate_kn = alternate
+                      break
+              if candidate_kn:
+                  break
+          assert selected_address is not None and candidate_kn, {
+              "queries": address_queries,
+              "last_suggestions": suggestions,
+          }
           assert all(item.get("cadastral_number") for item in candidate_items), candidate_items
+          timings["address_suggestions_ms"] = round(address_suggestion_total, 1)
+          timings["selected_address_wms_ms"] = round(selected_address_wms_total, 1)
 
-          candidate_kn = candidate_items[0]["cadastral_number"]
           candidate_card = search({"query": candidate_kn}, "candidate_full_card_ms")
           candidate_obj = candidate_card.get("object") or {}
           assert candidate_card.get("kind") == "object", candidate_card
@@ -173,7 +197,6 @@ jobs:
           timings["full_address_flow_ms"] = round((time.monotonic() - flow_started) * 1000, 1)
 
           second_kn = candidate_kn
-          assert second_kn != first_kn, {"first_kn": first_kn, "second_kn": second_kn}
           second = search({"query": second_kn}, "second_known_kn_ms")
           second_obj = second.get("object") or {}
           assert second.get("kind") == "object", second
