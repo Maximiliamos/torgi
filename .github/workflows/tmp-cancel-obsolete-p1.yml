@@ -1,0 +1,39 @@
+name: Cancel obsolete P1 run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-cancel-obsolete-p1.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      OBSOLETE_RUN_ID: '37613222795'
+    steps:
+      - name: Cancel only the obsolete read-only P1 run
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          run="$(gh api "repos/$REPOSITORY/actions/runs/$OBSOLETE_RUN_ID")"
+          name="$(jq -r '.name' <<<"$run")"
+          sha="$(jq -r '.head_sha' <<<"$run")"
+          status="$(jq -r '.status' <<<"$run")"
+          echo "current=$current_sha run=$OBSOLETE_RUN_ID name=$name sha=$sha status=$status"
+          test "$name" = "P1 production data quality"
+          test "$sha" != "$current_sha"
+          if [[ "$status" == "completed" ]]; then
+            echo "Obsolete P1 already completed; nothing to cancel."
+            exit 0
+          fi
+          gh api -X POST "repos/$REPOSITORY/actions/runs/$OBSOLETE_RUN_ID/force-cancel" >/dev/null
+          echo "Force-cancelled obsolete read-only P1 run $OBSOLETE_RUN_ID."
