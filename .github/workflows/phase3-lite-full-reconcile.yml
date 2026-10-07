@@ -1,4 +1,5 @@
 name: Phase 3 Lite full source reconciliation
+# Final acceptance rerun marker: 2026-10-07. No runtime policy change.
 
 on:
   workflow_dispatch:
