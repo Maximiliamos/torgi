@@ -1,0 +1,34 @@
+name: Dispatch current main Home deploy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-current-main-home.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch Home deploy for exact current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          expected="c2eced29072d053fa538c0ea19cdee76d711fa12"
+          test "$current" = "$expected"
+          existing="$(gh api "repos/$REPOSITORY/actions/workflows/home-secondary-deploy.yml/runs?branch=main&per_page=50" --jq '[.workflow_runs[] | select(.head_sha == "'"$expected"'" and (.status != "completed" or .conclusion == "success"))] | length')"
+          if test "$existing" != "0"; then
+            echo "Exact Home deploy already exists for $expected"
+            exit 0
+          fi
+          gh workflow run home-secondary-deploy.yml --repo "$REPOSITORY" --ref main
+          echo "Dispatched Home deploy for $expected"
