@@ -33,6 +33,11 @@ web_lock_version = str(web_lock.get("version"))
 web_lock_root_version = str((web_lock.get("packages") or {}).get("", {}).get("version"))
 iss = (ROOT / "installer/BankrotAI.iss").read_text(encoding="utf-8")
 version_info = (ROOT / "installer/version_info.txt").read_text(encoding="utf-8")
+runtime_init = (ROOT / "src/bankrotai/__init__.py").read_text(encoding="utf-8")
+if 'version("bankrotai-finder")' not in runtime_init:
+    fail("runtime distribution name must match pyproject project name")
+if f'__version__ = "{version}"' not in runtime_init:
+    fail("frozen/metadata-free runtime version fallback must match pyproject")
 
 checks = {
     "WEB/package.json": web_version,
