@@ -34,9 +34,9 @@ dependencies = [
 desktop = ["PySide6>=6.7.0,<7"]
 dev = [
   "pytest>=9.0.3,<10",
-  "pyinstaller==6.20.0",
-  "ruff==0.12.2",
-  "mypy==1.16.1",
+  "pyinstaller==6.22.3",
+  "ruff==0.16.10",
+  "mypy==1.20.2",
 ]
 
 [tool.setuptools]
