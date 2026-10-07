@@ -15,6 +15,8 @@ def test_p1_push_audit_waits_for_exact_home_revision() -> None:
     assert "Wait for exact Home production revision" in text
     assert "Deploy home secondary origin" in text
     assert "head_sha=$GITHUB_SHA" in text
+    assert "&event=push" not in text
+    assert '"completed:success" if any' in text
     assert "needs: wait-home-deploy" in text
 
 
