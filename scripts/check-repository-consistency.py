@@ -28,11 +28,16 @@ with (ROOT / "pyproject.toml").open("rb") as fh:
     version = str(tomllib.load(fh)["project"]["version"])
 
 web_version = str(json.loads((ROOT / "WEB/package.json").read_text(encoding="utf-8"))["version"])
+web_lock = json.loads((ROOT / "WEB/package-lock.json").read_text(encoding="utf-8"))
+web_lock_version = str(web_lock.get("version"))
+web_lock_root_version = str((web_lock.get("packages") or {}).get("", {}).get("version"))
 iss = (ROOT / "installer/BankrotAI.iss").read_text(encoding="utf-8")
 version_info = (ROOT / "installer/version_info.txt").read_text(encoding="utf-8")
 
 checks = {
     "WEB/package.json": web_version,
+    "WEB/package-lock.json": web_lock_version,
+    "WEB/package-lock.json packages root": web_lock_root_version,
     "installer/BankrotAI.iss": (re.search(r'#define MyAppVersion "([^"]+)"', iss) or [None, "missing"])[1],
     "installer/version_info.txt ProductVersion": (re.search(r"ProductVersion', '([^']+)'", version_info) or [None, "missing"])[1],
     "installer/version_info.txt FileVersion": (re.search(r"FileVersion', '([^']+)'", version_info) or [None, "missing"])[1],
