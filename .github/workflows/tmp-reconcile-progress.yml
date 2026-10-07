@@ -29,7 +29,13 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "$(python -c 'import json,os; print(json.dumps({"username":os.environ["USERNAME"],"password":os.environ["PASSWORD"]}))')" \
             "$API_BASE/api/auth/login" >/dev/null
+          echo '=== OPERATIONS PROGRESS ==='
           curl --fail --silent --show-error --max-time 20 \
             -b "$cookie" \
             "$API_BASE/api/operations/progress" \
+            | python -m json.tool
+          echo '=== EXACT SYNC RUN ==='
+          curl --fail --silent --show-error --max-time 20 \
+            -b "$cookie" \
+            "$API_BASE/api/sync/lots/c9515774-9a99-4143-b650-d0f88720a658" \
             | python -m json.tool
