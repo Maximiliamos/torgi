@@ -1,4 +1,5 @@
 name: Deploy Cloudflare edge proxy
+# Final production acceptance rerun marker: 2026-10-07. No policy change.
 # Final acceptance redeploy marker: 2026-10-07. No deployment policy change.
 
 on:
