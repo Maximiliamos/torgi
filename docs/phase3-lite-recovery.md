@@ -9,7 +9,7 @@ Phase 3 Lite is intentionally small and optimized for a single home production o
 - Every replacement backup is restored into an isolated `postgres:17` container with no network before it becomes the retained canonical copy.
 - The restore drill verifies the Alembic revision plus row-count plausibility for processed lots, GEO snapshots, application users, ingestion runs and map datasets.
 - Backup metadata records SHA-256, source/restored schema revisions and restore status.
-- Canonical storage is `D:\BankrotAI\dr-backups`; after a successful replacement, exactly one latest verified `.dump + .json` pair is retained.
+- Canonical storage is `D:\BankrotAI\dr-backups`; after a successful replacement, the latest three verified `.dump + .json` generations are retained.
 - GitHub uses one deduplicated open issue per alert class and closes it automatically after recovery.
 
 ## Alert meanings
@@ -38,6 +38,7 @@ Never restore directly over the live database as a first test. First run an isol
 
 - C: drive: critical below 10% free.
 - Latest backup/restore evidence: critical when older than 60 hours. This matches the approximately 48-hour production cadence with scheduling grace.
-- The retained backup must have `restore_verification = passed`; an unverified replacement never evicts the last verified copy.
+- Retained backups must have `restore_verification = passed`; an unverified replacement never evicts the previously verified generations.
+- Local retention target: three verified generations on `D:`. Encrypted off-host retention is tracked separately because it requires an owner-approved encryption key and destination.
 - Source complete snapshot: uses the application freshness contract (36-hour full-coverage threshold). Individual stale/failed sources are warnings; production becomes critical only when configured source records are missing or no configured source is operational.
 - GEO backlog: critical when actionable work remains, GEO is not paused, and no completed geocoding batch has been recorded for 24 hours.

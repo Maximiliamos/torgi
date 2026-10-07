@@ -95,7 +95,7 @@ def test_p2_maintenance_is_bounded_and_fail_closed() -> None:
     assert "--log-opt max-size=20m --log-opt max-file=5" in deploy
     assert "Docker log rotation is not enforced" in deploy
     assert "-Destination 'D:\\BankrotAI\\dr-backups'" in backup
-    assert "-RetainCount 1" in backup
+    assert "-RetainCount 3" in backup
     assert "-VerifyRestore" in backup
     assert "actions: read" in backup
     assert "wait-home-deploy:" in backup

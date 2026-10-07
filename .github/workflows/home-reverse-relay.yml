@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 15
     environment: production
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare SSH identity
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
@@ -126,7 +126,7 @@ jobs:
     env:
       CONFIG_ROOT: C:\ProgramData\BankrotAI\relay
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Pin REG.RU relay outside the workstation VPN
         shell: powershell
         run: |

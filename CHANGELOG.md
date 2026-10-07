@@ -1,5 +1,15 @@
 # История изменений
 
+## 0.3.1 — 2026-10-07
+
+Safe post-closeout hardening.
+
+- Retain the latest three verified PostgreSQL backup generations on the Home host.
+- Prevent new >1000-line Python/TypeScript/JavaScript modules without explicit grandfathering.
+- Pin GitHub Actions and production container images to immutable revisions/digests.
+- Keep P0–P12 production acceptance and fail-closed backup verification unchanged.
+
+
 ## 0.3.0 — 2026-10-07
 
 Repository closeout release after the final production acceptance baseline.

@@ -39,7 +39,7 @@ if ($dFreeBefore -lt $requiredGb) {
 }
 
 Write-Host 'Phase 2: create and verify the new canonical D: backup.'
-& "$PSScriptRoot\backup-home-postgres.ps1" -Destination $Destination -RetainCount 1 -VerifyRestore
+& "$PSScriptRoot\backup-home-postgres.ps1" -Destination $Destination -RetainCount 3 -VerifyRestore
 if ($LASTEXITCODE -ne 0) {
     throw 'Canonical D: backup failed'
 }

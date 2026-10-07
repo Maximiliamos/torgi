@@ -3,7 +3,7 @@ param(
     [string]$Destination = 'D:\BankrotAI\dr-backups',
     [switch]$VerifyRestore,
     [ValidateRange(0, 10)]
-    [int]$RetainCount = 1,
+    [int]$RetainCount = 3,
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 1,
     [int]$MaxMapDatasetCountWarning = 5,
@@ -87,7 +87,7 @@ if ($VerifyRestore) {
     $verifyPassword = [guid]::NewGuid().ToString('N')
     try {
         docker run -d --name $verifyContainer --network none `
-            -e "POSTGRES_PASSWORD=$verifyPassword" -e POSTGRES_DB=bankrotai_restore postgres:17 | Out-Null
+            -e "POSTGRES_PASSWORD=$verifyPassword" -e POSTGRES_DB=bankrotai_restore postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675 | Out-Null
         for ($attempt = 1; $attempt -le 30; $attempt++) {
             docker exec $verifyContainer pg_isready -U postgres -d bankrotai_restore *> $null
             if ($LASTEXITCODE -eq 0) { break }

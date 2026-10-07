@@ -1,5 +1,5 @@
 #define MyAppName "BankrotAI"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppPublisher "BankrotAI"
 #define MyAppExeName "BankrotAI.exe"
 
