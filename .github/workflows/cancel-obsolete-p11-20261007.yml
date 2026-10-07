@@ -1,0 +1,76 @@
+name: Cancel obsolete P11 run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/cancel-obsolete-p11-20261007.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OBSOLETE_RUN_ID: "37675915584"
+    steps:
+      - name: Cancel only obsolete P11 SHA
+        shell: python
+        run: |
+          import json
+          import os
+          import time
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          run_id = os.environ["OBSOLETE_RUN_ID"]
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "sterdez-cancel-obsolete-p11",
+          }
+
+          def request(path, method="GET"):
+              req = urllib.request.Request(
+                  "https://api.github.com" + path,
+                  headers=headers,
+                  method=method,
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
+
+          main = request(f"/repos/{repo}/branches/main")["commit"]["sha"]
+          run = request(f"/repos/{repo}/actions/runs/{run_id}")
+          print(json.dumps({
+              "current_main": main,
+              "run_id": run_id,
+              "run_head_sha": run.get("head_sha"),
+              "status": run.get("status"),
+              "conclusion": run.get("conclusion"),
+          }, sort_keys=True))
+
+          if run.get("name") != "P11 production acceptance":
+              raise SystemExit("Refusing to cancel a non-P11 workflow")
+          if run.get("head_sha") == main:
+              raise SystemExit("Refusing to cancel P11 for the current main SHA")
+          if run.get("status") == "completed":
+              raise SystemExit(0)
+
+          request(f"/repos/{repo}/actions/runs/{run_id}/cancel", method="POST")
+          deadline = time.monotonic() + 120
+          while time.monotonic() < deadline:
+              state = request(f"/repos/{repo}/actions/runs/{run_id}")
+              if state.get("status") == "completed":
+                  print(json.dumps({
+                      "cancelled_run_id": run_id,
+                      "conclusion": state.get("conclusion"),
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+              time.sleep(3)
+          raise SystemExit("Obsolete P11 cancellation did not settle within 120 seconds")
