@@ -1,0 +1,12 @@
+# Default ownership for the current single-owner repository.
+* @Maximiliamos
+
+/.github/workflows/ @Maximiliamos
+/alembic/ @Maximiliamos
+/src/bankrotai/ @Maximiliamos
+/WEB/ @Maximiliamos
+/docs/phase3-lite-recovery.md @Maximiliamos
+/docs/phase4-lite-operations.md @Maximiliamos
+/docs/p11-production-acceptance.md @Maximiliamos
+/requirements.lock @Maximiliamos
+/requirements-dev.lock @Maximiliamos

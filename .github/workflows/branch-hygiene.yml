@@ -1,0 +1,119 @@
+name: Branch hygiene
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/branch-hygiene.yml"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: repository-branch-hygiene
+  cancel-in-progress: false
+
+jobs:
+  prune-merged:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Delete only merged or fully-contained disposable branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          api = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "sterdez-branch-hygiene",
+          }
+
+          def request(path, method="GET"):
+              req = urllib.request.Request(api + path, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
+
+          def pages(path):
+              page = 1
+              while True:
+                  sep = "&" if "?" in path else "?"
+                  data = request(f"{path}{sep}per_page=100&page={page}")
+                  if not data:
+                      return
+                  yield from data
+                  if len(data) < 100:
+                      return
+                  page += 1
+
+          branches = list(pages("/branches"))
+          open_prs = list(pages("/pulls?state=open"))
+          closed_prs = list(pages("/pulls?state=closed"))
+          open_heads = {
+              pr["head"]["ref"]
+              for pr in open_prs
+              if pr.get("head", {}).get("repo", {}).get("full_name") == repo
+          }
+          merged_heads = {
+              pr["head"]["ref"]
+              for pr in closed_prs
+              if pr.get("merged_at")
+              and pr.get("head", {}).get("repo", {}).get("full_name") == repo
+          }
+
+          deleted = []
+          retained = []
+          errors = []
+          for branch in branches:
+              name = branch["name"]
+              if name == "main" or branch.get("protected") or name in open_heads:
+                  retained.append({"branch": name, "reason": "protected/open"})
+                  continue
+
+              eligible = name in merged_heads
+              reason = "merged-pr" if eligible else ""
+              if not eligible:
+                  quoted = urllib.parse.quote(name, safe="")
+                  try:
+                      compare = request(f"/compare/main...{quoted}")
+                      eligible = int(compare.get("ahead_by", 1)) == 0
+                      reason = "ahead-by-zero" if eligible else "unique-commits"
+                  except Exception as exc:
+                      retained.append({"branch": name, "reason": f"compare-error:{exc}"})
+                      continue
+
+              if not eligible:
+                  retained.append({"branch": name, "reason": reason})
+                  continue
+
+              try:
+                  request("/git/refs/heads/" + urllib.parse.quote(name, safe=""), method="DELETE")
+                  deleted.append({"branch": name, "reason": reason})
+              except Exception as exc:
+                  errors.append({"branch": name, "error": str(exc)})
+
+          summary = {
+              "deleted_count": len(deleted),
+              "retained_count": len(retained),
+              "error_count": len(errors),
+              "deleted": deleted,
+              "errors": errors,
+          }
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(f"## Branch hygiene\n\nDeleted **{len(deleted)}** merged/contained branches; retained **{len(retained)}**; errors **{len(errors)}**.\n")
+          if errors:
+              raise SystemExit("One or more eligible branches could not be deleted")
