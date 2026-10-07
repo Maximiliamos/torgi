@@ -137,7 +137,7 @@ jobs:
         if: steps.cadence.outputs.due == 'true'
         shell: powershell
         run: |
-          .\scripts\backup-home-postgres.ps1 -Destination 'D:\BankrotAI\dr-backups' -RetainCount 1 -VerifyRestore
+          .\scripts\backup-home-postgres.ps1 -Destination 'D:\BankrotAI\dr-backups' -RetainCount 3 -VerifyRestore
           $latest = Get-ChildItem 'D:\BankrotAI\dr-backups' -Filter 'bankrotai-*.json' -File |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if (-not $latest) { throw 'Verified backup metadata was not created on D:' }
