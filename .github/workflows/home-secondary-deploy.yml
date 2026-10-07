@@ -1008,7 +1008,7 @@ jobs:
               --env POSTGRES_USER=bankrotai --env POSTGRES_DB=bankrotai `
               --env "POSTGRES_PASSWORD=$password" `
               --volume bankrotai-home-postgres:/var/lib/postgresql/data `
-              postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675 | Out-Null
+              postgres:17 | Out-Null
           } else {
             docker start $env:POSTGRES_CONTAINER | Out-Null
           }
@@ -1193,7 +1193,7 @@ jobs:
               --network $env:DOCKER_NETWORK `
               --mount "type=bind,source=$env:CONFIG_ROOT\redis.conf,target=/usr/local/etc/redis/redis.conf,readonly" `
               --volume bankrotai-home-redis:/data `
-              redis:7-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7 redis-server /usr/local/etc/redis/redis.conf | Out-Null
+              redis:7-alpine redis-server /usr/local/etc/redis/redis.conf | Out-Null
           } else {
             docker start $env:REDIS_CONTAINER | Out-Null
           }
