@@ -36,7 +36,7 @@ jobs:
       - name: Verify repository consistency
         run: python scripts/check-repository-consistency.py
 
-      - name: Wait for exact-SHA production gates
+      - name: Verify release provenance and production gates
         shell: python
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -50,46 +50,169 @@ jobs:
           repo = os.environ["GITHUB_REPOSITORY"]
           sha = os.environ["ACCEPTED_SHA"]
           token = os.environ["GITHUB_TOKEN"]
-          required = {
-              "Production reliability",
-              "P1 production data quality",
-              "Deploy WEB and API to REG.RU",
-              "Deploy Cloudflare edge proxy",
-              "Public WEB smoke",
-              "Production functional reliability",
-              "P11 production acceptance",
-          }
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json",
               "User-Agent": "sterdez-release-gate",
           }
-          url = f"https://api.github.com/repos/{repo}/actions/runs?head_sha={urllib.parse.quote(sha)}&per_page=100"
+          active_states = {"queued", "in_progress", "waiting", "requested", "pending"}
+          exact_required = {
+              "Production reliability",
+              "Deploy home secondary origin",
+              "P1 production data quality",
+              "P11 production acceptance",
+          }
+
+          def api(path):
+              req = urllib.request.Request("https://api.github.com" + path, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          def exact_runs():
+              encoded = urllib.parse.quote(sha, safe="")
+              return api(f"/repos/{repo}/actions/runs?head_sha={encoded}&per_page=100").get("workflow_runs", [])
+
           deadline = time.monotonic() + 1800
           while True:
-              req = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  runs = json.load(response).get("workflow_runs", [])
+              runs = exact_runs()
               states = {}
-              for name in required:
+              for name in exact_required:
                   candidates = [run for run in runs if run.get("name") == name]
                   if any(run.get("status") == "completed" and run.get("conclusion") == "success" for run in candidates):
                       states[name] = "success"
-                  elif any(run.get("status") in {"queued", "in_progress", "waiting", "requested", "pending"} for run in candidates):
+                  elif any(run.get("status") in active_states for run in candidates):
                       states[name] = "active"
                   elif candidates:
                       states[name] = "failed"
                   else:
                       states[name] = "missing"
-              print(json.dumps(states, sort_keys=True))
+              print(json.dumps({"exact_sha": sha, "states": states}, sort_keys=True))
               if all(value == "success" for value in states.values()):
                   break
               failed = [name for name, value in states.items() if value == "failed"]
               if failed:
-                  raise SystemExit(f"Exact-SHA production gate failed: {failed}")
+                  raise SystemExit(f"Exact-SHA release gate failed: {failed}")
               if time.monotonic() >= deadline:
-                  raise SystemExit(f"Timed out waiting for exact-SHA gates: {states}")
+                  raise SystemExit(f"Timed out waiting for exact-SHA release gates: {states}")
               time.sleep(20)
+
+          exact = exact_runs()
+          exact_names = {
+              run.get("name")
+              for run in exact
+              if run.get("status") == "completed" and run.get("conclusion") == "success"
+          }
+          deploy_names = {"Deploy WEB and API to REG.RU", "Deploy Cloudflare edge proxy"}
+          if deploy_names.issubset(exact_names):
+              public_deploy_sha = sha
+              deploy_mode = "exact"
+          else:
+              def successful_workflow_runs(workflow_file):
+                  encoded = urllib.parse.quote(workflow_file, safe="")
+                  payload = api(
+                      f"/repos/{repo}/actions/workflows/{encoded}/runs"
+                      "?branch=main&status=success&per_page=100"
+                  )
+                  return [
+                      run
+                      for run in payload.get("workflow_runs", [])
+                      if run.get("conclusion") == "success"
+                  ]
+
+              regru = successful_workflow_runs("regru-deploy.yml")
+              cloudflare = successful_workflow_runs("cloudflare-edge-deploy.yml")
+              regru_by_sha = {run["head_sha"]: run for run in regru}
+              cloudflare_by_sha = {run["head_sha"]: run for run in cloudflare}
+              common = set(regru_by_sha) & set(cloudflare_by_sha)
+              candidates = sorted(
+                  common,
+                  key=lambda item: max(
+                      regru_by_sha[item].get("created_at") or "",
+                      cloudflare_by_sha[item].get("created_at") or "",
+                  ),
+                  reverse=True,
+              )
+              public_deploy_sha = None
+              changed_files = None
+              deploy_sensitive = None
+
+              sensitive_exact = {
+                  "Dockerfile",
+                  "requirements.lock",
+                  "pyproject.toml",
+                  ".github/workflows/regru-deploy.yml",
+                  ".github/workflows/cloudflare-edge-deploy.yml",
+              }
+              sensitive_prefixes = (
+                  "alembic/",
+                  "src/",
+                  "WEB/",
+                  "edge-proxy/",
+                  "api-proxy/",
+              )
+
+              for candidate in candidates:
+                  compare = api(
+                      f"/repos/{repo}/compare/"
+                      f"{urllib.parse.quote(candidate, safe='')}..."
+                      f"{urllib.parse.quote(sha, safe='')}"
+                  )
+                  if compare.get("status") not in {"ahead", "identical"}:
+                      continue
+                  files = compare.get("files", [])
+                  if len(files) >= 300:
+                      raise SystemExit(
+                          "Refusing ancestor deploy provenance because compare file list reached the 300-file API bound"
+                      )
+                  names = [item.get("filename", "") for item in files]
+                  sensitive = [
+                      name
+                      for name in names
+                      if name in sensitive_exact or name.startswith(sensitive_prefixes)
+                  ]
+                  if sensitive:
+                      continue
+                  public_deploy_sha = candidate
+                  changed_files = names
+                  deploy_sensitive = sensitive
+                  break
+
+              if public_deploy_sha is None:
+                  raise SystemExit(
+                      "No accepted ancestor public deploy exists without intervening deploy-sensitive changes"
+                  )
+
+              def has_success(workflow_file, target_sha):
+                  return any(
+                      run.get("head_sha") == target_sha and run.get("conclusion") == "success"
+                      for run in successful_workflow_runs(workflow_file)
+                  )
+
+              if not has_success("public-web-smoke.yml", public_deploy_sha):
+                  raise SystemExit(
+                      f"Public WEB smoke is not green for ancestor deploy {public_deploy_sha}"
+                  )
+              if not has_success("production-functional.yml", public_deploy_sha):
+                  raise SystemExit(
+                      f"Functional reliability is not green for ancestor deploy {public_deploy_sha}"
+                  )
+              deploy_mode = "ancestor-nondeploy"
+              print(
+                  json.dumps(
+                      {
+                          "accepted_sha": sha,
+                          "public_deploy_sha": public_deploy_sha,
+                          "deploy_mode": deploy_mode,
+                          "non_deploy_changes": changed_files,
+                          "deploy_sensitive_changes": deploy_sensitive,
+                      },
+                      sort_keys=True,
+                  )
+              )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"PUBLIC_DEPLOY_SHA={public_deploy_sha}\n")
+              env_file.write(f"PUBLIC_DEPLOY_MODE={deploy_mode}\n")
 
       - name: Build SBOM evidence
         run: |
@@ -113,8 +236,10 @@ jobs:
           # STERDEZ $TAG
 
           Accepted Git SHA: $ACCEPTED_SHA
+          Public deploy SHA: $PUBLIC_DEPLOY_SHA
+          Public deploy provenance: $PUBLIC_DEPLOY_MODE
 
-          This release was created only after exact-SHA production reliability, P1, REG.RU deploy, Cloudflare deploy, Public WEB smoke, functional reliability and P11 acceptance were all green.
+          This release requires exact-SHA production reliability, Home deployment, P1 and P11 acceptance. REG.RU/Cloudflare/Public WEB/Functional evidence must either be green on the same SHA or on a proven ancestor with no intervening deploy-sensitive changes.
 
           The attached CycloneDX SBOMs and SHA-256 checksums are generated from this accepted commit.
           EOF
