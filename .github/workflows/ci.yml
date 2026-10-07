@@ -170,12 +170,25 @@ jobs:
   docker-smoke-readonly:
     name: Docker read-only production smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - working-directory: WEB
-        run: npm ci && npx playwright install --with-deps chromium
+        run: |
+          set -euo pipefail
+          npm ci
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if test "$attempt" -eq 3; then
+              echo "Playwright Chromium install failed after bounded retries" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
       - run: bash scripts/docker-smoke-readonly.sh
 
   docker-smoke-operator:
