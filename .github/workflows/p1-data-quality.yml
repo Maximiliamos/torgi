@@ -4,10 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/p1-data-quality.yml'
-      - 'src/bankrotai/services/quality.py'
-      - 'scripts/p1-production-audit.ps1'
   schedule:
     - cron: '37 4 * * *'
   workflow_run:
