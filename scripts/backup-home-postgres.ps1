@@ -169,19 +169,49 @@ if ($RetainCount -gt 0) {
     if ($restoreStatus -ne 'passed') {
         Write-Warning "Retention skipped because the new backup has not passed isolated restore verification."
     } else {
-        $dumpFiles = @(
-            Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.dump' |
-                Sort-Object LastWriteTimeUtc -Descending
+        # Retain the newest N *verified dump + metadata pairs*. Never count an
+        # incomplete/failed dump as a verified generation or delete it blindly.
+        $verifiedPairs = @(
+            Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.json' |
+                ForEach-Object {
+                    $candidateMetadata = $_
+                    try {
+                        $candidate = Get-Content -LiteralPath $candidateMetadata.FullName -Raw | ConvertFrom-Json
+                        $stem = [System.IO.Path]::GetFileNameWithoutExtension($candidateMetadata.Name)
+                        $candidateDump = Join-Path $resolvedDestination "$stem.dump"
+                        if (
+                            $candidate.restore_verification -eq 'passed' -and
+                            $candidate.backup_file -and
+                            $candidate.sha256 -match '^[0-9a-fA-F]{64}$' -and
+                            (Test-Path -LiteralPath $candidateDump -PathType Leaf) -and
+                            ([System.IO.Path]::GetFullPath([string]$candidate.backup_file) -eq
+                             [System.IO.Path]::GetFullPath($candidateDump)) -and
+                            (Get-Item -LiteralPath $candidateDump).Length -gt 0
+                        ) {
+                            [pscustomobject]@{
+                                Dump = $candidateDump
+                                Metadata = $candidateMetadata.FullName
+                                CreatedAt = $candidateMetadata.LastWriteTimeUtc
+                            }
+                        } else {
+                            Write-Warning "Unverified/incomplete backup preserved for operator review: $($candidateMetadata.Name)"
+                        }
+                    } catch {
+                        Write-Warning "Unreadable backup metadata preserved for operator review: $($candidateMetadata.Name)"
+                    }
+                } |
+                Sort-Object -Property CreatedAt -Descending
         )
-        $protected = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($dump in ($dumpFiles | Select-Object -First $RetainCount)) {
-            [void]$protected.Add($dump.FullName)
-            $stem = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
-            [void]$protected.Add((Join-Path $resolvedDestination "$stem.json"))
+
+        $verifiedCount = @($verifiedPairs).Count
+        if ($verifiedCount -lt $RetainCount) {
+            Write-Warning "Only $verifiedCount verified backup generations present; retention will preserve all of them."
         }
-        Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*' |
-            Where-Object { -not $protected.Contains($_.FullName) } |
-            Remove-Item -Force
+        foreach ($old in @($verifiedPairs | Select-Object -Skip $RetainCount)) {
+            # Remove only explicitly matched superseded, verified pairs.
+            Remove-Item -LiteralPath $old.Dump -Force
+            Remove-Item -LiteralPath $old.Metadata -Force
+        }
     }
 }
 
