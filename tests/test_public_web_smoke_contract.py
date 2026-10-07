@@ -6,6 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "public-web-smoke.yml"
 
+# Production smoke provenance must never follow pull-request edge diagnostics.
+
 
 def test_scheduled_public_smoke_checks_latest_successful_edge_release() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
