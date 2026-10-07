@@ -11,7 +11,8 @@ def test_p1_push_audit_waits_for_exact_home_revision() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
     assert "push:" in text
-    assert "'src/bankrotai/services/quality.py'" in text
+    push_block = text.split("push:", 1)[1].split("schedule:", 1)[0]
+    assert "paths:" not in push_block
     assert "Wait for exact Home production revision" in text
     assert "Deploy home secondary origin" in text
     assert "head_sha=$GITHUB_SHA" in text

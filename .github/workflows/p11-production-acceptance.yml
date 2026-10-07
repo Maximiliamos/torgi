@@ -4,8 +4,6 @@ name: P11 production acceptance
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/p11-production-acceptance.yml'
   workflow_dispatch:
     inputs:
       soak_minutes:

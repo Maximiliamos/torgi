@@ -13,7 +13,8 @@ def test_p11_acceptance_is_main_only_deploy_gated_and_bounded() -> None:
     assert "workflow_dispatch:" in text
     assert "schedule:" not in text
     assert "branches: [main]" in text
-    assert "'.github/workflows/p11-production-acceptance.yml'" in text
+    push_block = text.split("push:", 1)[1].split("workflow_dispatch:", 1)[0]
+    assert "paths:" not in push_block
     assert "Wait for exact Home production revision" in text
     assert "Deploy home secondary origin" in text
     assert "head_sha=$GITHUB_SHA" in text
