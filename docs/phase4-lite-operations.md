@@ -72,18 +72,19 @@ If the runner listener is alive but disconnected and is in a long reconnect back
 
 ## Backup and restore
 
-Phase 3 policy remains authoritative:
+The current production backup policy is authoritative:
 
-- daily PostgreSQL backup with 14-day local retention;
-- weekly isolated restore drill;
-- SHA-256 verification;
-- schema-revision and critical row-count plausibility checks;
-- restore is tested in an isolated postgres:17 container with no network.
+- canonical backup root: `D:\BankrotAI\dr-backups`;
+- the scheduled workflow checks daily and creates a new PostgreSQL backup only when the latest verified backup is old enough for the approximately 48-hour cadence;
+- exactly one latest verified `.dump + .json` pair is retained after the replacement backup passes checksum and isolated restore verification;
+- SHA-256, schema revision and critical row-count plausibility are verified;
+- restore is tested in an isolated `postgres:17` container with no network;
+- P10/P11 treat backup/restore evidence as stale after 60 hours, which gives the 48-hour cadence a scheduling grace window.
 
 Manual drill:
 
 ```powershell
-.\scripts\backup-home-postgres.ps1 -Destination 'C:\ProgramData\BankrotAI\dr-backups' -VerifyRestore -RetainDays 14
+.\scripts\backup-home-postgres.ps1 -Destination 'D:\BankrotAI\dr-backups' -VerifyRestore
 ```
 
 See `docs/phase3-lite-recovery.md` for alert thresholds and recovery details.

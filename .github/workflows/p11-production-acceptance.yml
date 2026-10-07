@@ -1,4 +1,5 @@
 name: P11 production acceptance
+# Final acceptance rerun marker: 2026-10-07. No gate weakening.
 
 on:
   push:

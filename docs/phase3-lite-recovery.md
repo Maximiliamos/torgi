@@ -5,10 +5,11 @@ Phase 3 Lite is intentionally small and optimized for a single home production o
 ## Automated checks
 
 - Production health runs every 30 minutes on the home runner.
-- PostgreSQL backups run daily.
-- Sunday backup runs include a full restore into an isolated `postgres:17` container with no network.
+- The backup workflow checks production daily and creates a new PostgreSQL dump only when the latest verified copy reaches the approximately 48-hour cadence.
+- Every replacement backup is restored into an isolated `postgres:17` container with no network before it becomes the retained canonical copy.
 - The restore drill verifies the Alembic revision plus row-count plausibility for processed lots, GEO snapshots, application users, ingestion runs and map datasets.
 - Backup metadata records SHA-256, source/restored schema revisions and restore status.
+- Canonical storage is `D:\BankrotAI\dr-backups`; after a successful replacement, exactly one latest verified `.dump + .json` pair is retained.
 - GitHub uses one deduplicated open issue per alert class and closes it automatically after recovery.
 
 ## Alert meanings
@@ -24,7 +25,7 @@ Phase 3 Lite is intentionally small and optimized for a single home production o
 On the home Windows machine from the repository checkout:
 
 ```powershell
-.\scripts\backup-home-postgres.ps1 -Destination 'C:\ProgramData\BankrotAI\dr-backups' -VerifyRestore -RetainDays 14
+.\scripts\backup-home-postgres.ps1 -Destination 'D:\BankrotAI\dr-backups' -VerifyRestore
 ```
 
 A successful drill must end with `restore_verification = passed` and matching source/restored schema revisions. The verification container is removed automatically.
@@ -36,7 +37,7 @@ Never restore directly over the live database as a first test. First run an isol
 ## Thresholds
 
 - C: drive: critical below 10% free.
-- Latest backup: critical when older than 30 hours.
-- Latest verified restore drill: critical when older than 192 hours (8 days).
+- Latest backup/restore evidence: critical when older than 60 hours. This matches the approximately 48-hour production cadence with scheduling grace.
+- The retained backup must have `restore_verification = passed`; an unverified replacement never evicts the last verified copy.
 - Source complete snapshot: uses the application freshness contract (36-hour full-coverage threshold). Individual stale/failed sources are warnings; production becomes critical only when configured source records are missing or no configured source is operational.
 - GEO backlog: critical when actionable work remains, GEO is not paused, and no completed geocoding batch has been recorded for 24 hours.

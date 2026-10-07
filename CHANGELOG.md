@@ -1,5 +1,16 @@
 # История изменений
 
+## October 2026 — production hardening and cadastral search
+
+- completed the operational P0–P12 hardening sequence for durable reconciliation, data-quality controls, maintenance/DR, operations UX, source/GEO resilience and final acceptance tooling;
+- moved canonical production PostgreSQL backups to `D:\BankrotAI\dr-backups` with an approximately 48-hour cadence, checksum + isolated restore verification and one latest verified retained copy;
+- bounded MapDataset retention and recovery so cleanup is restartable and never requires Docker volume pruning;
+- added source/provider circuit breakers, bounded retries, Home runner/VPN diagnostics and controlled GEO backlog draining;
+- added P9 GEO quality scoring/canary and P10 operations dashboard;
+- added P11 evidence-based production acceptance workflow;
+- added P12 standalone cadastral search with persistent cache, NSPD/WMS/Photon/IK12 bounded fallbacks, map geometry/bounds and production acceptance coverage;
+- hardened Home Docker deployment, exact-SHA rollout and REG.RU/Cloudflare production gates.
+
 ## 0.2.0 — 2026-08-01
 
 - исправлены поиск по всей России и сброс фильтров карты;

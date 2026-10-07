@@ -1,5 +1,9 @@
 # BankrotAI product roadmap
 
+
+> **Naming note (October 2026):** the production hardening sequence referred to operationally as **P0–P12** is separate from the older BAT roadmap section labels below. The BAT identifiers (`BAT-001`, `BAT-101`, etc.) are the authoritative identifiers for the long-term backlog. A green operational P0–P12 acceptance does not imply that every long-term BAT item has been implemented.
+
+
 Roadmap оформлен как набор будущих GitHub issues. Каждый пункт имеет проверяемый результат; интеграции, требующие договора или внешних credentials, не считаются завершёнными только по наличию заглушки.
 
 ## Delivery phases — September 2026
