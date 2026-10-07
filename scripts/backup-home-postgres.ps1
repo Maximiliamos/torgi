@@ -3,7 +3,7 @@ param(
     [string]$Destination = 'D:\BankrotAI\dr-backups',
     [switch]$VerifyRestore,
     [ValidateRange(0, 10)]
-    [int]$RetainCount = 1,
+    [int]$RetainCount = 3,
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 1,
     [int]$MaxMapDatasetCountWarning = 5,
