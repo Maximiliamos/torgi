@@ -112,3 +112,20 @@ def test_backup_policy_uses_d_drive_three_verified_generations_and_safe_migratio
     assert "D: backup SHA-256 mismatch" in migration
     assert "docker volume prune" not in workflow
     assert "docker volume prune" not in migration
+
+
+def test_backup_retention_counts_only_restore_verified_pairs() -> None:
+    script = BACKUP.read_text(encoding="utf-8")
+    retention = script.split("if ($RetainCount -gt 0) {", 1)[1]
+
+    assert "Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.json'" in retention
+    assert "$candidate.restore_verification -eq 'passed'" in retention
+    assert "$candidate.sha256 -match '^[0-9a-fA-F]{64}$'" in retention
+    assert "Test-Path -LiteralPath $candidateDump -PathType Leaf" in retention
+    assert "GetFullPath([string]$candidate.backup_file)" in retention
+    assert "Sort-Object -Property CreatedAt -Descending" in retention
+    assert "Select-Object -Skip $RetainCount" in retention
+    assert "Remove-Item -LiteralPath $old.Dump -Force" in retention
+    assert "Remove-Item -LiteralPath $old.Metadata -Force" in retention
+    assert "Unverified/incomplete backup preserved for operator review" in retention
+    assert "Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.dump'" not in retention
