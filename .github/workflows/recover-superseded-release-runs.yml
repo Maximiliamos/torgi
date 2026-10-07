@@ -78,8 +78,10 @@ jobs:
                       )
                   return False
               if name == "Phase 3 Lite backup and restore drill":
-                  # The workflow is still waiting for map retention; no backup has started.
-                  if any(j["name"] == "backup" and j["status"] != "completed" for j in jobs):
+                  # An unstarted queued backup can be superseded; an active
+                  # backup/restore must never be interrupted.
+                  backup_jobs = [j for j in jobs if j["name"] == "backup"]
+                  if any(j["status"] == "in_progress" or j.get("started_at") for j in backup_jobs):
                       return False
                   return any(j["name"] == "wait-map-retention" for j in jobs)
               # Only the exact old queued maintenance / diagnostic runs may be cancelled.
