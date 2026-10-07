@@ -69,7 +69,11 @@ def test_p11_acceptance_uses_canonical_photon_container_name() -> None:
 def test_p11_acceptance_bounds_transient_network_wait() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "deadline = time.monotonic() + 900" in text
-    assert '"network_wait did not drain within bounded 15-minute acceptance window"' in text
-    assert "if network_wait == 0:" in text
-    assert "time.sleep(15)" in text
+    assert 'GeoFailure.status == "network_wait"' in text
+    assert "max_allowed = max(25, min(100, math.ceil(max(actionable, 1) * 0.05)))" in text
+    assert "stale_cutoff = now - timedelta(minutes=15)" in text
+    assert "future_limit = now + timedelta(minutes=30)" in text
+    assert '"network_wait exceeds bounded operational queue"' in text
+    assert '"stale network_wait rows exceeded retry grace"' in text
+    assert '"network_wait retry scheduled outside bounded recovery horizon"' in text
+    assert "network_wait == 0" not in text
