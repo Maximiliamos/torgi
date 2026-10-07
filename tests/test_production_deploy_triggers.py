@@ -7,33 +7,16 @@ CLOUDFLARE_WORKFLOW = ROOT / ".github" / "workflows" / "cloudflare-edge-deploy.y
 HOME_WORKFLOW = ROOT / ".github" / "workflows" / "home-secondary-deploy.yml"
 
 
-PRODUCTION_PATHS = (
-    '"Dockerfile"',
-    '"requirements.lock"',
-    '"pyproject.toml"',
-    '"alembic/**"',
-    '"src/**"',
-    '"WEB/**"',
-    '"edge-proxy/**"',
-    '"api-proxy/**"',
-    '".github/workflows/regru-deploy.yml"',
-    '".github/workflows/cloudflare-edge-deploy.yml"',
-)
-
-
-def test_public_production_deploys_share_the_same_push_scope() -> None:
+def test_public_production_deploys_cover_every_main_sha() -> None:
     regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
 
-    for path in PRODUCTION_PATHS:
-        assert path in regru
-        assert path in cloudflare
-
-    # Home-only rollout fixes must not force a public WEB/edge redeploy. The
-    # home workflow has its own production job and S3 publication gate.
-    assert '".github/workflows/home-secondary-deploy.yml"' not in regru
-    assert '".github/workflows/home-secondary-deploy.yml"' not in cloudflare
-
+    regru_push = regru.split("push:", 1)[1].split("permissions:", 1)[0]
+    cloudflare_push = cloudflare.split("push:", 1)[1].split("pull_request:", 1)[0]
+    assert "main" in regru_push
+    assert "main" in cloudflare_push
+    assert "paths:" not in regru_push
+    assert "paths:" not in cloudflare_push
 
 def test_cloudflare_wait_budget_covers_regru_deploy_window() -> None:
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
