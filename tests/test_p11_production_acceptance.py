@@ -64,3 +64,12 @@ def test_p11_acceptance_uses_canonical_photon_container_name() -> None:
 
     assert "'bankrotai-photon'" in text
     assert "'bankrotai-home-photon'" not in text
+
+
+def test_p11_acceptance_bounds_transient_network_wait() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "deadline = time.monotonic() + 900" in text
+    assert '"network_wait did not drain within bounded 15-minute acceptance window"' in text
+    assert "if network_wait == 0:" in text
+    assert "time.sleep(15)" in text
