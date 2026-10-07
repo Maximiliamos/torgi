@@ -9,6 +9,8 @@ RELEASE = ROOT / ".github" / "workflows" / "release.yml"
 
 def test_release_artifacts_require_sigstore_and_exact_sha_identity() -> None:
     content = RELEASE.read_text(encoding="utf-8")
+    assert 'if [ "$EXISTING_TARGET" != "$ACCEPTED_SHA" ]; then' in content
+    assert "Bump the version." in content
     assert "id-token: write" in content
     assert "attestations: write" in content
     assert "artifact-metadata: write" in content
