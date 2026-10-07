@@ -49,9 +49,23 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: "3.11", cache: pip }
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1
+      - name: Install EGL dependency with bounded apt retries
+        run: |
+          set -euo pipefail
+          apt_retry() {
+            for attempt in 1 2 3; do
+              if sudo timeout 180 apt-get "$@"; then
+                return 0
+              fi
+              if test "$attempt" -eq 3; then
+                echo "apt-get $* failed after bounded retries" >&2
+                return 1
+              fi
+              sleep "$((attempt * 10))"
+            done
+          }
+          apt_retry update
+          apt_retry install -y libegl1
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - run: pytest -m "not postgres"
 
@@ -85,9 +99,23 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: "3.11", cache: pip }
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1
+      - name: Install EGL dependency with bounded apt retries
+        run: |
+          set -euo pipefail
+          apt_retry() {
+            for attempt in 1 2 3; do
+              if sudo timeout 180 apt-get "$@"; then
+                return 0
+              fi
+              if test "$attempt" -eq 3; then
+                echo "apt-get $* failed after bounded retries" >&2
+                return 1
+              fi
+              sleep "$((attempt * 10))"
+            done
+          }
+          apt_retry update
+          apt_retry install -y libegl1
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - run: pytest -m postgres
 

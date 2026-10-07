@@ -6,8 +6,6 @@ on:
     - cron: "23 3 * * 1"
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/branch-hygiene.yml"
 
 permissions:
   contents: write
@@ -88,6 +86,13 @@ jobs:
               if pr.get("merged_at")
               and pr.get("head", {}).get("repo", {}).get("full_name") == repo
           }
+          closed_dependabot_heads = {
+              pr["head"]["ref"]
+              for pr in closed_prs
+              if not pr.get("merged_at")
+              and pr.get("head", {}).get("repo", {}).get("full_name") == repo
+              and str(pr.get("head", {}).get("ref") or "").startswith("dependabot/")
+          }
 
           deleted = []
           retained = []
@@ -98,8 +103,14 @@ jobs:
                   retained.append({"branch": name, "reason": "protected/open"})
                   continue
 
-              eligible = name in merged_heads
-              reason = "merged-pr" if eligible else ""
+              eligible = name in merged_heads or name in closed_dependabot_heads
+              reason = (
+                  "merged-pr"
+                  if name in merged_heads
+                  else "closed-dependabot-pr"
+                  if name in closed_dependabot_heads
+                  else ""
+              )
               if not eligible:
                   quoted = urllib.parse.quote(name, safe="")
                   try:

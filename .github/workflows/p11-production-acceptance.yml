@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: p11-production-acceptance
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   wait-home-deploy:
