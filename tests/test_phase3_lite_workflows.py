@@ -68,7 +68,7 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "$ageHours -lt 46" in backup
     assert "-Destination 'D:\\BankrotAI\\dr-backups'" in backup
     assert "-VerifyRestore" in backup
-    assert "-RetainCount 1" in backup
+    assert "-RetainCount 3" in backup
     assert "Remove superseded C backup roots after verified D backup" in backup
     assert "docker volume prune" not in backup
     assert "[Phase 3] Backup/restore alert" in backup
@@ -97,17 +97,18 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "did not reach success within retry deadline" not in full_reconcile
 
 
-def test_backup_policy_uses_d_drive_single_verified_copy_and_safe_migration() -> None:
+def test_backup_policy_uses_d_drive_three_verified_generations_and_safe_migration() -> None:
     backup_script = BACKUP.read_text(encoding="utf-8")
     workflow = BACKUP_WORKFLOW.read_text(encoding="utf-8")
     migration = (ROOT / "scripts" / "migrate-backups-to-d.ps1").read_text(encoding="utf-8")
 
     assert "Destination = 'D:\\BankrotAI\\dr-backups'" in backup_script
-    assert "RetainCount = 1" in backup_script
+    assert "RetainCount = 3" in backup_script
     assert "map_storage = $mapStorage" in backup_script
     assert "Retention skipped because the new backup has not passed isolated restore verification." in backup_script
     assert "restoreStatus -ne 'passed'" in backup_script
     assert "Remove superseded C backup roots after verified D backup" in workflow
+    assert "-RetainCount 3" in migration
     assert "D: backup SHA-256 mismatch" in migration
     assert "docker volume prune" not in workflow
     assert "docker volume prune" not in migration
