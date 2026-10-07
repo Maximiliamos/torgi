@@ -7,20 +7,6 @@ CLOUDFLARE_WORKFLOW = ROOT / ".github" / "workflows" / "cloudflare-edge-deploy.y
 HOME_WORKFLOW = ROOT / ".github" / "workflows" / "home-secondary-deploy.yml"
 
 
-PRODUCTION_PATHS = (
-    '"Dockerfile"',
-    '"requirements.lock"',
-    '"pyproject.toml"',
-    '"alembic/**"',
-    '"src/**"',
-    '"WEB/**"',
-    '"edge-proxy/**"',
-    '"api-proxy/**"',
-    '".github/workflows/regru-deploy.yml"',
-    '".github/workflows/cloudflare-edge-deploy.yml"',
-)
-
-
 def test_public_production_deploys_share_the_same_push_scope() -> None:
     regru = REGRU_WORKFLOW.read_text(encoding="utf-8")
     cloudflare = CLOUDFLARE_WORKFLOW.read_text(encoding="utf-8")
