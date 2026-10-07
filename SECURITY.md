@@ -45,6 +45,7 @@ disclosure timeline will be agreed after triage.
   findings for the complete tree and the production-only tree.
 - Dependency/security failures are investigated or fixed. They must not be downgraded
   to warnings merely to make a release green.
+- Any narrowly scoped temporary exception must be documented in `docs/security-exceptions.md` with owner, scope, review cadence and exit condition.
 - Required branch-protection checks must pass before merge to `main`.
 - Production releases use the exact merged Git SHA and fail closed when health,
   migration, map-publication or recovery gates fail.

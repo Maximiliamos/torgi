@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible product or production defect
+title: "[Bug] "
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened and what should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps, affected URL/screen/source and relevant run ID or commit.
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options:
+        - Production blocker
+        - Data correctness
+        - Reliability
+        - User experience
+        - Development only
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs/screenshots with secrets and personal data removed.
