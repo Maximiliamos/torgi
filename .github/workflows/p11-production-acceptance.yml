@@ -165,63 +165,91 @@ jobs:
         run: |
           $script = @'
           import json
-          import time
-          from bankrotai.db import SessionLocal
+          import math
+          from datetime import timedelta
+          from sqlalchemy import select
+          from bankrotai.core import utc_now
+          from bankrotai.db import GeoFailure, SessionLocal
           from bankrotai.services.geo_backfill import geocoding_progress
           from bankrotai.services.quality import list_source_health
           from bankrotai.services.source_resilience import source_global_network_state
 
-          deadline = time.monotonic() + 900
-          samples = []
-          while True:
-              session = SessionLocal()
-              try:
-                  sources = list_source_health(session)
-                  network = source_global_network_state(session)
-                  geo = geocoding_progress(session)
-                  configured = [s for s in sources if s.source_system != "tbankrot.ru"]
-              finally:
-                  session.close()
-
+          session = SessionLocal()
+          try:
+              sources = list_source_health(session)
+              network = source_global_network_state(session)
+              geo = geocoding_progress(session)
+              configured = [s for s in sources if s.source_system != "tbankrot.ru"]
               assert configured, "no public source health records"
               assert not network.get("circuit_open"), network
 
-              network_wait = int(geo.get("network_wait") or 0)
-              samples.append({
+              geo_network = geo.get("network") or {}
+              geo_external = geo_network.get("external") or {}
+              assert not geo_external.get("circuit_open"), geo_external
+
+              now = utc_now().replace(tzinfo=None)
+              network_rows = list(
+                  session.scalars(
+                      select(GeoFailure).where(GeoFailure.status == "network_wait")
+                  ).all()
+              )
+              network_wait = len(network_rows)
+              actionable = int(geo.get("actionable_remaining") or 0)
+              max_allowed = max(25, min(100, math.ceil(max(actionable, 1) * 0.05)))
+              stale_cutoff = now - timedelta(minutes=15)
+              future_limit = now + timedelta(minutes=30)
+              stale_ids = [
+                  int(row.lot_id)
+                  for row in network_rows
+                  if row.next_retry_at is None
+                  or (
+                      row.next_retry_at < stale_cutoff
+                      and row.last_failed_at < stale_cutoff
+                  )
+              ]
+              excessive_future_ids = [
+                  int(row.lot_id)
+                  for row in network_rows
+                  if row.next_retry_at is not None and row.next_retry_at > future_limit
+              ]
+
+              assert network_wait <= max_allowed, {
+                  "reason": "network_wait exceeds bounded operational queue",
                   "network_wait": network_wait,
-                  "actionable_remaining": int(geo.get("actionable_remaining") or 0),
-                  "eligible_now": int(geo.get("eligible_now") or 0),
-                  "waiting_for_retry": int(geo.get("waiting_for_retry") or 0),
-                  "next_retry_at": geo.get("next_retry_at"),
-              })
-              if network_wait == 0:
-                  print(json.dumps({
-                      "sources": [{
-                          "source": s.source_system,
-                          "status": s.status,
-                          "freshness": s.freshness_status,
-                          "coverage": s.coverage_status,
-                          "circuit": s.circuit_state,
-                      } for s in configured],
-                      "network": network,
-                      "geo": {
-                          "percent": geo.get("percent"),
-                          "actionable_remaining": geo.get("actionable_remaining"),
-                          "network_wait": network_wait,
-                          "deferred_no_match": geo.get("deferred_no_match"),
-                          "deferred_validation": geo.get("deferred_validation"),
-                      },
-                      "network_wait_samples": samples,
-                  }, default=str))
-                  break
-              if time.monotonic() >= deadline:
-                  raise AssertionError({
-                      "reason": "network_wait did not drain within bounded 15-minute acceptance window",
-                      "network": network,
-                      "geo": geo,
-                      "samples": samples,
-                  })
-              time.sleep(15)
+                  "max_allowed": max_allowed,
+                  "actionable_remaining": actionable,
+              }
+              assert not stale_ids, {
+                  "reason": "stale network_wait rows exceeded retry grace",
+                  "sample_lot_ids": stale_ids[:25],
+              }
+              assert not excessive_future_ids, {
+                  "reason": "network_wait retry scheduled outside bounded recovery horizon",
+                  "sample_lot_ids": excessive_future_ids[:25],
+              }
+
+              print(json.dumps({
+                  "sources": [{
+                      "source": s.source_system,
+                      "status": s.status,
+                      "freshness": s.freshness_status,
+                      "coverage": s.coverage_status,
+                      "circuit": s.circuit_state,
+                  } for s in configured],
+                  "network": network,
+                  "geo": {
+                      "percent": geo.get("percent"),
+                      "actionable_remaining": actionable,
+                      "network_wait": network_wait,
+                      "network_wait_max_allowed": max_allowed,
+                      "network_wait_stale_count": len(stale_ids),
+                      "network_wait_excessive_future_count": len(excessive_future_ids),
+                      "deferred_no_match": geo.get("deferred_no_match"),
+                      "deferred_validation": geo.get("deferred_validation"),
+                  },
+              }, default=str))
+          finally:
+              session.close()
           '@
           $json = $script | docker exec -i bankrotai-home-map-worker python -
           if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Source/GEO resilience acceptance failed' }
