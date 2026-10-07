@@ -1762,81 +1762,13 @@ CADASTRAL_GEOCODER = CadastralGeocoder()
 IK12_GEOCODER = IK12Geocoder()
 
 
-def centroid_from_geometry(geom: dict | None) -> tuple[float | None, float | None]:
-    if not geom:
-        return None, None
-
-    coords = geom.get("coordinates")
-    if not coords:
-        return None, None
-
-    points = []
-
-    def collect(obj):
-        if isinstance(obj, list):
-            if len(obj) >= 2 and all(isinstance(x, (int, float)) for x in obj[:2]):
-                points.append(obj)
-            else:
-                for item in obj:
-                    collect(item)
-
-    collect(coords)
-
-    if not points:
-        return None, None
-
-    lon = sum(p[0] for p in points) / len(points)
-    lat = sum(p[1] for p in points) / len(points)
-
-    return lat, lon
-
-
-def to_geojson_geometry(geom: dict | None) -> dict | None:
-    if not geom:
-        return None
-
-    if geom.get("type") and geom.get("coordinates"):
-        return {
-            "type": geom["type"],
-            "coordinates": geom["coordinates"],
-        }
-
-    return None
-
-
-def json_like_text(value: Any) -> str:
-    return str(value)
-
-
-def web_mercator_to_wgs84(x: float, y: float) -> tuple[float, float]:
-    radius = 6378137.0
-    lon = (x / radius) * 180.0 / math.pi
-    lat = math.degrees(math.atan(math.sinh(y / radius)))
-    return lon, lat
-
-
-def geometry_to_wgs84(geom: dict | None) -> dict | None:
-    if not geom:
-        return None
-
-    coords = geom.get("coordinates")
-    if not coords:
-        return to_geojson_geometry(geom)
-
-    def convert(obj):
-        if isinstance(obj, list):
-            if len(obj) >= 2 and all(isinstance(x, (int, float)) for x in obj[:2]):
-                x, y = float(obj[0]), float(obj[1])
-                if abs(x) > 180 or abs(y) > 90:
-                    return list(web_mercator_to_wgs84(x, y))
-                return [x, y]
-            return [convert(item) for item in obj]
-        return obj
-
-    return {
-        "type": geom.get("type"),
-        "coordinates": convert(coords),
-    }
+from bankrotai.services.geo_geometry import (
+    centroid_from_geometry as centroid_from_geometry,
+    to_geojson_geometry as to_geojson_geometry,
+    json_like_text as json_like_text,
+    web_mercator_to_wgs84 as web_mercator_to_wgs84,
+    geometry_to_wgs84 as geometry_to_wgs84,
+)
 
 
 def normalize_nspd_props(props: dict, cadastral_number: str) -> dict[str, Any]:
