@@ -44,11 +44,19 @@ jobs:
           test "$MAP_OBJECT_STORE_BUCKET" = "sterdez-map"
           test "$MAP_OBJECT_STORE_REGION" = "ru-1"
           test -n "$MAP_OBJECT_STORE_PUBLIC_BASE_URL"
-          test -n "$MAP_OBJECT_STORE_ACCESS_KEY"
-          test -n "$MAP_OBJECT_STORE_SECRET_KEY"
-          printf 'REG.RU S3 variables and secrets are present\n'
+          if test -n "$MAP_OBJECT_STORE_ACCESS_KEY" && test -n "$MAP_OBJECT_STORE_SECRET_KEY"; then
+            echo "HAS_S3_CREDENTIALS=true" >> "$GITHUB_ENV"
+            printf 'REG.RU S3 variables and authenticated credentials are present\n'
+          elif test "$GITHUB_EVENT_NAME" = "pull_request"; then
+            echo "HAS_S3_CREDENTIALS=false" >> "$GITHUB_ENV"
+            printf 'Authenticated REG.RU S3 checks skipped for pull_request because production secrets are unavailable\n'
+          else
+            echo "Missing REG.RU S3 credentials outside pull_request context" >&2
+            exit 1
+          fi
 
       - name: Ensure AWS CLI is available
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -58,6 +66,7 @@ jobs:
           aws --version
 
       - name: Configure browser CORS
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -93,12 +102,14 @@ jobs:
             --bucket "$MAP_OBJECT_STORE_BUCKET"
 
       - name: Install application
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check -e .
 
       - name: Upload probe with production signer
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -129,6 +140,7 @@ jobs:
           PY
 
       - name: Verify authenticated object exists
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -141,6 +153,7 @@ jobs:
             --key "$PROBE_KEY"
 
       - name: Verify public read and CORS
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -220,6 +233,7 @@ jobs:
           PY
 
       - name: Estimate regional bundle reduction from existing S3 tiles
+        if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -319,8 +333,15 @@ jobs:
           print(json.dumps({"bundle_estimates": output[:10]}, ensure_ascii=False, indent=2))
           PY
 
+      - name: Record credentialless PR diagnostic
+        if: env.HAS_S3_CREDENTIALS != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'REG.RU S3 authenticated diagnostic intentionally skipped: pull_request secrets unavailable. Production exact-SHA publication/deploy gates remain authoritative.\n'
+
       - name: Delete probe
-        if: always()
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
