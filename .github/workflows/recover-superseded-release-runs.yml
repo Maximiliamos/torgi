@@ -102,9 +102,19 @@ jobs:
                   api(f"/actions/runs/{run_id}/cancel", method="POST")
                   results.append((run_id, "cancel-requested"))
               except urllib.error.HTTPError as exc:
-                  # A concurrently completed run may return conflict.
-                  if exc.code in (409, 422) and api(f"/actions/runs/{run_id}")["status"] == "completed":
+                  # GitHub may return 409 for abandoned queued runs. Only
+                  # exact allowlisted identities can fall back to force-cancel.
+                  current = api(f"/actions/runs/{run_id}")
+                  if current["status"] == "completed":
                       results.append((run_id, "completed-during-check"))
+                  elif exc.code in (409, 422) and current["status"] in (
+                      "queued", "pending", "waiting", "requested", "in_progress"
+                  ):
+                      try:
+                          api(f"/actions/runs/{run_id}/force-cancel", method="POST")
+                          results.append((run_id, "force-cancel-requested"))
+                      except urllib.error.HTTPError as force_exc:
+                          results.append((run_id, f"manual-cancel-required-http-{force_exc.code}"))
                   else:
                       raise
 
