@@ -1,0 +1,115 @@
+name: Recover superseded release runs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/recover-superseded-release-runs.yml']
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: recover-superseded-release-runs
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Cancel only SHA-checked obsolete runs after durable reconciliation
+        shell: python
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          current_workflow_sha = os.environ["GITHUB_SHA"]
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "sterdez-one-shot-superseded-cleanup",
+          }
+
+          def api(path, method="GET"):
+              request = urllib.request.Request(root + path, headers=headers, method=method)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
+
+          current_sha = api("/branches/main")["commit"]["sha"]
+          if current_sha != current_workflow_sha:
+              raise SystemExit("Current main has changed: refusing stale maintenance job")
+
+          previous_sha = "6f6b989ad37370e06af6ac8d122d9ef64b3d9691"
+          old_sha = "0ba01fd7eaa39b432c15d23d6ee501672090da65"
+          exact_targets = {
+              37686947716: (previous_sha, "Phase 3 Lite full source reconciliation"),
+              37686947875: (previous_sha, "Phase 3 Lite backup and restore drill"),
+              37686947790: (previous_sha, "P7 GEO fast drain"),
+              37686947844: (previous_sha, "P9 GEO quality canary"),
+              37687769970: (previous_sha, "P2 production maintenance"),
+              37642360099: (old_sha, "Deploy Cloudflare edge proxy"),
+              37642360146: (old_sha, "Production reliability"),
+              37642360125: (old_sha, "REG.RU S3 diagnostics"),
+          }
+
+          def safe_to_cancel(run_id, name):
+              jobs = api(f"/actions/runs/{run_id}/jobs?per_page=100")["jobs"]
+              if name == "Phase 3 Lite full source reconciliation":
+                  for job in jobs:
+                      if job["name"] != "reconcile":
+                          continue
+                      steps = {s["name"]: s for s in job.get("steps", [])}
+                      finished = steps.get("Wait for full reconciliation to finish", {})
+                      verification = steps.get(
+                          "Verify post-reconciliation MapDataset and REG.RU S3 manifest", {}
+                      )
+                      return (
+                          finished.get("conclusion") == "success"
+                          and verification.get("status") == "in_progress"
+                      )
+                  return False
+              if name == "Phase 3 Lite backup and restore drill":
+                  # The workflow is still waiting for map retention; no backup has started.
+                  if any(j["name"] == "backup" and j["status"] != "completed" for j in jobs):
+                      return False
+                  return any(j["name"] == "wait-map-retention" for j in jobs)
+              # Only the exact old queued maintenance / diagnostic runs may be cancelled.
+              return True
+
+          results = []
+          for run_id, (sha, name) in exact_targets.items():
+              run = api(f"/actions/runs/{run_id}")
+              if run.get("head_sha") != sha or run.get("name") != name:
+                  raise SystemExit(f"Unexpected identity for run {run_id}; refusing cancellation")
+              if run["status"] == "completed":
+                  results.append((run_id, "already-completed"))
+                  continue
+              if not safe_to_cancel(run_id, name):
+                  results.append((run_id, "retained-fail-closed"))
+                  continue
+              try:
+                  api(f"/actions/runs/{run_id}/cancel", method="POST")
+                  results.append((run_id, "cancel-requested"))
+              except urllib.error.HTTPError as exc:
+                  # A concurrently completed run may return conflict.
+                  if exc.code in (409, 422) and api(f"/actions/runs/{run_id}")["status"] == "completed":
+                      results.append((run_id, "completed-during-check"))
+                  else:
+                      raise
+
+          for run_id, status in results:
+              print(f"{run_id}: {status}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## SHA-checked obsolete run cleanup\n\n")
+              for run_id, status in results:
+                  summary.write(f"- {run_id}: {status}\n")
+              summary.write("\nNo current-main workflow run is in the cancellation allowlist.\n")
