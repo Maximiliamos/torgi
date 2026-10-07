@@ -28,4 +28,6 @@ def test_release_runner_cleanup_is_explicitly_bounded_and_fail_closed() -> None:
     assert "Wait for full reconciliation to finish" in workflow
     assert "finished.get(\"conclusion\") == \"success\"" in workflow
     assert "retained-fail-closed" in workflow
+    assert "/actions/runs/{run_id}/force-cancel" in workflow
+    assert "manual-cancel-required-http-" in workflow
     assert "No current-main workflow run is in the cancellation allowlist." in workflow
