@@ -19,21 +19,16 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
-      - run: ruff check src tests
-      - run: mypy src/bankrotai
-      - run: bash -n scripts/*.sh
-
-  python-security:
-    name: Python dependency audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with: { python-version: "3.11", cache: pip }
+      - name: Verify version and lock consistency
+        run: python scripts/check-repository-consistency.py
       - name: Audit locked Python runtime dependencies
         run: |
           python -m pip install --disable-pip-version-check pip-audit==2.10.1
           pip-audit -r requirements.lock
+      - run: ruff check src tests
+      - run: mypy src/bankrotai
+      - run: bash -n scripts/*.sh
+
 
   sqlite-tests:
     name: Python tests (SQLite)

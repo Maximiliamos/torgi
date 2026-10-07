@@ -1,5 +1,17 @@
 # История изменений
 
+## 0.3.0 — 2026-10-07
+
+Repository closeout release after the final production acceptance baseline.
+
+- Production P1/P11, public WEB smoke and functional reliability are green on the accepted production line.
+- Formalized one product release version across Python, WEB and Windows installer metadata.
+- Added repository consistency checks, dependency governance, CODEOWNERS, contribution/PR templates and automated branch hygiene.
+- Added accepted-release automation with SBOM/checksum evidence.
+- Retired legacy Neon maintenance and one-time REG.RU password bootstrap workflows from active Actions.
+- Separated per-release acceptance from periodic disaster-recovery certification.
+
+
 ## October 2026 — production hardening and cadastral search
 
 - completed the operational P0–P12 hardening sequence for durable reconciliation, data-quality controls, maintenance/DR, operations UX, source/GEO resilience and final acceptance tooling;
