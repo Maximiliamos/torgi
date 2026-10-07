@@ -14,8 +14,8 @@ def test_nested_preview_images_keep_order_and_deduplicate() -> None:
                 "https://cdn.example/1.jpg",
                 "javascript:alert(1)",
                 "file:///C:/private.txt",
+                {"image_url": "https://cdn.example/3.jpg"},
             ],
-            "image": {"image_url": "https://cdn.example/3.jpg"},
         }
     )
     assert images == [
