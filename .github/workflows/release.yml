@@ -112,11 +112,12 @@ jobs:
           cat > release-evidence.md <<EOF
           # STERDEZ $TAG
 
-          Accepted Git SHA: `$ACCEPTED_SHA`
+          Accepted Git SHA: $ACCEPTED_SHA
 
           This release was created only after exact-SHA production reliability, P1, REG.RU deploy, Cloudflare deploy, Public WEB smoke, functional reliability and P11 acceptance were all green.
 
           The attached CycloneDX SBOMs and SHA-256 checksums are generated from this accepted commit.
           EOF
           sha256sum requirements.lock WEB/package-lock.json sbom-python.json sbom-web.json > SHA256SUMS
-          gh release create "$TAG" --target "$ACCEPTED_SHA" --title "STERDEZ $TAG" --notes-file release-evidence.md             sbom-python.json sbom-web.json SHA256SUMS
+          gh release create "$TAG" --target "$ACCEPTED_SHA" --title "STERDEZ $TAG" --notes-file release-evidence.md \
+            sbom-python.json sbom-web.json SHA256SUMS
