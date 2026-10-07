@@ -310,10 +310,11 @@ def map_delivery_reconciliation_report(
 ) -> dict[str, Any]:
     """Reconcile the public map across DB candidates, MapDataset and REG.RU S3.
 
-    The DB eligibility calculation intentionally mirrors build_map_dataset:
-    duplicates/archives and invalid current coordinates are excluded first,
-    then the same region-sanity checks explain spatial exclusions. This makes
-    every loss between the source database and the published map auditable.
+    The DB eligibility calculation intentionally mirrors build_map_dataset.
+    Because GEO and ingestion keep changing the live DB after a dataset starts
+    building, rows changed after the dataset creation timestamp are reported as
+    bounded post-dataset drift instead of false integrity failures. Older
+    missing/extra rows still fail the reconciliation gate.
     """
     from bankrotai.core import get_settings
     from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
@@ -342,6 +343,21 @@ def map_delivery_reconciliation_report(
             "manifest": {"checked": False, "ok": None},
         }
 
+    dataset_cutoff = current.created_at
+    if dataset_cutoff.tzinfo is not None:
+        dataset_cutoff = dataset_cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def changed_after_dataset(*values: datetime | None) -> bool:
+        for value in values:
+            if value is None:
+                continue
+            stamp = value
+            if stamp.tzinfo is not None:
+                stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+            if stamp > dataset_cutoff:
+                return True
+        return False
+
     candidates = session.execute(
         select(
             ProcessedLot.id,
@@ -349,6 +365,8 @@ def map_delivery_reconciliation_report(
             ProcessedLot.cadastral_number,
             ProcessedLot.current_geo_lat,
             ProcessedLot.current_geo_lon,
+            ProcessedLot.current_geo_observed_at,
+            ProcessedLot.last_update,
         ).where(
             ProcessedLot.duplicate_of_id.is_(None),
             ProcessedLot.is_archived.is_(False),
@@ -358,6 +376,7 @@ def map_delivery_reconciliation_report(
     ).all()
 
     eligible_ids: set[int] = set()
+    eligible_change_times: dict[int, tuple[datetime | None, datetime | None]] = {}
     spatial_rejections: dict[str, int] = {}
     spatial_rejected_ids: list[int] = []
     for row in candidates:
@@ -389,7 +408,9 @@ def map_delivery_reconciliation_report(
             if len(spatial_rejected_ids) < max(1, problem_limit):
                 spatial_rejected_ids.append(int(row.id))
             continue
-        eligible_ids.add(int(row.id))
+        lot_id = int(row.id)
+        eligible_ids.add(lot_id)
+        eligible_change_times[lot_id] = (row.current_geo_observed_at, row.last_update)
 
     dataset_ids: set[int] = set()
     point_features = 0
@@ -402,13 +423,45 @@ def map_delivery_reconciliation_report(
         for feature in (payload or {}).get("features", []):
             if not isinstance(feature, dict) or feature.get("kind") != "lot":
                 continue
-            lot_id = feature.get("id")
-            if isinstance(lot_id, int):
+            feature_lot_id = feature.get("id")
+            if isinstance(feature_lot_id, int):
                 point_features += 1
-                dataset_ids.add(lot_id)
+                dataset_ids.add(feature_lot_id)
 
-    missing_ids = sorted(eligible_ids - dataset_ids)
-    extra_ids = sorted(dataset_ids - eligible_ids)
+    live_missing_ids = sorted(eligible_ids - dataset_ids)
+    live_extra_ids = sorted(dataset_ids - eligible_ids)
+
+    pending_missing_ids = [
+        lot_id
+        for lot_id in live_missing_ids
+        if changed_after_dataset(*eligible_change_times.get(lot_id, (None, None)))
+    ]
+    pending_missing_set = set(pending_missing_ids)
+    missing_ids = [lot_id for lot_id in live_missing_ids if lot_id not in pending_missing_set]
+
+    extra_change_times: dict[int, tuple[datetime | None, datetime | None, datetime | None]] = {}
+    if live_extra_ids:
+        for row in session.execute(
+            select(
+                ProcessedLot.id,
+                ProcessedLot.current_geo_observed_at,
+                ProcessedLot.last_update,
+                ProcessedLot.archived_at,
+            ).where(ProcessedLot.id.in_(live_extra_ids))
+        ).all():
+            extra_change_times[int(row.id)] = (
+                row.current_geo_observed_at,
+                row.last_update,
+                row.archived_at,
+            )
+    pending_extra_ids = [
+        lot_id
+        for lot_id in live_extra_ids
+        if lot_id in extra_change_times and changed_after_dataset(*extra_change_times[lot_id])
+    ]
+    pending_extra_set = set(pending_extra_ids)
+    extra_ids = [lot_id for lot_id in live_extra_ids if lot_id not in pending_extra_set]
+
     actual_tile_count = int(
         session.scalar(
             select(func.count()).select_from(MapTile).where(MapTile.dataset_id == current.id)
@@ -468,6 +521,7 @@ def map_delivery_reconciliation_report(
         "dataset": {
             "version": current.version,
             "status": current.status,
+            "created_at": current.created_at,
             "published_at": current.published_at,
             "declared_point_count": int(current.point_count or 0),
             "declared_tile_count": int(current.tile_count or 0),
@@ -486,6 +540,12 @@ def map_delivery_reconciliation_report(
         "missing_from_dataset_sample_lot_ids": missing_ids[: max(1, problem_limit)],
         "extra_in_dataset_count": len(extra_ids),
         "extra_in_dataset_sample_lot_ids": extra_ids[: max(1, problem_limit)],
+        "live_missing_from_dataset_count": len(live_missing_ids),
+        "live_extra_in_dataset_count": len(live_extra_ids),
+        "pending_post_dataset_missing_count": len(pending_missing_ids),
+        "pending_post_dataset_missing_sample_lot_ids": pending_missing_ids[: max(1, problem_limit)],
+        "pending_post_dataset_extra_count": len(pending_extra_ids),
+        "pending_post_dataset_extra_sample_lot_ids": pending_extra_ids[: max(1, problem_limit)],
         "manifest": manifest,
     }
 
