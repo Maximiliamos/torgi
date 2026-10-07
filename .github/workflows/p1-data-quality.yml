@@ -36,10 +36,10 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 1120); do
-            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&per_page=50"               | python -c 'import json,sys; runs=[x for x in json.load(sys.stdin).get("workflow_runs", []) if x.get("name")=="Deploy home secondary origin"]; active={"queued","in_progress","pending","waiting","requested"}; print("completed:success" if any(x.get("status")=="completed" and x.get("conclusion")=="success" for x in runs) else "active" if any(x.get("status") in active for x in runs) else "completed:failure" if runs else "missing")')"
             if [ "$state" = "completed:success" ]; then exit 0; fi
             case "$state" in
-              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+              completed:*) echo "All exact-SHA Home deploy attempts failed: $state" >&2; exit 1 ;;
             esac
             sleep 15
           done
