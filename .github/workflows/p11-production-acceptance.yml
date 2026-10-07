@@ -38,10 +38,10 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 1120); do
-            state="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50" | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            state="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&per_page=50" | python -c 'import json,sys; runs=[x for x in json.load(sys.stdin).get("workflow_runs", []) if x.get("name")=="Deploy home secondary origin"]; active={"queued","in_progress","pending","waiting","requested"}; print("completed:success" if any(x.get("status")=="completed" and x.get("conclusion")=="success" for x in runs) else "active" if any(x.get("status") in active for x in runs) else "completed:failure" if runs else "missing")')"
             if [ "$state" = "completed:success" ]; then exit 0; fi
             case "$state" in
-              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+              completed:*) echo "All exact-SHA Home deploy attempts failed: $state" >&2; exit 1 ;;
             esac
             sleep 15
           done
@@ -167,9 +167,9 @@ jobs:
           import json
           import math
           from datetime import timedelta
-          from sqlalchemy import select
+          from sqlalchemy import or_, select
           from bankrotai.core import utc_now
-          from bankrotai.db import GeoFailure, SessionLocal
+          from bankrotai.db import GeoFailure, ProcessedLot, SessionLocal
           from bankrotai.services.geo_backfill import geocoding_progress
           from bankrotai.services.quality import list_source_health
           from bankrotai.services.source_resilience import source_global_network_state
@@ -188,12 +188,40 @@ jobs:
               assert not geo_external.get("circuit_open"), geo_external
 
               now = utc_now().replace(tzinfo=None)
+              has_geo = (
+                  ProcessedLot.current_geo_lat.is_not(None)
+                  & ProcessedLot.current_geo_lon.is_not(None)
+              )
+              pending = or_(
+                  ~has_geo,
+                  (
+                      ProcessedLot.needs_geo_check.is_(True)
+                      & ProcessedLot.geo_input_hash.is_(None)
+                  ),
+              )
               network_rows = list(
                   session.scalars(
-                      select(GeoFailure).where(GeoFailure.status == "network_wait")
+                      select(GeoFailure)
+                      .join(ProcessedLot, ProcessedLot.id == GeoFailure.lot_id)
+                      .where(
+                          ProcessedLot.duplicate_of_id.is_(None),
+                          ProcessedLot.is_archived.is_(False),
+                          or_(
+                              ProcessedLot.cadastral_number.isnot(None),
+                              ProcessedLot.address.isnot(None),
+                          ),
+                          pending,
+                          GeoFailure.status == "network_wait",
+                      )
                   ).all()
               )
               network_wait = len(network_rows)
+              reported_network_wait = int(geo.get("network_wait") or 0)
+              assert network_wait == reported_network_wait, {
+                  "reason": "P11 active network_wait query diverged from geocoding_progress",
+                  "query_count": network_wait,
+                  "reported_count": reported_network_wait,
+              }
               actionable = int(geo.get("actionable_remaining") or 0)
               max_allowed = max(25, min(100, math.ceil(max(actionable, 1) * 0.05)))
               stale_cutoff = now - timedelta(minutes=15)
@@ -241,6 +269,7 @@ jobs:
                       "percent": geo.get("percent"),
                       "actionable_remaining": actionable,
                       "network_wait": network_wait,
+                      "reported_network_wait": reported_network_wait,
                       "network_wait_max_allowed": max_allowed,
                       "network_wait_stale_count": len(stale_ids),
                       "network_wait_excessive_future_count": len(excessive_future_ids),
