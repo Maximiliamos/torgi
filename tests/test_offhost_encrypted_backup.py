@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
-from scripts import export_verified_backup_offhost as offhost
+# scripts/ is a CLI directory and is intentionally not an installed package.
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/export_verified_backup_offhost.py"
+spec = importlib.util.spec_from_file_location("offhost_export", SCRIPT)
+assert spec is not None and spec.loader is not None
+offhost = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(offhost)
 
 
 def verified_pair(root: Path) -> tuple[Path, Path]:
