@@ -15,7 +15,9 @@ ALLOWLIST = {
     "src/bankrotai/services/geo_backfill.py",
     "src/bankrotai/logic.py",
     "src/bankrotai/tasks.py",
+    "src/bankrotai/services/ingestion.py",
     "WEB/src/features/map/MapView.tsx",
+    "WEB/src/lib/api.ts",
 }
 
 roots = [ROOT / "src", ROOT / "WEB" / "src"]
