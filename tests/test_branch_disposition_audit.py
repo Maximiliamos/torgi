@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from scripts import branch_disposition_audit as inventory
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/branch_disposition_audit.py"
+spec = importlib.util.spec_from_file_location("branch_inventory", SCRIPT)
+assert spec is not None and spec.loader is not None
+inventory = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inventory)
 
 
 def fake_source(repo: str, path: str, token: str):
