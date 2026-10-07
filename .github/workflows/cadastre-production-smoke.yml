@@ -172,7 +172,8 @@ jobs:
           assert candidate_obj.get("info"), candidate_obj
           timings["full_address_flow_ms"] = round((time.monotonic() - flow_started) * 1000, 1)
 
-          second_kn = "76:23:010101:15008"
+          second_kn = candidate_kn
+          assert second_kn != first_kn, {"first_kn": first_kn, "second_kn": second_kn}
           second = search({"query": second_kn}, "second_known_kn_ms")
           second_obj = second.get("object") or {}
           assert second.get("kind") == "object", second
