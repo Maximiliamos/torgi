@@ -17,6 +17,8 @@ def test_p11_acceptance_is_main_only_deploy_gated_and_bounded() -> None:
     assert "Wait for exact Home production revision" in text
     assert "Deploy home secondary origin" in text
     assert "head_sha=$GITHUB_SHA" in text
+    assert "&event=push" not in text
+    assert '"completed:success" if any' in text
     assert "$minutes = if ($pushRun) { 30 }" in text
     assert text.count("$minutes = if ($pushRun) { 30 }") >= 2
     assert "P11 acceptance may run only from main" in text
@@ -70,6 +72,11 @@ def test_p11_acceptance_bounds_transient_network_wait() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
     assert 'GeoFailure.status == "network_wait"' in text
+    assert "ProcessedLot.duplicate_of_id.is_(None)" in text
+    assert "ProcessedLot.is_archived.is_(False)" in text
+    assert "ProcessedLot.current_geo_lat.is_not(None)" in text
+    assert '"P11 active network_wait query diverged from geocoding_progress"' in text
+    assert "reported_network_wait = int(geo.get(\"network_wait\") or 0)" in text
     assert "max_allowed = max(25, min(100, math.ceil(max(actionable, 1) * 0.05)))" in text
     assert "stale_cutoff = now - timedelta(minutes=15)" in text
     assert "future_limit = now + timedelta(minutes=30)" in text
