@@ -2,6 +2,12 @@ name: P1 production data quality
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/p1-data-quality.yml'
+      - 'src/bankrotai/services/quality.py'
+      - 'scripts/p1-production-audit.ps1'
   schedule:
     - cron: '37 4 * * *'
   workflow_run:
@@ -9,6 +15,7 @@ on:
     types: [completed]
 
 permissions:
+  actions: read
   contents: read
   issues: write
 
@@ -17,7 +24,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  wait-home-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact Home production revision
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 1120); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); r=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if r is None else "{}:{}".format(r.get("status"), r.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then exit 0; fi
+            case "$state" in
+              completed:*) echo "Home deploy failed: $state" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Timed out waiting for Home deploy of $GITHUB_SHA" >&2
+          exit 1
+
   audit:
+    needs: wait-home-deploy
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 30
