@@ -25,9 +25,9 @@ The workflow has an explicit `restart_drill=false` input.
 
 When enabled it restarts application/workers, Redis and PostgreSQL sequentially, then requires the public API to recover. It does not restart Windows and never prunes Docker volumes.
 
-## What stays manual
+## Periodic disaster-recovery certification
 
-A full Windows host reboot cannot be safely initiated by the same self-hosted runner that must report the result. Keep the OS reboot as a user-present final drill:
+A full Windows host reboot cannot be safely initiated by the same self-hosted runner that must report the result. It is therefore a periodic DR certification drill, not a prerequisite for every otherwise-green production release. For a DR certification:
 
 1. complete a green P11 run without restart;
 2. complete a green P11 run with the controlled container restart;
@@ -37,9 +37,9 @@ A full Windows host reboot cannot be safely initiated by the same self-hosted ru
 
 Network/VPN/DNS/TLS fault behavior is covered by P6/P8 regression tests plus the Home runner route diagnostic; P11 does not intentionally cut the host network because doing so would also sever the only control channel.
 
-## Acceptance order
+## Release acceptance order
 
-Before declaring the project production-ready:
+A normal production release is accepted after steps 1–7 below. Steps 8–9 belong to periodic DR certification and are recorded separately:
 
 1. successful full source reconciliation;
 2. successful backup + restore drill;

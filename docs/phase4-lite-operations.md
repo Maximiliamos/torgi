@@ -120,6 +120,19 @@ Never bypass the single-active ingestion lock to make a workflow green.
 - Security scan failures are fixed or explicitly investigated; they are not converted to warnings merely to unblock a release.
 - Root licensing remains an owner decision; do not publish a license implicitly.
 
+## Release versioning and repository governance
+
+- STERDEZ uses one product release version across `pyproject.toml`, `WEB/package.json`, Inno Setup and Windows version metadata.
+- `scripts/check-repository-consistency.py` is part of the required `Python lint and types` context, so runtime/dev lock divergence or version drift blocks merge.
+- Accepted releases are created only after the exact SHA has a green P11 plus P1, public WEB, functional, REG.RU and Cloudflare evidence.
+- Fully merged disposable branches are pruned by `.github/workflows/branch-hygiene.yml`; protected branches and open PR heads are never deleted.
+- Legacy infrastructure procedures belong in documentation, not permanently active production workflows.
+- The current single-home data-authority decision is documented in ADR-0001.
+
+## Disaster-recovery certification
+
+Per-release acceptance does not require a Windows reboot. Controlled container restart and full host reboot are periodic DR certification drills. A DR certification is complete only after a green controlled restart drill, a user-present Windows reboot, recovery of Docker and the GitHub runner, and a final green P11. Track the most recent certification separately from normal release acceptance.
+
 ## Phase 4 Lite completion criteria
 
 Phase 4 Lite is complete when:

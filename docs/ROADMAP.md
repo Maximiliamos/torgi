@@ -1,5 +1,8 @@
 # BankrotAI product roadmap
 
+> **Production acceptance baseline (2026-10-07):** operational P0–P12 is accepted on `d290e03870398b107e6555dc6b74a1284b67efc9`. Final evidence: P11 `37643825562`, P1 `37643825462`, Public WEB `37644404647`, Functional `37644404587`. The BAT backlog below remains future product/architecture work and is tracked separately from release acceptance.
+
+
 
 > **Naming note (October 2026):** the production hardening sequence referred to operationally as **P0–P12** is separate from the older BAT roadmap section labels below. The BAT identifiers (`BAT-001`, `BAT-101`, etc.) are the authoritative identifiers for the long-term backlog. A green operational P0–P12 acceptance does not imply that every long-term BAT item has been implemented.
 
