@@ -1,0 +1,33 @@
+name: Audit branch disposition without deletion
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/branch-disposition-audit.yml'
+      - 'scripts/branch_disposition_audit.py'
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Inventory all refs against stable main
+        run: python scripts/branch_disposition_audit.py --repo "$GITHUB_REPOSITORY" --json branch-inventory.json --markdown branch-inventory.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: branch-disposition-${{ github.run_id }}
+          path: |
+            branch-inventory.json
+            branch-inventory.md
+          retention-days: 90
