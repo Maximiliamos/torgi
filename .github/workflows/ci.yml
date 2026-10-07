@@ -15,8 +15,8 @@ jobs:
     name: Python lint and types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Verify version and lock consistency
@@ -36,8 +36,8 @@ jobs:
     name: Python dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - name: Audit locked Python runtime dependencies
         run: |
@@ -48,8 +48,8 @@ jobs:
     name: Python tests (SQLite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - name: Install EGL dependency with bounded apt retries
         run: |
@@ -75,8 +75,8 @@ jobs:
     name: Database migration tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - run: pytest tests/test_database_reliability.py
@@ -98,8 +98,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/bankrotai_test
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - name: Install EGL dependency with bounded apt retries
         run: |
@@ -126,8 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: WEB } }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - run: npm ci
       - name: Audit npm dependencies with bounded registry retries
@@ -189,8 +189,8 @@ jobs:
     name: Windows desktop BAT smoke
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Check source desktop through START_TORGI.bat
@@ -202,8 +202,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
       - working-directory: WEB
         run: |
@@ -225,5 +225,5 @@ jobs:
     name: Docker operator queue smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: bash scripts/docker-smoke-operator.sh

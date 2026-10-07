@@ -65,7 +65,7 @@ jobs:
           Get-Content -LiteralPath $report | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
 
       - name: Upload diagnostics
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: home-performance-diagnostics-${{ github.run_id }}
           path: ${{ runner.temp }}/home-performance-diagnostics.txt
