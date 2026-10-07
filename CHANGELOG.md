@@ -1,5 +1,15 @@
 # История изменений
 
+## 0.3.2 — planned next accepted release
+
+Remote-only hardening prepared after v0.3.1:
+
+- Incrementally extract source lot filtering, map geometry, HTTP request models and desktop preview utilities without changing their public contracts.
+- Sign and independently verify release SBOM/checksum evidence with GitHub OIDC/Sigstore before publishing a release.
+- Stage an opt-in, encrypted off-host PostgreSQL backup exporter (not activated without owner credentials and restore evidence).
+- Add a read-only branch disposition inventory workflow; preserve unreviewed unique commits.
+- Keep P0–P12 production and release gates unchanged; release only on the final accepted main SHA.
+
 ## 0.3.1 — 2026-10-07
 
 Safe post-closeout hardening.
