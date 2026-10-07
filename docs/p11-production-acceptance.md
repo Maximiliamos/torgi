@@ -13,7 +13,7 @@ The manual workflow `.github/workflows/p11-production-acceptance.yml` runs only 
 - DB current MapDataset ↔ REG.RU S3 public manifest equality;
 - active lot / GEO snapshot evidence;
 - source circuits and global source-network health;
-- GEO network-wait state;
+- GEO operational retry state: `network_wait` must remain bounded, have non-stale retry scheduling, and must not indicate an open global/provider network circuit;
 - Home runner GitHub route diagnostics;
 - a bounded read-only soak (default 30 minutes).
 
