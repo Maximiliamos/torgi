@@ -1,0 +1,35 @@
+name: Temporary reconciliation progress diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-reconcile-progress.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      API_BASE: https://api.sterdez.online
+      USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
+      PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
+    steps:
+      - name: Read authenticated production progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          cookie="${RUNNER_TEMP}/cookies.txt"
+          curl --fail --silent --show-error --max-time 20 \
+            -c "$cookie" \
+            -H 'Content-Type: application/json' \
+            -d "$(python -c 'import json,os; print(json.dumps({"username":os.environ["USERNAME"],"password":os.environ["PASSWORD"]}))')" \
+            "$API_BASE/api/auth/login" >/dev/null
+          curl --fail --silent --show-error --max-time 20 \
+            -b "$cookie" \
+            "$API_BASE/api/operations/progress" \
+            | python -m json.tool
