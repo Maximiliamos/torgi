@@ -423,10 +423,10 @@ def map_delivery_reconciliation_report(
         for feature in (payload or {}).get("features", []):
             if not isinstance(feature, dict) or feature.get("kind") != "lot":
                 continue
-            lot_id = feature.get("id")
-            if isinstance(lot_id, int):
+            feature_lot_id = feature.get("id")
+            if isinstance(feature_lot_id, int):
                 point_features += 1
-                dataset_ids.add(lot_id)
+                dataset_ids.add(feature_lot_id)
 
     live_missing_ids = sorted(eligible_ids - dataset_ids)
     live_extra_ids = sorted(dataset_ids - eligible_ids)
