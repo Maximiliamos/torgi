@@ -16,11 +16,18 @@ permissions:
   issues: write
 
 concurrency:
-  group: p1-production-data-quality
+  # A workflow_run from an obsolete reconciliation must not cancel the
+  # push-triggered P1 on a newer production SHA.
+  group: p1-production-data-quality-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
   wait-home-deploy:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_sha == github.sha &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
