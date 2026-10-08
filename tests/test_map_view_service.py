@@ -90,6 +90,8 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     source_system="torgi.gov.ru",
                     external_id="duplicate",
                     source_url="https://example.test/gis",
+                    source_status="active",
+                    last_seen_at=datetime.now(),
                 ),
                 LotGeoSnapshot(
                     lot_id=primary.id,

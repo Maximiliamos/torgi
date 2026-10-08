@@ -189,6 +189,38 @@ jobs:
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
           test -n "$YANDEX_MAPS_API_KEY"
 
+      - name: Wait for exact home deployment before staging REG.RU
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 400); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then
+              HOME_SHA="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                "https://$HOME_RELAY_HOSTNAME/health/live" \
+                | python -c 'import json,sys; print(json.load(sys.stdin).get("deployment_sha",""))' || true)"
+              if [ "$HOME_SHA" = "$GITHUB_SHA" ]; then
+                echo "Exact Home API SHA verified: $HOME_SHA"
+                break
+              fi
+              echo "Home deploy workflow succeeded but live API SHA mismatch: expected=$GITHUB_SHA observed=${HOME_SHA:-missing}" >&2
+              exit 1
+            fi
+            case "$state" in
+              completed:*)
+                echo "Exact home deployment failed: $state" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$attempt" = 400 ]; then
+              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+
       - name: Prepare SSH identity
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
@@ -264,32 +296,6 @@ jobs:
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             'test "$(id -u)" = 0 && docker version >/dev/null'
 
-      - name: Wait for exact home deployment before staging REG.RU
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 400); do
-            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
-            if [ "$state" = "completed:success" ]; then
-              echo "Exact home deployment is ready: $GITHUB_SHA"
-              break
-            fi
-            case "$state" in
-              completed:*)
-                echo "Exact home deployment failed: $state" >&2
-                exit 1
-                ;;
-            esac
-            if [ "$attempt" = 400 ]; then
-              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
-              exit 1
-            fi
-            sleep 15
-          done
-
       - name: Verify staged home API before changing REG.RU
         env:
           API_KEY: ${{ secrets.KOYEB_SERVICE_KEY }}
@@ -316,6 +322,15 @@ jobs:
             fi
             sleep 5
           done
+          # Re-check the actual live API commit immediately before any REG.RU
+          # configuration change. A green workflow alone is not a SHA proof.
+          LIVE_HOME_SHA="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            "https://$HOME_RELAY_HOSTNAME/health/live" \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("deployment_sha",""))')"
+          if [ "$LIVE_HOME_SHA" != "$GITHUB_SHA" ]; then
+            echo "Home API changed during staging: expected=$GITHUB_SHA got=${LIVE_HOME_SHA:-missing}" >&2
+            exit 1
+          fi
           LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
           login_ok="no"
           for login_attempt in $(seq 1 12); do

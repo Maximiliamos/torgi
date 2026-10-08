@@ -155,9 +155,9 @@ Done: desktop/web checklist UI. Remaining: notifications and document-to-field r
 
 ## P0 — завершение безопасного web/desktop parity
 
-### BAT-301 — Three-source bulk synchronization
+### BAT-301 — Four-source automatic bulk reconciliation (TBankrot isolated)
 
-- единая Celery orchestration для ГИС «Торги», TBankrot и РАД/ЛОТ-ОНЛАЙН;
+- единая Celery orchestration для `torgi.gov.ru`, `lot-online.ru`, `torgi-russia.ru`, `bidexpert.ru` только с учётом runtime pause/circuit; TBankrot остаётся отдельным authenticated/paused источником и не считается автоматическим покрытием;
 - idempotency key, per-source cursor/progress/retry/cancel и частичный результат;
 - web показывает недоступные источники и не объявляет неполный проход успешным;
 - acceptance: повторный запуск не создаёт дублей, progress восстанавливается после restart worker.

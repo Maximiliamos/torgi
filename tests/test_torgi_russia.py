@@ -589,3 +589,20 @@ def test_torgi_russia_exhausts_transient_status_retries_fail_closed() -> None:
 
     assert session.calls == 5
     assert [call.args[0] for call in sleep.call_args_list] == [1, 2, 4, 8]
+
+
+def test_torgi_russia_legacy_html_does_not_promote_unknown_to_active() -> None:
+    html = """<main><article class="card">
+    <h3 class="card__title"><a href="/lot/7143576">Земельный участок</a></h3>
+    <p class="card__excerpt">Участок площадью 1489 кв.м.</p>
+    </article></main>"""
+    lots = TorgiRussiaClient.parse_search_page(
+        html, "https://xn----etbpba5admdlad.xn--p1ai/search?history_only=0"
+    )
+    assert len(lots) == 1
+    assert lots[0].auction_status == "unknown"
+    html = html.replace('<p class="card__excerpt">', '<span class="card__status">Завершены</span><p class="card__excerpt">')
+    closed = TorgiRussiaClient.parse_search_page(
+        html, "https://xn----etbpba5admdlad.xn--p1ai/search?history_only=0"
+    )
+    assert closed[0].auction_status == "closed"

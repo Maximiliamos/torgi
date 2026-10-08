@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
+from bankrotai.services.cadastral_identity import pick_nspd_feature, pick_pkk_feature, geo_result_needs_review
 from bankrotai.services.geo_cadastral_properties import (
     CADASTRAL_RE as CADASTRAL_RE,
     normalize_nspd_props as normalize_nspd_props,
@@ -280,10 +281,7 @@ class IK12Geocoder:
 
 
 class CadastralGeocoder:
-    """
-    Кадастровый поиск и геокодинг.
-    Всё держим в geo.py, без отдельного cadastre.py.
-    """
+    """Кадастровый поиск и геокодинг с проверкой личности объекта."""
 
     FEATURE_TYPES = {
         "land_plot": 1,
@@ -897,7 +895,9 @@ class CadastralGeocoder:
         if not features:
             return None
 
-        feature = features[0]
+        feature = pick_pkk_feature(features, cadastral_number)
+        if feature is None:
+            return None
         attrs = feature.get("attrs") or {}
         center = feature.get("center") or {}
         geometry = feature.get("geometry")
@@ -1084,6 +1084,8 @@ class CadastralGeocoder:
             return None
 
         feature = self._pick_nspd_feature(features, query)
+        if feature is None:
+            return None
         props = feature.get("properties") or {}
         expected_cadastral = query if CADASTRAL_RE.match(query.replace(" ", "")) else ""
         info = normalize_nspd_props(props, expected_cadastral)
@@ -1128,12 +1130,8 @@ class CadastralGeocoder:
             raw=feature,
         )
 
-    def _pick_nspd_feature(self, features: list[dict], cadastral_number: str) -> dict:
-        for feature in features:
-            text = json_like_text(feature)
-            if cadastral_number in text:
-                return feature
-        return features[0]
+    def _pick_nspd_feature(self, features: list[dict], cadastral_number: str) -> dict | None:
+        return pick_nspd_feature(features, cadastral_number)
 
     def geocode(self, cadastral_number: str) -> dict | None:
         result = self.search_by_cadastral_number(cadastral_number)
@@ -2168,7 +2166,7 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
     if final_result.address and (not lot.address or len(lot.address) < 15 or is_incomplete_address(lot.address)):
         lot.address = final_result.address
 
-    lot.needs_geo_check = final_result.confidence not in {"high", "medium"}
+    lot.needs_geo_check = geo_result_needs_review(lot.cadastral_number, lot.cadastral_numbers, final_result.cadastral_number, final_result.source, final_result.confidence)
 
     return True
 

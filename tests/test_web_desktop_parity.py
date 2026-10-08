@@ -51,7 +51,8 @@ def _authenticated_client(monkeypatch) -> tuple[TestClient, int]:
             auction_status="active",
             current_geo_lat=57.6261,
             current_geo_lon=39.8845,
-            current_geo_source="test",
+            # A cadastral lot can only reach the public map with exact GEO.
+            current_geo_source="nspd",
             current_geo_confidence="high",
         )
         session.add(lot)

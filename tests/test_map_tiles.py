@@ -125,8 +125,8 @@ def test_builder_dataset_membership_business_matrix():
     factory = _database()
     now = datetime(2026, 9, 6, 12, 0, 0)
     cases = [
-        ("closed-visible", {"auction_status": "closed"}, True, "low", True),
-        ("completed-visible", {"auction_status": "completed"}, True, "unknown", True),
+        ("closed-hidden", {"auction_status": "closed"}, True, "low", False),
+        ("completed-hidden", {"auction_status": "completed"}, True, "unknown", False),
         ("manual-review-visible", {"needs_human_review": True}, True, "medium", True),
         ("approved-visible", {"review_status": "approved"}, True, "high", True),
         ("rejected-visible", {"review_status": "rejected"}, True, "none", True),
