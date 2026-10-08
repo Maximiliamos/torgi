@@ -29,3 +29,19 @@ def test_release_keeps_exact_sha_production_gates() -> None:
     ):
         assert marker in text
     assert "head_sha=" in text
+
+
+def test_release_rechecks_main_after_long_gate_before_publishing() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    gate = text.index("Wait for exact-SHA production gates")
+    publication = text.index("      - name: Create accepted GitHub Release")
+    last_step = text[publication:]
+
+    # The initial current-main check is insufficient when P1/P11 queue or
+    # attestation spends many minutes running: refuse a superseded release.
+    assert gate < publication
+    assert 'gh api "repos/$GITHUB_REPOSITORY/branches/main"' in last_step
+    assert 'if [ "$CURRENT_MAIN_SHA" != "$ACCEPTED_SHA" ]; then' in last_step
+    assert "refusing stale release" in last_step
+    assert last_step.index("CURRENT_MAIN_SHA=") < last_step.index("gh release view")
+    assert last_step.index("CURRENT_MAIN_SHA=") < last_step.index("gh release create")

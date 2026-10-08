@@ -1,5 +1,12 @@
 # История изменений
 
+## 0.3.6 — planned, pending exact-SHA acceptance
+
+- Extract the map operations, source status, geocoding progress, administrative pause/resume controls and journal panel into a standalone tested React component.
+- Preserve the public `operationsSourceSummaryLabel` import from MapView, keep all runtime APIs untouched and tighten the legacy MapView line budget from 2,038 to 1,847 lines.
+- Deploy only after accepted `v0.3.5`; require all exact-SHA P1/P11, Home, REG.RU, Cloudflare, WEB and functional reliability gates before publishing this release.
+
+
 ## 0.3.5 — planned next exact-SHA accepted release
 
 - Correct full reconciliation: assert Torgi Russia positive lot counts **only when that source is enabled** in the durable configured source set; disabled sources never constitute claimed coverage.

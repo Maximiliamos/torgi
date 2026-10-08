@@ -18,7 +18,7 @@ ALLOWLIST_BUDGETS = {
     "src/bankrotai/logic.py": 1257,
     "src/bankrotai/tasks.py": 1296,
     "src/bankrotai/services/ingestion.py": 1185,
-    "WEB/src/features/map/MapView.tsx": 2038,
+    "WEB/src/features/map/MapView.tsx": 1847,
     "WEB/src/lib/api.ts": 1164,
 }
 

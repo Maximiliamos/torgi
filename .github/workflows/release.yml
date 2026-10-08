@@ -165,6 +165,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The gate can wait 30 minutes; main may move after the initial check.
+          # Never publish a superseded commit even if all of its gates went green.
+          CURRENT_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')"
+          if [ "$CURRENT_MAIN_SHA" != "$ACCEPTED_SHA" ]; then
+            echo "::error::main moved to $CURRENT_MAIN_SHA after accepting $ACCEPTED_SHA; refusing stale release." >&2
+            exit 1
+          fi
           VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           TAG="v$VERSION"
           if gh release view "$TAG" >/dev/null 2>&1; then
