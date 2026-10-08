@@ -1075,6 +1075,7 @@ def test_p14_unknown_does_not_unarchive_closed_legacy_projection(sessions) -> No
     uncertain = lot("p14-closed")
     uncertain.auction_status = "unknown"
     with sessions.begin() as session:
+        persist_lot(session, lot("p14-closed"))
         persist_lot(session, closed)
         persist_lot(session, uncertain)
     with sessions() as session:
