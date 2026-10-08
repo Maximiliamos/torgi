@@ -102,3 +102,46 @@ def test_home_api_sha_is_exposed_and_checked_on_all_deploy_paths() -> None:
     assert 'os.getenv("BANKROTAI_DEPLOY_SHA"' in api_code
     assert regru_workflow.count('get("deployment_sha","")') >= 2
     assert 'if [ "$LIVE_HOME_SHA" != "$GITHUB_SHA" ]; then' in regru_workflow
+
+
+def test_p16_repair_is_dry_run_and_preserves_source_provenance() -> None:
+    from bankrotai.db import CanonicalLot, SourceLot, LotStatusHistory
+
+    module_spec = importlib.util.spec_from_file_location(
+        "p16_public_map_repair", ROOT / "scripts/p16-public-map-repair.py"
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="torgi", source_system="torgi.gov.ru", external_id="76:22:010717:536",
+            title="Аренда земельного участка 76:22:010717:536", description="",
+            category="land", auction_status="active",
+        )
+        session.add(lot)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="p16-raw-history", legacy_processed_lot_id=lot.id,
+            title=lot.title, category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        source_lot = SourceLot(
+            canonical_lot_id=canonical.id, processed_lot_id=lot.id,
+            source_system="torgi.gov.ru", external_id="raw-same-id",
+        )
+        session.add(source_lot)
+        session.commit()
+        first = module.repair_candidate_batch(session, apply=False)
+        assert first["proposed_rows_in_first_batch"] == 1
+        assert first["archived_rows"] == 0
+        assert session.get(ProcessedLot, lot.id).is_archived is False
+        done = module.repair_candidate_batch(session, apply=True)
+        assert done["archived_rows"] == 1
+        assert session.get(ProcessedLot, lot.id).is_archived is True
+        assert session.get(SourceLot, source_lot.id).archive_reason == "rental"
+        assert session.query(LotStatusHistory).count() == 1
+        assert session.query(ProcessedLot).count() == 1
