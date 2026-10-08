@@ -76,7 +76,7 @@ The current production backup policy is authoritative:
 
 - canonical backup root: `D:\BankrotAI\dr-backups`;
 - the scheduled workflow checks daily and creates a new PostgreSQL backup only when the latest verified backup is old enough for the approximately 48-hour cadence;
-- exactly one latest verified `.dump + .json` pair is retained after the replacement backup passes checksum and isolated restore verification;
+- the **latest three** restore-verified `.dump + .json` pairs are retained on `D:`; pruning runs only after a new isolated restore succeeds and never counts orphaned/unverified files;
 - SHA-256, schema revision and critical row-count plausibility are verified;
 - restore is tested in an isolated `postgres:17` container with no network;
 - P10/P11 treat backup/restore evidence as stale after 60 hours, which gives the 48-hour cadence a scheduling grace window.
