@@ -132,7 +132,9 @@ def test_unknown_update_revokes_stale_active_source_state() -> None:
             existing_sources={"gis-1": existing},
         )
         session.commit()
-
+        # Set-based upsert does not refresh already-loaded ORM objects when
+        # expire_on_commit=False; assert persisted DB state, not identity cache.
+        session.expire_all()
         source = session.scalar(select(SourceLot))
         processed = session.scalar(select(ProcessedLot))
         assert source is not None and source.is_active is False and source.is_archived is False
