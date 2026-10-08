@@ -140,5 +140,11 @@ def test_p14_expired_primary_with_fresh_canonical_sibling_is_reported_without_mu
         assert status["expired_primary_with_no_direct_source_link"] == 0
         assert status["expired_primary_with_active_canonical_proof_any_age"] == 1
         assert status["expired_primary_with_fresh_active_canonical_proof"] == 1
+        assert status["expired_with_active_unarchived_direct_source"] == 1
+        assert status["expired_with_fresh_active_unarchived_direct_source"] == 1
+        assert status["expired_direct_source_lifecycle"] == [{
+            "source_status": "active", "is_active": True,
+            "is_archived": False, "archive_reason": "none", "count": 1,
+        }]
         assert session.query(ProcessedLot).one().auction_status == "expired"
         assert session.query(SourceLot).one().is_active is True
