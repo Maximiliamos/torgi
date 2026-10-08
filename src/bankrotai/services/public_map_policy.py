@@ -38,6 +38,17 @@ def fresh_independent_source_projection():
             SourceLot.source_system.in_(AUTOMATIC_PUBLIC_SOURCES),
             SourceLot.is_active.is_(True),
             SourceLot.is_archived.is_(False),
+            # is_active may be stale: require independently normalized upstream status.
+            SourceLot.source_status.in_(PUBLIC_ACTIVE_STATUSES),
+            # A rental cannot qualify simply because the asset is real estate.
+            or_(
+                SourceLot.auction_type.is_(None),
+                ~or_(
+                    SourceLot.auction_type.ilike("%аренд%"),
+                    SourceLot.auction_type.ilike("%lease%"),
+                    SourceLot.auction_type.ilike("%rent%"),
+                ),
+            ),
             SourceLot.last_seen_at >= cutoff,
         )
         .exists()
