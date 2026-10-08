@@ -33,11 +33,17 @@ def public_map_preflight(points: list[dict[str, Any]]) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     for item in points:
         title = str(item.get("title") or "").casefold().replace("ё", "е")
+        description = str(item.get("description") or "").casefold().replace("ё", "е")
         category = str(item.get("category") or "")
         source = str(item.get("source_system") or "")
         geo_source = str(item.get("geo_source") or "")
         cadastral = item.get("cadastral_number")
-        if any(term in title for term in RENT_TOKENS):
+        if any(term in title for term in RENT_TOKENS) or any(
+            phrase in description for phrase in (
+                "вид торгов : аренда", "вид торгов: аренда",
+                "право заключения договора аренды",
+            )
+        ):
             counts["public_rental_count"] += 1
         if item.get("vin") or any(term in title for term in MOVABLE_TOKENS):
             counts["public_transport_count"] += 1
