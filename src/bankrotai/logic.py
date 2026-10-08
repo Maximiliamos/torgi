@@ -36,42 +36,42 @@ logger = logging.getLogger(__name__)
 
 def classify_category(title: str, description: str) -> str: 
     h = f"{title} {description}".lower() 
- 
+
     if any(token in h for token in ("автомоб", "vin", "грузов", "транспорт", "авто", "прицеп", "легков")): 
         return "car" 
- 
+
     if "квартир" in h: 
         return "apartment" 
- 
+
     if "нежилое помещение" in h or "нежилые помещения" in h or "помещени" in h: 
         return "commercial_room" 
- 
+
     if "нежилое здание" in h or "здание" in h or "склад" in h or "цех" in h: 
         if "земельн" in h or "участ" in h: 
             return "commercial_building_with_land" 
         return "commercial_building" 
- 
+
     if "жилой дом" in h or "дом жилой" in h or "коттедж" in h: 
         return "house" 
- 
+
     if "земельн" in h or "участ" in h: 
         return "land" 
- 
+
     if "машино-место" in h or "гараж" in h: 
         return "parking" 
- 
+
     if "незаверш" in h: 
         return "unfinished" 
- 
+
     if "комплекс" in h: 
         return "complex" 
- 
+
     if "дебитор" in h or "право требования" in h: 
         return "receivable" 
- 
+
     if "недвиж" in h: 
         return "real_estate" 
- 
+
     return "other" 
 
 # --- Ingest Utils ---
@@ -462,6 +462,9 @@ def _sync_source_lot(
         source_lot.is_archived = False
         source_lot.archived_at = None
         source_lot.archive_reason = None
+    elif normalized_source_status == "unknown":
+        source_lot.is_active = False
+        source_lot.archive_reason = source_lot.archive_reason or "source_status_unverified"
     source_lot.missing_successful_runs = 0
     processed.region_code = source_lot.region_code or processed.region_code
     canonical.region_code = source_lot.region_code or canonical.region_code
@@ -513,7 +516,7 @@ def _ensure_processed_source_lot(session: Session, processed: ProcessedLot) -> S
 
 def build_geo_decision(city_slug: str, raw_payload: dict[str, Any], fallback_text: str = "") -> dict:
     address = raw_payload.get("address") or raw_payload.get("location") or fallback_text
-    
+
     return {
         "geo_source": "fallback",
         "geo_method": "unresolved",
@@ -533,18 +536,18 @@ def build_status_decision(raw_payload: dict[str, Any], fallback_status: str = ""
         f"{d.get('title', '')} {d.get('text', '')}" 
         for d in dates 
     ).lower() 
- 
+
     text = f"{raw_status} {date_text}" 
- 
+
     final_status = "unknown" 
- 
+
     if any(word in text for word in ("заверш", "архив", "состоял", "продан")): 
         final_status = "closed" 
     elif any(word in text for word in ("опублик", "прием заявок", "приём заявок", "осталось", "до окончания")): 
         final_status = "active" 
     elif "начало торгов" in text: 
         final_status = "scheduled" 
- 
+
     return { 
         "final_status": final_status, 
         "confidence": "medium", 
@@ -556,7 +559,7 @@ def normalize_status(status: str) -> str:
     value = (status or "").strip().lower()
     if not value:
         return "unknown"
-    if any(token in value for token in ("closed", "completed", "finished", "заверш", "закрыт", "несостоя")):
+    if any(token in value for token in ("closed", "completed", "finished", "заверш", "закрыт", "несостоя", "архив", "отмен", "прекращ", "окончен", "cancel", "expired", "failed", "archiv")):
         return "closed"
     if any(token in value for token in ("scheduled", "pending", "приём", "прием", "ожида")):
         return "scheduled"
@@ -565,7 +568,6 @@ def normalize_status(status: str) -> str:
     if value in {"active", "scheduled", "closed", "unknown"}:
         return value
     return status.strip()
-
 # --- Scoring Logic ---
 
 def calculate_discount_percent(market_price: float | None, auction_price: float | None) -> float | None:
@@ -588,19 +590,19 @@ def calculate_rating(
 ) -> float | None: 
     if discount_percent is None or risk_score is None: 
         return None 
- 
+
     if status not in {"active", "scheduled"}: 
         return 0 
- 
+
     score = 0.0 
- 
+
     # Дисконт важен, но не должен доминировать 
     safe_discount = max(-50, min(discount_percent, 95)) 
     score += safe_discount * 0.35 
- 
+
     # Риск 
     score += (10 - risk_score) * 3.0 
- 
+
     # Базовая ликвидность по типу объекта 
     liquidity_by_category = { 
         "apartment": 20, 
@@ -615,33 +617,33 @@ def calculate_rating(
         "other": 3, 
     } 
     score += liquidity_by_category.get(category, 4) 
- 
+
     # Штраф за низкую уверенность оценки 
     if confidence == "low": 
         score -= 10 
     elif confidence == "medium": 
         score -= 4 
- 
+
     text_legal = (legal_status or "").lower() 
     text_addr = (address or "").lower() 
- 
+
     # ОКН / наследие 
     if "культурн" in text_legal or "наслед" in text_legal: 
         score -= 20 
- 
+
     # Плохой адрес 
     if not address or len(address) < 15: 
         score -= 8 
- 
+
     # Нет площади 
     if not area: 
         score -= 8 
- 
+
     # Сельская коммерция 
     if category in {"commercial_building", "commercial_building_with_land", "commercial_room"}: 
         if any(x in text_addr for x in [" д ", " дерев", " с ", " село", "посел", "р-н", "район"]): 
             score -= 8 
- 
+
     return round(max(0, min(score, 100)), 2) 
 
 def needs_human_review(confidence: str) -> bool:
@@ -701,7 +703,7 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
         lot.closed_at = lot.closed_at or utc_now()
         lot.is_archived = True
         lot.archived_at = lot.archived_at or utc_now()
-    elif old_status == "closed":
+    elif old_status == "closed" and normalized in {"active", "scheduled"}:
         lot.is_archived = False
         lot.archived_at = None
     session.add(LotStatusHistory(
@@ -836,18 +838,17 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
                 processed.current_geo_source = None
                 processed.current_geo_confidence = None
                 processed.current_geo_observed_at = None
-        
+
         if normalized.start_price is not None:
             processed.start_price = _to_decimal(normalized.start_price)
         if normalized.current_price is not None:
             processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
-        if new_status and not (new_status == "unknown" and processed.auction_status not in {None, "", "unknown"}):
+        if new_status:
             apply_lot_status(session, processed, new_status, normalized.source or "sync")
         processed.last_update = utc_now()
-        
-        logger.info(f"Updated lot {normalized.external_id}")
 
+        logger.info(f"Updated lot {normalized.external_id}")
     if processed.current_price is not None and processed.current_price != old_current_price:
         session.add(LotPriceEvent(
             lot_id=processed.id,
@@ -856,7 +857,6 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
             amount=processed.current_price,
             metadata_json={"external_id": normalized.external_id},
         ))
-                
     session.flush()
     canonical_hint = None
     if duplicate_primary is not None:
