@@ -1,6 +1,6 @@
 # BankrotAI product roadmap
 
-> **Production acceptance baseline (2026-10-07):** operational P0–P12 is accepted on `d290e03870398b107e6555dc6b74a1284b67efc9`. Final evidence: P11 `37643825562`, P1 `37643825462`, Public WEB `37644404647`, Functional `37644404587`. The BAT backlog below remains future product/architecture work and is tracked separately from release acceptance.
+> **Current release checkpoint (2026-10-08):** v0.3.4 is published at `f504d040`; v0.3.5 code is merged at `260e6420` and must pass its own exact-SHA acceptance before being called an accepted release. The older P0–P12 baseline at `d290e038` is historical evidence, not proof that all newly reported map defects are fixed. P13–P17 remain an additional product-integrity workstream. The BAT backlog below is distinct.
 
 
 
@@ -13,7 +13,7 @@ Roadmap оформлен как набор будущих GitHub issues. Каж�
 
 | Phase | Goal | Status | Production evidence |
 | --- | --- | --- | --- |
-| Phase 1 | Correctness and freshness of lot/GEO/map data | **100% complete** | Automated ingestion/freshness, GEO/map correctness and production rollout verified |
+| Phase 1 | Initial lot/GEO/map delivery (legacy scope) | **Legacy acceptance only** | Initial production checks passed, but P13–P17 owner-reported correctness defects remain |
 | Phase 2 Lite | Fast UX for 1–4 users without enterprise scaling | **100% complete** | Concurrency/cache/map hot-path changes verified in production |
 | Phase 3 Lite | Backups, restore proof, health/recovery and durable reconciliation | **100% complete** | Full reconciliation `36239355328` succeeded; post-reconciliation Phase 3 health/recovery succeeded |
 | Phase 4 Lite | Operations docs, release/recovery checklist, dependency security and issue cleanup | **100% complete** | Runbook/security gates shipped; legacy alert backlog reduced from 405 to 0; production recovery cycle green |
@@ -23,6 +23,40 @@ The delivery phases above are the practical production plan for the current depl
 (up to four users). The BAT roadmap below remains the longer-term product backlog and
 must not be treated as a requirement to add enterprise infrastructure before it is needed.
 
+
+## P12.5–P17 — актуальное качество продукта (требует новой приёмки)
+
+**P12.5 — Repository Sync Cleanup:** сверить README, D: 48h/3 verified backup generations,
+архивировать устаревшие Neon/Cloudflare документы, обозначить исторические отчёты,
+защитить legacy tunnel и сохранить один канонический runbook. PR документации — отдельно
+от P13–P17, без затрагивания рабочей БД.
+
+**P13 — Public Map Integrity:** публичная карта содержит только активную продажу
+недвижимости, не аренду, транспорт, закрытые/отменённые или неуверенно
+геокодированные объекты. Подтверждение на реальной базе и пяти примерах обязательно.
+
+**P14 — Source Lifecycle Integrity:** нормализация статусов `torgi-russia.ru`,
+актуальность SourceLot→CanonicalLot, проверка свежести каждого реально
+подключённого источника и изоляция исторического TBankrot. Отключённый источник
+не может считаться источником свежих лотов. См. SRC-001 #931.
+
+**P15 — Strict Cadastral GEO:** точное совпадение кадастрового номера в NSPD/PKK,
+никакого `features[0]` при отсутствии соответствия, запрет публиковать
+приблизительный адресный centroid как подтверждённое положение участка.
+
+**P16 — Historical Data Repair:** сначала read-only dry-run и таблица причин,
+затем backup/restore proof, ограниченная проверяемая коррекция состояний лотов
+без физического удаления и bounded пересчёт старых GEO; только потом новый MapDataset.
+
+**P17 — Production Integrity Gates:** одинаковый exact SHA Home→REG.RU→Cloudflare
+для push/manual/rerun, метрики загрязнения публичной карты и запрет публикации
+плохого набора данных. Приёмка 5 реальных ошибок из `Ошибки(1).docx` и
+репрезентативной выборки новых лотов через DB→MapDataset→S3→public WEB.
+
+**Статус на 2026-10-08:** указанные P13–P17 ещё не приняты как production.
+Наличие Draft PR #932 не равнозначно исправлению реальных меток до релиза
+и повторной пострелизной проверки. Прежние 100% для Phase 1–5 не являются
+гарантией выполнения P13–P17.
 
 ## P0 — надёжное ядро торгов
 
