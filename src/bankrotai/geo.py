@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
-from bankrotai.services.cadastral_identity import pick_nspd_feature, pick_pkk_feature
+from bankrotai.services.cadastral_identity import pick_nspd_feature, pick_pkk_feature, geo_result_needs_review
 from bankrotai.services.geo_cadastral_properties import (
     CADASTRAL_RE as CADASTRAL_RE,
     normalize_nspd_props as normalize_nspd_props,
@@ -2166,7 +2166,7 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
     if final_result.address and (not lot.address or len(lot.address) < 15 or is_incomplete_address(lot.address)):
         lot.address = final_result.address
 
-    lot.needs_geo_check = final_result.confidence not in {"high", "medium"}
+    lot.needs_geo_check = geo_result_needs_review(lot.cadastral_number, lot.cadastral_numbers, final_result.cadastral_number, final_result.source, final_result.confidence)
 
     return True
 
