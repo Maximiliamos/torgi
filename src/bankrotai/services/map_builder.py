@@ -28,7 +28,8 @@ from bankrotai.services.map_bundle_store import (
     publish_dataset_to_regional_bundles,
 )
 from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
-from bankrotai.services.public_map_policy import public_map_predicates
+from bankrotai.services.public_map_policy import public_map_predicates, fresh_independent_source_projection
+from bankrotai.services.public_map_quality import public_map_preflight
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -447,6 +448,14 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 select(
                     ProcessedLot.id,
                     ProcessedLot.title,
+                    ProcessedLot.description,
+                    ProcessedLot.category,
+                    ProcessedLot.vin,
+                    ProcessedLot.source_system,
+                    ProcessedLot.current_geo_source.label("geo_source"),
+                    ProcessedLot.current_geo_confidence.label("geo_confidence"),
+                    ProcessedLot.needs_geo_check,
+                    fresh_independent_source_projection().label("independent_source_verified"),
                     ProcessedLot.current_price,
                     ProcessedLot.start_price,
                     ProcessedLot.region_code,
@@ -518,6 +527,14 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "lat": row.centroid_lat,
                     "lon": row.centroid_lon,
                     "title": row.title,
+                    "category": row.category,
+                    "vin": row.vin,
+                    "source_system": row.source_system,
+                    "cadastral_number": row.cadastral_number,
+                    "geo_source": row.geo_source,
+                    "geo_confidence": row.geo_confidence,
+                    "needs_geo_check": row.needs_geo_check,
+                    "independent_source_verified": bool(row.independent_source_verified),
                     "current_price": float(row.current_price) if row.current_price is not None else None,
                     "start_price": float(row.start_price) if row.start_price is not None else None,
                     "region_code": region_code,
@@ -526,6 +543,13 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "is_archived": row.is_archived,
                     "review_status": row.review_status,
                 }
+            )
+        quality_metrics = public_map_preflight(points)
+        logger.info("Map dataset public quality preflight: %s", quality_metrics)
+        if not quality_metrics["ok"]:
+            raise RuntimeError(
+                "Refusing contaminated public map dataset: "
+                + json.dumps(quality_metrics, ensure_ascii=False, sort_keys=True)
             )
         if spatial_rejection_counts:
             logger.warning(
@@ -668,6 +692,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             "build_duration_ms": build_duration_ms,
             "duration_ms": total_duration_ms,
             "storage": storage,
+            "public_map_quality": quality_metrics,
             "object_store": object_store,
             **promotion,
         }
