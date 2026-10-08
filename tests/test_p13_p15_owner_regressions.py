@@ -140,3 +140,42 @@ def test_rental_transaction_in_source_body_excluded_even_with_generic_land_title
         session.add(lot)
         session.flush()
         assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
+
+
+def test_cadastral_address_fallback_is_never_final_even_when_photon_says_high() -> None:
+    from bankrotai.geo import CadastralObjectResult, apply_lot_geo_result
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="test", source_system="test", external_id="76:02:022201:38",
+            title="Земельный участок 76:02:022201:38",
+            description="", category="land", auction_status="active",
+            cadastral_number="76:02:022201:38",
+        )
+        session.add(lot)
+        session.flush()
+        weak = CadastralObjectResult(
+            query="Борисоглебский район", cadastral_number=None,
+            lat=57.7, lon=39.2, source="photon", confidence="high",
+        )
+        assert apply_lot_geo_result(session, lot, weak) is True
+        assert lot.needs_geo_check is True
+        assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
+        trusted = CadastralObjectResult(
+            query=lot.cadastral_number, cadastral_number=lot.cadastral_number,
+            lat=57.6, lon=39.8, source="nspd", confidence="high",
+        )
+        assert apply_lot_geo_result(session, lot, trusted) is True
+        assert lot.needs_geo_check is False
+
+
+def test_cadastral_provider_result_with_wrong_id_still_requires_review() -> None:
+    from bankrotai.services.cadastral_identity import geo_result_needs_review
+    assert geo_result_needs_review(
+        "76:02:022201:38", None, "76:02:022201:39", "nspd", "high"
+    ) is True
+    assert geo_result_needs_review(
+        "76:02:022201:38", None, "76:02:022201:38", "nspd", "high"
+    ) is False
