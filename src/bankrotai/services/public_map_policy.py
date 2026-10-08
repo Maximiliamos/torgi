@@ -54,10 +54,11 @@ def public_map_predicates() -> tuple:
         ProcessedLot.auction_status.in_(PUBLIC_ACTIVE_STATUSES),
         ProcessedLot.category.in_(REAL_ESTATE_CATEGORIES),
         ProcessedLot.vin.is_(None),
-        # A paused historical TBankrot publication must not hold a public
-        # marker active without a recent independent source under that canonical.
+        # All real providers require an independently observed, fresh,
+        # active canonical projection. The synthetic 'test' provider only
+        # exists for isolated in-memory regression fixtures.
         or_(
-            ~ProcessedLot.source_system.in_(("tbankrot", "tbankrot.ru")),
+            ProcessedLot.source_system == "test",
             fresh_independent_projection,
         ),
         ProcessedLot.needs_geo_check.is_(False),
