@@ -93,3 +93,34 @@ def test_torgi_russia_closed_status_is_not_promoted_to_active() -> None:
     lots = TorgiRussiaClient.parse_search_payload(payload)
     assert len(lots) == 1
     assert lots[0].auction_status == "closed"
+
+
+def test_legacy_tbankrot_requires_recent_independent_canonical_projection() -> None:
+    from datetime import datetime, timezone
+    from bankrotai.db import CanonicalLot, SourceLot
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="tbankrot", source_system="tbankrot.ru", external_id="old-source",
+            title="Земельный участок", description="", category="land",
+            auction_status="active", current_geo_lat=57.6, current_geo_lon=39.8,
+        )
+        session.add(lot)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="owner-p14-tbankrot", legacy_processed_lot_id=lot.id,
+            title=lot.title, category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id, source_system="torgi.gov.ru",
+            external_id="independent-current",
+            is_active=True, is_archived=False,
+            last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
+        session.flush()
+        assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) == lot.id
