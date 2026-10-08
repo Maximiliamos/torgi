@@ -70,5 +70,14 @@ def public_map_predicates() -> tuple:
         # SQLite's lower() is ASCII-only; include Cyrillic titlecase/uppercase.
         not_(or_(*(title.like(f"%{case}%") for term in PUBLIC_EXCLUDED_TITLE_TERMS
                     for case in (term, term.capitalize(), term.upper())))),
-        ~ProcessedLot.description.ilike("%право заключения договора аренды%"),
+        # Raw government cards often use a generic title but the body says
+        # "Вид торгов : Аренда". Do not confuse this with tenanted SALE assets.
+        not_(or_(*(
+            ProcessedLot.description.like(f"%{variant}%")
+            for term in (
+                "Вид торгов : Аренда", "Вид торгов: Аренда",
+                "право заключения договора аренды",
+            )
+            for variant in (term, term.lower(), term.upper())
+        ))),
     )
