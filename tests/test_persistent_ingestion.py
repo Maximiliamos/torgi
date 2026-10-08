@@ -1117,3 +1117,29 @@ def test_p14_normalize_explicit_cancel_and_archive_into_closed() -> None:
     assert normalize_status("Архив") == "closed"
     assert normalize_status("expired") == "closed"
     assert normalize_status("unknown") == "unknown"
+
+
+
+def test_p14_new_confirmed_active_can_restore_unknown_batch_source(sessions) -> None:
+    original = lot("p14-reopen")
+    uncertain = lot("p14-reopen")
+    uncertain.auction_status = "unknown"
+    confirmed = lot("p14-reopen")
+    with sessions.begin() as session:
+        persist_changed_lots_batch(session, [original], "p14-1")
+    with sessions.begin() as session:
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == original.external_id))
+        persist_changed_lots_batch(session, [uncertain], "p14-2", existing_sources={original.external_id: source})
+    with sessions.begin() as session:
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == original.external_id))
+        persist_changed_lots_batch(session, [confirmed], "p14-3", existing_sources={original.external_id: source})
+    with sessions() as session:
+        projection = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == original.external_id))
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == original.external_id))
+        assert projection.auction_status == "active"
+        assert source.source_status == "active"
+        assert source.is_active is True and source.is_archived is False
+        assert source.archive_reason is None
+        assert [row.new_status for row in session.scalars(
+            select(LotStatusHistory).where(LotStatusHistory.lot_id == projection.id).order_by(LotStatusHistory.id)
+        ).all()] == ["active", "unknown", "active"]
