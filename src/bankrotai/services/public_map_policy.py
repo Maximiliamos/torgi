@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import not_, or_, select
 
 from bankrotai.db import CanonicalLot, ProcessedLot, SourceLot
+from bankrotai.core import get_settings
 from bankrotai.services.real_estate_filter import REAL_ESTATE_CATEGORIES
 
 TRUSTED_CADASTRAL_GEO_SOURCES = frozenset({"nspd", "ik12_cadastral", "pkk"})
@@ -69,7 +70,10 @@ def public_map_predicates() -> tuple:
         # active canonical projection. The synthetic 'test' provider only
         # exists for isolated in-memory regression fixtures.
         or_(
-            ProcessedLot.source_system == "test",
+            # Synthetic rows belong to developer/unit-test environments only.
+            # Production MUST require an independent source for every lot.
+            *([ProcessedLot.source_system == "test"]
+              if get_settings().app_env not in {"production", "prod"} else []),
             fresh_independent_projection,
         ),
         ProcessedLot.needs_geo_check.is_(False),
