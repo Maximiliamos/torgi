@@ -12,7 +12,7 @@ import argparse
 import hashlib
 import json
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -31,7 +31,13 @@ def proposed_archive_reason(lot: ProcessedLot) -> str | None:
     title = (lot.title or "").casefold().replace("ё", "е").strip()
     if lot.vin or lot.category in MOVABLE_CATEGORIES or any(word in title for word in MOVABLE_WORDS):
         return "movable_property"
-    if any(title.startswith(prefix) for prefix in RENT_HEADS):
+    desc = (lot.description or "").casefold().replace("ё", "е")
+    if any(title.startswith(prefix) for prefix in RENT_HEADS) or any(
+        phrase in desc for phrase in (
+            "право заключения договора аренды",
+            "вид торгов : аренда", "вид торгов: аренда",
+        )
+    ):
         return "rental"
     if (lot.auction_status or "") in CLOSED_STATUSES:
         return "source_closed"
@@ -41,6 +47,16 @@ def proposed_archive_reason(lot: ProcessedLot) -> str | None:
 def verified_backup(metadata_path: Path) -> None:
     """Refuse applying changes without both a restored backup and matching bytes."""
     details = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+    created_text = str(details.get("created_at") or "").replace("Z", "+00:00")
+    try:
+        created_at = datetime.fromisoformat(created_text)
+    except ValueError as exc:
+        raise ValueError("Backup creation timestamp is missing or invalid") from exc
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)
+    if age < timedelta(minutes=-5) or age > timedelta(hours=60):
+        raise ValueError("Backup must be fresh (at most 60h) before live repair")
     if details.get("restore_verification") != "passed":
         raise ValueError("Backup metadata has no successful isolated restore verification")
     dump_path = metadata_path.with_suffix(".dump")
