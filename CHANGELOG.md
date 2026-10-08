@@ -1,5 +1,13 @@
 # История изменений
 
+## 0.3.3 — next accepted release (pending gates)
+
+- Continue behavior-preserving BAT-308 decomposition: extract desktop map preview assets and GEO geometry helpers.
+- Set individual ratcheting line budgets for ten existing oversized modules; new modules remain bounded to 1,000 lines.
+- Recover exact-SHA release publication when P1 finishes after P11, without bypassing any required production gate.
+- Do not activate off-host backup export or change on-premise databases without owner-approved credentials and real restore verification.
+
+
 ## 0.3.2 — planned next accepted release
 
 Remote-only hardening prepared after v0.3.1:
