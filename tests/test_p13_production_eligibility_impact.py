@@ -60,6 +60,8 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
         assert result["db_unarchived_mapped_primary"] == 4
         assert result["proposed_maximum_eligible_points"] == 1
         assert result["upper_bound_ratio_to_current_dataset"] == 0.01
+        assert result["preview_fails_existing_coverage_guard"] is True
+        assert result["existing_required_min_coverage_ratio"] >= 0.01
         assert result["five_owner_cases"]["76:22:010717:536"]["eligible_id_count"] == 0
         assert result["five_owner_cases"]["76:09:082601:3891"]["eligible_id_count"] == 0
         assert result["five_owner_cases"]["reported_moped_vin"]["eligible"] == 0
