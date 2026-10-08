@@ -87,3 +87,17 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
         assert result["five_owner_cases"]["reported_moped_vin"]["eligible"] == 0
         assert session.query(ProcessedLot).count() == 4
         assert session.query(SourceLot).count() == 4
+        assert reasons["source_has_active_proof_ignoring_freshness"] == 1
+        assert reasons["source_no_active_canonical_proof"] == 0
+        assert reasons["source_only_freshness_expired"] == 0
+
+        # Mutate only the disposable test fixture; audit remains SELECT-only.
+        source = session.query(SourceLot).filter_by(external_id="sale").one()
+        source.last_seen_at = datetime(2020, 1, 1)
+        session.flush()
+        expired = impact.build_report(session)
+        stale_reasons = expired["root_cause_diagnostics"]
+        assert expired["proposed_maximum_eligible_points"] == 0
+        assert stale_reasons["source_no_active_canonical_proof"] == 0
+        assert stale_reasons["source_only_freshness_expired"] == 1
+        session.rollback()
