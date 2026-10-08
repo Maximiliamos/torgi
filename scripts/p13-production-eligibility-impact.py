@@ -154,8 +154,46 @@ def build_report(session: Session) -> dict:
     active_proof_any_age_count = int(session.scalar(
         select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
     ) or 0)
+    expired = (*base, ProcessedLot.auction_status == "expired")
+    # An expired primary can disagree with a fresh canonical sibling. Report
+    # such conflicts for manual review rather than restoring its active status.
+    direct_link_exists = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id
+    ).exists()
+    expired_direct_source_status = dict(session.execute(
+        select(SourceLot.source_status, func.count(func.distinct(ProcessedLot.id)))
+        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(*expired)
+        .group_by(SourceLot.source_status)
+    ).all())
+    status_provenance = {
+        "expired_primary_by_source": breakdown(
+            session, expired, ProcessedLot.source_system
+        ),
+        "expired_primary_with_no_direct_source_link": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, ~direct_link_exists)
+        ) or 0),
+        "expired_primary_direct_link_statuses": {
+            str(key or "unknown"): int(count)
+            for key, count in expired_direct_source_status.items()
+        },
+        "expired_primary_with_active_canonical_proof_any_age": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, source_proof_any_age)
+        ) or 0),
+        "expired_primary_with_fresh_active_canonical_proof": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, proposed[5])
+        ) or 0),
+        "interpretation": (
+            "Expired is an observed processed status, NOT source proof of a "
+            "completed sale. Active canonical proof conflicts need individual "
+            "review; never reclassify expired rows solely to raise map coverage. "
+            "Direct-link statuses may count the same processed row more than once."
+        ),
+    }
+
     root_cause = {
         "status_distribution_before_filters": breakdown(session, base, ProcessedLot.auction_status),
+        "status_provenance": status_provenance,
         "geo_before_stage_by_source": breakdown(session, pre_geo, ProcessedLot.current_geo_source),
         "geo_needs_check_or_unknown": int(session.scalar(
             select(func.count(ProcessedLot.id)).where(
