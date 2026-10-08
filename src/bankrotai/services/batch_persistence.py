@@ -22,8 +22,6 @@ from bankrotai.logic import (
 
 def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) -> dict[str, Any]:
     auction_status = lot.auction_status
-    if normalize_status(auction_status) == "unknown" and existing is not None:
-        auction_status = existing.auction_status
     return {
         "external_id": lot.external_id,
         "source": lot.source,
@@ -88,6 +86,10 @@ def _source_values(
         is_active, is_archived, archived_at, archive_reason = True, False, None, None
     elif status == "closed":
         is_active, is_archived, archived_at, archive_reason = False, True, now, "source_status"
+    elif status == "unknown":
+        is_active = False
+        if not is_archived:
+            archive_reason = "source_status_unverified"
     return {
         "canonical_lot_id": canonical_lot_id,
         "processed_lot_id": processed_lot_id,
