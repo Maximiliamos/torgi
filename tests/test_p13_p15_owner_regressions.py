@@ -124,3 +124,19 @@ def test_legacy_tbankrot_requires_recent_independent_canonical_projection() -> N
         ))
         session.flush()
         assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) == lot.id
+
+
+def test_rental_transaction_in_source_body_excluded_even_with_generic_land_title() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="test", source_system="test", external_id="76:22:010717:536",
+            title="Земельный участок 6.79 сотки",
+            description="Вид торгов : Аренда. Кадастровый номер 76:22:010717:536",
+            category="land", auction_status="active",
+            current_geo_lat=57.5, current_geo_lon=39.5,
+        )
+        session.add(lot)
+        session.flush()
+        assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
