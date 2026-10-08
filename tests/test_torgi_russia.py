@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 
 import requests
+import pytest
 
 from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
@@ -589,3 +590,49 @@ def test_torgi_russia_exhausts_transient_status_retries_fail_closed() -> None:
 
     assert session.calls == 5
     assert [call.args[0] for call in sleep.call_args_list] == [1, 2, 4, 8]
+
+
+@pytest.mark.parametrize(
+    ("upstream", "expected"),
+    [
+        ("Идёт приём заявок", "active"),
+        ({"title": "Прием заявок"}, "active"),
+        ("Завершено", "closed"),
+        ({"title": "Торги отменены"}, "closed"),
+        ("Истёк срок торгов", "unknown"),
+        ("", "unknown"),
+        ({}, "unknown"),
+        ("Неизвестный статус", "unknown"),
+    ],
+)
+def test_p14_torgi_russia_requires_authoritative_status(upstream, expected) -> None:
+    item = _new_site_lot()
+    item["status"] = upstream
+    lots = TorgiRussiaClient.parse_search_payload({"data": [item]})
+    assert len(lots) == 1
+    assert lots[0].auction_status == expected
+    assert lots[0].raw_data["source_status"] == upstream
+
+
+def test_p14_torgi_russia_history_never_becomes_active() -> None:
+    item = _new_site_lot()
+    assert TorgiRussiaClient.parse_search_payload(
+        {"data": [item]}, history_only=True
+    )[0].auction_status == "archived"
+
+
+def test_p14_legacy_html_unknown_is_not_assumed_active() -> None:
+    html = """<main><article class="card">
+      <h3 class="card__title"><a href="/lot/7143576">Земельный участок</a></h3>
+      <p class="card__excerpt">Участок площадью 1489 кв.м.</p>
+    </article></main>"""
+    assert TorgiRussiaClient.parse_search_page(
+        html, "https://xn----etbpba5admdlad.xn--p1ai/search?history_only=0"
+    )[0].auction_status == "unknown"
+    with_status = html.replace(
+        '<p class="card__excerpt">',
+        '<span class="card__status">Завершены</span><p class="card__excerpt">',
+    )
+    assert TorgiRussiaClient.parse_search_page(
+        with_status, "https://xn----etbpba5admdlad.xn--p1ai/search?history_only=0"
+    )[0].auction_status == "closed"
