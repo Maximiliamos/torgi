@@ -18,7 +18,10 @@ permissions:
 concurrency:
   # A workflow_run from an obsolete reconciliation must not cancel the
   # push-triggered P1 on a newer production SHA.
-  group: p1-production-data-quality-${{ github.event.workflow_run.head_sha || github.sha }}
+  # Failed reconciliation workflow_run events can skip every job, yet their
+  # concurrency cancellation still runs first. Keep source events isolated
+  # from push-triggered P1 on the same SHA.
+  group: p1-production-data-quality-${{ github.event.workflow_run.head_sha || github.sha }}-${{ github.event_name }}-${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion || 'n/a' }}
   cancel-in-progress: true
 
 jobs:
