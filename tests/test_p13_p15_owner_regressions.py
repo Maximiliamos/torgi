@@ -119,11 +119,16 @@ def test_legacy_tbankrot_requires_recent_independent_canonical_projection() -> N
         session.add(SourceLot(
             canonical_lot_id=canonical.id, source_system="torgi.gov.ru",
             external_id="independent-current",
-            is_active=True, is_archived=False,
+            is_active=True, is_archived=False, source_status="active",
             last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
         ))
         session.flush()
         assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) == lot.id
+
+        active_source = session.scalars(select(SourceLot).where(SourceLot.canonical_lot_id == canonical.id)).one()
+        active_source.source_status = "closed"
+        session.flush()
+        assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
 
 
 def test_rental_transaction_in_source_body_excluded_even_with_generic_land_title() -> None:
