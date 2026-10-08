@@ -193,3 +193,30 @@ def test_p17_preflight_rejects_rental_hidden_in_description() -> None:
     report = public_map_preflight([point])
     assert report["ok"] is False
     assert report["public_rental_count"] == 1
+
+
+def test_p17_stratified_sample_has_requested_bounds_and_is_reproducible() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        categories = [("land", 53), ("commercial_room", 33), ("house", 23)]
+        for category, count in categories:
+            for index in range(count):
+                session.add(ProcessedLot(
+                    source="test", source_system="test",
+                    external_id=f"{category}-{index}",
+                    title=f"Продажа {category} {index}",
+                    description="", category=category, auction_status="active",
+                    current_geo_lat=57.0, current_geo_lon=39.0,
+                ))
+        session.commit()
+        one = audit.audit_public_map_candidates(session)
+        two = audit.audit_public_map_candidates(session)
+        ids = one["p17_representative_sample_ids"]
+        assert {name: len(values) for name, values in ids.items()} == {
+            "land": 50, "premises": 30, "homes": 20,
+        }
+        assert ids == two["p17_representative_sample_ids"]
+        assert one["p17_eligible_group_counts"] == {
+            "land": 53, "premises": 33, "homes": 23,
+        }
