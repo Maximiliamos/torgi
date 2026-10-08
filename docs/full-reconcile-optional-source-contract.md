@@ -27,3 +27,18 @@ does not mean that a source is fixed or up-to-date.
 A recovery pass should prove the exact source set and a matching accepted
 GitHub SHA with a green new workflow run. Rerunning an old failed run does not
 load newly merged workflow code and must not be represented as a pass.
+
+## Production load isolation during release acceptance
+
+P11 `37713390115` failed its public-health soak while regional ingestion was
+also active on the Home host. That temporal overlap does **not** prove which
+component caused the outage, but it creates avoidable contention. On push,
+the GitHub-hosted `wait-home-deploy` job now waits for P11 to reach a
+**terminal** state for the same SHA before it queues heavy ingestion. The
+wait is bounded and fails closed if no P11 completion is observed.
+
+Importantly, even a failed P11 can be terminal for this *scheduling* purpose,
+but it remains FAILED for the separate exact-SHA release gates. There is no
+shortcut to acceptance; this only avoids running full ingestion during the
+hard uptime soak. Manual `workflow_dispatch` remains available for deliberate
+operator reconciliation and is not delayed by a push-specific release gate.
