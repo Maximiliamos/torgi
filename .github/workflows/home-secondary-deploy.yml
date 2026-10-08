@@ -691,6 +691,7 @@ jobs:
             --name $env:CONTAINER_NAME `
             --network $env:DOCKER_NETWORK `
             --env-file (Join-Path $env:CONFIG_ROOT 'home-secondary.env') `
+            --env "BANKROTAI_DEPLOY_SHA=$env:GITHUB_SHA" `
             --mount "type=bind,source=$env:CONFIG_ROOT\tbankrot-auth,target=/run/tbankrot-auth" `
             --shm-size 256m `
             --publish 127.0.0.1:18000:8000 `
