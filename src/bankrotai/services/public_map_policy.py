@@ -27,11 +27,10 @@ PUBLIC_EXCLUDED_TITLE_TERMS = (
 )
 
 
-def public_map_predicates() -> tuple:
-    """Composable SQLAlchemy WHERE clauses: no in-memory post-limit filtering."""
-    title = ProcessedLot.title
-    source_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=72)
-    fresh_independent_projection = (
+def fresh_independent_source_projection():
+    """Correlated EXISTS used both by eligibility and preflight instrumentation."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=72)
+    return (
         select(SourceLot.id)
         .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
         .where(
@@ -39,10 +38,16 @@ def public_map_predicates() -> tuple:
             SourceLot.source_system.in_(AUTOMATIC_PUBLIC_SOURCES),
             SourceLot.is_active.is_(True),
             SourceLot.is_archived.is_(False),
-            SourceLot.last_seen_at >= source_cutoff,
+            SourceLot.last_seen_at >= cutoff,
         )
         .exists()
     )
+
+
+def public_map_predicates() -> tuple:
+    """Composable SQLAlchemy WHERE clauses: no in-memory post-limit filtering."""
+    title = ProcessedLot.title
+    fresh_independent_projection = fresh_independent_source_projection()
     return (
         ProcessedLot.duplicate_of_id.is_(None),
         ProcessedLot.is_archived.is_(False),
