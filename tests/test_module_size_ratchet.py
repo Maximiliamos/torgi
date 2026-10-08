@@ -23,7 +23,7 @@ def test_grandfathered_modules_have_bounded_caps() -> None:
     caps = _read_budgets()
     assert caps["src/bankrotai/gui.py"] == 7002
     assert caps["src/bankrotai/api.py"] == 2538
-    assert caps["src/bankrotai/scrapers.py"] == 3530
+    assert caps["src/bankrotai/scrapers.py"] == 3145
     assert caps["WEB/src/features/map/MapView.tsx"] == 2038
     assert all(cap > 1000 for cap in caps.values())
 
