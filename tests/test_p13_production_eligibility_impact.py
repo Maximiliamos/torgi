@@ -59,6 +59,15 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
         assert result["no_mutations"] is True
         assert result["db_unarchived_mapped_primary"] == 4
         assert result["proposed_maximum_eligible_points"] == 1
+        assert result["sequential_exclusion_ladder"] == {
+            "01_geo_nonarchived_primary": 4,
+            "02_and_active_status": 3,
+            "03_and_real_estate_no_vin": 2,
+            "04_and_sale_not_rental_transport": 1,
+            "05_and_strict_cadastral_geo": 1,
+            "06_and_fresh_active_source": 1,
+        }
+        assert sum(result["exclusion_counts_by_stage"].values()) == 3
         assert result["upper_bound_ratio_to_current_dataset"] == 0.01
         assert result["preview_fails_existing_coverage_guard"] is True
         assert result["existing_required_min_coverage_ratio"] >= 0.01
