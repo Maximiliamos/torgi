@@ -13,7 +13,7 @@ import time
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Callable
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,6 +22,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.extractors import extract_address, extract_area, extract_cadastral_numbers
 from bankrotai.logic import classify_category
 from bankrotai.scraper_contracts import LotOnlineSearchFilters, parse_money
+from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 
 class LotOnlineClientError(RuntimeError):
