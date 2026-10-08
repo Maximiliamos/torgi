@@ -2,7 +2,9 @@ name: Release accepted version
 
 on:
   workflow_run:
-    workflows: ["P11 production acceptance"]
+    # Trigger again when lagging P1 finishes, even if an earlier P11-driven
+    # release gate timed out while Home was busy with reconciliation.
+    workflows: ["P11 production acceptance", "P1 production data quality"]
     types: [completed]
 
 permissions:
