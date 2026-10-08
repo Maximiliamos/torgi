@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,6 +22,7 @@ from bankrotai.db import ProcessedLot, SourceLot, SessionLocal
 from bankrotai.services.public_map_policy import (
     PUBLIC_ACTIVE_STATUSES,
     PUBLIC_EXCLUDED_TITLE_TERMS,
+    public_map_predicates,
 )
 from bankrotai.services.real_estate_filter import REAL_ESTATE_CATEGORIES
 
@@ -95,6 +97,35 @@ def audit_public_map_candidates(session: Session, *, limit_examples: int = 25) -
         if reasons:
             counts["rows_with_findings"] += 1
 
+    # Deterministic, stratified reservoir sample for the requested P17
+    # production acceptance (50 land, 30 premises, 20 houses/flats).
+    quotas = {"land": 50, "premises": 30, "homes": 20}
+    groups = {
+        "land": {"land"},
+        "premises": {"commercial_room", "commercial", "office", "retail", "real_estate"},
+        "homes": {"apartment", "house", "living"},
+    }
+    randomizer = random.Random(20261008)
+    seen: Counter[str] = Counter()
+    stratified: dict[str, list[int]] = {name: [] for name in quotas}
+    eligible_rows = session.execute(
+        select(ProcessedLot.id, ProcessedLot.category)
+        .where(*public_map_predicates())
+        .order_by(ProcessedLot.id)
+    ).yield_per(500)
+    for lot_id, category in eligible_rows:
+        group = next((name for name, categories in groups.items() if category in categories), None)
+        if group is None:
+            continue
+        seen[group] += 1
+        subset = stratified[group]
+        if len(subset) < quotas[group]:
+            subset.append(int(lot_id))
+        else:
+            replacement = randomizer.randrange(seen[group])
+            if replacement < quotas[group]:
+                subset[replacement] = int(lot_id)
+
     return {
         "dry_run": True,
         "mutation_count": 0,
@@ -102,6 +133,10 @@ def audit_public_map_candidates(session: Session, *, limit_examples: int = 25) -
         "source_freshness_window_hours": 72,
         "counts": dict(sorted(counts.items())),
         "sample_processed_lot_ids": dict(sorted(samples.items())),
+        "p17_sample_random_seed": 20261008,
+        "p17_representative_sample_ids": stratified,
+        "p17_eligible_group_counts": dict(seen),
+        "p17_requested_sample_sizes": quotas,
         "caveat": "Direct source rows only; canonical sibling and paused-circuit state require separate verification",
     }
 
