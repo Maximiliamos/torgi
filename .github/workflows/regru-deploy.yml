@@ -40,31 +40,6 @@ jobs:
       SSH_HOST: 194.226.126.233
       SSH_PORT: "2222"
     steps:
-      - name: Wait for exact home deployment before staging REG.RU
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 400); do
-            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
-            if [ "$state" = "completed:success" ]; then
-              echo "Exact home deployment is ready: $GITHUB_SHA"
-              break
-            fi
-            case "$state" in
-              completed:*)
-                echo "Exact home deployment failed: $state" >&2
-                exit 1
-                ;;
-            esac
-            if [ "$attempt" = 400 ]; then
-              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
-              exit 1
-            fi
-            sleep 15
-          done
-
       - name: Prepare SSH identity
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
@@ -213,6 +188,31 @@ jobs:
           test -n "$API_KEY"
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
           test -n "$YANDEX_MAPS_API_KEY"
+
+      - name: Wait for exact home deployment before staging REG.RU
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 400); do
+            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+            if [ "$state" = "completed:success" ]; then
+              echo "Exact home deployment is ready: $GITHUB_SHA"
+              break
+            fi
+            case "$state" in
+              completed:*)
+                echo "Exact home deployment failed: $state" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$attempt" = 400 ]; then
+              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
+              exit 1
+            fi
+            sleep 15
+          done
 
       - name: Prepare SSH identity
         env:
