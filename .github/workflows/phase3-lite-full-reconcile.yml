@@ -48,6 +48,30 @@ jobs:
           echo "Timed out waiting for home deployment of $GITHUB_SHA after extended runner backlog allowance" >&2
           exit 1
 
+      - name: Avoid full ingestion competing with exact-SHA P11 soak
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # P11's 30-minute soak is a hard acceptance of public API uptime.
+          # Full regional ingestion is substantial load on the same Home host.
+          # Wait for the current SHA's P11 to reach a terminal state; a failed
+          # P11 is never marked successful here, merely no longer concurrent.
+          for attempt in $(seq 1 720); do
+            state="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+              | python -c 'import json,sys; runs=[r for r in json.load(sys.stdin).get("workflow_runs", []) if r.get("name")=="P11 production acceptance" and r.get("head_sha")==__import__("os").environ["GITHUB_SHA"]]; print("waiting" if not runs else max(runs,key=lambda x:x.get("created_at","")).get("status","waiting"))')"
+            if [ "$state" = "completed" ]; then
+              echo "P11 current-SHA run completed; starting independent source reconciliation"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "P11 did not finish; refusing overlapping full ingestion on the production host" >&2
+          exit 1
+
   reconcile:
     needs: wait-home-deploy
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
