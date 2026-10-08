@@ -51,6 +51,7 @@ def test_confirmed_sale_qualifies_and_suspect_cadastral_geo_does_not() -> None:
         session.flush()
         assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) is None
         lot.needs_geo_check = False
+        lot.current_geo_source = "nspd"
         assert session.scalar(select(ProcessedLot.id).where(*public_map_predicates())) == lot.id
 
 
