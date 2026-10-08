@@ -84,7 +84,7 @@ def test_public_map_preflight_keeps_exact_active_sale() -> None:
     point = {
         "title": "Продажа земельного участка", "category": "land",
         "status": "active", "is_archived": False,
-        "source_system": "torgi.gov.ru",
+        "source_system": "torgi.gov.ru", "independent_source_verified": True,
         "cadastral_number": "76:23:010101:1", "geo_source": "nspd",
         "geo_confidence": "high",
     }
