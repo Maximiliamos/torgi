@@ -11,9 +11,9 @@ LIMIT = 1000
 # Snapshot as of accepted main SHA 3bd9e4baa6b2ce339fb51744830211c233628a31.
 ALLOWLIST_BUDGETS = {
     "src/bankrotai/gui.py": 7002,
-    "src/bankrotai/scrapers.py": 3530,
+    "src/bankrotai/scrapers.py": 3145,
     "src/bankrotai/api.py": 2538,
-    "src/bankrotai/geo.py": 2409,
+    "src/bankrotai/geo.py": 2190,
     "src/bankrotai/services/geo_backfill.py": 1880,
     "src/bankrotai/logic.py": 1257,
     "src/bankrotai/tasks.py": 1296,
