@@ -113,7 +113,7 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
         ]
 
 
-def test_unknown_update_preserves_last_known_status_and_source_state() -> None:
+def test_unknown_update_revokes_stale_active_source_state() -> None:
     factory = sessions()
     with factory() as session:
         add_run(session, "run-1")
@@ -135,9 +135,10 @@ def test_unknown_update_preserves_last_known_status_and_source_state() -> None:
 
         source = session.scalar(select(SourceLot))
         processed = session.scalar(select(ProcessedLot))
-        assert source is not None and source.is_active is True and source.is_archived is False
-        assert processed is not None and processed.auction_status == "active"
-        assert session.scalar(select(func.count()).select_from(LotStatusHistory)) == 1
+        assert source is not None and source.is_active is False and source.is_archived is False
+        assert source.source_status == "unknown"
+        assert processed is not None and processed.auction_status == "unknown"
+        assert session.scalar(select(func.count()).select_from(LotStatusHistory)) == 2
 
 
 def test_status_history_records_only_real_status_changes() -> None:
