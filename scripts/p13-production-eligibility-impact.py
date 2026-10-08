@@ -14,6 +14,7 @@ from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.db import CanonicalLot, MapDataset, ProcessedLot, SessionLocal, SourceLot
+from bankrotai.core import get_settings
 
 ACTIVE = ("active", "scheduled", "published", "open", "applications_submission")
 PROPERTY = (
@@ -104,6 +105,13 @@ def build_report(session: Session) -> dict:
     raw_count = int(session.scalar(select(func.count(ProcessedLot.id)).where(*base)) or 0)
     candidate_count = int(session.scalar(select(func.count(ProcessedLot.id)).where(*proposed)) or 0)
     old_point_count = int(current.point_count or 0) if current else 0
+    required_coverage_ratio = float(get_settings().min_map_coverage_ratio)
+    preview_ratio = candidate_count / old_point_count if old_point_count else None
+    # Even this upper bound can fail the *existing* MapBuilder promotion
+    # guard; note a hard blocker instead of masking it with "high CI %".
+    coverage_guard_must_block = bool(
+        preview_ratio is not None and preview_ratio < required_coverage_ratio
+    )
     # Candidate count is an UPPER bound on final new points because additional
     # spatial/locality checks run in MapBuilder. Not a publication success claim.
     candidates_by_source = breakdown(session, proposed, ProcessedLot.source_system)
@@ -143,7 +151,9 @@ def build_report(session: Session) -> dict:
         },
         "db_unarchived_mapped_primary": raw_count,
         "proposed_maximum_eligible_points": candidate_count,
-        "upper_bound_ratio_to_current_dataset": round(candidate_count / old_point_count, 4) if old_point_count else None,
+        "upper_bound_ratio_to_current_dataset": round(preview_ratio, 4) if preview_ratio is not None else None,
+        "existing_required_min_coverage_ratio": required_coverage_ratio,
+        "preview_fails_existing_coverage_guard": coverage_guard_must_block,
         "safety": {
             "requires_human_inspection_before_activation": True,
             "map_builder_spatial_rejections_not_applied": True,
