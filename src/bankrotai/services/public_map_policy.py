@@ -11,6 +11,8 @@ from sqlalchemy import not_, or_
 from bankrotai.db import ProcessedLot
 from bankrotai.services.real_estate_filter import REAL_ESTATE_CATEGORIES
 
+TRUSTED_CADASTRAL_GEO_SOURCES = frozenset({"nspd", "ik12_cadastral", "pkk"})
+
 PUBLIC_ACTIVE_STATUSES = frozenset({
     "active", "scheduled", "published", "open", "applications_submission",
 })
@@ -32,6 +34,11 @@ def public_map_predicates() -> tuple:
         ProcessedLot.category.in_(REAL_ESTATE_CATEGORIES),
         ProcessedLot.vin.is_(None),
         ProcessedLot.needs_geo_check.is_(False),
+        # A cadastral object may not use a weak address/Photon centroid as exact GEO.
+        or_(
+            ProcessedLot.cadastral_number.is_(None),
+            ProcessedLot.current_geo_source.in_(TRUSTED_CADASTRAL_GEO_SOURCES),
+        ),
         # SQLite's lower() is ASCII-only; include Cyrillic titlecase/uppercase.
         not_(or_(*(title.like(f"%{case}%") for term in PUBLIC_EXCLUDED_TITLE_TERMS
                     for case in (term, term.capitalize(), term.upper())))),
