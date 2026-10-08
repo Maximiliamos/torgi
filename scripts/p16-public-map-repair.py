@@ -18,7 +18,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import LotStatusEvent, LotStatusHistory, ProcessedLot, SessionLocal, SourceLot
+from bankrotai.db import LotGeoSnapshot, LotStatusEvent, LotStatusHistory, ProcessedLot, SessionLocal, SourceLot
 
 
 RENT_HEADS = ("аренда ", "право заключения договора аренды ", "субаренда ")
@@ -137,9 +137,69 @@ def repair_candidate_batch(session: Session, *, limit: int = 100, apply: bool = 
     }
 
 
+def quarantine_weak_cadastral_geo(
+    session: Session, *, limit: int = 25, region_code: str = "76", apply: bool = False
+) -> dict:
+    """P16: bounded Yaroslavl-first revalidation, preserving historical GEO."""
+    limit = max(1, min(50, int(limit)))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    accepted = ("nspd", "ik12_cadastral", "pkk")
+    rows = session.scalars(
+        select(ProcessedLot).where(
+            ProcessedLot.is_archived.is_(False),
+            ProcessedLot.duplicate_of_id.is_(None),
+            ProcessedLot.region_code == region_code,
+            ProcessedLot.cadastral_number.isnot(None),
+            ProcessedLot.current_geo_lat.isnot(None),
+            ProcessedLot.current_geo_lon.isnot(None),
+            ~ProcessedLot.current_geo_source.in_(accepted),
+        ).order_by(ProcessedLot.id).limit(limit)
+    ).all()
+    ids = [int(item.id) for item in rows]
+    if apply:
+        for lot in rows:
+            session.add(LotGeoSnapshot(
+                lot_id=lot.id,
+                geo_source=str(lot.current_geo_source or "unknown"),
+                geo_method="p16_quarantined_geo_hint",
+                geo_confidence=str(lot.current_geo_confidence or "unknown"),
+                centroid_lat=lot.current_geo_lat,
+                centroid_lon=lot.current_geo_lon,
+                observed_at=now,
+                metadata_json={
+                    "reason": "cadastral_address_fallback_unverified",
+                    "previous_geo_source": lot.current_geo_source,
+                    "cadastral_number": lot.cadastral_number,
+                },
+                trace_reason="P16: coordinate quarantined for exact cadastral revalidation",
+            ))
+            lot.current_geo_lat = None
+            lot.current_geo_lon = None
+            lot.current_geo_source = None
+            lot.current_geo_confidence = None
+            lot.current_geo_observed_at = None
+            lot.needs_geo_check = True
+            lot.geo_input_hash = None
+        session.commit()
+    else:
+        session.rollback()
+    return {
+        "mode": "bounded_geo_revalidation",
+        "dry_run": not apply,
+        "region_code": region_code,
+        "candidate_count": len(ids),
+        "changed": len(ids) if apply else 0,
+        "lot_ids": ids,
+        "snapshot_evidence_preserved": True,
+        "next_step": "run bounded geocoding worker and compare exact cadastral GEO before new map publication",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--geo-canary", action="store_true", help="quarantine weak cadastral GEO instead of archival repair")
+    parser.add_argument("--region", default="76", help="bounded GEO canary region")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--approved-batch", help="must be P16-APPROVED to permit mutations")
     parser.add_argument("--backup-metadata", type=Path)
@@ -149,7 +209,10 @@ def main() -> None:
             parser.error("--apply requires --approved-batch P16-APPROVED and --backup-metadata")
         verified_backup(args.backup_metadata)
     with SessionLocal() as session:
-        result = repair_candidate_batch(session, limit=args.limit, apply=args.apply)
+        if args.geo_canary:
+            result = quarantine_weak_cadastral_geo(session, limit=args.limit, region_code=args.region, apply=args.apply)
+        else:
+            result = repair_candidate_batch(session, limit=args.limit, apply=args.apply)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
