@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/p16-readonly-baseline.py'
+      - 'scripts/p13-production-eligibility-impact.py'
       - '.github/workflows/p16-read-only-baseline.yml'
 
 permissions:
@@ -33,6 +34,26 @@ jobs:
           if ($result.read_only -ne $true -or $result.no_mutations -ne $true) { throw 'Audit did not assert read-only contract' }
           $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $report -Encoding utf8
           Write-Output ("P16 nonarchived mapped primary={0}, candidate problem rows={1}" -f $result.counts.nonarchived_mapped_primary, $result.counts.candidate_problem_rows)
+      - name: Preview proposed public map eligibility on live Home (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'p13-public-map-impact.json'
+          $script = Get-Content -LiteralPath 'scripts/p13-production-eligibility-impact.py' -Raw -Encoding utf8
+          $output = $script | docker exec -i bankrotai-home-map-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'P13 exact eligibility impact preview failed' }
+          $result = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($result.read_only -ne $true -or $result.no_mutations -ne $true) { throw 'Impact preview must be read-only' }
+          $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("Map preflight: existing={0}, candidate_upper_bound={1}, ratio={2}" -f $result.current_dataset.point_count, $result.proposed_maximum_eligible_points, $result.upper_bound_ratio_to_current_dataset)
+      - name: Upload exact public eligibility impact preview
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p13-live-public-map-impact
+          path: ${{ runner.temp }}/p13-public-map-impact.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Preserve sanitized evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
