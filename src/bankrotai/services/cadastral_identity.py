@@ -39,3 +39,22 @@ def pick_nspd_feature(features: list[dict], query: str) -> dict | None:
                 if str(source.get(key) or "").replace(" ", "") == expected:
                     return feature
     return None
+
+
+def exact_cadastral_geo_verified(
+    expected_number: str | None,
+    alternate_numbers: list[str] | None,
+    observed_number: str | None,
+    provider: str | None,
+) -> bool:
+    """Weak address, unmatched cadastre and point-based WMS are only hints."""
+    observed = str(observed_number or "").replace(" ", "")
+    candidates = {
+        str(value).replace(" ", "")
+        for value in (expected_number, *(alternate_numbers or []))
+        if value
+    }
+    return bool(
+        observed and observed in candidates
+        and provider in {"nspd", "ik12_cadastral", "pkk"}
+    )
