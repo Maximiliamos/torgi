@@ -621,6 +621,11 @@ class TorgiRussiaClient:
             start_price = parse_money(str(bid.get("data-start-bid") or "")) if bid else None
             current_price = parse_money(str(bid.get("data-current-bid") or "")) if bid else None
             meta = [item.get_text(" ", strip=True) for item in card.select(".card-meta__item")]
+            raw_status = card.select_one(".card__status, .card-status, [data-lot-status]")
+            source_status = (
+                str(raw_status.get("data-lot-status") or "").strip()
+                or raw_status.get_text(" ", strip=True)
+            ) if raw_status else ""
             region_name = next((item for item in meta if normalize_region_code(item)), None)
             region_code = normalize_region_code(region_name)
             cadastres = [
@@ -655,7 +660,9 @@ class TorgiRussiaClient:
                     area=None,
                     start_price=start_price,
                     current_price=current_price,
-                    auction_status="archived" if "history_only=1" in page_url else "active",
+                    auction_status=public_auction_status(
+                        source_status, history_only="history_only=1" in page_url
+                    ),
                     lot_url=lot_url,
                     source_url=lot_url,
                     detail_level="search",
