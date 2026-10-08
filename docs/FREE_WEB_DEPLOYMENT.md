@@ -1,3 +1,10 @@
+> **HISTORICAL / DO NOT USE FOR CURRENT PRODUCTION (2026-10-08).**
+> This guide documents the retired Neon / Pages Function / Cloudflare Tunnel deployment.
+> Current canonical architecture is Home PostgreSQL/API/workers → REG.RU WSS relay and S3 map bundles → Cloudflare edge.
+> Follow [Phase 4 operations](phase4-lite-operations.md), [Phase 3 recovery](phase3-lite-recovery.md),
+> [production configuration](production-configuration.md) and the root README for current procedures.
+> Never provision Neon, restore Neon data, rotate legacy secrets or run a retired workflow using this historical guide.
+
 # Бесплатное развёртывание WEB MVP
 
 ## Схема
