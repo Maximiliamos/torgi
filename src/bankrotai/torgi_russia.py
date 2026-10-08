@@ -46,6 +46,39 @@ def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
 
+def public_auction_status(source_status: object, *, history_only: bool = False) -> str:
+    """Keep an unknown/upstream-closed procedure off the public active map.
+
+    Upstream status strings and dictionaries are not normalized sale eligibility.
+    An unfamiliar status must remain unknown rather than silently becoming active.
+    """
+    if history_only:
+        return "archived"
+    if isinstance(source_status, dict):
+        source_status = (
+            source_status.get("title")
+            or source_status.get("name")
+            or source_status.get("status")
+            or ""
+        )
+    value = str(source_status or "").strip().casefold().replace("ё", "е")
+    if not value:
+        return "unknown"
+    if any(marker in value for marker in (
+        "заверш", "окончен", "закрыт", "отмен", "прекращ", "не состоял",
+        "архив", "снят с торгов", "completed", "finished", "closed",
+        "cancelled", "canceled", "expired", "failed",
+    )):
+        return "closed"
+    if any(marker in value for marker in (
+        "прием заяв", "идет прием", "идут торги", "торги идут",
+        "объявлен", "проводятся торги", "опубликован", "scheduled",
+        "active", "published", "open", "applications_submission",
+    )):
+        return "active"
+    return "unknown"
+
+
 @dataclass(slots=True)
 class TorgiRussiaDetails:
     torgi_russia_url: str | None = None
@@ -516,7 +549,7 @@ class TorgiRussiaClient:
                     area=None,
                     start_price=start_price,
                     current_price=current_price,
-                    auction_status="archived" if history_only else "active",
+                    auction_status=public_auction_status(status, history_only=history_only),
                     lot_url=lot_url,
                     source_url=lot_url,
                     detail_level="search",
@@ -588,6 +621,11 @@ class TorgiRussiaClient:
             start_price = parse_money(str(bid.get("data-start-bid") or "")) if bid else None
             current_price = parse_money(str(bid.get("data-current-bid") or "")) if bid else None
             meta = [item.get_text(" ", strip=True) for item in card.select(".card-meta__item")]
+            raw_status = card.select_one(".card__status, .card-status, [data-lot-status]")
+            source_status = (
+                str(raw_status.get("data-lot-status") or "").strip()
+                or raw_status.get_text(" ", strip=True)
+            ) if raw_status else ""
             region_name = next((item for item in meta if normalize_region_code(item)), None)
             region_code = normalize_region_code(region_name)
             cadastres = [
@@ -622,7 +660,9 @@ class TorgiRussiaClient:
                     area=None,
                     start_price=start_price,
                     current_price=current_price,
-                    auction_status="archived" if "history_only=1" in page_url else "active",
+                    auction_status=public_auction_status(
+                        source_status, history_only="history_only=1" in page_url
+                    ),
                     lot_url=lot_url,
                     source_url=lot_url,
                     detail_level="search",
