@@ -61,7 +61,8 @@ historical closed/rental/transport GEO errors have been eliminated.
 3. Require P1 and P11 (including full soak) on that same SHA; full reconciliation
    is separate evidence and disabled sources do not count toward coverage.
 4. Publish a versioned release with SBOM/checksums and verified OIDC/Sigstore
-   provenance. Never claim the next patch version is released before its own
+   provenance. v0.3.5 passed its own acceptance and is published at `260e6420`.
+   Never claim the next patch version is released before its own
    exact-SHA acceptance.
 5. Manual `workflow_dispatch` Home-ordering hardening is included in draft
    PR #932 and is **not yet active** until that PR is merged and accepted.
