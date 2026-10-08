@@ -476,12 +476,8 @@ def current_time(_: AuthenticatedUser = Depends(require_user)):
 
 @app.get("/health/live")
 async def liveness_check():
-    # Keep liveness off AnyIO's shared worker-thread pool. Slow synchronous
-    # source/database calls must not make a healthy event loop look dead.
-    result = {"status": "alive", "version": __version__}
-    if sha := os.getenv("BANKROTAI_DEPLOY_SHA", ""):
-        result["deployment_sha"] = sha
-    return result
+    sha = os.getenv("BANKROTAI_DEPLOY_SHA", "")
+    return {"status": "alive", "version": __version__, **({"deployment_sha": sha} if sha else {})}
 
 
 @app.get("/health/ready")
