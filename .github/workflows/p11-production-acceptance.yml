@@ -326,23 +326,31 @@ jobs:
             $freeGb = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
             $liveOk = $false
             $readyOk = $false
+            $liveError = $null
+            $readyError = $null
             try {
               $liveOk = (Invoke-WebRequest -Uri 'https://api.sterdez.online/health/live' -UseBasicParsing -TimeoutSec 15).StatusCode -eq 200
+            } catch { $liveError = [string]$_.Exception.GetType().Name }
+            try {
               $readyOk = (Invoke-WebRequest -Uri 'https://api.sterdez.online/health/ready' -UseBasicParsing -TimeoutSec 15).StatusCode -eq 200
-            } catch {}
+            } catch { $readyError = [string]$_.Exception.GetType().Name }
             $sample = [ordered]@{
               at = (Get-Date).ToUniversalTime().ToString('o')
               live = $liveOk
               ready = $readyOk
+              live_exception_type = $liveError
+              ready_exception_type = $readyError
               disk_free_gb = $freeGb
             }
             $samples += $sample
+            # Persist each observation BEFORE failing closed so even a single
+            # transient public-health failure leaves actionable soak evidence.
+            $samples | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$env:RUNNER_TEMP\p11-soak.json" -Encoding utf8
             if (-not $liveOk -or -not $readyOk) { throw "Production health failed during soak: $($sample | ConvertTo-Json -Compress)" }
             if ($freeGb -lt 10) { throw "Disk dropped below P11 hard floor during soak: $freeGb GB" }
             if ((Get-Date).ToUniversalTime() -ge $deadline) { break }
             Start-Sleep -Seconds 60
           } while ($true)
-          $samples | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$env:RUNNER_TEMP\p11-soak.json" -Encoding utf8
 
       - name: Upload P11 evidence
         if: always()

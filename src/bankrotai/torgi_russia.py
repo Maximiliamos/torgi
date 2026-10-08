@@ -162,6 +162,35 @@ class TorgiRussiaClient:
             current_page=page,
         )
 
+        # Do not accept a 200 interstitial, unrecognised SSR schema or
+        # silently dropped lot records as an empty/complete catalogue page.
+        # A legitimate empty region still carries explicit initialLots=[] and
+        # initialMeta with total=0. Never publish missing-lot archival evidence
+        # after parsing a page whose data contract cannot be proven.
+        if not records:
+            flight = self._extract_next_flight_text(response.text)
+            initial_lots = self._extract_named_json_value(flight, "initialLots")
+            initial_meta = self._extract_named_json_value(flight, "initialMeta")
+            if not isinstance(initial_lots, list) or not isinstance(initial_meta, dict):
+                fingerprint = sha256(response.content).hexdigest()[:16] if hasattr(response, "content") else sha256(response.text.encode("utf-8")).hexdigest()[:16]
+                raise RuntimeError(
+                    "Torgi Russia public search SSR schema is missing or invalid; "
+                    f"page={page} region_id={filters.region_id} "
+                    f"html_sha256_prefix={fingerprint} "
+                    "(possible upstream layout change or access interstitial)"
+                )
+            if initial_lots:
+                raise RuntimeError(
+                    "Torgi Russia public search lost records while parsing nonempty initialLots; "
+                    f"page={page} region_id={filters.region_id}"
+                )
+            reported_total = initial_meta.get("total")
+            if page == 1 and str(reported_total or "0").isdigit() and int(reported_total or 0) > 0:
+                raise RuntimeError(
+                    "Torgi Russia public search reported positive total but parsed zero lots; "
+                    f"page={page} region_id={filters.region_id} total={reported_total}"
+                )
+
         if filters.region_id is not None and records:
             source_region_id = int(filters.region_id)
             expected_code = PUBLIC_REGION_FILTER_EXPECTATIONS.get(source_region_id)
@@ -198,6 +227,12 @@ class TorgiRussiaClient:
 
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
+        if len(lots) != len(records):
+            raise RuntimeError(
+                "Torgi Russia public search dropped malformed lot records; "
+                f"page={page} region_id={filters.region_id} "
+                f"records={len(records)} normalized={len(lots)}"
+            )
         for lot in lots:
             raw = dict(lot.raw_data or {})
             raw["raw_endpoint"] = response.url

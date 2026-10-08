@@ -341,9 +341,17 @@ jobs:
                   }
                 }
               }
-              $torgiRussia = @($rows | Where-Object { $_.source -eq 'torgi-russia.ru' }) | Select-Object -First 1
-              if ($null -eq $torgiRussia -or [int64]$torgiRussia.items_seen -le 0) {
-                throw "Torgi Russia production parser returned no lots"
+              # Optional sources are absent from the current approved set
+              # while paused. Verify Torgi Russia only if this run actually
+              # configured it; otherwise never mistake "not scheduled" for
+              # "parser returned zero lots" (BAT-309 reconciliation safety).
+              if ('torgi-russia.ru' -in $expectedSources) {
+                $torgiRussia = @($rows | Where-Object { $_.source -eq 'torgi-russia.ru' }) | Select-Object -First 1
+                if ($null -eq $torgiRussia -or [int64]$torgiRussia.items_seen -le 0) {
+                  throw "Configured Torgi Russia production parser returned no lots"
+                }
+              } else {
+                Write-Output 'Torgi Russia is not configured for this full reconciliation; no parser coverage claimed'
               }
               @(
                 "## Final source reconciliation",
