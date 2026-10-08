@@ -1,3 +1,8 @@
+> **HISTORICAL SNAPSHOT — not a current production runbook.** References below to a Neon origin
+> availability gate describe an obsolete transitional topology. Current authority is Home PostgreSQL,
+> with REG.RU S3 immutable map bundles and a Cloudflare edge frontend. For operations see
+> [Phase 4 operations](phase4-lite-operations.md) and [production configuration](production-configuration.md).
+
 # Persistent nationwide lot ingestion
 
 The implementation extends the existing operating model instead of creating a
