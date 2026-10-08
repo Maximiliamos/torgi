@@ -154,8 +154,94 @@ def build_report(session: Session) -> dict:
     active_proof_any_age_count = int(session.scalar(
         select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
     ) or 0)
+    expired = (*base, ProcessedLot.auction_status == "expired")
+    # An expired primary can disagree with a fresh canonical sibling. Report
+    # such conflicts for manual review rather than restoring its active status.
+    direct_link_exists = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id
+    ).exists()
+    expired_direct_source_status = dict(session.execute(
+        select(SourceLot.source_status, func.count(func.distinct(ProcessedLot.id)))
+        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(*expired)
+        .group_by(SourceLot.source_status)
+    ).all())
+    # Direct SourceLot flags are crucial: historical textual "active" can
+    # coexist with an archived source projection. None of these observations
+    # proves the auction is current without validated source sync evidence.
+    direct_lifecycle_rows = session.execute(
+        select(
+            SourceLot.source_status,
+            SourceLot.is_active,
+            SourceLot.is_archived,
+            SourceLot.archive_reason,
+            func.count(func.distinct(ProcessedLot.id)),
+        )
+        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(*expired)
+        .group_by(
+            SourceLot.source_status, SourceLot.is_active, SourceLot.is_archived,
+            SourceLot.archive_reason,
+        )
+        .order_by(func.count(func.distinct(ProcessedLot.id)).desc())
+        .limit(50)
+    ).all()
+    direct_lifecycle = [
+        {
+            "source_status": str(status or "unknown"),
+            "is_active": bool(is_active),
+            "is_archived": bool(is_archived),
+            "archive_reason": str(reason or "none"),
+            "count": int(count),
+        }
+        for status, is_active, is_archived, reason, count in direct_lifecycle_rows
+    ]
+    active_direct = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id,
+        SourceLot.is_active.is_(True), SourceLot.is_archived.is_(False),
+        SourceLot.source_status.in_(ACTIVE),
+    ).exists()
+    fresh_direct = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id,
+        SourceLot.is_active.is_(True), SourceLot.is_archived.is_(False),
+        SourceLot.source_status.in_(ACTIVE),
+        SourceLot.last_seen_at >= now - timedelta(hours=72),
+    ).exists()
+    status_provenance = {
+        "expired_direct_source_lifecycle": direct_lifecycle,
+        "expired_with_active_unarchived_direct_source": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, active_direct)
+        ) or 0),
+        "expired_with_fresh_active_unarchived_direct_source": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, fresh_direct)
+        ) or 0),
+        "expired_primary_by_source": breakdown(
+            session, expired, ProcessedLot.source_system
+        ),
+        "expired_primary_with_no_direct_source_link": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, ~direct_link_exists)
+        ) or 0),
+        "expired_primary_direct_link_statuses": {
+            str(key or "unknown"): int(count)
+            for key, count in expired_direct_source_status.items()
+        },
+        "expired_primary_with_active_canonical_proof_any_age": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, source_proof_any_age)
+        ) or 0),
+        "expired_primary_with_fresh_active_canonical_proof": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, proposed[5])
+        ) or 0),
+        "interpretation": (
+            "Expired is an observed processed status, NOT source proof of a "
+            "completed sale. Active canonical proof conflicts need individual "
+            "review; never reclassify expired rows solely to raise map coverage. "
+            "Direct-link statuses may count the same processed row more than once."
+        ),
+    }
+
     root_cause = {
         "status_distribution_before_filters": breakdown(session, base, ProcessedLot.auction_status),
+        "status_provenance": status_provenance,
         "geo_before_stage_by_source": breakdown(session, pre_geo, ProcessedLot.current_geo_source),
         "geo_needs_check_or_unknown": int(session.scalar(
             select(func.count(ProcessedLot.id)).where(

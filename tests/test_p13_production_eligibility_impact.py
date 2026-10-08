@@ -101,3 +101,50 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
         assert stale_reasons["source_no_active_canonical_proof"] == 0
         assert stale_reasons["source_only_freshness_expired"] == 1
         session.rollback()
+
+
+def test_p14_expired_primary_with_fresh_canonical_sibling_is_reported_without_mutation() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        row = ProcessedLot(
+            external_id="expired-with-active-canonical-proof",
+            source="test", source_system="tbankrot.ru",
+            title="Продажа земельного участка", description="",
+            category="land", auction_status="expired",
+            is_archived=False, current_geo_lat=57.6, current_geo_lon=39.8,
+            current_geo_source="nspd", needs_geo_check=False,
+        )
+        session.add(row)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="test-p14-expired-active-proof",
+            legacy_processed_lot_id=row.id, title=row.title, category=row.category,
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id, processed_lot_id=row.id,
+            source_system="torgi.gov.ru", external_id="verified-current-sale",
+            source_status="active", is_active=True, is_archived=False,
+            last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
+        session.commit()
+        result = impact.build_report(session)
+        status = result["root_cause_diagnostics"]["status_provenance"]
+        assert result["root_cause_diagnostics"]["status_distribution_before_filters"] == {
+            "expired": 1
+        }
+        assert status["expired_primary_by_source"] == {"tbankrot.ru": 1}
+        assert status["expired_primary_direct_link_statuses"] == {"active": 1}
+        assert status["expired_primary_with_no_direct_source_link"] == 0
+        assert status["expired_primary_with_active_canonical_proof_any_age"] == 1
+        assert status["expired_primary_with_fresh_active_canonical_proof"] == 1
+        assert status["expired_with_active_unarchived_direct_source"] == 1
+        assert status["expired_with_fresh_active_unarchived_direct_source"] == 1
+        assert status["expired_direct_source_lifecycle"] == [{
+            "source_status": "active", "is_active": True,
+            "is_archived": False, "archive_reason": "none", "count": 1,
+        }]
+        assert session.query(ProcessedLot).one().auction_status == "expired"
+        assert session.query(SourceLot).one().is_active is True
