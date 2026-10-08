@@ -58,3 +58,17 @@ def exact_cadastral_geo_verified(
         observed and observed in candidates
         and provider in {"nspd", "ik12_cadastral", "pkk"}
     )
+
+
+def geo_result_needs_review(
+    expected: str | None,
+    alternates: list[str] | None,
+    observed: str | None,
+    provider: str | None,
+    confidence: str | None,
+) -> bool:
+    if confidence not in {"high", "medium"}:
+        return True
+    if expected or alternates:
+        return not exact_cadastral_geo_verified(expected, alternates, observed, provider)
+    return False
