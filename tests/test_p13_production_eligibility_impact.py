@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, CanonicalLot, MapDataset, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotSyncRun, LotSyncSourceRun, MapDataset, ProcessedLot, SourceLot
 
 
 PATH = Path(__file__).resolve().parents[1] / "scripts/p13-production-eligibility-impact.py"
@@ -148,3 +148,62 @@ def test_p14_expired_primary_with_fresh_canonical_sibling_is_reported_without_mu
         }]
         assert session.query(ProcessedLot).one().auction_status == "expired"
         assert session.query(SourceLot).one().is_active is True
+
+
+
+def test_p14_archive_history_uses_completed_run_evidence_not_active_text() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        archived_day = datetime(2026, 10, 8, 9, 30)
+        primary = ProcessedLot(
+            external_id="historical-1", source="test", source_system="bidexpert.ru",
+            title="Земельный участок", description="", category="land",
+            auction_status="expired", is_archived=False,
+            current_geo_lat=57.6, current_geo_lon=39.8,
+            current_geo_source="nspd", needs_geo_check=False,
+        )
+        session.add(primary)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="p14-history-1", legacy_processed_lot_id=primary.id,
+            title=primary.title, category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id, processed_lot_id=primary.id,
+            source_system="bidexpert.ru", external_id="bid-1",
+            source_status="active", is_active=False, is_archived=True,
+            archived_at=archived_day,
+            archive_reason="missing_after_two_complete_syncs",
+        ))
+        session.add(LotSyncRun(
+            id="p14-complete-1", status="success",
+            trigger_type="manual", total_sources=1,
+        ))
+        session.flush()
+        session.add(LotSyncSourceRun(
+            sync_run_id="p14-complete-1", source_system="bidexpert.ru",
+            status="success", complete_source_run=True, items_seen=9,
+            pages_scanned=2, items_archived=1, finished_at=archived_day,
+        ))
+        session.commit()
+        before = session.query(ProcessedLot).one().auction_status
+        report = impact.build_report(session)
+        evidence = report["root_cause_diagnostics"]["status_provenance"]
+        assert evidence["expired_direct_source_lifecycle"] == [{
+            "source_status": "active", "is_active": False,
+            "is_archived": True,
+            "archive_reason": "missing_after_two_complete_syncs", "count": 1,
+        }]
+        assert evidence["largest_archive_date_cohorts"] == [{
+            "source_system": "bidexpert.ru", "archive_date": "2026-10-08", "count": 1,
+        }]
+        assert evidence["recent_source_sync_run_evidence"]["bidexpert.ru"] == [{
+            "finished_at_utc": "2026-10-08T09:30:00Z",
+            "status": "success", "complete_source_run": True,
+            "pages_scanned": 2, "items_seen": 9,
+            "items_archived": 1, "coverage_guard_rejected": False,
+        }]
+        assert session.query(ProcessedLot).one().auction_status == before == "expired"

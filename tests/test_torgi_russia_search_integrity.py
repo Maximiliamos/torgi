@@ -1,10 +1,13 @@
 """Fail closed when a Torgi Russia public search page no longer proves complete data."""
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
+from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
 from bankrotai.torgi_russia import TorgiRussiaClient
 
 
@@ -65,3 +68,41 @@ def test_legitimate_zero_region_stays_zero_with_proven_ssr_meta():
     assert lots == []
     assert metadata["loaded"] == 0
     assert metadata["total"] == 0
+
+
+def test_repeated_nonempty_page_aborts_source_before_reconciliation():
+    """A stale upstream page must not be mistaken for a completed region."""
+    connector = TorgiRussiaConnector()
+    connector._region_ids = [1]
+
+    class RepeatingClient:
+        def search_lots(self, filters):
+            return (
+                [SimpleNamespace(external_id="torgi-russia:123")],
+                {"has_more": filters.page == 1},
+            )
+
+    connector.client = RepeatingClient()
+    filters = TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1)
+    first = asyncio.run(connector.search(filters))
+    assert first.next_cursor == "region:0:2"
+    with pytest.raises(RuntimeError, match="refusing incomplete full reconciliation"):
+        asyncio.run(connector.search(filters, first.next_cursor))
+
+
+def test_different_pages_are_not_mistaken_for_repeated_inventory():
+    connector = TorgiRussiaConnector()
+    connector._region_ids = [1]
+
+    class PagedClient:
+        def search_lots(self, filters):
+            return (
+                [SimpleNamespace(external_id=f"torgi-russia:{filters.page}")],
+                {"has_more": filters.page == 1},
+            )
+
+    connector.client = PagedClient()
+    filters = TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1)
+    first = asyncio.run(connector.search(filters))
+    second = asyncio.run(connector.search(filters, first.next_cursor))
+    assert second.next_cursor is None
