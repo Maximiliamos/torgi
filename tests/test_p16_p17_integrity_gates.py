@@ -178,3 +178,18 @@ def test_p16_bounded_geo_canary_preserves_old_point_as_evidence() -> None:
         snapshot = session.query(LotGeoSnapshot).one()
         assert snapshot.centroid_lat == 57.55
         assert snapshot.geo_method == "p16_quarantined_geo_hint"
+
+
+def test_p17_preflight_rejects_rental_hidden_in_description() -> None:
+    from bankrotai.services.public_map_quality import public_map_preflight
+
+    point = {
+        "title": "Земельный участок 6.79 сотки",
+        "description": "Вид торгов : Аренда",
+        "category": "land", "status": "active", "is_archived": False,
+        "source_system": "torgi.gov.ru", "independent_source_verified": True,
+        "geo_source": "nspd", "cadastral_number": "76:22:010717:536",
+    }
+    report = public_map_preflight([point])
+    assert report["ok"] is False
+    assert report["public_rental_count"] == 1
