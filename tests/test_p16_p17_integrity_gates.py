@@ -145,3 +145,36 @@ def test_p16_repair_is_dry_run_and_preserves_source_provenance() -> None:
         assert session.get(SourceLot, source_lot.id).archive_reason == "rental"
         assert session.query(LotStatusHistory).count() == 1
         assert session.query(ProcessedLot).count() == 1
+
+
+def test_p16_bounded_geo_canary_preserves_old_point_as_evidence() -> None:
+    from bankrotai.db import LotGeoSnapshot
+
+    spec = importlib.util.spec_from_file_location(
+        "p16_geo_repair", ROOT / "scripts/p16-public-map-repair.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="test", source_system="test", external_id="76:02:022201:38",
+            title="Земельный участок", description="", category="land",
+            region_code="76", cadastral_number="76:02:022201:38",
+            auction_status="active", current_geo_lat=57.55, current_geo_lon=39.82,
+            current_geo_source="photon", current_geo_confidence="high",
+        )
+        session.add(lot)
+        session.commit()
+        audit = module.quarantine_weak_cadastral_geo(session, limit=25, apply=False)
+        assert audit["candidate_count"] == 1
+        assert session.get(ProcessedLot, lot.id).current_geo_lat == 57.55
+        changed = module.quarantine_weak_cadastral_geo(session, limit=25, apply=True)
+        assert changed["changed"] == 1
+        assert session.get(ProcessedLot, lot.id).current_geo_lat is None
+        assert session.get(ProcessedLot, lot.id).needs_geo_check is True
+        snapshot = session.query(LotGeoSnapshot).one()
+        assert snapshot.centroid_lat == 57.55
+        assert snapshot.geo_method == "p16_quarantined_geo_hint"
