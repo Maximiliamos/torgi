@@ -166,7 +166,55 @@ def build_report(session: Session) -> dict:
         .where(*expired)
         .group_by(SourceLot.source_status)
     ).all())
+    # Direct SourceLot flags are crucial: historical textual "active" can
+    # coexist with an archived source projection. None of these observations
+    # proves the auction is current without validated source sync evidence.
+    direct_lifecycle_rows = session.execute(
+        select(
+            SourceLot.source_status,
+            SourceLot.is_active,
+            SourceLot.is_archived,
+            SourceLot.archive_reason,
+            func.count(func.distinct(ProcessedLot.id)),
+        )
+        .join(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(*expired)
+        .group_by(
+            SourceLot.source_status, SourceLot.is_active, SourceLot.is_archived,
+            SourceLot.archive_reason,
+        )
+        .order_by(func.count(func.distinct(ProcessedLot.id)).desc())
+        .limit(50)
+    ).all()
+    direct_lifecycle = [
+        {
+            "source_status": str(status or "unknown"),
+            "is_active": bool(is_active),
+            "is_archived": bool(is_archived),
+            "archive_reason": str(reason or "none"),
+            "count": int(count),
+        }
+        for status, is_active, is_archived, reason, count in direct_lifecycle_rows
+    ]
+    active_direct = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id,
+        SourceLot.is_active.is_(True), SourceLot.is_archived.is_(False),
+        SourceLot.source_status.in_(ACTIVE),
+    ).exists()
+    fresh_direct = select(SourceLot.id).where(
+        SourceLot.processed_lot_id == ProcessedLot.id,
+        SourceLot.is_active.is_(True), SourceLot.is_archived.is_(False),
+        SourceLot.source_status.in_(ACTIVE),
+        SourceLot.last_seen_at >= now - timedelta(hours=72),
+    ).exists()
     status_provenance = {
+        "expired_direct_source_lifecycle": direct_lifecycle,
+        "expired_with_active_unarchived_direct_source": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, active_direct)
+        ) or 0),
+        "expired_with_fresh_active_unarchived_direct_source": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(*expired, fresh_direct)
+        ) or 0),
         "expired_primary_by_source": breakdown(
             session, expired, ProcessedLot.source_system
         ),
