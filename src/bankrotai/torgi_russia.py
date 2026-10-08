@@ -227,6 +227,12 @@ class TorgiRussiaClient:
 
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
+        if len(lots) != len(records):
+            raise RuntimeError(
+                "Torgi Russia public search dropped malformed lot records; "
+                f"page={page} region_id={filters.region_id} "
+                f"records={len(records)} normalized={len(lots)}"
+            )
         for lot in lots:
             raw = dict(lot.raw_data or {})
             raw["raw_endpoint"] = response.url
