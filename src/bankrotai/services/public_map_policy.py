@@ -32,6 +32,8 @@ def public_map_predicates() -> tuple:
         ProcessedLot.category.in_(REAL_ESTATE_CATEGORIES),
         ProcessedLot.vin.is_(None),
         ProcessedLot.needs_geo_check.is_(False),
-        not_(or_(*(title.ilike(f"%{term}%") for term in PUBLIC_EXCLUDED_TITLE_TERMS))),
+        # SQLite's lower() is ASCII-only; include Cyrillic titlecase/uppercase.
+        not_(or_(*(title.like(f"%{case}%") for term in PUBLIC_EXCLUDED_TITLE_TERMS
+                    for case in (term, term.capitalize(), term.upper())))),
         ~ProcessedLot.description.ilike("%право заключения договора аренды%"),
     )
