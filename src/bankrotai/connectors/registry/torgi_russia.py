@@ -66,8 +66,12 @@ class TorgiRussiaConnector(AuctionConnector):
             and self._previous_page_signature == signature
         )
         if repeated_page:
-            metadata["has_more"] = False
-            metadata["repeated_page_guard"] = True
+            # The upstream returned the same nonempty page for a different
+            # cursor. Its regional inventory is unverified: pretending to
+            # finish it would allow a full sync to archive missing lots.
+            raise RuntimeError(
+                "Torgi Russia repeated pagination; refusing incomplete full reconciliation"
+            )
         self._previous_page_signature = signature
 
         if metadata.get("has_more"):
