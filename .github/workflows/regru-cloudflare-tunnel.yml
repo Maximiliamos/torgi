@@ -1,7 +1,13 @@
-name: Maintain REG.RU Cloudflare tunnel
+name: LEGACY EMERGENCY ONLY - REG.RU Cloudflare tunnel
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_legacy_tunnel:
+        description: "I approve changing the legacy tunnel on REG.RU (may conflict with WSS relay)"
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -12,6 +18,7 @@ concurrency:
 
 jobs:
   install-named-tunnel:
+    if: inputs.confirm_legacy_tunnel == true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

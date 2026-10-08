@@ -1,3 +1,8 @@
+> **HISTORICAL SNAPSHOT — 2026-09-22.** Statements about nameservers not switched,
+> public DNS unavailable or no traffic cutover were true only for the documented migration.
+> Do not treat this as today's production status or as a deployment/rollback instruction.
+> Consult [Phase 4 operations](phase4-lite-operations.md) and live exact-SHA deployment evidence.
+
 # STERDEZ domain migration evidence
 
 Date: 2026-09-22
