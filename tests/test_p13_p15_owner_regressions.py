@@ -184,3 +184,24 @@ def test_cadastral_provider_result_with_wrong_id_still_requires_review() -> None
     assert geo_result_needs_review(
         "76:02:022201:38", None, "76:02:022201:38", "nspd", "high"
     ) is False
+
+
+def test_production_never_allows_synthetic_source_to_bypass_freshness(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    import bankrotai.services.public_map_policy as policy
+
+    monkeypatch.setattr(
+        policy, "get_settings", lambda: SimpleNamespace(app_env="production")
+    )
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            source="test", source_system="test", external_id="synthetic-not-public",
+            title="Продажа земельного участка", description="",
+            category="land", auction_status="active",
+            current_geo_lat=57.5, current_geo_lon=39.5,
+        )
+        session.add(lot)
+        session.flush()
+        assert session.scalar(select(ProcessedLot.id).where(*policy.public_map_predicates())) is None
