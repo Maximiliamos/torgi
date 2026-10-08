@@ -1087,8 +1087,6 @@ class NationwideIngestionService:
             is_active, is_archived = False, True
         elif normalized_status in {"active", "scheduled"}:
             is_active, is_archived = True, False
-        elif normalized_status == "unknown":
-            is_active = False
         return (
             normalized.title,
             normalized.description,
@@ -1112,7 +1110,7 @@ class NationwideIngestionService:
             normalized.next_price_reduction_at or _to_datetime(_raw_value(raw, "next_price_reduction_at")),
             NationwideIngestionService._mutable_raw_evidence(raw),
             _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update")),
-            is_active,
+            is_active and normalized_status != "unknown",
             is_archived,
         )
 
