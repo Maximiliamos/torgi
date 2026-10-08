@@ -462,6 +462,12 @@ def _sync_source_lot(
         source_lot.is_archived = False
         source_lot.archived_at = None
         source_lot.archive_reason = None
+    elif normalized_source_status == "unknown":
+        # Unknown upstream evidence must not keep an old active projection alive.
+        # Preserve closed/archive history; do not infer either active or closed.
+        source_lot.is_active = False
+        if not source_lot.is_archived:
+            source_lot.archive_reason = "source_status_unverified"
     source_lot.missing_successful_runs = 0
     processed.region_code = source_lot.region_code or processed.region_code
     canonical.region_code = source_lot.region_code or canonical.region_code
@@ -556,7 +562,7 @@ def normalize_status(status: str) -> str:
     value = (status or "").strip().lower()
     if not value:
         return "unknown"
-    if any(token in value for token in ("closed", "completed", "finished", "заверш", "закрыт", "несостоя")):
+    if any(token in value for token in ("closed", "completed", "finished", "заверш", "закрыт", "несостоя", "архив", "отмен", "прекращ", "окончен", "cancel", "expired", "failed", "archiv")):
         return "closed"
     if any(token in value for token in ("scheduled", "pending", "приём", "прием", "ожида")):
         return "scheduled"
@@ -701,7 +707,7 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
         lot.closed_at = lot.closed_at or utc_now()
         lot.is_archived = True
         lot.archived_at = lot.archived_at or utc_now()
-    elif old_status == "closed":
+    elif old_status == "closed" and normalized in {"active", "scheduled"}:
         lot.is_archived = False
         lot.archived_at = None
     session.add(LotStatusHistory(
@@ -842,7 +848,9 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
         if normalized.current_price is not None:
             processed.current_price = _to_decimal(normalized.current_price)
         new_status = (normalized.auction_status or "").strip()
-        if new_status and not (new_status == "unknown" and processed.auction_status not in {None, "", "unknown"}):
+        if new_status:
+            # An explicit unknown observation supersedes stale active evidence.
+            # LotStatusHistory preserves the earlier source claim for audit.
             apply_lot_status(session, processed, new_status, normalized.source or "sync")
         processed.last_update = utc_now()
         
