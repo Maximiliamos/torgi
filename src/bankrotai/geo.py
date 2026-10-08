@@ -897,7 +897,14 @@ class CadastralGeocoder:
         if not features:
             return None
 
-        feature = features[0]
+        # Provider ordering is not identity evidence: reject an unrelated first hit.
+        normalized = cadastral_number.replace(" ", "")
+        feature = next((item for item in features if isinstance(item, dict) and any(
+            str((item.get("attrs") or {}).get(key) or "").replace(" ", "") == normalized
+            for key in ("cn", "cad_num", "cadastralNumber", "cadastral_number")
+        )), None)
+        if feature is None:
+            return None
         attrs = feature.get("attrs") or {}
         center = feature.get("center") or {}
         geometry = feature.get("geometry")
@@ -1084,6 +1091,8 @@ class CadastralGeocoder:
             return None
 
         feature = self._pick_nspd_feature(features, query)
+        if feature is None:
+            return None
         props = feature.get("properties") or {}
         expected_cadastral = query if CADASTRAL_RE.match(query.replace(" ", "")) else ""
         info = normalize_nspd_props(props, expected_cadastral)
@@ -1128,12 +1137,26 @@ class CadastralGeocoder:
             raw=feature,
         )
 
-    def _pick_nspd_feature(self, features: list[dict], cadastral_number: str) -> dict:
+    def _pick_nspd_feature(self, features: list[dict], cadastral_number: str) -> dict | None:
+        """A cadastral query must match a provider-supplied identity, never features[0]."""
+        normalized = cadastral_number.replace(" ", "")
+        if not CADASTRAL_RE.fullmatch(normalized):
+            return next((item for item in features if isinstance(item, dict)), None)
         for feature in features:
-            text = json_like_text(feature)
-            if cadastral_number in text:
-                return feature
-        return features[0]
+            if not isinstance(feature, dict):
+                continue
+            props = feature.get("properties") or {}
+            if not isinstance(props, dict):
+                continue
+            options = props.get("options") or {}
+            for source in (options, props):
+                if not isinstance(source, dict):
+                    continue
+                for key in ("cad_num", "cadNum", "cadastralNumber", "cadastral_number", "cn"):
+                    observed = str(source.get(key) or "").replace(" ", "")
+                    if observed == normalized:
+                        return feature
+        return None
 
     def geocode(self, cadastral_number: str) -> dict | None:
         result = self.search_by_cadastral_number(cadastral_number)
