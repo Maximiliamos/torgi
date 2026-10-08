@@ -130,6 +130,30 @@ def build_report(session: Session) -> dict:
         ProcessedLot.current_geo_source.is_(None),
         ~ProcessedLot.current_geo_source.in_(CAD_GEO),
     )
+    # Same canonical sale/source proof as proposed_filters, except for recency.
+    # Distinguishes missing or invalid canonical proof from expired evidence.
+    source_proof_any_age = (
+        select(SourceLot.id)
+        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
+        .where(
+            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            SourceLot.source_system.in_(AUTO),
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.source_status.in_(ACTIVE),
+            or_(
+                SourceLot.auction_type.is_(None),
+                ~or_(
+                    SourceLot.auction_type.ilike("%аренд%"),
+                    SourceLot.auction_type.ilike("%lease%"),
+                    SourceLot.auction_type.ilike("%rent%"),
+                ),
+            ),
+        ).exists()
+    )
+    active_proof_any_age_count = int(session.scalar(
+        select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
+    ) or 0)
     root_cause = {
         "status_distribution_before_filters": breakdown(session, base, ProcessedLot.auction_status),
         "geo_before_stage_by_source": breakdown(session, pre_geo, ProcessedLot.current_geo_source),
@@ -144,6 +168,13 @@ def build_report(session: Session) -> dict:
                 bad_cadastral_source,
             )
         ) or 0),
+        "source_no_active_canonical_proof": (
+            sequential["05_and_strict_cadastral_geo"] - active_proof_any_age_count
+        ),
+        "source_only_freshness_expired": (
+            active_proof_any_age_count - sequential["06_and_fresh_active_source"]
+        ),
+        "source_has_active_proof_ignoring_freshness": active_proof_any_age_count,
         "before_fresh_source_by_primary_system": breakdown(
             session, pre_source, ProcessedLot.source_system
         ),
