@@ -1,6 +1,6 @@
 # BankrotAI product roadmap
 
-> **Current release checkpoint (2026-10-08):** v0.3.4 is published at `f504d040`; v0.3.5 code is merged at `260e6420` and must pass its own exact-SHA acceptance before being called an accepted release. The older P0–P12 baseline at `d290e038` is historical evidence, not proof that all newly reported map defects are fixed. P13–P17 remain an additional product-integrity workstream. The BAT backlog below is distinct.
+> **Current release checkpoint (2026-10-08):** v0.3.4 is published at `f504d040`; v0.3.5 was published after exact-SHA acceptance at `260e6420`. The older P0–P12 baseline at `d290e038` is historical evidence, not proof that all newly reported map defects are fixed. P13–P17 remain an additional product-integrity workstream. The BAT backlog below is distinct.
 
 
 
