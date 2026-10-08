@@ -59,3 +59,46 @@ def test_manual_regru_deploy_waits_for_home_before_touching_host() -> None:
     assert "Deploy home secondary origin" in wait
     assert wait_start < wait_end < job.index("      - name: Prepare server and release HTTPS port")
     assert "Exact home deployment failed" in wait
+
+
+def test_public_map_preflight_rejects_contamination() -> None:
+    from bankrotai.services.public_map_quality import public_map_preflight
+
+    point = {
+        "title": "Аренда здания", "category": "real_estate",
+        "status": "closed", "is_archived": False, "vin": None,
+        "source_system": "torgi.gov.ru",
+        "cadastral_number": "76:22:010717:536",
+        "geo_source": "photon",
+    }
+    report = public_map_preflight([point])
+    assert report["ok"] is False
+    assert report["public_rental_count"] == 1
+    assert report["public_closed_count"] == 1
+    assert report["cadastral_address_fallback_count"] == 1
+
+
+def test_public_map_preflight_keeps_exact_active_sale() -> None:
+    from bankrotai.services.public_map_quality import public_map_preflight
+
+    point = {
+        "title": "Продажа земельного участка", "category": "land",
+        "status": "active", "is_archived": False,
+        "source_system": "torgi.gov.ru",
+        "cadastral_number": "76:23:010101:1", "geo_source": "nspd",
+        "geo_confidence": "high",
+    }
+    report = public_map_preflight([point])
+    assert report["ok"] is True
+    assert report["point_count"] == 1
+    assert report["public_rental_count"] == report["public_closed_count"] == 0
+
+
+def test_home_api_sha_is_exposed_and_checked_on_all_deploy_paths() -> None:
+    home_workflow = (ROOT / ".github/workflows/home-secondary-deploy.yml").read_text(encoding="utf-8")
+    api_code = (ROOT / "src/bankrotai/api.py").read_text(encoding="utf-8")
+    regru_workflow = (ROOT / ".github/workflows/regru-deploy.yml").read_text(encoding="utf-8")
+    assert '--env "BANKROTAI_DEPLOY_SHA=$env:GITHUB_SHA"' in home_workflow
+    assert 'os.getenv("BANKROTAI_DEPLOY_SHA"' in api_code
+    assert regru_workflow.count('get("deployment_sha","")') >= 2
+    assert 'if [ "$LIVE_HOME_SHA" != "$GITHUB_SHA" ]; then' in regru_workflow
