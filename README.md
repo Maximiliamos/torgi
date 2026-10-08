@@ -79,6 +79,8 @@ Desktop-поиск работает только с продажей недви�
 
 Краткий operational runbook, release checklist, rollback и аварийное восстановление
 зафиксированы в [docs/phase4-lite-operations.md](docs/phase4-lite-operations.md).
+Актуальная схема production и отличие от исторических Neon/Cloudflare инструкций:
+[docs/current-production-architecture.md](docs/current-production-architecture.md).
 Phase 3 backup/restore thresholds и значения alert-классов остаются в
 [docs/phase3-lite-recovery.md](docs/phase3-lite-recovery.md).
 
