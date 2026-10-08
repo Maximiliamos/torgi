@@ -1,5 +1,13 @@
 # История изменений
 
+## 0.3.4 — next accepted release (pending gates)
+
+- Extract independent LotOnline public auction client from `scrapers.py` while preserving the existing scraper import API, retry bounds and real-estate sale exclusion.
+- Extract NSPD/legacy PKK metadata normalizers and shared cadastral regex from `geo.py` while preserving all public symbols and provider results.
+- Tighten per-module shrinking architecture budgets for both refactored monoliths.
+- No changes to database schema, upstream-provider access controls, source reconciliation completeness or production keys. Exact-SHA P1/P11 release checks remain required.
+
+
 ## 0.3.3 — next accepted release (pending gates)
 
 - Continue behavior-preserving BAT-308 decomposition: extract desktop map preview assets and GEO geometry helpers.
