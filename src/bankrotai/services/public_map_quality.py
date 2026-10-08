@@ -45,7 +45,7 @@ def public_map_preflight(points: list[dict[str, Any]]) -> dict[str, Any]:
             counts["public_closed_count"] += 1
         if category not in REAL_ESTATE_CATEGORIES:
             counts["public_movable_count"] += 1
-        if source in ("tbankrot", "tbankrot.ru") and not item.get("independent_source_verified"):
+        if source != "test" and not item.get("independent_source_verified"):
             counts["stale_source_only_count"] += 1
         if cadastral and geo_source not in TRUSTED_CADASTRAL_GEO_SOURCES:
             counts["cadastral_address_fallback_count"] += 1
