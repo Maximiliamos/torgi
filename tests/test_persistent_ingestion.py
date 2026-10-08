@@ -17,6 +17,7 @@ from bankrotai.db import (
     LotGeoSnapshot,
     LotNote,
     LotPriceEvent,
+    LotStatusHistory,
     LotSyncRun,
     LotSyncSourceRun,
     ProcessedLot,
@@ -24,7 +25,8 @@ from bankrotai.db import (
     Watchlist,
 )
 from bankrotai.domain import NormalizedLot
-from bankrotai.logic import _promote_active_projection, persist_lot
+from bankrotai.logic import _promote_active_projection, persist_lot, normalize_status
+from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SourceSyncResult,
@@ -1044,3 +1046,73 @@ def test_expired_sync_run_is_failed_before_replacement(sessions) -> None:
         assert expired.status == "failed"
         assert expired.finished_at is not None
         assert session.get(LotSyncRun, replacement).status == "queued"
+
+
+def test_p14_unknown_revokes_legacy_active_projection(sessions) -> None:
+    current = lot("p14-legacy")
+    with sessions.begin() as session:
+        persist_lot(session, current)
+    uncertain = lot("p14-legacy")
+    uncertain.auction_status = "unknown"
+    with sessions.begin() as session:
+        persist_lot(session, uncertain)
+    with sessions() as session:
+        primary = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "p14-legacy"))
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "p14-legacy"))
+        assert primary.auction_status == "unknown"
+        assert source.source_status == "unknown"
+        assert source.is_active is False
+        assert source.archive_reason == "source_status_unverified"
+        histories = session.scalars(
+            select(LotStatusHistory).where(LotStatusHistory.lot_id == primary.id).order_by(LotStatusHistory.id)
+        ).all()
+        assert [entry.new_status for entry in histories] == ["active", "unknown"]
+
+
+def test_p14_unknown_does_not_unarchive_closed_legacy_projection(sessions) -> None:
+    closed = lot("p14-closed")
+    closed.auction_status = "closed"
+    uncertain = lot("p14-closed")
+    uncertain.auction_status = "unknown"
+    with sessions.begin() as session:
+        persist_lot(session, closed)
+        persist_lot(session, uncertain)
+    with sessions() as session:
+        primary = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "p14-closed"))
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "p14-closed"))
+        assert primary.auction_status == "unknown"
+        assert primary.is_archived is True
+        assert source.is_active is False
+        assert source.is_archived is True
+
+
+def test_p14_unknown_revokes_batch_active_projection(sessions) -> None:
+    active = lot("p14-batch")
+    unknown = lot("p14-batch")
+    unknown.auction_status = "unknown"
+    with sessions.begin() as session:
+        persist_changed_lots_batch(session, [active], "p14-run-1")
+    with sessions.begin() as session:
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "p14-batch"))
+        persist_changed_lots_batch(
+            session, [unknown], "p14-run-2", existing_sources={"p14-batch": source}
+        )
+    with sessions() as session:
+        primary = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "p14-batch"))
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "p14-batch"))
+        assert primary.auction_status == "unknown"
+        assert source.source_status == "unknown"
+        assert source.is_active is False
+        assert source.is_archived is False
+        assert source.archive_reason == "source_status_unverified"
+        statuses = session.scalars(
+            select(LotStatusHistory).where(LotStatusHistory.lot_id == primary.id).order_by(LotStatusHistory.id)
+        ).all()
+        assert [entry.new_status for entry in statuses] == ["active", "unknown"]
+
+
+def test_p14_normalize_explicit_cancel_and_archive_into_closed() -> None:
+    assert normalize_status("Отменён") == "closed"
+    assert normalize_status("Архив") == "closed"
+    assert normalize_status("expired") == "closed"
+    assert normalize_status("unknown") == "unknown"
