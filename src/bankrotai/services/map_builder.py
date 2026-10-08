@@ -527,6 +527,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "lat": row.centroid_lat,
                     "lon": row.centroid_lon,
                     "title": row.title,
+                    "description": row.description,
                     "category": row.category,
                     "vin": row.vin,
                     "source_system": row.source_system,
