@@ -1,3 +1,7 @@
+> **HISTORICAL SNAPSHOT — 2026-09-22.** Old hostnames, failed checks, backup paths,
+> GEO backlog and reported release SHA below are historical evidence, not current configuration.
+> For current operating instructions use [Phase 4 operations](phase4-lite-operations.md).
+
 # DEZSTER release verification — 22 September 2026 (MSK)
 
 **FINAL STATUS: NOT FULLY VERIFIED.** The candidate has not passed an independent full CI and production data verification. Do not deploy this worktree or run bulk data repair based on this report.
