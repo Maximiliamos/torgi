@@ -21,7 +21,7 @@ def _mapped_lot(external_id: str) -> ProcessedLot:
         auction_status="active",
         current_geo_lat=57.6261,
         current_geo_lon=39.8845,
-        current_geo_source="photon",
+        current_geo_source="nspd",
         current_geo_confidence="high",
     )
 
