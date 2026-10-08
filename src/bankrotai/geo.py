@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, distance_km
 from bankrotai.core import get_settings, utc_now
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
+from bankrotai.services.cadastral_identity import pick_nspd_feature, pick_pkk_feature
 from bankrotai.services.geo_cadastral_properties import (
     CADASTRAL_RE as CADASTRAL_RE,
     normalize_nspd_props as normalize_nspd_props,
@@ -280,10 +281,7 @@ class IK12Geocoder:
 
 
 class CadastralGeocoder:
-    """
-    Кадастровый поиск и геокодинг.
-    Всё держим в geo.py, без отдельного cadastre.py.
-    """
+    """Кадастровый поиск и геокодинг с проверкой личности объекта."""
 
     FEATURE_TYPES = {
         "land_plot": 1,
@@ -897,12 +895,7 @@ class CadastralGeocoder:
         if not features:
             return None
 
-        # Provider ordering is not identity evidence: reject an unrelated first hit.
-        normalized = cadastral_number.replace(" ", "")
-        feature = next((item for item in features if isinstance(item, dict) and any(
-            str((item.get("attrs") or {}).get(key) or "").replace(" ", "") == normalized
-            for key in ("cn", "cad_num", "cadastralNumber", "cadastral_number")
-        )), None)
+        feature = pick_pkk_feature(features, cadastral_number)
         if feature is None:
             return None
         attrs = feature.get("attrs") or {}
@@ -1138,25 +1131,7 @@ class CadastralGeocoder:
         )
 
     def _pick_nspd_feature(self, features: list[dict], cadastral_number: str) -> dict | None:
-        """A cadastral query must match a provider-supplied identity, never features[0]."""
-        normalized = cadastral_number.replace(" ", "")
-        if not CADASTRAL_RE.fullmatch(normalized):
-            return next((item for item in features if isinstance(item, dict)), None)
-        for feature in features:
-            if not isinstance(feature, dict):
-                continue
-            props = feature.get("properties") or {}
-            if not isinstance(props, dict):
-                continue
-            options = props.get("options") or {}
-            for source in (options, props):
-                if not isinstance(source, dict):
-                    continue
-                for key in ("cad_num", "cadNum", "cadastralNumber", "cadastral_number", "cn"):
-                    observed = str(source.get(key) or "").replace(" ", "")
-                    if observed == normalized:
-                        return feature
-        return None
+        return pick_nspd_feature(features, cadastral_number)
 
     def geocode(self, cadastral_number: str) -> dict | None:
         result = self.search_by_cadastral_number(cadastral_number)
