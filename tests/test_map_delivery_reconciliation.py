@@ -35,7 +35,7 @@ def test_map_delivery_reconciliation_matches_db_and_dataset() -> None:
         session.add(lot)
         session.flush()
         dataset = MapDataset(
-            version="20260930T000000000000Z-r6-bundle-s3",
+            version="20260930T000000000000Z-r7-bundle-s3",
             status="ready",
             is_current=True,
             point_count=1,
@@ -91,7 +91,7 @@ def test_map_delivery_reconciliation_exposes_missing_eligible_lot() -> None:
         session.flush()
         missing_id = missing.id
         dataset = MapDataset(
-            version="20260930T000000000000Z-r6-bundle-s3",
+            version="20260930T000000000000Z-r7-bundle-s3",
             status="ready",
             is_current=True,
             point_count=1,
@@ -131,7 +131,7 @@ def test_map_delivery_reconciliation_ignores_post_dataset_geo_arrival() -> None:
         session.add(present)
         session.flush()
         dataset = MapDataset(
-            version="20261007T000000000000Z-r6-bundle-s3",
+            version="20261007T000000000000Z-r7-bundle-s3",
             status="ready",
             is_current=True,
             point_count=1,
@@ -178,7 +178,7 @@ def test_map_delivery_reconciliation_ignores_post_dataset_removal_until_next_bui
         session.add(lot)
         session.flush()
         dataset = MapDataset(
-            version="20261007T010000000000Z-r6-bundle-s3",
+            version="20261007T010000000000Z-r7-bundle-s3",
             status="ready",
             is_current=True,
             point_count=1,
