@@ -28,6 +28,7 @@ from bankrotai.services.map_bundle_store import (
     publish_dataset_to_regional_bundles,
 )
 from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
+from bankrotai.services.public_map_policy import public_map_predicates
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -79,8 +80,7 @@ def map_source_fingerprint(session: Session) -> str:
             func.max(ProcessedLot.last_update),
             func.max(ProcessedLot.current_geo_observed_at),
         ).where(
-            ProcessedLot.duplicate_of_id.is_(None),
-            ProcessedLot.is_archived.is_(False),
+            *public_map_predicates(),
             ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
             ProcessedLot.current_geo_lon.between(-180.0, 180.0),
         )
@@ -458,8 +458,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.current_geo_lon.label("centroid_lon"),
                 )
                 .where(
-                    ProcessedLot.duplicate_of_id.is_(None),
-                    ProcessedLot.is_archived.is_(False),
+                    *public_map_predicates(),
                     ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
                     ProcessedLot.current_geo_lon.between(-180.0, 180.0),
                 )
