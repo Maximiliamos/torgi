@@ -6,12 +6,15 @@ The historical registry retains excluded rows for audit and recovery.
 
 from __future__ import annotations
 
-from sqlalchemy import not_, or_
+from datetime import datetime, timedelta, timezone
 
-from bankrotai.db import ProcessedLot
+from sqlalchemy import not_, or_, select
+
+from bankrotai.db import CanonicalLot, ProcessedLot, SourceLot
 from bankrotai.services.real_estate_filter import REAL_ESTATE_CATEGORIES
 
 TRUSTED_CADASTRAL_GEO_SOURCES = frozenset({"nspd", "ik12_cadastral", "pkk"})
+AUTOMATIC_PUBLIC_SOURCES = frozenset({"torgi.gov.ru", "lot-online.ru", "torgi-russia.ru", "bidexpert.ru"})
 
 PUBLIC_ACTIVE_STATUSES = frozenset({
     "active", "scheduled", "published", "open", "applications_submission",
@@ -27,12 +30,31 @@ PUBLIC_EXCLUDED_TITLE_TERMS = (
 def public_map_predicates() -> tuple:
     """Composable SQLAlchemy WHERE clauses: no in-memory post-limit filtering."""
     title = ProcessedLot.title
+    source_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=72)
+    fresh_independent_projection = (
+        select(SourceLot.id)
+        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
+        .where(
+            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            SourceLot.source_system.in_(AUTOMATIC_PUBLIC_SOURCES),
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.last_seen_at >= source_cutoff,
+        )
+        .exists()
+    )
     return (
         ProcessedLot.duplicate_of_id.is_(None),
         ProcessedLot.is_archived.is_(False),
         ProcessedLot.auction_status.in_(PUBLIC_ACTIVE_STATUSES),
         ProcessedLot.category.in_(REAL_ESTATE_CATEGORIES),
         ProcessedLot.vin.is_(None),
+        # A paused historical TBankrot publication must not hold a public
+        # marker active without a recent independent source under that canonical.
+        or_(
+            ~ProcessedLot.source_system.in_(("tbankrot", "tbankrot.ru")),
+            fresh_independent_projection,
+        ),
         ProcessedLot.needs_geo_check.is_(False),
         # A cadastral object may not use a weak address/Photon centroid as exact GEO.
         or_(
