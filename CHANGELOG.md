@@ -1,5 +1,13 @@
 # История изменений
 
+## 0.3.5 — planned next exact-SHA accepted release
+
+- Correct full reconciliation: assert Torgi Russia positive lot counts **only when that source is enabled** in the durable configured source set; disabled sources never constitute claimed coverage.
+- Reject unexpected Next.js SSR/interstitial/contradictory results in the optional Torgi Russia parser before incomplete data can be treated as successful.
+- Preserve every P11 health-soak sample, including the failing observation and separate exception types, without relaxing health or disk thresholds.
+- Continue to require same-commit P1/P11 and all existing production release gates and keyless Sigstore attestation.
+
+
 ## 0.3.4 — next accepted release (pending gates)
 
 - Extract independent LotOnline public auction client from `scrapers.py` while preserving the existing scraper import API, retry bounds and real-estate sale exclusion.
