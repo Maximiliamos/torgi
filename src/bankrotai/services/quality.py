@@ -320,6 +320,7 @@ def map_delivery_reconciliation_report(
     from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
     from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
     from bankrotai.services.map_builder import MAX_WEB_MERCATOR_LAT, POINT_ZOOM
+    from bankrotai.services.public_map_policy import public_map_predicates
     from bankrotai.services.map_bundle_store import normalize_map_region_code
     from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
     from bankrotai.services.map_object_store import _verify_public_manifest
@@ -368,8 +369,7 @@ def map_delivery_reconciliation_report(
             ProcessedLot.current_geo_observed_at,
             ProcessedLot.last_update,
         ).where(
-            ProcessedLot.duplicate_of_id.is_(None),
-            ProcessedLot.is_archived.is_(False),
+            *public_map_predicates(),
             ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
             ProcessedLot.current_geo_lon.between(-180.0, 180.0),
         )
