@@ -8,6 +8,6 @@ from .db import init_db, session_scope
 try:
     __version__ = version("bankrotai-finder")
 except PackageNotFoundError:
-    __version__ = "0.3.2"
+    __version__ = "0.3.3"
 
 __all__ = ["__version__", "get_logger", "get_settings", "init_db", "session_scope"]
