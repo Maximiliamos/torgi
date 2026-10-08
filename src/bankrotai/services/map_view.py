@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
+from bankrotai.services.public_map_policy import public_map_predicates
 
 
 def extract_map_image_urls(raw_data: object) -> list[str]:
@@ -174,7 +175,8 @@ def _map_base_filters(
     include_archived: bool,
     review_status: str | None,
 ) -> list:
-    filters = [ProcessedLot.duplicate_of_id.is_(None)]
+    # Public map is active real-estate sale only, even when old clients pass include_archived=true.
+    filters = list(public_map_predicates())
     if city_slug:
         filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
     if region_code:
@@ -183,8 +185,6 @@ def _map_base_filters(
         filters.append(ProcessedLot.start_price >= min_start_price)
     if max_start_price is not None:
         filters.append(ProcessedLot.start_price <= max_start_price)
-    if not include_archived:
-        filters.append(ProcessedLot.is_archived.is_(False))
     if review_status:
         filters.append(ProcessedLot.review_status == review_status)
     return filters
