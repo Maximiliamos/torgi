@@ -68,6 +68,17 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
             "06_and_fresh_active_source": 1,
         }
         assert sum(result["exclusion_counts_by_stage"].values()) == 3
+        reasons = result["root_cause_diagnostics"]
+        assert reasons["status_distribution_before_filters"] == {
+            "active": 3, "closed": 1,
+        }
+        assert reasons["geo_before_stage_by_source"] == {"nspd": 1}
+        assert reasons["geo_needs_check_or_unknown"] == 0
+        assert reasons["geo_cadastral_untrusted_source"] == 0
+        assert reasons["before_fresh_source_by_primary_system"] == {
+            "torgi.gov.ru": 1,
+        }
+        assert "not the canonical SourceLot" in reasons["source_label_semantics"]
         assert result["upper_bound_ratio_to_current_dataset"] == 0.01
         assert result["preview_fails_existing_coverage_guard"] is True
         assert result["existing_required_min_coverage_ratio"] >= 0.01
@@ -76,3 +87,17 @@ def test_live_impact_preview_is_only_readonly_and_conservative() -> None:
         assert result["five_owner_cases"]["reported_moped_vin"]["eligible"] == 0
         assert session.query(ProcessedLot).count() == 4
         assert session.query(SourceLot).count() == 4
+        assert reasons["source_has_active_proof_ignoring_freshness"] == 1
+        assert reasons["source_no_active_canonical_proof"] == 0
+        assert reasons["source_only_freshness_expired"] == 0
+
+        # Mutate only the disposable test fixture; audit remains SELECT-only.
+        source = session.query(SourceLot).filter_by(external_id="sale").one()
+        source.last_seen_at = datetime(2020, 1, 1)
+        session.flush()
+        expired = impact.build_report(session)
+        stale_reasons = expired["root_cause_diagnostics"]
+        assert expired["proposed_maximum_eligible_points"] == 0
+        assert stale_reasons["source_no_active_canonical_proof"] == 0
+        assert stale_reasons["source_only_freshness_expired"] == 1
+        session.rollback()

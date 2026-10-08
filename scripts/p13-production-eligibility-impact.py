@@ -123,6 +123,67 @@ def build_report(session: Session) -> dict:
             session.scalar(select(func.count(ProcessedLot.id)).where(*gate_filters)) or 0
         )
 
+    # Read-only stage-specific diagnostics; reason counts may overlap.
+    pre_geo = tuple(proposed[index] for index in stages[3][1])
+    pre_source = tuple(proposed[index] for index in stages[4][1])
+    bad_cadastral_source = or_(
+        ProcessedLot.current_geo_source.is_(None),
+        ~ProcessedLot.current_geo_source.in_(CAD_GEO),
+    )
+    # Same canonical sale/source proof as proposed_filters, except for recency.
+    # Distinguishes missing or invalid canonical proof from expired evidence.
+    source_proof_any_age = (
+        select(SourceLot.id)
+        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
+        .where(
+            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            SourceLot.source_system.in_(AUTO),
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.source_status.in_(ACTIVE),
+            or_(
+                SourceLot.auction_type.is_(None),
+                ~or_(
+                    SourceLot.auction_type.ilike("%аренд%"),
+                    SourceLot.auction_type.ilike("%lease%"),
+                    SourceLot.auction_type.ilike("%rent%"),
+                ),
+            ),
+        ).exists()
+    )
+    active_proof_any_age_count = int(session.scalar(
+        select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
+    ) or 0)
+    root_cause = {
+        "status_distribution_before_filters": breakdown(session, base, ProcessedLot.auction_status),
+        "geo_before_stage_by_source": breakdown(session, pre_geo, ProcessedLot.current_geo_source),
+        "geo_needs_check_or_unknown": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(
+                *pre_geo, ProcessedLot.needs_geo_check.is_not(False)
+            )
+        ) or 0),
+        "geo_cadastral_untrusted_source": int(session.scalar(
+            select(func.count(ProcessedLot.id)).where(
+                *pre_geo, ProcessedLot.cadastral_number.is_not(None),
+                bad_cadastral_source,
+            )
+        ) or 0),
+        "source_no_active_canonical_proof": (
+            sequential["05_and_strict_cadastral_geo"] - active_proof_any_age_count
+        ),
+        "source_only_freshness_expired": (
+            active_proof_any_age_count - sequential["06_and_fresh_active_source"]
+        ),
+        "source_has_active_proof_ignoring_freshness": active_proof_any_age_count,
+        "before_fresh_source_by_primary_system": breakdown(
+            session, pre_source, ProcessedLot.source_system
+        ),
+        "source_label_semantics": (
+            "These breakdowns and eligible_by_source use ProcessedLot.source_system, "
+            "not the canonical SourceLot supplying fresh independent proof."
+        ),
+    }
+
     candidate_count = int(session.scalar(select(func.count(ProcessedLot.id)).where(*proposed)) or 0)
     old_point_count = int(current.point_count or 0) if current else 0
     required_coverage_ratio = float(get_settings().min_map_coverage_ratio)
@@ -171,6 +232,7 @@ def build_report(session: Session) -> dict:
         },
         "db_unarchived_mapped_primary": raw_count,
         "sequential_exclusion_ladder": sequential,
+        "root_cause_diagnostics": root_cause,
         "exclusion_counts_by_stage": {
             f"{list(sequential)[idx - 1]}__to__{label}": list(sequential.values())[idx - 1] - count
             for idx, (label, count) in enumerate(sequential.items()) if idx > 0
