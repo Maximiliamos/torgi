@@ -1087,6 +1087,8 @@ class NationwideIngestionService:
             is_active, is_archived = False, True
         elif normalized_status in {"active", "scheduled"}:
             is_active, is_archived = True, False
+        elif normalized_status == "unknown":
+            is_active = False
         return (
             normalized.title,
             normalized.description,
