@@ -1,0 +1,43 @@
+name: P16 read-only Home integrity baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/p16-readonly-baseline.py'
+      - '.github/workflows/p16-read-only-baseline.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p16-read-only-baseline
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Audit existing Home production database without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Join-Path $env:RUNNER_TEMP 'p16-readonly-baseline.json'
+          $script = Get-Content -LiteralPath 'scripts/p16-readonly-baseline.py' -Raw -Encoding utf8
+          $output = $script | docker exec -i bankrotai-home-map-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'Read-only Home integrity baseline failed' }
+          $result = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($result.read_only -ne $true -or $result.no_mutations -ne $true) { throw 'Audit did not assert read-only contract' }
+          $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $report -Encoding utf8
+          Write-Output ("P16 nonarchived mapped primary={0}, candidate problem rows={1}" -f $result.counts.nonarchived_mapped_primary, $result.counts.candidate_problem_rows)
+      - name: Preserve sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p16-home-readonly-baseline
+          path: ${{ runner.temp }}/p16-readonly-baseline.json
+          if-no-files-found: warn
+          retention-days: 30
