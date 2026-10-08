@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import CanonicalLot, MapDataset, ProcessedLot, SessionLocal, SourceLot
+from bankrotai.db import CanonicalLot, LotSyncSourceRun, MapDataset, ProcessedLot, SessionLocal, SourceLot
 from bankrotai.core import get_settings
 
 ACTIVE = ("active", "scheduled", "published", "open", "applications_submission")
@@ -207,8 +207,54 @@ def build_report(session: Session) -> dict:
         SourceLot.source_status.in_(ACTIVE),
         SourceLot.last_seen_at >= now - timedelta(hours=72),
     ).exists()
+    # Recent completed or rejected coverage runs show what source actually
+    # supplied. Never assume an expired ProcessedLot represents a closed sale.
+    history_by_source = {}
+    for system in (*AUTO, "tbankrot.ru"):
+        history = session.scalars(
+            select(LotSyncSourceRun)
+            .where(
+                LotSyncSourceRun.source_system == system,
+                LotSyncSourceRun.finished_at.is_not(None),
+            )
+            .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
+            .limit(6)
+        ).all()
+        history_by_source[system] = [
+            {
+                "finished_at_utc": item.finished_at.isoformat() + "Z",
+                "status": item.status,
+                "complete_source_run": bool(item.complete_source_run),
+                "pages_scanned": int(item.pages_scanned or 0),
+                "items_seen": int(item.items_seen or 0),
+                "items_archived": int(item.items_archived or 0),
+                "coverage_guard_rejected": bool(
+                    str(item.error_message or "").startswith(
+                        "source coverage guard rejected reconciliation:"
+                    )
+                ),
+            }
+            for item in history
+        ]
+    archive_day_rows = session.execute(
+        select(
+            SourceLot.source_system, func.date(SourceLot.archived_at),
+            func.count(func.distinct(ProcessedLot.id)),
+        )
+        .join(ProcessedLot, SourceLot.processed_lot_id == ProcessedLot.id)
+        .where(*expired, SourceLot.archive_reason == "missing_after_two_complete_syncs")
+        .group_by(SourceLot.source_system, func.date(SourceLot.archived_at))
+        .order_by(func.count(func.distinct(ProcessedLot.id)).desc())
+        .limit(25)
+    ).all()
+    archive_day_cohorts = [
+        {"source_system": str(system), "archive_date": str(day or "unknown"), "count": int(n)}
+        for system, day, n in archive_day_rows
+    ]
     status_provenance = {
         "expired_direct_source_lifecycle": direct_lifecycle,
+        "recent_source_sync_run_evidence": history_by_source,
+        "largest_archive_date_cohorts": archive_day_cohorts,
         "expired_with_active_unarchived_direct_source": int(session.scalar(
             select(func.count(ProcessedLot.id)).where(*expired, active_direct)
         ) or 0),
