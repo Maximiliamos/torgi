@@ -103,6 +103,26 @@ def build_report(session: Session) -> dict:
         select(MapDataset).where(MapDataset.is_current.is_(True))
     )
     raw_count = int(session.scalar(select(func.count(ProcessedLot.id)).where(*base)) or 0)
+    # Sequential exclusion ladder isolates the actual coverage collapse.
+    # The existing map policy is imported only as fixed SQL predicates here:
+    # 0 duplicate; 1 archived; 2 status; 3 category; 4 VIN;
+    # 5 independent source; 6 needs_geo_check; 7 cadastral GEO;
+    # 8 title; 9 description; 10 latitude; 11 longitude.
+    stages = (
+        ("01_geo_nonarchived_primary", (0, 1, 10, 11)),
+        ("02_and_active_status", (0, 1, 2, 10, 11)),
+        ("03_and_real_estate_no_vin", (0, 1, 2, 3, 4, 10, 11)),
+        ("04_and_sale_not_rental_transport", (0, 1, 2, 3, 4, 8, 9, 10, 11)),
+        ("05_and_strict_cadastral_geo", (0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11)),
+        ("06_and_fresh_active_source", tuple(range(12))),
+    )
+    sequential = {}
+    for label, indexes in stages:
+        gate_filters = tuple(proposed[index] for index in indexes)
+        sequential[label] = int(
+            session.scalar(select(func.count(ProcessedLot.id)).where(*gate_filters)) or 0
+        )
+
     candidate_count = int(session.scalar(select(func.count(ProcessedLot.id)).where(*proposed)) or 0)
     old_point_count = int(current.point_count or 0) if current else 0
     required_coverage_ratio = float(get_settings().min_map_coverage_ratio)
@@ -150,6 +170,11 @@ def build_report(session: Session) -> dict:
             "tile_count": int(current.tile_count or 0) if current else 0,
         },
         "db_unarchived_mapped_primary": raw_count,
+        "sequential_exclusion_ladder": sequential,
+        "exclusion_counts_by_stage": {
+            f"{list(sequential)[idx - 1]}__to__{label}": list(sequential.values())[idx - 1] - count
+            for idx, (label, count) in enumerate(sequential.items()) if idx > 0
+        },
         "proposed_maximum_eligible_points": candidate_count,
         "upper_bound_ratio_to_current_dataset": round(preview_ratio, 4) if preview_ratio is not None else None,
         "existing_required_min_coverage_ratio": required_coverage_ratio,
