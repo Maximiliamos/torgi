@@ -198,8 +198,15 @@ jobs:
           for attempt in $(seq 1 400); do
             state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
             if [ "$state" = "completed:success" ]; then
-              echo "Exact home deployment is ready: $GITHUB_SHA"
-              break
+              HOME_SHA="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                "https://$HOME_RELAY_HOSTNAME/health/live" \
+                | python -c 'import json,sys; print(json.load(sys.stdin).get("deployment_sha",""))' || true)"
+              if [ "$HOME_SHA" = "$GITHUB_SHA" ]; then
+                echo "Exact Home API SHA verified: $HOME_SHA"
+                break
+              fi
+              echo "Home deploy workflow succeeded but live API SHA mismatch: expected=$GITHUB_SHA observed=${HOME_SHA:-missing}" >&2
+              exit 1
             fi
             case "$state" in
               completed:*)
@@ -315,6 +322,15 @@ jobs:
             fi
             sleep 5
           done
+          # Re-check the actual live API commit immediately before any REG.RU
+          # configuration change. A green workflow alone is not a SHA proof.
+          LIVE_HOME_SHA="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            "https://$HOME_RELAY_HOSTNAME/health/live" \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("deployment_sha",""))')"
+          if [ "$LIVE_HOME_SHA" != "$GITHUB_SHA" ]; then
+            echo "Home API changed during staging: expected=$GITHUB_SHA got=${LIVE_HOME_SHA:-missing}" >&2
+            exit 1
+          fi
           LOGIN_PAYLOAD="$(python -c 'import json,os; print(json.dumps({"username": os.environ["E2E_USERNAME"], "password": os.environ["E2E_PASSWORD"]}))')"
           login_ok="no"
           for login_attempt in $(seq 1 12); do
