@@ -44,7 +44,7 @@ def test_all_twenty_distinct_first_party_etps_have_canonical_url_and_plan():
     for profile in PROFILES:
         assert urlsplit(profile.catalogue_url).scheme == "https"
         assert urlsplit(profile.catalogue_url).hostname
-        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots", "cdtrf_cards"}
+        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}
         assert safe_url(profile, profile.catalogue_url) == profile.catalogue_url
 
 
@@ -195,7 +195,7 @@ def test_joint_probe_never_changes_database_or_proves_full_inventory(monkeypatch
     ]
 
 
-@pytest.mark.parametrize("source", ["rts-tender.ru", "roseltorg.ru"])
+@pytest.mark.parametrize("source", ["roseltorg.ru"])
 def test_property_sale_sections_require_verified_public_listing_contract(source):
     profile = PROFILE_BY_ID[source]
     assert profile.strategy == "research"
