@@ -59,7 +59,7 @@ def create_mets_canary_router(require_admin):
             raise HTTPException(status_code=422, detail="Invalid M-ETS lot identifier")
         from bankrotai.connectors.registry.mets_public import MetsConnector
         from bankrotai.db import session_scope
-        from bankrotai.logic import log_action, persist_lot
+        from bankrotai.services.etp_canary_persistence import (persist_canary_lot, CanaryDuplicateReviewRequired)
 
         try:
             normalized = await MetsConnector().fetch_lot(external_id)
@@ -67,13 +67,10 @@ def create_mets_canary_router(require_admin):
         except Exception as exc:
             raise HTTPException(status_code=422, detail="M-ETS detail could not be verified") from exc
         with session_scope() as session:
-            record = persist_lot(session, normalized)
-            log_action(
-                session, str(actor.id), "import_verified_etp_canary", "lot",
-                str(record.id),
-                {"source_system": "m-ets.ru", "external_id": normalized.external_id,
-                 "reconcile_missing": False, "import_mode": "admin_exact_lot"},
-            )
+            try:
+                record = persist_canary_lot(session, normalized, str(actor.id))
+            except CanaryDuplicateReviewRequired as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             return {
                 "source_system": "m-ets.ru",
                 "external_id": normalized.external_id,
