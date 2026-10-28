@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 from bankrotai.connectors.base import AuctionConnector
 
@@ -35,6 +36,8 @@ def _register_builtins() -> None:
     from bankrotai.connectors.registry.bidexpert import BidExpertConnector
     from bankrotai.connectors.registry.fedresurs import FedresursConnector
     from bankrotai.connectors.registry.lot_online import LotOnlineConnector
+    from bankrotai.connectors.registry.mets_public import MetsConnector
+    from bankrotai.connectors.registry.direct_etp_pilots import DirectEtpPilotConnector, PILOT_SOURCE_IDS
     from bankrotai.connectors.registry.tbankrot import TBankrotConnector
     from bankrotai.connectors.registry.torgi_gov import TorgiGovConnector
     from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
@@ -43,6 +46,11 @@ def _register_builtins() -> None:
     connector_registry.register(TBankrotConnector.source_id, TBankrotConnector)
     connector_registry.register(FedresursConnector.source_id, FedresursConnector)
     connector_registry.register(LotOnlineConnector.source_id, LotOnlineConnector)
+    # Explicit per-lot canary only; M-ETS is not a default full-sync source.
+    connector_registry.register(MetsConnector.source_id, MetsConnector)
+    # Candidate-only direct ETPs are never scheduled by default_source_specs.
+    for source_id in PILOT_SOURCE_IDS:
+        connector_registry.register(source_id, partial(DirectEtpPilotConnector, source_id))
     connector_registry.register(TorgiRussiaConnector.source_id, TorgiRussiaConnector)
     connector_registry.register(BidExpertConnector.source_id, BidExpertConnector)
 

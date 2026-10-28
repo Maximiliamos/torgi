@@ -110,6 +110,9 @@ from bankrotai.tasks import (
     schedule_region_sync,
 )
 from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
+from bankrotai.services.etp_mets_canary import create_mets_canary_router
+from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
+from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalogue_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -166,18 +169,15 @@ _AUTH_EXECUTOR_CAPACITY = threading.BoundedSemaphore(_AUTH_EXECUTOR_WORKERS)
 _AUTH_PENDING_LIMIT = max(100, _AUTH_EXECUTOR_WORKERS * 10)
 _AUTH_PENDING_CAPACITY = threading.BoundedSemaphore(_AUTH_PENDING_LIMIT)
 
-
 def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
     with read_session_scope() as session:
         return verify_session_token(session, token, settings.auth_session_secret or "")
-
 
 def _resolve_session_actor_with_capacity(token: str) -> AuthenticatedUser | None:
     try:
         return _resolve_session_actor(token)
     finally:
         _AUTH_EXECUTOR_CAPACITY.release()
-
 
 async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
     loop = asyncio.get_running_loop()
@@ -186,7 +186,6 @@ async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
             return True
         await asyncio.sleep(min(0.005, max(0.0, deadline - loop.time())))
     return False
-
 
 def _persist_request_failure(method: str, path: str, error: str) -> None:
     with session_scope() as session:
@@ -198,7 +197,6 @@ def _persist_request_failure(method: str, path: str, error: str) -> None:
                 context_json={"method": method, "path": path, "error": error[:2000]},
             )
         )
-
 
 from bankrotai.api_models import (
     BulkTorgiSyncRequest as BulkTorgiSyncRequest,
@@ -226,7 +224,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=256, compresslevel=5)
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -336,7 +333,6 @@ async def log_requests(request: Request, call_next):
             logger.exception("Failed to persist API diagnostic event")
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
-
 def _consume_rate_limit(client_id: str) -> bool:
     base_limit = max(settings.api_rate_limit_per_minute, 1)
     # Keep login and other unauthenticated traffic on the strict per-IP limit.
@@ -369,7 +365,6 @@ def _consume_rate_limit(client_id: str) -> bool:
     hits.append(now)
     _rate_limit_hits[client_id] = hits
     return True
-
 
 def _is_read_only_mvp_path(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
@@ -466,6 +461,10 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
         raise HTTPException(status_code=403, detail="Administrator access required")
     return actor
 
+
+app.include_router(create_mets_canary_router(require_admin))
+app.include_router(create_cdtrf_canary_router(require_admin))
+app.include_router(create_etp_pilot_catalogue_router(require_admin))
 
 @app.get("/")
 def read_root():
