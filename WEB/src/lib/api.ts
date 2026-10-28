@@ -28,7 +28,6 @@ export type LotListItem = {
   review_status?: string | null;
   duplicate_of_id?: number | null;
 };
-
 export type LotDetail = LotListItem & {
   source: string;
   source_system: string;
@@ -1012,6 +1011,7 @@ export async function fetchPublicYandexMapBundleTile(
 }
 export type DirectMapFilterQuery = {
   region_code?: string;
+  sources?: string;
   min_start_price?: number;
   max_start_price?: number;
 };
