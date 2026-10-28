@@ -39,6 +39,7 @@ def _register_builtins() -> None:
     from bankrotai.connectors.registry.tbankrot import TBankrotConnector
     from bankrotai.connectors.registry.torgi_gov import TorgiGovConnector
     from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
+    from bankrotai.connectors.registry.direct_etp_pilots import DirectEtpPilotConnector, PILOT_SOURCE_IDS
 
     connector_registry.register(TorgiGovConnector.source_id, TorgiGovConnector)
     connector_registry.register(TBankrotConnector.source_id, TBankrotConnector)
@@ -47,6 +48,12 @@ def _register_builtins() -> None:
     connector_registry.register(MetsConnector.source_id, MetsConnector)
     connector_registry.register(TorgiRussiaConnector.source_id, TorgiRussiaConnector)
     connector_registry.register(BidExpertConnector.source_id, BidExpertConnector)
+    # Discoverable read-only pilots. No corresponding default SourceSyncSpec exists.
+    for source_id in PILOT_SOURCE_IDS:
+        connector_registry.register(
+            source_id,
+            lambda source_id=source_id: DirectEtpPilotConnector(source_id),
+        )
 
 
 _register_builtins()
