@@ -541,7 +541,9 @@ def cleanup_old_map_datasets_task() -> dict[str, Any]:
         building_min_age_hours=6,
         apply=True,
     )
-    retired_versions = list(applied.get("candidate_versions") or [])
+    # Partial tile pruning must NOT delete an S3 manifest. Only versions
+    # whose dataset row was fully removed are safe to retire remotely.
+    retired_versions = list(applied.get("deleted_versions") or [])
     try:
         manifest_retention = delete_retired_dataset_manifests(retired_versions)
     except Exception as exc:
