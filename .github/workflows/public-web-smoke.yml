@@ -32,7 +32,8 @@ jobs:
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main'
       )
-    runs-on: ubuntu-latest
+    # Playwright 1.55.1 cannot install Chromium on ubuntu-26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       E2E_BASE_URL: https://sterdez.online
