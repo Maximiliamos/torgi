@@ -482,6 +482,7 @@ export type MapLotsResponse = {
 export type MapViewportQuery = {
   city_slug?: string;
   region_code?: string;
+  sources?: string;
   min_start_price?: number;
   max_start_price?: number;
   include_archived?: boolean;
@@ -751,6 +752,10 @@ export const probeSourceHealth = (sourceSystem: string) =>
     next_retry_at?: string | null;
     retry?: Record<string, unknown> | null;
   }>(`/api/operations/sources/${encodeURIComponent(sourceSystem)}/probe`, undefined, { method: "POST" });
+export const fetchMapSourceOptions = () =>
+  requestJson<{ items: Array<{
+    id: string; label: string; ingestion_stage: "connected" | "pilot"; has_database_records: boolean
+  }> }>("/api/map/sources");
 export const fetchMapLots = (query: MapViewportQuery = {}) =>
   requestJson<MapLotsResponse>("/api/map/lots", query);
 export const fetchMapLotDetail = (lotId: number) =>
@@ -992,7 +997,6 @@ export async function fetchPublicYandexMapBundleTile(
   ) {
     throw new ApiError("Некорректный путь bundle карты");
   }
-
   const bundleUrl = new URL(entry.bundle, `${root.toString().replace(/\/$/, "")}/`);
   if (bundleUrl.origin !== root.origin) throw new ApiError("Bundle карты вышел за разрешённый origin");
   const bundle = await cacheSharedRequest(
@@ -1006,7 +1010,6 @@ export async function fetchPublicYandexMapBundleTile(
   const tile = bundle.tiles[`${z}/${x}/${y}`];
   return tile ? validateYandexMapTilePayload(tile) : { type: "FeatureCollection", features: [] };
 }
-
 export type DirectMapFilterQuery = {
   region_code?: string;
   min_start_price?: number;
@@ -1043,11 +1046,9 @@ async function pruneMapCache(cache: Cache) {
   entries.sort((left, right) => right.cachedAt - left.cachedAt);
   await Promise.all(entries.slice(MAP_CACHE_MAX_ENTRIES).map(({ request }) => cache.delete(request)));
 }
-
 export async function clearMapCache() {
   if ("caches" in window) await window.caches.delete(MAP_CACHE_NAME);
 }
-
 export async function fetchMapLotsSWR(
   query: MapViewportQuery,
   onCached?: (value: MapLotsResponse) => void,
@@ -1074,7 +1075,6 @@ export async function fetchMapLotsSWR(
       await cache?.delete(request);
     }
   }
-
   const started = performance.now();
   try {
     const response = await fetchWithReadRetry(url, {
