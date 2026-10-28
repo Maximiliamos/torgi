@@ -55,7 +55,7 @@ class DirectEtpPilotConnector(AuctionConnector):
     def _preview(self, limit: int) -> dict:
         if not 1 <= limit <= 20:
             raise ValueError("Read-only preview limit must be 1..20")
-        html = fetch_catalogue(self.profile, session=self.session)
+        html = fetch_catalogue(self.profile, session=self.session, timeout=(2, 6))
         observations = parse_catalogue(self.profile, html, limit=limit)
         return {
             "source": self.source_id,
