@@ -1,7 +1,7 @@
 """Safe URL selection for browser ETP collector; no live browsers or network."""
 from __future__ import annotations
 
-from scripts.etp_capture_v6 import detail_urls, public_url, safe_url_label
+from scripts.etp_capture_v6 import detail_urls, public_url, safe_url_label, extract_sber_goods_links
 
 
 class _Links:
@@ -62,3 +62,21 @@ def test_sberbank_lot_view_only_not_a_login_page():
 
 def test_no_unverified_detail_pattern_means_no_guessed_lots():
     assert detail_urls(_Page(["https://ausib.ru/news/123"]), "ausib.ru", "ausib.ru") == []
+
+
+def test_only_approved_sberbank_bankruptcy_goods_urls_are_followed():
+    def entry(source, group, url, section="13"):
+        return {"_source": {
+            "ObjectSource": source, "BranchGroup": group,
+            "SourceTradeSectionId": section, "objectHref": url,
+        }}
+    category = "Продажа имущества (предприятия) банкротов"
+    good = "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/13/0/0/100012"
+    payload = {"PurchaseList": [
+        entry(category, "Недвижимое имущество", good),
+        entry(category, "Движимое имущество", good),
+        entry("Приватизация", "Недвижимое имущество", good),
+        entry(category, "Недвижимое имущество", "https://evil.example/Catalog/NBT/GoodsView/13/0/0/10"),
+        entry(category, "Недвижимое имущество", good + "?token=private"),
+    ]}
+    assert extract_sber_goods_links(payload) == [good]
