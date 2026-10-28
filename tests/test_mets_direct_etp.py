@@ -165,7 +165,7 @@ def test_saved_browser_snapshot_summary_is_parsed_even_after_large_header():
         '<html><head><meta itemprop="sku" content="242979-МЭТС-1"></head>'
         '<body><div>' + 'Настройки авторизации. ' * 260 + '</div>'
         '<h1>242979-МЭТС</h1>'
-        '<h2 class="lot-title">2-комнатная квартира, г Рязань, ул Бирюзова</h2>'
+        '<h2 class="lot-title">2-комнатная квартира, г Рязань, ул Бирюзова<span class="hidden" ellipse=""><span>еще</span></span></h2>'
         '<div class="lot-regnumber">Идентификационный номер: 242979-МЭТС-1</div>'
         '<div class="lot-cost-item price"><div class="value">3 224 286 ₽'
         '</div><div class="title">Начальная цена</div></div>'
@@ -184,12 +184,14 @@ def test_saved_browser_snapshot_summary_is_parsed_even_after_large_header():
     )
     lot = parse_mets_lot(html, "https://m-ets.ru/242979-1")
     assert lot.external_id == "242979-1"
+    assert lot.title == "2-комнатная квартира, г Рязань, ул Бирюзова"
     assert lot.start_price == 3224286
     assert lot.current_price is None
     assert lot.auction_status == "scheduled"
     assert lot.application_deadline.isoformat() == "2026-12-04T09:00:00"
     assert lot.cadastral_number == "62:29:0020001:1008"
     assert lot.raw_data["mentions_pledge"] is True
+    assert lot.raw_data["deposit_rub"] == 644857.20
     assert lot.raw_data["complete_search_pagination"] is False
     assert "Рекламный лот" not in lot.description
 
