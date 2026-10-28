@@ -1,4 +1,4 @@
-"""Read-only catalogue discovery for 20 direct Russian electronic trading platforms.
+"""Read-only catalogue discovery across the user-selected 20 ETPs plus two extras.
 
 A listing candidate is *not* a validated auction lot. Full source completeness,
 status reconciliation and ingestion are deliberately disabled until per-site
@@ -54,6 +54,12 @@ PROFILES: tuple[EtpProfile, ...] = (
                "Public trade table containing embedded numbered lots"),
     EtpProfile("alfalot.ru", "Альфалот", "https://etp.alfalot.ru/app/Home/page", "links",
                "Dynamic public procedures; may require separate JSON contract"),
+    EtpProfile("rts-tender.ru", "РТС-тендер (имущественные торги)",
+               "https://www.rts-tender.ru/property-sales", "research",
+               "Confirmed official property-sales section; determine public lot API"),
+    EtpProfile("roseltorg.ru", "Росэлторг / 178-ФЗ",
+               "https://178fz.roseltorg.ru/", "research",
+               "Confirmed public privatization section; find accessible sale listings"),
     EtpProfile("sberbank-ast.ru", "Сбербанк-АСТ — имущественные торги", "https://utp.sberbank-ast.ru/", "research",
                "Select property-sale section, not state procurement"),
     EtpProfile("fabrikant.ru", "Фабрикант", "https://www.fabrikant.ru/", "research",
@@ -309,7 +315,7 @@ def batch_probe(*, session: requests.Session, ids: tuple[str, ...] | None = None
                 "error_type": type(exc).__name__, "candidates": [],
             })
     return {
-        "mode": "readonly_20_etp_catalogue_pilot",
+        "mode": "readonly_multi_etp_catalogue_pilot",
         "expected_source_count": len(PROFILES),
         "queried_source_count": len(requested),
         "source_completeness_proven": False,
