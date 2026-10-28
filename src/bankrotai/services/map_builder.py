@@ -172,7 +172,9 @@ def cleanup_map_datasets(
             return False
 
         candidates = [dataset for dataset in datasets if is_candidate(dataset)]
-        candidate_ids = [dataset.id for dataset in candidates]
+        # Snapshot IDs/versions before any rollback or per-chunk commit expires ORM rows.
+        candidate_targets = [(int(dataset.id), str(dataset.version)) for dataset in candidates]
+        candidate_ids = [dataset_id for dataset_id, _ in candidate_targets]
         candidate_tiles = sum(int(dataset.tile_count or 0) for dataset in candidates)
         result = {
             "dry_run": not apply,
@@ -199,11 +201,9 @@ def cleanup_map_datasets(
             deleted_tile_count = 0
             deleted_versions: list[str] = []
             remaining_budget = max_tiles_per_run
-            for dataset in candidates:
+            for dataset_id, dataset_version in candidate_targets:
                 if remaining_budget <= 0:
                     break
-                dataset_id = int(dataset.id)
-                dataset_version = str(dataset.version)
                 while remaining_budget > 0:
                     if session.get_bind().dialect.name == "postgresql":
                         session.execute(
