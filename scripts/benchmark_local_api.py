@@ -10,7 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise URLError('redirects are disabled for local-only diagnostics')
+
+
+LOCAL_OPENER = build_opener(_NoRedirect())
 
 
 def local_url(value: str) -> str:
@@ -31,7 +39,7 @@ def measure(endpoint: str, *, count: int, timeout: float, interval: float) -> di
     for sample in range(count):
         before = time.perf_counter()
         try:
-            with urlopen(endpoint, timeout=timeout) as response:
+            with LOCAL_OPENER.open(endpoint, timeout=timeout) as response:
                 status = str(response.status)
                 response.read(2048)
         except HTTPError as exc:
