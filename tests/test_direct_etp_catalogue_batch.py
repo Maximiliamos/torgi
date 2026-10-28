@@ -44,7 +44,7 @@ def test_all_twenty_distinct_first_party_etps_have_canonical_url_and_plan():
     for profile in PROFILES:
         assert urlsplit(profile.catalogue_url).scheme == "https"
         assert urlsplit(profile.catalogue_url).hostname
-        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots"}
+        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots", "cdtrf_cards"}
         assert safe_url(profile, profile.catalogue_url) == profile.catalogue_url
 
 
@@ -96,6 +96,26 @@ def test_verdict_arrest_listing_keeps_separate_lot_identity_and_status_text():
     assert rows[0]["listing_price_rub"] == 4500000.0
     assert rows[0]["source_status_text"] == "Подача заявок"
     assert not rows[0]["ready_for_ingestion"]
+
+
+def test_cdtrf_catalogue_trade_id_is_not_mistaken_for_verified_lot_id():
+    html = """
+    <div class="catalog-card">
+       <div class="catalog-card__code">Код торгов: 390364</div>
+       <a class="catalog-card__name" href="https://torgi.cdtrf.ru/trades/390364">
+          Нежилое помещение (гараж)</a>
+       <div class="catalog-card__price-val">675 000 ₽</div>
+    </div>
+    """
+    data = parse_catalogue(PROFILE_BY_ID["cdtrf.ru"], html)
+    assert data == [{
+        "source": "cdtrf.ru", "trade": "390364", "lot": None,
+        "external_id": None, "title": "Нежилое помещение (гараж)",
+        "catalogue_detail_link": "https://torgi.cdtrf.ru/trades/390364",
+        "listing_price_rub": "675000.00",
+        "source_status_text": "", "evidence": "cdtrf_catalogue_trade_not_lot",
+        "verified_detail": False, "ready_for_ingestion": False,
+    }]
 
 
 def test_trade_table_is_split_by_lot_and_not_registered_as_auction_asset():
@@ -185,7 +205,7 @@ def test_property_sale_sections_require_verified_public_listing_contract(source)
 
 
 def test_research_profile_does_not_fabricate_available_lots():
-    profile = PROFILE_BY_ID["etp-profit.ru"]
+    profile = PROFILE_BY_ID["ausib.ru"]
     with pytest.raises(EtpCatalogError):
         parse_catalogue(profile, PER_LOT)
 
