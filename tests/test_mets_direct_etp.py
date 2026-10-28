@@ -11,10 +11,10 @@ from bankrotai.connectors.registry.mets_public import (
     parse_mets_lot,
 )
 
-URL = "https://meetings.m-ets.ru/240512-1"
+URL = "https://m-ets.ru/240512-1"
 CATALOGUE = """
 <html><a href="/240512-1">Здание в Липецке</a>
-<a href="https://meetings.m-ets.ru/240512-1">Repeat</a>
+<a href="https://m-ets.ru/240512-1">Repeat</a>
 <a href="https://evil.example/111111-1">Not an ETP</a>
 <a href="/238380-1">Квартира в Москве</a>
 </html>
@@ -43,7 +43,7 @@ DETAIL_PERIOD = """
 
 def test_discovery_only_allows_auction_lot_paths_on_official_host():
     assert discover_lot_urls(CATALOGUE) == [
-        URL, "https://meetings.m-ets.ru/238380-1",
+        URL, "https://m-ets.ru/238380-1",
     ]
     assert discover_lot_urls(CATALOGUE, limit=1) == [URL]
     with pytest.raises(ValueError):
@@ -66,7 +66,7 @@ def test_direct_etp_detail_price_status_identity_and_cadastre():
 
 def test_period_is_not_the_final_application_deadline():
     lot = parse_mets_lot(
-        DETAIL_PERIOD, "https://meetings.m-ets.ru/238380-1"
+        DETAIL_PERIOD, "https://m-ets.ru/238380-1"
     )
     assert lot.current_price == 3436617.64
     assert lot.start_price is None
@@ -76,9 +76,9 @@ def test_period_is_not_the_final_application_deadline():
 
 
 @pytest.mark.parametrize("bad_url", [
-    "http://meetings.m-ets.ru/240512-1",
+    "http://m-ets.ru/240512-1",
     "https://evil.example/240512-1",
-    "https://meetings.m-ets.ru/240512-1?q=secret",
+    "https://m-ets.ru/240512-1?q=secret",
 ])
 def test_never_fetch_external_or_query_urls(bad_url):
     with pytest.raises(MetsEvidenceError):
@@ -87,7 +87,7 @@ def test_never_fetch_external_or_query_urls(bad_url):
 
 def test_fail_closed_when_lot_identity_does_not_match_page():
     with pytest.raises(MetsEvidenceError, match="identifier"):
-        parse_mets_lot(DETAIL, "https://meetings.m-ets.ru/240513-1")
+        parse_mets_lot(DETAIL, "https://m-ets.ru/240513-1")
 
 
 class Response:
@@ -115,7 +115,7 @@ class SessionStub:
             return Response(CATALOGUE)
         if url == URL:
             return Response(DETAIL)
-        if url == "https://meetings.m-ets.ru/238380-1":
+        if url == "https://m-ets.ru/238380-1":
             return Response("<html><h2>Broken card</h2></html>")
         raise AssertionError(f"Unexpected requested URL: {url}")
 
@@ -133,7 +133,7 @@ def test_pilot_is_bounded_and_never_claims_complete_coverage(monkeypatch):
     assert result["safe_for_archival"] is False
     assert result["written_to_database"] is False
     assert session.urls == [
-        APARTMENTS_URL, URL, "https://meetings.m-ets.ru/238380-1",
+        APARTMENTS_URL, URL, "https://m-ets.ru/238380-1",
     ]
 
 
@@ -156,3 +156,56 @@ def test_registry_connector_fetches_exact_etp_lot_but_blocks_sync():
     assert got.external_id == "240512-1"
     with pytest.raises(ConnectorCapabilityError):
         asyncio.run(connector.search({}))
+
+
+
+def test_saved_browser_snapshot_summary_is_parsed_even_after_large_header():
+    """Model the actual m-ets.ru DOM: several thousand chars of modal chrome."""
+    html = (
+        '<html><head><meta itemprop="sku" content="242979-МЭТС-1"></head>'
+        '<body><div>' + 'Настройки авторизации. ' * 260 + '</div>'
+        '<h1>242979-МЭТС</h1>'
+        '<h2 class="lot-title">2-комнатная квартира, г Рязань, ул Бирюзова</h2>'
+        '<div class="lot-regnumber">Идентификационный номер: 242979-МЭТС-1</div>'
+        '<div class="lot-cost-item price"><div class="value">3 224 286 ₽'
+        '</div><div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item zadat"><div class="value">'
+        '644 857,20 ₽</div><div class="title">Размер задатка</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Объявленные торги</div></div>'
+        '<div class="lot-cost-item date"><div class="title">'
+        'Начало приема заявок:</div><div class="value">02.11.2026 09:00</div></div>'
+        '<div class="lot-cost-item date"><div class="title">'
+        'Окончание приема заявок:</div><div class="value">04.12.2026 09:00</div></div>'
+        '<span itemprop="description">Двухкомнатная квартира площадью 50,10 кв.м.'
+        ' Кадастровый номер: 62:29:0020001:1008, находится в залоге.</span>'
+        '<a class="card-item" href="/100001-1">Рекламный лот</a>'
+        '</body></html>'
+    )
+    lot = parse_mets_lot(html, "https://m-ets.ru/242979-1")
+    assert lot.external_id == "242979-1"
+    assert lot.start_price == 3224286
+    assert lot.current_price is None
+    assert lot.auction_status == "scheduled"
+    assert lot.application_deadline.isoformat() == "2026-12-04T09:00:00"
+    assert lot.cadastral_number == "62:29:0020001:1008"
+    assert lot.raw_data["mentions_pledge"] is True
+    assert lot.raw_data["complete_search_pagination"] is False
+    assert "Рекламный лот" not in lot.description
+
+
+def test_homepage_event_feed_never_counts_as_full_search_result():
+    html = (
+        '<html><head><meta property="og:url" content="https://m-ets.ru/">'
+        '</head><body><a href="/242979-1">Свежие торги</a></body></html>'
+    )
+    with pytest.raises(MetsEvidenceError, match="Homepage"):
+        discover_lot_urls(html)
+
+
+def test_lot_meta_sku_disagreement_fails_closed():
+    html = DETAIL.replace(
+        '<html lang="ru">', '<html lang="ru"><meta itemprop="sku" content="240513-МЭТС-1">'
+    )
+    with pytest.raises(MetsEvidenceError, match="SKU"):
+        parse_mets_lot(html, URL)
