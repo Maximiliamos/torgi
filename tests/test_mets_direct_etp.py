@@ -138,3 +138,19 @@ def test_pilot_is_bounded_and_never_claims_complete_coverage(monkeypatch):
 def test_redirect_refused_without_following():
     with pytest.raises(MetsEvidenceError, match="Redirect"):
         MetsPublicPilot(session=SessionStub(redirect=True)).preview()
+
+
+def test_registry_connector_fetches_exact_etp_lot_but_blocks_sync():
+    import asyncio
+
+    from bankrotai.connectors.base import ConnectorCapabilityError
+    from bankrotai.connectors.registry import connector_registry
+    from bankrotai.connectors.registry.mets_public import MetsConnector
+
+    connector = MetsConnector(session=SessionStub())
+    assert connector_registry.create("m-ets.ru").source_id == "m-ets.ru"
+    got = asyncio.run(connector.fetch_lot("240512-1"))
+    assert got.start_price == 22_500_000
+    assert got.external_id == "240512-1"
+    with pytest.raises(ConnectorCapabilityError):
+        asyncio.run(connector.search({}))
