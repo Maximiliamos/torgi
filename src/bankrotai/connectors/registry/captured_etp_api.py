@@ -60,7 +60,7 @@ def parse_cdtrf_api_page(body: object, *, page_num: int, page_size: int = 20) ->
     if not 1 <= page_num <= 100000 or not 1 <= page_size <= 100:
         raise ValueError("Invalid CDTRF page number/size")
     items, total = _page(body, "items")
-    if body.get("success") is not True or len(items) > page_size:
+    if not isinstance(body, dict) or body.get("success") is not True or len(items) > page_size:
         raise ApiEvidenceError("CDTRF API reported failure or oversized page")
     seen: set[str] = set()
     candidates = []
