@@ -24,19 +24,20 @@ SOURCE_LABELS = {
     "nistp.ru": "НИС",
     "sberbank-ast.ru": "Сбербанк-АСТ",
     "fabrikant.ru": "Фабрикант",
-    "arbitlot.ru": "АРБбитЛот",
-    "ural-etp.ru": "Уральская ЭТП",
-    "sistematorg.ru": "Систематорг",
+    "arbbitlot.ru": "АРБбитЛот",
+    "etpu.ru": "Уральская ЭТП",
+    "sistematorg.com": "Систематорг",
     "centerr.ru": "Центр реализации",
     "vertrades.ru": "Вердиктъ",
-    "auction-center.ru": "Аукцион-центр",
+    "aukcioncenter.ru": "Аукцион-центр",
     "etp-profit.ru": "Профит",
     "ausib.ru": "Аукционы Сибири",
     "utender.ru": "uTender",
-    "russia-online.ru": "RUSSIA OnLine",
+    "rus-on.ru": "RUSSIA OnLine",
     "electro-torgi.ru": "Электро-Торги",
     "zakazrf.ru": "ЗаказРФ",
     "roseltorg.ru": "Росэлторг",
+    "utpl.ru": "Объединённая торговая площадка",
 }
 CONNECTED = frozenset({
     "torgi.gov.ru", "lot-online.ru", "tbankrot.ru", "bidexpert.ru", "torgi-russia.ru",
@@ -50,7 +51,7 @@ def parse_source_selection(raw: str | None) -> tuple[str, ...]:
     if len(raw) > 900:
         raise ValueError("Source filter exceeds 900 characters")
     ids = raw.split(",")
-    if len(ids) > 26 or any(not entry or entry != entry.strip() for entry in ids):
+    if len(ids) > len(SOURCE_LABELS) or any(not entry or entry != entry.strip() for entry in ids):
         raise ValueError("Invalid source selection")
     unknown = set(ids).difference(SOURCE_LABELS)
     if unknown:
