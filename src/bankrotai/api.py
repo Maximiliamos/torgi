@@ -110,6 +110,7 @@ from bankrotai.tasks import (
     schedule_region_sync,
 )
 from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
+from bankrotai.services.etp_mets_canary import create_mets_canary_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -466,6 +467,8 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
         raise HTTPException(status_code=403, detail="Administrator access required")
     return actor
 
+
+app.include_router(create_mets_canary_router(require_admin))
 
 @app.get("/")
 def read_root():
