@@ -55,6 +55,8 @@ DETAIL_PATTERNS = {
 CHALLENGE = re.compile("проверяем ваш браузер|anti.ddos|checking your browser|ddos-guard|captcha", re.I)
 SENSITIVE_URL_KEY = re.compile("token|auth|session|cookie|secret|key|password|email|phone", re.I)
 NOISE = re.compile("/news|/login|/auth|/account|/register|/support|/help|/company", re.I)
+SBER_BANKRUPTCY = "Продажа имущества (предприятия) банкротов"
+SBER_DETAIL_HOST = "utp.sberbank-ast.ru"
 MAX_HTML = 3 * 1024 * 1024
 MAX_API = 2 * 1024 * 1024
 
@@ -62,6 +64,36 @@ MAX_API = 2 * 1024 * 1024
 def public_url(url: str, host: str) -> bool:
     p = urlsplit(url)
     return p.scheme == "https" and p.hostname == host and not p.username and not p.password and p.port is None
+
+
+def is_site_url(url: str, source: str, host: str) -> bool:
+    if public_url(url, host):
+        return True
+    return source == "sberbank-ast.ru" and public_url(url, SBER_DETAIL_HOST)
+
+
+def extract_sber_goods_links(data: object) -> list[str]:
+    """Only property goods in the explicitly filtered bankruptcy catalogue."""
+    if not isinstance(data, dict) or not isinstance(data.get("PurchaseList"), list):
+        return []
+    urls: list[str] = []
+    for item in data["PurchaseList"][:100]:
+        row = item.get("_source") if isinstance(item, dict) else None
+        if not isinstance(row, dict):
+            continue
+        if (row.get("ObjectSource") != SBER_BANKRUPTCY
+                or str(row.get("SourceTradeSectionId")) != "13"
+                or row.get("BranchGroup") != "Недвижимое имущество"):
+            continue
+        url = str(row.get("objectHref") or "")
+        p = urlsplit(url)
+        if (not public_url(url, SBER_DETAIL_HOST)
+                or p.query or p.fragment
+                or not re.fullmatch(DETAIL_PATTERNS["sberbank-ast.ru"], p.path)):
+            continue
+        if url not in urls:
+            urls.append(url)
+    return urls
 
 
 def safe_url_label(url: str) -> str:
@@ -82,7 +114,7 @@ def detail_urls(page, source: str, host: str) -> list[str]:
     selected = []
     for link in links:
         p = urlsplit(link)
-        if (not public_url(link, host) or NOISE.search(p.path)
+        if (not is_site_url(link, source, host) or NOISE.search(p.path)
                 or not re.fullmatch(pattern, p.path, flags=re.I)):
             continue
         if source == "lot-online.ru" and "dispatch=products.view" not in p.query:
@@ -106,7 +138,7 @@ def record_page(page, folder: Path, label: str, events: list, host: str) -> None
     except Exception as exc:
         events.append({"event": "screenshot_failed", "stage": label, "error": type(exc).__name__})
     try:
-        if public_url(page.url, host):
+        if public_url(page.url, host) or public_url(page.url, SBER_DETAIL_HOST):
             html = page.content().encode("utf-8", "replace")
             if len(html) <= MAX_HTML:
                 (folder / (label + ".html")).write_bytes(html)
@@ -186,6 +218,7 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
     payloads = folder / "network"
     payloads.mkdir(exist_ok=True)
     network_count = 0
+    sber_goods_links: list[str] = []
 
     def on_response(resp):
         nonlocal network_count
@@ -204,6 +237,10 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
             if not body or len(body) > MAX_API:
                 return
             data = json.loads(body)
+            if profile.source_id == "sberbank-ast.ru":
+                for url in extract_sber_goods_links(data):
+                    if url not in sber_goods_links:
+                        sber_goods_links.append(url)
             # Raw JSON can contain personal data: stored locally only.
             path = payloads / f"response_{network_count:03d}.json"
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -232,6 +269,8 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
             status = "challenge_unresolved"
         else:
             first = detail_urls(page, profile.source_id, host)
+            if profile.source_id == "sberbank-ast.ru":
+                first = list(dict.fromkeys(first + sber_goods_links))
             record_page(page, folder, "02_catalogue_first", events, host)
             events.append({"event": "first_page", "links": len(first)})
             if not first:
@@ -254,6 +293,17 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
                             events.append({"event": "detail_challenge"})
                             record_page(page, folder, f"lot_{index:02d}_challenge", events, host)
                             continue
+                        if profile.source_id == "sberbank-ast.ru":
+                            try:
+                                text = page.locator("body").inner_text(timeout=3000)
+                            except Exception:
+                                text = ""
+                            if len(text) < 250 or not re.search(
+                                "недвижим|земельн|квартир|помещени|здани|гараж|лот №", text, re.I
+                            ):
+                                events.append({"event": "sber_detail_rejected_generic_shell"})
+                                record_page(page, folder, f"lot_{index:02d}_rejected", events, host)
+                                continue
                         record_page(page, folder, f"lot_{index:02d}", events, host)
                         details += 1
                     except Exception as exc:
