@@ -123,6 +123,24 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_source_observation_timestamps_are_ordered_on_insert_and_resync(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot()]]))
+    with sessions() as session:
+        first = session.scalar(select(SourceLot))
+        assert first is not None
+        observed_first = first.first_seen_at
+        assert first.first_seen_at <= first.last_seen_at
+
+    # A re-ingestion must keep the original first_seen_at.
+    run_with(service, FakeConnector([[lot(price=350_000)]]))
+    with sessions() as session:
+        updated = session.scalar(select(SourceLot))
+        assert updated is not None
+        assert updated.first_seen_at == observed_first
+        assert updated.first_seen_at <= updated.last_seen_at
+
+
 def test_source_run_records_real_progress_timestamp_and_phase(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_id, _ = run_with(service, FakeConnector([[lot()]]))
