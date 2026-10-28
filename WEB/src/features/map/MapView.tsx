@@ -187,12 +187,12 @@ export function directMapFilterSignature(filters: DirectMapFilterQuery) {
     && filters.max_start_price == null
     && !filters.sources
   ) return "";
-  return [
+  const base = [
     filters.region_code ?? "",
     filters.min_start_price ?? "",
     filters.max_start_price ?? "",
-    filters.sources?.split(",").sort().join(",") ?? "",
   ].join("|");
+  return filters.sources ? `${base}|${filters.sources.split(",").sort().join(",")}` : base;
 }
 export function fetchCachedYandexMapTile(
   completed: Map<string, YandexMapTilePayload>,
