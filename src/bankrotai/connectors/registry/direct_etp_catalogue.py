@@ -81,8 +81,8 @@ PROFILES: tuple[EtpProfile, ...] = (
                "Public HTML trade list; second www platform version needs separate evidence"),
     EtpProfile("ausib.ru", "Аукционы Сибири", "https://ausib.ru/", "research",
                "Public catalogue route not yet established"),
-    EtpProfile("vertrades.ru", "Вердиктъ", "https://vertrades.ru/", "research",
-               "Public catalogue route not yet established"),
+    EtpProfile("vertrades.ru", "Вердиктъ", "https://arest.vertrades.ru/bidding",
+               "verdict_lots", "Public property/asset arrest auction table; bankruptcy is a separate section"),
     EtpProfile("utender.ru", "uTender", "https://utender.ru/", "research",
                "Public catalogue route not yet established"),
     EtpProfile("rus-on.ru", "RUSSIA OnLine", "https://rus-on.ru/bankrot/trade_list.php", "trade_rows",
@@ -241,6 +241,33 @@ def _parse_provider_links(profile: EtpProfile, soup: BeautifulSoup, limit: int) 
 ALFALOT_ID = re.compile(r"(?P<trade>[0-9A-Z/]{7,30})\.lot(?P<lot>\d{1,5})(?:\.lot\d{1,5})?", re.IGNORECASE)
 
 
+
+def _parse_verdict_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:
+    """Public arrest-asset register: [trade, lot, debtor, asset, price, ..., status]."""
+    items = []
+    for tr in soup.select("tr"):
+        cells = tr.find_all("td", recursive=False)
+        if len(cells) < 10:
+            continue
+        trade = _clean(cells[0].get_text(" ", strip=True))
+        lot = _clean(cells[1].get_text(" ", strip=True))
+        title = _clean(cells[3].get_text(" ", strip=True))
+        if not re.fullmatch(r"\d{3,14}", trade) or not re.fullmatch(r"\d{1,5}", lot):
+            continue
+        try:
+            link = _first_provider_link(profile, cells[3:4] + cells[:2])
+            items.append(_candidate(
+                profile, trade=trade, lot=lot, title=title,
+                url=link, price=_money(cells[4].get_text(" ", strip=True)),
+                status=cells[-1].get_text(" ", strip=True),
+            ))
+        except EtpCatalogError:
+            continue
+        if len(items) >= limit:
+            break
+    return items
+
+
 def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:
     """Parse official upcoming-sales listing; no assumption about full coverage."""
     items = []
@@ -275,7 +302,7 @@ def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) ->
 
 
 def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[dict]:
-    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots"}:
+    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots"}:
         raise EtpCatalogError("No verified HTML extractor for this source")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
@@ -284,6 +311,8 @@ def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[
         rows = _parse_lot_tables(profile, soup, limit)
     elif profile.strategy == "alfalot_lots":
         rows = _parse_alfalot_lots(profile, soup, limit)
+    elif profile.strategy == "verdict_lots":
+        rows = _parse_verdict_lots(profile, soup, limit)
     elif profile.strategy == "trade_rows":
         rows = _parse_trade_tables(profile, soup, limit)
     else:
