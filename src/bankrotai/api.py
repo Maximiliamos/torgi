@@ -383,6 +383,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return True
         if path in {
             "/api/map/lots",
+            "/api/map/sources",
             "/api/quality/geocoding",
             "/api/map/datasets/current",
             "/api/map/review-statuses",
