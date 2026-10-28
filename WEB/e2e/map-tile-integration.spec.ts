@@ -22,6 +22,10 @@ test("versioned tile map integration, cache, detail, review and legacy filter", 
     });
     if (path === "/api/auth/me") return json({ id: 1, username: "reader", role: "reader" }, { Date: new Date().toUTCString() });
     if (path === "/api/regions") return json([{ code: "76", name: "Ярославская область" }]);
+    if (path === "/api/map/sources") return json({ items: [
+      { id: "lot-online.ru", label: "Lot-online / РАД", ingestion_stage: "connected", has_database_records: true },
+      { id: "rts-tender.ru", label: "РТС-тендер", ingestion_stage: "pilot", has_database_records: false },
+    ] });
     if (path === "/api/operations/progress") return json({
       sync: {
         task_id: "sync-e2e", status: "running", sources: [{
