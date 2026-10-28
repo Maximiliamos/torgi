@@ -86,7 +86,9 @@ def parse_grid(html: str, *, limit: int = 100) -> dict:
     cards = soup.select('div.it-main-grid-card[rts-at="all-trades-lot-card"]')
     if not cards:
         raise RtsEvidenceError("RTS Angular grid has no rendered lot cards")
-    accepted, rejected, seen = [], {}, set()
+    accepted: list[dict] = []
+    rejected: dict[str, int] = {}
+    seen: set[str] = set()
     for card in cards:
         try:
             notice = _required(card, '[rts-at="lot-card-trade-number"]')
