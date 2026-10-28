@@ -64,9 +64,9 @@ PROFILES: tuple[EtpProfile, ...] = (
                "https://178fz.roseltorg.ru/", "research",
                "Confirmed public privatization section; find accessible sale listings"),
     EtpProfile("sberbank-ast.ru", "Сбербанк-АСТ — продажа имущества",
-               "https://www.sberbank-ast.ru/sales/SaleProperty.html", "research",
-               "Verified UTP property PurchaseView details supported in sber_ast_property.py; "
-               "official sale landing is not verified paginated listing, procurement excluded"),
+               "https://www.sberbank-ast.ru/ESGoodsList.html", "research",
+               "Verified UTP PurchaseView details; bankruptcy landing navigates to ESGoodsList "
+               "with a browser localStorage sourceTerm filter, not a verified HTTP listing"),
     EtpProfile("fabrikant.ru", "Фабрикант",
                "https://www.fabrikant.ru/procedure/search/sales?section_ids%5B%5D=6",
                "links", "Public bankruptcy-sale search; candidate extraction remains conservative"),
