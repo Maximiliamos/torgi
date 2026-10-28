@@ -401,6 +401,10 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         ):
             parts = path.split("/")
             return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
+        if path == "/api/etp/pilots/sources" or (
+            path.startswith("/api/etp/pilots/") and path.endswith("/preview")
+        ):
+            return True
         if path.startswith("/api/search/"):
             return True
         if path.startswith("/api/sync/lots/"):
@@ -448,19 +452,16 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         return len(parts) == 5 and parts[3].isdigit() and parts[4] in {"participation", "review-status"}
     return False
 
-
 def require_user(request: Request) -> AuthenticatedUser:
     actor = getattr(request.state, "authenticated_user", None)
     if actor is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return actor
 
-
 def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> AuthenticatedUser:
     if actor.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
     return actor
-
 
 app.include_router(create_mets_canary_router(require_admin))
 app.include_router(create_cdtrf_canary_router(require_admin))
@@ -469,7 +470,6 @@ app.include_router(create_etp_pilot_catalogue_router(require_admin))
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
-
 
 @app.get("/api/time")
 def current_time(_: AuthenticatedUser = Depends(require_user)):
