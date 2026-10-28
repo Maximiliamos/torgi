@@ -44,7 +44,7 @@ def test_all_twenty_distinct_first_party_etps_have_canonical_url_and_plan():
     for profile in PROFILES:
         assert urlsplit(profile.catalogue_url).scheme == "https"
         assert urlsplit(profile.catalogue_url).hostname
-        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research"}
+        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots"}
         assert safe_url(profile, profile.catalogue_url) == profile.catalogue_url
 
 
@@ -78,6 +78,24 @@ def test_alfalot_lot_card_link_is_first_party_and_identity_is_trade_plus_lot():
     )
     assert rows[0]["listing_price_rub"] is None
     assert rows[0]["verified_detail"] is False
+
+
+def test_verdict_arrest_listing_keeps_separate_lot_identity_and_status_text():
+    html = """
+    <table><tr><td><a href="/bidding/140008">140008</a></td>
+    <td>2</td><td>Должник</td>
+    <td><a href="/showTrades?id=140008">Нежилое здание 76:23:0001203:42</a></td>
+    <td>4 500 000,00</td><td>Организатор</td>
+    <td>01.11.2026</td><td>15.11.2026</td><td>16.11.2026</td>
+    <td>Подача заявок</td></tr></table>
+    """
+    rows = parse_catalogue(PROFILE_BY_ID["vertrades.ru"], html)
+    assert len(rows) == 1
+    assert rows[0]["external_id"] == "140008:2"
+    assert rows[0]["cadastral_number"] == "76:23:0001203:42"
+    assert rows[0]["listing_price_rub"] == 4500000.0
+    assert rows[0]["source_status_text"] == "Подача заявок"
+    assert not rows[0]["ready_for_ingestion"]
 
 
 def test_trade_table_is_split_by_lot_and_not_registered_as_auction_asset():
