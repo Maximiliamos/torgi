@@ -167,18 +167,15 @@ _AUTH_EXECUTOR_CAPACITY = threading.BoundedSemaphore(_AUTH_EXECUTOR_WORKERS)
 _AUTH_PENDING_LIMIT = max(100, _AUTH_EXECUTOR_WORKERS * 10)
 _AUTH_PENDING_CAPACITY = threading.BoundedSemaphore(_AUTH_PENDING_LIMIT)
 
-
 def _resolve_session_actor(token: str) -> AuthenticatedUser | None:
     with read_session_scope() as session:
         return verify_session_token(session, token, settings.auth_session_secret or "")
-
 
 def _resolve_session_actor_with_capacity(token: str) -> AuthenticatedUser | None:
     try:
         return _resolve_session_actor(token)
     finally:
         _AUTH_EXECUTOR_CAPACITY.release()
-
 
 async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
     loop = asyncio.get_running_loop()
@@ -187,7 +184,6 @@ async def _wait_for_auth_executor_capacity(deadline: float) -> bool:
             return True
         await asyncio.sleep(min(0.005, max(0.0, deadline - loop.time())))
     return False
-
 
 def _persist_request_failure(method: str, path: str, error: str) -> None:
     with session_scope() as session:
@@ -199,7 +195,6 @@ def _persist_request_failure(method: str, path: str, error: str) -> None:
                 context_json={"method": method, "path": path, "error": error[:2000]},
             )
         )
-
 
 from bankrotai.api_models import (
     BulkTorgiSyncRequest as BulkTorgiSyncRequest,
