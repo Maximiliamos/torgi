@@ -282,7 +282,7 @@ class MetsPublicPilot:
                 failures.append({"url": url, "error_type": type(exc).__name__})
         return {
             "source": "m-ets.ru",
-            "category": "apartment",
+            "category": "selected_real_estate_categories",
             "catalogue_url": APARTMENTS_URL,
             "complete_source_inventory": False,
             "safe_for_archival": False,
