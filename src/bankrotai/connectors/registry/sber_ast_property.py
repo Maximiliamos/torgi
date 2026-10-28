@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -120,8 +121,13 @@ def _price_periods(soup: BeautifulSoup, *, initial: str, minimum: str | None) ->
         floor = Decimal(minimum) if minimum is not None else Decimal(0)
         for position, period in enumerate(result, 1):
             period_price = Decimal(str(period["price_rub"]))
+            try:
+                starts = datetime.strptime(str(period["start"]), "%d.%m.%Y %H:%M")
+                ends = datetime.strptime(str(period["end"]), "%d.%m.%Y %H:%M")
+            except ValueError as exc:
+                raise SberAstEvidenceError("Invalid price period dates") from exc
             if (int(str(period["period_number"])) != position or period_price > previous
-                    or period_price < floor or period["start"] > period["end"]):
+                    or period_price < floor or starts > ends):
                 raise SberAstEvidenceError("Incomplete/unsorted or contradictory UTP price periods")
             previous = period_price
     return result
