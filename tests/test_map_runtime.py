@@ -355,6 +355,11 @@ def test_map_source_selection_filters_runtime_tile_and_viewport_with_duplicate_s
     assert len(response.json()["features"]) == 1
     assert client.get(url, params={"sources": "m-ets.ru"}).json()["features"] == []
     assert client.get(url, params={"sources": "rts-tender.ru,evil.org"}).status_code == 422
+    before_archive_options = client.get("/api/map/sources")
+    assert before_archive_options.status_code == 200
+    assert next(
+        item for item in before_archive_options.json()["items"] if item["id"] == "rts-tender.ru"
+    )["has_database_records"]
     # A source's archived duplicate must stop matching while its canonical
     # object remains active on Lot-online.
     with factory.begin() as session:
@@ -374,4 +379,6 @@ def test_map_source_selection_filters_runtime_tile_and_viewport_with_duplicate_s
     assert len(client.get(url, params={"sources": "lot-online.ru"}).json()["features"]) == 1
     options = client.get("/api/map/sources")
     assert options.status_code == 200
-    assert next(x for x in options.json()["items"] if x["id"] == "rts-tender.ru")["has_database_records"]
+    assert not next(
+        item for item in options.json()["items"] if item["id"] == "rts-tender.ru"
+    )["has_database_records"]
