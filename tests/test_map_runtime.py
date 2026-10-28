@@ -355,6 +355,23 @@ def test_map_source_selection_filters_runtime_tile_and_viewport_with_duplicate_s
     assert len(response.json()["features"]) == 1
     assert client.get(url, params={"sources": "m-ets.ru"}).json()["features"] == []
     assert client.get(url, params={"sources": "rts-tender.ru,evil.org"}).status_code == 422
+    # A source's archived duplicate must stop matching while its canonical
+    # object remains active on Lot-online.
+    with factory.begin() as session:
+        child = session.scalar(
+            select(ProcessedLot).where(ProcessedLot.external_id == "rts-uuid-1")
+        )
+        assert child is not None
+        child.is_archived = True
+    reset_runtime_index_for_tests()
+    # Current published dataset has not been rebuilt: the runtime uses fresh
+    # source membership for this dataset version after cache reset.
+    with api._filtered_tile_cache_lock:
+        api._filtered_tile_cache.clear()
+    now_empty = client.get(url, params={"sources": "rts-tender.ru"})
+    assert now_empty.status_code == 200
+    assert now_empty.json()["features"] == []
+    assert len(client.get(url, params={"sources": "lot-online.ru"}).json()["features"]) == 1
     options = client.get("/api/map/sources")
     assert options.status_code == 200
     assert next(x for x in options.json()["items"] if x["id"] == "rts-tender.ru")["has_database_records"]
