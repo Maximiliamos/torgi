@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 from bankrotai.connectors.base import AuctionConnector
 
@@ -49,7 +50,7 @@ def _register_builtins() -> None:
     connector_registry.register(MetsConnector.source_id, MetsConnector)
     # Candidate-only direct ETPs are never scheduled by default_source_specs.
     for source_id in PILOT_SOURCE_IDS:
-        connector_registry.register(source_id, lambda source_id=source_id: DirectEtpPilotConnector(source_id))
+        connector_registry.register(source_id, partial(DirectEtpPilotConnector, source_id))
     connector_registry.register(TorgiRussiaConnector.source_id, TorgiRussiaConnector)
     connector_registry.register(BidExpertConnector.source_id, BidExpertConnector)
 
