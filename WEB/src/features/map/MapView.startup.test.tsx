@@ -14,6 +14,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     pauseGeocoding: vi.fn(),
     resumeGeocoding: vi.fn(),
     fetchRegions: vi.fn(),
+    fetchMapSourceOptions: vi.fn(),
     searchCadastre: vi.fn(),
     setReviewStatus: vi.fn(),
   };
@@ -29,6 +30,7 @@ import {
   pauseGeocoding,
   resumeGeocoding,
   fetchRegions,
+  fetchMapSourceOptions,
   searchCadastre,
   setReviewStatus,
   type MapDataset,
@@ -127,6 +129,12 @@ describe("tile map startup", () => {
     vi.clearAllMocks();
     vi.mocked(fetchCurrentUser).mockResolvedValue({ id: 1, username: "reader", role: "reader" });
     vi.mocked(fetchRegions).mockResolvedValue([]);
+    vi.mocked(fetchMapSourceOptions).mockResolvedValue({
+      items: [
+        { id: "lot-online.ru", label: "Lot-online / РАД", ingestion_stage: "connected", has_database_records: true },
+        { id: "rts-tender.ru", label: "РТС-тендер", ingestion_stage: "pilot", has_database_records: false },
+      ],
+    });
     vi.mocked(fetchMapTile).mockResolvedValue({ features: [] });
     vi.mocked(fetchOperationsProgress).mockResolvedValue({
       sync: null,

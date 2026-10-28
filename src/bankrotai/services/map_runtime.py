@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import logging
 from threading import RLock, Thread
@@ -32,6 +32,7 @@ class RuntimePoint:
     region_code: str | None
     status: str | None
     review_status: str | None
+    source_systems: frozenset[str] = frozenset()
 
     def as_payload_point(self) -> dict[str, Any]:
         return {
@@ -193,6 +194,20 @@ def _dataset_points(session: Session, dataset: MapDataset) -> list[RuntimePoint]
                 review_status=point.review_status,
             )
 
+    # Source membership is loaded once per published dataset. A canonical map
+    # marker can represent duplicate ProcessedLot rows from several platforms.
+    sources_by_root: dict[int, set[str]] = defaultdict(set)
+    for lot_id, duplicate_of_id, source_system, is_archived in session.execute(
+        select(ProcessedLot.id, ProcessedLot.duplicate_of_id,
+               ProcessedLot.source_system, ProcessedLot.is_archived)
+    ):
+        root_id = duplicate_of_id if duplicate_of_id is not None else lot_id
+        if root_id in points_by_id and source_system and not is_archived:
+            sources_by_root[root_id].add(source_system)
+    for lot_id, point in points_by_id.items():
+        points_by_id[lot_id] = replace(
+            point, source_systems=frozenset(sources_by_root.get(lot_id, ()))
+        )
     points = list(points_by_id.values())
     if len(points) != int(dataset.point_count):
         raise RuntimeError(
@@ -287,8 +302,10 @@ def _filter_token(
     region_code: str | None,
     min_start_price: float | None,
     max_start_price: float | None,
+    sources: tuple[str, ...] = (),
 ) -> str:
     raw = f"{region_code or '*'}|{min_start_price if min_start_price is not None else '*'}|{max_start_price if max_start_price is not None else '*'}"
+    raw += "|" + ",".join(sources)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
@@ -301,10 +318,13 @@ def build_filtered_tile(
     region_code: str | None,
     min_start_price: float | None,
     max_start_price: float | None,
+    sources: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     candidates = index.by_zoom_tile.get(z, {}).get((x, y), ())
     filtered: list[RuntimePoint] = []
     for point in candidates:
+        if sources and not point.source_systems.intersection(sources):
+            continue
         if region_code and point.region_code != region_code:
             continue
         if min_start_price is not None and (
@@ -331,7 +351,7 @@ def build_filtered_tile(
         )
         feature["id"] = (
             f"fc:{index.version}:{z}:{x}:{y}:"
-            f"{_filter_token(region_code, min_start_price, max_start_price)}"
+            f"{_filter_token(region_code, min_start_price, max_start_price, sources)}"
         )
         return yandex_feature_collection([feature])
 
