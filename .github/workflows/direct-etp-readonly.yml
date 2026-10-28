@@ -1,0 +1,62 @@
+name: Direct ETP catalogue read-only verification
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/direct-etp-readonly.yml"
+      - "scripts/probe_direct_etps.py"
+      - "src/bankrotai/connectors/registry/direct_etp_catalogue.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readonly-direct-etp-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  public-catalogue-probe:
+    if: github.event.pull_request.head.ref == 'feat/p1-multi-etp-catalogues-20261028'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout PR branch (read-only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Configure Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install minimal public HTML parser dependencies
+        run: python -m pip install "requests==2.34.2" "beautifulsoup4==4.15.0"
+      - name: Probe registered public source catalogues with one request per site
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/probe_direct_etps.py \
+            --confirm-public-network \
+            --output "$RUNNER_TEMP/direct-etp-report.json" \
+            --max-candidates-per-site 15 --delay-seconds 1.5
+      - name: Summarize verified and blocked catalogues (not ingestion readiness)
+        if: always()
+        run: |
+          python - <<'PY'
+          import collections, json, os, pathlib
+          report=pathlib.Path(os.environ["RUNNER_TEMP"])/"direct-etp-report.json"
+          if report.exists():
+              data=json.loads(report.read_text(encoding="utf-8"))
+              counts=collections.Counter(item["status"] for item in data["sources"])
+              with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as f:
+                  f.write("## Read-only ETP catalogue diagnostic\n\n")
+                  f.write(f"Sites checked: {data['queried_source_count']} / {data['expected_source_count']}\n\n")
+                  for state,count in sorted(counts.items()):
+                      f.write(f"- {state}: {count}\n")
+                  f.write("\n**Not a completeness test; no DB/Celery/S3 writes, no archival.**\n")
+          PY
+      - name: Save bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: direct-etp-readonly
+          path: ${{ runner.temp }}/direct-etp-report.json
+          if-no-files-found: warn
+          retention-days: 7
