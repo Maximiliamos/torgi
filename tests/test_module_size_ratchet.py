@@ -22,7 +22,8 @@ def _read_budgets() -> dict[str, int]:
 def test_grandfathered_modules_have_bounded_caps() -> None:
     caps = _read_budgets()
     assert caps["src/bankrotai/gui.py"] == 7002
-    assert caps["src/bankrotai/api.py"] == 2538
+    # Source filter endpoint expansion is reviewed in docs/adr/2026-10-28-multi-etp-map-filters.md.
+    assert caps["src/bankrotai/api.py"] == 2565
     assert caps["src/bankrotai/scrapers.py"] == 3145
     assert caps["src/bankrotai/geo.py"] == 2190
     assert caps["WEB/src/features/map/MapView.tsx"] == 2038

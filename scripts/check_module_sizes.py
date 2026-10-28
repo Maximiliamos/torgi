@@ -12,7 +12,8 @@ LIMIT = 1000
 ALLOWLIST_BUDGETS = {
     "src/bankrotai/gui.py": 7002,
     "src/bankrotai/scrapers.py": 3145,
-    "src/bankrotai/api.py": 2538,
+    # API map-source bindings reviewed in ADR 2026-10-28-multi-etp-map-filters.md.
+    "src/bankrotai/api.py": 2565,
     "src/bankrotai/geo.py": 2190,
     "src/bankrotai/services/geo_backfill.py": 1880,
     "src/bankrotai/logic.py": 1257,

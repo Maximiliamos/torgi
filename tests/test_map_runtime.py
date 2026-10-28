@@ -280,3 +280,105 @@ def test_filtered_tile_cache_handles_four_parallel_users(monkeypatch):
         results = list(pool.map(lambda _: load_once(), range(4)))
 
     assert results == [(200, "HIT")] * 4
+
+
+
+def test_map_source_selection_filters_runtime_tile_and_viewport_with_duplicate_source(monkeypatch):
+    """RTS and Lot-online publications share one pin; unrelated ETP returns zero."""
+    from bankrotai.services.map_view import build_map_lots_response
+
+    reset_runtime_index_for_tests()
+    factory = _factory()
+    with factory.begin() as session:
+        original = session.scalar(
+            select(ProcessedLot).where(ProcessedLot.external_id == "a")
+        )
+        assert original is not None
+        original.source_system = "lot-online.ru"
+        original.source = "lot-online.ru"
+        duplicate = ProcessedLot(
+            external_id="rts-uuid-1", source="rts-tender.ru",
+            source_system="rts-tender.ru", title="Same building",
+            description="", category="land", auction_status="active",
+            duplicate_of_id=original.id,
+        )
+        session.add(duplicate)
+    result = build_map_dataset(factory)
+    index = get_runtime_index(factory, result["version"])
+    x, y = tile_xy(57.6261, 39.8845, 12)
+    rts = build_filtered_tile(
+        index, z=12, x=x, y=y, region_code="76",
+        min_start_price=None, max_start_price=None,
+        sources=("rts-tender.ru",),
+    )
+    lot_online = build_filtered_tile(
+        index, z=12, x=x, y=y, region_code="76",
+        min_start_price=None, max_start_price=None,
+        sources=("lot-online.ru",),
+    )
+    both = build_filtered_tile(
+        index, z=12, x=x, y=y, region_code="76",
+        min_start_price=None, max_start_price=None,
+        sources=("lot-online.ru", "rts-tender.ru"),
+    )
+    no_lots = build_filtered_tile(
+        index, z=12, x=x, y=y, region_code="76",
+        min_start_price=None, max_start_price=None,
+        sources=("m-ets.ru",),
+    )
+    assert len(rts["features"]) == len(lot_online["features"]) == len(both["features"]) == 1
+    assert rts["features"][0]["id"] == lot_online["features"][0]["id"]
+    assert both["features"][0]["id"] == rts["features"][0]["id"]
+    assert no_lots["features"] == []
+
+    with factory() as session:
+        response = build_map_lots_response(
+            session, city_slug=None, region_code="76", sources=("rts-tender.ru",),
+            limit=20,
+        )
+        assert len(response["items"]) == 1
+        assert response["items"][0]["id"] == rts["features"][0]["id"]
+
+    @contextmanager
+    def scope():
+        with factory() as session:
+            yield session
+
+    monkeypatch.setattr(api, "read_session_scope", scope)
+    monkeypatch.setattr(api.settings, "app_env", "test")
+    with api._filtered_tile_cache_lock:
+        api._filtered_tile_cache.clear()
+    client = TestClient(api.app)
+    url = f"/api/map/filtered-tiles/{result['version']}/12/{x}/{y}"
+    response = client.get(url, params={"sources": "rts-tender.ru"})
+    assert response.status_code == 200
+    assert len(response.json()["features"]) == 1
+    assert client.get(url, params={"sources": "m-ets.ru"}).json()["features"] == []
+    assert client.get(url, params={"sources": "rts-tender.ru,evil.org"}).status_code == 422
+    before_archive_options = client.get("/api/map/sources")
+    assert before_archive_options.status_code == 200
+    assert next(
+        item for item in before_archive_options.json()["items"] if item["id"] == "rts-tender.ru"
+    )["has_database_records"]
+    # A source's archived duplicate must stop matching while its canonical
+    # object remains active on Lot-online.
+    with factory.begin() as session:
+        child = session.scalar(
+            select(ProcessedLot).where(ProcessedLot.external_id == "rts-uuid-1")
+        )
+        assert child is not None
+        child.is_archived = True
+    reset_runtime_index_for_tests()
+    # Current published dataset has not been rebuilt: the runtime uses fresh
+    # source membership for this dataset version after cache reset.
+    with api._filtered_tile_cache_lock:
+        api._filtered_tile_cache.clear()
+    now_empty = client.get(url, params={"sources": "rts-tender.ru"})
+    assert now_empty.status_code == 200
+    assert now_empty.json()["features"] == []
+    assert len(client.get(url, params={"sources": "lot-online.ru"}).json()["features"]) == 1
+    options = client.get("/api/map/sources")
+    assert options.status_code == 200
+    assert not next(
+        item for item in options.json()["items"] if item["id"] == "rts-tender.ru"
+    )["has_database_records"]

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from bankrotai.services.map_source_filters import source_match_condition
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
 
@@ -173,8 +174,11 @@ def _map_base_filters(
     max_start_price: float | None,
     include_archived: bool,
     review_status: str | None,
+    sources: tuple[str, ...] = (),
 ) -> list:
     filters = [ProcessedLot.duplicate_of_id.is_(None)]
+    if sources:
+        filters.append(source_match_condition(sources))
     if city_slug:
         filters.append(ProcessedLot.region_slug.in_(get_region_query_values(city_slug)))
     if region_code:
@@ -199,6 +203,7 @@ def build_map_lot_statistics(
     max_start_price: float | None = None,
     include_archived: bool = False,
     review_status: str | None = None,
+    sources: tuple[str, ...] = (),
 ) -> dict:
     filters = _map_base_filters(
         city_slug=city_slug,
@@ -207,6 +212,7 @@ def build_map_lot_statistics(
         max_start_price=max_start_price,
         include_archived=include_archived,
         review_status=review_status,
+        sources=sources,
     )
     total = session.scalar(select(func.count(ProcessedLot.id)).where(*filters)) or 0
     mapped_total = (
@@ -237,6 +243,7 @@ def build_map_lots_response(
     east: float | None = None,
     north: float | None = None,
     review_status: str | None = None,
+    sources: tuple[str, ...] = (),
     statistics: dict | None = None,
     defer_statistics: bool = False,
 ) -> dict:
@@ -248,6 +255,7 @@ def build_map_lots_response(
         max_start_price=max_start_price,
         include_archived=include_archived,
         review_status=review_status,
+        sources=sources,
     )
     map_filters = list(filters)
     if all(value is not None for value in (west, south, east, north)):
@@ -319,6 +327,7 @@ def build_map_lots_response(
             max_start_price=max_start_price,
             include_archived=include_archived,
             review_status=review_status,
+            sources=sources,
         )
     total = statistics["total"]
     mapped_total = statistics["mapped_total"]

@@ -272,6 +272,7 @@ def test_builtin_connector_registry_is_explicit() -> None:
         "bidexpert.ru",
         "fedresurs.ru",
         "lot-online.ru",
+        "m-ets.ru",
         "tbankrot.ru",
         "torgi-russia.ru",
         "torgi.gov.ru",
