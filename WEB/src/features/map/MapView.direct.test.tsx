@@ -35,6 +35,7 @@ import {
   fetchMapReviewStatuses,
   fetchOperationsProgress,
   fetchRegions,
+  fetchMapSourceOptions,
   type MapDataset,
   type YandexMapTilePayload,
 } from "../../lib/api";
