@@ -136,15 +136,12 @@ def create_cdtrf_canary_router(require_admin):
         except Exception as exc:
             raise HTTPException(status_code=422, detail="CDTRF detail verification failed") from exc
         from bankrotai.db import session_scope
-        from bankrotai.logic import log_action, persist_lot
+        from bankrotai.services.etp_canary_persistence import (persist_canary_lot, CanaryDuplicateReviewRequired)
         with session_scope() as session:
-            persisted = persist_lot(session, lot)
-            log_action(
-                session, str(actor.id), "import_verified_etp_canary", "lot",
-                str(persisted.id),
-                {"source_system": "cdtrf.ru", "trade_id": trade_id,
-                 "lot_id": lot_id, "reconcile_missing": False},
-            )
+            try:
+                persisted = persist_canary_lot(session, lot, str(actor.id))
+            except CanaryDuplicateReviewRequired as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             return {"id": persisted.id, "source_system": "cdtrf.ru",
                     "external_id": lot.external_id,
                     "requires_geocoding_and_map_publication": True,
