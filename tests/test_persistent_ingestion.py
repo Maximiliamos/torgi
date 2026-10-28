@@ -121,6 +121,36 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert len(rows) == 1
         assert rows[0].region_code == "76"
         assert float(rows[0].start_price or 0) == 500_000
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
+        assert processed is not None
+        assert processed.region_code == "76"
+
+
+def test_source_observation_timestamps_are_ordered_on_insert_and_resync(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot()]]))
+    with sessions() as session:
+        first = session.scalar(select(SourceLot))
+        assert first is not None
+        observed_first = first.first_seen_at
+        assert first.first_seen_at <= first.last_seen_at
+
+    # A re-ingestion must keep the original first_seen_at.
+    run_with(service, FakeConnector([[lot(price=350_000)]]))
+    with sessions() as session:
+        updated = session.scalar(select(SourceLot))
+        assert updated is not None
+        assert updated.first_seen_at == observed_first
+        assert updated.first_seen_at <= updated.last_seen_at
+
+
+def test_legacy_source_lot_observation_time_is_ordered(sessions) -> None:
+    with sessions() as session:
+        persist_lot(session, lot("legacy-timestamp"))
+        session.commit()
+        observed = session.scalar(select(SourceLot).where(SourceLot.external_id == "legacy-timestamp"))
+        assert observed is not None
+        assert observed.first_seen_at <= observed.last_seen_at
 
 
 def test_source_run_records_real_progress_timestamp_and_phase(sessions) -> None:
