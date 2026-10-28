@@ -62,6 +62,24 @@ def test_repeated_public_table_pattern_keeps_trade_lot_and_numeric_price(source)
     assert row["ready_for_ingestion"] is False
 
 
+def test_alfalot_lot_card_link_is_first_party_and_identity_is_trade_plus_lot():
+    html = """
+    <table><tr><td>0026026018DS.lot2</td>
+    <td><a href="/app/LotCard/page?LotCard.lotEntity=LT%3Ademo123">
+    Земельный участок 54:20:030601:2341 – 800 кв.м.</a></td>
+    <td>290 000.00 руб. начальная цена</td></tr></table>
+    """
+    rows = parse_catalogue(PROFILE_BY_ID["alfalot.ru"], html)
+    assert len(rows) == 1
+    assert rows[0]["external_id"] == "0026026018DS:2"
+    assert rows[0]["cadastral_number"] == "54:20:030601:2341"
+    assert rows[0]["catalogue_detail_link"].startswith(
+        "https://etp.alfalot.ru/app/LotCard/page?"
+    )
+    assert rows[0]["listing_price_rub"] is None
+    assert rows[0]["verified_detail"] is False
+
+
 def test_trade_table_is_split_by_lot_and_not_registered_as_auction_asset():
     p = PROFILE_BY_ID["nistp.ru"]
     rows = parse_catalogue(p, MULTI)
