@@ -67,6 +67,7 @@ def source_match_condition(sources: tuple[str, ...]):
     duplicate_from_source = exists(
         select(1).where(
             member.duplicate_of_id == ProcessedLot.id,
+            member.is_archived.is_(False),
             member.source_system.in_(sources),
         )
     )
