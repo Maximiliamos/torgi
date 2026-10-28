@@ -59,6 +59,16 @@ class FedresursPublicationsClient:
         self.timeout = (5, 30)
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._last_request_at: float | None = None
+
+    def _pace(self) -> None:
+        """Keep the one-client pilot at no more than four requests/second."""
+        now = time.monotonic()
+        if self._last_request_at is not None:
+            remaining = 0.25 - (now - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_request_at = time.monotonic()
 
     def authenticate(self) -> str:
         if self._token and time.monotonic() < self._token_expires_at:
@@ -67,6 +77,7 @@ class FedresursPublicationsClient:
             raise RuntimeError("Set FEDRESURS_LOGIN and FEDRESURS_PASSWORD outside of Git")
         # Official v1/auth requires the *original* password inside HTTPS JSON,
         # not the SHA-512 digest used by the old TORGI implementation.
+        self._pace()
         response = self.session.post(
             f"{self.base_url}/v1/auth",
             json={"login": self.login, "password": self.password},
@@ -82,6 +93,7 @@ class FedresursPublicationsClient:
         return self._token
 
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._pace()
         response = self.session.get(
             f"{self.base_url}/v1/{path}",
             params=params,
