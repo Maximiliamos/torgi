@@ -73,7 +73,6 @@ def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_pri
         ))
         second = persist_lot(session, _lot(
             "lot-online.ru",
-        "m-ets.ru",
             "lot-online:1760257",
             title="Имущество муниципального округа по адресу Ивановское, Ленина, 21",
             address="Ивановское, ул. Ленина, д. 21",
@@ -273,6 +272,7 @@ def test_builtin_connector_registry_is_explicit() -> None:
         "bidexpert.ru",
         "fedresurs.ru",
         "lot-online.ru",
+        "m-ets.ru",
         "tbankrot.ru",
         "torgi-russia.ru",
         "torgi.gov.ru",
