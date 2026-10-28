@@ -11,6 +11,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+import sys
+from types import ModuleType
+
+# This probe deliberately avoids loading bankrotai.__init__, the DB layer,
+# connector registry and worker runtime. All relevant HTML parsers are pure.
+# Import the read-only modules using a package namespace bound to their source
+# directory so the isolated CI runner needs only requests + BeautifulSoup.
+_ROOT = Path(__file__).resolve().parents[1] / "src" / "bankrotai"
+for _name, _directory in (
+    ("bankrotai", _ROOT),
+    ("bankrotai.connectors", _ROOT / "connectors"),
+    ("bankrotai.connectors.registry", _ROOT / "connectors" / "registry"),
+):
+    if _name not in sys.modules:
+        _namespace = ModuleType(_name)
+        _namespace.__path__ = [str(_directory)]
+        sys.modules[_name] = _namespace
 
 from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILES,
