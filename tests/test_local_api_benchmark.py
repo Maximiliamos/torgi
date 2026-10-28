@@ -30,7 +30,10 @@ def test_benchmark_preserves_http_errors_as_status(monkeypatch):
     def fake_urlopen(endpoint, timeout):
         raise HTTPError(endpoint, 401, "unauthorized", {}, None)
 
-    monkeypatch.setattr(BENCH, "urlopen", fake_urlopen)
+    class FakeOpener:
+        open = staticmethod(fake_urlopen)
+
+    monkeypatch.setattr(BENCH, "LOCAL_OPENER", FakeOpener())
     result = BENCH.measure("http://127.0.0.1:18000/health/live", count=3, timeout=1, interval=0)
     assert result["statuses"] == {"401": 3}
     assert result["p95_ms"] >= 0
