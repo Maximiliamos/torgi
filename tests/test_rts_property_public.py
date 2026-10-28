@@ -110,7 +110,7 @@ def test_detail_preserves_notice_lot_id_and_both_cadastres():
     {"uuid": "e63b29f2-f6cc-4169-927b-e9fc8d4c9de7"},
     {"price": "0 руб."},
     {"notice": "22000086100000000620"},
-    {"code": "22000086100000000619007"},
+    {"code": "22000086100000000620006"},
 ])
 def test_contradictory_detail_fails_closed(kwargs):
     with pytest.raises(RtsEvidenceError):
