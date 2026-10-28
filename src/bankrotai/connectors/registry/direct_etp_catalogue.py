@@ -400,7 +400,7 @@ def batch_probe(*, session: requests.Session, ids: tuple[str, ...] | None = None
     requested = ids or tuple(PROFILE_BY_ID)
     if len(set(requested)) != len(requested) or any(x not in PROFILE_BY_ID for x in requested):
         raise ValueError("Unknown or duplicate source ID")
-    results = []
+    results: list[dict[str, object]] = []
     for index, sid in enumerate(requested):
         p = PROFILE_BY_ID[sid]
         if index:
