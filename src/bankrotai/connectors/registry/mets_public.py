@@ -107,6 +107,9 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     ):
         raise MetsEvidenceError("Page has no matching M-ETS trade/lot identifier")
 
+    # Real M-ETS h2.lot-title includes collapsed UI text "еще".
+    for collapsed in soup.select("h2.lot-title [ellipse]"):
+        collapsed.decompose()
     headings = [
         heading.get_text(" ", strip=True)
         for heading in soup.find_all(["h1", "h2"])
@@ -144,6 +147,15 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             initial = parsed_price
         elif label_text == "Текущая цена":
             current = parsed_price
+    deposit_node = soup.select_one(".lot-cost-item.zadat")
+    deposit = None
+    if deposit_node is not None:
+        deposit_value = deposit_node.select_one(".value")
+        if deposit_value is not None:
+            deposit = _price_before_label(
+                deposit_value.get_text(" ", strip=True) + " Размер задатка",
+                "Размер задатка",
+            )
     if not summary_nodes:  # Compatibility with earlier minimal mocked HTML.
         initial = _price_before_label(text[:4000], "Начальная цена")
         current = _price_before_label(text[:4000], "Текущая цена")
@@ -195,6 +207,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "source_current_price_observed": current is not None,
             "source_initial_price_observed": initial is not None,
             "source_status_text": source_status[:160] if status_node else None,
+            "deposit_rub": deposit,
             "mentions_pledge": ("залоге" in description.lower() or "залог" in description.lower()),
             "complete_search_pagination": False,
         },
