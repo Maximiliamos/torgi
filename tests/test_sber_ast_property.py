@@ -92,11 +92,18 @@ def test_property_card_has_three_distinct_ids_and_fixed_price_schedule():
 def test_dutch_auction_period_dates_are_chronological_not_lexical():
     # 31 December -> 1 January is valid even though textual dd.mm order falls.
     html = sample().replace(
-        "01.02.2027 10:00", "31.12.2026 23:55", 1
-    ).replace("01.02.2027 10:20", "01.01.2027 00:05", 1)
+        'content="leaf:PeriodStartDate">01.02.2027 10:00',
+        'content="leaf:PeriodStartDate">31.12.2026 23:55', 1
+    ).replace(
+        'content="leaf:PeriodStopDate">01.02.2027 10:20',
+        'content="leaf:PeriodStopDate">01.01.2027 00:05', 1
+    )
     row = parse_property_detail(html, URL)
     assert row["price_periods"][0]["end"] == "01.01.2027 00:05"
-    bad = sample().replace("01.02.2027 10:00", "99.12.2026 10:00", 1)
+    bad = sample().replace(
+        'content="leaf:PeriodStartDate">01.02.2027 10:00',
+        'content="leaf:PeriodStartDate">99.12.2026 10:00', 1
+    )
     with pytest.raises(SberAstEvidenceError, match="Invalid price period dates"):
         parse_property_detail(bad, URL)
 
