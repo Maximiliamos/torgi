@@ -112,6 +112,7 @@ from bankrotai.tasks import (
 from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
 from bankrotai.services.etp_mets_canary import create_mets_canary_router
 from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
+from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalogue_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -332,7 +333,6 @@ async def log_requests(request: Request, call_next):
             logger.exception("Failed to persist API diagnostic event")
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
-
 def _consume_rate_limit(client_id: str) -> bool:
     base_limit = max(settings.api_rate_limit_per_minute, 1)
     # Keep login and other unauthenticated traffic on the strict per-IP limit.
@@ -365,7 +365,6 @@ def _consume_rate_limit(client_id: str) -> bool:
     hits.append(now)
     _rate_limit_hits[client_id] = hits
     return True
-
 
 def _is_read_only_mvp_path(request: Request) -> bool:
     path = request.url.path.rstrip("/") or "/"
@@ -465,6 +464,7 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
 
 app.include_router(create_mets_canary_router(require_admin))
 app.include_router(create_cdtrf_canary_router(require_admin))
+app.include_router(create_etp_pilot_catalogue_router(require_admin))
 
 @app.get("/")
 def read_root():
