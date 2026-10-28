@@ -108,6 +108,8 @@ def cleanup_map_datasets(
     building_min_age_hours: int = 6,
     apply: bool = False,
     now: datetime | None = None,
+    tile_batch_size: int = 1000,
+    max_tiles_per_run: int = 100_000,
 ) -> dict:
     """Find or remove obsolete non-current map versions under the publisher lock.
 
@@ -116,6 +118,10 @@ def cleanup_map_datasets(
     and rejected builds retain a short diagnostic grace period, while abandoned
     building rows get a longer grace period to avoid racing a live build.
     """
+    if not 1 <= tile_batch_size <= 5000:
+        raise ValueError("tile_batch_size must be between 1 and 5000")
+    if max_tiles_per_run < 1:
+        raise ValueError("max_tiles_per_run must be positive")
     if retain_previous_ready < 1:
         raise ValueError("retain_previous_ready must preserve at least one rollback dataset")
     if min_age_hours < 1:
@@ -181,26 +187,93 @@ def cleanup_map_datasets(
             },
         }
         if apply and candidate_ids:
-            # A single DELETE for millions of tile rows exceeds the production
-            # statement timeout. Small transactions keep the API responsive and
-            # remain restartable: already removed candidates simply disappear
-            # from the next dry-run.
+            # The previous DELETE for five entire datasets could involve hundreds
+            # of thousands of rows and time out. Bound both each SQL statement
+            # and total work performed by one maintenance invocation.
+            #
+            # Each chunk is committed independently. If interrupted, subsequent
+            # invocations continue from the remaining map_tiles; the parent
+            # MapDataset row is deleted ONLY after all its tiles have gone.
+            session.rollback()
             deleted_dataset_count = 0
             deleted_tile_count = 0
-            for offset in range(0, len(candidate_ids), 5):
-                batch_ids = candidate_ids[offset : offset + 5]
-                if session.get_bind().dialect.name == "postgresql":
-                    session.execute(
-                        text("SELECT pg_advisory_xact_lock(:lock_key)"),
-                        {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
+            deleted_versions: list[str] = []
+            remaining_budget = max_tiles_per_run
+            for dataset in candidates:
+                if remaining_budget <= 0:
+                    break
+                dataset_id = int(dataset.id)
+                dataset_version = str(dataset.version)
+                while remaining_budget > 0:
+                    if session.get_bind().dialect.name == "postgresql":
+                        session.execute(
+                            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                            {"lock_key": _PROMOTION_ADVISORY_LOCK_KEY},
+                        )
+                    # Recheck safety after every commit: a newer promotion or
+                    # operator rollback may change which versions are protected.
+                    still_noncurrent = session.scalar(
+                        select(MapDataset.id).where(
+                            MapDataset.id == dataset_id,
+                            MapDataset.is_current.is_(False),
+                        )
                     )
-                deleted_tiles = session.execute(delete(MapTile).where(MapTile.dataset_id.in_(batch_ids))).rowcount or 0
-                deleted_datasets = session.execute(delete(MapDataset).where(MapDataset.id.in_(batch_ids))).rowcount or 0
-                session.commit()
-                deleted_tile_count += int(deleted_tiles)
-                deleted_dataset_count += int(deleted_datasets)
+                    rollback_protected_ids = set(session.scalars(
+                        select(MapDataset.id)
+                        .where(
+                            MapDataset.is_current.is_(False),
+                            MapDataset.status == "ready",
+                            MapDataset.published_at.is_not(None),
+                        )
+                        .order_by(
+                            MapDataset.published_at.desc(),
+                            MapDataset.created_at.desc(),
+                            MapDataset.id.desc(),
+                        )
+                        .limit(retain_previous_ready)
+                    ))
+                    if still_noncurrent is None or dataset_id in rollback_protected_ids:
+                        session.rollback()
+                        break
+
+                    tile_ids = (
+                        select(MapTile.id)
+                        .where(MapTile.dataset_id == dataset_id)
+                        .order_by(MapTile.id)
+                        .limit(min(tile_batch_size, remaining_budget))
+                    )
+                    removed = int(
+                        session.execute(
+                            delete(MapTile).where(MapTile.id.in_(tile_ids)),
+                            execution_options={"synchronize_session": False},
+                        ).rowcount or 0
+                    )
+                    if removed:
+                        session.commit()
+                        deleted_tile_count += removed
+                        remaining_budget -= removed
+                        continue
+
+                    # No remaining child rows. This transaction is the only
+                    # point at which the dataset and its S3 manifest may retire.
+                    removed_dataset = int(session.execute(
+                        delete(MapDataset).where(
+                            MapDataset.id == dataset_id,
+                            MapDataset.is_current.is_(False),
+                        )
+                    ).rowcount or 0)
+                    session.commit()
+                    if removed_dataset:
+                        deleted_dataset_count += removed_dataset
+                        deleted_versions.append(dataset_version)
+                    break
+
             result["deleted_tile_count"] = deleted_tile_count
             result["deleted_dataset_count"] = deleted_dataset_count
+            # Never remove a manifest for a dataset that was only partly pruned.
+            result["deleted_versions"] = deleted_versions
+            result["remaining_candidate_dataset_count"] = len(candidates) - deleted_dataset_count
+            result["tile_budget_exhausted"] = remaining_budget == 0
         else:
             session.rollback()
         return result
