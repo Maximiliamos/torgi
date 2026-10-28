@@ -44,8 +44,11 @@ class EtpProfile:
 # Precise starting URLs are provider-owned. Some root pages do not expose a
 # catalogue; these profiles have explicit unsupported strategy (not fake data).
 PROFILES: tuple[EtpProfile, ...] = (
-    EtpProfile("m-ets.ru", "МЭТС", "https://meetings.m-ets.ru/", "existing",
-               "Direct detail parser PR #964; full catalogue still pending"),
+    EtpProfile("m-ets.ru", "МЭТС",
+               "https://m-ets.ru/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9",
+               "existing",
+               "Official canonical m-ets.ru detail corrected; search HTML not yet verified "
+               "(two supplied files were homepage snapshots); no pagination or archival"),
     EtpProfile("lot-online.ru", "РАД / Lot-online", "https://lot-online.ru/", "existing",
                "Already in nationwide ingestion; do not double-count"),
     EtpProfile("cdtrf.ru", "Центр дистанционных торгов",
