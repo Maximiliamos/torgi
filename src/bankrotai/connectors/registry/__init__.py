@@ -35,6 +35,7 @@ def _register_builtins() -> None:
     from bankrotai.connectors.registry.bidexpert import BidExpertConnector
     from bankrotai.connectors.registry.fedresurs import FedresursConnector
     from bankrotai.connectors.registry.lot_online import LotOnlineConnector
+    from bankrotai.connectors.registry.mets_public import MetsConnector
     from bankrotai.connectors.registry.tbankrot import TBankrotConnector
     from bankrotai.connectors.registry.torgi_gov import TorgiGovConnector
     from bankrotai.connectors.registry.torgi_russia import TorgiRussiaConnector
@@ -43,6 +44,8 @@ def _register_builtins() -> None:
     connector_registry.register(TBankrotConnector.source_id, TBankrotConnector)
     connector_registry.register(FedresursConnector.source_id, FedresursConnector)
     connector_registry.register(LotOnlineConnector.source_id, LotOnlineConnector)
+    # Explicit per-lot canary only; M-ETS is not a default full-sync source.
+    connector_registry.register(MetsConnector.source_id, MetsConnector)
     connector_registry.register(TorgiRussiaConnector.source_id, TorgiRussiaConnector)
     connector_registry.register(BidExpertConnector.source_id, BidExpertConnector)
 
