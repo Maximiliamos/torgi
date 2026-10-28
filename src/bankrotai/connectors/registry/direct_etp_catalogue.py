@@ -48,8 +48,9 @@ PROFILES: tuple[EtpProfile, ...] = (
                "Direct detail parser PR #964; full catalogue still pending"),
     EtpProfile("lot-online.ru", "РАД / Lot-online", "https://lot-online.ru/", "existing",
                "Already in nationwide ingestion; do not double-count"),
-    EtpProfile("cdtrf.ru", "Центр дистанционных торгов", "https://bankrot.cdtrf.ru/", "links",
-               "Public catalogue; may require JS to expose exact links"),
+    EtpProfile("cdtrf.ru", "Центр дистанционных торгов",
+               "https://torgi.cdtrf.ru/", "cdtrf_cards",
+               "SSR catalogue + Nuxt detail parser; pagination JS/API not yet verified"),
     EtpProfile("nistp.ru", "Новые информационные сервисы", "https://nistp.ru/bankrot/trade_list.php", "trade_rows",
                "Public trade table containing embedded numbered lots"),
     EtpProfile("alfalot.ru", "Альфалот",
@@ -302,11 +303,33 @@ def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) ->
 
 
 def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[dict]:
-    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots"}:
+    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots", "cdtrf_cards"}:
         raise EtpCatalogError("No verified HTML extractor for this source")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
     soup = BeautifulSoup(html, "html.parser")
+    if profile.strategy == "cdtrf_cards":
+        from bankrotai.connectors.registry.cdtrf_public import parse_catalogue as parse_cdtrf
+
+        # Each catalog card is an observation about a trade, not a proven lot.
+        # Stable trade_lot_id is only available after Nuxt detail decoding.
+        source = parse_cdtrf(html, limit=limit)
+        return [
+            {
+                "source": profile.source_id,
+                "trade": item["trade_id"],
+                "lot": None,
+                "external_id": None,
+                "title": item["title"],
+                "catalogue_detail_link": item["detail_url"],
+                "listing_price_rub": item["initial_price_rub"],
+                "source_status_text": item["source_status_text"],
+                "evidence": "cdtrf_catalogue_trade_not_lot",
+                "verified_detail": False,
+                "ready_for_ingestion": False,
+            }
+            for item in source["page_observations"]
+        ]
     if profile.strategy == "table_lots":
         rows = _parse_lot_tables(profile, soup, limit)
     elif profile.strategy == "alfalot_lots":
