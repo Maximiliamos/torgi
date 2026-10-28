@@ -1,0 +1,40 @@
+name: ETP pilots and capture replay validation
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/etp-pilot-validation.yml"
+      - "src/bankrotai/connectors/registry/direct_etp_pilots.py"
+      - "src/bankrotai/connectors/registry/etp_capture_replay.py"
+      - "src/bankrotai/connectors/registry/__init__.py"
+      - "scripts/etp_capture_v6.py"
+      - "scripts/verify_etp_capture.py"
+      - "tests/test_etp_capture_replay.py"
+      - "tests/test_etp_capture_v6.py"
+      - "tests/test_direct_etp_pilots.py"
+permissions:
+  contents: read
+jobs:
+  offline-shadow-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install pinned runtime and tests
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Syntax
+        run: |
+          python -m py_compile scripts/etp_capture_v6.py scripts/verify_etp_capture.py
+          python -m py_compile src/bankrotai/connectors/registry/direct_etp_pilots.py
+          python -m py_compile src/bankrotai/connectors/registry/etp_capture_replay.py
+      - name: Regression tests (offline only)
+        run: |
+          pytest -q tests/test_etp_capture_replay.py tests/test_etp_capture_v6.py tests/test_direct_etp_pilots.py tests/test_captured_etp_api.py
