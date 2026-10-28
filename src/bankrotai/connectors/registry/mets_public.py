@@ -17,10 +17,10 @@ from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import classify_category
 
-BASE = "https://meetings.m-ets.ru"
-# M-ETS public search filter for "Квартира" category (36).
+BASE = "https://m-ets.ru"
+# User-observed search filter for seven real-estate category IDs; full paging unverified.
 APARTMENTS_URL = (
-    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiJ9&sp=7qr7"
+    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
 )
 DETAIL_PATH = re.compile(r"^/(\d{4,9})-(\d{1,5})/?$")
 CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
@@ -36,7 +36,7 @@ class MetsEvidenceError(ValueError):
 def _host_lot_url(url: str) -> tuple[str, str, str]:
     parsed = urlsplit(url)
     match = DETAIL_PATH.fullmatch(parsed.path)
-    if parsed.scheme != "https" or parsed.netloc != "meetings.m-ets.ru" or not match:
+    if parsed.scheme != "https" or parsed.netloc != "m-ets.ru" or not match:
         raise MetsEvidenceError("Expected an HTTPS M-ETS lot URL with <trade>-<lot> identity")
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise MetsEvidenceError("M-ETS lot URL cannot have a query, fragment or credentials")
@@ -49,6 +49,9 @@ def discover_lot_urls(html: str, *, limit: int = 10) -> list[str]:
     if not 1 <= limit <= 50:
         raise ValueError("pilot limit must be 1..50")
     soup = BeautifulSoup(html, "html.parser")
+    identity = soup.select_one('meta[property="og:url"]')
+    if identity is not None and identity.get("content") == BASE + "/":
+        raise MetsEvidenceError("Homepage is not a verified M-ETS search catalogue")
     result: list[str] = []
     seen: set[str] = set()
     for link in soup.select("a[href]"):
@@ -115,30 +118,60 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     if not title:
         raise MetsEvidenceError("No trustworthy M-ETS lot title in HTML")
 
-    cadastral_match = CADASTRE.search(text)
+    # The first 4k characters of saved HTML are login/crypto dialogs.
+    # Read only the primary lot panel so recommended cards cannot overwrite it.
+    primary_description = soup.select_one('[itemprop="description"]')
+    description = primary_description.get_text(" ", strip=True) if primary_description else ""
+    cadastral_match = CADASTRE.search(title + " " + description)
     cadastral = cadastral_match.group(1) if cadastral_match else None
-    # The page may contain old, current and initial prices. Capture only
-    # values explicitly labelled in the source's summary.
-    initial = _price_before_label(text[:4000], "Начальная цена")
-    current = _price_before_label(text[:4000], "Текущая цена")
-    if "Торги в стадии приема заявок" in text[:4000]:
+    meta_sku = soup.select_one('[itemprop="sku"][content]')
+    if meta_sku is not None and meta_sku.get("content") != f"{trade}-МЭТС-{lot_number}":
+        raise MetsEvidenceError("M-ETS page SKU contradicts URL")
+    summary_nodes = soup.select(".lot-cost-item")
+    initial = None
+    current = None
+    for item in summary_nodes:
+        classes = item.get("class", [])
+        label = item.select_one(".title")
+        value = item.select_one(".value")
+        if label is None or value is None or "price" not in classes:
+            continue
+        label_text = label.get_text(" ", strip=True)
+        parsed_price = _price_before_label(
+            value.get_text(" ", strip=True) + " " + label_text, label_text
+        )
+        if label_text == "Начальная цена":
+            initial = parsed_price
+        elif label_text == "Текущая цена":
+            current = parsed_price
+    if not summary_nodes:  # Compatibility with earlier minimal mocked HTML.
+        initial = _price_before_label(text[:4000], "Начальная цена")
+        current = _price_before_label(text[:4000], "Текущая цена")
+    status_node = soup.select_one(".lot-cost-item.status .lot-status-name")
+    source_status = (
+        status_node.get_text(" ", strip=True) if status_node
+        else text[:4000]
+    )
+    if "Торги в стадии приема заявок" in source_status:
         status = "active"
-    elif "Объявленные торги" in text[:4000]:
+    elif "Объявленные торги" in source_status:
         status = "scheduled"
     else:
         status = "unknown"
-    deadline = _date_after_label(text[:5000], "Окончание приема заявок")
-    # "Окончание приема заявок на периоде" is NOT a full auction deadline.
+    dates = " ".join(x.get_text(" ", strip=True)
+                     for x in soup.select(".lot-cost-item.date"))
+    date_source = dates or text[:5000]
+    deadline = _date_after_label(date_source, "Окончание приема заявок")
     period_deadline = _date_after_label(
-        text[:5000], "Окончание приема заявок на периоде"
+        date_source, "Окончание приема заявок на периоде"
     )
-    category = classify_category(title, text[:3000])
+    category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
     return NormalizedLot(
         external_id=f"{trade}-{lot_number}",
         source="m-ets.ru",
         source_system="m-ets.ru",
         title=title[:500],
-        description=text[:3000],
+        description=(description or text[:3000])[:3000],
         category=category,
         region_slug=None,
         region_name=None,
@@ -161,6 +194,9 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "period_deadline": period_deadline.isoformat() if period_deadline else None,
             "source_current_price_observed": current is not None,
             "source_initial_price_observed": initial is not None,
+            "source_status_text": source_status[:160] if status_node else None,
+            "mentions_pledge": ("залоге" in description.lower() or "залог" in description.lower()),
+            "complete_search_pagination": False,
         },
         application_deadline=deadline,
         auction_timezone="Europe/Moscow",
