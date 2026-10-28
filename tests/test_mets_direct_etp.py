@@ -115,6 +115,8 @@ class SessionStub:
             return Response(CATALOGUE)
         if url == URL:
             return Response(DETAIL)
+        if url == "https://meetings.m-ets.ru/238380-1":
+            return Response("<html><h2>Broken card</h2></html>")
         raise AssertionError(f"Unexpected requested URL: {url}")
 
 
