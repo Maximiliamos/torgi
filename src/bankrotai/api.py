@@ -89,6 +89,9 @@ from bankrotai.services.quality import (
     map_delivery_reconciliation_report,
     operational_quality_report,
 )
+from bankrotai.services.map_source_filters import (
+    map_source_catalogue, parse_source_selection,
+)
 from bankrotai.services.map_view import build_map_lot_detail, build_map_lot_statistics, build_map_lots_response
 from bankrotai.services.map_builder import tile_xy
 from bankrotai.services.map_payload import legacy_tile_to_yandex
@@ -1666,6 +1669,19 @@ def get_stats(city_slug: str = DEFAULT_REGION):
         return build_stats_response(session, city_slug)
 
 
+def _source_filter(raw: str | None) -> tuple[str, ...]:
+    try:
+        return parse_source_selection(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/map/sources")
+def get_map_source_options():
+    with read_session_scope() as session:
+        return map_source_catalogue(session)
+
+
 @app.get("/api/map/lots")
 def get_map_lots(
     request: Request,
@@ -1680,7 +1696,9 @@ def get_map_lots(
     east: float | None = Query(None, ge=-180, le=180),
     north: float | None = Query(None, ge=-90, le=90),
     review_status: str | None = Query(None, pattern="^(approved|maybe|rejected)$"),
+    sources: str | None = Query(None, max_length=900),
 ):
+    selected_sources = _source_filter(sources)
     bounds = (west, south, east, north)
     if any(value is not None for value in bounds) and not all(value is not None for value in bounds):
         raise HTTPException(status_code=422, detail="west, south, east and north must be provided together")
@@ -1698,6 +1716,7 @@ def get_map_lots(
         east,
         north,
         review_status,
+        selected_sources,
     )
     statistics_key = (
         city_slug,
@@ -1706,6 +1725,7 @@ def get_map_lots(
         max_start_price,
         include_archived,
         review_status,
+        selected_sources,
     )
     now = time.monotonic()
     with _map_response_cache_lock:
@@ -1729,6 +1749,7 @@ def get_map_lots(
                     max_start_price=max_start_price,
                     include_archived=include_archived,
                     review_status=review_status,
+                    sources=selected_sources,
                 )
                 with _map_response_cache_lock:
                     _map_statistics_cache[statistics_key] = (now, statistics)
@@ -1745,6 +1766,7 @@ def get_map_lots(
                 east=east,
                 north=north,
                 review_status=review_status,
+                sources=selected_sources,
                 statistics=statistics,
                 defer_statistics=bounded_viewport and statistics is None,
             )
@@ -2003,6 +2025,7 @@ def get_filtered_map_tile(
     region_code: str | None = Query(None, pattern=r"^\d{2,3}$"),
     min_start_price: float | None = Query(None, ge=0),
     max_start_price: float | None = Query(None, ge=0),
+    sources: str | None = Query(None, max_length=900),
 ):
     if not (0 <= z <= 14 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
         raise HTTPException(status_code=404, detail="Map tile not found")
@@ -2016,6 +2039,7 @@ def get_filtered_map_tile(
             detail="min_start_price must not exceed max_start_price",
         )
 
+    selected_sources = _source_filter(sources)
     started = time.monotonic()
     cache_key = (
         version,
@@ -2025,6 +2049,7 @@ def get_filtered_map_tile(
         region_code,
         min_start_price,
         max_start_price,
+        selected_sources,
     )
     with _filtered_tile_cache_lock:
         cached = _filtered_tile_cache.get(cache_key)
@@ -2047,6 +2072,7 @@ def get_filtered_map_tile(
             region_code=region_code,
             min_start_price=min_start_price,
             max_start_price=max_start_price,
+            sources=selected_sources,
         )
         body = json.dumps(
             payload,
