@@ -39,8 +39,8 @@ MULTI = """
 
 
 def test_all_twenty_distinct_first_party_etps_have_canonical_url_and_plan():
-    assert len(PROFILES) == 20
-    assert len(PROFILE_BY_ID) == 20
+    assert len(PROFILES) == 22
+    assert len(PROFILE_BY_ID) == 22
     for profile in PROFILES:
         assert urlsplit(profile.catalogue_url).scheme == "https"
         assert urlsplit(profile.catalogue_url).hostname
@@ -121,7 +121,7 @@ def test_joint_probe_never_changes_database_or_proves_full_inventory(monkeypatch
         session=session, ids=("m-ets.ru", "etpu.ru", "nistp.ru", "ausib.ru"),
         delay_seconds=0.5,
     )
-    assert report["expected_source_count"] == 20
+    assert report["expected_source_count"] == 22
     assert report["queried_source_count"] == 4
     assert report["source_completeness_proven"] is False
     assert report["can_reconcile_missing_or_archive"] is False
@@ -137,6 +137,15 @@ def test_joint_probe_never_changes_database_or_proves_full_inventory(monkeypatch
         PROFILE_BY_ID["etpu.ru"].catalogue_url,
         PROFILE_BY_ID["nistp.ru"].catalogue_url,
     ]
+
+
+@pytest.mark.parametrize("source", ["rts-tender.ru", "roseltorg.ru"])
+def test_property_sale_sections_require_verified_public_listing_contract(source):
+    profile = PROFILE_BY_ID[source]
+    assert profile.strategy == "research"
+    assert "https://" in profile.catalogue_url
+    with pytest.raises(EtpCatalogError):
+        parse_catalogue(profile, PER_LOT)
 
 
 def test_research_profile_does_not_fabricate_available_lots():
