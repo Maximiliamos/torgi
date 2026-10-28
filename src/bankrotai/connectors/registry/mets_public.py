@@ -238,3 +238,35 @@ class MetsPublicPilot:
             "lots": rows,
             "failures": failures,
         }
+
+
+class MetsConnector:
+    """Explicit connector registry entry; ingestion search is locked until full crawl."""
+
+    source_id = "m-ets.ru"
+    capabilities = frozenset({"fetch_lot", "read_only_pilot"})
+
+    def __init__(self, *, session: requests.Session | None = None) -> None:
+        self.pilot = MetsPublicPilot(session=session)
+
+    async def search(self, filters=None, cursor=None):
+        from bankrotai.connectors.base import ConnectorCapabilityError
+
+        raise ConnectorCapabilityError(
+            "M-ETS supports read-only preview and exact detail only; "
+            "no archive-safe full catalogue pagination has been verified"
+        )
+
+    async def fetch_lot(self, external_id: str) -> NormalizedLot:
+        import asyncio
+
+        if not re.fullmatch(r"\d{4,9}-\d{1,5}", external_id):
+            raise MetsEvidenceError("M-ETS external_id must be <trade>-<lot>")
+        url = f"{BASE}/{external_id}"
+        html = await asyncio.to_thread(self.pilot._get, url)
+        return parse_mets_lot(html, url)
+
+    async def preview(self, *, max_lots: int = 5) -> dict:
+        import asyncio
+
+        return await asyncio.to_thread(self.pilot.preview, max_lots=max_lots)
