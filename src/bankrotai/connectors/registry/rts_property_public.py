@@ -115,7 +115,7 @@ def parse_grid(html: str, *, limit: int = 100) -> dict:
             status = _text(card.select_one('[rts-at="lot-card-lot-state"]'))
             if not price or not status:
                 raise RtsEvidenceError("Missing RTS card price or status")
-            region_node = card.select_one(".all-trades-main-section__main-part p.rts-text_color-secondary")
+            region_node = card.select_one(".it-main-grid-card__main-section p.rts-text_body-m.rts-text_color-secondary")
             region = _text(region_node) if region_node else None
             row = {
                 "source": "rts-tender.ru", "notice_number": notice,
