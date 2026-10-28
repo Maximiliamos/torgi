@@ -57,8 +57,9 @@ PROFILES: tuple[EtpProfile, ...] = (
                "https://etp.alfalot.ru/app/LotList/page?LotList.pageNum.lots=0&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
                "alfalot_lots", "Public upcoming-sale lots; current/paused require separate pages"),
     EtpProfile("rts-tender.ru", "РТС-тендер (имущественные торги)",
-               "https://www.rts-tender.ru/property-sales", "research",
-               "Confirmed official property-sales section; determine public lot API"),
+               "https://it2.rts-tender.ru/v2/grid/trades/all", "rts_grid_cards",
+               "Public Angular lot cards; mix arrest, nonstationary rights and other sections; "
+               "lot details in rts_property_public.py, API/pagination unverified"),
     EtpProfile("roseltorg.ru", "Росэлторг / 178-ФЗ",
                "https://178fz.roseltorg.ru/", "research",
                "Confirmed public privatization section; find accessible sale listings"),
@@ -305,7 +306,7 @@ def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) ->
 
 
 def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[dict]:
-    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots", "cdtrf_cards"}:
+    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}:
         raise EtpCatalogError("No verified HTML extractor for this source")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
@@ -331,6 +332,24 @@ def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[
                 "ready_for_ingestion": False,
             }
             for item in source["page_observations"]
+        ]
+    if profile.strategy == "rts_grid_cards":
+        from bankrotai.connectors.registry.rts_property_public import parse_grid as parse_rts
+
+        observed = parse_rts(html, limit=limit)
+        return [
+            {
+                "source": profile.source_id, "external_id": item["external_id"],
+                "trade": item["notice_number"], "lot": item["lot_number"],
+                "title": item["title"], "catalogue_detail_link": item["detail_url"],
+                "listing_price_rub": item["listing_price_rub"],
+                "source_status_text": item["source_status_text"],
+                "regulation": item["regulation"],
+                "notice_url": item["notice_url"],
+                "evidence": "rts_saved_angular_grid_unverified_detail",
+                "verified_detail": False, "ready_for_ingestion": False,
+            }
+            for item in observed["property_candidates"]
         ]
     if profile.strategy == "table_lots":
         rows = _parse_lot_tables(profile, soup, limit)
