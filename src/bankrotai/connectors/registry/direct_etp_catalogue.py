@@ -76,8 +76,9 @@ PROFILES: tuple[EtpProfile, ...] = (
                "Public per-lot table"),
     EtpProfile("aukcioncenter.ru", "Аукцион-центр", "https://aukcioncenter.ru/etp/trade/list.html?show=current", "trade_rows",
                "Public trade table; confirm detail URLs"),
-    EtpProfile("etp-profit.ru", "Профит", "https://etp-profit.ru/", "research",
-               "Two concurrent platform versions after August 2026"),
+    EtpProfile("etp-profit.ru", "Профит",
+               "https://etp-profit.ru/etp/trade/list.html?show=current", "trade_rows",
+               "Public HTML trade list; second www platform version needs separate evidence"),
     EtpProfile("ausib.ru", "Аукционы Сибири", "https://ausib.ru/", "research",
                "Public catalogue route not yet established"),
     EtpProfile("vertrades.ru", "Вердиктъ", "https://vertrades.ru/", "research",
@@ -169,7 +170,7 @@ def _parse_lot_tables(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> l
         if not re.fullmatch(r"\d{4,12}", trade) or not re.fullmatch(r"\d{1,5}", lot):
             continue
         try:
-            link = _first_provider_link(profile, cells[:4])
+            link = _first_provider_link(profile, cells[3:4] + cells[:3])
             items.append(_candidate(
                 profile, trade=trade, lot=lot, title=title, url=link,
                 price=_money(cells[4].get_text(" ", strip=True)),
