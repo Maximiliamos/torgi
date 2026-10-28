@@ -121,6 +121,9 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert len(rows) == 1
         assert rows[0].region_code == "76"
         assert float(rows[0].start_price or 0) == 500_000
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
+        assert processed is not None
+        assert processed.region_code == "76"
 
 
 def test_source_observation_timestamps_are_ordered_on_insert_and_resync(sessions) -> None:
