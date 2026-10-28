@@ -280,34 +280,35 @@ def test_builtin_connector_registry_is_explicit() -> None:
     assert connector_registry.create("torgi.gov.ru").source_id == "torgi.gov.ru"
 
 
-def test_fedresurs_connector_authenticates_and_normalizes_official_message() -> None:
-    class Response:
-        def __init__(self, payload):
-            self.payload = payload
+def test_fedresurs_connector_authenticates_but_refuses_synthetic_lot() -> None:
+    import asyncio
 
+    from bankrotai.connectors.base import ConnectorCapabilityError
+    from bankrotai.connectors.registry.fedresurs_publications import DEMO_URL
+
+    class Response:
         def raise_for_status(self):
             return None
 
         def json(self):
-            return self.payload
+            return {"jwt": "token"}
 
     class SessionStub:
         def __init__(self):
             self.auth_body = None
 
-        def post(self, _url, *, json, timeout):
+        def post(self, _url, *, json, timeout, allow_redirects):
+            assert allow_redirects is False
             self.auth_body = json
-            return Response({"jwt": "token"})
-
-        def get(self, _url, *, params, headers, timeout):
-            assert headers == {"Authorization": "Bearer token", "Accept": "application/json"}
-            return Response({"items": [{"guid": "guid-1", "title": "Land lot", "price": 123}]})
+            return Response()
 
     session = SessionStub()
-    connector = FedresursConnector(login="user", password="secret", base_url="https://official.example", session=session)
-    page = connector._search_sync({}, None)
+    connector = FedresursConnector(
+        login="user", password="secret", base_url=DEMO_URL, session=session
+    )
+    health = asyncio.run(connector.healthcheck())
 
-    assert session.auth_body["login"] == "user"
-    assert len(session.auth_body["passwordHash"]) == 128
-    assert page.items[0].external_id == "guid-1"
-    assert page.items[0].source_system == "fedresurs.ru"
+    assert health.status == "healthy"
+    assert session.auth_body == {"login": "user", "password": "secret"}
+    with pytest.raises(ConnectorCapabilityError, match="not individual sale lots"):
+        asyncio.run(connector.search({}))
