@@ -31,7 +31,8 @@ concurrency:
 jobs:
   production-functional:
     if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
-    runs-on: ubuntu-latest
+    # Keep Playwright 1.55.1 on a supported Ubuntu image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       E2E_BASE_URL: ${{ inputs.web_base_url || 'https://sterdez.online' }}
