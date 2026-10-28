@@ -197,11 +197,12 @@ def _dataset_points(session: Session, dataset: MapDataset) -> list[RuntimePoint]
     # Source membership is loaded once per published dataset. A canonical map
     # marker can represent duplicate ProcessedLot rows from several platforms.
     sources_by_root: dict[int, set[str]] = defaultdict(set)
-    for lot_id, duplicate_of_id, source_system in session.execute(
-        select(ProcessedLot.id, ProcessedLot.duplicate_of_id, ProcessedLot.source_system)
+    for lot_id, duplicate_of_id, source_system, is_archived in session.execute(
+        select(ProcessedLot.id, ProcessedLot.duplicate_of_id,
+               ProcessedLot.source_system, ProcessedLot.is_archived)
     ):
         root_id = duplicate_of_id if duplicate_of_id is not None else lot_id
-        if root_id in points_by_id and source_system:
+        if root_id in points_by_id and source_system and not is_archived:
             sources_by_root[root_id].add(source_system)
     for lot_id, point in points_by_id.items():
         points_by_id[lot_id] = replace(
