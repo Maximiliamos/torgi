@@ -141,6 +141,15 @@ def test_source_observation_timestamps_are_ordered_on_insert_and_resync(sessions
         assert updated.first_seen_at <= updated.last_seen_at
 
 
+def test_legacy_source_lot_observation_time_is_ordered(sessions) -> None:
+    with sessions() as session:
+        persist_lot(session, lot("legacy-timestamp"))
+        session.commit()
+        observed = session.scalar(select(SourceLot).where(SourceLot.external_id == "legacy-timestamp"))
+        assert observed is not None
+        assert observed.first_seen_at <= observed.last_seen_at
+
+
 def test_source_run_records_real_progress_timestamp_and_phase(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_id, _ = run_with(service, FakeConnector([[lot()]]))
