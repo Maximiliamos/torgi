@@ -152,6 +152,10 @@ def _source_values(
         "inspection_procedure": lot.inspection_procedure or _raw_value(raw, "inspection_procedure"),
         "organizer_contact": lot.organizer_contact or _raw_value(raw, "organizer_contact"),
         "raw_data": raw,
+        # Use one timestamp for both fields on inserts. Otherwise the ORM
+        # default for first_seen_at runs during INSERT after last_seen_at was
+        # captured, producing inverted observation times for every new lot.
+        "first_seen_at": existing.first_seen_at if existing is not None else now,
         "last_seen_at": now,
         "last_sync_run_id": run_id,
         "is_active": is_active,
