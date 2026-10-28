@@ -184,6 +184,7 @@ def test_automatic_cleanup_keeps_safe_retention_arguments(monkeypatch) -> None:
         return {
             "candidate_dataset_count": 1,
             "candidate_versions": ["old-r6-bundle-s3"],
+            "deleted_versions": ["old-r6-bundle-s3"] if kwargs["apply"] else [],
         }
 
     deleted: list[list[str]] = []
