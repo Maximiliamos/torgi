@@ -73,6 +73,7 @@ def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_pri
         ))
         second = persist_lot(session, _lot(
             "lot-online.ru",
+        "m-ets.ru",
             "lot-online:1760257",
             title="Имущество муниципального округа по адресу Ивановское, Ленина, 21",
             address="Ивановское, ул. Ленина, д. 21",
