@@ -1,6 +1,6 @@
 # ADR: multi-source filtered map, source provenance and API module ratchet
 
-Date: 2026-10-28 · Status: proposed (Draft PR #965)
+Date: 2026-10-28 · Status: accepted for isolated map-filter release; ETP pilots remain Draft #965
 
 ## Context
 
@@ -8,11 +8,11 @@ Public REG.RU S3 map bundles are immutable and optimized for unfiltered maps.
 Filter requests (region, starting price) already use a bounded runtime index.
 A client-only ETP selector would be incorrect because low-zoom clusters are
 preaggregated and deduplicated canonical assets appear under multiple sources.
-New ETP pilot profiles must not enter production ingestion implicitly.
+New ETP pilot profiles are not part of this release and must not enter production ingestion implicitly.
 
 ## Decision
 
-- GET /api/map/sources exposes all 26 requested sources plus UTPL; pilot is
+- GET /api/map/sources exposes five existing sources plus 22 pilot ETP options; pilot is
   separate from "has_database_records". No synthetic source availability.
 - A bounded, validated `sources` comma-separated query selects **any** of the
   requested source systems, including ProcessedLot children merged into a
