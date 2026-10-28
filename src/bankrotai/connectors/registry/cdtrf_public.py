@@ -193,7 +193,7 @@ def parse_detail(html: str, url: str) -> dict:
     lat, lon = lot.get("latitude"), lot.get("longitude")
     coords = None
     try:
-        pair = (float(lat), float(lon))
+        pair = (float(lat), float(lon)) if lat is not None and lon is not None else (0.0, 0.0)
         if pair != (0.0, 0.0) and -85.0511 <= pair[0] <= 85.0511 and -180 <= pair[1] <= 180:
             coords = {"lat": pair[0], "lon": pair[1]}
     except (TypeError, ValueError):
