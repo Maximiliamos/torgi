@@ -24,6 +24,13 @@ except ImportError as exc:
     raise SystemExit("Install playwright: python -m pip install playwright && python -m playwright install chromium") from exc
 
 from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
+from dataclasses import replace
+
+# Browser-confirmed catalogue hosts can differ from the corporate root domain.
+START_OVERRIDES = {
+    "lot-online.ru": "https://catalog.lot-online.ru/index.php?dispatch=categories.view&category_id=9876",
+    "roseltorg.ru": "https://www.roseltorg.ru/search/sale?sale=2&currency=all&status%5B%5D=1&status%5B%5D=0&status%5B%5D=5",
+}
 
 DETAIL_PATTERNS = {
     "m-ets.ru": r"^/\d{4,9}-\d{1,5}/?$",
@@ -290,7 +297,10 @@ def main() -> int:
                 ctx = browser.new_context(ignore_https_errors=False, accept_downloads=False)
                 page = ctx.new_page()
                 try:
-                    outcomes.append(scan(page, known[source], root, args.max_details,
+                    profile = known[source]
+                    if source in START_OVERRIDES:
+                        profile = replace(profile, catalogue_url=START_OVERRIDES[source])
+                    outcomes.append(scan(page, profile, root, args.max_details,
                                          args.challenge_timeout))
                 finally:
                     ctx.close()
