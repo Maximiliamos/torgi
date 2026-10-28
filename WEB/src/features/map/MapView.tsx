@@ -24,6 +24,7 @@ import {
   fetchPublicYandexMapBundleTile,
   fetchFilteredYandexMapTile,
   fetchRegions,
+  fetchMapSourceOptions,
   fetchNationwideLotSync,
   fetchOperationsProgress,
   pauseGeocoding,
@@ -66,6 +67,11 @@ import {
   visibleTileCoordinates,
   mapTileCacheKey,
 } from "./mapGeometry";
+import {
+  MapFiltersPanel, EMPTY_MAP_FILTERS, mapFilterUiState,
+} from "./MapFiltersPanel";
+import type { MapFilterState, MapSourceOption } from "./MapFiltersPanel";
+export { mapFilterUiState } from "./MapFiltersPanel";
 import type { TileCoordinate } from "./mapGeometry";
 // Keep the existing MapView public exports for all downstream imports.
 export {
@@ -179,11 +185,13 @@ export function directMapFilterSignature(filters: DirectMapFilterQuery) {
     filters.region_code == null
     && filters.min_start_price == null
     && filters.max_start_price == null
+    && !filters.sources
   ) return "";
   return [
     filters.region_code ?? "",
     filters.min_start_price ?? "",
     filters.max_start_price ?? "",
+    filters.sources?.split(",").sort().join(",") ?? "",
   ].join("|");
 }
 export function fetchCachedYandexMapTile(
@@ -1230,19 +1238,6 @@ function LotPreviewLoading({
   );
 }
 
-type MapFilterState = { region: string; minPrice: string; maxPrice: string };
-const EMPTY_MAP_FILTERS: MapFilterState = { region: "", minPrice: "", maxPrice: "" };
-
-export function mapFilterUiState(filters: MapFilterState, applied: MapFilterState) {
-  return {
-    dirty:
-      filters.region !== applied.region ||
-      filters.minPrice !== applied.minPrice ||
-      filters.maxPrice !== applied.maxPrice,
-    appliedCount: [applied.region, applied.minPrice, applied.maxPrice].filter(Boolean).length,
-  };
-}
-
 function relativeUpdate(value: string | null, now: number) {
   if (!value) return "время обновления неизвестно";
   const elapsed = Math.max(0, now - new Date(value).getTime());
@@ -1303,6 +1298,7 @@ export function MapView({
   const [timings, setTimings] = React.useState({ api: 0, server: 0, render: 0, cached: false });
   const [clock, setClock] = React.useState(Date.now());
   const [regions, setRegions] = React.useState<RegionOption[]>([]);
+  const [sourceOptions, setSourceOptions] = React.useState<MapSourceOption[]>([]);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [mapNotice, setMapNotice] = React.useState("");
@@ -1322,13 +1318,14 @@ export function MapView({
   const [operationProgress, setOperationProgress] = React.useState<OperationsProgress | null>(null);
   const [geocodingControlBusy, setGeocodingControlBusy] = React.useState(false);
   const filterUi = mapFilterUiState(filters, appliedFilters);
-  const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice;
+  const tileMode = !favoritesOnly && !appliedFilters.region && !appliedFilters.minPrice && !appliedFilters.maxPrice && !(appliedFilters.sources?.length);
   const directTileMode = DIRECT_MAP_TILES && !favoritesOnly;
   const directFilters = React.useMemo<DirectMapFilterQuery>(() => ({
     region_code: appliedFilters.region || undefined,
+    sources: appliedFilters.sources?.length ? [...appliedFilters.sources].sort().join(",") : undefined,
     min_start_price: appliedFilters.minPrice ? Number(appliedFilters.minPrice) : undefined,
     max_start_price: appliedFilters.maxPrice ? Number(appliedFilters.maxPrice) : undefined,
-  }), [appliedFilters.maxPrice, appliedFilters.minPrice, appliedFilters.region]);
+  }), [appliedFilters.maxPrice, appliedFilters.minPrice, appliedFilters.region, appliedFilters.sources]);
   const directFilterKey = directMapFilterSignature(directFilters);
   const visibleMapObjects = directTileMode
     ? directRenderedCount
@@ -1378,9 +1375,10 @@ export function MapView({
       setMapNotice("");
       try {
         const query = favoritesOnly
-          ? { region_code: applied.region || undefined, review_status: "approved" as const }
+          ? { region_code: applied.region || undefined, sources: applied.sources?.length ? [...applied.sources].sort().join(",") : undefined, review_status: "approved" as const }
           : {
               region_code: applied.region || undefined,
+              sources: applied.sources?.length ? [...applied.sources].sort().join(",") : undefined,
               min_start_price: applied.minPrice ? Number(applied.minPrice) : undefined,
               max_start_price: applied.maxPrice ? Number(applied.maxPrice) : undefined,
               west: viewport?.[0],
@@ -1492,6 +1490,10 @@ export function MapView({
         setIsAdmin(user.role === "admin");
       })
       .catch(() => setIsAdmin(false));
+  }, []);
+  React.useEffect(() => {
+    fetchMapSourceOptions().then((response) => setSourceOptions(response.items))
+      .catch(() => setSourceOptions([]));
   }, []);
   React.useEffect(() => {
     if (!active) return;
@@ -1879,69 +1881,15 @@ export function MapView({
         ) : (
           <div className="mapControlPanel">
             <h2>Лоты недвижимости</h2>
-            <form className="mapFiltersForm" onSubmit={(event) => { event.preventDefault(); if (filterUi.dirty) setAppliedFilters({ ...filters }); }}>
-              <fieldset className="mapFiltersBox">
-                <legend>Фильтры{filterUi.appliedCount > 0 ? ` · применено ${filterUi.appliedCount}` : ""}</legend>
-                <label>
-                  <span>Стартовая цена от</span>
-                  <input
-                    type="number"
-                    value={filters.minPrice}
-                    onChange={(event) =>
-                      setFilters({ ...filters, minPrice: event.target.value })
-                    }
-                    placeholder="Не задано"
-                  />
-                </label>
-                <label>
-                  <span>Стартовая цена до</span>
-                  <input
-                    type="number"
-                    value={filters.maxPrice}
-                    onChange={(event) =>
-                      setFilters({ ...filters, maxPrice: event.target.value })
-                    }
-                    placeholder="Не задано"
-                  />
-                </label>
-                <label>
-                  <span>Субъект РФ</span>
-                  <select
-                    value={filters.region}
-                    onChange={(event) =>
-                      setFilters({ ...filters, region: event.target.value })
-                    }
-                  >
-                    <option value="">Все регионы</option>
-                    {regions.map((region) => (
-                      <option key={region.code} value={region.code}>
-                        {region.code} — {region.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div>
-                  <button type="submit" disabled={!filterUi.dirty}>{filterUi.dirty ? "Применить" : "Применено"}</button>
-                  <button
-                    type="button"
-                    disabled={filterUi.appliedCount === 0 && !filterUi.dirty}
-                    onClick={() => {
-                      setFilters({ ...EMPTY_MAP_FILTERS });
-                      setAppliedFilters({ ...EMPTY_MAP_FILTERS });
-                    }}
-                  >
-                    Сбросить
-                  </button>
-                </div>
-                <small className={filterUi.dirty ? "mapFilterHint mapFilterHint--pending" : "mapFilterHint"}>
-                  {filterUi.dirty
-                    ? "Есть неприменённые изменения"
-                    : filterUi.appliedCount > 0
-                      ? "Фильтры применены к карте"
-                      : "Показаны все лоты"}
-                </small>
-              </fieldset>
-            </form>
+            <MapFiltersPanel
+              filters={filters} setFilters={setFilters} applied={appliedFilters}
+              regions={regions} sources={sourceOptions}
+              onApply={() => { if (filterUi.dirty) setAppliedFilters({ ...filters }); }}
+              onReset={() => {
+                setFilters({ ...EMPTY_MAP_FILTERS, sources: [] });
+                setAppliedFilters({ ...EMPTY_MAP_FILTERS, sources: [] });
+              }}
+            />
             {operationProgress && <OperationProgressCard
               value={operationProgress}
               isAdmin={isAdmin}
