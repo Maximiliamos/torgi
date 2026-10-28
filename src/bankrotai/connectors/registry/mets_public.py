@@ -125,7 +125,12 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # Read only the primary lot panel so recommended cards cannot overwrite it.
     primary_description = soup.select_one('[itemprop="description"]')
     description = primary_description.get_text(" ", strip=True) if primary_description else ""
-    cadastral_match = CADASTRE.search(title + " " + description)
+    # Legacy compact HTML may lack schema.org description. Fall back to
+    # text only when there are no recommendation cards to misattribute.
+    cadastral_scope = title + " " + description
+    if not primary_description and not soup.select("a.card-item"):
+        cadastral_scope = text[:4000]
+    cadastral_match = CADASTRE.search(cadastral_scope)
     cadastral = cadastral_match.group(1) if cadastral_match else None
     meta_sku = soup.select_one('[itemprop="sku"][content]')
     if meta_sku is not None and meta_sku.get("content") != f"{trade}-МЭТС-{lot_number}":
