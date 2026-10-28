@@ -317,6 +317,51 @@ describe("direct Yandex tile transport", () => {
     ));
   });
 
+  it("selects Lot-online and RTS together and requests only source-filtered tiles", async () => {
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+    await waitFor(() => expect(fetchMapSourceOptions).toHaveBeenCalled());
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+    fireEvent.click(screen.getByText("Источники ЭТП: все"));
+    const lotOnline = await screen.findByRole("checkbox", { name: "Lot-online / РАД" });
+    const rts = screen.getByRole("checkbox", { name: "РТС-тендер" });
+    fireEvent.click(lotOnline);
+    fireEvent.click(rts);
+    expect(screen.getByText("Источники ЭТП: выбрано 2")).toBeInTheDocument();
+    expect(screen.getByText(/Пока нет записей · пилот/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Применить" }));
+
+    act(() => send(frame, "bankrotai-ready"));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "set-direct-dataset", enabled: true,
+        filterKey: "|||lot-online.ru,rts-tender.ru",
+      }),
+      "*",
+    ));
+    act(() => send(frame, "bankrotai-request-tiles", {
+      version: "direct-v1",
+      filterKey: "|||lot-online.ru,rts-tender.ru",
+      generation: 12,
+      visible: [{ z: 12, x: 2501, y: 1301 }],
+      prefetch: [],
+    }));
+    await waitFor(() => expect(fetchFilteredYandexMapTile).toHaveBeenCalledWith(
+      "direct-v1", 12, 2501, 1301,
+      expect.objectContaining({ sources: "lot-online.ru,rts-tender.ru" }),
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Сбросить" }));
+    await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "set-direct-dataset", enabled: true, filterKey: "",
+      }),
+      "*",
+    ));
+  });
+
   it("keeps region and price filters on runtime-filtered direct tiles", async () => {
     const { MapView } = await import("./MapView");
     render(<MapView refreshToken={0} />);
