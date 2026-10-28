@@ -17,6 +17,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapReviewStatuses: vi.fn(),
     fetchOperationsProgress: vi.fn(),
     fetchRegions: vi.fn(),
+    fetchMapSourceOptions: vi.fn(),
     setReviewStatus: vi.fn(),
   };
 });
@@ -87,6 +88,12 @@ describe("direct Yandex tile transport", () => {
       role: "reader",
     });
     vi.mocked(fetchRegions).mockResolvedValue([{ code: "76", name: "Ярославская область" }]);
+    vi.mocked(fetchMapSourceOptions).mockResolvedValue({
+      items: [
+        { id: "lot-online.ru", label: "Lot-online / РАД", ingestion_stage: "connected", has_database_records: true },
+        { id: "rts-tender.ru", label: "РТС-тендер", ingestion_stage: "pilot", has_database_records: false },
+      ],
+    });
     vi.mocked(fetchOperationsProgress).mockResolvedValue({
       sync: null,
       geocoding: {
