@@ -111,6 +111,7 @@ from bankrotai.tasks import (
 )
 from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source_specs
 from bankrotai.services.etp_mets_canary import create_mets_canary_router
+from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -222,7 +223,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=256, compresslevel=5)
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -464,6 +464,7 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
 
 
 app.include_router(create_mets_canary_router(require_admin))
+app.include_router(create_cdtrf_canary_router(require_admin))
 
 @app.get("/")
 def read_root():
