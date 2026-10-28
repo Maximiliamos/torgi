@@ -30,6 +30,7 @@ import {
   pauseGeocoding,
   resumeGeocoding,
   fetchRegions,
+  fetchMapSourceOptions,
   searchCadastre,
   setReviewStatus,
   type MapDataset,
