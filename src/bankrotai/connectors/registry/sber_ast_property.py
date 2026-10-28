@@ -119,11 +119,11 @@ def _price_periods(soup: BeautifulSoup, *, initial: str, minimum: str | None) ->
         previous = Decimal(initial)
         floor = Decimal(minimum) if minimum is not None else Decimal(0)
         for position, period in enumerate(result, 1):
-            price = Decimal(period["price_rub"])
-            if (period["period_number"] != position or price > previous
-                    or price < floor or period["start"] > period["end"]):
+            period_price = Decimal(period["price_rub"])
+            if (period["period_number"] != position or period_price > previous
+                    or period_price < floor or period["start"] > period["end"]):
                 raise SberAstEvidenceError("Incomplete/unsorted or contradictory UTP price periods")
-            previous = price
+            previous = period_price
     return result
 
 
