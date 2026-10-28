@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
+from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError, ConnectorPage
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import classify_category
 
@@ -240,7 +241,7 @@ class MetsPublicPilot:
         }
 
 
-class MetsConnector:
+class MetsConnector(AuctionConnector):
     """Explicit connector registry entry; ingestion search is locked until full crawl."""
 
     source_id = "m-ets.ru"
@@ -249,9 +250,7 @@ class MetsConnector:
     def __init__(self, *, session: requests.Session | None = None) -> None:
         self.pilot = MetsPublicPilot(session=session)
 
-    async def search(self, filters=None, cursor=None):
-        from bankrotai.connectors.base import ConnectorCapabilityError
-
+    async def search(self, filters=None, cursor=None) -> ConnectorPage:
         raise ConnectorCapabilityError(
             "M-ETS supports read-only preview and exact detail only; "
             "no archive-safe full catalogue pagination has been verified"
