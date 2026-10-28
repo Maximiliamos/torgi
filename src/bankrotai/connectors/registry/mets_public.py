@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import asdict
 from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
@@ -24,7 +23,7 @@ APARTMENTS_URL = (
 )
 DETAIL_PATH = re.compile(r"^/(\d{4,9})-(\d{1,5})/?$")
 CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
-PRICE = re.compile(r"(?<!\d)(\d[\d \u00a0\u202f]{0,25})(?:[,\.](\d{1,2}))?\s*₽")
+PRICE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,12})(?:[,\.](\d{1,2}))?\s*₽")
 DATE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})")
 MAX_HTML_BYTES = 2_000_000
 
