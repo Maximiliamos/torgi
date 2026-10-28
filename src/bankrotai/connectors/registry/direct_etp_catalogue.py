@@ -52,18 +52,20 @@ PROFILES: tuple[EtpProfile, ...] = (
                "Public catalogue; may require JS to expose exact links"),
     EtpProfile("nistp.ru", "Новые информационные сервисы", "https://nistp.ru/bankrot/trade_list.php", "trade_rows",
                "Public trade table containing embedded numbered lots"),
-    EtpProfile("alfalot.ru", "Альфалот", "https://etp.alfalot.ru/app/Home/page", "links",
-               "Dynamic public procedures; may require separate JSON contract"),
+    EtpProfile("alfalot.ru", "Альфалот",
+               "https://etp.alfalot.ru/app/LotList/page?LotList.pageNum.lots=0&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
+               "alfalot_lots", "Public upcoming-sale lots; current/paused require separate pages"),
     EtpProfile("rts-tender.ru", "РТС-тендер (имущественные торги)",
                "https://www.rts-tender.ru/property-sales", "research",
                "Confirmed official property-sales section; determine public lot API"),
     EtpProfile("roseltorg.ru", "Росэлторг / 178-ФЗ",
                "https://178fz.roseltorg.ru/", "research",
                "Confirmed public privatization section; find accessible sale listings"),
-    EtpProfile("sberbank-ast.ru", "Сбербанк-АСТ — имущественные торги", "https://utp.sberbank-ast.ru/", "research",
+    EtpProfile("sberbank-ast.ru", "Сбербанк-АСТ — имущественные торги", "https://utp.sberbank-ast.ru/Bankruptcy", "research",
                "Select property-sale section, not state procurement"),
-    EtpProfile("fabrikant.ru", "Фабрикант", "https://www.fabrikant.ru/", "research",
-               "Find public bankruptcy property section without auth"),
+    EtpProfile("fabrikant.ru", "Фабрикант",
+               "https://www.fabrikant.ru/procedure/search/sales?section_ids%5B%5D=6",
+               "links", "Public bankruptcy-sale search; candidate extraction remains conservative"),
     EtpProfile("arbbitlot.ru", "АРБбитЛот", "https://torgi.arbbitlot.ru/", "links",
                "Public auctions/view pages; listing routes require confirmation"),
     EtpProfile("etpu.ru", "Уральская ЭТП", "https://bankrupt.etpu.ru/public/purchases-all/", "table_lots",
@@ -234,14 +236,53 @@ def _parse_provider_links(profile: EtpProfile, soup: BeautifulSoup, limit: int) 
     return items
 
 
+
+ALFALOT_ID = re.compile(r"(?P<trade>[0-9A-Z/]{7,30})\.lot(?P<lot>\d{1,5})(?:\.lot\d{1,5})?", re.IGNORECASE)
+
+
+def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:
+    """Parse official upcoming-sales listing; no assumption about full coverage."""
+    items = []
+    for tr in soup.select("tr"):
+        description = _clean(tr.get_text(" ", strip=True), 4500)
+        identity = ALFALOT_ID.search(description)
+        if not identity or not PROPERTY_WORDS.search(description):
+            continue
+        card_url = None
+        for link in tr.select("a[href]"):
+            href = str(link["href"])
+            if "/LotCard/page" not in href or "LotCard.lotEntity=" not in href:
+                continue
+            try:
+                card_url = safe_url(profile, href)
+            except EtpCatalogError:
+                continue
+            break
+        if not card_url:
+            continue
+        try:
+            items.append(_candidate(
+                profile, trade=identity.group("trade"), lot=identity.group("lot"),
+                title=description[identity.end():], url=card_url,
+                price=None, status="unknown",
+            ))
+        except EtpCatalogError:
+            continue
+        if len(items) >= limit:
+            break
+    return items
+
+
 def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[dict]:
-    if profile.strategy not in {"trade_rows", "table_lots", "links"}:
+    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots"}:
         raise EtpCatalogError("No verified HTML extractor for this source")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
     soup = BeautifulSoup(html, "html.parser")
     if profile.strategy == "table_lots":
         rows = _parse_lot_tables(profile, soup, limit)
+    elif profile.strategy == "alfalot_lots":
+        rows = _parse_alfalot_lots(profile, soup, limit)
     elif profile.strategy == "trade_rows":
         rows = _parse_trade_tables(profile, soup, limit)
     else:
