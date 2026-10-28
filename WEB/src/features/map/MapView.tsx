@@ -1492,7 +1492,8 @@ export function MapView({
       .catch(() => setIsAdmin(false));
   }, []);
   React.useEffect(() => {
-    fetchMapSourceOptions().then((response) => setSourceOptions(response.items))
+    fetchMapSourceOptions().then((response) =>
+      setSourceOptions(Array.isArray(response?.items) ? response.items : []))
       .catch(() => setSourceOptions([]));
   }, []);
   React.useEffect(() => {
