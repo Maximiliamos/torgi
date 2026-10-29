@@ -148,6 +148,7 @@ def _cdtrf_rejection_code(exc: Exception) -> str:
     if "no cdtrf ssr" in msg or "invalid cdtrf ssr" in msg or "lot object missing" in msg:
         return "ssr_schema_changed"
     for marker, code in (
+        ("cdtrf_unsupported_property_right", "unsupported_property_right"),
         ("cdtrf_category_unverified", "category_unverified"),
         ("cdtrf_cadastral_missing", "cadastral_missing"),
         ("cdtrf_price_missing", "price_missing"),
