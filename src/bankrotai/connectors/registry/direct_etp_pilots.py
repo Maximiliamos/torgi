@@ -47,9 +47,17 @@ class DirectEtpPilotConnector(AuctionConnector):
         self.session = session or requests.Session()
 
     async def search(self, filters=None, cursor: str | None = None) -> ConnectorPage:
+        if self.source_id == "cdtrf.ru":
+            from bankrotai.connectors.registry.etp_incremental import (
+                EtpIncrementalFilters, incremental_cdtrf_search,
+            )
+            if isinstance(filters, EtpIncrementalFilters) and filters.source_id == self.source_id:
+                return await asyncio.to_thread(
+                    incremental_cdtrf_search, filters, cursor, session=self.session
+                )
         raise ConnectorCapabilityError(
             f"{self.source_id}: complete pagination/detail/status contracts unverified; "
-            "production ingestion and archival are disabled"
+            "only specifically approved non-archival windows are allowed"
         )
 
     def _preview(self, limit: int) -> dict:
