@@ -403,7 +403,7 @@ jobs:
               }
             }
 
-            git diff --quiet $baseSha $env:GITHUB_SHA -- requirements.lock pyproject.toml certs
+            git diff --quiet $baseSha $env:GITHUB_SHA -- requirements.lock certs
             $foundationDiff = $LASTEXITCODE
             if ($foundationDiff -eq 1) {
               throw 'Offline source-overlay fallback refused: Python dependencies or trusted CA inputs changed since the deployed image'
@@ -411,6 +411,45 @@ jobs:
             if ($foundationDiff -ne 0) {
               throw "Offline source-overlay fallback refused: could not compare dependency inputs (git diff exit $foundationDiff)"
             }
+
+            # Only [project].version may differ from the deployed pyproject.
+            # Dependency, build-system or package configuration changes
+            # must still be rejected before using the offline overlay.
+            function Normalize-OverlayPyproject {
+              param([string[]]$Lines)
+              $inProject = $false
+              $versionSeen = $false
+              $normalized = @()
+              foreach ($line in $Lines) {
+                if ($line -match '^\\s*\\[([^]]+)\\]\\s*$') {
+                  $inProject = $Matches[1] -ceq 'project'
+                }
+                if ($inProject -and $line -match '^\\s*version\\s*=\\s*"[0-9]+\\.[0-9]+\\.[0-9]+"\\s*$') {
+                  if ($versionSeen) {
+                    throw 'Offline source-overlay fallback refused: duplicate project version'
+                  }
+                  $versionSeen = $true
+                  $normalized += 'version = "<release-only>"'
+                } else {
+                  $normalized += $line
+                }
+              }
+              if (-not $versionSeen) {
+                throw 'Offline source-overlay fallback refused: invalid project version'
+              }
+              return ($normalized -join [char]10)
+            }
+            $baseProject = @(& git.exe show "${baseSha}:pyproject.toml")
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Offline source-overlay fallback refused: deployed pyproject unavailable'
+            }
+            $currentProject = @(Get-Content -LiteralPath 'pyproject.toml')
+            $baseNormalized = Normalize-OverlayPyproject -Lines $baseProject
+            $currentNormalized = Normalize-OverlayPyproject -Lines $currentProject
+            if ($baseNormalized -cne $currentNormalized) {
+              throw 'Offline source-overlay fallback refused: pyproject differs beyond [project].version'
+            }
+            Write-Output 'Offline source-overlay version-only metadata proof: PASS'
 
             $pythonLine = (Select-String -LiteralPath 'Dockerfile' -Pattern '^FROM python:([0-9]+\.[0-9]+)-slim@sha256:[0-9a-f]{64}$' | Select-Object -First 1)
             if (-not $pythonLine -or $pythonLine.Matches.Count -eq 0) {
