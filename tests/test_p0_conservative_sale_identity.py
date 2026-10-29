@@ -20,6 +20,7 @@ def item(source, external, url, cadastral="76:02:022201:38"):
         source_url=url,
         cadastral_number=cadastral,
         cadastral_numbers=[cadastral] if cadastral else [],
+        raw_data={},
         title="Земельный участок 1000 м²",
         address="Один адрес",
         region_slug="yaroslavl",
