@@ -66,6 +66,12 @@ def _validate_cursor(cursor: str | None) -> int:
     return int(cursor.split(":", 1)[0])
 
 
+def _bounded_scope(pages: int) -> str:
+    if pages == 2:
+        return "two_page_incremental_window"
+    return f"bounded_{pages}_page_incremental_window"
+
+
 def _property_ready(lot) -> bool:
     return bool(
         lot.category in PROPERTY_CATEGORIES
@@ -125,9 +131,7 @@ def incremental_mets_search(
                 rejected += 1
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": ("two_page_incremental_window"
-                                             if filters.max_pages == 2 else
-                                             f"bounded_{filters.max_pages}_page_incremental_window"),
+                            "source_scope": _bounded_scope(filters.max_pages),
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, MetsEvidenceError, ValueError):
@@ -206,9 +210,7 @@ def incremental_cdtrf_search(
                 )
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": ("two_page_incremental_window"
-                                             if filters.max_pages == 2 else
-                                             f"bounded_{filters.max_pages}_page_incremental_window"),
+                            "source_scope": _bounded_scope(filters.max_pages),
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, CdtrfCanaryError, ValueError) as exc:
