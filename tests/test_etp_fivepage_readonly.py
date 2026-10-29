@@ -194,3 +194,37 @@ def test_connector_emits_public_candidate_fingerprints_without_raw_ids(monkeypat
     ]
     assert "243003-1" not in str(page.metadata)
     assert "243003-2" not in str(page.metadata)
+
+
+def test_cdtrf_fingerprints_include_all_listed_property_candidates(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    monkeypatch.setattr(
+        mod, "preview_cdtrf_public_api",
+        lambda page, session=None: {
+            "candidates": [
+                {"trade_id": "390364", "trade_lot_id": "390900"},
+                {"trade_id": "390364", "trade_lot_id": "390901"},
+                {"trade_id": "390364", "trade_lot_id": "390902"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        mod, "fetch_verified_cdtrf_lot",
+        lambda trade, lot_id, session=None: SimpleNamespace(
+            **{**vars(lot(f"cdtrf:{lot_id}", "cdtrf.ru")),
+               "lot_url": "https://torgi.cdtrf.ru/trades/390364"}
+        ),
+    )
+    page = mod.incremental_cdtrf_search(
+        mod.EtpIncrementalFilters(
+            "cdtrf.ru", max_detail_requests=1, max_pages=1
+        ), None,
+    )
+    assert len(page.items) == 1
+    assert page.metadata["catalogue_lots"] == 3
+    assert page.metadata["catalogue_identity_fingerprints"] == [
+        hashlib.sha256(value.encode("utf-8")).hexdigest()
+        for value in ("390900", "390901", "390902")
+    ]
+    assert "390901" not in str(page.metadata)
