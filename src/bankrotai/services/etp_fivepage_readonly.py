@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from typing import Callable
 
 from bankrotai.connectors.base import ConnectorPage
@@ -33,6 +34,7 @@ def verify_window(
         source, max_detail_requests=details_per_page, max_pages=pages,
     )
     seen: set[str] = set()
+    seen_catalogue_fingerprints: set[str] = set()
     cursor: str | None = None
     catalogued = 0
     rejected = 0
@@ -53,10 +55,24 @@ def verify_window(
         catalogue_items = result.metadata.get("catalogue_lots")
         if type(catalogue_items) is not int or catalogue_items < len(result.items):
             raise RuntimeError("ETP catalogue count is not evidenced")
+        # The connector provides all listed candidate IDs as SHA-256 fingerprints,
+        # including candidates omitted by the tiny allowed detail-request cap.
+        fingerprints = result.metadata.get("catalogue_identity_fingerprints")
+        if (not isinstance(fingerprints, list)
+                or len(fingerprints) != catalogue_items
+                or not all(isinstance(x, str)
+                           and re.fullmatch(r"[0-9a-f]{64}", x) for x in fingerprints)
+                or len(fingerprints) != len(set(fingerprints))):
+            raise RuntimeError("ETP catalogue identity fingerprint evidence is incomplete")
+        if any(x in seen_catalogue_fingerprints for x in fingerprints):
+            raise RuntimeError("ETP catalogue repeats an observed ID across pages")
+        seen_catalogue_fingerprints.update(fingerprints)
         catalogued += catalogue_items
         detail_rejected = result.metadata.get("details_rejected")
         if type(detail_rejected) is not int or detail_rejected < 0:
             raise RuntimeError("ETP rejected-detail count is not evidenced")
+        if len(result.items) + detail_rejected > details_per_page:
+            raise RuntimeError("ETP page reports more detail attempts than authorized")
         rejected += detail_rejected
         for lot in result.items:
             identity = str(getattr(lot, "external_id", "") or "").strip()
@@ -76,6 +92,7 @@ def verify_window(
         "source": source, "read_only": True,
         "no_database_writes": True, "pages_verified": pages,
         "catalogue_candidates_seen": catalogued,
+        "unique_catalogue_id_fingerprints": len(seen_catalogue_fingerprints),
         "verified_unique_property_details": len(seen),
         "details_rejected": rejected,
         "complete_source_inventory": False, "safe_for_archival": False,
