@@ -42,6 +42,8 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
               "complete_source_inventory": False}
     if not apply:
         return report
+    if not lots:
+        raise RuntimeError("No verified real-estate lots found; refusing empty import")
     from bankrotai.db import session_scope
     from bankrotai.services.etp_canary_persistence import (
         CanaryDuplicateReviewRequired, persist_canary_lot,
@@ -53,6 +55,8 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
             report["persisted_count"] += 1
         except CanaryDuplicateReviewRequired:
             report["duplicate_review_count"] += 1
+    if report["persisted_count"] == 0:
+        raise RuntimeError("No unique verified lots imported; review duplicates and source")
     return report
 
 
