@@ -64,7 +64,8 @@ def test_isolated_canary_key_does_not_alias_different_auction_same_cadastral():
         cadastral_number="76:02:022201:38", source_system="cdtrf.ru",
         external_id="cdtrf:390899",
     )
-    assert _canonical_key(first) == _canonical_key(second)
+    # Distinct source publications must never share a key by cadastre alone.
+    assert _canonical_key(first) != _canonical_key(second)
     assert _canonical_key(first, isolate_source=True) != _canonical_key(
         second, isolate_source=True
     )
