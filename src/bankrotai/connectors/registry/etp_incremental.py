@@ -136,6 +136,24 @@ def incremental_mets_search(
     )
 
 
+def _cdtrf_rejection_code(exc: Exception) -> str:
+    """Only deterministic failure categories. Never publish source HTML or PII."""
+    msg = str(exc).lower()
+    if "lot id differs" in msg or "trade id or title disagreement" in msg:
+        return "lot_identity_mismatch"
+    if "no stable cdtrf lot identity" in msg:
+        return "missing_lot_identity"
+    if "price disagreement" in msg:
+        return "price_mismatch"
+    if "no cdtrf ssr" in msg or "invalid cdtrf ssr" in msg or "lot object missing" in msg:
+        return "ssr_schema_changed"
+    if "insufficient property" in msg:
+        return "property_evidence_missing"
+    if "http " in msg or isinstance(exc, requests.RequestException):
+        return "http_or_network_error"
+    return "other_detail_error"
+
+
 def incremental_cdtrf_search(
     filters: EtpIncrementalFilters, cursor: str | None,
     *, session: requests.Session | None = None,
@@ -155,6 +173,7 @@ def incremental_cdtrf_search(
         raise CdtrfCanaryError("CDTRF second API page repeats the first page")
     accepted = []
     rejected = 0
+    rejected_codes: dict[str, int] = {}
     for hit in candidates[:filters.max_detail_requests]:
         try:
             lot = fetch_verified_cdtrf_lot(
@@ -162,19 +181,26 @@ def incremental_cdtrf_search(
             )
             if not _property_ready(lot):
                 rejected += 1
+                rejected_codes["property_evidence_missing"] = (
+                    rejected_codes.get("property_evidence_missing", 0) + 1
+                )
                 continue
             lot.raw_data = {**lot.raw_data,
                             "source_scope": "two_page_incremental_window",
                             "complete_source_inventory": False}
             accepted.append(lot)
-        except (requests.RequestException, CdtrfCanaryError, ValueError):
+        except (requests.RequestException, CdtrfCanaryError, ValueError) as exc:
             rejected += 1
+            code = _cdtrf_rejection_code(exc)
+            rejected_codes[code] = rejected_codes.get(code, 0) + 1
     return ConnectorPage(
         items=accepted,
         next_cursor=_cursor_for(identities) if page == 1 else None,
         metadata={
             "pages_fetched": 1, "progress_current": page, "progress_total": 2,
             "catalogue_lots": len(identities), "details_rejected": rejected,
+            "detail_attempts": min(len(candidates), filters.max_detail_requests),
+            "rejection_codes": rejected_codes,
             "complete_source_inventory": False, "safe_for_archival": False,
             "requested_category_group": "property_pilot",
         },
