@@ -214,3 +214,90 @@ def test_cdtrf_rejection_exposes_rights_risk_without_source_text():
     assert _cdtrf_rejection_code(
         CdtrfCanaryError("CDTRF_UNSUPPORTED_PROPERTY_RIGHT")
     ) == "unsupported_property_right"
+
+
+def test_optin_five_page_mets_bounded_cursor_and_non_archival(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+    monkeypatch.setattr(
+        mod, "_get_mets_catalogue",
+        lambda pilot, page: f'<html><a href="240000-{page}">Участок</a></html>',
+    )
+    monkeypatch.setattr(
+        mod, "parse_mets_lot",
+        lambda html, url: fake_lot("m-ets.ru", url.rsplit("/", 1)[-1]),
+    )
+    filters = EtpIncrementalFilters(
+        "m-ets.ru", max_detail_requests=1, max_pages=5
+    )
+    cursor = None
+    results = []
+    for page in range(1, 6):
+        result = incremental_mets_search(SimpleNamespace(), filters, cursor)
+        assert result.metadata["progress_current"] == page
+        assert result.metadata["progress_total"] == 5
+        assert result.metadata["complete_source_inventory"] is False
+        assert result.metadata["safe_for_archival"] is False
+        results.extend(lot.external_id for lot in result.items)
+        cursor = result.next_cursor
+        if page < 5:
+            assert cursor and cursor.startswith(f"{page + 1}:")
+        else:
+            assert cursor is None
+    assert len(results) == len(set(results)) == 5
+    with pytest.raises(ValueError, match="bounded"):
+        incremental_mets_search(SimpleNamespace(), filters, "6:0000000000000000")
+
+
+def test_optin_five_page_cdtrf_cursor_and_source_details(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+    monkeypatch.setattr(
+        mod, "preview_cdtrf_public_api",
+        lambda page, session=None: {
+            "candidates": [
+                {"trade_id": "390364", "trade_lot_id": str(390899 + page)}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        mod, "fetch_verified_cdtrf_lot",
+        lambda trade, lot, session=None: fake_lot("cdtrf.ru", f"cdtrf:{lot}"),
+    )
+    filters = EtpIncrementalFilters(
+        "cdtrf.ru", max_detail_requests=1, max_pages=5
+    )
+    cursor = None
+    identities = []
+    for page in range(1, 6):
+        result = incremental_cdtrf_search(filters, cursor)
+        identities.extend(item.external_id for item in result.items)
+        assert result.metadata["progress_current"] == page
+        assert result.metadata["progress_total"] == 5
+        assert result.metadata["safe_for_archival"] is False
+        assert result.metadata["complete_source_inventory"] is False
+        cursor = result.next_cursor
+    assert cursor is None
+    assert len(set(identities)) == 5
+
+
+def test_five_page_trial_is_explicit_optin_and_does_not_enable_archival():
+    from bankrotai.services.etp_incremental_specs import (
+        etp_five_page_source_specs, etp_incremental_source_specs,
+    )
+    from bankrotai.services.ingestion import default_source_specs
+
+    specs = etp_five_page_source_specs()
+    assert {s.source_id for s in specs} == {"m-ets.ru", "cdtrf.ru"}
+    assert all(
+        s.reconcile_missing is False
+        and s.max_batches == 5
+        and s.filters.max_pages == 5
+        and s.filters.max_detail_requests == 2
+        for s in specs
+    )
+    assert all(s.filters.max_pages == 2 for s in etp_incremental_source_specs())
+    assert not {s.source_id for s in specs}.intersection(
+        {s.source_id for s in default_source_specs()}
+    )
+    for pages in (0, 6):
+        with pytest.raises(ValueError, match="bounded"):
+            EtpIncrementalFilters("m-ets.ru", max_pages=pages)
