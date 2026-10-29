@@ -11,6 +11,13 @@
 
 
 
+## S5 pre-import collision safety (staging, 30.10.2026)
+
+- `src/bankrotai/services/etp_preimport_collision_review.py`: ограниченная до **двух** проверенных деталей read-only проверка существующих `ProcessedLot` и `SourceLot` по отдельным индексированным ID и кадастру. Даже совпадение кадастра другой ЭТП является **причиной ручного разбора**, а не доказательством одной продажи.
+- `etp_manual_import --audit-collisions` запрещено сочетать с `--apply`. PostgreSQL-сессия выполняет только SELECT и rollback. В sanitized отчёте лишь агрегированные counts: cross-source cadastral collision, old source/processed ID, duplicate cadastral within batch, new no-known-collision.
+- Readiness-проверка #1013 требует **нулевых** конфликтов для обеих первых двух карточек каждой площадки; при конфликте — fail closed, оператор должен выбрать иную проверенную партию. Даже результат `ready_for_separate_operator_canary=true` **не гарантирует отсутствие гонок**, ни права автоматического импорта/архивирования или немедленной публикации карты: все source/DB/GEO/WEB-gates остаются обязательными.
+- **Статус:** staging, до принятого release 0.3.8 и интеграционного CI/реального Home preflight не считается production-функцией.
+
 ## 0.3.9 — staging интеграция подтверждения регионов и readiness ЭТП
 
 - [#1011](https://github.com/Maximiliamos/torgi/pull/1011) и [#1012](https://github.com/Maximiliamos/torgi/pull/1012) интегрированы на базе 0.3.8 `b5200eaa` только для общего CI; обе функции **read-only**.
