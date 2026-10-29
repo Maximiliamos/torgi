@@ -132,6 +132,24 @@ def test_workflow_checks_accepted_deploy_twice_before_mutation():
         assert fragment in guard
 
 
+def test_operator_canary_preview_blocks_collision_before_any_apply():
+    root = Path(__file__).resolve().parents[1]
+    wf = (root / ".github/workflows/etp-manual-verified-import.yml").read_text(
+        encoding="utf-8"
+    )
+    preview = "Refuse collision-prone or already-imported source details before any write"
+    applying = "Import at most two verified lots, no source reconciliation"
+    assert wf.index("Require recent locally restore-verified backup") < wf.index(preview)
+    assert wf.index(preview) < wf.index(applying)
+    assert "python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --audit-collisions" in wf
+    assert "$review.blocked_candidate_count -ne 0" in wf
+    assert "$review.new_unconflicted_candidate_count -ne $review.details_reviewed" in wf
+    assert "$review.database_writes -ne 0" in wf
+    assert "$review.revalidate_in_atomic_import -ne $true" in wf
+    assert "manual review required" in wf
+    assert wf.count("verify-etp-canary-acceptance.ps1 -ExpectedSha") == 2
+
+
 def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     from contextlib import contextmanager
     from bankrotai import db
