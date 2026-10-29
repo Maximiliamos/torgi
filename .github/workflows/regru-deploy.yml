@@ -189,6 +189,54 @@ jobs:
           test -n "$AUTH_BOOTSTRAP_PASSWORD"
           test -n "$YANDEX_MAPS_API_KEY"
 
+      - name: Wait for exact home deployment before staging REG.RU
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not touch the REG.RU host for an outdated or still-deploying Home.
+          # Applies equally to push, workflow_dispatch, rerun and recovery.
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            for attempt in $(seq 1 400); do
+              state="$(curl --fail --silent --show-error \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50" \
+                | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
+              if [ "$state" = "completed:success" ]; then
+                break
+              fi
+              case "$state" in
+                completed:*)
+                  echo "Exact home deployment failed: $state" >&2
+                  exit 1
+                  ;;
+              esac
+              if [ "$attempt" = 400 ]; then
+                echo "Home deployment did not complete for $GITHUB_SHA" >&2
+                exit 1
+              fi
+              sleep 15
+            done
+          fi
+          # On manual/recovery runs there may be NO matching push workflow.
+          # Therefore the live immutable deployment SHA is authoritative.
+          for attempt in $(seq 1 12); do
+            live_sha="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              "https://$HOME_RELAY_HOSTNAME/health/live" \
+              | python -c 'import json,sys; print(json.load(sys.stdin).get("deployment_sha",""))' || true)"
+            if [ "$live_sha" = "$GITHUB_SHA" ]; then
+              echo "Verified Home API SHA $live_sha before REG.RU mutation"
+              break
+            fi
+            echo "Home API SHA mismatch: expected=$GITHUB_SHA observed=${live_sha:-missing}" >&2
+            if [ "$attempt" = 12 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+
       - name: Prepare SSH identity
         env:
           SSH_PRIVATE_KEY: ${{ secrets.REGRU_SSH_PRIVATE_KEY }}
@@ -263,32 +311,6 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts.deploy" \
             -p "$SSH_DEPLOY_PORT" "root@$SSH_HOST" \
             'test "$(id -u)" = 0 && docker version >/dev/null'
-
-      - name: Wait for exact home deployment before staging REG.RU
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 400); do
-            state="$(curl --fail --silent --show-error               -H "Authorization: Bearer $GH_TOKEN"               -H 'Accept: application/vnd.github+json'               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"               | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); run=next((x for x in runs if x.get("name")=="Deploy home secondary origin"), None); print("missing" if run is None else "{}:{}".format(run.get("status"), run.get("conclusion")))')"
-            if [ "$state" = "completed:success" ]; then
-              echo "Exact home deployment is ready: $GITHUB_SHA"
-              break
-            fi
-            case "$state" in
-              completed:*)
-                echo "Exact home deployment failed: $state" >&2
-                exit 1
-                ;;
-            esac
-            if [ "$attempt" = 400 ]; then
-              echo "Timed out waiting for exact home deployment of $GITHUB_SHA" >&2
-              exit 1
-            fi
-            sleep 15
-          done
 
       - name: Verify staged home API before changing REG.RU
         env:
