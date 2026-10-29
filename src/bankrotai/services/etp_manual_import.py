@@ -87,6 +87,11 @@ def run_import(
         raise RuntimeError("No verified real-estate lots found; refusing empty import")
     if len(lots) > limit or len(lots) > 2:
         raise ValueError("Refusing unbounded ETP canary persistence")
+    # Candidate pages can change between preflight and apply. Recheck the
+    # entire write batch before opening a transaction: no two different sale
+    # IDs may reuse one cadastral number in this tiny operator canary.
+    if len({str(lot.cadastral_number or "").strip() for lot in lots}) != len(lots):
+        raise ValueError("Canary batch repeats a cadastral number; manual review required")
     from bankrotai.db import session_scope
     from bankrotai.services.etp_canary_persistence import persist_canary_lot
     # Commit at most two verified lots together. A cross-source collision or
