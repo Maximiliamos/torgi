@@ -17,13 +17,15 @@ from bankrotai.connectors.registry.direct_etp_catalogue import (
     batch_probe,
 )
 
-_ALLOWED_STATES = frozenset({
-    "existing_connector",
-    "needs_public_catalogue_contract",
-    "candidates_unverified",
-    "no_matches_or_changed_html",
-    "blocked_or_parser_error",
-})
+_READINESS = {
+    # This survey alone cannot verify detail, fresh statuses or map ingestion.
+    "existing_connector": ("not_assessed", "audit_existing_default_connector"),
+    "needs_public_catalogue_contract": ("S0", "discover_official_public_catalogue_and_paging"),
+    "candidates_unverified": ("S1", "verify_detail_identity_cadastral_price_and_status"),
+    "no_matches_or_changed_html": ("S0", "review_listing_html_filters_and_first_page"),
+    "blocked_or_parser_error": ("S0", "review_access_or_html_contract_without_bypass"),
+}
+_ALLOWED_STATES = frozenset(_READINESS)
 
 
 def run_inventory(
@@ -45,6 +47,8 @@ def run_inventory(
             "source_id": source_id,
             "strategy": next(p.strategy for p in PROFILES if p.source_id == source_id),
             "status": state,
+            "readiness_stage": _READINESS[state][0],
+            "next_required_action": _READINESS[state][1],
             "candidate_count": count,
             "detail_verified": False,
             "pagination_verified": False,
@@ -60,6 +64,10 @@ def run_inventory(
         "production_database_writes": 0,
         "map_publication": False,
         "archival_allowed": False,
+        "source_status_counts": {
+            status: sum(item["status"] == status for item in sources)
+            for status in sorted(_ALLOWED_STATES)
+        },
         "sources": sources,
     }
 

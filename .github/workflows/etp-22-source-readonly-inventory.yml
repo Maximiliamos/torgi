@@ -1,12 +1,24 @@
 name: ETP 22-source read-only inventory
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+  schedule:
+    - cron: "11 3 * * 1"
 
 permissions:
   contents: read
 
 jobs:
   safe-source-survey:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    concurrency:
+      group: etp-22-source-readonly-inventory
+      cancel-in-progress: true
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 35
     steps:
@@ -18,13 +30,36 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
             throw 'Trusted ingestion worker unavailable: readonly inventory not run'
           }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_run') {
+            $expected = '${{ github.event.workflow_run.head_sha }}'
+            $actual = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+            if ($LASTEXITCODE -ne 0 -or $actual -ne "bankrotai-home-api:$expected") {
+              throw "Home worker SHA changed before inventory, skipping stale evidence"
+            }
+          }
 
       - name: Probe all ETP catalogue profiles without database changes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_source_inventory --limit 5 --delay-seconds 1.0
-          if ($LASTEXITCODE -ne 0) {
+          $output = docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_source_inventory --limit 5 --delay-seconds 1.0
+          if ($LASTEXITCODE -ne 0 -or -not $output) {
             throw 'Read-only ETP inventory failed'
           }
-          Write-Output 'Inventory complete. Candidate counts DO NOT certify ingestion readiness.'
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.registered_profile_count -ne 22 -or $report.probed_source_count -ne 22 -or
+              $report.production_database_writes -ne 0 -or $report.complete_source_inventory -ne $false -or
+              $report.archival_allowed -ne $false -or $report.map_publication -ne $false) {
+            throw 'ETP inventory failed strict non-mutating 22-profile acceptance'
+          }
+          $dest = Join-Path $env:RUNNER_TEMP 'etp-22-source-readonly-inventory.json'
+          $report | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $dest -Encoding utf8
+          Write-Output ('ETP readiness: probed {0} of {1}; none certified for ingestion' -f $report.probed_source_count, $report.registered_profile_count)
+      - name: Retain sanitized 22-source evidence for readiness review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-22-source-readonly-inventory
+          path: ${{ runner.temp }}/etp-22-source-readonly-inventory.json
+          if-no-files-found: warn
+          retention-days: 30
