@@ -11,6 +11,13 @@
 
 
 
+## P13/P15 — исследование исторически пустых регионов (staging)
+
+- [Issue #1010](https://github.com/Maximiliamos/torgi/issues/1010): по exact-SHA Home P13 report 3 908 из 4 149 предварительно подходящих лотов имеют `region_code` NULL/пустой. Эта цифра описывает **полный P13 preview**, а не следующую диагностическую выборку.
+- Новый `bankrotai.services.historical_region_review` формирует **не более 50** read-only примеров действующих primary-лотов с кадастровым GEO и пропущенным регионом. Только прямые свежие официальные `SourceLot` + одиночный структурно корректный кадастр могут дать `consistent_requires_manual_approval`; конфликт, старый или отсутствующий источник остаются `blocked` для backfill.
+- Workflow `p13-historical-region-review.yml` принимает только exact Home SHA, сохраняет обезличенный JSON (внутренние ID/региональные коды, без адресов и номера кадастра). **Нет SQL UPDATE, GEO-публикации, архивирования или полного исправления 3 908 записей**; это sampling, не весь P13-список.
+- Следующая стадия после release acceptance: независимый impact/lineage review и restore-verified backup; только затем обратимый операторский батч и повторный P13 + фильтры региона + WEB.
+
 ## R7 / 0.3.8 — совместная проверка новой ветки
 
 - [PR #1007](https://github.com/Maximiliamos/torgi/pull/1007) синхронизирован с **актуальным** `main` после #1008/#1009; `src/bankrotai/services/etp_fivepage_readonly.py` проверяет все кандидаты пяти страниц МЭТС/ЦДТ по хешам ID, включая те, чьи детали не были загружены из-за лимитов.
