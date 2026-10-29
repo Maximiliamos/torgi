@@ -10,10 +10,10 @@ import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
-from bankrotai.db import ProcessedLot, SessionLocal
+from bankrotai.db import ProcessedLot, SessionLocal, SourceLot
 
 
 def assess_pair(
@@ -66,6 +66,21 @@ def build_report(session) -> dict:
             counts[reason] += 1
             if len(samples[reason]) < 20:
                 samples[reason].append({"primary_id": int(row[0]), "duplicate_id": int(row[1])})
+    # Additional P0 path: a canonical asset may contain multiple SourceLot
+    # publications even when no ProcessedLot.duplicate_of_id was set.
+    # This is a REVIEW CANDIDATE, not a proven false merge.
+    group_query = (
+        select(SourceLot.canonical_lot_id)
+        .group_by(SourceLot.canonical_lot_id)
+        .having(func.count(func.distinct(SourceLot.source_system)) > 1)
+        .order_by(SourceLot.canonical_lot_id)
+    )
+    for (canonical_id,) in session.execute(group_query).yield_per(500):
+        counts["canonical_groups_multiple_sources"] += 1
+        if len(samples["canonical_groups_multiple_sources"]) < 20:
+            samples["canonical_groups_multiple_sources"].append({
+                "canonical_id": int(canonical_id),
+            })
     return {
         "report": "p0_historical_cross_source_dedup_impact",
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
