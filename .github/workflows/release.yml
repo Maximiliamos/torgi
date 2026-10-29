@@ -113,8 +113,19 @@ jobs:
                       states[name] = "success"
                   elif any(run.get("status") in {"queued", "in_progress", "waiting", "requested", "pending"} for run in candidates):
                       states[name] = "active"
-                  elif candidates:
+                  elif any(
+                      run.get("status") == "completed"
+                      and run.get("conclusion") in {
+                          "failure", "timed_out", "action_required", "startup_failure"
+                      }
+                      for run in candidates
+                  ):
                       states[name] = "failed"
+                  elif candidates:
+                      # Superseded/cancelled/skipped smoke runs provide NO proof.
+                      # Do not treat them as success or as an immediate hard failure:
+                      # a replacement exact-SHA workflow_run may still be queued.
+                      states[name] = "retryable"
                   else:
                       states[name] = "missing"
               print(json.dumps(states, sort_keys=True))
