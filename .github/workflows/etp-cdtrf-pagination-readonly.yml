@@ -47,6 +47,32 @@ jobs:
           $file = Join-Path $env:RUNNER_TEMP 'cdtrf-pagination-readonly.json'
           $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $file -Encoding utf8
           Write-Output ("CDTRF scanned pages={0}, distinct ids={1}, candidate hints={2}" -f $report.pages_scanned, $report.unique_catalogue_lot_ids, $report.property_hint_candidates)
+      - name: Verify CDTRF candidate IDs across five pages and limited details
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_fivepage_readonly --source cdtrf.ru
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'CDTRF cross-page candidate audit failed' }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.source -ne 'cdtrf.ru' -or $report.read_only -ne $true -or
+              $report.no_database_writes -ne $true -or $report.pages_verified -ne 5 -or
+              $report.complete_source_inventory -ne $false -or
+              $report.safe_for_archival -ne $false -or $report.reconcile_missing -ne $false -or
+              $report.map_publication_verified -ne $false -or
+              $report.catalogue_candidates_seen -ne $report.unique_catalogue_id_fingerprints) {
+            throw 'CDTRF cross-page probe is incomplete or overstated'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'cdtrf-fivepage-crosspage-readonly.json'
+          $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("CDTRF candidate fingerprints={0}, detail validated={1}, rejected={2}" -f $report.unique_catalogue_id_fingerprints, $report.verified_unique_property_details, $report.details_rejected)
+      - name: Retain CDTRF five-page cross-page evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cdtrf-fivepage-crosspage-readonly
+          path: ${{ runner.temp }}/cdtrf-fivepage-crosspage-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Preserve sanitized pagination acceptance evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

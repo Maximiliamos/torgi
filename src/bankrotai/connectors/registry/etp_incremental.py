@@ -66,6 +66,18 @@ def _validate_cursor(cursor: str | None) -> int:
     return int(cursor.split(":", 1)[0])
 
 
+def _fingerprints(ids: list[str]) -> list[str]:
+    """Full SHA-256 public lot-ID fingerprints for cross-page evidence.
+
+    Return no raw source identifiers in the bounded audit metadata. This
+    intentionally represents all observed *candidate* IDs, not only the
+    subset whose detail requests were authorized.
+    """
+    if len(ids) != len(set(ids)):
+        raise ValueError("ETP catalogue identities are duplicated within a page")
+    return [hashlib.sha256(x.encode("utf-8")).hexdigest() for x in ids]
+
+
 def _bounded_scope(pages: int) -> str:
     if pages == 2:
         return "two_page_incremental_window"
@@ -143,6 +155,7 @@ def incremental_mets_search(
             "pages_fetched": 1, "progress_current": page,
             "progress_total": filters.max_pages,
             "catalogue_lots": len(ids), "details_rejected": rejected,
+            "catalogue_identity_fingerprints": _fingerprints(ids),
             "complete_source_inventory": False, "safe_for_archival": False,
             "requested_category_group": "property_pilot",
         },
@@ -224,6 +237,7 @@ def incremental_cdtrf_search(
             "pages_fetched": 1, "progress_current": page,
             "progress_total": filters.max_pages,
             "catalogue_lots": len(identities), "details_rejected": rejected,
+            "catalogue_identity_fingerprints": _fingerprints(identities),
             "detail_attempts": min(len(candidates), filters.max_detail_requests),
             "rejection_codes": rejected_codes,
             "complete_source_inventory": False, "safe_for_archival": False,

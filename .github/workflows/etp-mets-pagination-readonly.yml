@@ -47,6 +47,32 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'mets-catalogue-pagination-readonly.json'
           $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding utf8
           Write-Output ("M-ETS observed pages={0}, distinct catalogue identities={1}" -f $report.pages_scanned, $report.unique_catalogue_lot_ids)
+      - name: Verify M-ETS candidate IDs across five pages and limited details
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_fivepage_readonly --source m-ets.ru
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'M-ETS cross-page candidate audit failed' }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.source -ne 'm-ets.ru' -or $report.read_only -ne $true -or
+              $report.no_database_writes -ne $true -or $report.pages_verified -ne 5 -or
+              $report.complete_source_inventory -ne $false -or
+              $report.safe_for_archival -ne $false -or $report.reconcile_missing -ne $false -or
+              $report.map_publication_verified -ne $false -or
+              $report.catalogue_candidates_seen -ne $report.unique_catalogue_id_fingerprints) {
+            throw 'M-ETS cross-page probe is incomplete or overstated'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mets-fivepage-crosspage-readonly.json'
+          $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("M-ETS candidate fingerprints={0}, detail validated={1}, rejected={2}" -f $report.unique_catalogue_id_fingerprints, $report.verified_unique_property_details, $report.details_rejected)
+      - name: Retain M-ETS five-page cross-page evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mets-fivepage-crosspage-readonly
+          path: ${{ runner.temp }}/mets-fivepage-crosspage-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain M-ETS pagination report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
