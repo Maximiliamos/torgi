@@ -11,6 +11,13 @@
 
 
 
+## R7/S5 — zero-write canary readiness gate (staging 30.10.2026)
+
+- До ручного импорта МЭТС и ЦДТ на принятом exact SHA нужен **отдельный** read-only сигнал о готовности: реальный восстановленный PostgreSQL backup за последние 60 ч, актуальный `main`/P11/WEB/REG.RU/Cloudflare, правильная версия ingestion worker и 1–2 заново проверенных property details каждого источника.
+- `scripts/etp-canary-readiness.ps1` повторно использует обязательный `verify-etp-canary-acceptance.ps1` и сравнивает SHA256 backup с manifest; запускает `etp_manual_import` **без `--apply`**. Артефакт содержит только source ID, количество проверенных деталей и причины блокировки, не external IDs/ФИО/адреса.
+- `.github/workflows/etp-s5-canary-readiness.yml` запускается **только после success P11 main** на exact SHA, ничего не записывает и завершает failure при ошибках. Сигнал `details_verified_manual_import_still_required` **не даёт разрешения автоматически импортировать**: проверка кадастровых конфликтов, сам импорт 1–2 лотов, GEO, journal, MapDataset, S3 и WEB — последующие отдельные операторские действия.
+- **Статус:** staging PR, пока без merged/Home доказательств; 0 новых S5–S7 источников не сертифицировано. Версия 0.3.8 `b5200eaa` ещё должна пройти P11 и публикацию release.
+
 ## R7 / 0.3.8 — совместная проверка новой ветки
 
 - [PR #1007](https://github.com/Maximiliamos/torgi/pull/1007) синхронизирован с **актуальным** `main` после #1008/#1009; `src/bankrotai/services/etp_fivepage_readonly.py` проверяет все кандидаты пяти страниц МЭТС/ЦДТ по хешам ID, включая те, чьи детали не были загружены из-за лимитов.
