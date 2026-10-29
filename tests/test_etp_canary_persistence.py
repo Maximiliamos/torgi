@@ -79,3 +79,72 @@ def test_isolated_canary_key_is_idempotent_for_same_source_external_id():
     assert _canonical_key(first, isolate_source=True) == _canonical_key(
         again, isolate_source=True
     )
+
+
+def test_manual_write_refuses_unlinked_foreign_source_even_if_preflight_was_clean(
+    monkeypatch,
+):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as DBSession
+    from bankrotai.db import Base, CanonicalLot, SourceLot
+    import bankrotai.services.etp_canary_persistence as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    try:
+        with DBSession(engine) as session:
+            canonical = CanonicalLot(
+                canonical_key="foreign-unlinked-source-after-preflight",
+                title="Previous source sale",
+            )
+            session.add(canonical)
+            session.flush()
+            session.add(SourceLot(
+                canonical_lot_id=canonical.id,
+                processed_lot_id=None,
+                source_system="lot-online.ru",
+                external_id="foreign-previous",
+                cadastral_number=lot().cadastral_number,
+                is_archived=False,
+            ))
+            session.commit()
+        monkeypatch.setattr(
+            module, "persist_lot", lambda *a, **kw: pytest.fail("must not persist")
+        )
+        with DBSession(engine) as session:
+            with pytest.raises(CanaryDuplicateReviewRequired, match="manual review"):
+                persist_canary_lot(session, lot(), "operator")
+            session.rollback()
+    finally:
+        engine.dispose()
+
+
+def test_manual_write_refuses_exact_existing_source_id_at_transaction_boundary(
+    monkeypatch,
+):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as DBSession
+    from bankrotai.db import Base, ProcessedLot
+    import bankrotai.services.etp_canary_persistence as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    try:
+        with DBSession(engine) as session:
+            session.add(ProcessedLot(
+                external_id=lot().external_id,
+                source="m-ets.ru", source_system="m-ets.ru",
+                cadastral_number=lot().cadastral_number,
+                title="Already imported", description="",
+                category="land", auction_status="active",
+            ))
+            session.commit()
+        monkeypatch.setattr(
+            module, "persist_lot", lambda *a, **kw: pytest.fail("must not persist")
+        )
+        with DBSession(engine) as session:
+            with pytest.raises(CanaryDuplicateReviewRequired, match="already present"):
+                persist_canary_lot(session, lot(), "operator")
+            session.rollback()
+    finally:
+        engine.dispose()
