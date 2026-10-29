@@ -244,7 +244,7 @@ def test_optin_five_page_mets_bounded_cursor_and_non_archival(monkeypatch):
         else:
             assert cursor is None
     assert len(results) == len(set(results)) == 5
-    with pytest.raises(ValueError, match="bounded"):
+    with pytest.raises(ValueError, match="cursor"):
         incremental_mets_search(SimpleNamespace(), filters, "6:0000000000000000")
 
 
