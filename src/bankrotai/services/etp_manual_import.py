@@ -13,7 +13,7 @@ import os
 from typing import Any
 
 from bankrotai.connectors.registry import connector_registry
-from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters
+from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters, _property_ready
 
 APPROVED = ("m-ets.ru", "cdtrf.ru")
 
@@ -24,13 +24,33 @@ def _assert_apply_allowed() -> None:
         raise PermissionError("Refusing import: operator and verified-backup gates are required")
 
 
+def verified_canary_items(page, *, source: str, limit: int) -> list:
+    """Fail closed on an unexpected, overly broad or mixed-source connector page."""
+    metadata = page.metadata
+    if (not isinstance(metadata, dict)
+            or metadata.get("complete_source_inventory") is not False
+            or metadata.get("safe_for_archival") is not False):
+        raise ValueError("ETP canary page lacks explicit partial/non-archival evidence")
+    items = list(page.items)
+    if len(items) > limit:
+        raise ValueError("ETP canary connector exceeded the authorized detail cap")
+    identities: set[str] = set()
+    for lot in items:
+        identity = str(lot.external_id or "").strip()
+        if (lot.source_system != source or not identity or identity in identities
+                or not _property_ready(lot)):
+            raise ValueError("Unverified, duplicated or cross-source ETP canary lot")
+        identities.add(identity)
+    return items
+
+
 async def collect_lots(source: str, limit: int):
-    if source not in APPROVED or not 1 <= limit <= 3:
+    if source not in APPROVED or not 1 <= limit <= 2:
         raise ValueError("Unsupported source or overly broad canary limit")
     page = await connector_registry.create(source).search(
         EtpIncrementalFilters(source, max_detail_requests=limit)
     )
-    return page.items
+    return verified_canary_items(page, source=source, limit=limit)
 
 
 def run_import(source: str, *, limit: int, apply: bool) -> dict:
@@ -38,26 +58,25 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
         _assert_apply_allowed()  # Must happen before any network/DB access.
     lots = asyncio.run(collect_lots(source, limit))
     report: dict[str, Any] = {"source": source, "verified_detail_count": len(lots),
-              "persisted_count": 0, "duplicate_review_count": 0,
+              "persisted_count": 0, "persisted_external_ids": [],
+              "duplicate_review_count": 0,
               "write_authorized": apply, "missing_lot_archival": False,
               "complete_source_inventory": False}
     if not apply:
         return report
     if not lots:
         raise RuntimeError("No verified real-estate lots found; refusing empty import")
+    if len(lots) > limit or len(lots) > 2:
+        raise ValueError("Refusing unbounded ETP canary persistence")
     from bankrotai.db import session_scope
-    from bankrotai.services.etp_canary_persistence import (
-        CanaryDuplicateReviewRequired, persist_canary_lot,
-    )
-    for lot in lots:
-        try:
-            with session_scope() as session:
-                persist_canary_lot(session, lot, "github-actions-etp-canary")
-            report["persisted_count"] += 1
-        except CanaryDuplicateReviewRequired:
-            report["duplicate_review_count"] += 1
-    if report["persisted_count"] == 0:
-        raise RuntimeError("No unique verified lots imported; review duplicates and source")
+    from bankrotai.services.etp_canary_persistence import persist_canary_lot
+    # Commit at most two verified lots together. A cross-source collision or
+    # failure on the second lot must roll back the first, including its journal.
+    with session_scope() as session:
+        for lot in lots:
+            persist_canary_lot(session, lot, "github-actions-etp-canary")
+    report["persisted_count"] = len(lots)
+    report["persisted_external_ids"] = [lot.external_id for lot in lots]
     return report
 
 
