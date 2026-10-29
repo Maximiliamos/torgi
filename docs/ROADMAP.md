@@ -2,7 +2,7 @@
 
 **Версия:** 1.0 · **Дата аудита:** 29 октября 2026 г.  
 **Репозиторий:** https://github.com/Maximiliamos/torgi  
-**Базовый audit SHA:** `f70f128e` · **последний проверенный main:** `c8572374` (P15; production-gates выполняются; предыдущий `cae69ea9` прошёл P11)  
+**Базовый audit SHA:** `f70f128e` · **последний проверенный main:** `64acc690` (P17; Home, REG.RU, Cloudflare deploy successful; P11 ещё не принят); предыдущий `c8572374` прошёл P11  
 **Назначение:** единый исполнимый план для разработки, CI, домашнего production-узла, PostgreSQL, картографического конвейера, REG.RU и Cloudflare. Документ является планом, а не отчётом о выполнении.
 
 > **Бизнес-результат:** карта Sterdez.online показывает только **актуальные продажи недвижимости** с достоверными координатами и источниками; пользователь фильтрует несколько ЭТП; цены и статусы обновляются; дубли разных публикаций одной продажи объединяются, **разные продажи одного объекта не смешиваются**; журнал, избранное и действия пользователя сохраняются. Неподтверждённые источники не выдают фиктивные лоты.
@@ -18,17 +18,20 @@
 | ID | Приоритет | Практический результат | Фактический статус на 29.10.2026 | Следующий proof |
 |---|---|---|---|---|
 | R6/BAT-002 | P0 | Лоты ручной канарейки новых ЭТП не смешиваются с другими продажами по одному кадастру | PR [#979](https://github.com/Maximiliamos/torgi/pull/979) **merged**; SHA `cae69ea9` получил зелёные P11/WEB/Home/PostgreSQL | Отдельно проверить и исправить *исторические* группы в PostgreSQL |
-| R3/P15 | P1 | Выбор только структурно подтверждённого номера объекта НСПД/PKK | PR [#980](https://github.com/Maximiliamos/torgi/pull/980) **merged**; SHA `c8572374`; production acceptance на момент записи не окончена | P11 + реальная GEO-регрессия, impact report |
-| R5/P17 | P1 | Exact Home SHA обязателен **до** SSH-мутаций REG.RU, включая manual/rerun | PR [#977](https://github.com/Maximiliamos/torgi/pull/977): код + `BANKROTAI_DEPLOY_SHA`, green CI, **не merged** | Update branch, P11 с negative manual-SHA test |
+| R3/P15 | P1 | Выбор только структурно подтверждённого номера объекта НСПД/PKK | PR [#980](https://github.com/Maximiliamos/torgi/pull/980) **merged**; SHA `c8572374`, P11 принят | P11 + реальная GEO-регрессия, impact report |
+| R5/P17 | P1 | Exact Home SHA обязателен **до** SSH-мутаций REG.RU, включая manual/rerun | PR [#977](https://github.com/Maximiliamos/torgi/pull/977) **merged**; SHA `64acc690`; проверка Home SHA пройдена перед REG.RU SSH, P11 нового SHA ещё выполняется | P11 текущего SHA + отрицательный manual-SHA test, затем проверить rollback |
 | R7/CDTRF | P1 | Категория по HTML `lotInfo` и официальному badge; отказ при продаже прав/долей | PR [#975](https://github.com/Maximiliamos/torgi/pull/975): CI, **не merged** | Live read-only CDTRF detail >=1, затем S5 canary |
 | R8/S0–S1 | P1 | Санитизированный readiness probe всех 22 профилей, без DB writes | PR [#978](https://github.com/Maximiliamos/torgi/pull/978) **merged**; код survey есть в `main` | [#982](https://github.com/Maximiliamos/torgi/pull/982): scheduled/after-deploy; retain 22-source JSON artifact |
 | R1/P13 + R4/P16 | P0/P1 | Read-only impact отчёт реальных картографических исключений и межплощадочных старых дублей | PR [#983](https://github.com/Maximiliamos/torgi/pull/983): код + тесты, **не merged** | Выполнить Home audit и проверить потерю допустимых точек и исторические коллизии ДО update SQL |
 | R11/RELEASE | P1 | Без переназначения подписанного `v0.3.5`: единая новая версия Python/WEB/Windows | PR [#981](https://github.com/Maximiliamos/torgi/pull/981) `v0.3.6`, green CI, **не merged** | Выпуск **после** остальных исправлений и exact-SHA production gates |
 | R0/BAT | P2 | Все 23 старых BAT-описания и пользовательные P13–P17 ТЗ в одном файле | PR [#976](https://github.com/Maximiliamos/torgi/pull/976): **не merged** на момент записи | Merge после code changes/accepted release window |
+| R7/CDTRF-S2 | P1 | Проверить до 5 страниц официального JSON API ЦДТ без повторных lot IDs | [#984](https://github.com/Maximiliamos/torgi/pull/984): 9/9 CI green, ещё не merged | Реальный Home read-only JSON с показателями страниц, без DB writes |
+| R7/METS-S2 | P1 | Проверить до 5 страниц HTML каталога МЭТС без дубликатов | [#985](https://github.com/Maximiliamos/torgi/pull/985): 9/9 CI green, ещё не merged | Реальный Home read-only JSON и подтверждение фактических page links |
 
-**Не сделано:** ни один из 22 profile-survey результатов **не означает** полного обхода и автоматической загрузки. Существующие штатные источники считаются отдельным потоком. МЭТС/ЦДТ live проба после первого survey: МЭТС 5/5, ЦДТ 2/5, записи в БД = 0. Не выдавать этот тест за `S5`.
 
-**Следующий блокирующий порядок:** защита P0 исторических групп → P17 exact SHA → P13 impact + P15 real GEO → CDTRF/METS manual S5 → scheduled incremental без archival → полное source-specific paging и остальные ЭТП. Все массовые DB writes только после restore-verified backup.
+**Не сделано:** ни один из 22 profile-survey результатов **не означает** полного обхода и автоматической загрузки. Существующие штатные источники считаются отдельным потоком. Новая read-only проба [#40908345635](https://github.com/Maximiliamos/torgi/actions/runs/40908345635): МЭТС 5/5, ЦДТ 3/5; DB writes = 0. Не выдавать этот тест за `S5`.
+
+**Следующий блокирующий порядок:** P0 исторические группы (impact/audit) → P17 production P11 → P13 impact + P15 реальный GEO → CDTRF/METS ручной S5 → scheduled incremental без archival → полное source-specific paging и остальные ЭТП. Все массовые DB writes только после restore-verified backup.
 
 
 ## 1. Источники задания и метод аудита
