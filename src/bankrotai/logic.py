@@ -122,7 +122,6 @@ def _to_datetime(value: Any) -> datetime | None:
 
 def _canonical_key(normalized: NormalizedLot, *, isolate_source: bool = False) -> str:
     # A cadastral number identifies an asset, not a specific auction sale.
-    # Shared EFRSB messages and bankruptcy proceedings may also contain many lots.
     # Explicitly proven copies use canonical_hint; no implicit cross-sale aliasing.
     return f"source:{normalized.source_system}:{normalized.external_id}"
 
