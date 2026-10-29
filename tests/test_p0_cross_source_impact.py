@@ -129,6 +129,7 @@ def test_new_verified_etp_sales_with_same_cadastre_persist_as_separate_canonical
             first_id = next(
                 s.canonical_lot_id for s in sources if s.source_system == "m-ets.ru"
             )
+            session.commit()
             with session.begin():
                 persist_lot(session, auction("m-ets.ru", "243003-1"), isolate_source=True)
             assert len(session.scalars(select(ProcessedLot)).all()) == 2
