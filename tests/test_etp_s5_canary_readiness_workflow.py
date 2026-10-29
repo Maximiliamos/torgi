@@ -41,6 +41,12 @@ def test_readonly_operator_source_proof_never_invokes_apply_or_db_write():
     assert "map_publication_verified = $false" in SCRIPT
     assert "reconcile_missing = $false" in SCRIPT
     assert "existing_cadastral_collision_checked = $false" in SCRIPT
+    assert "existing_cadastral_collision_checked = $true" in SCRIPT
+    assert "--audit-collisions" in lines[0]
+    assert "$review.new_unconflicted_candidate_count -ne $candidate.verified_detail_count" in SCRIPT
+    assert "$review.blocked_candidate_count -ne 0" in SCRIPT
+    assert "$review.database_writes -ne 0" in SCRIPT
+    assert "$review.revalidate_in_atomic_import -ne $true" in SCRIPT
 
 
 def test_readiness_requires_real_backup_hash_and_partial_source_details():
