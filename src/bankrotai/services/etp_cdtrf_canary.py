@@ -58,8 +58,8 @@ def _http_get(session: requests.Session, url: str, *, accepts: str) -> requests.
 
 def preview_cdtrf_public_api(page: int = 1, *, session: requests.Session | None = None) -> dict:
     """Official JSON filter from observed browser network; no PII extraction."""
-    if page not in (1, 2):
-        raise CdtrfCanaryError("Canary preview limited to the first two pages")
+    if not 1 <= page <= 5:
+        raise CdtrfCanaryError("Canary preview limited to the first five pages")
     endpoint = f"{API}?Declare=true&RecieveReq=true&PageSize=20&PageNum={page}"
     own = session or requests.Session()
     # Checked URL plus literal query keys, no external redirect.

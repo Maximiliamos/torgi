@@ -207,3 +207,97 @@ def test_p14_archive_history_uses_completed_run_evidence_not_active_text() -> No
             "items_archived": 1, "coverage_guard_rejected": False,
         }]
         assert session.query(ProcessedLot).one().auction_status == before == "expired"
+
+
+def test_p13_direct_source_proof_works_without_legacy_canonical_pointer() -> None:
+    """P0's new sale identity can have no historical legacy primary pointer."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        row = ProcessedLot(
+            external_id="new-sale-001", source_system="torgi.gov.ru",
+            source="torgi.gov.ru", title="Продажа земельного участка",
+            description="", category="land", auction_status="active",
+            is_archived=False, current_geo_lat=57.6,
+            current_geo_lon=39.8, needs_geo_check=False,
+        )
+        other = ProcessedLot(
+            external_id="unproven-002", source_system="torgi.gov.ru",
+            source="torgi.gov.ru", title="Продажа другого участка",
+            description="", category="land", auction_status="active",
+            is_archived=False, current_geo_lat=57.6,
+            current_geo_lon=39.8, needs_geo_check=False,
+        )
+        session.add_all([row, other])
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="source:torgi.gov.ru:new-sale-001",
+            title=row.title, category=row.category,
+            legacy_processed_lot_id=None,
+        )
+        session.add(canonical)
+        session.flush()
+        source = SourceLot(
+            canonical_lot_id=canonical.id, processed_lot_id=row.id,
+            source_system="torgi.gov.ru", external_id=row.external_id,
+            source_status="active", is_active=True, is_archived=False,
+            last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        session.add(source)
+        session.commit()
+        report = impact.build_report(session)
+        assert report["proposed_maximum_eligible_points"] == 1
+        assert report["sequential_exclusion_ladder"][
+            "06_and_fresh_active_source"
+        ] == 1
+        diagnostics = report["root_cause_diagnostics"]
+        assert diagnostics["source_direct_link_proof_not_in_legacy"] == 1
+        assert diagnostics["source_has_active_proof_ignoring_freshness"] == 1
+        assert report["read_only"] and report["no_mutations"]
+        assert session.query(ProcessedLot).count() == 2
+        assert other.auction_status == "active"
+
+        # A stale source does not establish current availability.
+        source.last_seen_at = datetime(2020, 1, 1)
+        session.flush()
+        stale = impact.build_report(session)
+        assert stale["proposed_maximum_eligible_points"] == 0
+        assert stale["root_cause_diagnostics"][
+            "source_direct_link_proof_not_in_legacy"
+        ] == 1
+        session.rollback()
+
+
+def test_p13_direct_source_proof_rejects_archived_or_rental_source() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        row = ProcessedLot(
+            external_id="real-property-003", source_system="torgi.gov.ru",
+            source="torgi.gov.ru", title="Земельный участок",
+            description="", category="land", auction_status="active",
+            is_archived=False, current_geo_lat=57.6,
+            current_geo_lon=39.8, needs_geo_check=False,
+        )
+        session.add(row)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="source:torgi.gov.ru:real-property-003",
+            title=row.title, category="land", legacy_processed_lot_id=None,
+        )
+        session.add(canonical)
+        session.flush()
+        source = SourceLot(
+            canonical_lot_id=canonical.id, processed_lot_id=row.id,
+            source_system="torgi.gov.ru", external_id=row.external_id,
+            source_status="active", is_active=True, is_archived=True,
+            last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        session.add(source)
+        session.flush()
+        assert impact.build_report(session)["proposed_maximum_eligible_points"] == 0
+        source.is_archived = False
+        source.auction_type = "аренда"
+        session.flush()
+        assert impact.build_report(session)["proposed_maximum_eligible_points"] == 0
+        session.rollback()
