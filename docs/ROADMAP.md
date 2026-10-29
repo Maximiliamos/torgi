@@ -19,6 +19,7 @@
 
 | Дата | Что сделано лично в GitHub | Доказательство | Чего это НЕ доказывает |
 |---|---|---|---|
+| 29.10.2026 | Создал [PR #987](https://github.com/Maximiliamos/torgi/pull/987): source-specific default canonical identity, запрет автоматической дедупликации разных продаж по одному кадастру/цене/адресу, добавил тесты | [PR #987](https://github.com/Maximiliamos/torgi/pull/987), commit [`ddbd28ea`](https://github.com/Maximiliamos/torgi/commit/ddbd28eabb37fb7af9a7cb4dc9da31a7e2204691) | PR пока не принят в `main`, интеграционные CI/live regression ещё не подтверждены; старые ошибочные группы не исправлены |
 | 29.10.2026 | Проверил CI и **объединил PR #986** (разделение конкурентных smoke по exact SHA; ожидание повторного проверенного запуска без fail-open). | [PR #986](https://github.com/Maximiliamos/torgi/pull/986), [merge `c0d0a040`](https://github.com/Maximiliamos/torgi/commit/c0d0a040bc8c4897b47811d57841588b26ce095a), 9/9 CI на PR head `5284d495` | Не подтверждены P11 нового SHA, успешный подписанный релиз 0.3.6, импорт ЭТП, исправление исторических записей и появление их на карте |
 | 29.10.2026 | Обновил этот документ в ветке [PR #976](https://github.com/Maximiliamos/torgi/pull/976), сохранил предыдущие требования и незакрытые проверки. | Текущая редакция `docs/ROADMAP.md` в ветке PR #976 | ROADMAP остаётся **не в `main`** до отдельного слияния; правка документа не равна выкладке функций |
 
@@ -27,7 +28,7 @@
 
 | ID | Приоритет | Практический результат | Фактический статус на 29.10.2026 | Следующий proof |
 |---|---|---|---|---|
-| R6/BAT-002 | P0 | Лоты ручной канарейки новых ЭТП не смешиваются с другими продажами по одному кадастру | PR [#979](https://github.com/Maximiliamos/torgi/pull/979) **merged**; SHA `cae69ea9` получил зелёные P11/WEB/Home/PostgreSQL | Отдельно проверить и исправить *исторические* группы в PostgreSQL |
+| R6/BAT-002 | P0 | Разные продажи одного объекта должны оставаться отдельными во всех потоках ingest | PR [#979](https://github.com/Maximiliamos/torgi/pull/979) **merged** (только новые ETP canaries, `cae69ea9`); обнаружена общая ошибка legacy dedup, подготовлен [#987](https://github.com/Maximiliamos/torgi/pull/987), **CI выполняется, не merged** | Дождаться 9/9 CI #987; сверить поведение действующих источников и PostgreSQL impact, затем отдельная staged production acceptance и историческая миграция |
 | R3/P15 | P1 | Выбор только структурно подтверждённого номера объекта НСПД/PKK | PR [#980](https://github.com/Maximiliamos/torgi/pull/980) **merged**; SHA `c8572374`, P11 принят | P11 + реальная GEO-регрессия, impact report |
 | R5/P17 | P1 | Exact Home SHA обязателен **до** SSH-мутаций REG.RU, включая manual/rerun | PR [#977](https://github.com/Maximiliamos/torgi/pull/977) **merged**; SHA `64acc690`; проверка Home SHA пройдена перед REG.RU SSH, P11 нового SHA ещё выполняется | P11 текущего SHA + отрицательный manual-SHA test, затем проверить rollback |
 | R7/CDTRF | P1 | Категория по HTML `lotInfo` и официальному badge; отказ при продаже прав/долей | PR [#975](https://github.com/Maximiliamos/torgi/pull/975): CI, **не merged** | Live read-only CDTRF detail >=1, затем S5 canary |
