@@ -49,7 +49,7 @@ def test_api_preview_returns_real_estate_lot_identity_not_debtor():
 
 def test_rejects_unbounded_pages_and_untrusted_lot_ids():
     with pytest.raises(CdtrfCanaryError):
-        preview_cdtrf_public_api(3, session=Session())
+        preview_cdtrf_public_api(6, session=Session())
     with pytest.raises(CdtrfCanaryError):
         fetch_verified_cdtrf_lot("https://evil.example", "390899")
     with pytest.raises(CdtrfCanaryError):
