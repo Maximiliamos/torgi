@@ -85,3 +85,56 @@ def test_multi_source_canonical_link_is_reported_without_processed_duplicate():
             }
     finally:
         engine.dispose()
+
+
+
+def test_new_verified_etp_sales_with_same_cadastre_persist_as_separate_canonicals():
+    """Integration regression for P0: physical asset is not auction sale identity."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from bankrotai.db import Base, ProcessedLot, SourceLot
+    from bankrotai.domain import NormalizedLot
+    from bankrotai.logic import persist_lot
+
+    def auction(source: str, sale_id: str) -> NormalizedLot:
+        return NormalizedLot(
+            external_id=sale_id, source=source, source_system=source,
+            title="Земельный участок, кадастр 76:02:022201:38",
+            description="Продажа земельного участка",
+            category="land", region_slug="yaroslavl",
+            region_name="Ярославская область",
+            address="Ярославская область, Ярославский район",
+            cadastral_number="76:02:022201:38",
+            vin=None, area=600,
+            start_price=650000.0, current_price=650000.0,
+            auction_status="active",
+            lot_url=f"https://{source}/lot/{sale_id}",
+            source_url=f"https://{source}/lot/{sale_id}",
+            detail_level="public_detail", raw_data={"region_code": "76"},
+        )
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            with session.begin():
+                persist_lot(session, auction("m-ets.ru", "243003-1"), isolate_source=True)
+                persist_lot(session, auction("cdtrf.ru", "cdtrf:390899"), isolate_source=True)
+            processed = session.scalars(select(ProcessedLot)).all()
+            sources = session.scalars(select(SourceLot)).all()
+            assert len(processed) == 2
+            assert len(sources) == 2
+            assert all(p.duplicate_of_id is None for p in processed)
+            assert len({s.canonical_lot_id for s in sources}) == 2
+            first_id = next(
+                s.canonical_lot_id for s in sources if s.source_system == "m-ets.ru"
+            )
+            with session.begin():
+                persist_lot(session, auction("m-ets.ru", "243003-1"), isolate_source=True)
+            assert len(session.scalars(select(ProcessedLot)).all()) == 2
+            assert next(
+                s.canonical_lot_id for s in session.scalars(select(SourceLot)).all()
+                if s.source_system == "m-ets.ru"
+            ) == first_id
+    finally:
+        engine.dispose()
