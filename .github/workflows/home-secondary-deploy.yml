@@ -421,10 +421,10 @@ jobs:
               $versionSeen = $false
               $normalized = @()
               foreach ($line in $Lines) {
-                if ($line -match '^\\s*\\[([^]]+)\\]\\s*$') {
+                if ($line -match '^\s*\[([^]]+)\]\s*$') {
                   $inProject = $Matches[1] -ceq 'project'
                 }
-                if ($inProject -and $line -match '^\\s*version\\s*=\\s*"[0-9]+\\.[0-9]+\\.[0-9]+"\\s*$') {
+                if ($inProject -and $line -match '^\s*version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"\s*$') {
                   if ($versionSeen) {
                     throw 'Offline source-overlay fallback refused: duplicate project version'
                   }
