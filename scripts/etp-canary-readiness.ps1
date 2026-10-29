@@ -64,7 +64,8 @@ try {
         $failures += 'no_recent_restore_verified_backup'
     } else {
         # These calls use etp_manual_import WITHOUT --apply. The module reads
-        # at most two verified details per approved source, with no DB session.
+        # at most two verified details per source and runs rollback-only SELECTs
+        # to catch existing ID/cadastral collisions before operator dispatch.
         # Network 401/403/429 and invalid cards remain blockers; no bypass.
         foreach ($source in @('m-ets.ru', 'cdtrf.ru')) {
             $entry = [ordered]@{
@@ -75,7 +76,7 @@ try {
                 persisted_count = 0
             }
             try {
-                $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $source --limit 2 2>$null)
+                $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $source --limit 2 --audit-collisions 2>$null)
                 if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) {
                     throw 'Read-only detail collection failed'
                 }
@@ -90,8 +91,24 @@ try {
                     $candidate.verified_detail_count -gt 2) {
                     throw 'Canary preflight evidence missing or unsafe'
                 }
-                $entry.status = 'details_verified_manual_import_still_required'
+                $review = $candidate.preimport_collision_review
+                if ($null -eq $review -or
+                    $review.audit -ne 'etp_preimport_collision_review' -or
+                    $review.source -ne $source -or
+                    $review.read_only -ne $true -or
+                    $review.database_writes -ne 0 -or
+                    $review.map_publication_verified -ne $false -or
+                    $review.race_free_persistence_guaranteed -ne $false -or
+                    $review.revalidate_in_atomic_import -ne $true -or
+                    $review.details_reviewed -ne $candidate.verified_detail_count -or
+                    $review.blocked_candidate_count -ne 0 -or
+                    $review.new_unconflicted_candidate_count -ne $candidate.verified_detail_count -or
+                    $review.ready_for_separate_operator_canary -ne $true) {
+                    throw 'Verified ETP details have existing ID/cadastral conflicts or incomplete SQL evidence'
+                }
+                $entry.status = 'details_and_collisions_prechecked_manual_import_still_required'
                 $entry.verified_detail_count = [int]$candidate.verified_detail_count
+                $entry.existing_cadastral_collision_checked = $true
             } catch {
                 $entry.status = 'blocked_source_details_unverified'
                 $failures += ('source_details_not_verified:' + $source)
