@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+from typing import Any
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters
@@ -36,7 +37,7 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
     if apply:
         _assert_apply_allowed()  # Must happen before any network/DB access.
     lots = asyncio.run(collect_lots(source, limit))
-    report = {"source": source, "verified_detail_count": len(lots),
+    report: dict[str, Any] = {"source": source, "verified_detail_count": len(lots),
               "persisted_count": 0, "duplicate_review_count": 0,
               "write_authorized": apply, "missing_lot_archival": False,
               "complete_source_inventory": False}
