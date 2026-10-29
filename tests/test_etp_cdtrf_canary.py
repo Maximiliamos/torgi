@@ -80,7 +80,7 @@ def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
     assert lot.auction_status == "scheduled"
     with pytest.raises(CdtrfCanaryError, match="differs"):
         fetch_verified_cdtrf_lot("390364", "390898", session=object())
-    with pytest.raises(CdtrfCanaryError, match="Insufficient"):
+    with pytest.raises(CdtrfCanaryError, match="CDTRF_CADASTRAL_MISSING"):
         monkeypatch.setattr(module, "parse_detail", lambda h, u: {**fake_parse(h,u), "cadastral_number": None})
         fetch_verified_cdtrf_lot("390364", "390899", session=object())
 

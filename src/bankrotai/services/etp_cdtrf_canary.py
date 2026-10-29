@@ -86,9 +86,14 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
     category = classify_category(title, title)
     status = detail["source_status_code"]
     mapped = {"Declare": "scheduled", "RecieveReq": "active"}.get(status)
-    if (category not in PROPERTY or not detail.get("cadastral_number")
-            or detail.get("initial_price_rub") is None or mapped is None):
-        raise CdtrfCanaryError("Insufficient property, price, cadastral or status evidence")
+    if category not in PROPERTY:
+        raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
+    if not detail.get("cadastral_number"):
+        raise CdtrfCanaryError("CDTRF_CADASTRAL_MISSING")
+    if detail.get("initial_price_rub") is None:
+        raise CdtrfCanaryError("CDTRF_PRICE_MISSING")
+    if mapped is None:
+        raise CdtrfCanaryError("CDTRF_STATUS_UNRECOGNIZED")
     return NormalizedLot(
         external_id=f"cdtrf:{lot_id}", source="cdtrf.ru",
         source_system="cdtrf.ru", title=title, description=title,

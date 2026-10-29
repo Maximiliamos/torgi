@@ -147,6 +147,14 @@ def _cdtrf_rejection_code(exc: Exception) -> str:
         return "price_mismatch"
     if "no cdtrf ssr" in msg or "invalid cdtrf ssr" in msg or "lot object missing" in msg:
         return "ssr_schema_changed"
+    for marker, code in (
+        ("cdtrf_category_unverified", "category_unverified"),
+        ("cdtrf_cadastral_missing", "cadastral_missing"),
+        ("cdtrf_price_missing", "price_missing"),
+        ("cdtrf_status_unrecognized", "status_unrecognized"),
+    ):
+        if marker in msg:
+            return code
     if "insufficient property" in msg:
         return "property_evidence_missing"
     if "http " in msg or isinstance(exc, requests.RequestException):
