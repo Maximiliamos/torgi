@@ -46,3 +46,33 @@ def test_report_preserves_blocked_source_without_inventing_records(monkeypatch):
     assert item["error_type"] == "EtpCatalogError"
     assert item["candidate_count"] == 0
     assert not item["production_ingestion_enabled_by_inventory"]
+
+
+def test_readiness_is_not_conflated_with_production_import(monkeypatch):
+    from unittest.mock import Mock
+    from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
+    from bankrotai.services import etp_source_inventory as survey
+
+    observations = {
+        "m-ets.ru": "existing_connector",
+        "cdtrf.ru": "candidates_unverified",
+        "roseltorg.ru": "needs_public_catalogue_contract",
+    }
+    def fake_probe(**kwargs):
+        return {"sources": [
+            {"source": item.source_id,
+             "status": observations.get(item.source_id, "blocked_or_parser_error"),
+             "candidates": [{"title": "PRIVATE DETAILS"}]
+             if item.source_id == "cdtrf.ru" else []}
+            for item in PROFILES
+        ]}
+    monkeypatch.setattr(survey, "batch_probe", fake_probe)
+    report = survey.run_inventory(session=Mock())
+    stages = {x["source_id"]: x for x in report["sources"]}
+    assert stages["cdtrf.ru"]["readiness_stage"] == "S1"
+    assert stages["roseltorg.ru"]["readiness_stage"] == "S0"
+    assert stages["m-ets.ru"]["readiness_stage"] == "not_assessed"
+    assert stages["cdtrf.ru"]["next_required_action"] == "verify_detail_identity_cadastral_price_and_status"
+    assert all(x["production_ingestion_enabled_by_inventory"] is False for x in report["sources"])
+    assert "PRIVATE DETAILS" not in str(report)
+    assert sum(report["source_status_counts"].values()) == 22
