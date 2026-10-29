@@ -48,6 +48,18 @@ def review_canary_collisions(session, lots: list, *, source: str) -> dict:
             counts["cross_source_cadastre_overlap"] += 1
             continue
 
+        # Also reject source-only provenance from a different ETP even when
+        # a historical migration has not linked it to ProcessedLot yet.
+        if session.scalar(
+            select(SourceLot.id).where(
+                SourceLot.cadastral_number == cadastral,
+                SourceLot.source_system != source,
+                SourceLot.is_archived.is_(False),
+            ).limit(1)
+        ) is not None:
+            counts["cross_source_unlinked_provenance_overlap"] += 1
+            continue
+
         # A previously ingested exact ID is not a *new* canary. Keep it out
         # of the first-import acceptance report, even if an update might be
         # idempotent in the general production persister.
