@@ -15,6 +15,7 @@
 
 - [PR #1007](https://github.com/Maximiliamos/torgi/pull/1007) синхронизирован с **актуальным** `main` после #1008/#1009; `src/bankrotai/services/etp_fivepage_readonly.py` проверяет все кандидаты пяти страниц МЭТС/ЦДТ по хешам ID, включая те, чьи детали не были загружены из-за лимитов.
 - При повторении ID на **несоседних** страницах или отсутствии полного списка fingerprint происходит fail-closed. Доказательства S2/S3 не могут означать S5/S6/S7; `reconcile_missing=False`, production PostgreSQL пока не заполнен.
+- На Home после **успешного** exact-SHA deploy два ограниченных read-only workflow `etp-mets-pagination-readonly.yml` и `etp-cdtrf-pagination-readonly.yml` теперь отдельно запускают `etp_fivepage_readonly` (не более 5 страниц и 2 details/страницу), проверяют полный список candidate fingerprints и сохраняют JSON. Ошибку HTML/API/повторных ID нельзя маскировать как завершённый source sync.
 - **Обязательные ворота:** новый 10/10 CI/S3 на интеграционном head, затем merge и полный exact-SHA Home/P11/WEB/functional; финальный release только после доказательств. Отдельная проблема пропущенных исторических `region_code`: [#1010](https://github.com/Maximiliamos/torgi/issues/1010).
 
 ## Фактические результаты P13/P16 после PR #1008 (30.10.2026)
