@@ -193,3 +193,29 @@ def test_batch_update_requeues_geocoding_when_geo_input_changes() -> None:
         session.refresh(processed)
         assert processed.needs_geo_check is True
         assert processed.geo_input_hash is None
+
+
+def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral() -> None:
+    factory = sessions()
+    with factory() as session:
+        persist_lot(session, make_lot("gis-old"))
+        existing = session.scalar(select(SourceLot))
+        assert existing is not None
+        canonical = session.get(CanonicalLot, existing.canonical_lot_id)
+        assert canonical is not None
+        canonical.canonical_key = "cadastral:76:23:010101:1"
+        old_canonical_id = canonical.id
+        session.commit()
+
+        add_run(session, "run-legacy-1")
+        changed = make_lot("gis-old")
+        changed.current_price = 400_000
+        persist_changed_lots_batch(session, [changed], "run-legacy-1")
+        session.commit()
+        session.expire_all()
+
+        again = session.scalar(select(SourceLot))
+        assert again is not None
+        assert again.canonical_lot_id == old_canonical_id
+        assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 1
+        assert float(again.current_price or 0) == 400_000
