@@ -53,7 +53,11 @@ async def collect_lots(source: str, limit: int):
     return verified_canary_items(page, source=source, limit=limit)
 
 
-def run_import(source: str, *, limit: int, apply: bool) -> dict:
+def run_import(
+    source: str, *, limit: int, apply: bool, audit_collisions: bool = False,
+) -> dict:
+    if audit_collisions and apply:
+        raise ValueError("Collision preview cannot be combined with --apply")
     if apply:
         _assert_apply_allowed()  # Must happen before any network/DB access.
     lots = asyncio.run(collect_lots(source, limit))
@@ -63,6 +67,21 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
               "write_authorized": apply, "missing_lot_archival": False,
               "complete_source_inventory": False}
     if not apply:
+        if audit_collisions:
+            if not lots:
+                raise RuntimeError("No verified property details to preflight")
+            from bankrotai.db import SessionLocal
+            from bankrotai.services.etp_preimport_collision_review import (
+                review_canary_collisions,
+            )
+            # Session never commits and is rolled back even if SELECT fails.
+            with SessionLocal() as session:
+                try:
+                    report["preimport_collision_review"] = review_canary_collisions(
+                        session, lots, source=source
+                    )
+                finally:
+                    session.rollback()
         return report
     if not lots:
         raise RuntimeError("No verified real-estate lots found; refusing empty import")
@@ -85,8 +104,12 @@ def main() -> None:
     cli.add_argument("--source", choices=APPROVED, required=True)
     cli.add_argument("--limit", type=int, default=2)
     cli.add_argument("--apply", action="store_true")
+    cli.add_argument("--audit-collisions", action="store_true")
     args = cli.parse_args()
-    report = run_import(args.source, limit=args.limit, apply=args.apply)
+    report = run_import(
+        args.source, limit=args.limit, apply=args.apply,
+        audit_collisions=args.audit_collisions,
+    )
     print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
 
 
