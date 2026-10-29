@@ -27,7 +27,7 @@ from bankrotai.services.etp_cdtrf_canary import (
 
 CANARY_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru"})
 LOT_ID = re.compile(r"^[1-9]\d{3,8}-[1-9]\d{0,4}$")
-METS_PAGE = re.compile(r"^2:[0-9a-f]{16}$")
+METS_PAGE = re.compile(r"^[2-5]:[0-9a-f]{16}$")
 PROPERTY_CATEGORIES = frozenset({
     "apartment", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
@@ -40,17 +40,22 @@ class EtpIncrementalFilters:
     """A strictly bounded discovery window; not an exhaustive source spec."""
     source_id: str
     max_detail_requests: int = 3
+    max_pages: int = 2
 
     def __post_init__(self) -> None:
         if self.source_id not in CANARY_SOURCES:
             raise ValueError("Source not enabled for bounded ETP ingestion")
         if not 1 <= self.max_detail_requests <= 5:
             raise ValueError("ETP detail request cap must be 1..5")
+        if not 1 <= self.max_pages <= 5:
+            raise ValueError("ETP incremental window must be bounded to 1..5 pages")
 
 
-def _cursor_for(ids: list[str]) -> str:
+def _cursor_for(ids: list[str], next_page: int = 2) -> str:
+    if not 2 <= next_page <= 5:
+        raise ValueError("ETP cursor page exceeds the bounded five-page window")
     payload = ",".join(sorted(ids)).encode("ascii")
-    return "2:" + hashlib.sha256(payload).hexdigest()[:16]
+    return f"{next_page}:" + hashlib.sha256(payload).hexdigest()[:16]
 
 
 def _validate_cursor(cursor: str | None) -> int:
@@ -58,7 +63,7 @@ def _validate_cursor(cursor: str | None) -> int:
         return 1
     if not METS_PAGE.fullmatch(cursor):
         raise ValueError("Untrusted ETP page cursor")
-    return 2
+    return int(cursor.split(":", 1)[0])
 
 
 def _property_ready(lot) -> bool:
@@ -74,10 +79,9 @@ def _property_ready(lot) -> bool:
 def _get_mets_catalogue(pilot: MetsPublicPilot, page: int) -> str:
     if page == 1:
         return pilot._get(APARTMENTS_URL)
-    if page != 2:
-        raise MetsEvidenceError("Only two M-ETS catalogue pages are approved for this window")
-    # The exact page=2 structure was observed in the captured first/second pages.
-    url = APARTMENTS_URL + "&page=2"
+    if not 2 <= page <= 5:
+        raise MetsEvidenceError("Only five M-ETS catalogue pages are approved for this window")
+    url = APARTMENTS_URL + f"&page={page}"
     if pilot._last_request_at is not None:
         delay = 0.5 - (time.monotonic() - pilot._last_request_at)
         if delay > 0:
@@ -101,6 +105,8 @@ def incremental_mets_search(
     if filters.source_id != "m-ets.ru":
         raise ValueError("M-ETS incremental filters require source_id=m-ets.ru")
     page = _validate_cursor(cursor)
+    if page > filters.max_pages:
+        raise ValueError("M-ETS requested page exceeds the approved bounded window")
     html = _get_mets_catalogue(pilot, page)
     urls = discover_lot_urls(html, limit=50)
     if not urls:
@@ -108,8 +114,8 @@ def incremental_mets_search(
     ids = [x.rsplit("/", 1)[-1] for x in urls]
     if len(ids) != len(set(ids)) or not all(LOT_ID.fullmatch(x) for x in ids):
         raise MetsEvidenceError("M-ETS catalogue contains ambiguous lot IDs")
-    if page == 2 and cursor == _cursor_for(ids):
-        raise MetsEvidenceError("M-ETS second page repeats the first page")
+    if page > 1 and cursor == _cursor_for(ids, page):
+        raise MetsEvidenceError("M-ETS catalogue repeats the immediately preceding page")
     accepted = []
     rejected = 0
     for url in urls[:filters.max_detail_requests]:
@@ -119,16 +125,17 @@ def incremental_mets_search(
                 rejected += 1
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": "two_page_incremental_window",
+                            "source_scope": f"bounded_{filters.max_pages}_page_incremental_window",
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, MetsEvidenceError, ValueError):
             rejected += 1
     return ConnectorPage(
         items=accepted,
-        next_cursor=_cursor_for(ids) if page == 1 else None,
+        next_cursor=_cursor_for(ids, page + 1) if page < filters.max_pages else None,
         metadata={
-            "pages_fetched": 1, "progress_current": page, "progress_total": 2,
+            "pages_fetched": 1, "progress_current": page,
+            "progress_total": filters.max_pages,
             "catalogue_lots": len(ids), "details_rejected": rejected,
             "complete_source_inventory": False, "safe_for_archival": False,
             "requested_category_group": "property_pilot",
@@ -170,6 +177,8 @@ def incremental_cdtrf_search(
     if filters.source_id != "cdtrf.ru":
         raise ValueError("CDTRF incremental filters require source_id=cdtrf.ru")
     page = _validate_cursor(cursor)
+    if page > filters.max_pages:
+        raise ValueError("CDTRF requested page exceeds the approved bounded window")
     own = session or requests.Session()
     data = preview_cdtrf_public_api(page, session=own)
     candidates = data["candidates"]
@@ -178,8 +187,8 @@ def incremental_cdtrf_search(
         raise CdtrfCanaryError("No property candidates; refusing misleading ETP page")
     if len(identities) != len(set(identities)):
         raise CdtrfCanaryError("Repeated CDTRF property identities on page")
-    if page == 2 and cursor == _cursor_for(identities):
-        raise CdtrfCanaryError("CDTRF second API page repeats the first page")
+    if page > 1 and cursor == _cursor_for(identities, page):
+        raise CdtrfCanaryError("CDTRF API repeats the immediately preceding page")
     accepted = []
     rejected = 0
     rejected_codes: dict[str, int] = {}
@@ -195,7 +204,7 @@ def incremental_cdtrf_search(
                 )
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": "two_page_incremental_window",
+                            "source_scope": f"bounded_{filters.max_pages}_page_incremental_window",
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, CdtrfCanaryError, ValueError) as exc:
@@ -204,9 +213,10 @@ def incremental_cdtrf_search(
             rejected_codes[code] = rejected_codes.get(code, 0) + 1
     return ConnectorPage(
         items=accepted,
-        next_cursor=_cursor_for(identities) if page == 1 else None,
+        next_cursor=_cursor_for(identities, page + 1) if page < filters.max_pages else None,
         metadata={
-            "pages_fetched": 1, "progress_current": page, "progress_total": 2,
+            "pages_fetched": 1, "progress_current": page,
+            "progress_total": filters.max_pages,
             "catalogue_lots": len(identities), "details_rejected": rejected,
             "detail_attempts": min(len(candidates), filters.max_detail_requests),
             "rejection_codes": rejected_codes,
