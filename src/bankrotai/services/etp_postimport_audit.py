@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 
 from sqlalchemy import func, select
 
@@ -80,6 +81,48 @@ def inspect_import(session, source_id: str) -> dict:
     }
 
 
+
+def verify_expected_source_lots(session, source_id: str, ids: list[str]) -> list[dict]:
+    """Read-only proof that this particular canary's source IDs have correct links.
+
+    Prior source aggregate counts are not evidence that newly attempted IDs
+    were actually saved. GEO and public map publication remain separate gates.
+    """
+    if (source_id not in APPROVED or not 1 <= len(ids) <= 2
+            or len(ids) != len(set(ids))
+            or not all(re.fullmatch(r"[A-Za-z0-9:.\\-]{1,100}", value) for value in ids)):
+        raise ValueError("ETP canary audit requires one or two unique public source IDs")
+    result = []
+    for external_id in ids:
+        row = session.execute(
+            select(
+                SourceLot.source_system, SourceLot.canonical_lot_id,
+                SourceLot.processed_lot_id, SourceLot.cadastral_number,
+                SourceLot.is_archived,
+                ProcessedLot.source_system, ProcessedLot.external_id,
+                ProcessedLot.cadastral_number, ProcessedLot.is_archived,
+                ProcessedLot.auction_status,
+                ProcessedLot.current_geo_lat, ProcessedLot.current_geo_lon,
+            ).join(ProcessedLot, SourceLot.processed_lot_id == ProcessedLot.id)
+            .where(SourceLot.source_system == source_id,
+                   SourceLot.external_id == external_id)
+        ).one_or_none()
+        if (row is None or row[0] != source_id or not row[1] or not row[2]
+                or not row[3] or bool(row[4]) or row[5] != source_id
+                or row[6] != external_id or not row[7] or bool(row[8])
+                or row[9] not in ("active", "scheduled")
+                or row[3] != row[7]):
+            raise RuntimeError(
+                "ETP canary source ID lacks an active, same-source canonical/processed link"
+            )
+        result.append({
+            "external_id": external_id, "source_link_verified": True,
+            "geo_observed": row[10] is not None and row[11] is not None,
+            "public_map_verified": False,
+        })
+    return result
+
+
 def report(session) -> dict:
     current = session.scalar(
         select(MapDataset).where(MapDataset.is_current.is_(True))
@@ -98,11 +141,19 @@ def main() -> None:
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("--min-source-lots", type=int, default=0)
     args.add_argument("--source", choices=APPROVED, default=None)
+    args.add_argument("--expected-external-id", action="append", default=[])
     ns = args.parse_args()
     if ns.min_source_lots < 0:
         args.error("Negative minimum is invalid")
+    if ns.expected_external_id and ns.source is None:
+        args.error("Expected external IDs require --source")
     with SessionLocal() as session:
         payload = report(session)
+        payload["expected_canary_source_lots"] = (
+            verify_expected_source_lots(
+                session, ns.source, ns.expected_external_id,
+            ) if ns.expected_external_id else []
+        )
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     if ns.min_source_lots and any(
         x["source_lots"] < ns.min_source_lots for x in payload["sources"]
