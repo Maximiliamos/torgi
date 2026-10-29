@@ -2,7 +2,7 @@
 
 **Версия:** 1.0 · **Дата аудита:** 29 октября 2026 г.  
 **Репозиторий:** https://github.com/Maximiliamos/torgi  
-**Базовый audit SHA:** `f70f128e` · **последний проверенный main:** `64acc690` (P17; Home, REG.RU, Cloudflare deploy successful; P11 ещё не принят); предыдущий `c8572374` прошёл P11  
+**Базовый audit SHA:** `f70f128e` · **последний проверенный main:** `c0d0a040` (#986, release/smoke concurrency fix merged 29.10.2026); факт merge подтверждён, production P11 и новый release **ещё не подтверждены**; предыдущий `64acc690` прошёл Home/REG.RU/Cloudflare deploy, но release #40908784706 завершился failure  
 **Назначение:** единый исполнимый план для разработки, CI, домашнего production-узла, PostgreSQL, картографического конвейера, REG.RU и Cloudflare. Документ является планом, а не отчётом о выполнении.
 
 > **Бизнес-результат:** карта Sterdez.online показывает только **актуальные продажи недвижимости** с достоверными координатами и источниками; пользователь фильтрует несколько ЭТП; цены и статусы обновляются; дубли разных публикаций одной продажи объединяются, **разные продажи одного объекта не смешиваются**; журнал, избранное и действия пользователя сохраняются. Неподтверждённые источники не выдают фиктивные лоты.
@@ -12,6 +12,16 @@
 
 
 ## 0. Живой журнал выполнения P0/P1 и ЭТП (29.10.2026)
+
+**Правило обновления:** после каждого действия сначала вносим проверяемую запись (дата, задача, PR, SHA, тесты и ограничение), затем изменяем статус `не начато → в работе → PR/CI → merged → deployed → production accepted`. Пункт с кодом, но без сквозной production-приёмки, не считается закрытым. Записи ниже различают историю и фактическое состояние `main`.
+
+### Журнал собственных изменений ассистента
+
+| Дата | Что сделано лично в GitHub | Доказательство | Чего это НЕ доказывает |
+|---|---|---|---|
+| 29.10.2026 | Проверил CI и **объединил PR #986** (разделение конкурентных smoke по exact SHA; ожидание повторного проверенного запуска без fail-open). | [PR #986](https://github.com/Maximiliamos/torgi/pull/986), [merge `c0d0a040`](https://github.com/Maximiliamos/torgi/commit/c0d0a040bc8c4897b47811d57841588b26ce095a), 9/9 CI на PR head `5284d495` | Не подтверждены P11 нового SHA, успешный подписанный релиз 0.3.6, импорт ЭТП, исправление исторических записей и появление их на карте |
+| 29.10.2026 | Обновил этот документ в ветке [PR #976](https://github.com/Maximiliamos/torgi/pull/976), сохранил предыдущие требования и незакрытые проверки. | Текущая редакция `docs/ROADMAP.md` в ветке PR #976 | ROADMAP остаётся **не в `main`** до отдельного слияния; правка документа не равна выкладке функций |
+
 
 Эта секция уточняет статусы **на момент последней независимой проверки**. Не меняет требования разделов 1–14. `PR created`, `CI passed`, `merged`, `deployed`, `P11 accepted`, `E2E source accepted` — **разные** состояния.
 
@@ -24,7 +34,7 @@
 | R8/S0–S1 | P1 | Санитизированный readiness probe всех 22 профилей, без DB writes | PR [#978](https://github.com/Maximiliamos/torgi/pull/978) **merged**; код survey есть в `main` | [#982](https://github.com/Maximiliamos/torgi/pull/982): scheduled/after-deploy; retain 22-source JSON artifact |
 | R1/P13 + R4/P16 | P0/P1 | Read-only impact отчёт реальных картографических исключений и межплощадочных старых дублей | PR [#983](https://github.com/Maximiliamos/torgi/pull/983): код + тесты, **не merged** | Выполнить Home audit и проверить потерю допустимых точек и исторические коллизии ДО update SQL |
 | R11/RELEASE | P1 | Без переназначения подписанного `v0.3.5`: единая новая версия Python/WEB/Windows | PR [#981](https://github.com/Maximiliamos/torgi/pull/981) `v0.3.6`, green CI, **не merged** | Выпуск **после** остальных исправлений и exact-SHA production gates |
-| R11/SMOKE-GATE | P1 | Устранить ложные отказы релиза при отмене/пропуске обязательного exact-SHA smoke | [#986](https://github.com/Maximiliamos/torgi/pull/986) открытый PR; root cause подтверждён Actions [40908784706](https://github.com/Maximiliamos/torgi/actions/runs/40908784706) | 9/9 CI, работающие WEB/functional smoke, P11 и новый `v0.3.6` без переноса старого tag |
+| R11/SMOKE-GATE | P1 | Исправлен механизм конфликтующей отмены WEB/functional exact-SHA проверок и ожидания release gate | [#986](https://github.com/Maximiliamos/torgi/pull/986) **merged** в `main`, SHA [`c0d0a040`](https://github.com/Maximiliamos/torgi/commit/c0d0a040bc8c4897b47811d57841588b26ce095a); 9/9 CI пройдено **до merge**. Исходный сбой: [Actions #40908784706](https://github.com/Maximiliamos/torgi/actions/runs/40908784706) | Подтвердить P11, `Public WEB smoke`, `Production functional reliability` и успешный *новый* release на **точном `c0d0a040`**; до этого production закрытие НЕ засчитывать |
 | R0/BAT | P2 | Все 23 старых BAT-описания и пользовательные P13–P17 ТЗ в одном файле | PR [#976](https://github.com/Maximiliamos/torgi/pull/976): **не merged** на момент записи | Merge после code changes/accepted release window |
 | R7/CDTRF-S2 | P1 | Проверить до 5 страниц официального JSON API ЦДТ без повторных lot IDs | [#984](https://github.com/Maximiliamos/torgi/pull/984): 9/9 CI green, ещё не merged | Реальный Home read-only JSON с показателями страниц, без DB writes |
 | R7/METS-S2 | P1 | Проверить до 5 страниц HTML каталога МЭТС без дубликатов | [#985](https://github.com/Maximiliamos/torgi/pull/985): 9/9 CI green, ещё не merged | Реальный Home read-only JSON и подтверждение фактических page links |
