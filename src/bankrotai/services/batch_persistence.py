@@ -206,6 +206,15 @@ def _persist_changed_lots_chunk(
     if insert_factory is None:
         raise RuntimeError(f"Batch source persistence is unsupported for dialect {dialect}")
 
+    # An already-linked source must keep its historical/manual canonical group
+    # during normal refresh. Only NEW publications receive new sale-level keys.
+    existing_links = {
+        row.external_id: row
+        for row in session.scalars(select(SourceLot).where(
+            SourceLot.source_system == lots[0].source_system,
+            SourceLot.external_id.in_([lot.external_id for lot in lots]),
+        )).all()
+    }
     canonical_values = {
         _canonical_key(lot): {
             "canonical_key": _canonical_key(lot),
@@ -218,29 +227,30 @@ def _persist_changed_lots_chunk(
             "cadastral_number": lot.cadastral_number,
             "area": lot.area,
         }
-        for lot in lots
+        for lot in lots if lot.external_id not in existing_links
     }
-    canonical_statement = insert_factory(CanonicalLot).values(list(canonical_values.values()))
-    canonical_excluded = canonical_statement.excluded
-    session.execute(
-        canonical_statement.on_conflict_do_update(
-            index_elements=["canonical_key"],
-            set_={
-                "title": canonical_excluded.title,
-                "category": canonical_excluded.category,
-                "region_code": canonical_excluded.region_code,
-                "address": canonical_excluded.address,
-                "cadastral_number": canonical_excluded.cadastral_number,
-                "area": canonical_excluded.area,
-                "updated_at": utc_now(),
-            },
+    if canonical_values:
+        canonical_statement = insert_factory(CanonicalLot).values(list(canonical_values.values()))
+        canonical_excluded = canonical_statement.excluded
+        session.execute(
+            canonical_statement.on_conflict_do_update(
+                index_elements=["canonical_key"],
+                set_={
+                    "title": canonical_excluded.title,
+                    "category": canonical_excluded.category,
+                    "region_code": canonical_excluded.region_code,
+                    "address": canonical_excluded.address,
+                    "cadastral_number": canonical_excluded.cadastral_number,
+                    "area": canonical_excluded.area,
+                    "updated_at": utc_now(),
+                },
+            )
         )
-    )
     keys = set(canonical_values)
     canonicals = {
         row.canonical_key: row
         for row in session.scalars(select(CanonicalLot).where(CanonicalLot.canonical_key.in_(keys))).all()
-    }
+    } if keys else {}
 
     external_ids = [lot.external_id for lot in lots]
     existing_processed = {
@@ -364,15 +374,18 @@ def _persist_changed_lots_chunk(
         _source_values(
             lot,
             run_id=run_id,
-            canonical_lot_id=canonicals[_canonical_key(lot)].id,
+            canonical_lot_id=(
+                existing_links[lot.external_id].canonical_lot_id
+                if lot.external_id in existing_links else canonicals[_canonical_key(lot)].id
+            ),
             processed_lot_id=processed[lot.external_id].id,
-            existing=existing_sources.get(lot.external_id),
+            existing=existing_sources.get(lot.external_id) or existing_links.get(lot.external_id),
         )
         for lot in lots
     ]
     statement = insert_factory(SourceLot).values(values)
     excluded = statement.excluded
-    immutable = {"source_system", "external_id", "first_seen_at", "created_at"}
+    immutable = {"source_system", "external_id", "first_seen_at", "created_at", "canonical_lot_id"}
     update_values = {
         column.name: getattr(excluded, column.name)
         for column in SourceLot.__table__.columns
