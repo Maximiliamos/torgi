@@ -123,6 +123,61 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_source_lot_observation_timestamps_remain_ordered_on_resync(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot()]]))
+    with sessions() as session:
+        original = session.scalar(select(SourceLot))
+        assert original is not None
+        first_seen = original.first_seen_at
+        assert first_seen is not None
+        assert original.last_seen_at is not None
+        assert first_seen <= original.last_seen_at
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
+        assert processed is not None
+        assert processed.region_code == "76"
+
+    run_with(service, FakeConnector([[lot(price=350_000)]]))
+    with sessions() as session:
+        refreshed = session.scalar(select(SourceLot))
+        assert refreshed is not None
+        assert refreshed.first_seen_at == first_seen
+        assert refreshed.first_seen_at <= refreshed.last_seen_at
+
+
+def test_legacy_import_records_consistent_first_and_last_seen(sessions) -> None:
+    with sessions.begin() as session:
+        persist_lot(session, lot("legacy-timestamp"))
+
+    with sessions() as session:
+        row = session.scalar(
+            select(SourceLot).where(SourceLot.external_id == "legacy-timestamp")
+        )
+        assert row is not None
+        assert row.first_seen_at is not None
+        assert row.last_seen_at is not None
+        assert row.first_seen_at <= row.last_seen_at
+
+
+def test_region_code_change_requeues_batch_geo(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot()]]))
+    with sessions.begin() as session:
+        row = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
+        assert row is not None
+        row.needs_geo_check = False
+        row.geo_input_hash = "a" * 64
+
+    changed = lot(region_code="01")
+    run_with(service, FakeConnector([[changed]]))
+    with sessions() as session:
+        updated = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
+        assert updated is not None
+        assert updated.region_code == "01"
+        assert updated.needs_geo_check is True
+        assert updated.geo_input_hash is None
+
+
 def test_source_run_records_real_progress_timestamp_and_phase(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_id, _ = run_with(service, FakeConnector([[lot()]]))
