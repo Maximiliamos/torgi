@@ -55,7 +55,8 @@ def test_three_distinct_catalogue_pages_summarized_without_pii_or_writes():
     assert report["production_database_writes"] == 0
     assert report["archival_allowed"] is False
     assert "tradeId" not in str(report)
-    assert "900" not in str(report)
+    assert "trade_lot_id" not in str(report)
+    assert "detail_url" not in str(report)
 
 
 def test_overlapping_lot_identity_across_pages_fails_closed():
