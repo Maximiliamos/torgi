@@ -84,6 +84,29 @@ jobs:
           path: ${{ runner.temp }}/p0-cross-source-dedup-impact.json
           if-no-files-found: warn
           retention-days: 30
+      - name: Measure real M-ETS/CDTRF source, journal and GEO footprint (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = docker exec bankrotai-home-map-worker python -m bankrotai.services.etp_postimport_audit
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'ETP database integrity survey failed' }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.database_writes -ne 0 -or $report.requires_external_map_tile_verification -ne $true) {
+            throw 'ETP database survey overstated its acceptance evidence'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'etp-db-postimport-readonly.json'
+          $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding utf8
+          foreach ($source in $report.sources) {
+            Write-Output ("ETP DB {0}: source_lots={1}, processed={2}, geo={3}, price_events={4}, status_events={5}" -f $source.source, $source.source_lots, $source.processed_lots, $source.with_coordinates, $source.price_events, $source.status_history_events)
+          }
+      - name: Save ETP source/journal/GEO SQL acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-db-postimport-readonly
+          path: ${{ runner.temp }}/etp-db-postimport-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload exact public eligibility impact preview
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
