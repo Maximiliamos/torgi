@@ -129,26 +129,6 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     )
 
 
-def etp_incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
-    """Two evidence-backed limited windows; never authoritative source inventories.
-
-    These must only be used with reconcile_missing=False. They are not
-    automatically scheduled unless the operator opts in explicitly.
-    """
-    from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters
-
-    return (
-        SourceSyncSpec(
-            "m-ets.ru", EtpIncrementalFilters("m-ets.ru", max_detail_requests=3),
-            reconcile_missing=False, max_batches=2,
-        ),
-        SourceSyncSpec(
-            "cdtrf.ru", EtpIncrementalFilters("cdtrf.ru", max_detail_requests=3),
-            reconcile_missing=False, max_batches=2,
-        ),
-    )
-
-
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
     specs = []
