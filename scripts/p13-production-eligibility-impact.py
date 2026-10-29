@@ -40,7 +40,10 @@ def proposed_filters(*, cutoff: datetime) -> tuple:
         select(SourceLot.id)
         .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
         .where(
-            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            or_(
+                SourceLot.processed_lot_id == ProcessedLot.id,
+                CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            ),
             SourceLot.source_system.in_(AUTO),
             SourceLot.is_active.is_(True),
             SourceLot.is_archived.is_(False),
@@ -136,7 +139,10 @@ def build_report(session: Session) -> dict:
         select(SourceLot.id)
         .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
         .where(
-            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            or_(
+                SourceLot.processed_lot_id == ProcessedLot.id,
+                CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            ),
             SourceLot.source_system.in_(AUTO),
             SourceLot.is_active.is_(True),
             SourceLot.is_archived.is_(False),
@@ -154,6 +160,52 @@ def build_report(session: Session) -> dict:
     active_proof_any_age_count = int(session.scalar(
         select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
     ) or 0)
+    # Since P0 conservative identity, some valid SourceLot→ProcessedLot links
+    # have a canonical sale without legacy_processed_lot_id. Count direct and
+    # legacy evidence separately: no assumed cross-sale linkage.
+    direct_source_proof = (
+        select(SourceLot.id)
+        .where(
+            SourceLot.processed_lot_id == ProcessedLot.id,
+            SourceLot.source_system.in_(AUTO),
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.source_status.in_(ACTIVE),
+            or_(
+                SourceLot.auction_type.is_(None),
+                ~or_(
+                    SourceLot.auction_type.ilike("%аренд%"),
+                    SourceLot.auction_type.ilike("%lease%"),
+                    SourceLot.auction_type.ilike("%rent%"),
+                ),
+            ),
+        ).exists()
+    )
+    legacy_source_proof = (
+        select(SourceLot.id)
+        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
+        .where(
+            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
+            SourceLot.source_system.in_(AUTO),
+            SourceLot.is_active.is_(True),
+            SourceLot.is_archived.is_(False),
+            SourceLot.source_status.in_(ACTIVE),
+            or_(
+                SourceLot.auction_type.is_(None),
+                ~or_(
+                    SourceLot.auction_type.ilike("%аренд%"),
+                    SourceLot.auction_type.ilike("%lease%"),
+                    SourceLot.auction_type.ilike("%rent%"),
+                ),
+            ),
+        ).exists()
+    )
+    direct_only_source_proof = int(session.scalar(
+        select(func.count(ProcessedLot.id)).where(
+            *pre_source, direct_source_proof, ~legacy_source_proof,
+        )
+    ) or 0)
+
     expired = (*base, ProcessedLot.auction_status == "expired")
     # An expired primary can disagree with a fresh canonical sibling. Report
     # such conflicts for manual review rather than restoring its active status.
@@ -307,6 +359,12 @@ def build_report(session: Session) -> dict:
             active_proof_any_age_count - sequential["06_and_fresh_active_source"]
         ),
         "source_has_active_proof_ignoring_freshness": active_proof_any_age_count,
+        "source_direct_link_proof_not_in_legacy": direct_only_source_proof,
+        "source_direct_link_note": (
+            "Valid active SourceLot.processed_lot_id proof with no matching "
+            "CanonicalLot.legacy_processed_lot_id. This is evidence only, "
+            "not permission to republish archived or expired lots."
+        ),
         "before_fresh_source_by_primary_system": breakdown(
             session, pre_source, ProcessedLot.source_system
         ),
