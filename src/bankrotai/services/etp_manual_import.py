@@ -58,26 +58,25 @@ def run_import(source: str, *, limit: int, apply: bool) -> dict:
         _assert_apply_allowed()  # Must happen before any network/DB access.
     lots = asyncio.run(collect_lots(source, limit))
     report: dict[str, Any] = {"source": source, "verified_detail_count": len(lots),
-              "persisted_count": 0, "duplicate_review_count": 0,
+              "persisted_count": 0, "persisted_external_ids": [],
+              "duplicate_review_count": 0,
               "write_authorized": apply, "missing_lot_archival": False,
               "complete_source_inventory": False}
     if not apply:
         return report
     if not lots:
         raise RuntimeError("No verified real-estate lots found; refusing empty import")
+    if len(lots) > limit or len(lots) > 2:
+        raise ValueError("Refusing unbounded ETP canary persistence")
     from bankrotai.db import session_scope
-    from bankrotai.services.etp_canary_persistence import (
-        CanaryDuplicateReviewRequired, persist_canary_lot,
-    )
-    for lot in lots:
-        try:
-            with session_scope() as session:
-                persist_canary_lot(session, lot, "github-actions-etp-canary")
-            report["persisted_count"] += 1
-        except CanaryDuplicateReviewRequired:
-            report["duplicate_review_count"] += 1
-    if report["persisted_count"] == 0:
-        raise RuntimeError("No unique verified lots imported; review duplicates and source")
+    from bankrotai.services.etp_canary_persistence import persist_canary_lot
+    # Commit at most two verified lots together. A cross-source collision or
+    # failure on the second lot must roll back the first, including its journal.
+    with session_scope() as session:
+        for lot in lots:
+            persist_canary_lot(session, lot, "github-actions-etp-canary")
+    report["persisted_count"] = len(lots)
+    report["persisted_external_ids"] = [lot.external_id for lot in lots]
     return report
 
 
