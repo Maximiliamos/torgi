@@ -92,10 +92,10 @@ def _get_mets_catalogue(pilot: MetsPublicPilot, page: int) -> str:
         headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
     )
     if response.status_code != 200:
-        raise MetsEvidenceError(f"M-ETS catalogue page 2 HTTP {response.status_code}")
+        raise MetsEvidenceError(f"M-ETS catalogue HTTP {response.status_code}")
     if (len(response.content) > MAX_HTML_BYTES
             or "text/html" not in response.headers.get("Content-Type", "").lower()):
-        raise MetsEvidenceError("M-ETS page 2 response is not bounded HTML")
+        raise MetsEvidenceError("M-ETS catalogue page response is not bounded HTML")
     return response.text
 
 
@@ -125,7 +125,9 @@ def incremental_mets_search(
                 rejected += 1
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": f"bounded_{filters.max_pages}_page_incremental_window",
+                            "source_scope": ("two_page_incremental_window"
+                                             if filters.max_pages == 2 else
+                                             f"bounded_{filters.max_pages}_page_incremental_window"),
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, MetsEvidenceError, ValueError):
@@ -204,7 +206,9 @@ def incremental_cdtrf_search(
                 )
                 continue
             lot.raw_data = {**lot.raw_data,
-                            "source_scope": f"bounded_{filters.max_pages}_page_incremental_window",
+                            "source_scope": ("two_page_incremental_window"
+                                             if filters.max_pages == 2 else
+                                             f"bounded_{filters.max_pages}_page_incremental_window"),
                             "complete_source_inventory": False}
             accepted.append(lot)
         except (requests.RequestException, CdtrfCanaryError, ValueError) as exc:
