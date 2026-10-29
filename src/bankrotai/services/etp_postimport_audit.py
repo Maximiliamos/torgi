@@ -97,6 +97,7 @@ def report(session) -> dict:
 def main() -> None:
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("--min-source-lots", type=int, default=0)
+    args.add_argument("--source", choices=APPROVED, default=None)
     ns = args.parse_args()
     if ns.min_source_lots < 0:
         args.error("Negative minimum is invalid")
@@ -105,6 +106,7 @@ def main() -> None:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     if ns.min_source_lots and any(
         x["source_lots"] < ns.min_source_lots for x in payload["sources"]
+        if ns.source is None or x["source"] == ns.source
     ):
         raise SystemExit(1)
 
