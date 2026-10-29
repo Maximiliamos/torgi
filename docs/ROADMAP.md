@@ -417,7 +417,7 @@
 
 **Ниже сохранён текст исходных требований GitHub, доступный до объединения 29.10.2026.** Отдельные датированные утверждения в этих разделах являются историческим статусом и должны перепроверяться относительно текущего `main` и production. Этот appendix нужен для полноты и трассируемости, он не создаёт новый P0 по умолчанию.
 
-### P0–P2 (исторический) — надёжное ядро торгов
+### P0 — надёжное ядро торгов
 
 #### BAT-001 — Connector SDK and registry — foundation delivered
 
@@ -464,7 +464,7 @@ Done: schema and idempotent version recorder. Remaining: download workers, objec
 
 Done: authenticated connector contract. Blocked for live acceptance: production service agreement and credentials.
 
-### P0–P2 (исторический) — investment decision and participation
+### P1 — investment decision and participation
 
 #### BAT-101 — Maximum bid calculator — delivered API foundation
 
@@ -491,7 +491,7 @@ Done: desktop/web checklist UI. Remaining: notifications and document-to-field r
 - LLM only explains precomputed values;
 - no price output when evidence policy is not met.
 
-### P0–P2 (исторический) — Deal Room and learning loop
+### P2 — Deal Room and learning loop
 
 #### BAT-201 — Organizations, roles and partners
 
@@ -512,7 +512,7 @@ Done: desktop/web checklist UI. Remaining: notifications and document-to-field r
 - connector health dashboard, metrics, alerts and runbooks;
 - owner decision and publication of a root `LICENSE`.
 
-### P0–P2 (исторический) — завершение безопасного web/desktop parity
+### P0 — завершение безопасного web/desktop parity
 
 #### BAT-301 — Three-source bulk synchronization
 
@@ -539,7 +539,7 @@ Done: desktop/web checklist UI. Remaining: notifications and document-to-field r
 - отдельные allowlists методов и route capabilities endpoint для UI;
 - скрывать недоступные кнопки, возвращать `403` для запрещённого действия.
 
-### P0–P2 (исторический) — оставшиеся desktop-возможности в web
+### P1 — оставшиеся desktop-возможности в web
 
 #### BAT-305 — Import/export jobs
 
@@ -584,7 +584,7 @@ Done 2026-08-05: базовый Playwright journey проверяет вход, 
 и изменения «светофора».
 Remaining: сценарии импорта и изменения данных для каждого workflow и роли.
 
-### P0–P2 (исторический) — аудит и эксплуатация
+### P1 — аудит и эксплуатация
 
 #### BAT-308 — Split monoliths
 
@@ -602,7 +602,7 @@ Remaining: сценарии импорта и изменения данных д
 - root `LICENSE`, SBOM, signed release images, dependency update policy;
 - branch protection, required checks, secret scanning/private vulnerability reporting.
 
-### P0–P2 (исторический) — качество интерфейса и данных
+### P2 — качество интерфейса и данных
 
 #### BAT-311 — Frontend architecture and accessibility
 
