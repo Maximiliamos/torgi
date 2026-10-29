@@ -16,6 +16,7 @@ def lot(external_id: str, source: str = "m-ets.ru"):
         category="land", cadastral_number="76:01:000101:1",
         auction_status="active", current_price=250000,
         start_price=None, lot_url="https://m-ets.ru/12345-1",
+        raw_data={},
     )
 
 
