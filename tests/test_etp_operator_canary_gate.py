@@ -156,7 +156,7 @@ def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     from bankrotai.services import etp_canary_persistence as persistence
     from bankrotai.services import etp_manual_import as module
 
-    rows = [sale(), sale(external_id="243003-2")]
+    rows = [sale(), sale(external_id="243003-2", cadastral_number="76:23:010101:2")]
     async def candidates(source, limit):
         return rows
     monkeypatch.setattr(module, "collect_lots", candidates)
@@ -184,13 +184,30 @@ def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     assert outcome["missing_lot_archival"] is False
 
 
+def test_apply_rejects_new_duplicate_cadastre_before_sql_transaction(monkeypatch):
+    from bankrotai.services import etp_manual_import as module
+    from bankrotai import db
+
+    async def same_asset(source, limit):
+        return [sale(), sale(external_id="243003-2")]
+    monkeypatch.setattr(module, "collect_lots", same_asset)
+    monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
+    monkeypatch.setattr(
+        db, "session_scope",
+        lambda: pytest.fail("No database transaction may begin"),
+    )
+    with pytest.raises(ValueError, match="batch repeats a cadastral number"):
+        run_import("m-ets.ru", limit=2, apply=True)
+
+
 def test_second_lot_collision_rolls_back_first_and_fails_closed(monkeypatch):
     from contextlib import contextmanager
     from bankrotai import db
     from bankrotai.services import etp_canary_persistence as persistence
     from bankrotai.services import etp_manual_import as module
 
-    rows = [sale(), sale(external_id="243003-2")]
+    rows = [sale(), sale(external_id="243003-2", cadastral_number="76:23:010101:2")]
     async def candidates(source, limit):
         return rows
     monkeypatch.setattr(module, "collect_lots", candidates)
