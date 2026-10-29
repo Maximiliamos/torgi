@@ -113,6 +113,7 @@ from bankrotai.services.ingestion import SyncAlreadyRunningError, default_source
 from bankrotai.services.etp_mets_canary import create_mets_canary_router
 from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
 from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalogue_router
+from bankrotai.services.etp_incremental_preview_api import create_etp_incremental_preview_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -402,7 +403,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             parts = path.split("/")
             return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
         if path == "/api/etp/pilots/sources" or (
-            path.startswith("/api/etp/pilots/") and path.endswith("/preview")
+            path.startswith("/api/etp/pilots/") and path.endswith(("/preview", "/batch-preview"))
         ):
             return True
         if path.startswith("/api/search/"):
@@ -466,6 +467,7 @@ def require_admin(actor: AuthenticatedUser = Depends(require_user)) -> Authentic
 app.include_router(create_mets_canary_router(require_admin))
 app.include_router(create_cdtrf_canary_router(require_admin))
 app.include_router(create_etp_pilot_catalogue_router(require_admin))
+app.include_router(create_etp_incremental_preview_router(require_admin))
 
 @app.get("/")
 def read_root():
@@ -475,13 +477,11 @@ def read_root():
 def current_time(_: AuthenticatedUser = Depends(require_user)):
     return trusted_time_status()
 
-
 @app.get("/health/live")
 async def liveness_check():
     # Keep liveness off AnyIO's shared worker-thread pool. Slow synchronous
     # source/database calls must not make a healthy event loop look dead.
     return {"status": "alive", "version": __version__}
-
 
 @app.get("/health/ready")
 @app.get("/health")
