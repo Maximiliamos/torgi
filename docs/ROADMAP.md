@@ -11,6 +11,14 @@
 
 
 
+## Подтверждённая приёмка 0.3.8 и ЭТП (30.10.2026)
+
+- **main `b5200eaa`**: production CI, Home deploy, REG.RU WEB/API, Cloudflare edge, публичный WEB и functional smoke — success; **P1 production data quality** также success; **P11 30-min soak ещё выполняется**. `v0.3.8` **не опубликован** на момент этой записи; latest GitHub release — `v0.3.7`. Не сливать 0.3.9 с обходом exact-SHA P11.
+- [Home M-ETS run #40970926040](https://github.com/Maximiliamos/torgi/actions/runs/40970926040) success: 5 страниц, 100 уникальных ID каталога, 100 candidate fingerprints, 10 проверенных property details, 0 отклонений, без DB writes.
+- [Home CDTRF run #40970926049](https://github.com/Maximiliamos/torgi/actions/runs/40970926049) success: 5 страниц, 100 ID общего каталога; **48** кандидатов недвижимости, 48 candidate fingerprints, 8 подтверждённых property details, 2 отклонения. Это **не** 100 подтверждённых объектов недвижимости.
+- [Home P16 run #40970926059](https://github.com/Maximiliamos/torgi/actions/runs/40970926059) success: current MapDataset 52 028, строгий P13 максимум 4 149 (**7,97%**), 48 555 cross-source merged pairs для проверки, МЭТС/ЦДТ SourceLot=0/ProcessedLot=0/GEO=0. Не публиковать предложенную карту и не путать suspicious pairs с доказанными ошибками.
+- [PR #1013](https://github.com/Maximiliamos/torgi/pull/1013) staging 0.3.9 содержит только read-only P13 region review и S5 readiness, дополненные SQL проверкой существующих SourceLot/ProcessedLot кадастровых и exact-ID конфликтов **до** канареечного импорта. Это дополнительная защита, не отменяющая проверку непосредственно перед commit. **S5 persisted lots по-прежнему 0 до отдельной приёмки.**
+
 ## S5 pre-import collision safety (staging, 30.10.2026)
 
 - `src/bankrotai/services/etp_preimport_collision_review.py`: ограниченная до **двух** проверенных деталей read-only проверка существующих `ProcessedLot` и `SourceLot` по отдельным индексированным ID и кадастру. Даже совпадение кадастра другой ЭТП является **причиной ручного разбора**, а не доказательством одной продажи.
