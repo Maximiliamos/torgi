@@ -46,6 +46,8 @@ def create_etp_incremental_preview_router(require_admin):
             "next_cursor": page.next_cursor,
             "catalogue_lots": page.metadata.get("catalogue_lots"),
             "details_rejected": page.metadata.get("details_rejected"),
+            "detail_attempts": page.metadata.get("detail_attempts"),
+            "rejection_codes": page.metadata.get("rejection_codes", {}),
             "database_writes": 0, "complete_source_inventory": False,
             "archival_allowed": False, "map_publication": False,
         }
