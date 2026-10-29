@@ -120,7 +120,8 @@ def _to_datetime(value: Any) -> datetime | None:
     return None
 
 
-def _canonical_key(normalized: NormalizedLot) -> str:
+def _canonical_key(normalized: NormalizedLot, *, isolate_source: bool = False) -> str:
+    if isolate_source: return f"source:{normalized.source_system}:{normalized.external_id}"
     cadastral = (normalized.cadastral_number or "").replace(" ", "")
     if cadastral:
         return f"cadastral:{cadastral}"
@@ -328,19 +329,19 @@ def _sync_source_lot(
     session: Session,
     processed: ProcessedLot,
     normalized: NormalizedLot,
-    canonical_hint: CanonicalLot | None = None,
+    canonical_hint: CanonicalLot | None = None, *, isolate_source: bool = False,
 ) -> SourceLot:
     raw = normalized.raw_data or {}
-    preferred_key = _canonical_key(normalized)
+    preferred_key = _canonical_key(normalized, isolate_source=isolate_source)
     source_lot = session.scalar(
         select(SourceLot).where(
             SourceLot.source_system == normalized.source_system,
             SourceLot.external_id == normalized.external_id,
         )
     )
-    canonical = canonical_hint or session.scalar(
-        select(CanonicalLot).where(CanonicalLot.canonical_key == preferred_key)
-    )
+    canonical = canonical_hint or (
+        session.get(CanonicalLot, source_lot.canonical_lot_id) if source_lot else None
+    ) or session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == preferred_key))
     if canonical is None:
         existing_link = session.scalar(
             select(SourceLot).where(SourceLot.processed_lot_id == processed.id).order_by(SourceLot.id)
@@ -511,7 +512,6 @@ def _ensure_processed_source_lot(session: Session, processed: ProcessedLot) -> S
     session.add(existing)
     session.flush()
     return existing
-
 # --- Pipelines (Geo & Status) ---
 
 def build_geo_decision(city_slug: str, raw_payload: dict[str, Any], fallback_text: str = "") -> dict:
@@ -714,7 +714,7 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
     ))
     return True
 
-def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
+def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: bool = False) -> ProcessedLot:
     source_link = session.scalar(select(SourceLot).where(
         SourceLot.source_system == normalized.source_system,
         SourceLot.external_id == normalized.external_id,
@@ -728,7 +728,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
                 ProcessedLot.external_id == normalized.external_id,
             )
         )
-    duplicate_primary = _find_cross_source_processed_lot(session, normalized) if processed is None else None
+    duplicate_primary = _find_cross_source_processed_lot(session, normalized) if processed is None and not isolate_source else None
     if processed is None:
         processed = ProcessedLot(
             external_id=normalized.external_id,
@@ -862,7 +862,7 @@ def persist_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot:
     if duplicate_primary is not None:
         primary_link = _ensure_processed_source_lot(session, duplicate_primary)
         canonical_hint = session.get(CanonicalLot, primary_link.canonical_lot_id)
-    _sync_source_lot(session, processed, normalized, canonical_hint=canonical_hint)
+    _sync_source_lot(session, processed, normalized, canonical_hint=canonical_hint, isolate_source=isolate_source)
     if (
         duplicate_primary is not None
         and duplicate_primary.is_archived
