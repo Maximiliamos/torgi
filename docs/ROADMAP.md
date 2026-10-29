@@ -19,6 +19,12 @@
 - [Home P16 run #40970926059](https://github.com/Maximiliamos/torgi/actions/runs/40970926059) success: current MapDataset 52 028, строгий P13 максимум 4 149 (**7,97%**), 48 555 cross-source merged pairs для проверки, МЭТС/ЦДТ SourceLot=0/ProcessedLot=0/GEO=0. Не публиковать предложенную карту и не путать suspicious pairs с доказанными ошибками.
 - [PR #1013](https://github.com/Maximiliamos/torgi/pull/1013) staging 0.3.9 содержит только read-only P13 region review и S5 readiness, дополненные SQL проверкой существующих SourceLot/ProcessedLot кадастровых и exact-ID конфликтов **до** канареечного импорта. Это дополнительная защита, не отменяющая проверку непосредственно перед commit. **S5 persisted lots по-прежнему 0 до отдельной приёмки.**
 
+### Защита в ручном workflow
+
+- `.github/workflows/etp-manual-verified-import.yml` теперь **до SQL UPDATE/INSERT** запускает `etp_manual_import --audit-collisions` на двух свежих карточках и требует 0 уже существующих cross-source / source-only / exact-ID конфликтов. Стандартные independent exact-SHA P11 и restore-verified backup гейты не ослаблены.
+- В самом `run_import(..., apply=True)` перед транзакцией дополнительно проверяется уникальность кадастровых номеров **внутри** 2-лотной партии, чтобы source drift между проверкой и импортом не создал необоснованное дублирование. Если кадастровые номера совпали — отказ, операторская проверка, без DB writes.
+- Настоящий canary импорт остаётся **ручным**; цена/status/GEO/map должны быть проверены по exact persisted IDs, прежде чем объявлять ETP source S5–S7.
+
 ## S5 pre-import collision safety (staging, 30.10.2026)
 
 - `src/bankrotai/services/etp_preimport_collision_review.py`: ограниченная до **двух** проверенных деталей read-only проверка существующих `ProcessedLot` и `SourceLot` по отдельным индексированным ID и кадастру. Даже совпадение кадастра другой ЭТП является **причиной ручного разбора**, а не доказательством одной продажи.
