@@ -155,3 +155,15 @@ def test_production_readonly_middleware_allows_new_get_not_post():
         return SimpleNamespace(method=method, url=SimpleNamespace(path=path))
     assert _is_read_only_mvp_path(request("GET", "/api/etp/pilots/cdtrf.ru/batch-preview"))
     assert not _is_read_only_mvp_path(request("POST", "/api/etp/pilots/cdtrf.ru/batch-preview"))
+
+
+def test_etp_optin_specs_never_allow_archiving_or_change_default_sources():
+    from bankrotai.services.etp_incremental_specs import etp_incremental_source_specs
+    from bankrotai.services.ingestion import default_source_specs
+
+    specs = etp_incremental_source_specs()
+    assert {s.source_id for s in specs} == {"m-ets.ru", "cdtrf.ru"}
+    assert all(s.reconcile_missing is False and s.max_batches == 2 for s in specs)
+    assert not {s.source_id for s in specs}.intersection(
+        {s.source_id for s in default_source_specs()}
+    )
