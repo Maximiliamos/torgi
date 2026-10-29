@@ -117,8 +117,10 @@ def test_workflow_checks_accepted_deploy_twice_before_mutation():
     assert workflow.index("verify-etp-canary-acceptance.ps1") < workflow.index(
         "Require recent locally restore-verified backup"
     )
+    # The new --audit-collisions preview intentionally precedes the second
+    # exact-SHA check. What must remain after that check is the *write* call.
     assert workflow.rindex("verify-etp-canary-acceptance.ps1") < workflow.index(
-        "python -m bankrotai.services.etp_manual_import"
+        "python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply"
     )
     assert "actions: read" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
