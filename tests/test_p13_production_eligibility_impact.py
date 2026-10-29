@@ -301,3 +301,56 @@ def test_p13_direct_source_proof_rejects_archived_or_rental_source() -> None:
         session.flush()
         assert impact.build_report(session)["proposed_maximum_eligible_points"] == 0
         session.rollback()
+
+
+def test_p13_source_proof_uses_separate_indexable_identity_paths() -> None:
+    """Avoid the OR-inside-JOIN that timed out on Home PostgreSQL."""
+    from sqlalchemy.dialects import postgresql
+
+    direct, legacy = impact.source_sale_proofs(
+        cutoff=datetime(2026, 10, 29, 0, 0)
+    )
+    direct_sql = str(direct.compile(dialect=postgresql.dialect()))
+    legacy_sql = str(legacy.compile(dialect=postgresql.dialect()))
+    assert "source_lots.processed_lot_id = processed_lots.id" in direct_sql
+    assert "JOIN canonical_lots" not in direct_sql
+    assert "canonical_lots.legacy_processed_lot_id = processed_lots.id" in legacy_sql
+    assert "JOIN canonical_lots" in legacy_sql
+    assert "source_lots.processed_lot_id = processed_lots.id OR" not in legacy_sql
+    assert "source_lots.last_seen_at >=" in direct_sql
+    assert "source_lots.last_seen_at >=" in legacy_sql
+
+
+def test_p13_legacy_only_source_proof_remains_eligible() -> None:
+    """Splitting source predicates must not drop legitimate legacy-linked sales."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        primary = ProcessedLot(
+            external_id="legacy-linked-sale", source="torgi.gov.ru",
+            source_system="torgi.gov.ru", title="Земельный участок",
+            description="", category="land", auction_status="active",
+            is_archived=False, current_geo_lat=57.6, current_geo_lon=39.8,
+            current_geo_source="nspd", needs_geo_check=False,
+        )
+        session.add(primary)
+        session.flush()
+        canonical = CanonicalLot(
+            canonical_key="legacy-only-p13-proof",
+            legacy_processed_lot_id=primary.id,
+            title=primary.title, category="land",
+        )
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(
+            canonical_lot_id=canonical.id,
+            processed_lot_id=None,
+            source_system="torgi.gov.ru", external_id="legacy-proof",
+            source_status="active", is_active=True, is_archived=False,
+            last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
+        session.commit()
+        result = impact.build_report(session)
+        assert result["proposed_maximum_eligible_points"] == 1
+        assert result["root_cause_diagnostics"]["source_direct_link_proof_not_in_legacy"] == 0
+        assert session.query(ProcessedLot).count() == 1
