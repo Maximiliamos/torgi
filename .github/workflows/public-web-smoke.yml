@@ -20,8 +20,10 @@ permissions:
   issues: write
 
 concurrency:
-  group: public-web-smoke
-  cancel-in-progress: true
+  # Keep exact-SHA post-deploy proofs distinct from scheduled/manual audits.
+  # A second Cloudflare completion must never cancel the first proof.
+  group: public-web-smoke-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
 
 jobs:
   smoke:
