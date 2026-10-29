@@ -94,3 +94,75 @@ def test_http_api_routes_require_optin_and_no_db_mutations(monkeypatch):
     with TestClient(app) as client:
         blocked = client.post("/api/etp/pilots/cdtrf.ru/import/390364/390899")
     assert blocked.status_code == 403
+
+
+
+def test_generic_cdtrf_heading_uses_actual_property_description(monkeypatch):
+    """Real CDTRF headings often name a debtor, while lotInfo names the land."""
+    import bankrotai.services.etp_cdtrf_canary as module
+
+    monkeypatch.setattr(
+        module, "_http_get",
+        lambda session, url, *, accepts: SimpleNamespace(
+            headers={"Content-Type": "text/html"}, text="<html></html>"
+        ),
+    )
+    detail = {
+        "trade_id": "390364", "trade_lot_id": "390899",
+        "title": "Торги по реализации имущества должника",
+        "property_description": (
+            "Лот № 1 — земельный участок, кадастровый номер 32:10:0010101:42, "
+            "площадь 600 кв. м, в собственности"
+        ),
+        "category_label": "Земельные участки",
+        "cadastral_number": "32:10:0010101:42",
+        "initial_price_rub": "675000.00", "source_status_code": "RecieveReq",
+        "source_status_text": "Прием заявок", "region_label": "Брянская область",
+        "region_id": 32, "price_periods": [],
+    }
+    monkeypatch.setattr(module, "parse_detail", lambda html, url: detail)
+    lot = fetch_verified_cdtrf_lot("390364", "390899", session=object())
+    assert lot.category == "land"
+    assert lot.description.startswith("Лот № 1")
+    assert lot.auction_status == "active"
+
+
+@pytest.mark.parametrize("bad_description", [
+    "Лот 1 — 1/5 доля в праве собственности на земельный участок, "
+    "кадастровый номер 32:10:0010101:42",
+    "Лот 1 — право аренды земельного участка, "
+    "кадастровый номер 32:10:0010101:42",
+    "Лот 1 — право требования по договору на объект недвижимости, "
+    "кадастровый номер 32:10:0010101:42",
+])
+def test_cdtrf_rights_are_not_misclassified_as_real_estate(
+    monkeypatch, bad_description,
+):
+    import bankrotai.services.etp_cdtrf_canary as module
+
+    monkeypatch.setattr(
+        module, "_http_get",
+        lambda session, url, *, accepts: SimpleNamespace(
+            headers={"Content-Type": "text/html"}, text="<html></html>"
+        ),
+    )
+    monkeypatch.setattr(module, "parse_detail", lambda html, url: {
+        "trade_id": "390364", "trade_lot_id": "390899",
+        "title": "Реализация имущества", "property_description": bad_description,
+        "category_label": "Недвижимое имущество",
+        "cadastral_number": "32:10:0010101:42",
+        "initial_price_rub": "675000.00", "source_status_code": "Declare",
+    })
+    with pytest.raises(CdtrfCanaryError, match="UNSUPPORTED_PROPERTY_RIGHT"):
+        fetch_verified_cdtrf_lot("390364", "390899", session=object())
+
+
+def test_lotinfo_is_extracted_as_property_text():
+    from bankrotai.connectors.registry.cdtrf_public import _lot_property_text
+
+    text = _lot_property_text({
+        "name": "Торги по реализации имущества должника",
+        "lotInfo": "<p>Земельный участок, кадастровый номер 32:10:0010101:42</p>",
+        "description": None,
+    })
+    assert text == "Земельный участок, кадастровый номер 32:10:0010101:42"
