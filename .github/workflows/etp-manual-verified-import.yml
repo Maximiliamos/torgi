@@ -15,12 +15,23 @@ on:
         description: Type SAFE_SINGLE_SOURCE to allow no more than 2 verified details
 permissions:
   contents: read
+  actions: read
 jobs:
   canary:
-    if: ${{ inputs.confirmation == 'SAFE_SINGLE_SOURCE' }}
+    if: ${{ github.ref == 'refs/heads/main' && inputs.confirmation == 'SAFE_SINGLE_SOURCE' }}
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 15
+    concurrency:
+      group: etp-manual-verified-import
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Require current accepted exact SHA before backup and import
+        shell: powershell
+        run: |
+          .\\scripts\\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:GITHUB_SHA
       - name: Require recent locally restore-verified backup
         shell: powershell
         run: |
@@ -60,6 +71,9 @@ jobs:
           ETP_SOURCE: ${{ inputs.source_id }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # Recheck immediately before mutation: main, P11 or worker may have changed
+          # while a backup was being verified.
+          .\\scripts\\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:GITHUB_SHA
           docker exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply
           if ($LASTEXITCODE -ne 0) {
             throw "Canary source import failed for $env:ETP_SOURCE"
