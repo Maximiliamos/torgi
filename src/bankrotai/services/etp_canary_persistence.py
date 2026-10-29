@@ -31,7 +31,9 @@ def persist_canary_lot(session, normalized, actor_id: str):
         raise CanaryDuplicateReviewRequired(
             "Another source has the same cadastral number; manual review required"
         )
-    record = persist_lot(session, normalized)
+    # Cadastral overlap, same price or the same address does not prove the
+    # identity of the auction sale on another trading platform.
+    record = persist_lot(session, normalized, isolate_source=True)
     log_action(
         session, actor_id, "import_verified_etp_canary", "lot", str(record.id),
         {"source_system": normalized.source_system,

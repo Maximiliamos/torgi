@@ -33,7 +33,10 @@ def test_no_collision_records_audit_and_persists(monkeypatch):
     import bankrotai.services.etp_canary_persistence as module
     actions = []
     sentinel = SimpleNamespace(id=987)
-    monkeypatch.setattr(module, "persist_lot", lambda sess, normalized: sentinel)
+    def isolated_persist(sess, normalized, *, isolate_source):
+        assert isolate_source is True
+        return sentinel
+    monkeypatch.setattr(module, "persist_lot", isolated_persist)
     monkeypatch.setattr(module, "log_action", lambda *args: actions.append(args))
     assert persist_canary_lot(Session(None), lot(), "admin") is sentinel
     assert actions and actions[0][1] == "admin"
@@ -47,3 +50,31 @@ def test_missing_cadastre_never_written(monkeypatch):
     monkeypatch.setattr(module, "persist_lot", lambda *args: pytest.fail("must not write"))
     with pytest.raises(ValueError, match="cadastral"):
         persist_canary_lot(Session(None), obj, "admin")
+
+
+
+def test_isolated_canary_key_does_not_alias_different_auction_same_cadastral():
+    from bankrotai.logic import _canonical_key
+
+    first = SimpleNamespace(
+        cadastral_number="76:02:022201:38", source_system="m-ets.ru",
+        external_id="240000-1",
+    )
+    second = SimpleNamespace(
+        cadastral_number="76:02:022201:38", source_system="cdtrf.ru",
+        external_id="cdtrf:390899",
+    )
+    assert _canonical_key(first) == _canonical_key(second)
+    assert _canonical_key(first, isolate_source=True) != _canonical_key(
+        second, isolate_source=True
+    )
+
+
+def test_isolated_canary_key_is_idempotent_for_same_source_external_id():
+    from bankrotai.logic import _canonical_key
+
+    first = lot()
+    again = lot()
+    assert _canonical_key(first, isolate_source=True) == _canonical_key(
+        again, isolate_source=True
+    )
