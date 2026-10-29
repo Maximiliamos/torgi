@@ -305,10 +305,16 @@ class MetsConnector(AuctionConnector):
         self.pilot = MetsPublicPilot(session=session)
 
     async def search(self, filters=None, cursor=None) -> ConnectorPage:
-        raise ConnectorCapabilityError(
-            "M-ETS supports read-only preview and exact detail only; "
-            "no archive-safe full catalogue pagination has been verified"
+        from bankrotai.connectors.registry.etp_incremental import (
+            EtpIncrementalFilters, incremental_mets_search,
         )
+        import asyncio
+
+        if not isinstance(filters, EtpIncrementalFilters) or filters.source_id != self.source_id:
+            raise ConnectorCapabilityError(
+                "M-ETS only supports explicitly scoped non-archival incremental filters"
+            )
+        return await asyncio.to_thread(incremental_mets_search, self.pilot, filters, cursor)
 
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         import asyncio
