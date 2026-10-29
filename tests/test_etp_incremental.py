@@ -167,3 +167,40 @@ def test_etp_optin_specs_never_allow_archiving_or_change_default_sources():
     assert not {s.source_id for s in specs}.intersection(
         {s.source_id for s in default_source_specs()}
     )
+
+
+def test_cdtrf_scans_next_candidate_when_first_detail_identity_fails(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    monkeypatch.setattr(
+        mod, "preview_cdtrf_public_api",
+        lambda page, session=None: {
+            "candidates": [
+                {"trade_id": "390384", "trade_lot_id": "390919"},
+                {"trade_id": "390364", "trade_lot_id": "390899"},
+            ]
+        },
+    )
+
+    def inspect_detail(trade, lot, *, session=None):
+        if lot == "390919":
+            raise mod.CdtrfCanaryError("Detail lot ID differs from the requested lot")
+        return fake_lot("cdtrf.ru", f"cdtrf:{lot}")
+
+    monkeypatch.setattr(mod, "fetch_verified_cdtrf_lot", inspect_detail)
+    result = mod.incremental_cdtrf_search(
+        mod.EtpIncrementalFilters("cdtrf.ru", max_detail_requests=2), None,
+    )
+    assert [lot.external_id for lot in result.items] == ["cdtrf:390899"]
+    assert result.metadata["details_rejected"] == 1
+    assert result.metadata["detail_attempts"] == 2
+    assert result.metadata["rejection_codes"] == {"lot_identity_mismatch": 1}
+    assert result.metadata["safe_for_archival"] is False
+
+
+def test_cdtrf_failure_classification_redacts_sensitive_error():
+    from bankrotai.connectors.registry.etp_incremental import _cdtrf_rejection_code
+    assert _cdtrf_rejection_code(ValueError("No CDTRF SSR data")) == "ssr_schema_changed"
+    assert _cdtrf_rejection_code(ValueError("Price disagreement between HTML and SSR")) == "price_mismatch"
+    assert _cdtrf_rejection_code(ValueError("Insufficient property with debtor Elena")) == "property_evidence_missing"
+    assert _cdtrf_rejection_code(ValueError("sensitive person contact 7-900-000-0000")) == "other_detail_error"
