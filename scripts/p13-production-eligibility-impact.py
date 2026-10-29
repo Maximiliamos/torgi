@@ -35,37 +35,57 @@ DESC_BANS = (
 )
 
 
-def proposed_filters(*, cutoff: datetime) -> tuple:
-    independent = (
+def source_sale_proofs(*, cutoff: datetime | None = None) -> tuple:
+    """Index-friendly direct/legacy proofs of the *same* sale.
+
+    Do not combine the processed_lot_id and legacy_processed_lot_id keys in
+    one joined EXISTS using OR: on the large Home tables that query exceeded
+    PostgreSQL statement_timeout during P13 pre-publication inspection.
+    Split the two identity paths so each can use its own indexed key. No
+    unverified source, archived row, rental or stale detail is promoted.
+    """
+    conditions = (
+        SourceLot.source_system.in_(AUTO),
+        SourceLot.is_active.is_(True),
+        SourceLot.is_archived.is_(False),
+        SourceLot.source_status.in_(ACTIVE),
+        or_(
+            SourceLot.auction_type.is_(None),
+            ~or_(
+                SourceLot.auction_type.ilike("%аренд%"),
+                SourceLot.auction_type.ilike("%lease%"),
+                SourceLot.auction_type.ilike("%rent%"),
+            ),
+        ),
+    )
+    if cutoff is not None:
+        conditions += (SourceLot.last_seen_at >= cutoff,)
+    direct = (
+        select(SourceLot.id)
+        .where(SourceLot.processed_lot_id == ProcessedLot.id, *conditions)
+        .exists()
+    )
+    legacy = (
         select(SourceLot.id)
         .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
-        .where(
-            or_(
-                SourceLot.processed_lot_id == ProcessedLot.id,
-                CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
-            ),
-            SourceLot.source_system.in_(AUTO),
-            SourceLot.is_active.is_(True),
-            SourceLot.is_archived.is_(False),
-            SourceLot.source_status.in_(ACTIVE),
-            or_(
-                SourceLot.auction_type.is_(None),
-                ~or_(
-                    SourceLot.auction_type.ilike("%аренд%"),
-                    SourceLot.auction_type.ilike("%lease%"),
-                    SourceLot.auction_type.ilike("%rent%"),
-                ),
-            ),
-            SourceLot.last_seen_at >= cutoff,
-        ).exists()
+        .where(CanonicalLot.legacy_processed_lot_id == ProcessedLot.id, *conditions)
+        .exists()
     )
+    return direct, legacy
+
+
+def source_sale_proof(*, cutoff: datetime | None = None):
+    return or_(*source_sale_proofs(cutoff=cutoff))
+
+
+def proposed_filters(*, cutoff: datetime) -> tuple:
     return (
         ProcessedLot.duplicate_of_id.is_(None),
         ProcessedLot.is_archived.is_(False),
         ProcessedLot.auction_status.in_(ACTIVE),
         ProcessedLot.category.in_(PROPERTY),
         ProcessedLot.vin.is_(None),
-        independent,  # NEVER trust synthetic/test sources for live production.
+        source_sale_proof(cutoff=cutoff),  # First-party fresh proof only.
         ProcessedLot.needs_geo_check.is_(False),
         or_(
             ProcessedLot.cadastral_number.is_(None),
@@ -135,71 +155,14 @@ def build_report(session: Session) -> dict:
     )
     # Same canonical sale/source proof as proposed_filters, except for recency.
     # Distinguishes missing or invalid canonical proof from expired evidence.
-    source_proof_any_age = (
-        select(SourceLot.id)
-        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
-        .where(
-            or_(
-                SourceLot.processed_lot_id == ProcessedLot.id,
-                CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
-            ),
-            SourceLot.source_system.in_(AUTO),
-            SourceLot.is_active.is_(True),
-            SourceLot.is_archived.is_(False),
-            SourceLot.source_status.in_(ACTIVE),
-            or_(
-                SourceLot.auction_type.is_(None),
-                ~or_(
-                    SourceLot.auction_type.ilike("%аренд%"),
-                    SourceLot.auction_type.ilike("%lease%"),
-                    SourceLot.auction_type.ilike("%rent%"),
-                ),
-            ),
-        ).exists()
-    )
+    source_proof_any_age = source_sale_proof()
     active_proof_any_age_count = int(session.scalar(
         select(func.count(ProcessedLot.id)).where(*pre_source, source_proof_any_age)
     ) or 0)
     # Since P0 conservative identity, some valid SourceLot→ProcessedLot links
     # have a canonical sale without legacy_processed_lot_id. Count direct and
     # legacy evidence separately: no assumed cross-sale linkage.
-    direct_source_proof = (
-        select(SourceLot.id)
-        .where(
-            SourceLot.processed_lot_id == ProcessedLot.id,
-            SourceLot.source_system.in_(AUTO),
-            SourceLot.is_active.is_(True),
-            SourceLot.is_archived.is_(False),
-            SourceLot.source_status.in_(ACTIVE),
-            or_(
-                SourceLot.auction_type.is_(None),
-                ~or_(
-                    SourceLot.auction_type.ilike("%аренд%"),
-                    SourceLot.auction_type.ilike("%lease%"),
-                    SourceLot.auction_type.ilike("%rent%"),
-                ),
-            ),
-        ).exists()
-    )
-    legacy_source_proof = (
-        select(SourceLot.id)
-        .join(CanonicalLot, SourceLot.canonical_lot_id == CanonicalLot.id)
-        .where(
-            CanonicalLot.legacy_processed_lot_id == ProcessedLot.id,
-            SourceLot.source_system.in_(AUTO),
-            SourceLot.is_active.is_(True),
-            SourceLot.is_archived.is_(False),
-            SourceLot.source_status.in_(ACTIVE),
-            or_(
-                SourceLot.auction_type.is_(None),
-                ~or_(
-                    SourceLot.auction_type.ilike("%аренд%"),
-                    SourceLot.auction_type.ilike("%lease%"),
-                    SourceLot.auction_type.ilike("%rent%"),
-                ),
-            ),
-        ).exists()
-    )
+    direct_source_proof, legacy_source_proof = source_sale_proofs()
     direct_only_source_proof = int(session.scalar(
         select(func.count(ProcessedLot.id)).where(
             *pre_source, direct_source_proof, ~legacy_source_proof,

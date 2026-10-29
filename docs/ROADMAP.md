@@ -11,6 +11,14 @@
 
 
 
+## Обновление 30.10.2026 — движение к 50% (не приёмка)
+
+- **Актуальный main перед этой веткой:** `4b995050`, [#1005](https://github.com/Maximiliamos/torgi/pull/1005) merged; `v0.3.6` выпущена на `adad8cd8` (SBOM/SHA256SUMS). `0.3.7` объединена, но exact-SHA P11 на момент проверки ещё выполнялся, отдельный release не подтверждён.
+- **R1/R4 блокер:** [P16 Home run #40962180271](https://github.com/Maximiliamos/torgi/actions/runs/40962180271) failed: `psycopg.errors.QueryCanceled` / PostgreSQL statement timeout в `scripts/p13-production-eligibility-impact.py` на коррелированном `SourceLot JOIN CanonicalLot` с `OR` по двум FK.
+- **Доработка в [PR #1008](https://github.com/Maximiliamos/torgi/pull/1008):** разделены две независимые индексируемые SQL EXISTS-ветки (direct/legacy), те же source/status/freshness guards; добавлены тесты SQL-формы и legacy-only. **Статус: PR/CI, НЕ production accepted**, пока exact-SHA Home P16 не пройдёт без тайм-аута и не получены актуальные цифры покрытия карты. Никаких DB writes или map publication.
+- **R7:** [#1007](https://github.com/Maximiliamos/torgi/pull/1007) остаётся открытым 0.3.8 staging с проверкой всех каталожных ID на пяти страницах, а не только выбранных для detail. Это не полный каталог и не production sync.
+- **Точка отсчёта готовности:** ранее дана **ориентировочная экспертная оценка ~40% ±5–10 п.п.**, не вычисляемая по чеклисту. Цель 50% нельзя засчитать по созданным PR; необходимы зелёные CI, точная Home-приёмка, реальный DB→GEO→Map/WEB proof и исправление критических блокеров. Новых production ETP S5–S7 не подтверждено.
+
 ## 0. Живой журнал выполнения P0/P1 и ЭТП (29.10.2026)
 
 **Правило обновления:** после каждого действия сначала вносим проверяемую запись (дата, задача, PR, SHA, тесты и ограничение), затем изменяем статус `не начато → в работе → PR/CI → merged → deployed → production accepted`. Пункт с кодом, но без сквозной production-приёмки, не считается закрытым. Записи ниже различают историю и фактическое состояние `main`.
