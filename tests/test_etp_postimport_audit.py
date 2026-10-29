@@ -42,3 +42,69 @@ def test_report_requires_external_map_verification():
     assert result["requires_external_map_tile_verification"] is True
     assert result["current_map_dataset_published"] is False
     assert len(result["sources"]) == 2
+
+
+def test_exact_imported_source_ids_require_correct_active_link_in_database():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
+    from bankrotai.services.etp_postimport_audit import verify_expected_source_lots
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            canonical = CanonicalLot(canonical_key="source:m-ets.ru:243003-1", title="Lot")
+            processed = ProcessedLot(
+                external_id="243003-1", source="m-ets.ru", source_system="m-ets.ru",
+                title="Lot", category="land", auction_status="active",
+                cadastral_number="76:01:000100:1",
+            )
+            session.add_all([canonical, processed])
+            session.flush()
+            source = SourceLot(
+                canonical_lot_id=canonical.id, processed_lot_id=processed.id,
+                source_system="m-ets.ru", external_id="243003-1",
+                cadastral_number="76:01:000100:1",
+            )
+            session.add(source)
+            session.flush()
+            verified = verify_expected_source_lots(session, "m-ets.ru", ["243003-1"])
+            assert verified == [{
+                "external_id": "243003-1", "source_link_verified": True,
+                "geo_observed": False, "public_map_verified": False,
+            }]
+            with pytest.raises(RuntimeError, match="active"):
+                verify_expected_source_lots(session, "m-ets.ru", ["243003-2"])
+            processed.auction_status = "closed"
+            session.flush()
+            with pytest.raises(RuntimeError, match="active"):
+                verify_expected_source_lots(session, "m-ets.ru", ["243003-1"])
+            processed.auction_status = "active"
+            source.cadastral_number = "76:01:000100:2"
+            session.flush()
+            with pytest.raises(RuntimeError, match="active"):
+                verify_expected_source_lots(session, "m-ets.ru", ["243003-1"])
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("ids", [
+    [], ["id-1", "id-2", "id-3"], ["id-1", "id-1"],
+    ["; rm -rf /"], ["lot number"], ["bad\nvalue"],
+])
+def test_exact_source_audit_rejects_invalid_ids_before_any_query(ids):
+    from bankrotai.services.etp_postimport_audit import verify_expected_source_lots
+    with pytest.raises(ValueError, match="unique public source IDs"):
+        verify_expected_source_lots(FakeSession([]), "m-ets.ru", ids)
+
+
+def test_etp_workflow_requires_actual_new_ids_not_aggregate_only():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[1] /
+                ".github/workflows/etp-manual-verified-import.yml").read_text(
+                    encoding="utf-8")
+    assert "etp-canary-result.json" in workflow
+    assert "--expected-external-id" in workflow
+    assert "$canary.persisted_count -ne $ids.Count" in workflow
+    assert "'--expected-external-id',[string]$id" in workflow
