@@ -342,15 +342,15 @@
 
 ## 13. Обязательное дополнение: объединение с предыдущим GitHub ROADMAP и ТЗ
 
-**Источник:** исторический GitHub [\`docs/ROADMAP.md\`](https://github.com/Maximiliamos/torgi/blob/f70f128e92aec788a894aeb9ce2ab7cc42f261bd/docs/ROADMAP.md) (базовые этапы Phase 1–5 и все BAT-пункты), а также [полный продуктовый аудит от 05.08.2026](https://github.com/Maximiliamos/torgi/blob/main/docs/audits/2026-08-05-full-product-audit.md), [P14 source status acceptance](p14-source-status-acceptance-20261008.md) и [план восстановления карты P13–P17](p13-p17-verified-data-recovery-plan.md).
+**Источник:** исторический GitHub [`docs/ROADMAP.md`](https://github.com/Maximiliamos/torgi/blob/f70f128e92aec788a894aeb9ce2ab7cc42f261bd/docs/ROADMAP.md) (базовые этапы Phase 1–5 и все BAT-пункты), а также [полный продуктовый аудит от 05.08.2026](https://github.com/Maximiliamos/torgi/blob/main/docs/audits/2026-08-05-full-product-audit.md), [P14 source status acceptance](p14-source-status-acceptance-20261008.md) и [план восстановления карты P13–P17](p13-p17-verified-data-recovery-plan.md).
 
-**Правило преемственности:** исходные BAT-номера остаются без переименования. Обозначения \`R0–R11\` являются текущими пакетами реализации, \`P13–P17\` — отдельной работой по качеству карты, \`BAT-001…BAT-312\` — историческим продуктовым backlog. Категории P0/P1/P2 в исторических заголовках BAT — старый backlog, а не утверждение о новом срочном P0. При противоречии исторического текста с текущим действующим runtime применяется проверенный новый контракт, а историческое требование отмечается как устаревшее/требующее переоценки; оно не выполняется слепо.
+**Правило преемственности:** исходные BAT-номера остаются без переименования. Обозначения `R0–R11` являются текущими пакетами реализации, `P13–P17` — отдельной работой по качеству карты, `BAT-001…BAT-312` — историческим продуктовым backlog. Категории P0/P1/P2 в исторических заголовках BAT — старый backlog, а не утверждение о новом срочном P0. При противоречии исторического текста с текущим действующим runtime применяется проверенный новый контракт, а историческое требование отмечается как устаревшее/требующее переоценки; оно не выполняется слепо.
 
 ### 13.1. Реестр BAT: что дополнительно внесено из старого roadmap
 
 | Старое ТЗ | Область и незакрытая проверка | Связь с новой очередью |
 |---|---|---|
-| BAT-001 | SDK коннекторов: перенести остатки логики источников из \`scrapers.py\`; поддерживать fixture/contract tests для каждой ЭТП | R6, R8, R10 |
+| BAT-001 | SDK коннекторов: перенести остатки логики источников из `scrapers.py`; поддерживать fixture/contract tests для каждой ЭТП | R6, R8, R10 |
 | BAT-002 | Разделить physical-object identity, sale/procedure identity и source publication; не объединять две продажи только по кадастру | R1, R2, R6, R11 |
 | BAT-003 | Полнота полей торгов: процедуры, расписание цен, задаток, сроки и юридическая специфика | R2, R6–R9 |
 | BAT-004 | Версии документов, SHA-256, безопасное получение/хранение/дифф и доступность исходных документов | R9, R10 |
@@ -363,28 +363,28 @@
 | BAT-203 | Эксплуатация, метрики, документы, root LICENSE, защищённые backup/restore | R0, R5, R10 |
 | BAT-301 | Устаревшее «три источника»: заменить фактическим контрактом active/paused + 4 штатных источника, не активировать TBankrot вслепую; durable jobs/idempotency | R0, R2, R6 |
 | BAT-302 | Долгие фоновые AI/GEO задачи, retry/budgets/audit и сохранение статуса после перезагрузки браузера | R3, R9, R10 |
-| BAT-303 | Ролевой доступ \`reader/analyst/admin\`, negative API tests и разграничение доступа к каждому endpoint | R5, R9, R11 |
-| BAT-304 | Честное разделение режима read-only и curated actions; соответствующие \`403\` и UI capabilities | R5, R9, R11 |
+| BAT-303 | Ролевой доступ `reader/analyst/admin`, negative API tests и разграничение доступа к каждому endpoint | R5, R9, R11 |
+| BAT-304 | Честное разделение режима read-only и curated actions; соответствующие `403` и UI capabilities | R5, R9, R11 |
 | BAT-305 | Безопасный HTML import и потоковый/фоновый Excel export с проверкой типа, размера и сроком хранения | R9, R10; отдельная WEB parity приёмка |
 | BAT-306 | Полнота карты: viewport pagination, кадастровая геометрия/WMS, Yandex API key/domain policy | R3, R5, R9, R11 |
 | BAT-307 | WEB/desktop parity по всем пользовательским действиям, Playwright contract matrix и negative role tests | R9, R11 |
-| BAT-308 | Разделение монолитов \`gui.py\`, \`scrapers.py\`, \`api.py\`, больших WEB-компонентов | R6, R10 |
+| BAT-308 | Разделение монолитов `gui.py`, `scrapers.py`, `api.py`, больших WEB-компонентов | R6, R10 |
 | BAT-309 | SLO, наблюдаемость, latency/queue lag/source freshness, защищённые off-host backup и rollback drill | R0, R5, R10 |
 | BAT-310 | SBOM, подписанные релизы, неизменяемые теги, required checks/branch protection и secret scanning | R5, R10, R11 |
 | BAT-311 | UI-модули, i18n, design system, keyboard/focus/contrast/WCAG 2.2 AA | R9, R10 |
 | BAT-312 | Доказательная оценка активов, сделки, фактическая прибыль и калибровка рекомендаций | После R9; отдельная продуктовая приёмка |
 
-**Статус:** пункты выше являются требованиями, **а не списком подтверждённых дефектов**. Старый ROADMAP помечал ряд foundations как delivered, но для BAT-101–312 нет достаточных свежих end-to-end свидетельств, чтобы объявить их закрытыми сегодня. Выполнение любой задачи подтверждается отдельным \`main SHA\`/тестом/production evidence. Старые аудитные заметки не доказывают, что дефект существует в текущем релизе.
+**Статус:** пункты выше являются требованиями, **а не списком подтверждённых дефектов**. Старый ROADMAP помечал ряд foundations как delivered, но для BAT-101–312 нет достаточных свежих end-to-end свидетельств, чтобы объявить их закрытыми сегодня. Выполнение любой задачи подтверждается отдельным `main SHA`/тестом/production evidence. Старые аудитные заметки не доказывают, что дефект существует в текущем релизе.
 
 ### 13.2. Из аудитов GitHub — дополнительная проверка открытых требований
 
 - **Безопасность и доступ:** повторно проверить владельцев/роли, permission checks, tenant isolation, administrative GEO/backup/recovery, curated POST и отрицательные тесты, а не опираться только на исторический ревью.
-- **WEB/desktop:** подтвердить маршруты импорта HTML, Excel, batch AI/GEO, документов, контроль участия, калькулятор, историю, избранное и rollback; отметить \`delivered\` лишь по современной acceptance matrix.
+- **WEB/desktop:** подтвердить маршруты импорта HTML, Excel, batch AI/GEO, документов, контроль участия, калькулятор, историю, избранное и rollback; отметить `delivered` лишь по современной acceptance matrix.
 - **Документы и права:** версии и метаданные не гарантируют проверенного download worker, content comparison, antivirus/size validation, ACL и безопасного object storage.
-- **Полнота рынка:** проверить фактическую активность четырёх основных источников через production \`paused/circuit\`, отдельно ЕФРСБ и ограничения договора/credentials. Наличие \`default_source_specs()\` не равно свежему полному обходу.
+- **Полнота рынка:** проверить фактическую активность четырёх основных источников через production `paused/circuit`, отдельно ЕФРСБ и ограничения договора/credentials. Наличие `default_source_specs()` не равно свежему полному обходу.
 - **Кадастр и метаданные:** отображаемый кадастровый номер, взятый из пользовательского запроса, не является доказательством ответа провайдера. Не использовать его для одобрения геометрии или реестровой идентичности.
-- **Восстановление:** на \`main\` backup workflow использует \`D:\BankrotAI\dr-backups\`, \`-RetainCount 3\`, isolated restore и порог 60 часов. Не переносить старое замечание о \`RetainCount=1\` на актуальный workflow.
-- **Доказательства качества:** строгая политика P13–P17 по старому аудиту резко уменьшает число допускаемых к карте записей. Не обходить quality gate изменением \`MIN_MAP_COVERAGE_RATIO\`; сначала восстановить действительно свежие статусы и точную геометрию, затем пересмотреть baseline согласно источникам.
+- **Восстановление:** на `main` backup workflow использует `D:\BankrotAI\dr-backups`, `-RetainCount 3`, isolated restore и порог 60 часов. Не переносить старое замечание о `RetainCount=1` на актуальный workflow.
+- **Доказательства качества:** строгая политика P13–P17 по старому аудиту резко уменьшает число допускаемых к карте записей. Не обходить quality gate изменением `MIN_MAP_COVERAGE_RATIO`; сначала восстановить действительно свежие статусы и точную геометрию, затем пересмотреть baseline согласно источникам.
 
 ### 13.3. ПЕРВАЯ ОЧЕРЕДЬ — конкретные работы для разработчика
 
@@ -392,34 +392,34 @@
 
 | Порядок | Задача/ID | Действие | Что считается доказательством выполнения |
 |---|---|---|---|
-| **1.1** | **R0-BASELINE-001** | Снять exact SHA Home/REG.RU/Cloudflare, зафиксировать live \`MapDataset\`, активные и paused источники, 5 контрольных кейсов, off-host DR статус; прочитать фактический source freshness/coverage | Read-only \`baseline.json\`, link на workflows, без DB writes |
-| **1.2** | **R0-IMPACT-002** | Запустить существующий \`scripts/p13-production-eligibility-impact.py\`, до/после по состояниям \`rental/closed/transport\`, GEO и stale-source с сохранением количества валидных объектов | SQL/JSON impact matrix; review на качественно допустимую карту |
+| **1.1** | **R0-BASELINE-001** | Снять exact SHA Home/REG.RU/Cloudflare, зафиксировать live `MapDataset`, активные и paused источники, 5 контрольных кейсов, off-host DR статус; прочитать фактический source freshness/coverage | Read-only `baseline.json`, link на workflows, без DB writes |
+| **1.2** | **R0-IMPACT-002** | Запустить существующий `scripts/p13-production-eligibility-impact.py`, до/после по состояниям `rental/closed/transport`, GEO и stale-source с сохранением количества валидных объектов | SQL/JSON impact matrix; review на качественно допустимую карту |
 | **1.3** | **R1-ELIGIBILITY-001 / R2-DEDUP-001** | Разбить PR #932: общий sale-only/real-estate/active map gate и независимое исправление алгоритма cross-source merge; несколько продаж одного объекта **не** сливать | Unit+PostgreSQL regression; 5 owner cases; 0 опасных новых точек |
-| **1.4** | **R5-DEPLOY-001** | Исправить exact-SHA зависимость REG.RU от Home для \`workflow_dispatch\`, rerun и recovery, не только push; stop до SSH/deploy | Green тесты четырёх режимов запуска; одинаковый SHA |
-| **1.5** | **R7-CDTRF-001** | Проверить PR #975 после тестов на живых карточках: \`lotInfo\`, \`category_label\`, \`tradeId\`/\`tradeLotId\`; сделать повторный home smoke | \`cdtrf.ru\`: не менее одной доказанно корректной карточки и 0 слабых верификаций |
+| **1.4** | **R5-DEPLOY-001** | Исправить exact-SHA зависимость REG.RU от Home для `workflow_dispatch`, rerun и recovery, не только push; stop до SSH/deploy | Green тесты четырёх режимов запуска; одинаковый SHA |
+| **1.5** | **R7-CDTRF-001** | Проверить PR #975 после тестов на живых карточках: `lotInfo`, `category_label`, `tradeId`/`tradeLotId`; сделать повторный home smoke | `cdtrf.ru`: не менее одной доказанно корректной карточки и 0 слабых верификаций |
 | **1.6** | **R3-CADASTRE-001 / R4-REPAIR-001** | Ограниченный GEO dry-run по пяти ошибкам + два сценария адресного/кадастрового поиска; реальная сверка по провайдеру, quarantine загрязнённых данных | Протокол original evidence, exact matching, отсутствие фальшивых границ и ложных центроидов |
-| **1.7** | **R6-ETP-CONTRACT-001 / R7-METS-001** | После безопасных R1/R2/R5 и подтверждённого backup запустить канареечный импорт МЭТС, затем ЦДТ, проверить журнал/geo/map/S3 в одном SHA | Два \`S5\` E2E на реальных лотах; без массового архивирования |
+| **1.7** | **R6-ETP-CONTRACT-001 / R7-METS-001** | После безопасных R1/R2/R5 и подтверждённого backup запустить канареечный импорт МЭТС, затем ЦДТ, проверить журнал/geo/map/S3 в одном SHA | Два `S5` E2E на реальных лотах; без массового архивирования |
 
-**Порог первой очереди:** не начинать пакет R8 массовых источников, пока не прошли \`R2-DEDUP-001\`, \`R5-DEPLOY-001\`, карта не прошла P13 impact review, и не принят первый источник уровня \`S5\`.
+**Порог первой очереди:** не начинать пакет R8 массовых источников, пока не прошли `R2-DEDUP-001`, `R5-DEPLOY-001`, карта не прошла P13 impact review, и не принят первый источник уровня `S5`.
 
 ### 13.4. Приоритеты, которые не должны задерживать первую пару ЭТП
 
-\`BAT-103/201/202/312\` — инвестиционная оценка, партнёры и outcome learning — остаются отдельным **не закрытым по умолчанию** продуктовым направлением и выполняются после критического потока R0–R9; \`BAT-303/304/310\` при этом проходят минимум необходимой безопасности до включения source-admin действий. Владелец может назначить им собственные приоритеты без влияния на чистоту карты.
+`BAT-103/201/202/312` — инвестиционная оценка, партнёры и outcome learning — остаются отдельным **не закрытым по умолчанию** продуктовым направлением и выполняются после критического потока R0–R9; `BAT-303/304/310` при этом проходят минимум необходимой безопасности до включения source-admin действий. Владелец может назначить им собственные приоритеты без влияния на чистоту карты.
 
 ### 13.5. Проверка и изменения в GitHub
 
-- При исполнении плана вести отдельные Issues/PR на каждый пункт \`R0-...\`, \`R1-...\`, \`BAT-...\`, с указанием связанного исходного ТЗ, acceptance criteria, CI и живого \`main SHA\`.
+- При исполнении плана вести отдельные Issues/PR на каждый пункт `R0-...`, `R1-...`, `BAT-...`, с указанием связанного исходного ТЗ, acceptance criteria, CI и живого `main SHA`.
 - Настоящий документ фиксирует актуальные цели. Для осведомлённости старые phase 1–5 считались принятыми **в историческом объёме**; они не закрывают текущие требования P13–P17, прямые ЭТП и новый кадастровый поиск.
-- Не переносить рабочие ветки #932/#965 целиком: они устарели относительно \`main\` и содержат взаимосвязанные изменения. Переносить изолированные подтверждённые файлы и исправления, предварительно перепроверяя конфликтующие алгоритмы.
+- Не переносить рабочие ветки #932/#965 целиком: они устарели относительно `main` и содержат взаимосвязанные изменения. Переносить изолированные подтверждённые файлы и исправления, предварительно перепроверяя конфликтующие алгоритмы.
 - Не включать новые производственные источники, не писать в БД и не переносить метки карты в ходе чисто документационного изменения ROADMAP.
 
-## 14. Полный исторический BAT-backlog из прежнего \`docs/ROADMAP.md\` (сохранён без удаления требований)
+## 14. Полный исторический BAT-backlog из прежнего `docs/ROADMAP.md` (сохранён без удаления требований)
 
-**Ниже сохранён текст исходных требований GitHub, доступный до объединения 29.10.2026.** Отдельные датированные утверждения в этих разделах являются историческим статусом и должны перепроверяться относительно текущего \`main\` и production. Этот appendix нужен для полноты и трассируемости, он не создаёт новый P0 по умолчанию.
+**Ниже сохранён текст исходных требований GitHub, доступный до объединения 29.10.2026.** Отдельные датированные утверждения в этих разделах являются историческим статусом и должны перепроверяться относительно текущего `main` и production. Этот appendix нужен для полноты и трассируемости, он не создаёт новый P0 по умолчанию.
 
-## P0 — надёжное ядро торгов
+### P0–P2 (исторический) — надёжное ядро торгов
 
-### BAT-001 — Connector SDK and registry — foundation delivered
+#### BAT-001 — Connector SDK and registry — foundation delivered
 
 - единый async-контракт `search/fetch_lot/fetch_documents/fetch_events/healthcheck`;
 - capability declaration, cursor и metadata;
@@ -428,7 +428,7 @@
 
 Done: SDK, registry and first adapters exist. Remaining: move source-specific implementation out of `scrapers.py` incrementally.
 
-### BAT-002 — Canonical and source identity — foundation delivered
+#### BAT-002 — Canonical and source identity — foundation delivered
 
 - `CanonicalLot -> SourceLot[]`;
 - уникальность `(source_system, external_id)`;
@@ -437,7 +437,7 @@ Done: SDK, registry and first adapters exist. Remaining: move source-specific im
 
 Done: schema, migration and ingest synchronization. Remaining: reviewed merge/split UI and stronger identity evidence.
 
-### BAT-003 — Auction procedure fields — foundation delivered
+#### BAT-003 — Auction procedure fields — foundation delivered
 
 - ЭТП, процедура, извещение, сообщение ЕФРСБ;
 - должник, организатор, арбитражный управляющий, дело;
@@ -446,7 +446,7 @@ Done: schema, migration and ingest synchronization. Remaining: reviewed merge/sp
 
 Done: normalized indexed storage and detail API. Remaining: filters and notification jobs.
 
-### BAT-004 — Immutable document history — foundation delivered
+#### BAT-004 — Immutable document history — foundation delivered
 
 - document identity per source lot;
 - SHA-256 versions and storage keys;
@@ -455,7 +455,7 @@ Done: normalized indexed storage and detail API. Remaining: filters and notifica
 
 Done: schema and idempotent version recorder. Remaining: download workers, object storage and semantic diff.
 
-### BAT-005 — Official EFRSB Publications API — integration-ready
+#### BAT-005 — Official EFRSB Publications API — integration-ready
 
 - operator-issued credentials only;
 - `/v1/auth`, trade message search/detail and authorized archive URL;
@@ -464,9 +464,9 @@ Done: schema and idempotent version recorder. Remaining: download workers, objec
 
 Done: authenticated connector contract. Blocked for live acceptance: production service agreement and credentials.
 
-## P1 — investment decision and participation
+### P0–P2 (исторический) — investment decision and participation
 
-### BAT-101 — Maximum bid calculator — delivered API foundation
+#### BAT-101 — Maximum bid calculator — delivered API foundation
 
 - explicit conservative sale price;
 - repair, legal, holding, tax, commission, capital, target profit and risk reserve;
@@ -475,7 +475,7 @@ Done: authenticated connector contract. Blocked for live acceptance: production 
 
 Done: desktop/web form and saved assumptions. Remaining: approval history.
 
-### BAT-102 — Participation control — delivered data/API foundation
+#### BAT-102 — Participation control — delivered data/API foundation
 
 - ETP accreditation and signature validity;
 - application, deposit purpose/sending/receipt, signed documents and acceptance;
@@ -484,70 +484,70 @@ Done: desktop/web form and saved assumptions. Remaining: approval history.
 
 Done: desktop/web checklist UI. Remaining: notifications and document-to-field reconciliation.
 
-### BAT-103 — Evidence-based valuation
+#### BAT-103 — Evidence-based valuation
 
 - comparable dataset with distance, price/m², date, exposure and condition;
 - separate liquidity, expense and risk models;
 - LLM only explains precomputed values;
 - no price output when evidence policy is not met.
 
-## P2 — Deal Room and learning loop
+### P0–P2 (исторический) — Deal Room and learning loop
 
-### BAT-201 — Organizations, roles and partners
+#### BAT-201 — Organizations, roles and partners
 
 - tenant-scoped users and RBAC;
 - ownership, assignments, approvals and audit trail;
 - planned/actual partner contributions and profit allocation.
 
-### BAT-202 — Outcome dataset
+#### BAT-202 — Outcome dataset
 
 - recommendation -> bid -> purchase -> expenses -> sale -> actual profit;
 - immutable model/prompt/data provenance;
 - backtesting, calibration and drift monitoring.
 
-### BAT-203 — Operations
+#### BAT-203 — Operations
 
 - PostgreSQL primary production database;
 - S3/MinIO documents, encrypted backups and restore drills;
 - connector health dashboard, metrics, alerts and runbooks;
 - owner decision and publication of a root `LICENSE`.
 
-## P0 — завершение безопасного web/desktop parity
+### P0–P2 (исторический) — завершение безопасного web/desktop parity
 
-### BAT-301 — Three-source bulk synchronization
+#### BAT-301 — Three-source bulk synchronization
 
 - единая Celery orchestration для ГИС «Торги», TBankrot и РАД/ЛОТ-ОНЛАЙН;
 - idempotency key, per-source cursor/progress/retry/cancel и частичный результат;
 - web показывает недоступные источники и не объявляет неполный проход успешным;
 - acceptance: повторный запуск не создаёт дублей, progress восстанавливается после restart worker.
 
-### BAT-302 — Background AI and GEO operations
+#### BAT-302 — Background AI and GEO operations
 
 - queue endpoints для single/batch AI, GEO, retry failed GEO и re-geocode;
 - server-side concurrency/rate limits, budget limit и audit actor;
 - acceptance: browser disconnect не останавливает job, статус доступен после повторного входа.
 
-### BAT-303 — Real RBAC and tenant isolation
+#### BAT-303 — Real RBAC and tenant isolation
 
 - `reader` только читает, `analyst` меняет личный workflow, `admin` запускает jobs и merge/split;
 - tenant/user scope для watchlist, notes, scenarios, checklist, audit log;
 - отрицательные API-тесты для каждого endpoint и роли.
 
-### BAT-304 — Honest deployment modes
+#### BAT-304 — Honest deployment modes
 
 - заменить двусмысленный `API_READ_ONLY` на curated/read-only режимы;
 - отдельные allowlists методов и route capabilities endpoint для UI;
 - скрывать недоступные кнопки, возвращать `403` для запрещённого действия.
 
-## P1 — оставшиеся desktop-возможности в web
+### P0–P2 (исторический) — оставшиеся desktop-возможности в web
 
-### BAT-305 — Import/export jobs
+#### BAT-305 — Import/export jobs
 
 - безопасная загрузка HTML с size/type limits и malware scan;
 - Excel export как streaming/background download с теми же колонками и фильтрами;
 - retention и удаление временных файлов по политике.
 
-### BAT-306 — Map parity
+#### BAT-306 — Map parity
 
 - Yandex provider как optional web layer без silent fallback после успешной загрузки;
 - кадастровый WMS/proxy, marker clustering и серверная фильтрация цены/status/review;
@@ -570,7 +570,7 @@ Follow-up 2026-08-05: устранены два дефекта внешнего 
 Playwright-регрессиями; remaining BAT-306 не изменился: viewport pagination и
 production API key/domain policy.
 
-### BAT-307 — Web parity acceptance suite
+#### BAT-307 — Web parity acceptance suite
 
 - Playwright journeys: search/import, registry/detail, watchlist, map/review,
   calculator/history, participation, documents diff и duplicate review;
@@ -584,32 +584,32 @@ Done 2026-08-05: базовый Playwright journey проверяет вход, 
 и изменения «светофора».
 Remaining: сценарии импорта и изменения данных для каждого workflow и роли.
 
-## P1 — аудит и эксплуатация
+### P0–P2 (исторический) — аудит и эксплуатация
 
-### BAT-308 — Split monoliths
+#### BAT-308 — Split monoliths
 
 - разнести GUI по feature widgets/controllers, API по routers/services, scraper implementations по connectors;
 - не допускать новых модулей свыше 1000 строк без ADR.
 
-### BAT-309 — Observability and recovery
+#### BAT-309 — Observability and recovery
 
 - SLO, Prometheus/OpenTelemetry, queue lag/source freshness/GEO/AI error alerts;
 - PostgreSQL encrypted backups, quarterly restore drill и документированный RPO/RTO;
 - release rollback rehearsal и migration compatibility window.
 
-### BAT-310 — Supply chain and governance
+#### BAT-310 — Supply chain and governance
 
 - root `LICENSE`, SBOM, signed release images, dependency update policy;
 - branch protection, required checks, secret scanning/private vulnerability reporting.
 
-## P2 — качество интерфейса и данных
+### P0–P2 (исторический) — качество интерфейса и данных
 
-### BAT-311 — Frontend architecture and accessibility
+#### BAT-311 — Frontend architecture and accessibility
 
 - feature modules/routes, schema-derived labels, i18n и единый design system;
 - WCAG 2.2 AA keyboard/focus/contrast tests.
 
-### BAT-312 — Outcome and valuation evidence
+#### BAT-312 — Outcome and valuation evidence
 
 - comparable evidence policy и отказ от оценки при недостаточных данных;
 - полный outcome dataset, backtesting, calibration и drift monitoring.
