@@ -57,6 +57,18 @@
 ## 4. Прямые ЭТП: что подтверждено
 
 - [22-source readiness](https://github.com/Maximiliamos/torgi/actions/runs/40925467730): все **22/22** профиля обследованы read-only, **0** сертифицировано для production ingestion только по этому обследованию.
+Проверенное распределение статусов `etp-22-source-readonly-inventory.json` (**все 22 профиля**):
+
+| Статус диагностики | Кол-во | Площадки и следующий шаг |
+| --- | ---: | --- |
+| `candidates_unverified` / S1 | 5 | `nistp.ru`, `etpu.ru`, `centerr.ru`, `zakazrf.ru`, `utpl.ru`; проверить официальные детали/ID/кадастр/цену/статус |
+| `existing_connector` (readiness not assessed) | 2 | `m-ets.ru`, `lot-online.ru`; обследование не переаттестовало действующий или пилотный коннектор |
+| `blocked_or_parser_error` / S0 | 3 | `cdtrf.ru`, `rts-tender.ru`, `etp-profit.ru`; отдельно проверить доступ и контракт HTML/API без обхода ограничений |
+| `needs_public_catalogue_contract` / S0 | 5 | `roseltorg.ru`, `sberbank-ast.ru`, `ausib.ru`, `utender.ru`, `electro-torgi.ru`; найти публичный официальный каталог |
+| `no_matches_or_changed_html` / S0 | 7 | `alfalot.ru`, `fabrikant.ru`, `arbbitlot.ru`, `sistematorg.com`, `aukcioncenter.ru`, `vertrades.ru`, `rus-on.ru`; проверить разметку/выдачу |
+
+Этот классификатор относится **только к ограниченному inventory**; не противоречит отдельным успешным live-пробам МЭТС/ЦДТ и не означает отсутствие действительных торгов на площадках.
+
 - [МЭТС: пагинация](https://github.com/Maximiliamos/torgi/actions/runs/40925467762): 5 просмотренных страниц, **100** уникальных идентификаторов каталога.
 - [ЦДТ: пагинация](https://github.com/Maximiliamos/torgi/actions/runs/40925467763): 5 просмотренных страниц, **100** различных идентификаторов, 46 candidate hints.
 - [Home limited live detail](https://github.com/Maximiliamos/torgi/actions/runs/40925467810): МЭТС — 20 кандидатов / 5 проверенных карточек; ЦДТ — 10 кандидатов / 2 проверенных / 3 отклонённых (`unsupported_property_right` 1, `lot_identity_mismatch` 2). Без записей в БД.
