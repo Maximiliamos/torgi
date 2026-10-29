@@ -74,16 +74,41 @@ jobs:
           # Recheck immediately before mutation: main, P11 or worker may have changed
           # while a backup was being verified.
           .\scripts\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:GITHUB_SHA
-          docker exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply
+          $lines = @(& docker.exe exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply)
           if ($LASTEXITCODE -ne 0) {
             throw "Canary source import failed for $env:ETP_SOURCE"
           }
-      - name: Confirm source presence and audit journals and geo after import
+          $canary = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
+          $ids = @($canary.persisted_external_ids)
+          if ($canary.source -ne $env:ETP_SOURCE -or $ids.Count -lt 1 -or
+              $ids.Count -gt 2 -or $canary.persisted_count -ne $ids.Count) {
+            throw 'ETP canary result is missing exact committed public source identities'
+          }
+          $canary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
+            Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
+          ) -Encoding utf8
+      - name: Confirm exact imported source identities and GEO state after import
         shell: powershell
         env:
           ETP_SOURCE: ${{ inputs.source_id }}
         run: |
-          docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_postimport_audit --source $env:ETP_SOURCE --min-source-lots 1
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
+          $canary = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          if ($canary.source -ne $env:ETP_SOURCE) {
+            throw 'ETP canary result is from a different source'
+          }
+          $ids = @($canary.persisted_external_ids)
+          if ($ids.Count -lt 1 -or $ids.Count -gt 2) {
+            throw 'ETP canary audit cannot confirm one or two new source IDs'
+          }
+          $arguments = @('exec','bankrotai-home-ingestion-worker','python',
+            '-m','bankrotai.services.etp_postimport_audit',
+            '--source',$env:ETP_SOURCE,'--min-source-lots','1')
+          foreach ($id in $ids) {
+            $arguments += @('--expected-external-id',[string]$id)
+          }
+          & docker.exe @arguments
           if ($LASTEXITCODE -ne 0) {
-            throw "ETP post-import SQL audit found no source lots"
+            throw 'ETP exact-source post-import audit failed; publication is not accepted'
           }
