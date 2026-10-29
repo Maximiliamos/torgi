@@ -130,3 +130,84 @@ def test_workflow_checks_accepted_deploy_twice_before_mutation():
         "bankrotai-home-api:$ExpectedSha",
     ):
         assert fragment in guard
+
+
+def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
+    from contextlib import contextmanager
+    from bankrotai import db
+    from bankrotai.services import etp_canary_persistence as persistence
+    from bankrotai.services import etp_manual_import as module
+
+    rows = [sale(), sale(external_id="243003-2")]
+    async def candidates(source, limit):
+        return rows
+    monkeypatch.setattr(module, "collect_lots", candidates)
+    monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
+    transactions = []
+    @contextmanager
+    def isolated():
+        proposed = []
+        try:
+            yield proposed
+            transactions.append(list(proposed))
+        except Exception:
+            proposed.clear()
+            raise
+    def persist(sess, item, actor):
+        sess.append(item.external_id)
+    monkeypatch.setattr(db, "session_scope", isolated)
+    monkeypatch.setattr(persistence, "persist_canary_lot", persist)
+
+    outcome = run_import("m-ets.ru", limit=2, apply=True)
+    assert transactions == [["243003-1", "243003-2"]]
+    assert outcome["persisted_count"] == 2
+    assert outcome["persisted_external_ids"] == ["243003-1", "243003-2"]
+    assert outcome["missing_lot_archival"] is False
+
+
+def test_second_lot_collision_rolls_back_first_and_fails_closed(monkeypatch):
+    from contextlib import contextmanager
+    from bankrotai import db
+    from bankrotai.services import etp_canary_persistence as persistence
+    from bankrotai.services import etp_manual_import as module
+
+    rows = [sale(), sale(external_id="243003-2")]
+    async def candidates(source, limit):
+        return rows
+    monkeypatch.setattr(module, "collect_lots", candidates)
+    monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
+    committed = []
+    rolled_back = []
+    @contextmanager
+    def isolated():
+        proposed = []
+        try:
+            yield proposed
+            committed.extend(proposed)
+        except Exception:
+            rolled_back.extend(proposed)
+            raise
+    def persist(sess, item, actor):
+        if item.external_id == "243003-2":
+            raise persistence.CanaryDuplicateReviewRequired("manual review required")
+        sess.append(item.external_id)
+    monkeypatch.setattr(db, "session_scope", isolated)
+    monkeypatch.setattr(persistence, "persist_canary_lot", persist)
+
+    with pytest.raises(persistence.CanaryDuplicateReviewRequired):
+        run_import("m-ets.ru", limit=2, apply=True)
+    assert committed == []
+    assert rolled_back == ["243003-1"]
+
+
+def test_run_import_rejects_excessive_lots_even_if_collector_is_bypassed(monkeypatch):
+    from bankrotai.services import etp_manual_import as module
+    async def unexpected(source, limit):
+        return [sale(external_id=f"other-{n}") for n in range(3)]
+    monkeypatch.setattr(module, "collect_lots", unexpected)
+    monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
+    with pytest.raises(ValueError, match="unbounded"):
+        run_import("m-ets.ru", limit=2, apply=True)
