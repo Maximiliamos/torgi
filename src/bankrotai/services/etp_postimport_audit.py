@@ -90,7 +90,7 @@ def verify_expected_source_lots(session, source_id: str, ids: list[str]) -> list
     """
     if (source_id not in APPROVED or not 1 <= len(ids) <= 2
             or len(ids) != len(set(ids))
-            or not all(re.fullmatch(r"[A-Za-z0-9:.\\-]{1,100}", value) for value in ids)):
+            or not all(re.fullmatch(r"[A-Za-z0-9:.-]{1,100}", value) for value in ids)):
         raise ValueError("ETP canary audit requires one or two unique public source IDs")
     result = []
     for external_id in ids:
