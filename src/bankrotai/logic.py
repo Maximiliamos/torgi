@@ -121,14 +121,8 @@ def _to_datetime(value: Any) -> datetime | None:
 
 
 def _canonical_key(normalized: NormalizedLot, *, isolate_source: bool = False) -> str:
-    if isolate_source: return f"source:{normalized.source_system}:{normalized.external_id}"
-    cadastral = (normalized.cadastral_number or "").replace(" ", "")
-    if cadastral:
-        return f"cadastral:{cadastral}"
-    if normalized.efresb_message_number:
-        return f"efrsb:{normalized.efresb_message_number.strip()}"
-    if normalized.bankruptcy_case_number and normalized.procedure_number:
-        return f"case:{normalized.bankruptcy_case_number.strip()}:{normalized.procedure_number.strip()}"
+    # A cadastral number identifies an asset, not a specific auction sale.
+    # Explicitly proven copies use canonical_hint; no implicit cross-sale aliasing.
     return f"source:{normalized.source_system}:{normalized.external_id}"
 
 
@@ -188,23 +182,38 @@ def _titles_identify_same_lot(left: str | None, right: str | None) -> bool:
     return score >= 0.92
 
 
+def _same_published_sale_url(left: Any, right: Any) -> bool:
+    """Require exactly the same lot-specific publication URL, not asset similarity."""
+    from urllib.parse import urlsplit
+
+    def published_url(lot: Any) -> tuple[str, str, str] | None:
+        for raw in (getattr(lot, "lot_url", None), getattr(lot, "source_url", None)):
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            parsed = urlsplit(raw.strip())
+            if parsed.scheme != "https" or not parsed.hostname:
+                continue
+            path = parsed.path.rstrip("/")
+            # Never use a generic catalogue/homepage as proof of sale identity.
+            if len(path.strip("/")) < 8:
+                continue
+            return (parsed.hostname.lower(), path, parsed.query)
+        return None
+
+    one, two = published_url(left), published_url(right)
+    return one is not None and one == two
+
+
 def _same_cross_source_lot(existing: ProcessedLot, normalized: NormalizedLot) -> bool:
     if (existing.source_system or "").casefold() == (normalized.source_system or "").casefold():
         return False
-    shared_cadastral = _processed_lot_cadastral_numbers(existing) & _normalized_lot_cadastral_numbers(normalized)
-    if shared_cadastral:
-        # Price is mutable auction state (especially for public offers), not
-        # physical identity.  A shared exact cadastral number is stronger
-        # evidence than a temporary price difference between an aggregator
-        # and the primary trading platform.
-        return True
-    if not _prices_match(existing.current_price or existing.start_price, normalized.current_price or normalized.start_price):
+    # A cadastral number, an identical address/title and even the same price
+    # identify an ASSET, not the same sale. Only matching original lot URLs
+    # together with cadastral evidence qualify for automatic cross-source merge.
+    # Other pairs require reviewed manual merge, preserving provenance.
+    if not (_processed_lot_cadastral_numbers(existing) & _normalized_lot_cadastral_numbers(normalized)):
         return False
-    if _text_containment(existing.address, normalized.address) >= 0.72:
-        return True
-    return _titles_identify_same_lot(existing.title, normalized.title) and bool(
-        existing.region_slug and existing.region_slug == normalized.region_slug
-    )
+    return _same_published_sale_url(existing, normalized)
 
 
 def _find_cross_source_processed_lot(session: Session, normalized: NormalizedLot) -> ProcessedLot | None:
@@ -483,11 +492,9 @@ def _ensure_processed_source_lot(session: Session, processed: ProcessedLot) -> S
             existing.processed_lot_id = processed.id
         return existing
 
-    canonical_key = (
-        f"cadastral:{_clean_cadastral(processed.cadastral_number)}"
-        if _clean_cadastral(processed.cadastral_number)
-        else f"legacy:{processed.id}"
-    )
+    # Reconciliation must not silently attach a new sale to another sale's
+    # historical cadastral-key canonical group.
+    canonical_key = f"legacy:{processed.id}"
     canonical = session.scalar(select(CanonicalLot).where(CanonicalLot.canonical_key == canonical_key))
     if canonical is None:
         canonical = CanonicalLot(
@@ -878,16 +885,9 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
 def _same_processed_cross_source_lot(left: ProcessedLot, right: ProcessedLot) -> bool:
     if (left.source_system or "").casefold() == (right.source_system or "").casefold():
         return False
-    shared_cadastral = _processed_lot_cadastral_numbers(left) & _processed_lot_cadastral_numbers(right)
-    if shared_cadastral:
-        return True
-    if not _prices_match(left.current_price or left.start_price, right.current_price or right.start_price):
-        return False
-    if _text_containment(left.address, right.address) >= 0.72:
-        return True
-    return _titles_identify_same_lot(left.title, right.title) and bool(
-        left.region_slug and left.region_slug == right.region_slug
-    )
+    return bool(
+        _processed_lot_cadastral_numbers(left) & _processed_lot_cadastral_numbers(right)
+    ) and _same_published_sale_url(left, right)
 
 
 def reconcile_cross_source_duplicates(session: Session) -> int:
