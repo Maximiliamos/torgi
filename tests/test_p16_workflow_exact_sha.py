@@ -20,3 +20,11 @@ def test_impact_report_is_readonly_and_exact_home_code():
     assert "p13-production-eligibility-impact.py" in WF
     assert "scripts/p16-readonly-baseline.py" in WF
     assert "read_only" in WF and "no_mutations" in WF
+
+
+def test_etp_sql_acceptance_is_readonly_and_not_misreported_as_public_map():
+    assert "python -m bankrotai.services.etp_postimport_audit" in WF
+    assert "report.database_writes -ne 0" in WF
+    assert "report.requires_external_map_tile_verification -ne $true" in WF
+    assert "etp-db-postimport-readonly.json" in WF
+    assert "Save ETP source/journal/GEO SQL acceptance evidence" in WF
