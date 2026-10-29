@@ -2,6 +2,9 @@ name: P16 read-only Home integrity baseline
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
   push:
     branches: [main]
     paths:
@@ -18,10 +21,25 @@ concurrency:
 
 jobs:
   audit:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Verify read-only impact report uses exact deployed Home image
+        shell: powershell
+        run: |
+          if ($env:GITHUB_EVENT_NAME -ne 'workflow_run') { exit 0 }
+          $expected = '${{ github.event.workflow_run.head_sha }}'
+          $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-map-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
+            throw 'Live Home map worker changed SHA; refusing mixed-version impact evidence'
+          }
       - name: Audit existing Home production database without writes
         shell: powershell
         run: |
@@ -46,6 +64,26 @@ jobs:
           if ($result.read_only -ne $true -or $result.no_mutations -ne $true) { throw 'Impact preview must be read-only' }
           $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
           Write-Output ("Map preflight: existing={0}, candidate_upper_bound={1}, ratio={2}" -f $result.current_dataset.point_count, $result.proposed_maximum_eligible_points, $result.upper_bound_ratio_to_current_dataset)
+      - name: Audit historical cross-source dedup risks (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'p0-cross-source-dedup-impact.json'
+          $script = Get-Content -LiteralPath 'scripts/p0-cross-source-dedup-impact.py' -Raw -Encoding utf8
+          $output = $script | docker exec -i bankrotai-home-map-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'P0 historical duplicate survey failed' }
+          $result = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($result.read_only -ne $true -or $result.no_mutations -ne $true) { throw 'Duplicate survey must be read-only' }
+          $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("Potential historic cross-source duplicate pairs: {0}" -f $result.counts.cross_source_merged_pairs)
+      - name: Upload P0 historical dedup impact report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p0-historical-dedup-impact
+          path: ${{ runner.temp }}/p0-cross-source-dedup-impact.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload exact public eligibility impact preview
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
