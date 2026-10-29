@@ -39,7 +39,7 @@ def _lot(source: str, external_id: str, **overrides) -> NormalizedLot:
         current_price=900_000,
         auction_status="active",
         lot_url=None,
-        source_url="https://example.com/lot",
+        source_url="https://example.com/auction/lot-42",
         detail_level="detail",
         raw_data={},
     )
@@ -63,7 +63,7 @@ def test_source_lots_from_two_systems_share_canonical_asset() -> None:
         assert session.query(CanonicalLot).count() == 1
 
 
-def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_price() -> None:
+def test_cross_source_copy_without_cadastral_is_not_auto_merged_by_price_address() -> None:
     with Session(_engine()) as session:
         first = persist_lot(session, _lot(
             "tbankrot.ru",
@@ -84,9 +84,9 @@ def test_cross_source_copy_without_cadastral_number_is_hidden_by_address_and_pri
         copy = session.scalar(select(ProcessedLot).where(
             ProcessedLot.external_id == "lot-online:1760257"
         ))
-        assert second.id == first.id
+        assert second.id != first.id
         assert copy is not None
-        assert copy.duplicate_of_id == first.id
+        assert copy.duplicate_of_id is None
 
 
 def test_exact_cadastral_identity_is_not_split_by_public_offer_price() -> None:
