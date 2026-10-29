@@ -350,9 +350,15 @@ jobs:
           }
 
           if (-not $built) {
+            # On the home Windows runner, Chromium's Debian packages can take
+            # more than four minutes even when pip dependencies are cached.
+            # Keep retries bounded and preserve all existing fail-closed checks.
+            # 2026-10-29 bbaeff53 failed after 180+240 seconds, before the
+            # apt/Playwright layer could complete; fallback correctly refused
+            # because pyproject.toml (release version) had changed.
             $attempts = @(
-              [pscustomobject]@{ Pull = $true;  Timeout = 180; Mode = 'refresh-base' },
-              [pscustomobject]@{ Pull = $false; Timeout = 240; Mode = 'cached-base' }
+              [pscustomobject]@{ Pull = $true;  Timeout = 900; Mode = 'refresh-base' },
+              [pscustomobject]@{ Pull = $false; Timeout = 900; Mode = 'cached-base' }
             )
             $attemptNumber = 0
             foreach ($attempt in $attempts) {
