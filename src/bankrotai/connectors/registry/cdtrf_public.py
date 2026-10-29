@@ -146,6 +146,23 @@ def _ssr_lot(soup: BeautifulSoup) -> tuple[dict, dict]:
     raise CdtrfEvidenceError("Lot object missing from SSR")
 
 
+def _lot_property_text(lot: dict) -> str:
+    """Extract the actual property description, not the generic auction heading.
+
+    CDTRF publishes it as HTML in the SSR lotInfo field; description is
+    optional. Refuse unexpectedly large or non-text values rather than guessing.
+    """
+    fragments = []
+    for key in ("lotInfo", "description"):
+        value = lot.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > 16_000:
+            raise CdtrfEvidenceError("Invalid CDTRF lot property description")
+        fragments.append(value)
+    return _text(BeautifulSoup(" ".join(fragments), "html.parser"))
+
+
 def parse_detail(html: str, url: str) -> dict:
     canonical, trade_id = checked_url(url)
     soup = BeautifulSoup(html, "html.parser")
@@ -190,6 +207,7 @@ def parse_detail(html: str, url: str) -> dict:
         "html.parser",
     ).get_text(" ", strip=True)
     cadastral = CADASTRE.search(raw_cadastre)
+    property_description = _lot_property_text(lot)
     lat, lon = lot.get("latitude"), lot.get("longitude")
     coords = None
     try:
@@ -203,6 +221,7 @@ def parse_detail(html: str, url: str) -> dict:
         "trade_lot_id": str(lot_id), "lot_number": str(lot_number),
         "external_id": f"cdtrf:{lot_id}",
         "title": title[:600], "category_label": category,
+        "property_description": property_description,
         "region_label": region, "region_id": lot.get("regionID"),
         "cadastral_number": cadastral.group(0) if cadastral else None,
         "initial_price_rub": initial, "current_price_rub": None,

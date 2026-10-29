@@ -204,3 +204,13 @@ def test_cdtrf_failure_classification_redacts_sensitive_error():
     assert _cdtrf_rejection_code(ValueError("Price disagreement between HTML and SSR")) == "price_mismatch"
     assert _cdtrf_rejection_code(ValueError("Insufficient property with debtor Elena")) == "property_evidence_missing"
     assert _cdtrf_rejection_code(ValueError("sensitive person contact 7-900-000-0000")) == "other_detail_error"
+
+
+
+def test_cdtrf_rejection_exposes_rights_risk_without_source_text():
+    from bankrotai.connectors.registry.etp_incremental import _cdtrf_rejection_code
+    from bankrotai.services.etp_cdtrf_canary import CdtrfCanaryError
+
+    assert _cdtrf_rejection_code(
+        CdtrfCanaryError("CDTRF_UNSUPPORTED_PROPERTY_RIGHT")
+    ) == "unsupported_property_right"

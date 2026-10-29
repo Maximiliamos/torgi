@@ -21,6 +21,15 @@ API = "https://torgi.cdtrf.ru/api/Trade/trades"
 BASE = "https://torgi.cdtrf.ru/trades/"
 REQUEST_TIMEOUT = (3, 8)
 MAX_RESPONSE = 2_000_000
+# Do not mistake the sale of a share, a lease right, or a receivable for
+# an unrestricted sale of the underlying real-estate object.
+UNSUPPORTED_PROPERTY_RIGHTS = re.compile(
+    r"(?iu)(?:\b\d+\s*/\s*\d+\s*дол[яиею]"
+    r"|дол[яиею]\s+в\s+праве"
+    r"|прав[оа]\s+аренд[ыа]"
+    r"|прав[оа]\s+требовани[яй]"
+    r"|дебиторск)"
+)
 PROPERTY = frozenset({
     "apartment", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
@@ -83,7 +92,17 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
     if detail["trade_id"] != trade_id or detail["trade_lot_id"] != lot_id:
         raise CdtrfCanaryError("Detail lot ID differs from the requested lot")
     title = detail["title"]
-    category = classify_category(title, title)
+    # The auction title often names only the debtor. The property itself
+    # is identified in the Nuxt lotInfo, independently of the HTML heading.
+    property_description = str(detail.get("property_description") or "").strip()
+    category_label = str(detail.get("category_label") or "").strip()
+    evidence = f"{title} {property_description}"
+    if UNSUPPORTED_PROPERTY_RIGHTS.search(evidence):
+        raise CdtrfCanaryError("CDTRF_UNSUPPORTED_PROPERTY_RIGHT")
+    if category_label and ("движим" in category_label.casefold()
+                           and "недвижим" not in category_label.casefold()):
+        raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
+    category = classify_category(title, f"{property_description} {category_label}")
     status = detail["source_status_code"]
     mapped = {"Declare": "scheduled", "RecieveReq": "active"}.get(status)
     if category not in PROPERTY:
@@ -96,7 +115,8 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         raise CdtrfCanaryError("CDTRF_STATUS_UNRECOGNIZED")
     return NormalizedLot(
         external_id=f"cdtrf:{lot_id}", source="cdtrf.ru",
-        source_system="cdtrf.ru", title=title, description=title,
+        source_system="cdtrf.ru", title=title,
+        description=property_description or title,
         category=category, region_slug=None, region_name=None,
         address=detail.get("region_label") or None,
         cadastral_number=detail["cadastral_number"],
@@ -106,6 +126,8 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         lot_url=url, source_url=url, detail_level="public_detail",
         raw_data={
             "evidence": "url_html_nuxt_identity_match",
+            "category_label": category_label,
+            "category_evidence": "lotInfo_and_official_badge",
             "trade_id": trade_id, "trade_lot_id": lot_id,
             "source_status_text": detail.get("source_status_text"),
             "source_status_code": status,
