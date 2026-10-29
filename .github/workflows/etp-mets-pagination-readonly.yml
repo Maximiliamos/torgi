@@ -1,0 +1,57 @@
+name: M-ETS first-party bounded pagination evidence
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mets-readonly-pagination
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Verify trusted Home worker image
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $worker) { throw 'Trusted Home ingestion worker unavailable' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_run') {
+            $expected = '${{ github.event.workflow_run.head_sha }}'
+            if ($worker -ne "bankrotai-home-api:$expected") {
+              throw 'Home worker image SHA mismatch; refuse mixed-revision catalogue evidence'
+            }
+          }
+      - name: Scan five bounded M-ETS catalogue pages without detail or writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_mets_pagination_probe --max-pages 5 --delay-seconds 1
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'M-ETS catalogue pagination probe failed' }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.database_writes -ne 0 -or $report.archival_allowed -ne $false -or
+              $report.complete_source_inventory -ne $false -or $report.map_publication -ne $false) {
+            throw 'Unexpected unsafe source pagination evidence'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mets-catalogue-pagination-readonly.json'
+          $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("M-ETS observed pages={0}, distinct catalogue identities={1}" -f $report.pages_scanned, $report.unique_catalogue_lot_ids)
+      - name: Retain M-ETS pagination report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mets-catalogue-pagination-readonly
+          path: ${{ runner.temp }}/mets-catalogue-pagination-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
