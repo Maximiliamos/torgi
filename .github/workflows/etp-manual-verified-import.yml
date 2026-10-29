@@ -64,3 +64,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Canary source import failed for $env:ETP_SOURCE"
           }
+      - name: Confirm source presence and audit journals and geo after import
+        shell: powershell
+        env:
+          ETP_SOURCE: ${{ inputs.source_id }}
+        run: |
+          docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_postimport_audit --source $env:ETP_SOURCE --min-source-lots 1
+          if ($LASTEXITCODE -ne 0) {
+            throw "ETP post-import SQL audit found no source lots"
+          }
