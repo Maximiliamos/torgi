@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/backup-home-postgres.ps1'
+      - 'scripts/ensure-docker-for-backup.ps1'
       - '.github/workflows/phase3-lite-backup.yml'
 
 permissions:
@@ -112,6 +113,11 @@ jobs:
           }
           "due=$($due.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           Write-Output "Backup due=$due"
+
+      - name: Recover and verify Docker engine before PostgreSQL backup
+        if: steps.cadence.outputs.due == 'true'
+        shell: powershell
+        run: .\\scripts\\ensure-docker-for-backup.ps1 -TimeoutSeconds 150
 
       - name: Verify C temp headroom and D backup capacity
         if: steps.cadence.outputs.due == 'true'

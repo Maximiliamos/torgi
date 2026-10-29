@@ -1,0 +1,66 @@
+name: ETP manual verified one-source import
+on:
+  workflow_dispatch:
+    inputs:
+      source_id:
+        type: choice
+        description: Exactly one proven property source
+        required: true
+        options:
+          - m-ets.ru
+          - cdtrf.ru
+      confirmation:
+        type: string
+        required: true
+        description: Type SAFE_SINGLE_SOURCE to allow no more than 2 verified details
+permissions:
+  contents: read
+jobs:
+  canary:
+    if: ${{ inputs.confirmation == 'SAFE_SINGLE_SOURCE' }}
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Require recent locally restore-verified backup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'D:\BankrotAI\dr-backups'
+          $files = @(Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
+            Sort-Object LastWriteTimeUtc -Descending)
+          $verified = $false
+          foreach ($file in $files) {
+            try {
+              $data = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+              if ($data.restore_verification -ne 'passed' -or
+                  $data.source_schema_revision -ne $data.restored_schema_revision) { continue }
+              if (-not $data.backup_file -or -not (Test-Path -LiteralPath ([string]$data.backup_file))) { continue }
+              $age = ((Get-Date).ToUniversalTime() - $file.LastWriteTimeUtc).TotalHours
+              if ($age -gt 60 -or $age -lt 0) { continue }
+              $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$data.backup_file)).Hash.ToLowerInvariant()
+              if ($digest -ne ([string]$data.sha256).ToLowerInvariant()) { continue }
+              $verified = $true
+              Write-Output ("Recent restore-verified DB backup found; age hours: " + [math]::Round($age, 1))
+              break
+            } catch {
+              Write-Warning ('Skipping unverifiable backup manifest: ' + $file.Name)
+            }
+          }
+          if (-not $verified) { throw 'ETP import refused: no recent verified PostgreSQL backup' }
+      - name: Confirm trusted worker is running
+        shell: powershell
+        run: |
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'ETP import refused: trusted home worker is not running'
+          }
+      - name: Import at most two verified lots, no source reconciliation
+        shell: powershell
+        env:
+          ETP_SOURCE: ${{ inputs.source_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          docker exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply
+          if ($LASTEXITCODE -ne 0) {
+            throw "Canary source import failed for $env:ETP_SOURCE"
+          }
