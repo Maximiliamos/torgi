@@ -13,7 +13,6 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
 
 import requests
 
@@ -29,7 +28,6 @@ from bankrotai.services.etp_cdtrf_canary import (
 CANARY_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru"})
 LOT_ID = re.compile(r"^[1-9]\d{3,8}-[1-9]\d{0,4}$")
 METS_PAGE = re.compile(r"^2:[0-9a-f]{16}$")
-CDTRF_PAGE = re.compile(r"^2:[0-9a-f]{16}$")
 PROPERTY_CATEGORIES = frozenset({
     "apartment", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
