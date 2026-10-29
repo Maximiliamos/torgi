@@ -26,7 +26,9 @@ def test_home_image_build_is_bounded_and_has_offline_source_overlay_fallback() -
     assert "Timeout = 900; Mode = 'cached-base'" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
     assert "Offline source-overlay Docker build: PASS" in workflow
-    assert "requirements.lock pyproject.toml certs" in workflow
+    assert "git diff --quiet $baseSha $env:GITHUB_SHA -- requirements.lock certs" in workflow
+    assert "Normalize-OverlayPyproject" in workflow
+    assert "$baseNormalized -cne $currentNormalized" in workflow
     assert "production image tag does not expose a deploy SHA" in workflow
     assert "deployed Python $actualPython != required $expectedPython" in workflow
     assert "'--file', 'Dockerfile.home-overlay'" in workflow
