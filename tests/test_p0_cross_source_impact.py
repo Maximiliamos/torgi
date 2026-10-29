@@ -139,3 +139,73 @@ def test_new_verified_etp_sales_with_same_cadastre_persist_as_separate_canonical
             ) == first_id
     finally:
         engine.dispose()
+
+
+def test_readonly_review_priority_requires_external_evidence() -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from bankrotai.db import Base, ProcessedLot
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            def create(external_id, source, cadastre, region, status, duplicate=None):
+                item = ProcessedLot(
+                    source=source, source_system=source,
+                    external_id=external_id, title="Продажа участка",
+                    description="", category="land",
+                    auction_status=status, cadastral_number=cadastre,
+                    region_code=region, duplicate_of_id=duplicate,
+                    is_archived=False,
+                )
+                session.add(item)
+                session.flush()
+                return item.id
+
+            primary = create("sale-a", "lot-online.ru", "76:01:000101:1", "76", "active")
+            crossed = create(
+                "sale-b", "torgi.gov.ru", "77:01:000101:2", "77", "closed", primary
+            )
+            other_primary = create(
+                "sale-c", "lot-online.ru", "76:01:000101:3", "76", "active"
+            )
+            same_cadastre = create(
+                "sale-d", "torgi.gov.ru", "76:01:000101:3", "76", "expired",
+                other_primary,
+            )
+            session.commit()
+
+            report = runpy.run_path(
+                str(Path(__file__).resolve().parents[1] /
+                    "scripts/p0-cross-source-dedup-impact.py")
+            )["build_report"](session)
+            assert report["counts"]["cross_source_merged_pairs"] == 2
+            assert report["review_priority_counts"] == {
+                "01_cadastre_and_region_conflict": 1,
+                "04_same_cadastre_status_divergence": 1,
+            }
+            first = report["bounded_review_queue"]["01_cadastre_and_region_conflict"]
+            assert len(first) == 1
+            assert first[0]["primary_id"] == primary
+            assert first[0]["duplicate_id"] == crossed
+            assert first[0]["decision"] == "requires_primary_source_review"
+            assert report["review_queue_per_priority_limit"] == 20
+            assert report["safe_to_auto_split"] is False
+            assert report["review_required_before_split"] is True
+            assert report["restore_verified_backup_required_before_write"] is True
+            assert session.query(ProcessedLot).count() == 4
+            assert session.get(ProcessedLot, same_cadastre).duplicate_of_id == other_primary
+    finally:
+        engine.dispose()
+
+
+def test_review_priority_distinguishes_conflicts_from_ordinary_same_cadastre() -> None:
+    priority = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] /
+            "scripts/p0-cross-source-dedup-impact.py")
+    )["review_priority"]
+    assert priority(("conflicting_cadastres",)) == "02_cadastre_conflict"
+    assert priority(("region_conflict",)) == "03_region_conflict"
+    assert priority(("same_cadastre_not_sale_identity",)) is None
+    assert priority(("missing_cadastral_evidence",)) is None

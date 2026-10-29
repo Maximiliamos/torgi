@@ -35,6 +35,21 @@ def assess_pair(
     return tuple(issues)
 
 
+def review_priority(reasons: tuple[str, ...]) -> str | None:
+    """Rank review candidates, never assert that two auctions are the same sale."""
+    present = set(reasons)
+    if "conflicting_cadastres" in present and "region_conflict" in present:
+        return "01_cadastre_and_region_conflict"
+    if "conflicting_cadastres" in present:
+        return "02_cadastre_conflict"
+    if "region_conflict" in present:
+        return "03_region_conflict"
+    if ("same_cadastre_not_sale_identity" in present
+            and "source_status_divergence" in present):
+        return "04_same_cadastre_status_divergence"
+    return None
+
+
 def build_report(session) -> dict:
     primary = aliased(ProcessedLot)
     duplicate = aliased(ProcessedLot)
@@ -53,6 +68,8 @@ def build_report(session) -> dict:
     counts: Counter[str] = Counter()
     pair_sources: Counter[str] = Counter()
     samples: dict[str, list[dict[str, int]]] = defaultdict(list)
+    review_priority_counts: Counter[str] = Counter()
+    review_queue: dict[str, list[dict]] = defaultdict(list)
     for row in session.execute(query).yield_per(500):
         counts["cross_source_merged_pairs"] += 1
         src = f"{row[8]} -> {row[9]}"
@@ -66,6 +83,21 @@ def build_report(session) -> dict:
             counts[reason] += 1
             if len(samples[reason]) < 20:
                 samples[reason].append({"primary_id": int(row[0]), "duplicate_id": int(row[1])})
+        # Bounded P0 review packet: internal IDs and source labels only, no
+        # debtor names, addresses, unrestricted URLs or raw documents.
+        # The sampling limit does not affect the full population counters.
+        priority = review_priority(reasons)
+        if priority is not None:
+            review_priority_counts[priority] += 1
+            if len(review_queue[priority]) < 20:
+                review_queue[priority].append({
+                    "primary_id": int(row[0]),
+                    "duplicate_id": int(row[1]),
+                    "primary_source": str(row[8]),
+                    "duplicate_source": str(row[9]),
+                    "reasons": list(reasons),
+                    "decision": "requires_primary_source_review",
+                })
     # Additional P0 path: a canonical asset may contain multiple SourceLot
     # publications even when no ProcessedLot.duplicate_of_id was set.
     # This is a REVIEW CANDIDATE, not a proven false merge.
@@ -89,6 +121,12 @@ def build_report(session) -> dict:
         "counts": dict(sorted(counts.items())),
         "source_pairs": dict(sorted(pair_sources.items())),
         "sample_ids": dict(sorted(samples.items())),
+        "review_priority_counts": dict(sorted(review_priority_counts.items())),
+        "bounded_review_queue": dict(sorted(review_queue.items())),
+        "review_queue_per_priority_limit": 20,
+        "review_required_before_split": True,
+        "restore_verified_backup_required_before_write": True,
+        "safe_to_auto_split": False,
     }
 
 
