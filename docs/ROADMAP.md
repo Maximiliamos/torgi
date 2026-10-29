@@ -48,6 +48,8 @@
 | R7/METS-S2 | P1 | Проверить до 5 страниц HTML каталога МЭТС без дубликатов | #985 включён в **merged #989**, код/CI приняты в main | Реальный Home read-only JSON, затем полный обход и controlled canary |
 
 
+**ETP inventory classification:** 5 S1 candidates (`nistp.ru`, `etpu.ru`, `centerr.ru`, `zakazrf.ru`, `utpl.ru`), 2 existing connectors with readiness not assessed, 3 S0 blocked/parser errors, 5 S0 missing public catalogues, 7 S0 empty/changed HTML. **Ноль** новых S5–S7. См. [полную таблицу](production-readonly-audit-2026-10-29.md).
+
 **Live evidence 29.10.2026:** [M-ETS/CDTRF Home probe](https://github.com/Maximiliamos/torgi/actions/runs/40925467810): МЭТС 20 кандидатов / 5 подтверждённых, ЦДТ 10 / 2 подтверждённых / 3 отклонённых; [read-only DB audit](https://github.com/Maximiliamos/torgi/actions/runs/40925467727) = **0** записей обеих ЭТП. Ни 22 profile-survey, ни пять страниц не доказывают S5–S7. См. [production audit](production-readonly-audit-2026-10-29.md).
 
 **Следующий блокирующий порядок:** P0 исторические группы (impact/audit) → P17 production P11 → P13 impact + P15 реальный GEO → CDTRF/METS ручной S5 → scheduled incremental без archival → полное source-specific paging и остальные ЭТП. Все массовые DB writes только после restore-verified backup.
