@@ -18,20 +18,23 @@ async def run_probe() -> dict:
         result: dict = {
             "source": source_id, "healthy": False,
             "catalogue_lots": None, "validated_details": 0,
-            "rejected_details": None, "error_type": None,
+            "rejected_details": None, "detail_attempts": None,
+            "rejection_codes": {}, "error_type": None,
             "database_writes": 0, "archival_allowed": False,
         }
         try:
             connector = connector_registry.create(source_id)
             page = await asyncio.wait_for(
                 connector.search(
-                    EtpIncrementalFilters(source_id, max_detail_requests=1)
+                    EtpIncrementalFilters(source_id, max_detail_requests=5)
                 ),
-                timeout=55,
+                timeout=160,
             )
             result["catalogue_lots"] = page.metadata.get("catalogue_lots")
             result["validated_details"] = len(page.items)
             result["rejected_details"] = page.metadata.get("details_rejected")
+            result["detail_attempts"] = page.metadata.get("detail_attempts")
+            result["rejection_codes"] = page.metadata.get("rejection_codes", {})
             result["healthy"] = bool(page.items)
         except Exception as exc:
             result["error_type"] = type(exc).__name__
