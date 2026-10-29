@@ -1,0 +1,30 @@
+name: ETP 22-source read-only inventory
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safe-source-survey:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 35
+    steps:
+      - name: Check trusted worker is running
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted ingestion worker unavailable: readonly inventory not run'
+          }
+
+      - name: Probe all ETP catalogue profiles without database changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_source_inventory --limit 5 --delay-seconds 1.0
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Read-only ETP inventory failed'
+          }
+          Write-Output 'Inventory complete. Candidate counts DO NOT certify ingestion readiness.'
