@@ -100,6 +100,34 @@ def test_existing_source_and_processed_identity_does_not_count_as_new():
         engine.dispose()
 
 
+def test_unlinked_cross_source_provenance_requires_review():
+    """A SourceLot without ProcessedLot can still represent a prior sale."""
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            canonical = CanonicalLot(canonical_key="unlinked-foreign", title="Prior")
+            session.add(canonical)
+            session.flush()
+            session.add(SourceLot(
+                canonical_lot_id=canonical.id,
+                source_system="lot-online.ru", external_id="old-source-sale",
+                cadastral_number="76:02:022201:38", is_archived=False,
+            ))
+            session.commit()
+            report = review_canary_collisions(
+                session, [candidate("243003-1")], source="m-ets.ru"
+            )
+            assert report["new_unconflicted_candidate_count"] == 0
+            assert report["reason_counts"] == {
+                "cross_source_unlinked_provenance_overlap": 1
+            }
+            assert report["ready_for_separate_operator_canary"] is False
+            assert session.scalar(select(SourceLot.id)) is not None
+    finally:
+        engine.dispose()
+
+
 def test_duplicate_cadastral_in_two_new_details_is_blocked():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
