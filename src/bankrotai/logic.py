@@ -367,11 +367,11 @@ def _sync_source_lot(
         canonical.area = normalized.area if normalized.area is not None else canonical.area
 
     if source_lot is None:
+        observed_at = utc_now()
         source_lot = SourceLot(
-            canonical_lot_id=canonical.id,
-            processed_lot_id=processed.id,
-            source_system=normalized.source_system,
-            external_id=normalized.external_id,
+            canonical_lot_id=canonical.id, processed_lot_id=processed.id,
+            source_system=normalized.source_system, external_id=normalized.external_id,
+            first_seen_at=observed_at, last_seen_at=observed_at,
         )
         session.add(source_lot)
     elif source_lot.canonical_lot_id != canonical.id and preferred_key.startswith(("cadastral:", "efrsb:", "case:")):
@@ -501,13 +501,12 @@ def _ensure_processed_source_lot(session: Session, processed: ProcessedLot) -> S
         )
         session.add(canonical)
         session.flush()
+    observed_at = utc_now()
     existing = SourceLot(
-        canonical_lot_id=canonical.id,
-        processed_lot_id=processed.id,
-        source_system=processed.source_system,
-        external_id=processed.external_id,
+        canonical_lot_id=canonical.id, processed_lot_id=processed.id,
+        source_system=processed.source_system, external_id=processed.external_id,
         source_url=processed.source_url or processed.lot_url,
-        last_seen_at=utc_now(),
+        first_seen_at=observed_at, last_seen_at=observed_at,
     )
     session.add(existing)
     session.flush()

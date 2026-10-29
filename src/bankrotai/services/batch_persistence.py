@@ -31,6 +31,13 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         "category": lot.category,
         "region_slug": lot.region_slug,
         "region_name": lot.region_name,
+        # Persist the normalized code in the processed projection too.
+        # Missing incoming codes must not erase existing valid region metadata.
+        "region_code": (
+            normalize_region_code(
+                str((lot.raw_data or {}).get("region_code") or lot.region_name or lot.region_slug or "")
+            ) or (existing.region_code if existing is not None else None)
+        ),
         "address": lot.address,
         "cadastral_number": lot.cadastral_number,
         "cadastral_numbers": lot.raw_data.get("cadastral_numbers"),
@@ -152,6 +159,9 @@ def _source_values(
         "inspection_procedure": lot.inspection_procedure or _raw_value(raw, "inspection_procedure"),
         "organizer_contact": lot.organizer_contact or _raw_value(raw, "organizer_contact"),
         "raw_data": raw,
+        # ORM default runs later than this timestamp, causing inverted dates.
+        # On conflict first_seen_at remains immutable.
+        "first_seen_at": existing.first_seen_at if existing is not None else now,
         "last_seen_at": now,
         "last_sync_run_id": run_id,
         "is_active": is_active,
@@ -255,6 +265,7 @@ def _persist_changed_lots_chunk(
         "category",
         "region_slug",
         "region_name",
+        "region_code",
         "address",
         "cadastral_number",
         "cadastral_numbers",
@@ -290,6 +301,7 @@ def _persist_changed_lots_chunk(
             ProcessedLot.title.is_distinct_from(processed_excluded.title),
             ProcessedLot.description.is_distinct_from(processed_excluded.description),
             ProcessedLot.region_name.is_distinct_from(processed_excluded.region_name),
+            ProcessedLot.region_code.is_distinct_from(processed_excluded.region_code),
         ),
     )
     processed_updates["needs_geo_check"] = case(
