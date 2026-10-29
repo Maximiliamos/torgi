@@ -232,7 +232,9 @@ def test_optin_five_page_mets_bounded_cursor_and_non_archival(monkeypatch):
     cursor = None
     results = []
     for page in range(1, 6):
-        result = incremental_mets_search(SimpleNamespace(), filters, cursor)
+        result = incremental_mets_search(
+            SimpleNamespace(_get=lambda url: "detail"), filters, cursor
+        )
         assert result.metadata["progress_current"] == page
         assert result.metadata["progress_total"] == 5
         assert result.metadata["complete_source_inventory"] is False
