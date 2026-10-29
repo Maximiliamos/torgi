@@ -11,6 +11,25 @@
 
 
 
+## 0.3.9 — staging интеграция подтверждения регионов и readiness ЭТП
+
+- [#1011](https://github.com/Maximiliamos/torgi/pull/1011) и [#1012](https://github.com/Maximiliamos/torgi/pull/1012) интегрированы на базе 0.3.8 `b5200eaa` только для общего CI; обе функции **read-only**.
+- **До слияния/релиза**: завершить exact-SHA Home/P11 релиза 0.3.8, пройти новый полный интеграционный CI + S3, затем после merge отдельно проверить 50 образцов `region_code` и canary readiness. Это **не исправление 3908 регионов**, не S5 импорт и не публикация исправленной карты.
+
+## P13/P15 — исследование исторически пустых регионов (staging)
+
+- [Issue #1010](https://github.com/Maximiliamos/torgi/issues/1010): по exact-SHA Home P13 report 3 908 из 4 149 предварительно подходящих лотов имеют `region_code` NULL/пустой. Эта цифра описывает **полный P13 preview**, а не следующую диагностическую выборку.
+- Новый `bankrotai.services.historical_region_review` формирует **не более 50** read-only примеров действующих primary-лотов с кадастровым GEO и пропущенным регионом. Только прямые свежие официальные `SourceLot` + одиночный структурно корректный кадастр могут дать `consistent_requires_manual_approval`; конфликт, старый или отсутствующий источник остаются `blocked` для backfill.
+- Workflow `p13-historical-region-review.yml` принимает только exact Home SHA, сохраняет обезличенный JSON (внутренние ID/региональные коды, без адресов и номера кадастра). **Нет SQL UPDATE, GEO-публикации, архивирования или полного исправления 3 908 записей**; это sampling, не весь P13-список.
+- Следующая стадия после release acceptance: независимый impact/lineage review и restore-verified backup; только затем обратимый операторский батч и повторный P13 + фильтры региона + WEB.
+
+## R7/S5 — zero-write canary readiness gate (staging 30.10.2026)
+
+- До ручного импорта МЭТС и ЦДТ на принятом exact SHA нужен **отдельный** read-only сигнал о готовности: реальный восстановленный PostgreSQL backup за последние 60 ч, актуальный `main`/P11/WEB/REG.RU/Cloudflare, правильная версия ingestion worker и 1–2 заново проверенных property details каждого источника.
+- `scripts/etp-canary-readiness.ps1` повторно использует обязательный `verify-etp-canary-acceptance.ps1` и сравнивает SHA256 backup с manifest; запускает `etp_manual_import` **без `--apply`**. Артефакт содержит только source ID, количество проверенных деталей и причины блокировки, не external IDs/ФИО/адреса.
+- `.github/workflows/etp-s5-canary-readiness.yml` запускается **только после success P11 main** на exact SHA, ничего не записывает и завершает failure при ошибках. Сигнал `details_verified_manual_import_still_required` **не даёт разрешения автоматически импортировать**: проверка кадастровых конфликтов, сам импорт 1–2 лотов, GEO, journal, MapDataset, S3 и WEB — последующие отдельные операторские действия.
+- **Статус:** staging PR, пока без merged/Home доказательств; 0 новых S5–S7 источников не сертифицировано. Версия 0.3.8 `b5200eaa` ещё должна пройти P11 и публикацию release.
+
 ## R7 / 0.3.8 — совместная проверка новой ветки
 
 - [PR #1007](https://github.com/Maximiliamos/torgi/pull/1007) синхронизирован с **актуальным** `main` после #1008/#1009; `src/bankrotai/services/etp_fivepage_readonly.py` проверяет все кандидаты пяти страниц МЭТС/ЦДТ по хешам ID, включая те, чьи детали не были загружены из-за лимитов.

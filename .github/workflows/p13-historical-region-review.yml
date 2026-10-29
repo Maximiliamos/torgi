@@ -1,0 +1,61 @@
+name: P13 historical region evidence (read only)
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p13-region-evidence-readonly
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Require exact trusted Home image before region review
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '${{ github.event.workflow_run.head_sha || github.sha }}'
+          $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
+            throw 'Region evidence refused: Home image does not match exact event SHA'
+          }
+      - name: Read no more than 50 incomplete regions without changing PostgreSQL
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.historical_region_review --limit 50
+          if ($LASTEXITCODE -ne 0 -or -not $output) {
+            throw 'Bounded region evidence failed'
+          }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($report.read_only -ne $true -or $report.no_mutations -ne $true -or
+              $report.sample_exhaustive -ne $false -or
+              $report.same_as_full_p13_eligibility_population -ne $false -or
+              $report.historical_region_backfill_completed -ne $false -or
+              $report.restore_verified_backup_required_before_write -ne $true -or
+              $report.sample_size -gt 50 -or $report.sample_limit -ne 50) {
+            throw 'Region review overstated its eligibility or backfill evidence'
+          }
+          $file = Join-Path $env:RUNNER_TEMP 'p13-historical-region-review.json'
+          $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $file -Encoding utf8
+          Write-Output ("P13 historical region review: sample={0}, bounded and read-only" -f $report.sample_size)
+      - name: Preserve bounded region evidence without cadastral details
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p13-historical-region-review
+          path: ${{ runner.temp }}/p13-historical-region-review.json
+          if-no-files-found: warn
+          retention-days: 30
