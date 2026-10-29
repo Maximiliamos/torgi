@@ -21,5 +21,6 @@ def test_home_build_allows_slow_apt_and_chromium_without_disabling_fallback_guar
     assert "timeout-minutes: 120" in workflow
     assert "WaitForExit($TimeoutSeconds * 1000)" in workflow
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
-    assert "requirements.lock pyproject.toml certs" in workflow
+    assert "git diff --quiet $baseSha $env:GITHUB_SHA -- requirements.lock certs" in workflow
+    assert "$baseNormalized -cne $currentNormalized" in workflow
     assert "Offline source-overlay fallback refused: Python dependencies" in workflow
