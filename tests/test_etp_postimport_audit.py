@@ -16,7 +16,7 @@ class FakeSession:
 
 
 def test_one_source_acceptance_counts_are_aggregated():
-    s = FakeSession([2, 2, 0, 1, 1, 2, 1, 1, 0])
+    s = FakeSession([2, 2, 0, 1, 1, 2, 1, 0, 1])
     result = inspect_import(s, "m-ets.ru")
     assert result["source_lots"] == 2
     assert result["processed_lots"] == 2
@@ -37,7 +37,7 @@ def test_unknown_source_rejected_before_access():
 
 def test_report_requires_external_map_verification():
     from types import SimpleNamespace
-    result = report(FakeSession([0]*18, SimpleNamespace(version="m1", published_at=None)))
+    result = report(FakeSession([SimpleNamespace(version="m1", published_at=None)] + [0]*18))
     assert result["database_writes"] == 0
     assert result["requires_external_map_tile_verification"] is True
     assert result["current_map_dataset_published"] is False
