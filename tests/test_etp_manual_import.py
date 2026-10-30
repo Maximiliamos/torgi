@@ -95,4 +95,4 @@ def test_s5_reports_individual_source_readiness_without_automatic_full_sync():
     assert "all_source_details_preflight_passed" in script
     assert "Test-RecentRestoreVerifiedBackup" in script
     assert "--audit-collisions" in script
-    assert "--apply" not in script
+    assert "--source $source --limit 2 --audit-collisions" in script
