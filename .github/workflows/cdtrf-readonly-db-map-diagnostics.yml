@@ -1,0 +1,88 @@
+name: CDTRF read-only DB and map source diagnostics
+
+on:
+  push:
+    branches: [diagnostics/cdtrf-source-map-coverage-20261030]
+    paths:
+      - '.github/workflows/cdtrf-readonly-db-map-diagnostics.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 12
+    steps:
+      - name: Query trusted Home PostgreSQL without changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $live = @(docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}')
+          if ($LASTEXITCODE -ne 0 -or $live -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Canonical read-only ingestion worker unavailable'
+          }
+          $code = @'
+          import json
+          from sqlalchemy import func, select
+          from bankrotai.db import SessionLocal, SourceLot, ProcessedLot, LotSyncSourceRun, MapDataset
+          s = SessionLocal()
+          try:
+              source = "cdtrf.ru"
+              base = ProcessedLot.source_system == source
+              active = (base & ProcessedLot.duplicate_of_id.is_(None)
+                        & ProcessedLot.is_archived.is_(False)
+                        & ProcessedLot.auction_status.in_(("active", "scheduled")))
+              geo = ProcessedLot.current_geo_lat.is_not(None) & ProcessedLot.current_geo_lon.is_not(None)
+              last = s.scalar(select(LotSyncSourceRun).where(LotSyncSourceRun.source_system == source)
+                              .order_by(LotSyncSourceRun.id.desc()).limit(1))
+              dataset = s.scalar(select(MapDataset)
+                                 .where(MapDataset.is_current.is_(True), MapDataset.status == "ready")
+                                 .order_by(MapDataset.id.desc()).limit(1))
+              def count(*conditions):
+                  return int(s.scalar(select(func.count(ProcessedLot.id)).where(*conditions)) or 0)
+              result = {
+                  "source": source,
+                  "source_lots": int(s.scalar(select(func.count(SourceLot.id))
+                                             .where(SourceLot.source_system == source)) or 0),
+                  "processed_lots": count(base),
+                  "active_primary": count(active),
+                  "active_primary_with_geo": count(active, geo),
+                  "active_primary_without_geo": count(active, ~geo),
+                  "current_map_dataset": None if dataset is None else {
+                      "version": dataset.version,
+                      "status": dataset.status,
+                      "points_total_all_sources": int(dataset.point_count or 0),
+                  },
+                  "last_sync": None if last is None else {
+                      "status": last.status,
+                      "pages_scanned": last.pages_scanned,
+                      "items_seen": last.items_seen,
+                      "items_inserted": last.items_inserted,
+                      "items_updated": last.items_updated,
+                      "error": (last.error_message or "")[:200],
+                  },
+                  "database_writes": 0,
+              }
+              print(json.dumps(result, ensure_ascii=False, default=str))
+          finally:
+              s.rollback()
+              s.close()
+          '@
+          $output = @($code | docker exec -i bankrotai-home-ingestion-worker python -c "import sys;exec(sys.stdin.read().lstrip(chr(65279)))")
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF database read-only audit failed' }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($report.database_writes -ne 0 -or $report.source -ne 'cdtrf.ru') {
+            throw 'Unexpected audit shape'
+          }
+          $report | ConvertTo-Json -Depth 6
+          $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath 'cdtrf-db-map-readonly.json' -Encoding utf8
+
+      - name: Retain sanitized counts only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cdtrf-db-map-readonly
+          path: cdtrf-db-map-readonly.json
+          if-no-files-found: warn
+          retention-days: 14
