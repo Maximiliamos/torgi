@@ -73,4 +73,18 @@ def test_canonical_lot_visible_for_any_actual_source_of_merged_publication():
         assert options["rts-tender.ru"]["has_database_records"] is True
         assert options["m-ets.ru"]["has_database_records"] is False
         assert options["rts-tender.ru"]["ingestion_stage"] == "pilot"
+        # A merged or locally present pilot is not automatically accepted.
+        assert options["cdtrf.ru"]["ingestion_stage"] == "pilot"
+    with session_factory.begin() as session:
+        session.add(ProcessedLot(
+            source_system="cdtrf.ru", source="cdtrf.ru",
+            external_id="cdtrf:900001", title="Земельный участок",
+            description="Кадастровый объект", category="land",
+            auction_status="active", is_archived=False,
+        ))
+    with session_factory() as session:
+        options = {r["id"]: r for r in map_source_catalogue(session)["items"]}
+        assert options["cdtrf.ru"]["has_database_records"] is True
+        assert options["cdtrf.ru"]["ingestion_stage"] == "connected"
+        assert options["m-ets.ru"]["ingestion_stage"] == "pilot"
     engine.dispose()
