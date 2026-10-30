@@ -84,7 +84,7 @@ class CdtrfSourceCrawler:
         data = parse_cdtrf_api_page(
             response.json(), page_num=page_no, page_size=filters.page_size,
         )
-        total = data["reported_total"]
+        total: int = int(data["reported_total"])
         if self._total is None:
             self._total = total
             if ceil(total / filters.page_size) > filters.max_pages:
@@ -92,7 +92,7 @@ class CdtrfSourceCrawler:
         elif total != self._total:
             raise CdtrfCatalogueScanError("CDTRF total changed during scan")
 
-        expected = min(filters.page_size, max(0, self._total - (page_no - 1) * filters.page_size))
+        expected = min(filters.page_size, max(0, total - (page_no - 1) * filters.page_size))
         if data["observed_rows"] != expected:
             raise CdtrfCatalogueScanError("CDTRF incomplete page / unsupported server PageSize")
         ids = set(data["observed_lot_ids"])
@@ -141,7 +141,7 @@ class CdtrfSourceCrawler:
         if inspected >= 10 and sum(rejected.values()) / inspected > MAX_REJECTED_DETAIL_RATIO:
             raise CdtrfCatalogueScanError("CDTRF detail acceptance collapsed; source may have changed")
 
-        pages_total = ceil(self._total / filters.page_size) or 1
+        pages_total = ceil(total / filters.page_size) or 1
         next_no = page_no + 1
         digest = hashlib.sha256(
             "\n".join(sorted(ids)).encode("ascii")
