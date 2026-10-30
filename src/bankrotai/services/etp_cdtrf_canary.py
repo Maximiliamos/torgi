@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -79,6 +81,24 @@ def preview_cdtrf_public_api(page: int = 1, *, session: requests.Session | None 
             "safe_for_archival": False, "ready_for_production_sync": False}
 
 
+
+def _official_moscow_time(raw: object):
+    """No guessing from missing or malformed times; timezone-aware source date."""
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise CdtrfCanaryError("CDTRF_INVALID_TIME")
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+        try:
+            return datetime.strptime(raw.strip(), fmt).replace(
+                tzinfo=ZoneInfo("Europe/Moscow")
+            )
+        except ValueError:
+            pass
+    raise CdtrfCanaryError("CDTRF_INVALID_TIME")
+
+
+
 def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
                              *, session: requests.Session | None = None) -> NormalizedLot:
     if not ID.fullmatch(trade_id) or not ID.fullmatch(lot_id):
@@ -137,6 +157,12 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
             "complete_source_inventory": False,
         },
         procedure_number=trade_id, platform_name="ЦДТ",
+        application_start_at=_official_moscow_time(detail.get("application_start")),
+        application_deadline=_official_moscow_time(detail.get("application_end")),
+        auction_timezone="Europe/Moscow",
+        auction_type=detail.get("trade_type") or None,
+        efresb_message_number=str(detail["efrsb_message_id"]) if detail.get("efrsb_message_id") else None,
+        public_offer_schedule=detail.get("price_periods") or None,
     )
 
 
