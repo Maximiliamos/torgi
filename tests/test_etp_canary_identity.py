@@ -32,7 +32,7 @@ def test_digest_is_source_scoped_and_independent_of_catalogue_order():
 @pytest.mark.parametrize("identities", [
     [], [sample("243003-1")] * 2,
     [sample("243003-1")] * 3,
-    [sample("")], [sample("malformed\\nidentity")],
+    [sample("")], [sample("line" + chr(10) + "break")],
 ])
 def test_digest_does_not_hash_missing_or_repeated_source_ids(identities):
     with pytest.raises(ValueError):
