@@ -1,4 +1,4 @@
-"""Controlled one-page ETP canary import for the trusted home worker.
+"""Controlled bounded-page ETP canary import for the trusted home worker.
 
 Writes are disabled unless both independent operator/backup gates are set.
 No source-wide archiving, no missing-lot reconciliation and no bulk scheduling.
@@ -15,7 +15,6 @@ from typing import Any
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters, _property_ready
-
 from bankrotai.services.etp_canary_identity import canary_identity_digest
 
 APPROVED = ("m-ets.ru", "cdtrf.ru")
