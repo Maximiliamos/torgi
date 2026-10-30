@@ -1343,7 +1343,7 @@ export function MapView({
           review_status: "maybe",
           lat: item.lat as number,
           lon: item.lon as number,
-        })
+        }))
   ), [qaReport]);
   const qaSelectedItem = qaSelected === null
     ? null
