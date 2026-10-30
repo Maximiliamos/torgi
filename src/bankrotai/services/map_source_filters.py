@@ -84,7 +84,13 @@ def map_source_catalogue(session) -> dict:
             {
                 "id": key,
                 "label": name,
-                "ingestion_stage": "connected" if key in CONNECTED else "pilot",
+                # CDTRF becomes connected only after actual DB records exist.
+                # Deployment or a successful catalogue preview alone is not enough.
+                "ingestion_stage": (
+                    "connected"
+                    if key in CONNECTED or (key == "cdtrf.ru" and key in present)
+                    else "pilot"
+                ),
                 "has_database_records": key in present,
             }
             for key, name in SOURCE_LABELS.items()
