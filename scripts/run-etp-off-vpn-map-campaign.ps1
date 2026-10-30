@@ -27,6 +27,7 @@ trap {
 
 $repository = 'Maximiliamos/torgi'
 $allSourceQaWorkflow = 'etp-manual-qa-all-sources.yml'
+$p1Workflow = 'p1-data-quality.yml'
 $p11Workflow = 'p11-production-acceptance.yml'
 $s5Workflow = 'etp-s5-canary-readiness.yml'
 $campaignWorkflow = 'etp-verified-canary-geo-map.yml'
@@ -154,8 +155,20 @@ $qa = Wait-ForRunCreatedAfter -Workflow $allSourceQaWorkflow -NotBeforeUtc $qaDi
     -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
 Write-Host "All-source parser run: $($qa.url)"
 if ((Watch-RunProgress -RunId ([long]$qa.databaseId) -Label 'Парсинг 21 ЭТП' `
-    -BasePercent 0 -SpanPercent 35) -ne 0) {
+    -BasePercent 0 -SpanPercent 30) -ne 0) {
     throw 'The isolated 21-source parser run failed; no production import was attempted.'
+}
+
+Write-Host 'Running exact-SHA P1 production data-quality gate...'
+$p1DispatchUtc = [datetime]::UtcNow
+& gh.exe workflow run $p1Workflow --repo $repository --ref main
+if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch P1 production data quality' }
+$p1 = Wait-ForRunCreatedAfter -Workflow $p1Workflow -NotBeforeUtc $p1DispatchUtc `
+    -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
+Write-Host "P1 exact-SHA gate: $($p1.url)"
+if ((Watch-RunProgress -RunId ([long]$p1.databaseId) -Label 'P1: качество production-данных' `
+    -BasePercent 30 -SpanPercent 15) -ne 0) {
+    throw 'P1 production data-quality gate failed; no production import was attempted.'
 }
 
 Write-Host 'Waiting for production health to recover without VPN...'
@@ -171,7 +184,7 @@ for ($attempt = 1; $attempt -le $P11Attempts; $attempt++) {
         -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
     Write-Host "P11 attempt $attempt/$P11Attempts`: $($p11.url)"
     $exitCode = Watch-RunProgress -RunId ([long]$p11.databaseId) `
-        -Label "Production health, попытка $attempt" -BasePercent 35 -SpanPercent 20
+        -Label "Production health, попытка $attempt" -BasePercent 45 -SpanPercent 15
     if ($exitCode -eq 0) {
         $successfulP11 = $p11
         break
@@ -191,7 +204,7 @@ $s5 = Wait-ForRunCreatedAfter -Workflow $s5Workflow -NotBeforeUtc $p11Created `
     -Sha $ExpectedSha -DeadlineUtc $deadline
 Write-Host "S5 exact-SHA readiness: $($s5.url)"
 if ((Watch-RunProgress -RunId ([long]$s5.databaseId) -Label 'Проверка кандидатов и конфликтов' `
-    -BasePercent 55 -SpanPercent 15) -ne 0) {
+    -BasePercent 60 -SpanPercent 15) -ne 0) {
     throw 'S5 read-only source/collision readiness failed; no production import was authorized.'
 }
 
@@ -200,7 +213,7 @@ $campaign = Wait-ForRunCreatedAfter -Workflow $campaignWorkflow -NotBeforeUtc $s
     -Sha $ExpectedSha -DeadlineUtc $deadline
 Write-Host "Verified import/GEO/map campaign: $($campaign.url)"
 if ((Watch-RunProgress -RunId ([long]$campaign.databaseId) `
-    -Label 'Импорт, геокодирование и публикация карты' -BasePercent 70 -SpanPercent 30) -ne 0) {
+    -Label 'Импорт, геокодирование и публикация карты' -BasePercent 75 -SpanPercent 25) -ne 0) {
     throw 'Verified campaign failed closed. Inspect the linked matrix job; do not rerun with bypasses.'
 }
 
