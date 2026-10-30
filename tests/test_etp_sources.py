@@ -189,6 +189,93 @@ def test_price_label_keeps_price_before_following_deposit_field() -> None:
     assert lot.start_price == 1_000_000
 
 
+
+@pytest.mark.parametrize("source_id, href", [
+    ("etpu.ru", "https://bankrupt.etpu.ru/public/auctions/lots/view/224/"),
+    ("centerr.ru", "https://bankrupt.centerr.ru/public/auctions/lots/view/224/"),
+    ("utpl.ru", "https://bankrupt.utpl.ru/public/auctions/lots/view/224/"),
+    ("zakazrf.ru", "https://bankrot.zakazrf.ru/public/auctions/lots/view/224/"),
+])
+def test_table_start_price_without_currency_uses_verified_header(source_id: str, href: str) -> None:
+    html = f"""
+    <table><tr><th>№</th><th>Лот</th><th>Начальная цена</th>
+    <th>Задаток</th></tr><tr>
+    <td>1</td><td><a href="{href}">Земельный участок 50:05:0010203:1234</a></td>
+    <td>2 500 000,25</td><td>500 000,00</td></tr></table>
+    """
+    lot = parse_listing_html(profile(source_id), html)[0]
+    assert lot.start_price == 2500000.25
+    assert lot.current_price is None
+
+
+def test_unlabelled_amount_does_not_become_price_without_a_table_header() -> None:
+    html = """
+    <table><tr><td>Лот</td><td>Стоимость</td></tr>
+    <tr><td><a href="/public/auctions/lots/view/224/">Земельный участок</a></td>
+    <td>2 500 000,25</td></tr></table>
+    """
+    lot = parse_listing_html(profile("etpu.ru"), html)[0]
+    assert lot.start_price is None
+    assert lot.current_price is None
+
+
+def test_explicit_current_price_is_not_confused_with_initial_or_deposit() -> None:
+    body = """
+    <html><body><h1>Земельный участок в Московской области</h1>
+    Начальная цена 1 000 000 руб. Текущая цена 800 000 руб.
+    Размер задатка 100 000 руб. Кадастровый номер: 50:05:0010203:1234.
+    Подробное описание объекта продажи с открытым доступом для всех участников.
+    </body></html>
+    """
+    detail = parse_detail_html(
+        profile("m-ets.ru"), body, detail_url="https://m-ets.ru/243003-1"
+    )
+    assert detail.start_price == 1000000
+    assert detail.current_price == 800000
+    assert detail.deposit_amount is None
+    listing = f"<tr><td><a href='https://m-ets.ru/243003-1'>Земельный участок</a></td><td>{body}</td></tr>"
+    entry = parse_listing_html(profile("m-ets.ru"), listing)[0]
+    assert entry.start_price == 1000000
+    assert entry.current_price == 800000
+
+
+def test_start_price_does_not_imply_a_current_price() -> None:
+    body = """
+    <html><body><h1>Земельный участок</h1>
+    Начальная цена 1 000 000 руб. Размер задатка 100 000 руб.
+    Текст открытой карточки земельного участка, описание имущества.
+    </body></html>
+    """
+    lot = parse_detail_html(profile("m-ets.ru"), body, detail_url="https://m-ets.ru/243003-1")
+    assert lot.start_price == 1000000
+    assert lot.current_price is None
+
+
+def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() -> None:
+    from bankrotai.connectors.etp_sources import parse_sberbank_json
+    base = {
+        "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
+        "title": "Земельный участок, кадастровый номер 47:16:0420001:37",
+        "purchAmountRUB": "722100",
+        "purchAmount": "900000",
+    }
+    lots = parse_sberbank_json(profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": base}]}, page=1)
+    assert len(lots) == 1
+    assert lots[0].start_price == 722100
+    assert lots[0].current_price is None
+    assert lots[0].auction_at is None
+
+    unknown_currency = dict(base, purchAmountRUB=None)
+    assert parse_sberbank_json(
+        profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": unknown_currency}]}, page=1
+    )[0].start_price is None
+
+    rubles = dict(unknown_currency, purchCurrency="RUB")
+    assert parse_sberbank_json(
+        profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": rubles}]}, page=1
+    )[0].start_price == 900000
+
+
 def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
     html = """
     <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
@@ -297,6 +384,7 @@ def test_sberbank_api_pagination_and_mapping() -> None:
                 "title": "Автомобиль LADA VESTA, VIN XTAGFK110NY607362",
                 "purchName": "Торги по реализации автомобиля",
                 "purchAmount": "890000",
+                "purchCurrency": "RUB",
                 "PurchaseStageTerm": "Прием заявок",
                 "purchCode": "SBR013-2610260004-0",
                 "RegionNameTerm": "Г. Санкт-Петербург",
