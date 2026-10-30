@@ -39,6 +39,30 @@ def test_profile_parser_extracts_stable_identity_and_fields(source_id: str, href
     assert lots[0].raw_data["reconcile_missing"] is False
 
 
+
+@pytest.mark.parametrize("href", [
+    "http://bankrupt.etpu.ru/public/auctions/lots/view/224/",
+    "https://user:secret@bankrupt.etpu.ru/public/auctions/lots/view/224/",
+    "https://bankrupt.etpu.ru:8443/public/auctions/lots/view/224/",
+    "https://evil.example/public/auctions/lots/view/224/",
+])
+def test_listing_links_must_use_trusted_https_endpoint(href: str) -> None:
+    html = f"<a href='{href}'>Земельный участок</a>"
+    assert parse_listing_html(profile("etpu.ru"), html) == []
+
+
+def test_sberbank_json_rejects_untrusted_lot_link() -> None:
+    from bankrotai.connectors.etp_sources import parse_sberbank_json
+    raw = {
+        "objectHref": "http://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
+        "title": "Земельный участок",
+    }
+    with pytest.raises(SourceAccessError, match="unsafe provider URL"):
+        parse_sberbank_json(
+            profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": raw}]}, page=1
+        )
+
+
 def test_duplicate_links_do_not_duplicate_lots() -> None:
     href = "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115011"
     html = f"<div><a href='{href}'>Лот 1</a><a href='{href}'>Земельный участок площадью 792 кв. м.</a></div>"
