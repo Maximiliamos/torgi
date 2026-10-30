@@ -1330,8 +1330,8 @@ export function MapView({
   const qaReport = qaReports[qaSource];
   const qaPoints = React.useMemo<MapMarkerLot[]>(() => (
     (qaReport?.items ?? [])
-      .map((item, index): MapMarkerLot | null => (
-        item.lat !== null && item.lon !== null ? {
+      .filter((item) => item.lat !== null && item.lon !== null)
+      .map((item, index): MapMarkerLot => ({
           id: index + 1,
           title: item.title,
           address: item.cadastral_number,
@@ -1342,10 +1342,8 @@ export function MapView({
           is_archived: false,
           review_status: "maybe",
           lat: item.lat,
-          lon: item.lon,
-        } : null
-      ))
-      .filter((item): item is MapMarkerLot => item !== null)
+          lon: item.lon as number,
+        })
   ), [qaReport]);
   const qaSelectedItem = qaSelected === null
     ? null
@@ -1888,8 +1886,8 @@ export function MapView({
                     <strong>{item.title}</strong>
                     <small>{item.external_id} · {item.detail_level} · {item.geo_status}</small>
                     <small>Начальная: {item.start_price ?? "неизвестна"} · текущая: {item.current_price ?? "неизвестна"}</small>
-                    <a href={item.url} target="_blank" rel="noopener noreferrer"
-                      onClick={(event) => event.stopPropagation()}>Карточка ЭТП</a>
+                    <span><a href={item.url} target="_blank" rel="noopener noreferrer"
+                      onClick={(event) => event.stopPropagation()}>Карточка ЭТП</a></span>
                   </button>;
                 })}
                 {qaReport.items.length === 0 && <small>Подтверждённых кандидатов нет; проверьте доступность и парсер источника.</small>}
