@@ -46,8 +46,12 @@ jobs:
           $ok = $false
           foreach ($pageSize in @(100,50,20)) {
             Write-Output ("CDTRF full read-only attempt; page_size={0}" -f $pageSize)
+            $ErrorActionPreference = 'Continue'
             $output = @(Get-Content -LiteralPath $src -Raw | docker exec -i bankrotai-home-ingestion-worker python -c "import sys; code=sys.stdin.read(); exec(compile(code,'cdtrf_full_readonly','exec'), {'__name__':'__main__'})" --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
-            if ($LASTEXITCODE -ne 0) {
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($exitCode -ne 0) {
+              Write-Output ("CDTRF full scan failed with code {0}; log tail: {1}" -f $exitCode, ((@($output) | Select-Object -Last 5) -join ' '))
               Write-Warning ("CDTRF PageSize={0} failed; fall back to next official size" -f $pageSize)
               continue
             }
