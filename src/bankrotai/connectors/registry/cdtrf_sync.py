@@ -19,6 +19,7 @@ import requests
 
 from bankrotai.connectors.base import ConnectorPage
 from bankrotai.connectors.registry.captured_etp_api import parse_cdtrf_api_page
+from bankrotai.connectors.registry.cdtrf_public import CdtrfEvidenceError
 from bankrotai.connectors.registry.etp_incremental import _property_ready, _cdtrf_rejection_code
 from bankrotai.services.etp_cdtrf_canary import (
     CdtrfCanaryError, fetch_verified_cdtrf_lot, API, MAX_RESPONSE, REQUEST_TIMEOUT,
@@ -109,17 +110,32 @@ class CdtrfSourceCrawler:
                 lot = fetch_verified_cdtrf_lot(
                     str(hit["trade_id"]), str(hit["trade_lot_id"]), session=self.session
                 )
-            except CdtrfCanaryError as exc:
-                # A wrong category, lease right, missing cadastral number or
-                # past stage must not be advertised as current property.
-                # HTTP/structural source errors, however, invalidate this run.
+            except (CdtrfCanaryError, CdtrfEvidenceError) as exc:
+                # Different records may legitimately lack property details,
+                # contain a non-property asset, or have a trade-level HTML
+                # page showing a different lot ID. None is evidence that the
+                # requested lot is verified; reject just that candidate.
+                # The page-wide rejection threshold below fails closed if
+                # the provider's detail structure has changed systemically.
                 code = _cdtrf_rejection_code(exc)
-                if code in {"http_or_network_error", "ssr_schema_changed", "lot_identity_mismatch", "price_mismatch"}:
-                    raise CdtrfCatalogueScanError("CDTRF detail source/identity changed") from exc
+                if code == "http_or_network_error":
+                    # A provider block, 429 or other explicit HTTP refusal
+                    # is not a normal missing lot; stop without archival.
+                    raise CdtrfCatalogueScanError(
+                        "CDTRF detail HTTP failure; no source reconciliation"
+                    ) from exc
                 rejected[code] = rejected.get(code, 0) + 1
                 continue
-            except (requests.RequestException, ValueError) as exc:
-                raise CdtrfCatalogueScanError("CDTRF detail request or data failed") from exc
+            except requests.RequestException as exc:
+                raise CdtrfCatalogueScanError(
+                    "CDTRF detail network failure; no source reconciliation"
+                ) from exc
+            except ValueError as exc:
+                # Never hide an unexpected programming/data error under a
+                # generic 'unverified candidate' counter.
+                raise CdtrfCatalogueScanError(
+                    "CDTRF unexpected detail validation failure"
+                ) from exc
             if not (_property_ready(lot) or (
                 lot.auction_status == "closed"
                 and lot.cadastral_number
@@ -139,7 +155,10 @@ class CdtrfSourceCrawler:
             accepted.append(lot)
         inspected = len(data["property_candidates"])
         if inspected >= 10 and sum(rejected.values()) / inspected > MAX_REJECTED_DETAIL_RATIO:
-            raise CdtrfCatalogueScanError("CDTRF detail acceptance collapsed; source may have changed")
+            raise CdtrfCatalogueScanError(
+                "CDTRF detail acceptance collapsed; source may have changed; "
+                + ",".join(f"{key}={value}" for key, value in sorted(rejected.items()))
+            )
 
         pages_total = ceil(total / filters.page_size) or 1
         next_no = page_no + 1
