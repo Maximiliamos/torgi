@@ -126,7 +126,8 @@ def run_import(
               "write_authorized": apply, "missing_lot_archival": False,
               "complete_source_inventory": False,
               "reviewed_identity_digest": (
-                  canary_identity_digest(source, lots) if lots else None
+                  canary_identity_digest(source, lots)
+                  if 1 <= len(lots) <= 2 else None
               )}
     if not apply:
         if audit_collisions:
