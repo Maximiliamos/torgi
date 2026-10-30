@@ -81,3 +81,32 @@ def test_minimum_age_is_not_allowed_to_shrink_below_seven_days():
     inventory, manifests = _fixture()
     with pytest.raises(ValueError):
         P.plan_orphans(inventory, manifests, now=NOW, minimum_age_days=1)
+
+
+@pytest.mark.parametrize("bad", [
+    "unknown_truncation", "empty_next_token", "bad_size", "bad_modified",
+])
+def test_planner_requires_complete_and_valid_immutable_inventory(bad):
+    inventory, manifests = _fixture()
+    if bad == "unknown_truncation":
+        del inventory["IsTruncated"]
+    elif bad == "empty_next_token":
+        inventory["NextContinuationToken"] = "next-hidden-page"
+    elif bad == "bad_size":
+        for item in inventory["Contents"]:
+            if item["Key"] == "bundles/v1/aa/live.json":
+                item["Size"] = "100"
+    elif bad == "bad_modified":
+        for item in inventory["Contents"]:
+            if item["Key"] == "indexes/v1/bb/live.json":
+                item["LastModified"] = "2026-09-01T12:00:00"
+    with pytest.raises(ValueError):
+        P.plan_orphans(inventory, manifests, now=NOW)
+
+
+def test_planner_requires_aware_now_and_integer_age():
+    inventory, manifests = _fixture()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        P.plan_orphans(inventory, manifests, now=datetime(2026, 10, 30))
+    with pytest.raises(ValueError, match="integer"):
+        P.plan_orphans(inventory, manifests, now=NOW, minimum_age_days=True)
