@@ -16,11 +16,11 @@ $runStamp = [datetime]::Now.ToString('yyyyMMdd-HHmmss')
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
 $logPath = Join-Path $LogDirectory "etp-off-vpn-map-$runStamp.log"
 Start-Transcript -LiteralPath $logPath -Force | Out-Null
-Write-Host "Локальный журнал: $logPath"
+Write-Host "Local log: $logPath"
 trap {
     Write-Host ''
-    Write-Host ("ОШИБКА: {0}" -f $_.Exception.Message) -ForegroundColor Red
-    Write-Host "Полный локальный журнал сохранён: $logPath" -ForegroundColor Yellow
+    Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    Write-Host "Full local log: $logPath" -ForegroundColor Yellow
     try { Stop-Transcript | Out-Null } catch { }
     throw
 }
@@ -91,19 +91,19 @@ function Watch-RunProgress {
         $active = @($steps | Where-Object { $_.status -eq 'in_progress' } |
             Select-Object -First 1 -ExpandProperty name)
         $detail = if ($active.Count -eq 1) { [string]$active[0] } elseif ($run.status -eq 'queued') {
-            'ожидание свободного runner'
-        } else { 'проверка состояния' }
+            'waiting for an available runner'
+        } else { 'checking workflow state' }
         $elapsed = [math]::Floor(([datetime]::UtcNow - $started).TotalSeconds)
         if ($percent -ne $lastShownPercent -or
             ([datetime]::UtcNow - $lastHeartbeat).TotalSeconds -ge 30 -or
             $run.status -eq 'completed') {
-            Write-Host ("[{0,3}%] {1}: {2}; прошло {3} сек." -f $percent,$Label,$detail,$elapsed)
+            Write-Host ("[{0,3}%] {1}: {2}; elapsed {3} sec." -f $percent,$Label,$detail,$elapsed)
             $lastShownPercent = $percent
             $lastHeartbeat = [datetime]::UtcNow
         }
         if ($run.status -eq 'completed') {
             if ($run.conclusion -eq 'success') { return 0 }
-            Write-Warning "$Label завершён со статусом $($run.conclusion): $($run.url)"
+            Write-Warning "$Label finished with status $($run.conclusion): $($run.url)"
             return 1
         }
         Start-Sleep -Seconds 10
@@ -154,7 +154,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch all-source ETP QA' }
 $qa = Wait-ForRunCreatedAfter -Workflow $allSourceQaWorkflow -NotBeforeUtc $qaDispatchUtc `
     -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
 Write-Host "All-source parser run: $($qa.url)"
-if ((Watch-RunProgress -RunId ([long]$qa.databaseId) -Label 'Парсинг 21 ЭТП' `
+if ((Watch-RunProgress -RunId ([long]$qa.databaseId) -Label 'Parsing 21 ETP sources' `
     -BasePercent 0 -SpanPercent 30) -ne 0) {
     throw 'The isolated 21-source parser run failed; no production import was attempted.'
 }
@@ -166,7 +166,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch P1 production data quality'
 $p1 = Wait-ForRunCreatedAfter -Workflow $p1Workflow -NotBeforeUtc $p1DispatchUtc `
     -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
 Write-Host "P1 exact-SHA gate: $($p1.url)"
-if ((Watch-RunProgress -RunId ([long]$p1.databaseId) -Label 'P1: качество production-данных' `
+if ((Watch-RunProgress -RunId ([long]$p1.databaseId) -Label 'P1 production data quality' `
     -BasePercent 30 -SpanPercent 15) -ne 0) {
     throw 'P1 production data-quality gate failed; no production import was attempted.'
 }
@@ -184,7 +184,7 @@ for ($attempt = 1; $attempt -le $P11Attempts; $attempt++) {
         -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
     Write-Host "P11 attempt $attempt/$P11Attempts`: $($p11.url)"
     $exitCode = Watch-RunProgress -RunId ([long]$p11.databaseId) `
-        -Label "Production health, попытка $attempt" -BasePercent 45 -SpanPercent 15
+        -Label "Production health attempt $attempt" -BasePercent 45 -SpanPercent 15
     if ($exitCode -eq 0) {
         $successfulP11 = $p11
         break
@@ -203,7 +203,7 @@ $p11Created = ([datetime]$successfulP11.createdAt).ToUniversalTime()
 $s5 = Wait-ForRunCreatedAfter -Workflow $s5Workflow -NotBeforeUtc $p11Created `
     -Sha $ExpectedSha -DeadlineUtc $deadline
 Write-Host "S5 exact-SHA readiness: $($s5.url)"
-if ((Watch-RunProgress -RunId ([long]$s5.databaseId) -Label 'Проверка кандидатов и конфликтов' `
+if ((Watch-RunProgress -RunId ([long]$s5.databaseId) -Label 'Candidate and collision checks' `
     -BasePercent 60 -SpanPercent 15) -ne 0) {
     throw 'S5 read-only source/collision readiness failed; no production import was authorized.'
 }
@@ -213,7 +213,7 @@ $campaign = Wait-ForRunCreatedAfter -Workflow $campaignWorkflow -NotBeforeUtc $s
     -Sha $ExpectedSha -DeadlineUtc $deadline
 Write-Host "Verified import/GEO/map campaign: $($campaign.url)"
 if ((Watch-RunProgress -RunId ([long]$campaign.databaseId) `
-    -Label 'Импорт, геокодирование и публикация карты' -BasePercent 75 -SpanPercent 25) -ne 0) {
+    -Label 'Import, geocoding and map publication' -BasePercent 75 -SpanPercent 25) -ne 0) {
     throw 'Verified campaign failed closed. Inspect the linked matrix job; do not rerun with bypasses.'
 }
 
@@ -223,5 +223,5 @@ Write-Host 'Open the map: https://sterdez.online/map'
 Write-Host 'Public source checks:'
 Write-Host '  https://api.sterdez.online/api/map/lots?sources=m-ets.ru&limit=10'
 Write-Host '  https://api.sterdez.online/api/map/lots?sources=cdtrf.ru&limit=10'
-Write-Host "Полный локальный журнал: $logPath"
+Write-Host "Full local log: $logPath"
 Stop-Transcript | Out-Null
