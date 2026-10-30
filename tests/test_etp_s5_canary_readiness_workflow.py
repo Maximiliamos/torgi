@@ -11,7 +11,12 @@ SCRIPT = (ROOT / "scripts/etp-canary-readiness.ps1").read_text(
 
 
 def test_preflight_only_after_exact_accepted_main():
-    assert 'workflows: ["P11 production acceptance"]' in WORKFLOW
+    # P11, public WEB and functional smoke may finish in either order.
+    # Every trigger keeps the *same* exact-SHA production gates.
+    assert '- "P11 production acceptance"' in WORKFLOW
+    assert '- "Public WEB smoke"' in WORKFLOW
+    assert '- "Production functional reliability"' in WORKFLOW
+    assert "github.event.workflow_run.head_sha != ''" in WORKFLOW
     assert "github.event.workflow_run.conclusion == 'success'" in WORKFLOW
     assert "github.event.workflow_run.head_branch == 'main'" in WORKFLOW
     assert "ref: ${{ github.event.workflow_run.head_sha }}" in WORKFLOW
