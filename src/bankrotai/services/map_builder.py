@@ -216,7 +216,7 @@ def cleanup_map_datasets(
                         select(MapDataset).where(
                             MapDataset.id == dataset_id,
                             MapDataset.is_current.is_(False),
-                        ).with_for_update()
+                        ).with_for_update().execution_options(populate_existing=True)
                     )
                     rollback_protected_ids = set(session.scalars(
                         select(MapDataset.id)
