@@ -825,8 +825,17 @@ def test_source_full_specs_reject_unknown_source() -> None:
 def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:
     service = NationwideIngestionService(sessions)
 
+    # Test the concurrency property, not the wall-clock speed of SQLite
+    # plus an overloaded shared CI runner. Sequential execution cannot
+    # satisfy this barrier and deterministically fails the 5s timeout.
+    entered: set[str] = set()
+    all_entered = asyncio.Event()
+
     async def delayed(_run_id, spec):
-        await asyncio.sleep(0.12)
+        entered.add(spec.source_id)
+        if len(entered) == 2:
+            all_entered.set()
+        await asyncio.wait_for(all_entered.wait(), timeout=5.0)
         return SourceSyncResult(source_system=spec.source_id, status="success")
 
     monkeypatch.setattr(service, "_sync_source", delayed)
@@ -835,10 +844,8 @@ def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:
         SourceSyncSpec("source-b", {}, reconcile_missing=False, max_batches=1),
     )
     run_id = service.create_run(triggered_by="admin", trigger_type="manual_fast", total_sources=2)
-    started = time.perf_counter()
     result = asyncio.run(service.run(run_id, specs))
-
-    assert time.perf_counter() - started < 0.2
+    assert entered == {"source-a", "source-b"}
     assert result["status"] == "success"
 
 
