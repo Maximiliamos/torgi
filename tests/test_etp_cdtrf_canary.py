@@ -166,3 +166,53 @@ def test_lotinfo_is_extracted_as_property_text():
         "description": None,
     })
     assert text == "Земельный участок, кадастровый номер 32:10:0010101:42"
+
+
+
+@pytest.mark.parametrize("raw_status,expected", [
+    ("Declare", "scheduled"), ("RecieveReq", "active"),
+    ("DefinePart", "scheduled"), ("TradeGo", "active"),
+    ("SummingUp", "closed"),
+])
+def test_cdtrf_all_five_stages_are_normalized(monkeypatch, raw_status, expected):
+    import bankrotai.services.etp_cdtrf_canary as module
+
+    monkeypatch.setattr(module, "_http_get", lambda *a, **k: SimpleNamespace(
+        headers={"Content-Type": "text/html"}, text="<html></html>"
+    ))
+    monkeypatch.setattr(module, "parse_detail", lambda *a, **k: {
+        "trade_id": "390364", "trade_lot_id": "390899",
+        "title": "Земельный участок 32:10:0010101:42",
+        "property_description": "Земельный участок, кадастр 32:10:0010101:42",
+        "category_label": "Земельный участок",
+        "cadastral_number": "32:10:0010101:42",
+        "initial_price_rub": "675000.00",
+        "source_status_code": raw_status,
+    })
+    result = module.fetch_verified_cdtrf_lot(
+        "390364", "390899", session=object()
+    )
+    assert result.auction_status == expected
+
+
+def test_cdtrf_operator_source_is_disabled_without_three_gates(monkeypatch):
+    from bankrotai.services.ingestion import source_full_specs, default_source_specs
+
+    for name in (
+        "CDTRF_OPERATOR_SYNC_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert "cdtrf.ru" not in [x.source_id for x in default_source_specs()]
+    with pytest.raises(PermissionError):
+        source_full_specs("cdtrf.ru")
+    for name in (
+        "CDTRF_OPERATOR_SYNC_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
+    ):
+        monkeypatch.setenv(name, "1")
+    (spec,) = source_full_specs("cdtrf.ru")
+    assert spec.source_id == "cdtrf.ru"
+    assert spec.reconcile_missing is False
+    assert spec.filters.page_size == 100
+    assert spec.max_batches == 10000
