@@ -69,9 +69,9 @@ def _clean(value: str) -> str:
 
 def _money(value: str) -> float | None:
     label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|цена\s+лот\w*)"
-    after = re.search(label + r"(?P<between>[^\\d]{0,40})" + _MONEY_RE.pattern, value, re.IGNORECASE)
+    after = re.search(label + r"(?P<between>[^\d]{0,40})" + _MONEY_RE.pattern, value, re.IGNORECASE)
     # Never take another labelled field's value as the initial price.
-    if after and re.search(r"текущ\\w*\\s+цен\\w*|задатк\\w*", after.group("between"), re.I):
+    if after and re.search(r"текущ\w*\s+цен\w*|задатк\w*", after.group("between"), re.I):
         after = None
     raw: str | None = None
     if after:
