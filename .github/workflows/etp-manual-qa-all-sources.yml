@@ -49,7 +49,10 @@ jobs:
           # Capture them in the diagnostic log and decide by the native exit
           # code plus the fail-closed final JSON contract below.
           $ErrorActionPreference = 'Continue'
-          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_qa_batch --pages 2 --per-page 3 --geo-limit 1 2>&1)
+          # Tee progress to the Actions log so an operator sees source N/21 and
+          # percent while slow provider timeouts are still being processed.
+          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_qa_batch --pages 2 --per-page 3 --geo-limit 1 2>&1 |
+            Tee-Object -Variable liveOutput)
           $status = $LASTEXITCODE
           $ErrorActionPreference = 'Stop'
           $output | Set-Content -LiteralPath $log -Encoding utf8

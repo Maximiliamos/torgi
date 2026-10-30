@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,7 @@ def test_geo_result_requires_exact_cadastral_identity_and_valid_coordinates():
     assert not etp_qa_map._valid_geo_result(point, point.cadastral_number)
 
 
-def test_all_source_batch_cannot_claim_production_import(monkeypatch):
+def test_all_source_batch_cannot_claim_production_import(monkeypatch, capsys):
     from bankrotai.services import etp_qa_batch
 
     async def stub(source, **kwargs):
@@ -109,3 +110,9 @@ def test_all_source_batch_cannot_claim_production_import(monkeypatch):
     assert report["production_map_writes"] == 0
     assert report["archival_enabled"] is False
     assert report["complete_source_inventory"] is False
+    progress = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(progress) == 21
+    assert progress[0]["completed_sources"] == 1
+    assert progress[0]["total_sources"] == 21
+    assert progress[-1]["completed_sources"] == 21
+    assert progress[-1]["percent"] == 100.0
