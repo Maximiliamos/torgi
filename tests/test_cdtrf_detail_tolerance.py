@@ -112,3 +112,38 @@ def test_network_failure_remains_fail_closed(monkeypatch):
                 CdtrfSyncFilters(page_size=20), None
             )
         )
+
+
+
+def test_transient_detail_timeout_is_retried_then_verified(monkeypatch):
+    import bankrotai.connectors.registry.cdtrf_sync as module
+    calls = []
+
+    def flaky(trade, lot, *, session):
+        calls.append(lot)
+        if len(calls) < 3:
+            raise requests.exceptions.Timeout("temporary upstream timeout")
+        return _lot(trade, lot)
+
+    monkeypatch.setattr(module, "fetch_verified_cdtrf_lot", flaky)
+    delays = []
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+    lot = module._verified_detail_with_retry("400001", "500001", _Session())
+    assert lot.external_id == "cdtrf:500001"
+    assert len(calls) == 3
+    assert delays == [1, 2]
+
+
+def test_provider_403_is_not_retried(monkeypatch):
+    import bankrotai.connectors.registry.cdtrf_sync as module
+    from bankrotai.services.etp_cdtrf_canary import CdtrfCanaryError
+
+    calls = []
+    def denied(*args, **kwargs):
+        calls.append(1)
+        raise CdtrfCanaryError("CDTRF HTTP 403")
+
+    monkeypatch.setattr(module, "fetch_verified_cdtrf_lot", denied)
+    with pytest.raises(CdtrfCanaryError, match="403"):
+        module._verified_detail_with_retry("400001", "500001", _Session())
+    assert len(calls) == 1
