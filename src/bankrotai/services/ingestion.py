@@ -440,19 +440,13 @@ class NationwideIngestionService:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
         wall_started = time.perf_counter()
-        active_baseline = self._active_source_count(
-            spec.source_id,
-            region_code=spec.archive_region_code,
-        )
+        active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
         self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
         cursor: str | None = None
         try:
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
-                raise ConnectorCapabilityError(
-                    f"{spec.source_id}: connector has not proven a complete source inventory; "
-                    "missing-lot reconciliation is forbidden"
-                )
+                raise ConnectorCapabilityError(f"{spec.source_id}: missing-lot reconciliation is forbidden")
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
             reached_source_end = False
             for _page_number in range(1, page_limit + 1):
