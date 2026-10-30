@@ -54,11 +54,13 @@ async def collect_lots(source: str, limit: int):
         )
         return verified_canary_items(page, source=source, limit=limit)
 
-    # CDTRF page 1 can contain only non-sale/unsupported-rights candidates
-    # even when pages 2–5 contain verified property sales. Never promote
-    # rejected cards or increase the per-page detail cap to fill a batch.
+    # CDTRF's first two catalogue entries can be unsupported property rights.
+    # Inspect at most five public details per page; promote no more than
+    # "limit" verified sale identities across at most five pages (25 reads).
+    # The persisted batch cap and atomic collision guards stay unchanged.
+    detail_probe_cap = 5
     filters = EtpIncrementalFilters(
-        source, max_detail_requests=limit, max_pages=5,
+        source, max_detail_requests=detail_probe_cap, max_pages=5,
     )
     selected: list = []
     cursor: str | None = None
@@ -66,7 +68,7 @@ async def collect_lots(source: str, limit: int):
     seen_ids: set[str] = set()
     for page_number in range(1, 6):
         page = await connector.search(filters, cursor)
-        items = verified_canary_items(page, source=source, limit=limit)
+        items = verified_canary_items(page, source=source, limit=detail_probe_cap)
         metadata = page.metadata
         fingerprints = metadata.get("catalogue_identity_fingerprints")
         observed = metadata.get("catalogue_lots")

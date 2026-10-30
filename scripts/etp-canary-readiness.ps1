@@ -56,6 +56,9 @@ $report = [ordered]@{
     source_details = @()
     manual_source_import_is_separate_action = $true
     ready_for_automatic_sync = $false
+    ready_for_source_scoped_canary = $false
+    eligible_source_ids = @()
+    blocked_source_ids = @()
 }
 $failures = @()
 try {
@@ -117,12 +120,34 @@ try {
         }
     }
 } finally {
+    # Each source remains independently eligible. A blocked CDTRF detail
+    # must not suppress a verified M-ETS canary (or vice versa).
+    $eligible = @($report.source_details | Where-Object {
+        $_.status -eq 'details_and_collisions_prechecked_manual_import_still_required' -and
+        $_.verified_detail_count -ge 1 -and $_.verified_detail_count -le 2 -and
+        $_.existing_cadastral_collision_checked -eq $true
+    } | ForEach-Object { [string]$_.source })
+    $blocked = @($report.source_details | Where-Object {
+        $_.status -ne 'details_and_collisions_prechecked_manual_import_still_required'
+    } | ForEach-Object { [string]$_.source })
+    $report['eligible_source_ids'] = $eligible
+    $report['blocked_source_ids'] = $blocked
+    $report['ready_for_source_scoped_canary'] = (
+        $report.restore_verified_backup_available -eq $true -and
+        $eligible.Count -ge 1 -and $report.source_details.Count -eq 2
+    )
     $report['blocking_reasons'] = @($failures)
-    $report['all_source_details_preflight_passed'] = ($report.source_details.Count -eq 2 -and $failures.Count -eq 0)
+    $report['all_source_details_preflight_passed'] = (
+        $report.source_details.Count -eq 2 -and
+        $blocked.Count -eq 0 -and $failures.Count -eq 0
+    )
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutputFile -Encoding utf8
 }
 
-if ($failures.Count -gt 0) {
-    throw ('ETP canary preflight not accepted: ' + ($failures -join ', '))
+if ($report.ready_for_source_scoped_canary -ne $true) {
+    throw ('ETP S5 has no individually verified source: ' + ($failures -join ', '))
 }
-Write-Output 'Read-only ETP detail preflight passed; manual backup-gated import remains required'
+if ($blocked.Count -gt 0) {
+    Write-Warning ('ETP S5 source-scoped only; blocked sources remain disallowed: ' + ($blocked -join ', '))
+}
+Write-Output ('ETP S5 read-only verified source(s): ' + ($eligible -join ', ') + '; source-wide sync remains disabled')

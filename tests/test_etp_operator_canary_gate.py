@@ -250,7 +250,7 @@ def test_run_import_rejects_excessive_lots_even_if_collector_is_bypassed(monkeyp
         run_import("m-ets.ru", limit=2, apply=True)
 
 
-def test_cdtrf_canary_skips_rejected_first_page_without_expanding_detail_cap(monkeypatch):
+def test_cdtrf_canary_skips_rejected_first_page_with_bounded_detail_probe(monkeypatch):
     """The 5-page CDTRF evidence may contain valid sales after page one."""
     import hashlib
     from bankrotai.services import etp_manual_import as mod
@@ -287,7 +287,8 @@ def test_cdtrf_canary_skips_rejected_first_page_without_expanding_detail_cap(mon
     monkeypatch.setattr(mod.connector_registry, "create", lambda source: Connector())
     got = asyncio.run(collect_lots("cdtrf.ru", 2))
     assert [x.external_id for x in got] == ["cdtrf:390901", "cdtrf:390902"]
-    assert calls == [(1, 2, 5), (2, 2, 5)]
+    # Read at most five detail candidates on each bounded page but persist <=2.
+    assert calls == [(1, 5, 5), (2, 5, 5)]
 
 
 def test_cdtrf_canary_does_not_scan_more_than_five_bounded_pages(monkeypatch):
