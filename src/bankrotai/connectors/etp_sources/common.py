@@ -68,7 +68,7 @@ def _clean(value: str) -> str:
 
 
 def _money(value: str) -> float | None:
-    label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|текущ\w*\s+цен\w*|цена\s+лот\w*)"
+    label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|цена\s+лот\w*)"
     after = re.search(label + r"[^\d]{0,40}" + _MONEY_RE.pattern, value, re.IGNORECASE)
     raw: str | None = None
     if after:
@@ -91,6 +91,57 @@ def _money(value: str) -> float | None:
     except ValueError:
         return None
 
+
+
+def _current_money(value: str) -> float | None:
+    """A current price requires its own explicit label."""
+    match = re.search(
+        r"текущ\w*\s+цен\w*[^\d]{0,40}" + _MONEY_RE.pattern,
+        value, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        amount = float(match.group(1).replace(" ", "").replace("\xa0", "").replace(",", "."))
+        return amount if 0 < amount < 1e15 else None
+    except ValueError:
+        return None
+
+
+def _table_prices(row: Tag) -> tuple[float | None, float | None]:
+    """Table amounts are reliable only when tied to a named price column."""
+    if row.name != "tr":
+        return None, None
+    table = row.find_parent("table")
+    if table is None:
+        return None, None
+    cells = row.find_all("td", recursive=False)
+    if not cells:
+        return None, None
+    headings: list[str] = []
+    for heading_row in table.select("tr"):
+        headers = heading_row.find_all("th", recursive=False)
+        if headers:
+            headings = [_clean(h.get_text(" ", strip=True)).lower() for h in headers]
+            break
+    if len(headings) != len(cells):
+        return None, None
+
+    def parse_number(raw: str) -> float | None:
+        cleaned = _clean(raw).replace(" ", "").replace("\xa0", "")
+        cleaned = re.sub(r"(?:₽|руб(?:\.|лей)?)$", "", cleaned, flags=re.I)
+        if not re.fullmatch(r"\d{1,14}(?:[.,]\d{1,2})?", cleaned):
+            return None
+        amount = float(cleaned.replace(",", "."))
+        return amount if 0 < amount < 1e15 else None
+
+    initial = current = None
+    for title, cell in zip(headings, cells):
+        if re.search(r"начальн\w*\s+цен\w*|цена\s+лот\w*", title):
+            initial = parse_number(cell.get_text(" ", strip=True))
+        elif re.search(r"текущ\w*\s+цен\w*", title):
+            current = parse_number(cell.get_text(" ", strip=True))
+    return initial, current
 
 def _category(value: str) -> str:
     lowered = value.lower()
@@ -226,7 +277,7 @@ def _parse_multi_lot_catalogue(
             vin=None,
             area=None,
             start_price=price,
-            current_price=price,
+            current_price=None,
             auction_status=_status(str(item.get("source_status_text") or "")),
             lot_url=detail_url,
             source_url=detail_url,
@@ -311,7 +362,13 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         vin = _VIN_RE.search(context)
         area_match = _AREA_RE.search(context)
         area = float(area_match.group(1).replace(",", ".")) if area_match else None
+        table_initial, table_current = _table_prices(container)
         price = _money(context)
+        if price is None:
+            price = table_initial
+        current_price = _current_money(context)
+        if current_price is None:
+            current_price = table_current
         lots.append(NormalizedLot(
             external_id=external_id,
             source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -326,7 +383,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             vin=vin.group(0).upper() if vin else None,
             area=area,
             start_price=price,
-            current_price=price,
+            current_price=current_price,
             auction_status=_status(context),
             lot_url=href,
             source_url=href,
@@ -382,6 +439,7 @@ def parse_detail_html(
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
     price = _money(text_value)
+    current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -396,7 +454,7 @@ def parse_detail_html(
         vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
-        current_price=price,
+        current_price=current_price,
         auction_status=_status(text_value),
         lot_url=detail_url,
         source_url=detail_url,
@@ -440,11 +498,18 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
         if not title:
             continue
         price: float | None = None
-        amount = raw.get("purchAmount")
+        # The API provides an explicitly RUB-denominated price. A generic
+        # amount is accepted only with an explicit ruble currency marker.
+        amount = raw.get("purchAmountRUB")
+        currency = str(raw.get("purchCurrency") or raw.get("CurrencyCode") or "").strip().upper()
+        if amount is None and currency in {"RUB", "643"}:
+            amount = raw.get("purchAmount")
         try:
-            if isinstance(amount, (str, int, float)) and amount != "":
-                price = float(amount)
-        except (TypeError, ValueError):
+            if isinstance(amount, (str, int, float)) and not isinstance(amount, bool) and amount != "":
+                candidate = float(str(amount).replace(" ", "").replace(",", "."))
+                if 0 < candidate < 1e15:
+                    price = candidate
+        except (TypeError, ValueError, OverflowError):
             pass
         text_value = _clean(" ".join(str(raw.get(key) or "") for key in ("title", "purchName", "Address")))
         cadastral = _CADASTRAL_RE.search(str(raw.get("cadastralNumber") or text_value))
@@ -463,7 +528,7 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
             vin=vin.group(0).upper() if vin else None,
             area=None,
             start_price=price,
-            current_price=price,
+            current_price=None,
             auction_status=_status(str(raw.get("PurchaseStageTerm") or raw.get("purchStateNameTerm") or "")),
             lot_url=href,
             source_url=href,
