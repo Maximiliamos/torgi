@@ -1,7 +1,13 @@
 name: ETP S5 exact-SHA read-only canary readiness
 on:
   workflow_run:
-    workflows: ["P11 production acceptance"]
+    # These gates can finish in any order. Attempt the same strict S5
+    # read-only verification after each success so that a late WEB or
+    # functional smoke does not leave S5 permanently failed after P11.
+    workflows:
+      - "P11 production acceptance"
+      - "Public WEB smoke"
+      - "Production functional reliability"
     types: [completed]
 
 permissions:
@@ -16,7 +22,8 @@ jobs:
   preflight:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha != ''
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 12
     env:
