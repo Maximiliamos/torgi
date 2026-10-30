@@ -115,6 +115,7 @@ from bankrotai.services.etp_mets_canary import create_mets_canary_router
 from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
 from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalogue_router
 from bankrotai.services.etp_incremental_preview_api import create_etp_incremental_preview_router
+from bankrotai.services.etp_qa_map_api import create_etp_qa_map_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -469,6 +470,7 @@ app.include_router(create_mets_canary_router(require_admin))
 app.include_router(create_cdtrf_canary_router(require_admin))
 app.include_router(create_etp_pilot_catalogue_router(require_admin))
 app.include_router(create_etp_incremental_preview_router(require_admin))
+app.include_router(create_etp_qa_map_router(require_admin))
 
 @app.get("/")
 def read_root():
