@@ -74,7 +74,7 @@ def _labelled_catalogue_time(card, label: str) -> str | None:
     for item in card.select(".catalog-card__trade-info-item"):
         content = _text(item)
         match = re.fullmatch(
-            re.escape(label) + r"\\s*(\\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}:\\d{2})",
+            re.escape(label) + r"\s*(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})",
             content,
         )
         if match:
