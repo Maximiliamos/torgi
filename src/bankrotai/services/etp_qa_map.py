@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from bankrotai.connectors.etp_sources import (
     SOURCE_CONNECTOR_TYPES, PROFILES, EtpSearchFilters,
@@ -133,7 +133,7 @@ async def preview(source: str, *, pages: int = 2, per_page: int = 3,
                         CADASTRAL_GEOCODER.search_by_cadastral_number, cadastral
                     )
                     geo_cache[cadastral] = (
-                        (float(result.lat), float(result.lon))
+                        (float(cast(float, result.lat)), float(cast(float, result.lon)))
                         if _valid_geo_result(result, cadastral) else None
                     )
                 except Exception:
