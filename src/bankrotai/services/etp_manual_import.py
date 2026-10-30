@@ -1,4 +1,4 @@
-"""Controlled one-page ETP canary import for the trusted home worker.
+"""Controlled bounded-page ETP canary import for the trusted home worker.
 
 Writes are disabled unless both independent operator/backup gates are set.
 No source-wide archiving, no missing-lot reconciliation and no bulk scheduling.
@@ -10,10 +10,12 @@ import argparse
 import asyncio
 import json
 import os
+import re
 from typing import Any
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters, _property_ready
+from bankrotai.services.etp_canary_identity import canary_identity_digest
 
 APPROVED = ("m-ets.ru", "cdtrf.ru")
 
@@ -108,17 +110,25 @@ async def collect_lots(source: str, limit: int):
 
 def run_import(
     source: str, *, limit: int, apply: bool, audit_collisions: bool = False,
+    expected_identity_digest: str | None = None,
 ) -> dict:
     if audit_collisions and apply:
         raise ValueError("Collision preview cannot be combined with --apply")
     if apply:
         _assert_apply_allowed()  # Must happen before any network/DB access.
+        if (not isinstance(expected_identity_digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_identity_digest)):
+            raise PermissionError("Canary apply requires exact reviewed identity digest")
     lots = asyncio.run(collect_lots(source, limit))
     report: dict[str, Any] = {"source": source, "verified_detail_count": len(lots),
               "persisted_count": 0, "persisted_external_ids": [],
               "duplicate_review_count": 0,
               "write_authorized": apply, "missing_lot_archival": False,
-              "complete_source_inventory": False}
+              "complete_source_inventory": False,
+              "reviewed_identity_digest": (
+                  canary_identity_digest(source, lots)
+                  if 1 <= len(lots) <= 2 else None
+              )}
     if not apply:
         if audit_collisions:
             if not lots:
@@ -140,6 +150,8 @@ def run_import(
         raise RuntimeError("No verified real-estate lots found; refusing empty import")
     if len(lots) > limit or len(lots) > 2:
         raise ValueError("Refusing unbounded ETP canary persistence")
+    if report["reviewed_identity_digest"] != expected_identity_digest:
+        raise ValueError("Canary details changed since preview; no DB writes")
     # Candidate pages can change between preflight and apply. Recheck the
     # entire write batch before opening a transaction: no two different sale
     # IDs may reuse one cadastral number in this tiny operator canary.
@@ -163,10 +175,12 @@ def main() -> None:
     cli.add_argument("--limit", type=int, default=2)
     cli.add_argument("--apply", action="store_true")
     cli.add_argument("--audit-collisions", action="store_true")
+    cli.add_argument("--expected-identity-digest", type=str)
     args = cli.parse_args()
     report = run_import(
         args.source, limit=args.limit, apply=args.apply,
         audit_collisions=args.audit_collisions,
+        expected_identity_digest=args.expected_identity_digest,
     )
     print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
 

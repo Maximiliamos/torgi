@@ -13,6 +13,7 @@ import pytest
 from bankrotai.services.etp_manual_import import (
     collect_lots, run_import, verified_canary_items,
 )
+from bankrotai.services.etp_canary_identity import canary_identity_digest
 
 
 def sale(**overrides):
@@ -149,6 +150,11 @@ def test_operator_canary_preview_blocks_collision_before_any_apply():
     assert "$review.database_writes -ne 0" in wf
     assert "$review.revalidate_in_atomic_import -ne $true" in wf
     assert "manual review required" in wf
+    assert "reviewed_identity_digest" in wf
+    assert "--expected-identity-digest $digest" in wf
+    assert wf.index("Set-Content -LiteralPath $digestFile") < wf.index(
+        "--expected-identity-digest $digest"
+    )
     assert wf.count("verify-etp-canary-acceptance.ps1 -ExpectedSha") == 2
 
 
@@ -179,7 +185,7 @@ def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     monkeypatch.setattr(db, "session_scope", isolated)
     monkeypatch.setattr(persistence, "persist_canary_lot", persist)
 
-    outcome = run_import("m-ets.ru", limit=2, apply=True)
+    outcome = run_import("m-ets.ru", limit=2, apply=True, expected_identity_digest=canary_identity_digest("m-ets.ru", rows))
     assert transactions == [["243003-1", "243003-2"]]
     assert outcome["persisted_count"] == 2
     assert outcome["persisted_external_ids"] == ["243003-1", "243003-2"]
@@ -200,7 +206,7 @@ def test_apply_rejects_new_duplicate_cadastre_before_sql_transaction(monkeypatch
         lambda: pytest.fail("No database transaction may begin"),
     )
     with pytest.raises(ValueError, match="batch repeats a cadastral number"):
-        run_import("m-ets.ru", limit=2, apply=True)
+        run_import("m-ets.ru", limit=2, apply=True, expected_identity_digest=canary_identity_digest("m-ets.ru", [sale(), sale(external_id="243003-2")]))
 
 
 def test_second_lot_collision_rolls_back_first_and_fails_closed(monkeypatch):
@@ -234,7 +240,7 @@ def test_second_lot_collision_rolls_back_first_and_fails_closed(monkeypatch):
     monkeypatch.setattr(persistence, "persist_canary_lot", persist)
 
     with pytest.raises(persistence.CanaryDuplicateReviewRequired):
-        run_import("m-ets.ru", limit=2, apply=True)
+        run_import("m-ets.ru", limit=2, apply=True, expected_identity_digest=canary_identity_digest("m-ets.ru", rows))
     assert committed == []
     assert rolled_back == ["243003-1"]
 
@@ -247,7 +253,7 @@ def test_run_import_rejects_excessive_lots_even_if_collector_is_bypassed(monkeyp
     monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
     monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
     with pytest.raises(ValueError, match="unbounded"):
-        run_import("m-ets.ru", limit=2, apply=True)
+        run_import("m-ets.ru", limit=2, apply=True, expected_identity_digest="0" * 64)
 
 
 def test_cdtrf_canary_skips_rejected_first_page_without_expanding_detail_cap(monkeypatch):

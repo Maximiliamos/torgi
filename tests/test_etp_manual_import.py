@@ -30,4 +30,6 @@ def test_manual_import_refuses_empty_verified_batch(monkeypatch):
         return []
     monkeypatch.setattr(etp_manual_import, "collect_lots", empty)
     with pytest.raises(RuntimeError, match="No verified"):
-        etp_manual_import.run_import("cdtrf.ru", limit=1, apply=True)
+        etp_manual_import.run_import(
+            "cdtrf.ru", limit=1, apply=True, expected_identity_digest="0" * 64
+        )
