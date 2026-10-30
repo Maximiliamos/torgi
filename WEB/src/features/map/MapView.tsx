@@ -1341,7 +1341,7 @@ export function MapView({
           status: "qa_unverified",
           is_archived: false,
           review_status: "maybe",
-          lat: item.lat,
+          lat: item.lat as number,
           lon: item.lon as number,
         })
   ), [qaReport]);
@@ -1881,14 +1881,15 @@ export function MapView({
               <div className="mapFavoritesList">
                 {qaReport.items.map((item, index) => {
                   const mappedIndex = qaReport.items.slice(0, index + 1).filter(x => x.lat !== null && x.lon !== null).length;
-                  return <button key={item.external_id} type="button"
-                    onClick={() => item.lat !== null && item.lon !== null ? setQaSelected(mappedIndex) : undefined}>
-                    <strong>{item.title}</strong>
-                    <small>{item.external_id} · {item.detail_level} · {item.geo_status}</small>
-                    <small>Начальная: {item.start_price ?? "неизвестна"} · текущая: {item.current_price ?? "неизвестна"}</small>
-                    <span><a href={item.url} target="_blank" rel="noopener noreferrer"
-                      onClick={(event) => event.stopPropagation()}>Карточка ЭТП</a></span>
-                  </button>;
+                  return <div key={item.external_id}>
+                    <button type="button" disabled={item.lat === null || item.lon === null}
+                      onClick={() => setQaSelected(mappedIndex)}>
+                      <strong>{item.title}</strong>
+                      <small>{item.external_id} · {item.detail_level} · {item.geo_status}</small>
+                      <small>Начальная: {item.start_price ?? "неизвестна"} · текущая: {item.current_price ?? "неизвестна"}</small>
+                    </button>
+                    <a href={item.url} target="_blank" rel="noopener noreferrer">Открыть карточку ЭТП</a>
+                  </div>;
                 })}
                 {qaReport.items.length === 0 && <small>Подтверждённых кандидатов нет; проверьте доступность и парсер источника.</small>}
               </div>
