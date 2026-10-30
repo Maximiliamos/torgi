@@ -169,6 +169,19 @@ def test_price_label_does_not_capture_preceding_deposit() -> None:
     assert lot.start_price == 1_000_000
 
 
+def test_price_label_keeps_price_before_following_deposit_field() -> None:
+    html = """
+    <html><body><h1>Земельный участок</h1>
+    Начальная цена 1 000 000 руб. Размер задатка 100 000 руб.
+    Публичная карточка содержит достаточное описание лота для проверки парсинга.
+    </body></html>
+    """.encode()
+    lot = parse_detail_html(
+        profile("m-ets.ru"), html, detail_url="https://m-ets.ru/243003-1"
+    )
+    assert lot.start_price == 1_000_000
+
+
 def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
     html = """
     <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
@@ -179,9 +192,27 @@ def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
     """
     lots = parse_listing_html(profile("nistp.ru"), html)
     assert [lot.external_id for lot in lots] == [
-        "nistp.ru:71874-ОАОФ:1",
-        "nistp.ru:71874-ОАОФ:3",
+        "nistp.ru:1234:1",
+        "nistp.ru:1234:3",
     ]
+
+
+def test_nistp_parser_does_not_apply_preview_limit_to_full_page() -> None:
+    rows = "".join(
+        f"""<tr><td><a href='/bankrot/trade_view.php?trade_nid={index}'>
+        {70000 + index}-ОАОФ</a></td><td>Управляющий</td>
+        <td>Лот № 1: Земельный участок 76:12:0000123:{1000 + index}</td></tr>"""
+        for index in range(1, 36)
+    )
+    lots = parse_listing_html(profile("nistp.ru"), f"<table>{rows}</table>")
+    assert len(lots) == 35
+
+
+def test_shared_trade_card_does_not_claim_unproven_per_lot_detail_fetch() -> None:
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"]()
+    assert "fetch_lot" not in connector.capabilities
+    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
+        asyncio.run(connector.fetch_lot("nistp.ru:1234:1"))
 
 
 def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:

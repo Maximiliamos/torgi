@@ -70,9 +70,13 @@ def _clean(value: str) -> str:
 def _money(value: str) -> float | None:
     label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|текущ\w*\s+цен\w*|цена\s+лот\w*)"
     after = re.search(label + r"[^\d]{0,40}" + _MONEY_RE.pattern, value, re.IGNORECASE)
-    if after and not re.search(r"размер\s+задатка", value[after.end():after.end() + 60], re.IGNORECASE):
-        raw = after.group(1)
-    else:
+    raw: str | None = None
+    if after:
+        tail = value[after.end():after.end() + 100]
+        deposit = re.search(r"размер\s+задатка", tail, re.IGNORECASE)
+        if not deposit or _MONEY_RE.search(tail[deposit.end():deposit.end() + 60]):
+            raw = after.group(1)
+    if raw is None:
         before = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
         if not before or re.search(
             r"размер\s+задатка", value[max(0, before.start() - 60):before.start()], re.IGNORECASE
@@ -189,7 +193,9 @@ def _parse_multi_lot_catalogue(
     from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
 
     decoded = _parse_soup(html).decode()
-    observations = parse_catalogue(PROFILE_BY_ID[profile.source_id], decoded)
+    observations = parse_catalogue(PROFILE_BY_ID[profile.source_id], decoded, limit=100)
+    if len(observations) == 100:
+        raise SourceSchemaError(f"{profile.source_id}: page exceeds the verified per-page lot limit")
     identified = [item for item in observations if item.get("external_id")]
     if not identified:
         return None
@@ -197,13 +203,17 @@ def _parse_multi_lot_catalogue(
     for item in identified:
         price_value = item.get("listing_price_rub")
         try:
-            price = float(price_value) if price_value not in {None, ""} else None
+            price = float(price_value) if isinstance(price_value, (str, int, float)) and price_value != "" else None
         except (TypeError, ValueError):
             price = None
         title = _clean(str(item.get("title") or ""))
         detail_url = _safe_provider_url(profile, str(item.get("catalogue_detail_link") or ""))
+        query = parse_qs(urlparse(detail_url).query)
+        provider_id = next(iter(query.get("trade_nid", []) or query.get("id", [])), None)
+        if not provider_id or not item.get("lot"):
+            raise SourceSchemaError(f"{profile.source_id}: per-lot provider identity is missing")
         lots.append(NormalizedLot(
-            external_id=f"{profile.source_id}:{item['external_id']}",
+            external_id=f"{profile.source_id}:{provider_id}:{item['lot']}",
             source=profile.source_id.removesuffix(".ru"),
             source_system=profile.source_id,
             title=title[:500],
@@ -655,6 +665,10 @@ class HtmlEtpConnector(AuctionConnector):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
+        if self.source_id in {"nistp.ru", "vertrades.ru"}:
+            raise SourceAccessError(
+                f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
+            )
         template = self.profile.detail_url_template
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
@@ -703,6 +717,8 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
+    if profile.source_id in {"nistp.ru", "vertrades.ru"}:
+        ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
     return ProfiledConnector
