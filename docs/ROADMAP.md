@@ -11,6 +11,13 @@
 
 
 
+## S5 — устранение гонки при проверке готовности (30.10.2026)
+
+- P11 для `v0.3.9` `986616c1` **пройден**, опубликована [v0.3.9](https://github.com/Maximiliamos/torgi/releases/tag/v0.3.9). Это снимает историческую блокировку выпуска `0.3.10`, но новая версия обязана пройти свою exact-SHA приёмку.
+- [S5 Home run #40983300526](https://github.com/Maximiliamos/torgi/actions/runs/40983300526) **failed**: `Public WEB smoke has no successful latest exact-SHA run`. В тот момент последним был `skipped` WEB smoke; позднее [WEB #41014304441](https://github.com/Maximiliamos/torgi/actions/runs/41014304441) завершился success, но S5 не повторился автоматически. Не считать этот отказ доказательством отсутствия backup или поломки ЭТП: до этих проверок сценарий не дошёл.
+- `etp-s5-canary-readiness.yml` теперь запускает **одну и ту же строгую read-only проверку** после каждого successful `P11`, `Public WEB smoke` или `Production functional reliability` на `main` с exact SHA. Все восемь production gates, restore-verified backup + SHA256, worker image и 1–2 реальные детали МЭТС/ЦДТ с rollback-only SQL collision checks **остаются обязательными**; до их успеха S5 fail closed. Никаких `--apply`, DB writes, GEO/Map publication.
+- **До приёмки:** новый CI/S3 на интегрированном `0.3.10` SHA, merge, exact-SHA Home/P11 и **отдельный успешный S5 run**, выдавший отчёт с `restore_verified_backup_available=true` и без коллизий. Даже при S5 success полноценный операторский canary ещё не выполнен.
+
 ## 0.3.10 — общий staging P13/P2 (30.10.2026)
 
 - Интеграционный head объединяет [#1014](https://github.com/Maximiliamos/torgi/pull/1014), [#1015](https://github.com/Maximiliamos/torgi/pull/1015) и [#1016](https://github.com/Maximiliamos/torgi/pull/1016) на единой версии `0.3.10` для одного полного CI/S3 и последующей **одной** exact-SHA Home/P11 приёмки. До релиза v0.3.9 не сливать.
