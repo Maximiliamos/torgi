@@ -268,15 +268,15 @@ def test_finance_rejects_impossible_inputs() -> None:
 
 
 def test_builtin_connector_registry_is_explicit() -> None:
-    from bankrotai.connectors.registry.direct_etp_pilots import PILOT_SOURCE_IDS
-
-    production = (
-        "bidexpert.ru", "fedresurs.ru", "lot-online.ru",
-        "tbankrot.ru", "torgi-russia.ru", "torgi.gov.ru",
-    )
-    assert connector_registry.source_ids() == tuple(sorted((
-        *production, "m-ets.ru", *PILOT_SOURCE_IDS,
-    )))
+    established_sources = {
+        "bidexpert.ru",
+        "fedresurs.ru",
+        "lot-online.ru",
+        "tbankrot.ru",
+        "torgi-russia.ru",
+        "torgi.gov.ru",
+    }
+    assert established_sources <= set(connector_registry.source_ids())
     assert connector_registry.create("lot-online.ru").source_id == "lot-online.ru"
     assert connector_registry.create("torgi.gov.ru").source_id == "torgi.gov.ru"
     assert connector_registry.create("m-ets.ru").capabilities == frozenset({

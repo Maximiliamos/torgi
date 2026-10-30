@@ -40,9 +40,9 @@ class StubSession:
         return StubResponse(EXAMPLE)
 
 
-def test_registry_maintains_14_distinct_readonly_pilots():
+def test_registry_preserves_source_specific_pilots_only():
     assert len(PILOT_SOURCE_IDS) == 14
-    for sid in PILOT_SOURCE_IDS:
+    for sid in ("cdtrf.ru", "rts-tender.ru"):
         connector = connector_registry.create(sid)
         assert isinstance(connector, DirectEtpPilotConnector)
         assert connector.source_id == sid
@@ -51,6 +51,8 @@ def test_registry_maintains_14_distinct_readonly_pilots():
         assert health.metadata["can_reconcile_missing"] is False
         with pytest.raises(ConnectorCapabilityError):
             asyncio.run(connector.search(None))
+    for sid in set(PILOT_SOURCE_IDS) - {"cdtrf.ru", "rts-tender.ru"}:
+        assert not isinstance(connector_registry.create(sid), DirectEtpPilotConnector)
 
 
 def test_pilots_are_not_enabled_in_default_nationwide_sync():
