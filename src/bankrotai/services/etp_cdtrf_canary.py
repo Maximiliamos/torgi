@@ -139,7 +139,7 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         raise CdtrfCanaryError("CDTRF_STATUS_UNRECOGNIZED")
     return NormalizedLot(
         external_id=f"cdtrf:{lot_id}", source="cdtrf.ru",
-        source_system="cdtrf.ru", title=title,
+        source_system="cdtrf.ru", title=(property_description or title)[:600],
         description=property_description or title,
         category=category, region_slug=None,
         region_name=detail.get("region_label") or None,
