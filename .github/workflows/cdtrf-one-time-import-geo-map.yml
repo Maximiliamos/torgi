@@ -31,7 +31,10 @@ jobs:
         shell: powershell
         run: |
           $subject = (& git log -1 --format=%s).Trim()
-          if ($subject.StartsWith('CDTRF-first-pass:')) {
+          $markDir = 'D:\BankrotAI\etp-acceptance'
+          $sha = (& git rev-parse HEAD).Trim()
+          $marker = Join-Path $markDir "cdtrf-$sha-map-published.json"
+          if ($subject.StartsWith('CDTRF-first-pass:') -and -not (Test-Path -LiteralPath $marker)) {
             "approved=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             "approved=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -113,6 +116,10 @@ jobs:
             throw 'CDTRF map publication did not confirm geocoded source points'
           }
           $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-map-result.json' -Encoding utf8
+          $markDir = 'D:\BankrotAI\etp-acceptance'
+          New-Item -ItemType Directory -Force -Path $markDir | Out-Null
+          $marker = Join-Path $markDir "cdtrf-${{ github.event.workflow_run.head_sha }}-map-published.json"
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $marker -Encoding utf8
 
       - name: Preserve production evidence without original personal details
         if: always()
