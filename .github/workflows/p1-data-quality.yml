@@ -1,9 +1,14 @@
 name: P1 production data quality
 
 on:
-  # TEMPORARY: ETP manual QA. Run this audit on demand via Actions.
-  # Restore automatic push/schedule triggers after source-level QA is accepted.
   workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '37 4 * * *'
+  workflow_run:
+    workflows: ['Phase 3 Lite full source reconciliation']
+    types: [completed]
 
 permissions:
   actions: read
@@ -21,11 +26,8 @@ concurrency:
 
 jobs:
   wait-home-deploy:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.head_sha == github.sha &&
-       github.event.workflow_run.conclusion == 'success')
+    # TEMPORARY QA MODE: automatic P1 runs are skipped, manual dispatch runs normally.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
