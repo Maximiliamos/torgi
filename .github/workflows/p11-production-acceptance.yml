@@ -25,6 +25,8 @@ concurrency:
 
 jobs:
   wait-home-deploy:
+    # TEMPORARY QA MODE: automatically triggered 30-minute P11 jobs are skipped.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:

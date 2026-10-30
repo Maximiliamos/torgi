@@ -1,0 +1,74 @@
+name: ETP manual QA all sources (no P1/P11)
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etp-manual-qa-all-profiles
+  cancel-in-progress: true
+
+jobs:
+  live-qa:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 100
+    steps:
+      - name: Require trusted deployed Home worker
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $worker -ne 'running') {
+            throw 'ETP QA requires the trusted Home ingestion worker'
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_run') {
+            $expected = '${{ github.event.workflow_run.head_sha }}'
+            $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+            if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
+              throw 'Worker image SHA differs from deployed QA revision'
+            }
+          }
+
+      - name: Probe every public ETP profile and at most one GEO per source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'etp-manual-qa-all.json'
+          $log = Join-Path $env:RUNNER_TEMP 'etp-manual-qa-progress.log'
+          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_qa_batch --pages 2 --per-page 3 --geo-limit 1 2>&1)
+          $status = $LASTEXITCODE
+          $output | Set-Content -LiteralPath $log -Encoding utf8
+          if ($status -ne 0 -or $output.Count -lt 1) {
+            throw 'QA batch could not complete provider scanning'
+          }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($report.qa_only -ne $true -or $report.database_writes -ne 0 -or
+              $report.production_map_writes -ne 0 -or
+              $report.archival_enabled -ne $false -or
+              $report.complete_source_inventory -ne $false -or
+              $report.source_count -ne 21) {
+            throw 'QA batch lacks required isolation or source inventory'
+          }
+          $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+          Write-Output ("ETP QA: {0} profiles, {1} candidates, {2} located exact-cadastre points" -f $report.source_count,$report.candidates,$report.mapped)
+
+      - name: Publish private QA-only run summary (never production map S3)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: etp-manual-qa-all-profiles
+          path: |
+            ${{ runner.temp }}/etp-manual-qa-all.json
+            ${{ runner.temp }}/etp-manual-qa-progress.log
+          if-no-files-found: warn
+          retention-days: 14

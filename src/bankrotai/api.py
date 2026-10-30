@@ -115,6 +115,7 @@ from bankrotai.services.etp_mets_canary import create_mets_canary_router
 from bankrotai.services.etp_cdtrf_canary import create_cdtrf_canary_router
 from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalogue_router
 from bankrotai.services.etp_incremental_preview_api import create_etp_incremental_preview_router
+from bankrotai.services.etp_qa_map_api import create_etp_qa_map_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -469,6 +470,7 @@ app.include_router(create_mets_canary_router(require_admin))
 app.include_router(create_cdtrf_canary_router(require_admin))
 app.include_router(create_etp_pilot_catalogue_router(require_admin))
 app.include_router(create_etp_incremental_preview_router(require_admin))
+app.include_router(create_etp_qa_map_router(require_admin))
 
 @app.get("/")
 def read_root():
@@ -522,9 +524,7 @@ def readiness_check():
             return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks, "version": __version__}
 
-
 # --- Endpoints ---
-
 
 @app.post("/api/auth/login")
 def login(request: LoginRequest, response: Response):
@@ -547,17 +547,14 @@ def login(request: LoginRequest, response: Response):
     )
     return result
 
-
 @app.post("/api/auth/logout")
 def logout(response: Response):
     response.delete_cookie(_SESSION_COOKIE, path="/", httponly=True, secure=settings.is_production, samesite="strict")
     return {"status": "signed_out"}
 
-
 @app.get("/api/auth/me")
 def current_user(actor: AuthenticatedUser = Depends(require_user)):
     return {"id": actor.id, "username": actor.username, "role": actor.role}
-
 
 def _normalized_lot_to_dict(lot) -> dict:
     return {

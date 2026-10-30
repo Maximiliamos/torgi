@@ -71,6 +71,7 @@ import {
   MapFiltersPanel, EMPTY_MAP_FILTERS, mapFilterUiState,
 } from "./MapFiltersPanel";
 import type { MapFilterState, MapSourceOption } from "./MapFiltersPanel";
+import { EtpQaPanel, useEtpQa } from "./EtpQaPanel";
 export { mapFilterUiState } from "./MapFiltersPanel";
 import type { TileCoordinate } from "./mapGeometry";
 // Keep the existing MapView public exports for all downstream imports.
@@ -1304,6 +1305,8 @@ export function MapView({
   const [mapNotice, setMapNotice] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
+  const [qaMode, setQaMode] = React.useState(false);
+  const qa = useEtpQa(isAdmin);
   const [cadQuery, setCadQuery] = React.useState("");
   const [cadSearch, setCadSearch] = React.useState<CadastreSearchResponse | null>(null);
   const [cad, setCad] = React.useState<CadastreObject | null>(null);
@@ -1801,7 +1804,9 @@ export function MapView({
   return (
     <section className="mapDesktopShell">
       <div className="mapDesktopSidebar">
-        {cadSearch ? (
+        {qaMode ? (
+          <EtpQaPanel qa={qa} />
+        ) : cadSearch ? (
           <CadastrePanel
             result={cadSearch}
             detailsOpen={cadDetailsOpen}
@@ -1936,25 +1941,28 @@ export function MapView({
           {cad && <span title={cadText}>Кадастровый объект найден</span>}
           <button onClick={() => (tileMode || directTileMode) ? void loadCurrentMapDataset() : void load()}><RefreshCcw size={14} />Обновить метки</button>
           {isAdmin && <button disabled={syncing} onClick={() => void refreshCatalogue()}><RefreshCcw size={14} />{syncing ? "Обновление лотов…" : "Обновить лоты"}</button>}
+          {isAdmin && <button type="button" aria-pressed={qaMode} onClick={() => { setQaMode((v) => !v); qa.setQaSelected(null); }}>
+            {qaMode ? "Обычная карта" : "Тестовая карта ЭТП"}
+          </button>}
         </div>
         <YandexDesktopMap
-          lots={visibleLots}
-          tileEntries={tileEntries}
-          mapDataset={mapDataset}
-          directTileMode={directTileMode}
-          directFilters={directFilters}
+          lots={qaMode ? qa.qaPoints : visibleLots}
+          tileEntries={qaMode ? [] : tileEntries}
+          mapDataset={qaMode ? null : mapDataset}
+          directTileMode={qaMode ? false : directTileMode}
+          directFilters={qaMode ? {} : directFilters}
           reviewMarkerUpdate={reviewMarkerUpdate}
-          selectedCadastre={cad}
-          showCadastre={showCadastre}
-          selectedLotId={selectedLotId}
-          selectedLotGeometry={selectedLot?.geometry || null}
+          selectedCadastre={qaMode ? null : cad}
+          showCadastre={!qaMode && showCadastre}
+          selectedLotId={qaMode ? qa.qaSelected : selectedLotId}
+          selectedLotGeometry={qaMode ? null : selectedLot?.geometry || null}
           active={active}
-          onSelect={selectLot}
+          onSelect={qaMode ? (id) => qa.setQaSelected(id) : selectLot}
           onClusterSelect={(ids) => {
-            setCoincidentLotIds(Array.from(new Set(ids)));
-            setSelectedLotId(null);
+            if (qaMode) qa.setQaSelected(ids[0] ?? null);
+            else { setCoincidentLotIds(Array.from(new Set(ids))); setSelectedLotId(null); }
           }}
-          onViewport={handleViewport}
+          onViewport={qaMode ? () => undefined : handleViewport}
           onRendered={(durationMs, count) => {
             if (directTileMode) setDirectRenderedCount(count);
             setTimings((value) => ({ ...value, render: durationMs }));
@@ -1962,8 +1970,10 @@ export function MapView({
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты" aria-live="polite">
           <span>
-            {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте
-            {statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
+            {qaMode
+              ? `ТЕСТОВАЯ КАРТА — ${qa.qaPoints.length} координат, данные не подтверждены`
+              : <>{mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте</>}
+            {!qaMode && statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
             {timings.api > 0 && (
               <> · API {Math.round(timings.api)} мс · карта {Math.round(timings.render)} мс{timings.cached ? " · кеш" : ""}</>
             )}

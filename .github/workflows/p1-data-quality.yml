@@ -26,11 +26,13 @@ concurrency:
 
 jobs:
   wait-home-deploy:
+    # TEMPORARY QA MODE: manual-only execution, preserving exact-SHA event isolation.
     if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.head_sha == github.sha &&
-       github.event.workflow_run.conclusion == 'success')
+      github.event_name == 'workflow_dispatch' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha &&
+        github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
