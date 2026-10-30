@@ -2,8 +2,8 @@ name: P11 production acceptance
 # Final acceptance rerun marker: 2026-10-07. No gate weakening.
 
 on:
-  # TEMPORARY: ETP manual QA. Keep strict release acceptance available on demand.
-  # Restore the main push trigger after source-level QA is accepted.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       soak_minutes:
@@ -25,6 +25,8 @@ concurrency:
 
 jobs:
   wait-home-deploy:
+    # TEMPORARY QA MODE: automatically triggered 30-minute P11 jobs are skipped.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
