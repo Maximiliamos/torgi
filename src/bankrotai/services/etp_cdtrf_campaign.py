@@ -72,6 +72,13 @@ def run_import() -> dict:
         ))
     if int(source.get("items_archived") or 0) != 0:
         raise RuntimeError("CDTRF source unexpectedly archived lots")
+    # A successful page scan must not be confused with persisted property lots.
+    after = payload["after_import"]
+    if after["source_records"] < 1 or after["active_primary"] < 1:
+        raise RuntimeError(
+            "CDTRF catalogue imported no active verified lots: "
+            + json.dumps(payload, ensure_ascii=False, default=str)
+        )
     return payload
 
 
