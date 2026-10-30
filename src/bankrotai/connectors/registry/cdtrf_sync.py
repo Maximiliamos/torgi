@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -170,3 +171,16 @@ class CdtrfSourceCrawler:
 
     async def search(self, filters: CdtrfSyncFilters, cursor: str | None = None) -> ConnectorPage:
         return await asyncio.to_thread(self._search, filters, cursor)
+
+
+def operator_sync_spec():
+    """An explicit manual source run; never part of default Celery beat."""
+    if (os.getenv("CDTRF_OPERATOR_SYNC_ENABLED") != "1"
+            or os.getenv("ETP_CANARY_BACKUP_VERIFIED") != "1"
+            or os.getenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED") != "1"):
+        raise PermissionError("CDTRF sync requires operator authorization and verified backup")
+    from bankrotai.services.ingestion import SourceSyncSpec
+    return SourceSyncSpec(
+        "cdtrf.ru", CdtrfSyncFilters(page_size=100),
+        reconcile_missing=False, max_batches=MAX_SCAN_PAGES,
+    )
