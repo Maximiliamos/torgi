@@ -248,3 +248,131 @@ def test_run_import_rejects_excessive_lots_even_if_collector_is_bypassed(monkeyp
     monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
     with pytest.raises(ValueError, match="unbounded"):
         run_import("m-ets.ru", limit=2, apply=True)
+
+
+def test_cdtrf_canary_skips_rejected_first_page_without_expanding_detail_cap(monkeypatch):
+    """The 5-page CDTRF evidence may contain valid sales after page one."""
+    import hashlib
+    from bankrotai.services import etp_manual_import as mod
+    calls = []
+
+    class Connector:
+        async def search(self, filters, cursor=None):
+            number = 1 if cursor is None else int(cursor.split(":")[0])
+            calls.append((number, filters.max_detail_requests, filters.max_pages))
+            ids = [f"catalogue-cdtrf-{number}-a", f"catalogue-cdtrf-{number}-b"]
+            accepted = [] if number == 1 else [
+                sale(source_system="cdtrf.ru", external_id="cdtrf:390901",
+                     cadastral_number="77:01:000101:1",
+                     lot_url="https://torgi.cdtrf.ru/trades/390364"),
+                sale(source_system="cdtrf.ru", external_id="cdtrf:390902",
+                     cadastral_number="77:01:000101:2",
+                     lot_url="https://torgi.cdtrf.ru/trades/390365"),
+            ]
+            return SimpleNamespace(
+                items=accepted,
+                next_cursor=f"{number + 1}:deadbeefcafebabe",
+                metadata={
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "progress_current": number,
+                    "progress_total": 5,
+                    "catalogue_lots": len(ids),
+                    "catalogue_identity_fingerprints": [
+                        hashlib.sha256(x.encode("ascii")).hexdigest() for x in ids
+                    ],
+                },
+            )
+
+    monkeypatch.setattr(mod.connector_registry, "create", lambda source: Connector())
+    got = asyncio.run(collect_lots("cdtrf.ru", 2))
+    assert [x.external_id for x in got] == ["cdtrf:390901", "cdtrf:390902"]
+    assert calls == [(1, 2, 5), (2, 2, 5)]
+
+
+def test_cdtrf_canary_does_not_scan_more_than_five_bounded_pages(monkeypatch):
+    import hashlib
+    from bankrotai.services import etp_manual_import as mod
+    called = []
+
+    class Connector:
+        async def search(self, filters, cursor=None):
+            number = 1 if cursor is None else int(cursor.split(":")[0])
+            called.append(number)
+            item = f"candidate-{number}"
+            return SimpleNamespace(
+                items=[],
+                next_cursor=(f"{number + 1}:deadbeefcafebabe"
+                             if number < 5 else None),
+                metadata={
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "progress_current": number,
+                    "progress_total": 5,
+                    "catalogue_lots": 1,
+                    "catalogue_identity_fingerprints": [
+                        hashlib.sha256(item.encode("ascii")).hexdigest()
+                    ],
+                },
+            )
+
+    monkeypatch.setattr(mod.connector_registry, "create", lambda source: Connector())
+    assert asyncio.run(collect_lots("cdtrf.ru", 2)) == []
+    assert called == [1, 2, 3, 4, 5]
+    with pytest.raises(RuntimeError, match="No verified property details"):
+        run_import("cdtrf.ru", limit=2, apply=False, audit_collisions=True)
+
+
+def test_cdtrf_canary_rejects_nonadjacent_duplicate_catalogue_id(monkeypatch):
+    import hashlib
+    from bankrotai.services import etp_manual_import as mod
+    called = []
+
+    class Connector:
+        async def search(self, filters, cursor=None):
+            number = 1 if cursor is None else int(cursor.split(":")[0])
+            called.append(number)
+            # The duplicate is hidden among candidate IDs, not validated details.
+            identity = "repeated-hidden-candidate" if number in (1, 3) else f"id-{number}"
+            return SimpleNamespace(
+                items=[],
+                next_cursor=f"{number + 1}:deadbeefcafebabe",
+                metadata={
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "progress_current": number,
+                    "progress_total": 5,
+                    "catalogue_lots": 1,
+                    "catalogue_identity_fingerprints": [
+                        hashlib.sha256(identity.encode("ascii")).hexdigest()
+                    ],
+                },
+            )
+
+    monkeypatch.setattr(mod.connector_registry, "create", lambda source: Connector())
+    with pytest.raises(ValueError, match="identity evidence is incomplete"):
+        asyncio.run(collect_lots("cdtrf.ru", 2))
+    assert called == [1, 2, 3]
+
+
+def test_cdtrf_canary_rejects_missing_catalogue_fingerprint(monkeypatch):
+    from bankrotai.services import etp_manual_import as mod
+
+    class Connector:
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[],
+                next_cursor="2:deadbeefcafebabe",
+                metadata={
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "progress_current": 1,
+                    "progress_total": 5,
+                    "catalogue_lots": 2,
+                    "catalogue_identity_fingerprints": [],
+                },
+            )
+
+    monkeypatch.setattr(mod.connector_registry, "create", lambda source: Connector())
+    with pytest.raises(ValueError, match="identity evidence is incomplete"):
+        asyncio.run(collect_lots("cdtrf.ru", 2))
