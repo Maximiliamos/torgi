@@ -78,7 +78,7 @@ def _money(value: str) -> float | None:
         tail = value[after.end():after.end() + 100]
         deposit = re.search(r"размер\s+задатка", tail, re.IGNORECASE)
         if not deposit or _MONEY_RE.search(tail[deposit.end():deposit.end() + 60]):
-            raw = after.group(1)
+            raw = after.group(2)
     if raw is None:
         before = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
         if not before or re.search(
@@ -105,7 +105,7 @@ def _current_money(value: str) -> float | None:
     if not match or re.search(r"задатк\w*|начальн\w*\s+цен\w*", match.group("between"), re.I):
         return None
     try:
-        amount = float(match.group(1).replace(" ", "").replace("\xa0", "").replace(",", "."))
+        amount = float(match.group(2).replace(" ", "").replace("\xa0", "").replace(",", "."))
         return amount if 0 < amount < 1e15 else None
     except ValueError:
         return None
