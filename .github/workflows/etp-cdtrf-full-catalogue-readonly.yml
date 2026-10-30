@@ -47,7 +47,7 @@ jobs:
           foreach ($pageSize in @(100,50,20)) {
             Write-Output ("CDTRF full read-only attempt; page_size={0}" -f $pageSize)
             $ErrorActionPreference = 'Continue'
-            $output = @(Get-Content -LiteralPath $src -Raw | docker exec -i bankrotai-home-ingestion-worker python -c "import sys; code=sys.stdin.read(); exec(compile(code,'cdtrf_full_readonly','exec'), {'__name__':'__main__'})" --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
+            $output = @(Get-Content -LiteralPath $src -Raw | docker exec -i bankrotai-home-ingestion-worker python -c "import sys; code=sys.stdin.read().lstrip(chr(65279)); exec(compile(code,'cdtrf_full_readonly','exec'), {'__name__':'__main__'})" --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
             $exitCode = $LASTEXITCODE
             $ErrorActionPreference = 'Stop'
             if ($exitCode -ne 0) {
