@@ -1366,6 +1366,7 @@ export function MapView({
         throw new Error("Источник не подтвердил изолированный QA-режим");
       }
       setQaReports((value) => ({ ...value, [qaSource]: data }));
+      if (data.mapped_count > 0) setQaSelected(1);
     } catch (error) {
       setQaError(error instanceof Error ? error.message : "Ошибка пробного обхода ЭТП");
     } finally {
@@ -2062,8 +2063,10 @@ export function MapView({
         />
         <footer className="mapBottomStatus" aria-label="Состояние карты" aria-live="polite">
           <span>
-            {mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте
-            {statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
+            {qaMode
+              ? `ТЕСТОВАЯ КАРТА — ${qaPoints.length} координат, данные не подтверждены`
+              : <>{mapObjectCountLabel(statistics.total, statistics.returned, statistics.exact)} · {visibleMapObjects} на карте</>}
+            {!qaMode && statistics.exact && <> · {statistics.withoutCoordinates} без координат · {relativeUpdate(statistics.updatedAt, clock)}</>}
             {timings.api > 0 && (
               <> · API {Math.round(timings.api)} мс · карта {Math.round(timings.render)} мс{timings.cached ? " · кеш" : ""}</>
             )}
