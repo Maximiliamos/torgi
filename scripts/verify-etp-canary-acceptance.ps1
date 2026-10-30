@@ -35,9 +35,12 @@ $required = @(
     'Public WEB smoke',
     'Production functional reliability'
 )
+# A skipped conditional workflow_run executed no gate. It must not mask the
+# most recent actual pass/fail result on the same SHA.
 foreach ($name in $required) {
     $latest = @($runs.workflow_runs | Where-Object {
-        $_.name -eq $name -and $_.head_sha -eq $ExpectedSha
+        $_.name -eq $name -and $_.head_sha -eq $ExpectedSha -and
+        $_.conclusion -ne 'skipped'
     } | Sort-Object created_at -Descending | Select-Object -First 1)
     if ($latest.Count -ne 1 -or $latest[0].status -ne 'completed' -or
         $latest[0].conclusion -ne 'success') {
