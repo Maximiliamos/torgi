@@ -103,7 +103,8 @@ def _to_float(value: Any) -> float | None:
 
 def _to_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
+        return (value.astimezone(timezone.utc).replace(tzinfo=None)
+                if value.tzinfo is not None else value)
     if value in (None, ""):
         return None
     text = str(value).strip().replace("Z", "+00:00")
