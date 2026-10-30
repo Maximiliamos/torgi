@@ -73,3 +73,87 @@ def test_strict_page_and_delay_limits():
     for pages, delay in [(0, 1), (6, 1), (5, 0.1), (5, 100)]:
         with pytest.raises(ValueError):
             scan_cdtrf_pages(Session([]), max_pages=pages, delay_seconds=delay)
+
+
+# The full-catalogue walker is separate from the bounded five-page pilot.
+from urllib.parse import parse_qs, urlsplit
+
+from bankrotai.services.etp_cdtrf_full_catalogue import (
+    CdtrfCatalogueScanError, scan_complete_cdtrf_catalogue,
+)
+
+
+class FullScanSession:
+    def __init__(self, total, server_cap=None, overlap=False, drift=False):
+        self.total = total
+        self.server_cap = server_cap
+        self.overlap = overlap
+        self.drift = drift
+        self.calls = []
+
+    def get(self, url, *, allow_redirects, timeout, headers):
+        params = parse_qs(urlsplit(url).query)
+        assert params["Categories"] == ["21,22,23,31,32,33,34"]
+        assert all(params[x] == ["true"] for x in (
+            "Declare", "RecieveReq", "DefinePart", "TradeGo", "SummingUp"
+        ))
+        size = self.server_cap or int(params["PageSize"][0])
+        page = int(params["PageNum"][0])
+        assert not allow_redirects and headers["Accept"] == "application/json"
+        self.calls.append(page)
+        rows = [
+            {"tradeId": 390000 + i,
+             "tradeLotId": 500000 + (1 if self.overlap and page == 2 and i == size + 1 else i),
+             "categories": ",21,", "actualPrice": 670000}
+            for i in range((page - 1) * size + 1, min(page * size, self.total) + 1)
+        ]
+        response = Response(rows)
+        response.json = lambda: {
+            "success": True,
+            "totalCount": self.total + int(self.drift and page == 2),
+            "items": rows,
+        }
+        return response
+
+
+def test_full_catalogue_supports_actual_ui_sizes_without_importing():
+    for size, total, pages in ((20, 105, 6), (50, 105, 3), (100, 205, 3)):
+        session = FullScanSession(total)
+        report = scan_complete_cdtrf_catalogue(
+            session, page_size=size, sleep=lambda delay: None,
+        )
+        assert session.calls == list(range(1, pages + 1))
+        assert report["unique_catalogue_lot_ids"] == total
+        assert report["selected_catalogue_pages_observed"] is True
+        assert report["complete_source_inventory"] is False
+        assert report["stable_point_in_time_snapshot"] is False
+        assert report["archival_allowed"] is False
+        assert report["production_database_writes"] == 0
+
+
+def test_full_catalogue_rejects_unsupported_1000_or_silent_server_cap():
+    import pytest
+    with pytest.raises(CdtrfCatalogueScanError, match="20, 50, 100"):
+        scan_complete_cdtrf_catalogue(FullScanSession(205), page_size=1000)
+    with pytest.raises(CdtrfCatalogueScanError, match="Incomplete page"):
+        scan_complete_cdtrf_catalogue(
+            FullScanSession(205, server_cap=20), page_size=100,
+        )
+
+
+def test_full_catalogue_detects_overlaps_drift_and_missing_pages():
+    import pytest
+    with pytest.raises(CdtrfCatalogueScanError, match="Overlapping"):
+        scan_complete_cdtrf_catalogue(
+            FullScanSession(205, overlap=True), page_size=100,
+            sleep=lambda delay: None,
+        )
+    with pytest.raises(CdtrfCatalogueScanError, match="total changed"):
+        scan_complete_cdtrf_catalogue(
+            FullScanSession(205, drift=True), page_size=100,
+            sleep=lambda delay: None,
+        )
+    with pytest.raises(CdtrfCatalogueScanError, match="page budget"):
+        scan_complete_cdtrf_catalogue(
+            FullScanSession(205), page_size=100, max_pages=2,
+        )
