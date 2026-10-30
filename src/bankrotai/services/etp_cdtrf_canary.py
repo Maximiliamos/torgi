@@ -124,7 +124,11 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
     category = classify_category(title, f"{property_description} {category_label}")
     status = detail["source_status_code"]
-    mapped = {"Declare": "scheduled", "RecieveReq": "active"}.get(status)
+    mapped = {
+        "Declare": "scheduled", "RecieveReq": "active",
+        "DefinePart": "scheduled", "TradeGo": "active",
+        "SummingUp": "closed",  # bidding over; no longer open for purchase
+    }.get(status)
     if category not in PROPERTY:
         raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
     if not detail.get("cadastral_number"):
