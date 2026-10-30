@@ -74,11 +74,29 @@ jobs:
           }
           if (-not $ok) { throw 'Full read-only CDTRF scan failed at 100, 50 and 20' }
 
+      - name: Verify sample CDTRF details, without database writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = @(docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_fivepage_readonly --source cdtrf.ru)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF exact-lot five-page detail verification failed' }
+          $detail = $output[-1] | ConvertFrom-Json
+          if ($detail.source -ne 'cdtrf.ru' -or $detail.pages_verified -ne 5 -or
+              $detail.verified_unique_property_details -lt 1 -or
+              $detail.no_database_writes -ne $true -or
+              $detail.safe_for_archival -ne $false) {
+            throw 'CDTRF detail sample fails the existing source identity/real-estate contract'
+          }
+          $detail | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'cdtrf-detail-readonly.json' -Encoding UTF8
+          Write-Output ("CDTRF detail sample: candidates={0}, verified property cards={1}, rejected={2}" -f $detail.catalogue_candidates_seen,$detail.verified_unique_property_details,$detail.details_rejected)
+
       - name: Save sanitized read-only evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cdtrf-full-readonly
-          path: cdtrf-complete-readonly.json
+          path: |
+            cdtrf-complete-readonly.json
+            cdtrf-detail-readonly.json
           if-no-files-found: warn
           retention-days: 30
