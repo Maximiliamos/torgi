@@ -43,6 +43,13 @@
 - [#1011](https://github.com/Maximiliamos/torgi/pull/1011) и [#1012](https://github.com/Maximiliamos/torgi/pull/1012) интегрированы на базе 0.3.8 `b5200eaa` только для общего CI; обе функции **read-only**.
 - **До слияния/релиза**: завершить exact-SHA Home/P11 релиза 0.3.8, пройти новый полный интеграционный CI + S3, затем после merge отдельно проверить 50 образцов `region_code` и canary readiness. Это **не исправление 3908 регионов**, не S5 импорт и не публикация исправленной карты.
 
+## P13 — диагностика прямого происхождения пропущенных регионов (30.10.2026; PR/CI)
+
+- **Проверенный Home [run #40979232788](https://github.com/Maximiliamos/torgi/actions/runs/40979232788)** на SHA `986616c1` успешно изучил 50 исторических объектов в read-only. По прежней версии отчёта **у всех 50** отсутствовало *достаточное свежее прямое official SourceLot region evidence*; это не утверждение, что во всей популяции нет `SourceLot`.
+- Новый диагностический `direct_source_blocker` для тех же **не более 50** объектов отдельно разделяет: `no_direct_source_lot`, `direct_source_unapproved`, `direct_official_source_inactive_or_archived`, `direct_official_source_stale`, `direct_official_status_unverified`, `direct_official_region_missing` и `direct_official_region_proof_present`. Это позволит точно установить, почему в предыдущем отчёте нет подходящих регионов.
+- Запросы ограничены проверенными `processed_lot_id`; никакие `CanonicalLot`-соседи не считаются той же продажей. Отчёт содержит лишь агрегаты категорий и внутренние ID, не содержит кадастра, URL, адреса, должника или иных персональных данных. **Нет backfill, SQL writes, архивации, GEO и публикации карты.**
+- **До приёмки** нужно подтвердить CI, затем объединить и выполнить Home exact-SHA workflow заново; только тогда результаты категорий можно учитывать при адресном восстановлении региона, с подтверждённым backup/rollback и операторским разбором. `3908` кандидатов со старой оценкой region unknown не считаются исправленными.
+
 ## P13/P15 — исследование исторически пустых регионов (staging)
 
 - [Issue #1010](https://github.com/Maximiliamos/torgi/issues/1010): по exact-SHA Home P13 report 3 908 из 4 149 предварительно подходящих лотов имеют `region_code` NULL/пустой. Эта цифра описывает **полный P13 preview**, а не следующую диагностическую выборку.
