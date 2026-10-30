@@ -546,10 +546,9 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
                 f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
                 r"дата окончания представления заявок",
             ),
-            auction_at=_datetime_after(
-                f"Дата проведения {raw.get('AuctionResultDate') or ''}",
-                r"дата проведения",
-            ),
+            # AuctionResultDate describes the result, not the start of bidding.
+            # Never publish it as auction_at without source-specific evidence.
+            auction_at=None,
         ))
     return lots
 
