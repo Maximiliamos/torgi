@@ -156,6 +156,34 @@ def test_detail_parser_uses_labelled_price_before_deposit() -> None:
     assert lot.cadastral_number == "50:18:0080111:1897"
 
 
+def test_price_label_does_not_capture_preceding_deposit() -> None:
+    html = """
+    <html><body><h1>Земельный участок</h1>
+    Размер задатка 100 000 руб. Начальная цена 1 000 000 руб.
+    Публичная карточка содержит достаточное описание лота для проверки парсинга.
+    </body></html>
+    """.encode()
+    lot = parse_detail_html(
+        profile("m-ets.ru"), html, detail_url="https://m-ets.ru/243003-1"
+    )
+    assert lot.start_price == 1_000_000
+
+
+def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
+    html = """
+    <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
+    <td>Управляющий</td>
+    <td>Всего лотов: 3 Лот № 1: Земельный участок 76:12:0000123:456
+    Лот № 2: Автомобиль BMW
+    Лот № 3: Квартира 77:01:0001010:1234</td></tr></table>
+    """
+    lots = parse_listing_html(profile("nistp.ru"), html)
+    assert [lot.external_id for lot in lots] == [
+        "nistp.ru:71874-ОАОФ:1",
+        "nistp.ru:71874-ОАОФ:3",
+    ]
+
+
 def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
     body = """
     <html><body><h1>Квартира площадью 59 кв. м.</h1>
@@ -188,6 +216,19 @@ def test_form_pagination_posts_page_number() -> None:
     result = asyncio.run(connector.search({}, cursor="2"))
     assert result.items[0].external_id == "nistp.ru:501500"
     assert session.posts[0][1]["pagenum"] == "2"
+
+
+def test_form_pagination_rejects_cross_host_action() -> None:
+    page_one = b"""
+    <form id='nodesearch' action='https://127.0.0.1/internal'>
+      <input type='hidden' name='pagenum' value='1'>
+    </form>
+    """
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](
+        session=FakeSession(FakeResponse(200, page_one, "https://nistp.ru/bankrot/trade_list.php"))
+    )
+    with pytest.raises(SourceAccessError, match="unsafe provider URL"):
+        asyncio.run(connector.search({}, cursor="2"))
 
 
 def test_aspnet_pagination_posts_viewstate_and_target() -> None:
@@ -235,3 +276,18 @@ def test_sberbank_api_pagination_and_mapping() -> None:
     assert result.items[0].start_price == 890000
     assert result.items[0].vin == "XTAGFK110NY607362"
     assert session.posts[0][0] == "https://www.sberbank-ast.ru/api/Processing/main"
+
+
+def test_sberbank_healthcheck_uses_json_contract() -> None:
+    payload = {
+        "Total": 1,
+        "PurchaseList": [{"_source": {
+            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
+            "title": "Автомобиль LADA VESTA",
+        }}],
+    }
+    connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
+        session=FakeSession(FakeResponse(200, json.dumps(payload).encode()))
+    )
+    health = asyncio.run(connector.healthcheck())
+    assert health.status == "ok"

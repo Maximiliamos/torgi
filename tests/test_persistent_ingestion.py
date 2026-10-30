@@ -822,6 +822,24 @@ def test_source_full_specs_reject_unknown_source() -> None:
         source_full_specs("unknown.example")
 
 
+def test_incomplete_connector_cannot_reconcile_missing(sessions) -> None:
+    class IncompleteConnector(FakeConnector):
+        safe_for_reconciliation = False
+
+        async def search(self, filters, cursor=None):
+            raise AssertionError("search must not run before the reconciliation gate")
+
+    service = NationwideIngestionService(
+        sessions, connector_factory=lambda _source_id: IncompleteConnector([])
+    )
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+    result = asyncio.run(service._sync_source(
+        run_id, SourceSyncSpec("incomplete-etp", {}, reconcile_missing=True)
+    ))
+    assert result.status == "failed"
+    assert "reconciliation is forbidden" in (result.error or "")
+
+
 def test_fast_sources_execute_concurrently(sessions, monkeypatch) -> None:
     service = NationwideIngestionService(sessions)
 

@@ -15,7 +15,7 @@ from sqlalchemy import event, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from bankrotai.connectors.base import AuctionConnector
+from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.db import LotSyncRun, LotSyncSourceRun, ProcessedLot, SourceLot, utc_now
 from bankrotai.logic import (
@@ -448,6 +448,11 @@ class NationwideIngestionService:
         connector = self.connector_factory(spec.source_id)
         cursor: str | None = None
         try:
+            if spec.reconcile_missing and not connector.safe_for_reconciliation:
+                raise ConnectorCapabilityError(
+                    f"{spec.source_id}: connector has not proven a complete source inventory; "
+                    "missing-lot reconciliation is forbidden"
+                )
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
             reached_source_end = False
             for _page_number in range(1, page_limit + 1):

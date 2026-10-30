@@ -69,15 +69,19 @@ def _clean(value: str) -> str:
 
 def _money(value: str) -> float | None:
     label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|текущ\w*\s+цен\w*|цена\s+лот\w*)"
-    labelled = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
-    if labelled:
-        matches = [labelled.group(1)]
+    after = re.search(label + r"[^\d]{0,40}" + _MONEY_RE.pattern, value, re.IGNORECASE)
+    if after and not re.search(r"размер\s+задатка", value[after.end():after.end() + 60], re.IGNORECASE):
+        raw = after.group(1)
     else:
-        labelled = re.search(label + r"[^\d]{0,40}" + _MONEY_RE.pattern, value, re.IGNORECASE)
-        matches = [labelled.group(1)] if labelled else []
-    if not matches:
+        before = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
+        if not before or re.search(
+            r"размер\s+задатка", value[max(0, before.start() - 60):before.start()], re.IGNORECASE
+        ):
+            return None
+        raw = before.group(1)
+    if not raw:
         return None
-    raw = matches[0].replace(" ", "").replace("\xa0", "").replace(",", ".")
+    raw = raw.replace(" ", "").replace("\xa0", "").replace(",", ".")
     try:
         return float(raw)
     except ValueError:
@@ -164,7 +168,77 @@ def _parse_soup(html: str | bytes) -> BeautifulSoup:
     return BeautifulSoup(html, "html.parser")
 
 
+def _safe_provider_url(profile: EtpSourceProfile, value: str) -> str:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in profile.allowed_hosts
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+    ):
+        raise SourceAccessError(f"{profile.source_id}: refused unsafe provider URL")
+    return value
+
+
+def _parse_multi_lot_catalogue(
+    profile: EtpSourceProfile, html: str | bytes, *, page: int
+) -> list[NormalizedLot] | None:
+    if profile.source_id not in {"nistp.ru", "vertrades.ru"}:
+        return None
+    from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
+
+    decoded = _parse_soup(html).decode()
+    observations = parse_catalogue(PROFILE_BY_ID[profile.source_id], decoded)
+    identified = [item for item in observations if item.get("external_id")]
+    if not identified:
+        return None
+    lots: list[NormalizedLot] = []
+    for item in identified:
+        price_value = item.get("listing_price_rub")
+        try:
+            price = float(price_value) if price_value not in {None, ""} else None
+        except (TypeError, ValueError):
+            price = None
+        title = _clean(str(item.get("title") or ""))
+        detail_url = _safe_provider_url(profile, str(item.get("catalogue_detail_link") or ""))
+        lots.append(NormalizedLot(
+            external_id=f"{profile.source_id}:{item['external_id']}",
+            source=profile.source_id.removesuffix(".ru"),
+            source_system=profile.source_id,
+            title=title[:500],
+            description=title[:5000],
+            category=_category(title),
+            region_slug=None,
+            region_name=None,
+            address=None,
+            cadastral_number=item.get("cadastral_number"),
+            vin=None,
+            area=None,
+            start_price=price,
+            current_price=price,
+            auction_status=_status(str(item.get("source_status_text") or "")),
+            lot_url=detail_url,
+            source_url=detail_url,
+            detail_level="search",
+            raw_data={
+                "listing_page": page,
+                "trade_id": item.get("trade"),
+                "lot_number": item.get("lot"),
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+                "reconcile_missing": False,
+            },
+            platform_name=profile.platform_name,
+            platform_code=profile.platform_code,
+        ))
+    return lots
+
+
 def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: int = 1) -> list[NormalizedLot]:
+    multi_lot = _parse_multi_lot_catalogue(profile, html, page=page)
+    if multi_lot is not None:
+        return multi_lot
     soup = _parse_soup(html)
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
@@ -441,6 +515,7 @@ def _page_url(profile: EtpSourceProfile, page: int) -> str:
 class HtmlEtpConnector(AuctionConnector):
     profile: EtpSourceProfile
     capabilities = frozenset({"search", "fetch_lot", "healthcheck"})
+    safe_for_reconciliation = False
 
     def __init__(self, *, session: requests.Session | None = None, timeout: float = 25.0) -> None:
         self.session = session or requests.Session()
@@ -457,6 +532,8 @@ class HtmlEtpConnector(AuctionConnector):
         return self.profile.source_id
 
     def _check_response(self, response: requests.Response) -> requests.Response:
+        if 300 <= response.status_code < 400:
+            raise SourceAccessError(f"{self.source_id}: provider redirect was refused")
         if response.status_code in {401, 403, 429}:
             raise SourceAccessError(f"{self.source_id}: provider returned HTTP {response.status_code}")
         response.raise_for_status()
@@ -474,8 +551,11 @@ class HtmlEtpConnector(AuctionConnector):
                 "<cadastralNumber></cadastralNumber><isOnMapTerm></isOnMapTerm><hasRequest></hasRequest>"
                 "<hasDeposit></hasDeposit><orgInnKpp></orgInnKpp></query>"
             )
+            api_url = _safe_provider_url(
+                self.profile, "https://www.sberbank-ast.ru/api/Processing/main"
+            )
             response = self._check_response(self.session.post(
-                "https://www.sberbank-ast.ru/api/Processing/main",
+                api_url,
                 json={
                     "windowCode": "/ESGoodsList",
                     "actionType": "MONITOR",
@@ -486,6 +566,7 @@ class HtmlEtpConnector(AuctionConnector):
                     "options": {},
                 },
                 timeout=self.timeout,
+                allow_redirects=False,
             ))
             self._last_response, self._last_page = response, page
             return response
@@ -493,12 +574,19 @@ class HtmlEtpConnector(AuctionConnector):
         if page > 1 and not self.profile.supports_get_pagination and not supports_form:
             raise SourceAccessError(f"{self.source_id}: pagination requires a provider-specific browser/form contract")
         if page <= 1 or self.profile.supports_get_pagination:
-            response = self._check_response(self.session.get(_page_url(self.profile, page), timeout=self.timeout))
+            page_url = _safe_provider_url(self.profile, _page_url(self.profile, page))
+            response = self._check_response(self.session.get(
+                page_url, timeout=self.timeout, allow_redirects=False
+            ))
             self._last_response, self._last_page = response, page
             return response
 
         previous = self._last_response if self._last_page == page - 1 else None
-        previous = previous or self._check_response(self.session.get(self.profile.listing_url, timeout=self.timeout))
+        previous = previous or self._check_response(self.session.get(
+            _safe_provider_url(self.profile, self.profile.listing_url),
+            timeout=self.timeout,
+            allow_redirects=False,
+        ))
         soup = _parse_soup(previous.content)
         if self.profile.form_page_field:
             form = soup.find("form", id=self.profile.form_id) if self.profile.form_id else soup.find("form")
@@ -509,7 +597,10 @@ class HtmlEtpConnector(AuctionConnector):
                 if str(node.get("type") or "").lower() not in {"submit", "button", "image", "file"}:
                     data[str(node.get("name"))] = str(node.get("value") or "")
             data[self.profile.form_page_field] = str(page)
-            action = urljoin(previous.url or self.profile.listing_url, str(form.get("action") or ""))
+            action = _safe_provider_url(
+                self.profile,
+                urljoin(previous.url or self.profile.listing_url, str(form.get("action") or "")),
+            )
         else:
             link = next((
                 node for node in soup.select("a[href]")
@@ -525,8 +616,12 @@ class HtmlEtpConnector(AuctionConnector):
                 for node in soup.select("input[type=hidden][name]")
             }
             data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
-            action = previous.url or self.profile.listing_url
-        response = self._check_response(self.session.post(action, data=data, timeout=self.timeout))
+            action = _safe_provider_url(
+                self.profile, previous.url or self.profile.listing_url
+            )
+        response = self._check_response(self.session.post(
+            action, data=data, timeout=self.timeout, allow_redirects=False
+        ))
         self._last_response, self._last_page = response, page
         return response
 
@@ -574,7 +669,10 @@ class HtmlEtpConnector(AuctionConnector):
             sale_type=sale_type if separator else "",
             lot_id=lot_id if separator else identity,
         )
-        response = await asyncio.to_thread(self.session.get, detail_url, timeout=self.timeout)
+        detail_url = _safe_provider_url(self.profile, detail_url)
+        response = await asyncio.to_thread(
+            self.session.get, detail_url, timeout=self.timeout, allow_redirects=False
+        )
         if response.status_code in {401, 403, 429}:
             raise SourceAccessError(f"{self.source_id}: provider returned HTTP {response.status_code}")
         response.raise_for_status()
@@ -590,7 +688,10 @@ class HtmlEtpConnector(AuctionConnector):
             return ConnectorHealth("blocked", self.profile.blocked_reason, {"source": self.source_id})
         try:
             response = await asyncio.to_thread(self._request, 1)
-            lots = parse_listing_html(self.profile, response.content)
+            if self.profile.api_kind == "sberbank_ast":
+                lots = parse_sberbank_json(self.profile, response.json(), page=1)
+            else:
+                lots = parse_listing_html(self.profile, response.content)
         except Exception as exc:
             return ConnectorHealth("degraded", str(exc), {"source": self.source_id})
         status = "ok" if lots else "degraded"
