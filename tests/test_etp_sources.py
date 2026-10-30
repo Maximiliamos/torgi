@@ -69,6 +69,13 @@ def test_all_profiles_are_registered() -> None:
     assert set(SOURCE_CONNECTOR_TYPES) <= set(connector_registry.source_ids())
 
 
+def test_registry_uses_new_parsers_except_for_mature_source_specific_connectors() -> None:
+    preserved = {"m-ets.ru", "cdtrf.ru", "rts-tender.ru"}
+    for source_id, connector_cls in SOURCE_CONNECTOR_TYPES.items():
+        if source_id not in preserved:
+            assert isinstance(connector_registry.create(source_id), connector_cls)
+
+
 @pytest.mark.parametrize("source_id", ["rts-tender.ru", "etp-profit.ru", "ausib.ru", "utender.ru", "electro-torgi.ru"])
 def test_unproven_sources_fail_explicitly(source_id: str) -> None:
     connector = SOURCE_CONNECTOR_TYPES[source_id]()
