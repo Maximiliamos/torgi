@@ -233,7 +233,10 @@ def test_explicit_current_price_is_not_confused_with_initial_or_deposit() -> Non
     assert detail.start_price == 1000000
     assert detail.current_price == 800000
     assert detail.deposit_amount is None
-    listing = f"<tr><td><a href='https://m-ets.ru/243003-1'>Земельный участок</a></td><td>{body}</td></tr>"
+    listing = (
+        "<table><tr><td><a href='https://m-ets.ru/243003-1'>Земельный участок</a></td>"
+        "<td>Начальная цена 1 000 000 руб. Текущая цена 800 000 руб.</td></tr></table>"
+    )
     entry = parse_listing_html(profile("m-ets.ru"), listing)[0]
     assert entry.start_price == 1000000
     assert entry.current_price == 800000
