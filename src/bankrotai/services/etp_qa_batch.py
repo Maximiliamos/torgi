@@ -16,7 +16,9 @@ from bankrotai.services.etp_qa_map import SUPPORTED, preview
 
 async def run_all(*, pages: int, per_page: int, geo_limit: int) -> dict:
     reports = []
-    for source in sorted(SUPPORTED):
+    sources = sorted(SUPPORTED)
+    total = len(sources)
+    for index, source in enumerate(sources, start=1):
         try:
             result = await preview(
                 source, pages=pages, per_page=per_page,
@@ -37,7 +39,12 @@ async def run_all(*, pages: int, per_page: int, geo_limit: int) -> dict:
                 "error_categories": [type(exc).__name__],
             }
         reports.append(entry)
-        print(json.dumps({"qa_progress": entry}, ensure_ascii=False), flush=True)
+        print(json.dumps({
+            "qa_progress": entry,
+            "completed_sources": index,
+            "total_sources": total,
+            "percent": round(index / total * 100, 1),
+        }, ensure_ascii=False), flush=True)
     return {
         "report": "etp_manual_qa_multi_source",
         "checked_at": datetime.now(timezone.utc).isoformat(),
