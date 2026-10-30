@@ -124,6 +124,7 @@ def test_generic_cdtrf_heading_uses_actual_property_description(monkeypatch):
     lot = fetch_verified_cdtrf_lot("390364", "390899", session=object())
     assert lot.category == "land"
     assert lot.description.startswith("Лот № 1")
+    assert lot.title.startswith("Лот № 1")  # never use generic debtor heading as map title
     assert lot.auction_status == "active"
 
 
