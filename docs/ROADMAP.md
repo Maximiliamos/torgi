@@ -11,6 +11,52 @@
 
 
 
+## Подтверждённая приёмка 0.3.8 и ЭТП (30.10.2026)
+
+- **main `b5200eaa`**: production CI, Home deploy, REG.RU WEB/API, Cloudflare edge, публичный WEB и functional smoke — success; **P1 production data quality** также success; **P11 30-min soak ещё выполняется**. `v0.3.8` **не опубликован** на момент этой записи; latest GitHub release — `v0.3.7`. Не сливать 0.3.9 с обходом exact-SHA P11.
+- [Home M-ETS run #40970926040](https://github.com/Maximiliamos/torgi/actions/runs/40970926040) success: 5 страниц, 100 уникальных ID каталога, 100 candidate fingerprints, 10 проверенных property details, 0 отклонений, без DB writes.
+- [Home CDTRF run #40970926049](https://github.com/Maximiliamos/torgi/actions/runs/40970926049) success: 5 страниц, 100 ID общего каталога; **48** кандидатов недвижимости, 48 candidate fingerprints, 8 подтверждённых property details, 2 отклонения. Это **не** 100 подтверждённых объектов недвижимости.
+- [Home P16 run #40970926059](https://github.com/Maximiliamos/torgi/actions/runs/40970926059) success: current MapDataset 52 028, строгий P13 максимум 4 149 (**7,97%**), 48 555 cross-source merged pairs для проверки, МЭТС/ЦДТ SourceLot=0/ProcessedLot=0/GEO=0. Не публиковать предложенную карту и не путать suspicious pairs с доказанными ошибками.
+- [PR #1013](https://github.com/Maximiliamos/torgi/pull/1013) staging 0.3.9 содержит только read-only P13 region review и S5 readiness, дополненные SQL проверкой существующих SourceLot/ProcessedLot кадастровых и exact-ID конфликтов **до** канареечного импорта. Это дополнительная защита, не отменяющая проверку непосредственно перед commit. **S5 persisted lots по-прежнему 0 до отдельной приёмки.**
+
+### Защита в ручном workflow
+
+- `.github/workflows/etp-manual-verified-import.yml` теперь **до SQL UPDATE/INSERT** запускает `etp_manual_import --audit-collisions` на двух свежих карточках и требует 0 уже существующих cross-source / source-only / exact-ID конфликтов. Стандартные independent exact-SHA P11 и restore-verified backup гейты не ослаблены.
+- В самом `run_import(..., apply=True)` перед транзакцией дополнительно проверяется уникальность кадастровых номеров **внутри** 2-лотной партии, чтобы source drift между проверкой и импортом не создал необоснованное дублирование. Если кадастровые номера совпали — отказ, операторская проверка, без DB writes.
+- Настоящий canary импорт остаётся **ручным**; цена/status/GEO/map должны быть проверены по exact persisted IDs, прежде чем объявлять ETP source S5–S7.
+
+### Проверка непосредственно перед записью (0.3.9 staging)
+
+- `etp_canary_persistence.persist_canary_lot` теперь **внутри транзакции** повторно проверяет `SourceLot` другой площадки с тем же кадастром, включая те записи, которые ещё не связаны с `ProcessedLot`. Ранее эта проверка была только в предварительном SQL просмотре, а между ним и commit возможны изменения.
+- В момент записи также запрещено превращать уже существующий `ProcessedLot/SourceLot` с точным `source_system + external_id` в «первый новый canary». Это только строгий **первый** пробный импорт, не плановый инкрементальный update старого лота.
+- SQLite regression защищают оба сценария без вызова `persist_lot`. Это не обеспечивает глобальной serializable-защиты от всех гонок: PostgreSQL UniqueConstraints и откат при исключении остаются дополнительными рубежами. Production-импорт не подтверждён.
+
+## S5 pre-import collision safety (staging, 30.10.2026)
+
+- `src/bankrotai/services/etp_preimport_collision_review.py`: ограниченная до **двух** проверенных деталей read-only проверка существующих `ProcessedLot` и `SourceLot` по отдельным индексированным ID и кадастру. Даже совпадение кадастра другой ЭТП является **причиной ручного разбора**, а не доказательством одной продажи.
+- `etp_manual_import --audit-collisions` запрещено сочетать с `--apply`. PostgreSQL-сессия выполняет только SELECT и rollback. В sanitized отчёте лишь агрегированные counts: cross-source cadastral collision, old source/processed ID, duplicate cadastral within batch, new no-known-collision.
+- Readiness-проверка #1013 требует **нулевых** конфликтов для обеих первых двух карточек каждой площадки; при конфликте — fail closed, оператор должен выбрать иную проверенную партию. Даже результат `ready_for_separate_operator_canary=true` **не гарантирует отсутствие гонок**, ни права автоматического импорта/архивирования или немедленной публикации карты: все source/DB/GEO/WEB-gates остаются обязательными.
+- **Статус:** staging, до принятого release 0.3.8 и интеграционного CI/реального Home preflight не считается production-функцией.
+
+## 0.3.9 — staging интеграция подтверждения регионов и readiness ЭТП
+
+- [#1011](https://github.com/Maximiliamos/torgi/pull/1011) и [#1012](https://github.com/Maximiliamos/torgi/pull/1012) интегрированы на базе 0.3.8 `b5200eaa` только для общего CI; обе функции **read-only**.
+- **До слияния/релиза**: завершить exact-SHA Home/P11 релиза 0.3.8, пройти новый полный интеграционный CI + S3, затем после merge отдельно проверить 50 образцов `region_code` и canary readiness. Это **не исправление 3908 регионов**, не S5 импорт и не публикация исправленной карты.
+
+## P13/P15 — исследование исторически пустых регионов (staging)
+
+- [Issue #1010](https://github.com/Maximiliamos/torgi/issues/1010): по exact-SHA Home P13 report 3 908 из 4 149 предварительно подходящих лотов имеют `region_code` NULL/пустой. Эта цифра описывает **полный P13 preview**, а не следующую диагностическую выборку.
+- Новый `bankrotai.services.historical_region_review` формирует **не более 50** read-only примеров действующих primary-лотов с кадастровым GEO и пропущенным регионом. Только прямые свежие официальные `SourceLot` + одиночный структурно корректный кадастр могут дать `consistent_requires_manual_approval`; конфликт, старый или отсутствующий источник остаются `blocked` для backfill.
+- Workflow `p13-historical-region-review.yml` принимает только exact Home SHA, сохраняет обезличенный JSON (внутренние ID/региональные коды, без адресов и номера кадастра). **Нет SQL UPDATE, GEO-публикации, архивирования или полного исправления 3 908 записей**; это sampling, не весь P13-список.
+- Следующая стадия после release acceptance: независимый impact/lineage review и restore-verified backup; только затем обратимый операторский батч и повторный P13 + фильтры региона + WEB.
+
+## R7/S5 — zero-write canary readiness gate (staging 30.10.2026)
+
+- До ручного импорта МЭТС и ЦДТ на принятом exact SHA нужен **отдельный** read-only сигнал о готовности: реальный восстановленный PostgreSQL backup за последние 60 ч, актуальный `main`/P11/WEB/REG.RU/Cloudflare, правильная версия ingestion worker и 1–2 заново проверенных property details каждого источника.
+- `scripts/etp-canary-readiness.ps1` повторно использует обязательный `verify-etp-canary-acceptance.ps1` и сравнивает SHA256 backup с manifest; запускает `etp_manual_import` **без `--apply`**. Артефакт содержит только source ID, количество проверенных деталей и причины блокировки, не external IDs/ФИО/адреса.
+- `.github/workflows/etp-s5-canary-readiness.yml` запускается **только после success P11 main** на exact SHA, ничего не записывает и завершает failure при ошибках. Сигнал `details_verified_manual_import_still_required` **не даёт разрешения автоматически импортировать**: проверка кадастровых конфликтов, сам импорт 1–2 лотов, GEO, journal, MapDataset, S3 и WEB — последующие отдельные операторские действия.
+- **Статус:** staging PR, пока без merged/Home доказательств; 0 новых S5–S7 источников не сертифицировано. Версия 0.3.8 `b5200eaa` ещё должна пройти P11 и публикацию release.
+
 ## R7 / 0.3.8 — совместная проверка новой ветки
 
 - [PR #1007](https://github.com/Maximiliamos/torgi/pull/1007) синхронизирован с **актуальным** `main` после #1008/#1009; `src/bankrotai/services/etp_fivepage_readonly.py` проверяет все кандидаты пяти страниц МЭТС/ЦДТ по хешам ID, включая те, чьи детали не были загружены из-за лимитов.

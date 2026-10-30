@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from bankrotai.db import ProcessedLot
+from bankrotai.db import ProcessedLot, SourceLot
 from bankrotai.logic import log_action, persist_lot
 
 
@@ -30,6 +30,34 @@ def persist_canary_lot(session, normalized, actor_id: str):
     if duplicate is not None:
         raise CanaryDuplicateReviewRequired(
             "Another source has the same cadastral number; manual review required"
+        )
+    # Recheck source-only provenance at the actual write boundary. The
+    # preflight is SELECT-only and a new source row may appear afterwards.
+    if session.scalar(
+        select(SourceLot.id).where(
+            SourceLot.cadastral_number == cadastral,
+            SourceLot.source_system != normalized.source_system,
+            SourceLot.is_archived.is_(False),
+        ).limit(1)
+    ) is not None:
+        raise CanaryDuplicateReviewRequired(
+            "Another source provenance has the same cadastral number; manual review required"
+        )
+    # This manual first import must never silently overwrite an existing
+    # source identity that appeared between preview and transaction.
+    if session.scalar(
+        select(ProcessedLot.id).where(
+            ProcessedLot.source_system == normalized.source_system,
+            ProcessedLot.external_id == normalized.external_id,
+        ).limit(1)
+    ) is not None or session.scalar(
+        select(SourceLot.id).where(
+            SourceLot.source_system == normalized.source_system,
+            SourceLot.external_id == normalized.external_id,
+        ).limit(1)
+    ) is not None:
+        raise CanaryDuplicateReviewRequired(
+            "ETP canary source identity is already present; manual review required"
         )
     # Cadastral overlap, same price or the same address does not prove the
     # identity of the auction sale on another trading platform.

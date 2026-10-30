@@ -117,8 +117,10 @@ def test_workflow_checks_accepted_deploy_twice_before_mutation():
     assert workflow.index("verify-etp-canary-acceptance.ps1") < workflow.index(
         "Require recent locally restore-verified backup"
     )
+    # The new --audit-collisions preview intentionally precedes the second
+    # exact-SHA check. What must remain after that check is the *write* call.
     assert workflow.rindex("verify-etp-canary-acceptance.ps1") < workflow.index(
-        "python -m bankrotai.services.etp_manual_import"
+        "python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply"
     )
     assert "actions: read" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
@@ -132,13 +134,31 @@ def test_workflow_checks_accepted_deploy_twice_before_mutation():
         assert fragment in guard
 
 
+def test_operator_canary_preview_blocks_collision_before_any_apply():
+    root = Path(__file__).resolve().parents[1]
+    wf = (root / ".github/workflows/etp-manual-verified-import.yml").read_text(
+        encoding="utf-8"
+    )
+    preview = "Refuse collision-prone or already-imported source details before any write"
+    applying = "Import at most two verified lots, no source reconciliation"
+    assert wf.index("Require recent locally restore-verified backup") < wf.index(preview)
+    assert wf.index(preview) < wf.index(applying)
+    assert "python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --audit-collisions" in wf
+    assert "$review.blocked_candidate_count -ne 0" in wf
+    assert "$review.new_unconflicted_candidate_count -ne $review.details_reviewed" in wf
+    assert "$review.database_writes -ne 0" in wf
+    assert "$review.revalidate_in_atomic_import -ne $true" in wf
+    assert "manual review required" in wf
+    assert wf.count("verify-etp-canary-acceptance.ps1 -ExpectedSha") == 2
+
+
 def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     from contextlib import contextmanager
     from bankrotai import db
     from bankrotai.services import etp_canary_persistence as persistence
     from bankrotai.services import etp_manual_import as module
 
-    rows = [sale(), sale(external_id="243003-2")]
+    rows = [sale(), sale(external_id="243003-2", cadastral_number="76:23:010101:2")]
     async def candidates(source, limit):
         return rows
     monkeypatch.setattr(module, "collect_lots", candidates)
@@ -166,13 +186,30 @@ def test_two_verified_lots_commit_once_with_public_source_ids(monkeypatch):
     assert outcome["missing_lot_archival"] is False
 
 
+def test_apply_rejects_new_duplicate_cadastre_before_sql_transaction(monkeypatch):
+    from bankrotai.services import etp_manual_import as module
+    from bankrotai import db
+
+    async def same_asset(source, limit):
+        return [sale(), sale(external_id="243003-2")]
+    monkeypatch.setattr(module, "collect_lots", same_asset)
+    monkeypatch.setenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("ETP_CANARY_BACKUP_VERIFIED", "1")
+    monkeypatch.setattr(
+        db, "session_scope",
+        lambda: pytest.fail("No database transaction may begin"),
+    )
+    with pytest.raises(ValueError, match="batch repeats a cadastral number"):
+        run_import("m-ets.ru", limit=2, apply=True)
+
+
 def test_second_lot_collision_rolls_back_first_and_fails_closed(monkeypatch):
     from contextlib import contextmanager
     from bankrotai import db
     from bankrotai.services import etp_canary_persistence as persistence
     from bankrotai.services import etp_manual_import as module
 
-    rows = [sale(), sale(external_id="243003-2")]
+    rows = [sale(), sale(external_id="243003-2", cadastral_number="76:23:010101:2")]
     async def candidates(source, limit):
         return rows
     monkeypatch.setattr(module, "collect_lots", candidates)

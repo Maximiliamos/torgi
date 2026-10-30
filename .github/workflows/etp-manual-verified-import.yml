@@ -65,6 +65,36 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
             throw 'ETP import refused: trusted home worker is not running'
           }
+      - name: Refuse collision-prone or already-imported source details before any write
+        shell: powershell
+        env:
+          ETP_SOURCE: ${{ inputs.source_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # This is another read-only SELECT-only gate; the importer still
+          # checks collisions atomically in the eventual write transaction.
+          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --audit-collisions)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) {
+            throw 'ETP source candidate collision preflight failed'
+          }
+          $report = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          $review = $report.preimport_collision_review
+          if ($report.source -ne $env:ETP_SOURCE -or
+              $report.write_authorized -ne $false -or
+              $report.persisted_count -ne 0 -or
+              $report.complete_source_inventory -ne $false -or
+              $null -eq $review -or
+              $review.source -ne $env:ETP_SOURCE -or
+              $review.read_only -ne $true -or
+              $review.database_writes -ne 0 -or
+              $review.details_reviewed -lt 1 -or $review.details_reviewed -gt 2 -or
+              $review.new_unconflicted_candidate_count -ne $review.details_reviewed -or
+              $review.blocked_candidate_count -ne 0 -or
+              $review.ready_for_separate_operator_canary -ne $true -or
+              $review.revalidate_in_atomic_import -ne $true) {
+            throw 'ETP canary would overwrite/duplicate existing evidence: manual review required'
+          }
+          Write-Output ("ETP collision preflight passed for {0} details; writing is a separate guarded step" -f $review.details_reviewed)
       - name: Import at most two verified lots, no source reconciliation
         shell: powershell
         env:

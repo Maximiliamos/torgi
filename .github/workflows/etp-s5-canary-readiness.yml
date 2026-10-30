@@ -1,0 +1,42 @@
+name: ETP S5 exact-SHA read-only canary readiness
+on:
+  workflow_run:
+    workflows: ["P11 production acceptance"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: etp-s5-canary-readiness
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 12
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Check P11, current SHA, verified restore and bounded real-source detail without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'etp-s5-readonly-canary-readiness.json'
+          & .\scripts\etp-canary-readiness.ps1 -ExpectedSha '${{ github.event.workflow_run.head_sha }}' -OutputFile $path
+          if ($LASTEXITCODE -ne 0) { throw 'ETP S5 readiness preflight failed closed' }
+      - name: Retain sanitized candidate readiness evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-s5-canary-readiness
+          path: ${{ runner.temp }}/etp-s5-readonly-canary-readiness.json
+          if-no-files-found: warn
+          retention-days: 30
