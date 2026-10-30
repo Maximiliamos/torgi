@@ -547,17 +547,14 @@ def login(request: LoginRequest, response: Response):
     )
     return result
 
-
 @app.post("/api/auth/logout")
 def logout(response: Response):
     response.delete_cookie(_SESSION_COOKIE, path="/", httponly=True, secure=settings.is_production, samesite="strict")
     return {"status": "signed_out"}
 
-
 @app.get("/api/auth/me")
 def current_user(actor: AuthenticatedUser = Depends(require_user)):
     return {"id": actor.id, "username": actor.username, "role": actor.role}
-
 
 def _normalized_lot_to_dict(lot) -> dict:
     return {
