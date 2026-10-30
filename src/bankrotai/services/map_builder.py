@@ -212,11 +212,11 @@ def cleanup_map_datasets(
                         )
                     # Recheck safety after every commit: a newer promotion or
                     # operator rollback may change which versions are protected.
-                    still_noncurrent = session.scalar(
-                        select(MapDataset.id).where(
+                    row = session.scalar(
+                        select(MapDataset).where(
                             MapDataset.id == dataset_id,
                             MapDataset.is_current.is_(False),
-                        )
+                        ).with_for_update()
                     )
                     rollback_protected_ids = set(session.scalars(
                         select(MapDataset.id)
@@ -232,7 +232,25 @@ def cleanup_map_datasets(
                         )
                         .limit(retain_previous_ready)
                     ))
-                    if still_noncurrent is None or dataset_id in rollback_protected_ids:
+                    # A status, age, identity or publication change since
+                    # the snapshot must never turn a *new* current/rollback
+                    # candidate into a deletion target. Re-evaluate this under
+                    # the same transaction lock used by promotion.
+                    eligible_now = False
+                    if row is not None and row.version == dataset_version:
+                        created = row.created_at
+                        if created.tzinfo is not None:
+                            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+                        if row.status == "ready":
+                            eligible_now = (
+                                row.published_at is not None
+                                and dataset_id not in rollback_protected_ids
+                            )
+                        elif row.status in {"failed", "rejected"}:
+                            eligible_now = created <= stale_cutoff
+                        elif row.status == "building":
+                            eligible_now = created <= building_cutoff
+                    if not eligible_now or dataset_id in rollback_protected_ids:
                         session.rollback()
                         break
 
