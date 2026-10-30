@@ -1,9 +1,7 @@
 import React from "react";
-import {
-  fetchEtpQaPreview,
-  fetchEtpQaSources,
-} from "../../lib/api";
-import type { EtpQaPreview, MapMarkerLot } from "../../lib/api";
+import { fetchEtpQaPreview, fetchEtpQaSources } from "../../lib/etpQaApi";
+import type { EtpQaPreview } from "../../lib/etpQaApi";
+import type { MapMarkerLot } from "../../lib/api";
 
 export function useEtpQa(isAdmin: boolean) {
   const [qaSource, setQaSource] = React.useState("m-ets.ru");
