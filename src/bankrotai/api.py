@@ -524,9 +524,7 @@ def readiness_check():
             return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks, "version": __version__}
 
-
 # --- Endpoints ---
-
 
 @app.post("/api/auth/login")
 def login(request: LoginRequest, response: Response):
