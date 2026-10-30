@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import threading
 import time
@@ -146,6 +147,20 @@ def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
     This is used for controlled VPN-OFF source validation.  It deliberately
     retains full pagination and missing reconciliation, unlike fast refresh.
     """
+    if source_id == "cdtrf.ru":
+        # Only this explicit operator source run can perform CDTRF writes.
+        # The source is intentionally NOT in default_source_specs()/Celery beat.
+        # No absent-lot archival even after reading all selected pages: CDTRF
+        # does not provide a stable catalogue snapshot.
+        if (os.getenv("CDTRF_OPERATOR_SYNC_ENABLED") != "1"
+                or os.getenv("ETP_CANARY_BACKUP_VERIFIED") != "1"
+                or os.getenv("ETP_OPERATOR_CANARY_IMPORT_ENABLED") != "1"):
+            raise PermissionError("CDTRF sync requires operator authorization and verified backup")
+        from bankrotai.connectors.registry.cdtrf_sync import CdtrfSyncFilters
+        return (SourceSyncSpec(
+            "cdtrf.ru", CdtrfSyncFilters(page_size=100),
+            reconcile_missing=False, max_batches=10_000,
+        ),)
     for spec in default_source_specs():
         if spec.source_id == source_id:
             return (spec,)
