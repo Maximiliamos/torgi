@@ -135,7 +135,8 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
         amount = float(cleaned.replace(",", "."))
         return amount if 0 < amount < 1e15 else None
 
-    initial = current = None
+    initial: float | None = None
+    current: float | None = None
     for title, cell in zip(headings, cells):
         if re.search(r"начальн\w*\s+цен\w*|цена\s+лот\w*", title):
             initial = parse_number(cell.get_text(" ", strip=True))
