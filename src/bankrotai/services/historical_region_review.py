@@ -58,6 +58,30 @@ def classify_region_evidence(
     return "consistent_requires_manual_approval", cadastral
 
 
+def direct_source_blocker(rows: list[tuple], *, observed_at: datetime) -> str:
+    """Explain lack of source proof without treating a canonical sibling as direct."""
+    if not rows:
+        return "no_direct_source_lot"
+    official = [row for row in rows if row[0] in OFFICIAL]
+    if not official:
+        return "direct_source_unapproved"
+    live = [row for row in official if row[2] is True and row[3] is False]
+    if not live:
+        return "direct_official_source_inactive_or_archived"
+    recent = [
+        row for row in live
+        if row[5] is not None and row[5] >= observed_at - timedelta(hours=72)
+    ]
+    if not recent:
+        return "direct_official_source_stale"
+    status_ok = [row for row in recent if row[4] in ACTIVE]
+    if not status_ok:
+        return "direct_official_status_unverified"
+    if not any(str(row[1] or "").strip() for row in status_ok):
+        return "direct_official_region_missing"
+    return "direct_official_region_proof_present"
+
+
 def build_report(session: Session, *, limit: int = 50) -> dict:
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("Bounded region review limit must be 1..100")
@@ -81,25 +105,35 @@ def build_report(session: Session, *, limit: int = 50) -> dict:
         .limit(limit)
     ).all()
     counts: Counter[str] = Counter()
+    blocker_counts: Counter[str] = Counter()
     reviews = []
     for processed_id, cadastre in rows:
         # The explicit processed_lot_id is necessary: a legacy-only canonical
         # group can contain different sales of the same physical asset.
-        direct_regions = session.scalars(
-            select(SourceLot.region_code).where(
-                SourceLot.processed_lot_id == processed_id,
-                SourceLot.source_system.in_(OFFICIAL),
-                SourceLot.is_active.is_(True),
-                SourceLot.is_archived.is_(False),
-                SourceLot.source_status.in_(ACTIVE),
-                SourceLot.last_seen_at >= now - timedelta(hours=72),
-            )
+        # Inspect ONLY the direct processed-lot FK: a canonical group
+        # may contain distinct sales of the same cadastral object.
+        direct = session.execute(
+            select(
+                SourceLot.source_system, SourceLot.region_code,
+                SourceLot.is_active, SourceLot.is_archived,
+                SourceLot.source_status, SourceLot.last_seen_at,
+            ).where(SourceLot.processed_lot_id == processed_id)
         ).all()
+        blocker = direct_source_blocker(direct, observed_at=now)
+        direct_regions = [
+            row[1] for row in direct
+            if row[0] in OFFICIAL
+            and row[2] is True and row[3] is False
+            and row[4] in ACTIVE and row[5] is not None
+            and row[5] >= now - timedelta(hours=72)
+        ]
         reason, suggestion = classify_region_evidence(cadastre, direct_regions)
         counts[reason] += 1
+        blocker_counts[blocker] += 1
         reviews.append({
             "processed_lot_id": int(processed_id),
             "classification": reason,
+            "lineage_blocker": blocker,
             "review_region_hint": suggestion,
             "direct_fresh_source_region_count": len(direct_regions),
             "operation": "manual_review_only",
@@ -116,6 +150,7 @@ def build_report(session: Session, *, limit: int = 50) -> dict:
         "historical_region_backfill_completed": False,
         "restore_verified_backup_required_before_write": True,
         "classification_counts_in_sample": dict(sorted(counts.items())),
+        "lineage_blocker_counts_in_sample": dict(sorted(blocker_counts.items())),
         "bounded_review_items": reviews,
     }
 
