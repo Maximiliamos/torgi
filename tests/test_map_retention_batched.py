@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -105,3 +105,59 @@ def test_retention_rejects_unsafe_work_budget(tile_batch_size, max_tiles_per_run
             tile_batch_size=tile_batch_size,
             max_tiles_per_run=max_tiles_per_run,
         )
+
+
+def test_resumed_build_between_batches_blocks_remaining_tile_deletions():
+    """A failed row recovered to fresh building must not be further cleaned."""
+    engine, factory = _factory()
+    now = datetime(2026, 10, 30, 1)
+    old = now - timedelta(days=5)
+    with factory() as session:
+        current = MapDataset(
+            version="current", is_current=True, status="ready",
+            created_at=now, published_at=now, tile_count=1,
+        )
+        failed = MapDataset(
+            version="failed-old", is_current=False, status="failed",
+            created_at=old, tile_count=6,
+        )
+        session.add_all([current, failed])
+        session.flush()
+        session.add(MapTile(
+            dataset_id=current.id, z=12, x=0, y=0, feature_count=0,
+            etag="live", payload_json={"features": []},
+        ))
+        for x in range(6):
+            session.add(MapTile(
+                dataset_id=failed.id, z=12, x=x, y=0, feature_count=0,
+                etag=f"failed-{x}", payload_json={"features": []},
+            ))
+        session.commit()
+
+    changed = []
+    def resume_build(conn, cursor, statement, params, context, many):
+        if not changed and statement.lstrip().upper().startswith(
+            "DELETE FROM MAP_TILES"
+        ):
+            conn.execute(
+                update(MapDataset)
+                .where(MapDataset.version == "failed-old")
+                .values(status="building", created_at=now)
+            )
+            changed.append(True)
+
+    event.listen(engine, "after_cursor_execute", resume_build)
+    result = cleanup_map_datasets(
+        factory, now=now, apply=True,
+        tile_batch_size=2, max_tiles_per_run=20,
+    )
+    assert changed
+    assert result["deleted_tile_count"] == 2
+    assert result["deleted_dataset_count"] == 0
+    assert result["deleted_versions"] == []
+    with factory() as session:
+        assert session.scalar(
+            select(MapDataset.status).where(MapDataset.version == "failed-old")
+        ) == "building"
+        assert session.scalar(select(func.count()).select_from(MapTile)) == 5
+    engine.dispose()
