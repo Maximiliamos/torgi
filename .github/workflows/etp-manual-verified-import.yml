@@ -94,7 +94,12 @@ jobs:
               $review.revalidate_in_atomic_import -ne $true) {
             throw 'ETP canary would overwrite/duplicate existing evidence: manual review required'
           }
-          if ($report.reviewed_identity_digest -cnotmatch '^[0-9a-f]{64}
+          if ($report.reviewed_identity_digest -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'ETP verified source identities were not pinned'
+          }
+          $digestFile = Join-Path $env:RUNNER_TEMP 'etp-reviewed-identity-sha256.txt'
+          Set-Content -LiteralPath $digestFile -Value ([string]$report.reviewed_identity_digest) -Encoding ascii -NoNewline
+          Write-Output ("ETP collision preflight passed for {0} details; writing is a separate guarded step" -f $review.details_reviewed)
       - name: Import at most two verified lots, no source reconciliation
         shell: powershell
         env:
@@ -109,154 +114,10 @@ jobs:
             throw 'ETP import refused: missing exact approved preview identities'
           }
           $digest = (Get-Content -LiteralPath $digestFile -Raw).Trim()
-          if ($digest -cnotmatch '^[0-9a-f]{64}
-          if ($LASTEXITCODE -ne 0) {
-            throw "Canary source import failed for $env:ETP_SOURCE"
-          }
-          $canary = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
-          $ids = @($canary.persisted_external_ids)
-          if ($canary.source -ne $env:ETP_SOURCE -or $ids.Count -lt 1 -or
-              $ids.Count -gt 2 -or $canary.persisted_count -ne $ids.Count) {
-            throw 'ETP canary result is missing exact committed public source identities'
-          }
-          $canary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
-            Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          ) -Encoding utf8
-      - name: Confirm exact imported source identities and GEO state after import
-        shell: powershell
-        env:
-          ETP_SOURCE: ${{ inputs.source_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          $canary = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-          if ($canary.source -ne $env:ETP_SOURCE) {
-            throw 'ETP canary result is from a different source'
-          }
-          $ids = @($canary.persisted_external_ids)
-          if ($ids.Count -lt 1 -or $ids.Count -gt 2) {
-            throw 'ETP canary audit cannot confirm one or two new source IDs'
-          }
-          $arguments = @('exec','bankrotai-home-ingestion-worker','python',
-            '-m','bankrotai.services.etp_postimport_audit',
-            '--source',$env:ETP_SOURCE,'--min-source-lots','1')
-          foreach ($id in $ids) {
-            $arguments += @('--expected-external-id',[string]$id)
-          }
-          & docker.exe @arguments
-          if ($LASTEXITCODE -ne 0) {
-            throw 'ETP exact-source post-import audit failed; publication is not accepted'
-          }
-) {
-            throw 'ETP verified source identities were not pinned'
-          }
-          $digestFile = Join-Path $env:RUNNER_TEMP 'etp-reviewed-identity-sha256.txt'
-          Set-Content -LiteralPath $digestFile -Value ([string]$report.reviewed_identity_digest) -Encoding ascii -NoNewline
-          Write-Output ("ETP collision preflight passed for {0} details; writing is a separate guarded step" -f $review.details_reviewed)
-      - name: Import at most two verified lots, no source reconciliation
-        shell: powershell
-        env:
-          ETP_SOURCE: ${{ inputs.source_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Recheck immediately before mutation: main, P11 or worker may have changed
-          # while a backup was being verified.
-          .\scripts\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:GITHUB_SHA
-          $lines = @(& docker.exe exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply)
-          if ($LASTEXITCODE -ne 0) {
-            throw "Canary source import failed for $env:ETP_SOURCE"
-          }
-          $canary = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
-          $ids = @($canary.persisted_external_ids)
-          if ($canary.source -ne $env:ETP_SOURCE -or $ids.Count -lt 1 -or
-              $ids.Count -gt 2 -or $canary.persisted_count -ne $ids.Count) {
-            throw 'ETP canary result is missing exact committed public source identities'
-          }
-          $canary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
-            Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          ) -Encoding utf8
-      - name: Confirm exact imported source identities and GEO state after import
-        shell: powershell
-        env:
-          ETP_SOURCE: ${{ inputs.source_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          $canary = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-          if ($canary.source -ne $env:ETP_SOURCE) {
-            throw 'ETP canary result is from a different source'
-          }
-          $ids = @($canary.persisted_external_ids)
-          if ($ids.Count -lt 1 -or $ids.Count -gt 2) {
-            throw 'ETP canary audit cannot confirm one or two new source IDs'
-          }
-          $arguments = @('exec','bankrotai-home-ingestion-worker','python',
-            '-m','bankrotai.services.etp_postimport_audit',
-            '--source',$env:ETP_SOURCE,'--min-source-lots','1')
-          foreach ($id in $ids) {
-            $arguments += @('--expected-external-id',[string]$id)
-          }
-          & docker.exe @arguments
-          if ($LASTEXITCODE -ne 0) {
-            throw 'ETP exact-source post-import audit failed; publication is not accepted'
-          }
-) {
+          if ($digest -cnotmatch '^[0-9a-f]{64}$') {
             throw 'ETP import refused: invalid preview identity digest'
           }
           $lines = @(& docker.exe exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply --expected-identity-digest $digest)
-          if ($LASTEXITCODE -ne 0) {
-            throw "Canary source import failed for $env:ETP_SOURCE"
-          }
-          $canary = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
-          $ids = @($canary.persisted_external_ids)
-          if ($canary.source -ne $env:ETP_SOURCE -or $ids.Count -lt 1 -or
-              $ids.Count -gt 2 -or $canary.persisted_count -ne $ids.Count) {
-            throw 'ETP canary result is missing exact committed public source identities'
-          }
-          $canary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
-            Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          ) -Encoding utf8
-      - name: Confirm exact imported source identities and GEO state after import
-        shell: powershell
-        env:
-          ETP_SOURCE: ${{ inputs.source_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:RUNNER_TEMP 'etp-canary-result.json'
-          $canary = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-          if ($canary.source -ne $env:ETP_SOURCE) {
-            throw 'ETP canary result is from a different source'
-          }
-          $ids = @($canary.persisted_external_ids)
-          if ($ids.Count -lt 1 -or $ids.Count -gt 2) {
-            throw 'ETP canary audit cannot confirm one or two new source IDs'
-          }
-          $arguments = @('exec','bankrotai-home-ingestion-worker','python',
-            '-m','bankrotai.services.etp_postimport_audit',
-            '--source',$env:ETP_SOURCE,'--min-source-lots','1')
-          foreach ($id in $ids) {
-            $arguments += @('--expected-external-id',[string]$id)
-          }
-          & docker.exe @arguments
-          if ($LASTEXITCODE -ne 0) {
-            throw 'ETP exact-source post-import audit failed; publication is not accepted'
-          }
-) {
-            throw 'ETP verified source identities were not pinned'
-          }
-          $digestFile = Join-Path $env:RUNNER_TEMP 'etp-reviewed-identity-sha256.txt'
-          Set-Content -LiteralPath $digestFile -Value ([string]$report.reviewed_identity_digest) -Encoding ascii -NoNewline
-          Write-Output ("ETP collision preflight passed for {0} details; writing is a separate guarded step" -f $review.details_reviewed)
-      - name: Import at most two verified lots, no source reconciliation
-        shell: powershell
-        env:
-          ETP_SOURCE: ${{ inputs.source_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Recheck immediately before mutation: main, P11 or worker may have changed
-          # while a backup was being verified.
-          .\scripts\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:GITHUB_SHA
-          $lines = @(& docker.exe exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply)
           if ($LASTEXITCODE -ne 0) {
             throw "Canary source import failed for $env:ETP_SOURCE"
           }
