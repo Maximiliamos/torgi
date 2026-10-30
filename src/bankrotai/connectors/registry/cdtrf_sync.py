@@ -32,6 +32,21 @@ CURSOR = re.compile(r"^([1-9]\d{0,4}):([0-9a-f]{64})$")
 MAX_REJECTED_DETAIL_RATIO = 0.90
 
 
+def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Session):
+    """Retry only transient transport/5xx errors, never identity or 403/429."""
+    for attempt in range(3):
+        try:
+            return fetch_verified_cdtrf_lot(trade_id, lot_id, session=session)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt == 2:
+                raise
+        except CdtrfCanaryError as exc:
+            if not re.fullmatch(r"CDTRF HTTP (?:502|503|504)", str(exc)) or attempt == 2:
+                raise
+        time.sleep(attempt + 1)
+    raise RuntimeError("Unreachable CDTRF detail retry state")
+
+
 @dataclass(frozen=True, slots=True)
 class CdtrfSyncFilters:
     """Explicit operator-only sync; NEVER use in default_source_specs."""
@@ -107,8 +122,8 @@ class CdtrfSourceCrawler:
             if index:
                 time.sleep(filters.detail_delay_seconds)
             try:
-                lot = fetch_verified_cdtrf_lot(
-                    str(hit["trade_id"]), str(hit["trade_lot_id"]), session=self.session
+                lot = _verified_detail_with_retry(
+                    str(hit["trade_id"]), str(hit["trade_lot_id"]), self.session
                 )
             except (CdtrfCanaryError, CdtrfEvidenceError) as exc:
                 # Different records may legitimately lack property details,
