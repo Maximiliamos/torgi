@@ -9,6 +9,7 @@ import json
 import re
 import time
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from urllib.parse import urlsplit
 
 import requests
@@ -54,6 +55,33 @@ def money(value: str) -> str | None:
         return None
 
 
+def _catalogue_clock(value: str | None) -> str | None:
+    """Parse an explicitly labelled Moscow-local catalogue timestamp.
+
+    A catalogue date is evidence about a trade, NOT verified lot identity or
+    a substitute for the detailed Nuxt record.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%d.%m.%Y %H:%M:%S").isoformat()
+    except ValueError:
+        return None
+
+
+def _labelled_catalogue_time(card, label: str) -> str | None:
+    """Read only a separately labelled time; avoid interpreting other dates."""
+    for item in card.select(".catalog-card__trade-info-item"):
+        content = _text(item)
+        match = re.fullmatch(
+            re.escape(label) + r"\s*(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})",
+            content,
+        )
+        if match:
+            return _catalogue_clock(match.group(1))
+    return None
+
+
 def parse_catalogue(html: str, *, limit: int = 100) -> dict:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
@@ -77,6 +105,7 @@ def parse_catalogue(html: str, *, limit: int = 100) -> dict:
         seen.add(trade_id)
         title = _text(anchor)[:600]
         dt = DATES.search(_text(card.select_one(".catalog-card__trade-info")))
+        auction_time = _labelled_catalogue_time(card, "Дата проведения торгов:")
         status = re.sub(r"^Статус:\s*", "", _text(card.select_one(".catalog-card__status")))
         rows.append({
             "source": "cdtrf.ru", "trade_id": trade_id,
@@ -86,6 +115,8 @@ def parse_catalogue(html: str, *, limit: int = 100) -> dict:
             "initial_price_rub": money(_text(card.select_one(".catalog-card__price-val"))),
             "application_start": dt.group(1) if dt else None,
             "application_end": dt.group(2) if dt else None,
+            "auction_at": auction_time,
+            "auction_timezone": "Europe/Moscow" if auction_time else None,
             "property_hint": bool(PROPERTY.search(title)),
             "trade_lot_id": None,
             "verified_detail": False, "ready_for_ingestion": False,

@@ -135,9 +135,13 @@ def _source_values(
         "deposit_payment_details": lot.deposit_payment_details
         or _raw_value(raw, "deposit_payment_details", "deposit_requisites"),
         "deposit_deadline": lot.deposit_deadline or _to_datetime(_raw_value(raw, "deposit_deadline")),
-        "application_deadline": lot.application_deadline
+        "application_start_at": _to_datetime(lot.application_start_at)
+        or _to_datetime(_raw_value(raw, "bidd_start_time", "application_start_at")),
+        "application_deadline": _to_datetime(lot.application_deadline)
         or _to_datetime(_raw_value(raw, "bidd_end_time", "application_deadline")),
-        "auction_at": lot.auction_at or _to_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
+        "auction_at": _to_datetime(lot.auction_at)
+        or _to_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
+        "auction_timezone": lot.auction_timezone or _raw_value(raw, "auction_timezone", "timezone"),
         "published_at": lot.published_at,
         "source_updated_at": _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update")),
         "auction_step_amount": _to_decimal(

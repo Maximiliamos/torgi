@@ -124,6 +124,7 @@ def test_generic_cdtrf_heading_uses_actual_property_description(monkeypatch):
     lot = fetch_verified_cdtrf_lot("390364", "390899", session=object())
     assert lot.category == "land"
     assert lot.description.startswith("Лот № 1")
+    assert lot.title.startswith("Лот № 1")  # never use generic debtor heading as map title
     assert lot.auction_status == "active"
 
 
@@ -166,3 +167,117 @@ def test_lotinfo_is_extracted_as_property_text():
         "description": None,
     })
     assert text == "Земельный участок, кадастровый номер 32:10:0010101:42"
+
+
+
+@pytest.mark.parametrize("raw_status,expected", [
+    ("Declare", "scheduled"), ("RecieveReq", "active"),
+    ("DefinePart", "scheduled"), ("TradeGo", "active"),
+    ("SummingUp", "closed"),
+])
+def test_cdtrf_all_five_stages_are_normalized(monkeypatch, raw_status, expected):
+    import bankrotai.services.etp_cdtrf_canary as module
+
+    monkeypatch.setattr(module, "_http_get", lambda *a, **k: SimpleNamespace(
+        headers={"Content-Type": "text/html"}, text="<html></html>"
+    ))
+    monkeypatch.setattr(module, "parse_detail", lambda *a, **k: {
+        "trade_id": "390364", "trade_lot_id": "390899",
+        "title": "Земельный участок 32:10:0010101:42",
+        "property_description": "Земельный участок, кадастр 32:10:0010101:42",
+        "category_label": "Земельный участок",
+        "cadastral_number": "32:10:0010101:42",
+        "initial_price_rub": "675000.00",
+        "source_status_code": raw_status,
+    })
+    result = module.fetch_verified_cdtrf_lot(
+        "390364", "390899", session=object()
+    )
+    assert result.auction_status == expected
+
+
+def test_cdtrf_operator_source_is_disabled_without_three_gates(monkeypatch):
+    from bankrotai.services.ingestion import source_full_specs, default_source_specs
+
+    for name in (
+        "CDTRF_OPERATOR_SYNC_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert "cdtrf.ru" not in [x.source_id for x in default_source_specs()]
+    with pytest.raises(PermissionError):
+        source_full_specs("cdtrf.ru")
+    for name in (
+        "CDTRF_OPERATOR_SYNC_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
+    ):
+        monkeypatch.setenv(name, "1")
+    (spec,) = source_full_specs("cdtrf.ru")
+    assert spec.source_id == "cdtrf.ru"
+    assert spec.reconcile_missing is False
+    assert spec.filters.page_size == 100
+    assert spec.max_batches == 10000
+
+
+
+def test_cdtrf_source_full_sync_traverses_all_pages_without_archiving(monkeypatch):
+    """Connector API real path, fake requests and detail; 3 pages of 100."""
+    from urllib.parse import parse_qs, urlsplit
+    from bankrotai.connectors.registry.direct_etp_pilots import DirectEtpPilotConnector
+    from bankrotai.connectors.registry.cdtrf_sync import CdtrfSyncFilters
+
+    class R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        content = b"{}"
+        def __init__(self, payload):
+            self.payload = payload
+        def json(self):
+            return self.payload
+
+    class S:
+        def get(self, url, *, timeout, allow_redirects, headers):
+            q = parse_qs(urlsplit(url).query)
+            assert q["PageSize"] == ["100"]
+            p = int(q["PageNum"][0])
+            return R({
+                "success": True, "totalCount": 205,
+                "items": [
+                    {"tradeId": 390000 + i, "tradeLotId": 500000 + i,
+                     "categories": ",21,", "actualPrice": 120000}
+                    for i in range((p - 1) * 100 + 1, min(205, p * 100) + 1)
+                ],
+            })
+    import bankrotai.connectors.registry.cdtrf_sync as mod
+    def fake_detail(trade, lot, *, session):
+        assert trade.isdigit() and lot.isdigit()
+        from bankrotai.domain import NormalizedLot
+        return NormalizedLot(
+            external_id=f"cdtrf:{lot}", source="cdtrf.ru",
+            source_system="cdtrf.ru", title="Земельный участок",
+            description="Участок 32:10:0010101:42", category="land",
+            region_slug=None, region_name=None, address=None,
+            cadastral_number="32:10:0010101:42", vin=None, area=None,
+            start_price=120000, current_price=None,
+            auction_status="active",
+            lot_url=f"https://torgi.cdtrf.ru/trades/{trade}",
+            source_url=None, detail_level="public_detail", raw_data={},
+        )
+    monkeypatch.setattr(mod, "fetch_verified_cdtrf_lot", fake_detail)
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
+    connector = DirectEtpPilotConnector("cdtrf.ru", session=S())
+    filters = CdtrfSyncFilters(page_size=100)
+    cursor = None
+    seen = set()
+    for page_number in (1, 2, 3):
+        result = asyncio.run(connector.search(filters, cursor))
+        assert result.metadata["progress_current"] == page_number
+        assert result.metadata["progress_total"] == 3
+        assert result.metadata["safe_for_archival"] is False
+        assert result.metadata["complete_source_inventory"] is False
+        ids = {x.external_id for x in result.items}
+        assert not ids & seen
+        seen.update(ids)
+        cursor = result.next_cursor
+    assert len(seen) == 205
+    assert cursor is None

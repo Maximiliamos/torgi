@@ -1,0 +1,134 @@
+name: CDTRF one-time source import, GEO and map
+
+on:
+  workflow_run:
+    workflows: ["P11 production acceptance"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: cdtrf-one-time-source-campaign
+  cancel-in-progress: false
+
+jobs:
+  import-geocode-map:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 360
+    steps:
+      - name: Exact-SHA source checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Only one explicitly CDTRF-first-pass release is eligible
+        id: release
+        shell: powershell
+        run: |
+          $subject = (& git log -1 --format=%s).Trim()
+          $markDir = 'D:\BankrotAI\etp-acceptance'
+          $sha = (& git rev-parse HEAD).Trim()
+          $marker = Join-Path $markDir "cdtrf-$sha-map-published.json"
+          if ($subject.StartsWith('CDTRF-first-pass:') -and -not (Test-Path -LiteralPath $marker)) {
+            "approved=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "approved=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output "Unrelated accepted release: CDTRF first-pass campaign safely skipped"
+          }
+
+      - name: Require exact worker SHA and verified backup
+        if: steps.release.outputs.approved == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '${{ github.event.workflow_run.head_sha }}'
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) { throw 'Exact SHA mismatch after checkout' }
+          foreach ($container in @('bankrotai-home-ingestion-worker','bankrotai-home-geocoding-worker','bankrotai-home-map-worker')) {
+            $image = (docker inspect --format '{{.Config.Image}}' $container).Trim()
+            if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
+              throw "Wrong deployment SHA for $container; refuse production writes"
+            }
+          }
+          $disk = Get-PSDrive -Name C
+          if (($disk.Free / 1GB) -lt 10) { throw 'Home disk has under 10 GB free; refuse import' }
+          $root = 'D:\BankrotAI\dr-backups'
+          $manifests = @(Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' | Sort-Object LastWriteTimeUtc -Descending)
+          $found = $false
+          foreach ($file in $manifests) {
+            try {
+              $meta = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+              if ($meta.restore_verification -ne 'passed' -or
+                  $meta.source_schema_revision -ne $meta.restored_schema_revision -or
+                  -not $meta.backup_file -or
+                  -not (Test-Path -LiteralPath ([string]$meta.backup_file))) { continue }
+              $age = ((Get-Date).ToUniversalTime() - $file.LastWriteTimeUtc).TotalHours
+              if ($age -lt 0 -or $age -gt 60) { continue }
+              $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$meta.backup_file)).Hash
+              if ($digest.ToLowerInvariant() -ne ([string]$meta.sha256).ToLowerInvariant()) { continue }
+              $found = $true
+              break
+            } catch {}
+          }
+          if (-not $found) { throw 'CDTRF import refused: no fresh restore-verified PostgreSQL backup' }
+
+      - name: First full CDTRF catalogue and validated detail import
+        if: steps.release.outputs.approved == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = @(docker exec -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign import)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF source import failed closed' }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($report.status -ne 'success' -or $report.source.status -ne 'success' -or
+              $report.source.pages_scanned -lt 1 -or $report.source.items_archived -ne 0) {
+            throw 'CDTRF sync is not verified or unexpectedly archived missing lots'
+          }
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-import-result.json' -Encoding utf8
+
+      - name: Geocode all CDTRF eligible records with actual cadastral or address evidence
+        if: steps.release.outputs.approved == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = @(docker exec bankrotai-home-geocoding-worker python -m bankrotai.services.etp_cdtrf_campaign geocode --batch-size 250)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF source GEO campaign failed' }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($null -eq $report.after_geo -or $report.after_geo.with_coordinates -le 0) {
+            throw 'No reliable CDTRF coordinates; cannot publish CDTRF points'
+          }
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-geo-result.json' -Encoding utf8
+
+      - name: Atomically publish map dataset to S3 and update current dataset
+        if: steps.release.outputs.approved == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = @(docker exec bankrotai-home-map-worker python -m bankrotai.services.etp_cdtrf_campaign map)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF map publication failed' }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($report.map.build_status -ne 'success' -or $report.after_publication.with_coordinates -le 0) {
+            throw 'CDTRF map publication did not confirm geocoded source points'
+          }
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-map-result.json' -Encoding utf8
+          $markDir = 'D:\BankrotAI\etp-acceptance'
+          New-Item -ItemType Directory -Force -Path $markDir | Out-Null
+          $marker = Join-Path $markDir "cdtrf-${{ github.event.workflow_run.head_sha }}-map-published.json"
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $marker -Encoding utf8
+
+      - name: Preserve production evidence without original personal details
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cdtrf-first-pass-import-geo-map
+          path: |
+            cdtrf-import-result.json
+            cdtrf-geo-result.json
+            cdtrf-map-result.json
+          if-no-files-found: warn
+          retention-days: 30
