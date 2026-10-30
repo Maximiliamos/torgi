@@ -26,17 +26,26 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: Require single CDTRF-first-pass release, exact worker SHA and verified backup
+      - name: Only one explicitly CDTRF-first-pass release is eligible
+        id: release
+        shell: powershell
+        run: |
+          $subject = (& git log -1 --format=%s).Trim()
+          if ($subject.StartsWith('CDTRF-first-pass:')) {
+            "approved=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "approved=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output "Unrelated accepted release: CDTRF first-pass campaign safely skipped"
+          }
+
+      - name: Require exact worker SHA and verified backup
+        if: steps.release.outputs.approved == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = '${{ github.event.workflow_run.head_sha }}'
           $actual = (& git rev-parse HEAD).Trim()
           if ($actual -ne $expected) { throw 'Exact SHA mismatch after checkout' }
-          $subject = (& git log -1 --format=%s).Trim()
-          if (-not $subject.StartsWith('CDTRF-first-pass:')) {
-            throw "This is not the approved CDTRF-first-pass release: $subject"
-          }
           foreach ($container in @('bankrotai-home-ingestion-worker','bankrotai-home-geocoding-worker','bankrotai-home-map-worker')) {
             $image = (docker inspect --format '{{.Config.Image}}' $container).Trim()
             if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
@@ -66,6 +75,7 @@ jobs:
           if (-not $found) { throw 'CDTRF import refused: no fresh restore-verified PostgreSQL backup' }
 
       - name: First full CDTRF catalogue and validated detail import
+        if: steps.release.outputs.approved == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -79,6 +89,7 @@ jobs:
           $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-import-result.json' -Encoding utf8
 
       - name: Geocode all CDTRF eligible records with actual cadastral or address evidence
+        if: steps.release.outputs.approved == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -91,6 +102,7 @@ jobs:
           $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-geo-result.json' -Encoding utf8
 
       - name: Atomically publish map dataset to S3 and update current dataset
+        if: steps.release.outputs.approved == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
