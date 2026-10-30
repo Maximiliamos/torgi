@@ -32,12 +32,16 @@ def plan_orphans(
     minimum_age_days: int = 30,
 ) -> dict:
     """Returns a read-only candidate report; no deletions or API calls."""
-    if minimum_age_days < 7:
-        raise ValueError("minimum_age_days must be >= 7")
+    if type(minimum_age_days) is not int or minimum_age_days < 7:
+        raise ValueError("minimum_age_days must be an integer >= 7")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Inventory evaluation time must be timezone-aware")
     if not isinstance(inventory.get("Contents"), list):
         raise ValueError("Complete inventory with Contents list required")
-    if inventory.get("IsTruncated") is True or inventory.get("NextContinuationToken"):
-        raise ValueError("S3 listing truncated: refusing to plan deletions")
+    # A missing/unknown truncation flag cannot prove inventory completeness.
+    # A partial S3 listing could falsely label referenced objects as orphans.
+    if inventory.get("IsTruncated") is not False or inventory.get("NextContinuationToken"):
+        raise ValueError("S3 listing completeness not proved: refusing to plan deletions")
     objects = inventory["Contents"]
     keys: set[str] = set()
     manifest_keys: set[str] = set()
@@ -45,6 +49,10 @@ def plan_orphans(
         if not isinstance(item, dict) or not isinstance(item.get("Key"), str):
             raise ValueError("Malformed S3 inventory entry")
         key = item["Key"]
+        if key.startswith(IMMUTABLE_PREFIXES):
+            if type(item.get("Size")) is not int or item["Size"] < 0:
+                raise ValueError("Invalid immutable S3 object size")
+            _when(str(item.get("LastModified", "")))
         if key in keys:
             raise ValueError(f"Duplicate inventory key: {key}")
         keys.add(key)
