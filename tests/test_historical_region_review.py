@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
 from bankrotai.services.historical_region_review import (
-    build_report, classify_region_evidence, strict_cadastral_region,
+    build_report, classify_region_evidence, direct_source_blocker,
+    strict_cadastral_region,
 )
 
 
@@ -95,10 +96,15 @@ def test_historical_region_review_never_writes_and_ignores_stale_source():
                 "no_direct_official_region_evidence": 1,
                 "source_cadastral_region_conflict": 1,
             }
+            assert report["lineage_blocker_counts_in_sample"] == {
+                "direct_official_region_proof_present": 2,
+                "direct_official_source_stale": 1,
+            }
             reviews = {x["processed_lot_id"]: x for x in report["bounded_review_items"]}
             assert reviews[good]["review_region_hint"] == "76"
             assert reviews[conflict]["review_region_hint"] is None
             assert reviews[stale]["review_region_hint"] is None
+            assert reviews[stale]["lineage_blocker"] == "direct_official_source_stale"
             assert all(x["operation"] == "manual_review_only" for x in reviews.values())
             assert "cadastral_number" not in str(report)
             assert "address" not in str(report)
@@ -118,3 +124,33 @@ def test_region_report_refuses_unbounded_or_boolean_limit(bad_limit):
                 build_report(session, limit=bad_limit)
     finally:
         engine.dispose()
+
+
+def test_direct_source_blockers_distinguish_missing_link_stale_and_status():
+    from datetime import timedelta
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    good = ("torgi.gov.ru", "76", True, False, "active", now)
+    assert direct_source_blocker([], observed_at=now) == "no_direct_source_lot"
+    assert direct_source_blocker(
+        [("unknown-etp.example", "76", True, False, "active", now)],
+        observed_at=now,
+    ) == "direct_source_unapproved"
+    assert direct_source_blocker(
+        [("torgi.gov.ru", "76", False, False, "active", now)],
+        observed_at=now,
+    ) == "direct_official_source_inactive_or_archived"
+    assert direct_source_blocker(
+        [("torgi.gov.ru", "76", True, False, "active", now - timedelta(days=10))],
+        observed_at=now,
+    ) == "direct_official_source_stale"
+    assert direct_source_blocker(
+        [("torgi.gov.ru", "76", True, False, "unknown", now)],
+        observed_at=now,
+    ) == "direct_official_status_unverified"
+    assert direct_source_blocker(
+        [("torgi.gov.ru", None, True, False, "active", now)],
+        observed_at=now,
+    ) == "direct_official_region_missing"
+    assert direct_source_blocker([good], observed_at=now) == (
+        "direct_official_region_proof_present"
+    )
