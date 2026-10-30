@@ -47,10 +47,63 @@ def verified_canary_items(page, *, source: str, limit: int) -> list:
 async def collect_lots(source: str, limit: int):
     if source not in APPROVED or not 1 <= limit <= 2:
         raise ValueError("Unsupported source or overly broad canary limit")
-    page = await connector_registry.create(source).search(
-        EtpIncrementalFilters(source, max_detail_requests=limit)
+    connector = connector_registry.create(source)
+    if source == "m-ets.ru":
+        page = await connector.search(
+            EtpIncrementalFilters(source, max_detail_requests=limit)
+        )
+        return verified_canary_items(page, source=source, limit=limit)
+
+    # CDTRF page 1 can contain only non-sale/unsupported-rights candidates
+    # even when pages 2–5 contain verified property sales. Never promote
+    # rejected cards or increase the per-page detail cap to fill a batch.
+    filters = EtpIncrementalFilters(
+        source, max_detail_requests=limit, max_pages=5,
     )
-    return verified_canary_items(page, source=source, limit=limit)
+    selected: list = []
+    cursor: str | None = None
+    seen_fingerprints: set[str] = set()
+    seen_ids: set[str] = set()
+    for page_number in range(1, 6):
+        page = await connector.search(filters, cursor)
+        items = verified_canary_items(page, source=source, limit=limit)
+        metadata = page.metadata
+        fingerprints = metadata.get("catalogue_identity_fingerprints")
+        observed = metadata.get("catalogue_lots")
+        if (
+            metadata.get("progress_current") != page_number
+            or metadata.get("progress_total") != 5
+            or type(observed) is not int or observed < len(items)
+            or not isinstance(fingerprints, list)
+            or len(fingerprints) != observed
+            or len(fingerprints) != len(set(fingerprints))
+            or not all(isinstance(value, str)
+                       and len(value) == 64
+                       and all(c in "0123456789abcdef" for c in value)
+                       for value in fingerprints)
+            or any(value in seen_fingerprints for value in fingerprints)
+        ):
+            raise ValueError("CDTRF bounded catalogue identity evidence is incomplete")
+        seen_fingerprints.update(fingerprints)
+        for lot in items:
+            external_id = str(lot.external_id)
+            if external_id in seen_ids:
+                raise ValueError("CDTRF repeated a verified sale identity")
+            seen_ids.add(external_id)
+            selected.append(lot)
+            if len(selected) >= limit:
+                return selected
+        if page_number < 5:
+            if not isinstance(page.next_cursor, str) or not page.next_cursor.startswith(
+                f"{page_number + 1}:"
+            ):
+                raise ValueError("CDTRF bounded pagination ended before five pages")
+            cursor = page.next_cursor
+        elif page.next_cursor is not None:
+            raise ValueError("CDTRF page 5 returned an unbounded cursor")
+    # No verified sale is still a failure at the apply boundary, not an
+    # opportunity to persist unverified catalogue or vehicle candidates.
+    return selected
 
 
 def run_import(
