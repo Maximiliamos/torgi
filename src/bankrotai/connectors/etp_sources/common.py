@@ -308,8 +308,9 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
         href = urljoin(profile.listing_url, str(anchor.get("href") or "").strip())
-        parsed = urlparse(href)
-        if profile.allowed_hosts and parsed.hostname not in profile.allowed_hosts:
+        try:
+            _safe_provider_url(profile, href)
+        except SourceAccessError:
             continue
         match = profile.lot_url_re.search(href)
         if not match:
@@ -332,8 +333,9 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             if not raw_href.startswith(("/", "http://", "https://")):
                 continue
             href = urljoin(profile.listing_url, raw_href)
-            parsed = urlparse(href)
-            if profile.allowed_hosts and parsed.hostname not in profile.allowed_hosts:
+            try:
+                _safe_provider_url(profile, href)
+            except SourceAccessError:
                 continue
             match = profile.lot_url_re.search(href)
             if not match:
@@ -494,6 +496,7 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
         match = profile.lot_url_re.search(href)
         if not match:
             continue
+        _safe_provider_url(profile, href)
         external_id = _external_id(profile, href, match)
         if external_id in seen:
             continue
