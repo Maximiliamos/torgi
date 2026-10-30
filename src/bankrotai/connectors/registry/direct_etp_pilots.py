@@ -8,8 +8,12 @@ records and never writes to PostgreSQL, journals, geocoding queues or S3.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import requests
+
+if TYPE_CHECKING:
+    from bankrotai.connectors.registry.cdtrf_sync import CdtrfSourceCrawler
 
 from bankrotai.connectors.base import (
     AuctionConnector, ConnectorCapabilityError, ConnectorHealth, ConnectorPage,
@@ -45,7 +49,7 @@ class DirectEtpPilotConnector(AuctionConnector):
         self.source_id = source_id
         self.profile = PROFILE_BY_ID[source_id]
         self.session = session or requests.Session()
-        self._cdtrf_source_crawler = None
+        self._cdtrf_source_crawler: CdtrfSourceCrawler | None = None
 
     async def search(self, filters=None, cursor: str | None = None) -> ConnectorPage:
         if self.source_id == "cdtrf.ru":
