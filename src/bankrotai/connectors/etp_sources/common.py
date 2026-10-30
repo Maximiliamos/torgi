@@ -355,9 +355,11 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
         title = _clean(str(raw.get("title") or raw.get("BidName") or raw.get("purchName") or ""))
         if not title:
             continue
-        price = None
+        price: float | None = None
+        amount = raw.get("purchAmount")
         try:
-            price = float(raw.get("purchAmount")) if raw.get("purchAmount") not in {None, ""} else None
+            if isinstance(amount, (str, int, float)) and amount != "":
+                price = float(amount)
         except (TypeError, ValueError):
             pass
         text_value = _clean(" ".join(str(raw.get(key) or "") for key in ("title", "purchName", "Address")))

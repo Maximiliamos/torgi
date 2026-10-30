@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 from bankrotai.connectors.etp_sources.common import EtpSourceProfile
 
 
-def _profile(source_id: str, name: str, code: str, listing: str, pattern: str, **kwargs: object) -> EtpSourceProfile:
+def _profile(source_id: str, name: str, code: str, listing: str, pattern: str, **kwargs: Any) -> EtpSourceProfile:
     return EtpSourceProfile(source_id, name, code, listing, pattern, **kwargs)
 
 
