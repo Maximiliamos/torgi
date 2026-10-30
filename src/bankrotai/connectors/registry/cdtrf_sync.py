@@ -119,7 +119,12 @@ class CdtrfSourceCrawler:
                 continue
             except (requests.RequestException, ValueError) as exc:
                 raise CdtrfCatalogueScanError("CDTRF detail request or data failed") from exc
-            if not _property_ready(lot):
+            if not (_property_ready(lot) or (
+                lot.auction_status == "closed"
+                and lot.cadastral_number
+                and lot.lot_url
+                and lot.start_price is not None
+            )):
                 rejected["property_not_eligible"] = rejected.get("property_not_eligible", 0) + 1
                 continue
             if lot.external_id != hit["external_id"]:
