@@ -254,6 +254,30 @@ def test_start_price_does_not_imply_a_current_price() -> None:
     assert lot.current_price is None
 
 
+
+def test_missing_labeled_price_is_not_filled_from_adjacent_field() -> None:
+    detail_url = "https://m-ets.ru/243003-1"
+    prefix = (
+        "<html><body><h1>Земельный участок с кадастровым номером</h1>"
+        "Подробное публичное описание предмета торгов и условий продажи. "
+    )
+    first = parse_detail_html(
+        profile("m-ets.ru"),
+        prefix + "Начальная цена: Текущая цена 800 000 руб. Размер задатка 100 000 руб.</body></html>",
+        detail_url=detail_url,
+    )
+    assert first.start_price is None
+    assert first.current_price == 800000
+
+    second = parse_detail_html(
+        profile("m-ets.ru"),
+        prefix + "Текущая цена: Размер задатка 100 000 руб.</body></html>",
+        detail_url=detail_url,
+    )
+    assert second.start_price is None
+    assert second.current_price is None
+
+
 def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() -> None:
     from bankrotai.connectors.etp_sources import parse_sberbank_json
     base = {
