@@ -1,0 +1,240 @@
+name: ETP verified canary GEO and public map
+
+on:
+  workflow_run:
+    workflows: ["ETP S5 exact-SHA read-only canary readiness"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  import-geocode-publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [m-ets.ru, cdtrf.ru]
+    concurrency:
+      group: etp-verified-source-to-map-home
+      cancel-in-progress: false
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ETP_SOURCE: ${{ matrix.source }}
+      EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Checkout accepted exact SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Refuse stale or duplicate source release
+        id: gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((& git rev-parse HEAD).Trim() -ne $env:EXPECTED_SHA) {
+            throw 'ETP campaign checkout does not match accepted commit'
+          }
+          $dir = 'D:\BankrotAI\etp-acceptance'
+          $marker = Join-Path $dir ("map-{0}-{1}.json" -f $env:ETP_SOURCE,$env:EXPECTED_SHA)
+          if (Test-Path -LiteralPath $marker) {
+            "proceed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output "Already published and checked: refusing duplicate import"
+          } else {
+            "proceed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Verify full current-SHA production acceptance and trusted worker
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:EXPECTED_SHA
+
+      - name: Require recent restore-verified PostgreSQL backup
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'D:\BankrotAI\dr-backups'
+          if (-not (Test-Path -LiteralPath $root)) { throw 'Missing backup directory' }
+          $manifests = @(Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
+            Sort-Object LastWriteTimeUtc -Descending)
+          $verified = $false
+          foreach ($file in $manifests) {
+            try {
+              $data = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+              if ($data.restore_verification -ne 'passed' -or
+                  $data.source_schema_revision -ne $data.restored_schema_revision -or
+                  -not $data.backup_file -or
+                  -not (Test-Path -LiteralPath ([string]$data.backup_file))) { continue }
+              $age = ((Get-Date).ToUniversalTime() - $file.LastWriteTimeUtc).TotalHours
+              if ($age -lt 0 -or $age -gt 60) { continue }
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$data.backup_file)).Hash
+              if ($hash.ToLowerInvariant() -ne ([string]$data.sha256).ToLowerInvariant()) { continue }
+              $verified = $true
+              break
+            } catch {
+              Write-Warning 'Unverifiable backup manifest skipped'
+            }
+          }
+          if (-not $verified) { throw 'ETP import refused: no fresh restore-verified backup' }
+
+      - name: Read-only source identity and collision preflight
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --audit-collisions)
+          if ($LASTEXITCODE -ne 0 -or $lines.Count -lt 1) {
+            throw 'ETP collision preflight did not complete'
+          }
+          $report = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
+          $review = $report.preimport_collision_review
+          if ($report.source -ne $env:ETP_SOURCE -or
+              $report.write_authorized -ne $false -or
+              $report.persisted_count -ne 0 -or
+              $report.complete_source_inventory -ne $false -or
+              $null -eq $review -or $review.read_only -ne $true -or
+              $review.source -ne $env:ETP_SOURCE -or
+              $review.database_writes -ne 0 -or
+              $review.details_reviewed -lt 1 -or $review.details_reviewed -gt 2 -or
+              $review.new_unconflicted_candidate_count -ne $review.details_reviewed -or
+              $review.blocked_candidate_count -ne 0 -or
+              $review.ready_for_separate_operator_canary -ne $true -or
+              $review.revalidate_in_atomic_import -ne $true) {
+            throw 'ETP source identity is ambiguous or conflicts with existing records'
+          }
+
+      - name: Persist at most two verified property lots in one atomic transaction
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\verify-etp-canary-acceptance.ps1 -ExpectedSha $env:EXPECTED_SHA
+          $lines = @(& docker.exe exec -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_manual_import --source $env:ETP_SOURCE --limit 2 --apply)
+          if ($LASTEXITCODE -ne 0 -or $lines.Count -lt 1) { throw 'Verified ETP import failed closed' }
+          $report = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
+          $ids = @($report.persisted_external_ids)
+          if ($report.source -ne $env:ETP_SOURCE -or $ids.Count -lt 1 -or
+              $ids.Count -gt 2 -or $report.persisted_count -ne $ids.Count -or
+              $report.missing_lot_archival -ne $false) {
+            throw 'ETP import did not prove exact, non-archival source identities'
+          }
+          $path = Join-Path $env:RUNNER_TEMP ("etp-verified-{0}.json" -f $env:ETP_SOURCE)
+          $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+
+      - name: Audit exact source lot and journal persistence
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP ("etp-verified-{0}.json" -f $env:ETP_SOURCE)
+          $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          $args = @('exec','bankrotai-home-ingestion-worker','python','-m',
+            'bankrotai.services.etp_postimport_audit','--source',$env:ETP_SOURCE,'--min-source-lots','1')
+          foreach ($id in @($report.persisted_external_ids)) {
+            $args += @('--expected-external-id',[string]$id)
+          }
+          & docker.exe @args
+          if ($LASTEXITCODE -ne 0) { throw 'ETP exact source provenance audit failed' }
+
+      - name: Geocode only imported IDs through validated GEO pipeline
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP ("etp-verified-{0}.json" -f $env:ETP_SOURCE)
+          $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          $args = @('exec','bankrotai-home-geocoding-worker','python','-m',
+            'bankrotai.services.etp_verified_map_campaign','geocode','--source',$env:ETP_SOURCE)
+          foreach ($id in @($report.persisted_external_ids)) {
+            $args += @('--external-id',[string]$id)
+          }
+          $output = @(& docker.exe @args)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) {
+            throw 'ETP exact-source geocoding failed or has no verified coordinates'
+          }
+          $geo = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($geo.after.with_coordinates -lt 1) { throw 'ETP GEO returned no valid source coordinates' }
+
+      - name: Publish S3 map dataset with verified source GEO
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP ("etp-verified-{0}.json" -f $env:ETP_SOURCE)
+          $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          $args = @('exec','bankrotai-home-map-worker','python','-m',
+            'bankrotai.services.etp_verified_map_campaign','map','--source',$env:ETP_SOURCE)
+          foreach ($id in @($report.persisted_external_ids)) {
+            $args += @('--external-id',[string]$id)
+          }
+          $output = @(& docker.exe @args)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) {
+            throw 'ETP map dataset publication failed'
+          }
+          $map = ($output | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($map.map_build_status -ne 'success' -or $map.after.with_coordinates -lt 1) {
+            throw 'No proven ETP point in published dataset'
+          }
+
+      - name: Confirm publicly filtered map points and record final marker
+        if: steps.gate.outputs.proceed == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $visible = $false
+          $sample = $null
+          for ($i = 0; $i -lt 10; $i++) {
+            try {
+              $url = "https://api.sterdez.online/api/map/lots?sources=$env:ETP_SOURCE&limit=10"
+              $sample = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 25
+              if ($sample.returned -gt 0 -and $sample.mapped_total -gt 0 -and
+                  @($sample.items).Count -gt 0 -and
+                  $null -ne $sample.items[0].lat -and $null -ne $sample.items[0].lon) {
+                $visible = $true
+                break
+              }
+            } catch {
+              Write-Output ("Public ETP map not ready on attempt {0}" -f ($i + 1))
+            }
+            Start-Sleep -Seconds 15
+          }
+          if (-not $visible) { throw 'Public map filter has no verified ETP points' }
+          $catalogue = Invoke-RestMethod -Uri 'https://api.sterdez.online/api/map/sources' -Method Get -TimeoutSec 25
+          $source = @($catalogue.items | Where-Object { $_.id -eq $env:ETP_SOURCE })
+          if ($source.Count -ne 1 -or $source[0].has_database_records -ne $true) {
+            throw 'Public source catalogue does not confirm persisted ETP lots'
+          }
+          $evidence = [ordered]@{
+            source = $env:ETP_SOURCE
+            accepted_sha = $env:EXPECTED_SHA
+            mapped_total = [int]$sample.mapped_total
+            source_has_database_records = $true
+            publicly_verified_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $dir = 'D:\BankrotAI\etp-acceptance'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $marker = Join-Path $dir ("map-{0}-{1}.json" -f $env:ETP_SOURCE,$env:EXPECTED_SHA)
+          $evidence | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $marker -Encoding utf8
+          $path = Join-Path $env:RUNNER_TEMP ("etp-verified-{0}.json" -f $env:ETP_SOURCE)
+          $evidence | ConvertTo-Json -Depth 5 | Add-Content -LiteralPath $path -Encoding utf8
+
+      - name: Preserve PII-free source campaign evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-source-map-${{ matrix.source }}
+          path: ${{ runner.temp }}/etp-verified-${{ matrix.source }}.json
+          if-no-files-found: warn
+          retention-days: 30
