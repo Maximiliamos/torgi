@@ -63,10 +63,12 @@ invented GET pagination.
 ## Temporary manual QA mode (31 October 2026)
 
 The initial source discovery is *not* a release gate or production import. P1
-and P11 workflows are temporarily **workflow_dispatch-only**: the operator
-can run them manually in GitHub Actions, but a source-QA commit does not wait
-for their long automatic checks. Restore their push/schedule events after
-the per-source QA campaign is accepted.
+and P11 workflows retain their historical push/schedule triggers for
+compatibility, but their long worker jobs are temporarily gated to
+**workflow_dispatch only**. Automatic QA-branch releases show skipped
+P1/P11 jobs instead of running lengthy production checks. An operator can
+still manually launch the full tests in Actions. Restore the original job
+conditions after the source-by-source QA campaign is accepted.
 
 The automatic Home deploy completion triggers
 `.github/workflows/etp-manual-qa-all-sources.yml`, which calls the trusted
@@ -94,7 +96,7 @@ make investment or bid decisions until detail verification passes.
 For each provider, manually record: missing lot IDs; incorrect titles,
 cadastral numbers, price/date/status; pagination; duplicates; broken official
 links; missing geo; blocked HTTP/network; discrepancies against the official
-lot card. Re-enable P1/P11 automatic triggers and production import only after
+lot card. Re-enable P1/P11 automatic job execution and production import only after
 individual sources are approved and their final-page + status/price update
 contracts are tested. The existing atomic canary mechanism and archive guard
 remain independent of QA mode.
