@@ -13,7 +13,7 @@ import json
 
 from sqlalchemy import func, or_, select
 
-from bankrotai.db import ProcessedLot, SessionLocal
+from bankrotai.db import LotSyncSourceRun, ProcessedLot, SessionLocal
 from bankrotai.services.ingestion import (
     NationwideIngestionService, run_nationwide_sync, source_full_specs,
 )
@@ -34,6 +34,10 @@ def snapshot() -> dict[str, int]:
             ProcessedLot.current_geo_lat.is_not(None)
             & ProcessedLot.current_geo_lon.is_not(None)
         )
+        has_price = or_(
+            ProcessedLot.current_price.is_not(None),
+            ProcessedLot.start_price.is_not(None),
+        )
         return {
             "source_records": int(session.scalar(
                 select(func.count(ProcessedLot.id)).where(source)
@@ -47,6 +51,41 @@ def snapshot() -> dict[str, int]:
             "without_coordinates": int(session.scalar(
                 select(func.count(ProcessedLot.id)).where(active, ~has_geo)
             ) or 0),
+            "with_price": int(session.scalar(
+                select(func.count(ProcessedLot.id)).where(active, has_price)
+            ) or 0),
+        }
+
+
+def import_progress() -> dict:
+    """Machine-readable heartbeat for the long source-wide catalogue scan."""
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(LotSyncSourceRun)
+            .where(LotSyncSourceRun.source_system == SOURCE)
+            .order_by(LotSyncSourceRun.id.desc())
+            .limit(1)
+        )
+        if row is None:
+            return {"status": "waiting", "percent": 0, "pages_scanned": 0,
+                    "total_pages": None, "items_seen": 0}
+        checkpoint = row.checkpoint_json if isinstance(row.checkpoint_json, dict) else {}
+        current = int(checkpoint.get("progress_current") or row.pages_scanned or 0)
+        total = int(checkpoint.get("progress_total") or checkpoint.get("total_pages") or 0)
+        percent = min(100, int(current * 100 / total)) if total else 0
+        if row.status == "success":
+            percent = 100
+        return {
+            "status": row.status,
+            "percent": percent,
+            "pages_scanned": row.pages_scanned,
+            "total_pages": total or None,
+            "items_seen": row.items_seen,
+            "items_inserted": row.items_inserted,
+            "items_updated": row.items_updated,
+            "items_failed": row.items_failed,
+            "progress_at": row.progress_at,
+            "error": row.error_message,
         }
 
 
@@ -139,11 +178,13 @@ def publish_map() -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("import", "geocode", "map", "audit"))
+    parser.add_argument("stage", choices=("import", "progress", "geocode", "map", "audit"))
     parser.add_argument("--batch-size", type=int, default=250)
     args = parser.parse_args()
     if args.stage == "import":
         out = run_import()
+    elif args.stage == "progress":
+        out = import_progress()
     elif args.stage == "geocode":
         out = geocode_source(batch_size=args.batch_size)
     elif args.stage == "map":

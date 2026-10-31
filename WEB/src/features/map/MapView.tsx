@@ -1086,7 +1086,9 @@ function LotPreview({
         <p className="mapPreviewDescription">
           {lot.description || lot.address || "Описание отсутствует"}
         </p>
-        <strong className="mapPreviewPrice">{money(lot.current_price)}</strong>
+        <strong className="mapPreviewPrice">
+          {money(lot.current_price ?? lot.start_price)}
+        </strong>
         {lot.price_observed_at && (
           <small className="mapPreviewPriceObserved">
             Цена актуальна на {formatMoscowDate(lot.price_observed_at)} МСК
@@ -1228,8 +1230,10 @@ function LotPreviewLoading({
       <div className="mapPreviewBody">
         <span className="mapPreviewSource">Выбранный лот</span>
         <h2>{marker?.title || "Загрузка карточки…"}</h2>
-        {marker?.current_price != null && (
-          <strong className="mapPreviewPrice">{money(marker.current_price)}</strong>
+        {(marker?.current_price != null || marker?.start_price != null) && (
+          <strong className="mapPreviewPrice">
+            {money(marker.current_price ?? marker.start_price)}
+          </strong>
         )}
         <MapState error={Boolean(error)}>
           {error || "Загрузка описания и действий с лотом…"}
