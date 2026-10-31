@@ -46,11 +46,16 @@ jobs:
           $sha = (& git rev-parse HEAD).Trim()
           if ($sha -ne $env:TARGET_SHA) { throw 'Requested CDTRF SHA was not checked out exactly' }
           $marker = Join-Path $markDir "cdtrf-$sha-map-published.json"
-          if ($subject.StartsWith('CDTRF-first-pass:') -and -not (Test-Path -LiteralPath $marker)) {
+          # An explicit manual invocation is an operator decision. Automatic
+          # workflow_run still accepts only the deliberately named release.
+          # Both routes keep the exact-SHA P1, backup and worker checks below.
+          $manual = '${{ github.event_name }}' -eq 'workflow_dispatch'
+          if (($manual -or $subject.StartsWith('CDTRF-first-pass:')) -and
+              -not (Test-Path -LiteralPath $marker)) {
             "approved=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             "approved=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-Output "Unrelated accepted release: CDTRF first-pass campaign safely skipped"
+            Write-Output "CDTRF first-pass already published or no automatic release authorization"
           }
 
       - name: Require exact worker SHA and verified backup
