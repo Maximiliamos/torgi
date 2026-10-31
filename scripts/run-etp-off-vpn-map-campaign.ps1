@@ -8,7 +8,8 @@ param(
     [ValidateRange(1, 10)][int]$P11Attempts = 5,
     [ValidateRange(30, 600)][int]$RetryDelaySeconds = 90,
     [ValidateRange(5, 180)][int]$ChainTimeoutMinutes = 45,
-    [string]$LogDirectory = 'D:\BankrotAI\etp-operator-logs'
+    [string]$LogDirectory = 'D:\BankrotAI\etp-operator-logs',
+    [switch]$ResumeAfterP1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,7 +88,8 @@ function Watch-RunProgress {
         $completedSteps = @($steps | Where-Object { $_.status -eq 'completed' }).Count
         $fraction = if ($totalSteps -gt 0) { $completedSteps / $totalSteps } else { 0.0 }
         if ($run.status -eq 'completed' -and $run.conclusion -eq 'success') { $fraction = 1.0 }
-        $percent = [math]::Min(100, [math]::Floor($BasePercent + $fraction * $SpanPercent))
+        $calculatedPercent = [math]::Min(100, [math]::Floor($BasePercent + $fraction * $SpanPercent))
+        $percent = [math]::Max($lastShownPercent, $calculatedPercent)
         $active = @($steps | Where-Object { $_.status -eq 'in_progress' } |
             Select-Object -First 1 -ExpandProperty name)
         $detail = if ($active.Count -eq 1) { [string]$active[0] } elseif ($run.status -eq 'queued') {
@@ -147,28 +149,51 @@ foreach ($worker in $requiredWorkers) {
 }
 
 Write-Host "Exact production revision confirmed: $ExpectedSha"
-Write-Host 'Running all 21 new ETP parsers in isolated read-only QA...'
-$qaDispatchUtc = [datetime]::UtcNow
-& gh.exe workflow run $allSourceQaWorkflow --repo $repository --ref main
-if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch all-source ETP QA' }
-$qa = Wait-ForRunCreatedAfter -Workflow $allSourceQaWorkflow -NotBeforeUtc $qaDispatchUtc `
-    -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
-Write-Host "All-source parser run: $($qa.url)"
-if ((Watch-RunProgress -RunId ([long]$qa.databaseId) -Label 'Parsing 21 ETP sources' `
-    -BasePercent 0 -SpanPercent 30) -ne 0) {
-    throw 'The isolated 21-source parser run failed; no production import was attempted.'
+$fakeIpNames = @()
+foreach ($name in @('m-ets.ru', 'torgi.cdtrf.ru', 'nspd.gov.ru')) {
+    $addresses = @(Resolve-DnsName $name -Type A -ErrorAction Stop |
+        Where-Object { $_.IPAddress } | ForEach-Object { [string]$_.IPAddress })
+    if ($addresses.Count -lt 1) { throw "DNS returned no IPv4 address for $name" }
+    foreach ($address in $addresses) {
+        $octets = @($address.Split('.') | ForEach-Object { [int]$_ })
+        if ($octets.Count -eq 4 -and $octets[0] -eq 198 -and
+            $octets[1] -ge 18 -and $octets[1] -le 19) {
+            $fakeIpNames += "$name=$address"
+        }
+    }
 }
+if ($fakeIpNames.Count -gt 0) {
+    throw ('VPN/Fake-IP DNS is still active: ' + ($fakeIpNames -join ', ') +
+        '. Fully exit Happ, disable its Windows proxy, flush DNS, then retry.')
+}
+Write-Host 'DNS preflight passed: no Happ 198.18.0.0/15 Fake-IP addresses found.'
 
-Write-Host 'Running exact-SHA P1 production data-quality gate...'
-$p1DispatchUtc = [datetime]::UtcNow
-& gh.exe workflow run $p1Workflow --repo $repository --ref main
-if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch P1 production data quality' }
-$p1 = Wait-ForRunCreatedAfter -Workflow $p1Workflow -NotBeforeUtc $p1DispatchUtc `
-    -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
-Write-Host "P1 exact-SHA gate: $($p1.url)"
-if ((Watch-RunProgress -RunId ([long]$p1.databaseId) -Label 'P1 production data quality' `
-    -BasePercent 30 -SpanPercent 15) -ne 0) {
-    throw 'P1 production data-quality gate failed; no production import was attempted.'
+if (-not $ResumeAfterP1) {
+    Write-Host 'Running all 21 new ETP parsers in isolated read-only QA...'
+    $qaDispatchUtc = [datetime]::UtcNow
+    & gh.exe workflow run $allSourceQaWorkflow --repo $repository --ref main
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch all-source ETP QA' }
+    $qa = Wait-ForRunCreatedAfter -Workflow $allSourceQaWorkflow -NotBeforeUtc $qaDispatchUtc `
+        -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
+    Write-Host "All-source parser run: $($qa.url)"
+    if ((Watch-RunProgress -RunId ([long]$qa.databaseId) -Label 'Parsing 21 ETP sources' `
+        -BasePercent 0 -SpanPercent 30) -ne 0) {
+        throw 'The isolated 21-source parser run failed; no production import was attempted.'
+    }
+
+    Write-Host 'Running exact-SHA P1 production data-quality gate...'
+    $p1DispatchUtc = [datetime]::UtcNow
+    & gh.exe workflow run $p1Workflow --repo $repository --ref main
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to dispatch P1 production data quality' }
+    $p1 = Wait-ForRunCreatedAfter -Workflow $p1Workflow -NotBeforeUtc $p1DispatchUtc `
+        -Sha $ExpectedSha -DeadlineUtc ([datetime]::UtcNow.AddMinutes(3))
+    Write-Host "P1 exact-SHA gate: $($p1.url)"
+    if ((Watch-RunProgress -RunId ([long]$p1.databaseId) -Label 'P1 production data quality' `
+        -BasePercent 30 -SpanPercent 15) -ne 0) {
+        throw 'P1 production data-quality gate failed; no production import was attempted.'
+    }
+} else {
+    Write-Host '[ 45%] ResumeAfterP1: reusing the successful exact-SHA QA and P1 evidence.'
 }
 
 Write-Host 'Waiting for production health to recover without VPN...'
