@@ -125,28 +125,20 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"expires": 240},
         },
-        # Fast discovery reads one page per source and never reconciles missing
-        # inventory. Keeping it on quarter-hour boundaries leaves the daily full
-        # run an intentional offset, rather than asking both jobs to acquire the
-        # durable lease at the same instant.
-        "refresh-nationwide-sources-fast": {
-            "task": "bankrotai.tasks.automatic_nationwide_lot_refresh_task",
-            "schedule": crontab(minute="0,15,30,45"),
-            "args": ("fast",),
-            "options": {"expires": 840},
-        },
         "refresh-nationwide-sources-full": {
             "task": "bankrotai.tasks.automatic_nationwide_lot_refresh_task",
-            # The daily full run is bounded by the ingestion task's production
-            # time limit and is the only cadence allowed to archive.
-            "schedule": crontab(hour=3, minute=7),
+            # Celery beat runs in UTC: 06:00/18:00 UTC is 09:00/21:00 Moscow.
+            # One complete run replaces the former quarter-hour discovery jobs
+            # so source retries cannot keep the global ingestion lease busy all day.
+            "schedule": crontab(hour="6,18", minute=0),
             "args": ("full",),
-            "options": {"expires": 3_600},
+            "options": {"expires": 21_600},
         },
         "probe-source-network-health": {
             "task": "bankrotai.tasks.probe_source_network_health_task",
-            "schedule": 60.0,
-            "options": {"expires": 45},
+            # A small lead lets circuit state settle before each full source run.
+            "schedule": crontab(hour="5,17", minute=55),
+            "options": {"expires": 300},
         },
         "publish-dirty-map-dataset": {
             "task": "bankrotai.tasks.publish_dirty_map_dataset_task",
