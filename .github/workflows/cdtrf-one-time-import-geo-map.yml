@@ -101,8 +101,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $job = Start-Job -ScriptBlock {
-            docker exec -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign import
+          # PowerShell Receive-Job turns Docker's first stderr traceback line
+          # into a terminating NativeCommandError and hides the actual cause.
+          # Capture stdout+stderr at the native shell boundary instead.
+          $logPath = Join-Path $env:RUNNER_TEMP 'cdtrf-import-python-output.log'
+          $job = Start-Job -ArgumentList $logPath -ScriptBlock {
+            param([string]$path)
+            $command = 'docker.exe exec -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign import'
+            & $env:ComSpec /d /s /c "$command 1> `"$path`" 2>&1"
+            Write-Output ([int]$LASTEXITCODE)
           }
           while ($job.State -in @('NotStarted','Running')) {
             Start-Sleep -Seconds 30
@@ -116,10 +123,35 @@ jobs:
               Write-Output '[IMPORT   0%] waiting for the first durable source checkpoint'
             }
           }
-          $output = @(Receive-Job -Job $job -Wait)
+          $codes = @(Receive-Job -Job $job -Wait -ErrorAction Continue)
           $jobState = $job.State
           Remove-Job -Job $job -Force
-          if ($jobState -ne 'Completed' -or $output.Count -lt 1) { throw 'CDTRF source import failed closed' }
+          $output = if (Test-Path -LiteralPath $logPath) {
+            @(Get-Content -LiteralPath $logPath -Encoding utf8)
+          } else { @() }
+          $exitCode = if ($codes.Count -gt 0) { [int]$codes[-1] } else { -1 }
+          if ($jobState -ne 'Completed' -or $exitCode -ne 0 -or $output.Count -lt 1) {
+            $errorLines = @($output | Where-Object {
+              $_ -match '^Traceback \(' -or $_ -match '^\s+File "' -or
+              $_ -match '^[\w.]+(?:Error|Exception):'
+            } | Select-Object -Last 16)
+            $safeErrors = @($errorLines | ForEach-Object {
+              $line = $_ -replace '(?i)(password|token|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+', '$1=<redacted>'
+              $line -replace '([?&][^=\s]+)=([^&\s]+)', '$1=<redacted>'
+            })
+            $failure = [ordered]@{
+              source = 'cdtrf.ru'
+              stage = 'import'
+              worker_sha = $env:TARGET_SHA
+              exit_code = $exitCode
+              job_state = [string]$jobState
+              error_lines = $safeErrors
+              captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            }
+            $failure | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath 'cdtrf-import-failure.json' -Encoding utf8
+            $safeErrors | ForEach-Object { Write-Output $_ }
+            throw "CDTRF importer failed before GEO: exit=$exitCode; Python exception and traceback preserved in cdtrf-import-failure.json"
+          }
           $report = $output[-1] | ConvertFrom-Json
           if ($report.status -ne 'success' -or $report.source.status -ne 'success' -or
               $report.source.pages_scanned -lt 1 -or $report.source.items_archived -ne 0) {
@@ -194,5 +226,6 @@ jobs:
             cdtrf-geo-result.json
             cdtrf-map-result.json
             cdtrf-public-map-result.json
+            cdtrf-import-failure.json
           if-no-files-found: warn
           retention-days: 30
