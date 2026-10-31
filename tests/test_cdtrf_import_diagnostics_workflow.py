@@ -17,6 +17,9 @@ def test_import_stderr_is_preserved_without_powershell_receive_job_abort() -> No
     assert "Traceback" in workflow
     assert "if ($jobState -ne 'Completed' -or $exitCode -ne 0" in workflow
     assert "if ($report.status -ne 'success'" in workflow
+    assert "$manual = '${{ github.event_name }}' -eq 'workflow_dispatch'" in workflow
+    assert "-not (Test-Path -LiteralPath $marker)" in workflow
+    assert "Manual CDTRF import refused: no successful exact-SHA P1 production audit" in workflow
 
 
 def test_readonly_diagnostic_does_not_import_or_geocode() -> None:
