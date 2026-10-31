@@ -130,14 +130,14 @@ def test_beat_keeps_geo_watchdogs_and_minute_map_publication_watchdog() -> None:
     assert tasks._MAP_PUBLICATION_MIN_INTERVAL_SECONDS == 600
     assert tasks._MAP_PUBLICATION_MAX_DELAY_SECONDS == 900
     assert tasks._GEO_CONTINUATION_MAX_BATCHES == 8
-    fast_schedule = schedule["refresh-nationwide-sources-fast"]["schedule"]
+    assert "refresh-nationwide-sources-fast" not in schedule
     full_schedule = schedule["refresh-nationwide-sources-full"]["schedule"]
-    assert fast_schedule.minute == {0, 15, 30, 45}
-    assert schedule["refresh-nationwide-sources-fast"]["args"] == ("fast",)
-    assert schedule["refresh-nationwide-sources-fast"]["options"]["expires"] == 840
-    assert full_schedule.hour == {3}
-    assert full_schedule.minute == {7}
+    assert full_schedule.hour == {6, 18}
+    assert full_schedule.minute == {0}
     assert schedule["refresh-nationwide-sources-full"]["args"] == ("full",)
+    source_probe = schedule["probe-source-network-health"]["schedule"]
+    assert source_probe.hour == {5, 17}
+    assert source_probe.minute == {55}
 
 
 def test_heavy_tasks_use_isolated_queues() -> None:

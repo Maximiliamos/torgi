@@ -33,7 +33,7 @@ class Session:
         assert url.startswith("https://torgi.cdtrf.ru/api/Trade/trades?")
         assert "PageSize=20" in url
         assert allow_redirects is False
-        assert timeout == (3, 8)
+        assert timeout == (10, 30)
         assert "json" in headers["Accept"]
         self.calls.append(url)
         return Response(self.pages[len(self.calls) - 1])
