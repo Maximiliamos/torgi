@@ -105,7 +105,9 @@ def _map_lot_payload(
             "source_system": source.source_system,
             "external_id": source.external_id,
             "title": processed.title,
-            "price": float(processed.current_price) if processed.current_price is not None else None,
+            "price": float(processed.current_price if processed.current_price is not None else processed.start_price)
+            if (processed.current_price is not None or processed.start_price is not None)
+            else None,
             "url": source.source_url or processed.source_url or processed.lot_url,
             "is_primary": processed.id == lot.id,
         }
@@ -118,7 +120,9 @@ def _map_lot_payload(
                 "source_system": lot.source_system or lot.source,
                 "external_id": lot.external_id,
                 "title": lot.title,
-                "price": float(lot.current_price) if lot.current_price is not None else None,
+                "price": float(lot.current_price if lot.current_price is not None else lot.start_price)
+                if (lot.current_price is not None or lot.start_price is not None)
+                else None,
                 "url": lot.source_url or lot.lot_url,
                 "is_primary": True,
             }
@@ -136,6 +140,7 @@ def _map_lot_payload(
         "is_archived": lot.is_archived,
         "review_status": lot.review_status,
         "current_price": float(lot.current_price) if lot.current_price is not None else None,
+        "start_price": float(lot.start_price) if lot.start_price is not None else None,
         "minimum_price": float(minimum_price) if minimum_price is not None else None,
         "price_observed_at": _display_datetime(price_observed_at),
         "next_interval_price": float(primary.next_interval_price)

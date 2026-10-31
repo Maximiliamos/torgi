@@ -124,6 +124,46 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
     assert detail["next_price_reduction_at"] == "2026-08-24T10:00:00Z"
 
 
+def test_map_detail_displays_initial_price_when_current_price_is_not_published() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            external_id="cdtrf:391603",
+            source="cdtrf.ru",
+            source_system="cdtrf.ru",
+            title="Квартира в Каспийске",
+            description="",
+            category="apartment",
+            start_price=Decimal("7254000"),
+            current_price=None,
+            auction_status="active",
+            current_geo_lat=42.9085,
+            current_geo_lon=47.6157,
+            current_geo_source="address",
+            current_geo_confidence="high",
+        )
+        session.add(lot)
+        session.flush()
+        session.add(LotGeoSnapshot(
+            lot_id=lot.id,
+            geo_source="address",
+            geo_method="fixture",
+            geo_confidence="high",
+            centroid_lat=42.9085,
+            centroid_lon=47.6157,
+        ))
+        session.commit()
+        lot_id = lot.id
+
+        detail = build_map_lot_detail(session, lot_id)
+
+    assert detail is not None
+    assert detail["current_price"] is None
+    assert detail["start_price"] == 7_254_000
+    assert detail["sources"][0]["price"] == 7_254_000
+
+
 @pytest.mark.parametrize(
     ("limit", "expected_returned", "expected_truncated"),
     [(2, 2, True), (3, 3, False), (4, 3, False)],

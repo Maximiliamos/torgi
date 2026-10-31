@@ -178,6 +178,7 @@ export type MapLot = {
   is_archived: boolean;
   review_status: string | null;
   current_price: number | null;
+  start_price?: number | null;
   minimum_price: number | null;
   price_observed_at: string | null;
   next_interval_price: number | null;

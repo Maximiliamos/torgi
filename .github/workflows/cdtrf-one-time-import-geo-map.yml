@@ -82,8 +82,25 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $output = @(docker exec -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign import)
-          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'CDTRF source import failed closed' }
+          $job = Start-Job -ScriptBlock {
+            docker exec -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign import
+          }
+          while ($job.State -in @('NotStarted','Running')) {
+            Start-Sleep -Seconds 30
+            $progressLine = @(docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_cdtrf_campaign progress)[-1]
+            if ($LASTEXITCODE -eq 0 -and $progressLine) {
+              $progress = $progressLine | ConvertFrom-Json
+              Write-Output ("[IMPORT {0,3}%] pages={1}/{2}; verified lots={3}; inserted={4}; updated={5}; failed={6}" -f
+                [int]$progress.percent,$progress.pages_scanned,$progress.total_pages,$progress.items_seen,
+                $progress.items_inserted,$progress.items_updated,$progress.items_failed)
+            } else {
+              Write-Output '[IMPORT   0%] waiting for the first durable source checkpoint'
+            }
+          }
+          $output = @(Receive-Job -Job $job -Wait)
+          $jobState = $job.State
+          Remove-Job -Job $job -Force
+          if ($jobState -ne 'Completed' -or $output.Count -lt 1) { throw 'CDTRF source import failed closed' }
           $report = $output[-1] | ConvertFrom-Json
           if ($report.status -ne 'success' -or $report.source.status -ne 'success' -or
               $report.source.pages_scanned -lt 1 -or $report.source.items_archived -ne 0) {
@@ -116,43 +133,30 @@ jobs:
             throw 'CDTRF map publication did not confirm geocoded source points'
           }
           $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath 'cdtrf-map-result.json' -Encoding utf8
-      - name: Confirm CDTRF lot is visible through the public map filter
+      - name: Confirm all imported CDTRF prices, GEO and published map evidence
         if: steps.release.outputs.approved == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $visible = $false
-          $sample = $null
-          for ($try = 1; $try -le 10; $try++) {
-            try {
-              $uri = 'https://api.sterdez.online/api/map/lots?sources=cdtrf.ru&limit=10'
-              $sample = Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 25
-              if ($sample.returned -gt 0 -and $sample.mapped_total -gt 0 -and
-                  @($sample.items).Count -gt 0 -and
-                  $null -ne $sample.items[0].lat -and
-                  $null -ne $sample.items[0].lon) {
-                $visible = $true
-                break
-              }
-            } catch {
-              Write-Output ("CDTRF public map not ready, attempt {0}: {1}" -f $try, $_.Exception.GetType().Name)
-            }
-            Start-Sleep -Seconds 15
+          $auditLine = @(docker exec bankrotai-home-map-worker python -m bankrotai.services.etp_cdtrf_campaign audit)[-1]
+          if ($LASTEXITCODE -ne 0 -or -not $auditLine) { throw 'CDTRF final audit failed' }
+          $snapshot = ($auditLine | ConvertFrom-Json).snapshot
+          if ($snapshot.active_primary -lt 1 -or
+              $snapshot.with_price -ne $snapshot.active_primary -or
+              $snapshot.with_coordinates -lt 1) {
+            throw 'CDTRF final audit found missing prices, no active records, or no map coordinates'
           }
-          if (-not $visible) {
-            throw 'CDTRF import/GEO published locally but no confirmed lot reached the public map filter'
-          }
-          $state = Invoke-RestMethod -Method Get -Uri 'https://api.sterdez.online/api/map/sources' -TimeoutSec 25
-          $cdtrf = @($state.items | Where-Object { $_.id -eq 'cdtrf.ru' })
-          if ($cdtrf.Count -ne 1 -or $cdtrf[0].has_database_records -ne $true) {
-            throw 'Public map source catalogue does not confirm CDTRF database records'
+          $map = Get-Content -LiteralPath 'cdtrf-map-result.json' -Raw | ConvertFrom-Json
+          if ($map.map.build_status -ne 'success' -or $map.after_publication.with_coordinates -ne $snapshot.with_coordinates) {
+            throw 'CDTRF current map dataset does not match the final source audit'
           }
           $evidence = [ordered]@{
-            public_filter = 'cdtrf.ru'
-            returned = [int]$sample.returned
-            mapped_total = [int]$sample.mapped_total
-            sample_lot_id = [int]$sample.items[0].id
-            source_has_records = $true
+            source = 'cdtrf.ru'
+            active_primary = [int]$snapshot.active_primary
+            with_price = [int]$snapshot.with_price
+            with_coordinates = [int]$snapshot.with_coordinates
+            without_coordinates = [int]$snapshot.without_coordinates
+            map_dataset_id = [string]$map.map.dataset_id
             verified_at_utc = (Get-Date).ToUniversalTime().ToString('o')
           }
           $evidence | ConvertTo-Json -Depth 6 | Set-Content 'cdtrf-public-map-result.json' -Encoding utf8
