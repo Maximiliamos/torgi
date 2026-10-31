@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, case, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.core import utc_now
@@ -66,34 +66,40 @@ def data_quality_snapshot(session: Session) -> DataQualityDTO:
 
 def operational_quality_report(session: Session, *, stale_days: int = 7, problem_limit: int = 100) -> dict[str, Any]:
     """Repeatable source/data/map health report with actionable lot identifiers."""
-    from bankrotai.services.map_view import extract_map_image_urls
-
     now = utc_now()
     cutoff = now.replace(tzinfo=None) - timedelta(days=max(1, stale_days))
+    active = SourceLot.is_active.is_(True) & SourceLot.is_archived.is_(False)
+    raw_text = cast(SourceLot.raw_data, String)
+    photo_hint = or_(*(
+        raw_text.ilike(f'%"{key}"%')
+        for key in (
+            "main_image", "image", "photo", "thumbnail", "image_urls", "photo_urls",
+            "images", "photos", "gallery",
+        )
+    ))
     source_rows = session.execute(
         select(
             SourceLot.source_system,
-            SourceLot.is_active,
-            SourceLot.is_archived,
-            SourceLot.source_status,
-            SourceLot.last_seen_at,
-            SourceLot.raw_data,
+            func.count(SourceLot.id),
+            func.sum(case((active, 1), else_=0)),
+            func.sum(case((SourceLot.is_archived.is_(True), 1), else_=0)),
+            func.sum(case((photo_hint, 1), else_=0)),
+            func.sum(case((SourceLot.source_status.is_(None) | (SourceLot.source_status == "unknown"), 1), else_=0)),
+            func.sum(case((active & (SourceLot.last_seen_at < cutoff), 1), else_=0)),
+            func.max(SourceLot.last_seen_at),
         )
-    ).yield_per(1000)
-    sources: dict[str, dict[str, Any]] = {}
-    for source_system, is_active, is_archived, status, last_seen_at, raw_data in source_rows:
-        value = sources.setdefault(source_system, {
-            "total": 0, "active": 0, "archived": 0, "with_photos": 0,
-            "unknown_status": 0, "stale_active": 0, "last_seen_at": None,
-        })
-        value["total"] += 1
-        value["active"] += int(bool(is_active and not is_archived))
-        value["archived"] += int(bool(is_archived))
-        value["with_photos"] += int(bool(extract_map_image_urls(raw_data)))
-        value["unknown_status"] += int(not status or status == "unknown")
-        value["stale_active"] += int(bool(is_active and not is_archived and last_seen_at < cutoff))
-        if last_seen_at and (value["last_seen_at"] is None or last_seen_at > value["last_seen_at"]):
-            value["last_seen_at"] = last_seen_at
+        .group_by(SourceLot.source_system)
+    )
+    sources = {
+        source_system: {
+            "total": int(total or 0), "active": int(active_count or 0),
+            "archived": int(archived or 0), "with_photos": int(with_photos or 0),
+            "unknown_status": int(unknown or 0), "stale_active": int(stale or 0),
+            "last_seen_at": last_seen_at,
+        }
+        for source_system, total, active_count, archived, with_photos, unknown, stale, last_seen_at
+        in source_rows
+    }
 
     problem_query = (
         select(SourceLot.id, SourceLot.source_system, SourceLot.external_id, SourceLot.last_seen_at)
