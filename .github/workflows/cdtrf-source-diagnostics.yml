@@ -1,0 +1,83 @@
+name: CDTRF read-only last import diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cdtrf-source-diagnostics.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cdtrf-readonly-last-import-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 12
+    steps:
+      - name: Inspect latest durable source error, source lot counts and GEO
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $container = 'bankrotai-home-ingestion-worker'
+          $state = (docker inspect --format '{{.State.Status}}' $container).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'CDTRF diagnostic requires a running trusted Home ingestion worker'
+          }
+          $progressLines = @(docker exec $container python -m bankrotai.services.etp_cdtrf_campaign progress)
+          if ($LASTEXITCODE -ne 0 -or $progressLines.Count -lt 1) {
+            throw 'Could not read durable source progress'
+          }
+          $progress = $progressLines[-1] | ConvertFrom-Json
+          $auditLines = @(docker exec $container python -m bankrotai.services.etp_cdtrf_campaign audit)
+          if ($LASTEXITCODE -ne 0 -or $auditLines.Count -lt 1) {
+            throw 'Could not read source counts and GEO'
+          }
+          $audit = $auditLines[-1] | ConvertFrom-Json
+          # Keep the diagnostic bounded; never print environment variables,
+          # connection strings or full unvalidated source records.
+          $detail = [string]$progress.error
+          $detail = $detail -replace '(?i)(password|token|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+', '$1=<redacted>'
+          $detail = $detail -replace '([?&][^=\s]+)=([^&\s]+)', '$1=<redacted>'
+          if ($detail.Length -gt 900) { $detail = $detail.Substring(0,900) }
+          $evidence = [ordered]@{
+            source = 'cdtrf.ru'
+            mode = 'READ_ONLY_POST_FAILURE'
+            run_sha = $env:GITHUB_SHA
+            inspected_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            progress = [ordered]@{
+              status = [string]$progress.status
+              pages_scanned = [int]$progress.pages_scanned
+              total_pages = $progress.total_pages
+              items_seen = [int]$progress.items_seen
+              items_inserted = [int]$progress.items_inserted
+              items_updated = [int]$progress.items_updated
+              items_failed = [int]$progress.items_failed
+              progress_at = $progress.progress_at
+              error = $detail
+            }
+            snapshot = $audit.snapshot
+            database_writes = 0
+            archival_enabled = $false
+          }
+          $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$env:RUNNER_TEMP/cdtrf-last-import-diagnostics.json" -Encoding utf8
+          Write-Output ("CDTRF last durable source: status={0} pages={1}/{2} inserted={3} updated={4} failed={5}" -f
+            $evidence.progress.status, $evidence.progress.pages_scanned,
+            $evidence.progress.total_pages, $evidence.progress.items_inserted,
+            $evidence.progress.items_updated, $evidence.progress.items_failed)
+          Write-Output ("CDTRF source records={0}; valid GEO={1}; unresolved GEO={2}" -f
+            $audit.snapshot.source_records, $audit.snapshot.with_coordinates, $audit.snapshot.without_coordinates)
+          if ($detail) { Write-Output ("CDTRF source error: " + $detail) }
+
+      - name: Upload bounded read-only source diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cdtrf-last-import-readonly
+          path: ${{ runner.temp }}/cdtrf-last-import-diagnostics.json
+          if-no-files-found: warn
+          retention-days: 7
