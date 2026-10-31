@@ -1,6 +1,12 @@
 name: CDTRF one-time source import, GEO and map
 
 on:
+  workflow_dispatch:
+    inputs:
+      accepted_sha:
+        description: Exact deployed main SHA with a successful P1 audit
+        required: true
+        type: string
   workflow_run:
     workflows: ["P11 production acceptance"]
     types: [completed]
@@ -16,14 +22,19 @@ concurrency:
 
 jobs:
   import-geocode-map:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_sha || github.event.workflow_run.head_sha }}
     steps:
       - name: Exact-SHA source checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ env.TARGET_SHA }}
           persist-credentials: false
 
       - name: Only one explicitly CDTRF-first-pass release is eligible
@@ -33,6 +44,7 @@ jobs:
           $subject = (& git log -1 --format=%s).Trim()
           $markDir = 'D:\BankrotAI\etp-acceptance'
           $sha = (& git rev-parse HEAD).Trim()
+          if ($sha -ne $env:TARGET_SHA) { throw 'Requested CDTRF SHA was not checked out exactly' }
           $marker = Join-Path $markDir "cdtrf-$sha-map-published.json"
           if ($subject.StartsWith('CDTRF-first-pass:') -and -not (Test-Path -LiteralPath $marker)) {
             "approved=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -46,9 +58,16 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = '${{ github.event.workflow_run.head_sha }}'
+          $expected = $env:TARGET_SHA
           $actual = (& git rev-parse HEAD).Trim()
           if ($actual -ne $expected) { throw 'Exact SHA mismatch after checkout' }
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $p1Runs = @(gh run list --repo $env:GITHUB_REPOSITORY --workflow p1-data-quality.yml --commit $expected --event workflow_dispatch --limit 20 --json conclusion,headSha | ConvertFrom-Json)
+            $accepted = @($p1Runs | Where-Object { $_.headSha -eq $expected -and $_.conclusion -eq 'success' })
+            if ($LASTEXITCODE -ne 0 -or $accepted.Count -lt 1) {
+              throw 'Manual CDTRF import refused: no successful exact-SHA P1 production audit'
+            }
+          }
           foreach ($container in @('bankrotai-home-ingestion-worker','bankrotai-home-geocoding-worker','bankrotai-home-map-worker')) {
             $image = (docker inspect --format '{{.Config.Image}}' $container).Trim()
             if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$expected") {
@@ -162,7 +181,7 @@ jobs:
           $evidence | ConvertTo-Json -Depth 6 | Set-Content 'cdtrf-public-map-result.json' -Encoding utf8
           $markDir = 'D:\BankrotAI\etp-acceptance'
           New-Item -ItemType Directory -Force -Path $markDir | Out-Null
-          $marker = Join-Path $markDir "cdtrf-${{ github.event.workflow_run.head_sha }}-map-published.json"
+          $marker = Join-Path $markDir "cdtrf-$env:TARGET_SHA-map-published.json"
           $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $marker -Encoding utf8
 
       - name: Preserve production evidence without original personal details
