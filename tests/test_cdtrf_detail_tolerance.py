@@ -147,3 +147,40 @@ def test_provider_403_is_not_retried(monkeypatch):
     with pytest.raises(CdtrfCanaryError, match="403"):
         module._verified_detail_with_retry("400001", "500001", _Session())
     assert len(calls) == 1
+
+
+def test_live_catalogue_total_drift_and_shifted_rows_are_nonfatal(monkeypatch):
+    """A live non-reconciling catalogue must finish when page rows shift."""
+    import bankrotai.connectors.registry.cdtrf_sync as module
+
+    class Session:
+        def get(self, url, *, timeout, allow_redirects, headers):
+            page = 1 if "PageNum=1" in url else 2
+            start = 1 if page == 1 else 20  # lot 20 overlaps after a new trade arrives
+            rows = [{
+                "tradeId": 400000 + i,
+                "tradeLotId": 500000 + i,
+                "categories": ",21,", "actualPrice": 500000,
+            } for i in range(start, 21 if page == 1 else 40)]
+            reply = _Reply()
+            reply.json = lambda: {
+                "success": True,
+                "totalCount": 40 if page == 1 else 41,
+                "items": rows,
+            }
+            return reply
+
+    monkeypatch.setattr(
+        module, "fetch_verified_cdtrf_lot",
+        lambda trade, lot, *, session: _lot(trade, lot),
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    crawler = CdtrfSourceCrawler(Session())
+    first = asyncio.run(crawler.search(CdtrfSyncFilters(page_size=20), None))
+    second = asyncio.run(crawler.search(CdtrfSyncFilters(page_size=20), first.next_cursor))
+
+    assert len(first.items) == 20
+    assert len(second.items) == 19
+    assert second.metadata["catalogue_total_changes"] == 1
+    assert second.metadata["catalogue_overlap_rows_skipped"] == 1
+    assert second.metadata["safe_for_archival"] is False

@@ -70,6 +70,8 @@ class CdtrfSourceCrawler:
         self.session = session
         self._seen: set[str] = set()
         self._total: int | None = None
+        self._pages_total = 0
+        self._total_changes = 0
         self._expected_page = 1
         self._prior_digest: str | None = None
 
@@ -106,19 +108,33 @@ class CdtrfSourceCrawler:
             if ceil(total / filters.page_size) > filters.max_pages:
                 raise CdtrfCatalogueScanError("CDTRF catalogue exceeds page budget")
         elif total != self._total:
-            raise CdtrfCatalogueScanError("CDTRF total changed during scan")
+            # CDTRF is a live catalogue, not a point-in-time snapshot. New or
+            # closed trades routinely change totalCount while verified detail
+            # pages are being read. This source is deliberately non-reconciling,
+            # so retain the widest observed page boundary and de-duplicate any
+            # rows shifted across page boundaries instead of discarding a safe
+            # partial import.
+            self._total_changes += 1
+            self._total = total
+
+        observed_pages_total = ceil(total / filters.page_size) or 1
+        self._pages_total = max(self._pages_total, observed_pages_total)
+        if self._pages_total > filters.max_pages:
+            raise CdtrfCatalogueScanError("CDTRF catalogue exceeds page budget")
 
         expected = min(filters.page_size, max(0, total - (page_no - 1) * filters.page_size))
         if data["observed_rows"] != expected:
             raise CdtrfCatalogueScanError("CDTRF incomplete page / unsupported server PageSize")
         ids = set(data["observed_lot_ids"])
-        if ids & self._seen:
-            raise CdtrfCatalogueScanError("CDTRF duplicate lot IDs across catalogue pages")
+        overlapping_ids = ids & self._seen
+        new_ids = ids - self._seen
         self._seen.update(ids)
 
         accepted = []
         rejected: dict[str, int] = {}
         for index, hit in enumerate(data["property_candidates"]):
+            if str(hit["trade_lot_id"]) not in new_ids:
+                continue
             if index:
                 time.sleep(filters.detail_delay_seconds)
             try:
@@ -175,7 +191,7 @@ class CdtrfSourceCrawler:
                 + ",".join(f"{key}={value}" for key, value in sorted(rejected.items()))
             )
 
-        pages_total = ceil(total / filters.page_size) or 1
+        pages_total = self._pages_total
         next_no = page_no + 1
         digest = hashlib.sha256(
             "\n".join(sorted(ids)).encode("ascii")
@@ -195,6 +211,8 @@ class CdtrfSourceCrawler:
                 "property_hint_candidates": inspected,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
+                "catalogue_total_changes": self._total_changes,
+                "catalogue_overlap_rows_skipped": len(overlapping_ids),
                 "rejection_codes": rejected,
                 "requested_category_group": "cdtrf_property_nonreconciling",
                 "complete_source_inventory": False,
