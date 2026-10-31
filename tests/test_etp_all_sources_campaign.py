@@ -44,3 +44,41 @@ def test_all_source_campaign_requires_all_write_guards(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(PermissionError, match="authorization missing"):
         campaign._authorized()
+
+
+def test_all_source_campaign_journal_fields_fit_production_schema(monkeypatch):
+    from bankrotai.db import LotSyncRun
+    from bankrotai.services import etp_all_sources_campaign as campaign
+
+    assert len(campaign.RUN_TRIGGER_TYPE) <= LotSyncRun.__table__.c.trigger_type.type.length
+    assert len(campaign.RUN_TRIGGERED_BY) <= LotSyncRun.__table__.c.triggered_by.type.length
+
+    class StopAfterCreate(Exception):
+        pass
+
+    captured = {}
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_run(self, **kwargs):
+            captured.update(kwargs)
+            raise StopAfterCreate
+
+    for flag in (
+        "ETP_ALL_SOURCES_OPERATOR_ENABLED",
+        "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
+        "CDTRF_OPERATOR_SYNC_ENABLED",
+    ):
+        monkeypatch.setenv(flag, "1")
+    monkeypatch.setattr(campaign, "SequentialCampaignService", FakeService)
+
+    import pytest
+    with pytest.raises(StopAfterCreate):
+        campaign.run_import()
+
+    assert captured["trigger_type"] == campaign.RUN_TRIGGER_TYPE
+    assert captured["triggered_by"] == campaign.RUN_TRIGGERED_BY
+    assert captured["total_sources"] == len(campaign.RUNNABLE)

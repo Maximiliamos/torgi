@@ -21,6 +21,10 @@ from bankrotai.services.ingestion import (
     NationwideIngestionService, SourceSyncSpec, SyncAlreadyRunningError,
 )
 
+RUN_TRIGGERED_BY = "all_new_etp_operator_campaign"
+# LotSyncRun.trigger_type is VARCHAR(20) in the production schema.
+RUN_TRIGGER_TYPE = "manual_etp_campaign"
+
 ALL_SOURCE_IDS = tuple(profile.source_id for profile in PROFILES)
 BLOCKED = {profile.source_id: profile.blocked_reason for profile in PROFILES if profile.blocked_reason}
 RUNNABLE = tuple(source for source in ALL_SOURCE_IDS if source not in BLOCKED)
@@ -122,7 +126,7 @@ def progress() -> dict:
     with SessionLocal() as session:
         run = session.scalar(
             select(LotSyncRun)
-            .where(LotSyncRun.triggered_by == "all_new_etp_operator_campaign")
+            .where(LotSyncRun.triggered_by == RUN_TRIGGERED_BY)
             .order_by(LotSyncRun.id.desc()).limit(1)
         )
         if run is None:
@@ -165,8 +169,8 @@ def run_import() -> dict:
     for attempt in range(120):
         try:
             run_id = service.create_run(
-                triggered_by="all_new_etp_operator_campaign",
-                trigger_type="manual_all_new_etp_nonreconciling",
+                triggered_by=RUN_TRIGGERED_BY,
+                trigger_type=RUN_TRIGGER_TYPE,
                 total_sources=len(specs),
             )
             break
