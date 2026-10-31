@@ -1,0 +1,121 @@
+name: All new ETP sources import, GEO and map
+
+on:
+  workflow_dispatch:
+    inputs:
+      accepted_sha:
+        description: Exact deployed main SHA with a successful P1 audit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: all-new-etp-production-campaign
+  cancel-in-progress: false
+
+jobs:
+  import-geocode-map:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 1440
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: ${{ inputs.accepted_sha }}
+    steps:
+      - name: Exact-SHA checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Require exact deployed workers, P1 and verified backup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((& git rev-parse HEAD).Trim() -ne $env:TARGET_SHA) { throw 'Exact SHA checkout mismatch' }
+          $p1 = @(gh run list --repo $env:GITHUB_REPOSITORY --workflow p1-data-quality.yml --commit $env:TARGET_SHA --event workflow_dispatch --limit 20 --json conclusion,headSha | ConvertFrom-Json)
+          if (@($p1 | Where-Object { $_.headSha -eq $env:TARGET_SHA -and $_.conclusion -eq 'success' }).Count -lt 1) {
+            throw 'All-source import refused: no successful exact-SHA P1 audit'
+          }
+          foreach ($container in @('bankrotai-home-ingestion-worker','bankrotai-home-geocoding-worker','bankrotai-home-map-worker')) {
+            $image = (docker inspect --format '{{.Config.Image}}' $container).Trim()
+            if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$env:TARGET_SHA") {
+              throw "Wrong deployed image for $container"
+            }
+          }
+          $found = $false
+          foreach ($file in @(Get-ChildItem -LiteralPath 'D:\BankrotAI\dr-backups' -File -Filter 'bankrotai-*.json' | Sort-Object LastWriteTimeUtc -Descending)) {
+            try {
+              $meta = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+              $age = ((Get-Date).ToUniversalTime() - $file.LastWriteTimeUtc).TotalHours
+              if ($age -lt 0 -or $age -gt 60 -or $meta.restore_verification -ne 'passed' -or
+                  $meta.source_schema_revision -ne $meta.restored_schema_revision -or
+                  -not (Test-Path -LiteralPath ([string]$meta.backup_file))) { continue }
+              if ((Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$meta.backup_file)).Hash.ToLowerInvariant() -ne ([string]$meta.sha256).ToLowerInvariant()) { continue }
+              $found = $true; break
+            } catch {}
+          }
+          if (-not $found) { throw 'No fresh restore-verified PostgreSQL backup' }
+
+      - name: Sequential non-reconciling import of every new ETP
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'all-new-etp-import.log'
+          $job = Start-Job -ArgumentList $log -ScriptBlock {
+            param([string]$path)
+            $cmd = 'docker.exe exec -e ETP_ALL_SOURCES_OPERATOR_ENABLED=1 -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_all_sources_campaign import'
+            & $env:ComSpec /d /s /c "$cmd 1> `"$path`" 2>&1"
+            Write-Output ([int]$LASTEXITCODE)
+          }
+          while ($job.State -in @('NotStarted','Running')) {
+            Start-Sleep -Seconds 30
+            $line = @(docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_all_sources_campaign progress)[-1]
+            if ($LASTEXITCODE -eq 0 -and $line) {
+              $p = $line | ConvertFrom-Json
+              Write-Output ("[ALL ETP {0,3}%] sources={1}/{2}; current={3} ({4}%); status={5}" -f $p.percent,$p.completed,$p.total,$p.current_source,$p.current_source_percent,$p.status)
+            } else { Write-Output '[ALL ETP   0%] waiting for first durable checkpoint' }
+          }
+          $codes = @(Receive-Job -Job $job -Wait -ErrorAction Continue)
+          $state = $job.State
+          Remove-Job -Job $job -Force
+          $output = @(Get-Content -LiteralPath $log -Encoding utf8)
+          $code = if ($codes.Count) { [int]$codes[-1] } else { -1 }
+          if ($state -ne 'Completed' -or $code -ne 0 -or -not $output.Count) {
+            $output | Select-Object -Last 50 | ForEach-Object { Write-Output $_ }
+            throw "All-source importer process failed: exit=$code state=$state"
+          }
+          $report = $output[-1] | ConvertFrom-Json
+          $report | ConvertTo-Json -Depth 20 | Set-Content 'all-new-etp-import.json' -Encoding utf8
+          Write-Output ("Import status={0}; runnable sources={1}; blocked sources={2}" -f $report.result.status,$report.result.sources.Count,$report.blocked.PSObject.Properties.Count)
+
+      - name: Geocode every imported new-ETP lot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $line = @(docker exec bankrotai-home-geocoding-worker python -m bankrotai.services.etp_all_sources_campaign geocode --batch-size 250)[-1]
+          if ($LASTEXITCODE -ne 0 -or -not $line) { throw 'All-source GEO failed' }
+          ($line | ConvertFrom-Json) | ConvertTo-Json -Depth 20 | Set-Content 'all-new-etp-geo.json' -Encoding utf8
+
+      - name: Publish map once after all sources and GEO
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $line = @(docker exec bankrotai-home-map-worker python -m bankrotai.services.etp_all_sources_campaign map)[-1]
+          if ($LASTEXITCODE -ne 0 -or -not $line) { throw 'All-source map publication failed' }
+          ($line | ConvertFrom-Json) | ConvertTo-Json -Depth 20 | Set-Content 'all-new-etp-map.json' -Encoding utf8
+          $audit = @(docker exec bankrotai-home-map-worker python -m bankrotai.services.etp_all_sources_campaign audit)[-1] | ConvertFrom-Json
+          $audit | ConvertTo-Json -Depth 20 | Set-Content 'all-new-etp-audit.json' -Encoding utf8
+
+      - name: Preserve aggregate source evidence and logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: all-new-etp-import-geo-map
+          path: |
+            all-new-etp-*.json
+            ${{ runner.temp }}/all-new-etp-import.log
+          if-no-files-found: warn
+          retention-days: 30
