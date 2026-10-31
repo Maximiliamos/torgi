@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import String, case, cast, delete, func, or_, select, update
+from sqlalchemy import case, cast, delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.orm import Session
 
 from bankrotai.core import utc_now
@@ -69,14 +70,18 @@ def operational_quality_report(session: Session, *, stale_days: int = 7, problem
     now = utc_now()
     cutoff = now.replace(tzinfo=None) - timedelta(days=max(1, stale_days))
     active = SourceLot.is_active.is_(True) & SourceLot.is_archived.is_(False)
-    raw_text = cast(SourceLot.raw_data, String)
-    photo_hint = or_(*(
-        raw_text.ilike(f'%"{key}"%')
-        for key in (
-            "main_image", "image", "photo", "thumbnail", "image_urls", "photo_urls",
-            "images", "photos", "gallery",
-        )
-    ))
+    photo_keys = (
+        "main_image", "image", "photo", "thumbnail", "image_urls", "photo_urls",
+        "images", "photos", "gallery",
+    )
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        # The production column is JSON rather than JSONB.  Cast each document once
+        # and ask PostgreSQL whether any top-level photo key exists.  Text ILIKE
+        # checks parse and scan the same large payload once per key and can exceed
+        # the production statement timeout on a full source-quality audit.
+        photo_hint = cast(SourceLot.raw_data, JSONB).has_any(array(photo_keys))
+    else:
+        photo_hint = or_(*(SourceLot.raw_data[key].isnot(None) for key in photo_keys))
     source_rows = session.execute(
         select(
             SourceLot.source_system,
