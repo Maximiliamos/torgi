@@ -82,3 +82,41 @@ def test_all_source_campaign_journal_fields_fit_production_schema(monkeypatch):
     assert captured["trigger_type"] == campaign.RUN_TRIGGER_TYPE
     assert captured["triggered_by"] == campaign.RUN_TRIGGERED_BY
     assert captured["total_sources"] == len(campaign.RUNNABLE)
+
+
+def test_geocode_campaign_waits_for_the_shared_geo_lock(monkeypatch):
+    from contextlib import contextmanager
+
+    from bankrotai.services import etp_all_sources_campaign as campaign
+    import bankrotai.services.geo_backfill as geo_backfill
+
+    class ScalarResult:
+        def all(self):
+            return ["lot-1"]
+
+    class Session:
+        def scalars(self, _statement):
+            return ScalarResult()
+
+    @contextmanager
+    def session_factory():
+        yield Session()
+
+    calls = []
+
+    def geocode(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise geo_backfill.GeoBatchAlreadyRunning("busy")
+        return {"status": "completed", "processed": 1}
+
+    monkeypatch.setattr(campaign, "SessionLocal", session_factory)
+    monkeypatch.setattr(campaign, "snapshot", lambda: {})
+    monkeypatch.setattr(campaign.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(geo_backfill, "geocode_pending_lots", geocode)
+
+    result = campaign.geocode_all(batch_size=1)
+
+    assert len(calls) == 2
+    assert result["requested"] == 1
+    assert result["batches"][0]["status"] == "completed"
