@@ -127,7 +127,7 @@ def progress() -> dict:
         run = session.scalar(
             select(LotSyncRun)
             .where(LotSyncRun.triggered_by == RUN_TRIGGERED_BY)
-            .order_by(LotSyncRun.id.desc()).limit(1)
+            .order_by(LotSyncRun.created_at.desc(), LotSyncRun.id.desc()).limit(1)
         )
         if run is None:
             return {"status": "waiting", "percent": 0, "completed": 0, "total": len(RUNNABLE)}
@@ -187,7 +187,7 @@ def run_import() -> dict:
 def geocode_all(*, batch_size: int = 250) -> dict:
     if not 1 <= batch_size <= 500:
         raise ValueError("Invalid GEO batch size")
-    from bankrotai.services.geo_backfill import geocode_pending_lots
+    from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
 
     with SessionLocal() as session:
         ids = list(session.scalars(
@@ -201,9 +201,19 @@ def geocode_all(*, batch_size: int = 250) -> dict:
     batches = []
     for offset in range(0, len(ids), batch_size):
         chunk = ids[offset:offset + batch_size]
-        response = geocode_pending_lots(
-            SessionLocal, limit=len(chunk), lot_ids=chunk, refresh_strategy=False,
-        )
+        # The regular geocoding worker may already be draining lots inserted by
+        # the import stage.  Sharing its distributed lock is expected, so wait
+        # for it instead of failing the whole operator campaign on contention.
+        for attempt in range(120):
+            try:
+                response = geocode_pending_lots(
+                    SessionLocal, limit=len(chunk), lot_ids=chunk, refresh_strategy=False,
+                )
+                break
+            except GeoBatchAlreadyRunning:
+                if attempt == 119:
+                    raise
+                time.sleep(30)
         if response.get("status") in {"busy", "paused"}:
             raise RuntimeError("All-source GEO campaign blocked by existing GEO work")
         batches.append({"requested": len(chunk), **response})
