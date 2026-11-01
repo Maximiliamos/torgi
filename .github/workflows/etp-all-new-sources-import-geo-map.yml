@@ -37,7 +37,7 @@ jobs:
           & .\scripts\ensure-docker-for-backup.ps1 -TimeoutSeconds 180 -RequiredContainer 'bankrotai-home-postgres'
           foreach ($container in @(
             'bankrotai-home-redis',
-            'bankrotai-home-api',
+            'bankrotai-home-secondary',
             'bankrotai-home-ingestion-worker',
             'bankrotai-home-geocoding-worker',
             'bankrotai-home-map-worker'
