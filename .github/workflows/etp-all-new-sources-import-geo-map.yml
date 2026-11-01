@@ -30,6 +30,24 @@ jobs:
           ref: ${{ env.TARGET_SHA }}
           persist-credentials: false
 
+      - name: Recover Docker Desktop and production containers
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\ensure-docker-for-backup.ps1 -TimeoutSeconds 180 -RequiredContainer 'bankrotai-home-postgres'
+          foreach ($container in @(
+            'bankrotai-home-redis',
+            'bankrotai-home-api',
+            'bankrotai-home-ingestion-worker',
+            'bankrotai-home-geocoding-worker',
+            'bankrotai-home-map-worker'
+          )) {
+            docker start $container | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not start production container $container" }
+          }
+          docker version --format 'Docker server {{.Server.Version}} is available'
+          if ($LASTEXITCODE -ne 0) { throw 'Docker daemon became unavailable after recovery' }
+
       - name: Require exact deployed workers, P1 and verified backup
         shell: powershell
         run: |
