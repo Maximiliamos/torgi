@@ -149,7 +149,7 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
 
 def _sistematorg_lot_count(value: str) -> int | None:
     """A listing row represents a trade, potentially containing many lots."""
-    match = re.search(r"всего\\s+лотов\\s*[:：]\\s*(\\d+)", value, re.IGNORECASE)
+    match = re.search(r"всего\s+лотов\s*[:：]\s*(\d+)", value, re.IGNORECASE)
     if match is None:
         return None
     count = int(match.group(1))
