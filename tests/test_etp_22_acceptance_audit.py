@@ -90,3 +90,20 @@ def test_operator_review_must_be_independent():
     evidence = _evidence()
     evidence.pop("operator_review")
     assert evaluate_source(evidence)["status"] == "rejected"
+
+
+def test_lot_online_canonical_catalogue_detail_url_is_allowed():
+    evidence = _evidence()
+    evidence["source_id"] = "lot-online.ru"
+    old_id = "m-ets.ru:12345-1"
+    new_id = "lot-online.ru:example-product-123"
+    evidence["catalogue_pages"][0]["lot_ids"] = [new_id]
+    evidence["detail_lots"][0]["external_id"] = new_id
+    evidence["detail_lots"][0]["official_url"] = (
+        "https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=123"
+    )
+    evidence["database_lots"][0]["external_id"] = new_id
+    evidence["database_lots"][0]["source_system"] = "lot-online.ru"
+    evidence["map_lots"][0]["external_id"] = new_id
+    evidence["map_lots"][0]["source_system"] = "lot-online.ru"
+    assert evaluate_source(evidence)["status"] == "accepted"
