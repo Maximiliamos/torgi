@@ -30,6 +30,13 @@ from bankrotai.services.etp_cdtrf_full_catalogue import (
 
 CURSOR = re.compile(r"^([1-9]\d{0,4}):([0-9a-f]{64})$")
 MAX_REJECTED_DETAIL_RATIO = 0.90
+SYSTEMIC_DETAIL_REJECTION_CODES = frozenset({
+    "lot_identity_mismatch",
+    "missing_lot_identity",
+    "price_mismatch",
+    "ssr_schema_changed",
+    "other_detail_error",
+})
 
 
 def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Session):
@@ -185,7 +192,15 @@ class CdtrfSourceCrawler:
             }
             accepted.append(lot)
         inspected = len(data["property_candidates"])
-        if inspected >= 10 and sum(rejected.values()) / inspected > MAX_REJECTED_DETAIL_RATIO:
+        # Content-level exclusions are normal within CDTRF's broad real-estate
+        # categories (for example a movable asset mixed into a trade, or a
+        # card without enough property evidence).  Only structural detail
+        # failures indicate that the provider contract may have changed.
+        systemic_rejections = sum(
+            count for code, count in rejected.items()
+            if code in SYSTEMIC_DETAIL_REJECTION_CODES
+        )
+        if inspected >= 10 and systemic_rejections / inspected > MAX_REJECTED_DETAIL_RATIO:
             raise CdtrfCatalogueScanError(
                 "CDTRF detail acceptance collapsed; source may have changed; "
                 + ",".join(f"{key}={value}" for key, value in sorted(rejected.items()))
@@ -211,6 +226,7 @@ class CdtrfSourceCrawler:
                 "property_hint_candidates": inspected,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
+                "systemic_detail_rejections": systemic_rejections,
                 "catalogue_total_changes": self._total_changes,
                 "catalogue_overlap_rows_skipped": len(overlapping_ids),
                 "rejection_codes": rejected,

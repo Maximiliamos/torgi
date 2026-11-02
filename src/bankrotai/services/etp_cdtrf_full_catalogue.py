@@ -24,7 +24,7 @@ from bankrotai.services.etp_cdtrf_canary import API, MAX_RESPONSE, REQUEST_TIMEO
 # There is no confirmed server support for PageSize=1000.
 CDTRF_PAGE_SIZES = frozenset({20, 50, 100})
 CDTRF_STATUS_PARAMS = (
-    "Declare", "RecieveReq", "DefinePart", "TradeGo", "SummingUp"
+    "Declare", "RecieveReq", "DefinePart", "TradeGo"
 )
 CDTRF_PROPERTY_CATEGORIES = "21,22,23,31,32,33,34"
 MAX_SCAN_PAGES = 10_000

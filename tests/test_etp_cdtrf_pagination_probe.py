@@ -95,8 +95,9 @@ class FullScanSession:
         params = parse_qs(urlsplit(url).query)
         assert params["Categories"] == ["21,22,23,31,32,33,34"]
         assert all(params[x] == ["true"] for x in (
-            "Declare", "RecieveReq", "DefinePart", "TradeGo", "SummingUp"
+            "Declare", "RecieveReq", "DefinePart", "TradeGo"
         ))
+        assert "SummingUp" not in params
         size = self.server_cap or int(params["PageSize"][0])
         page = int(params["PageNum"][0])
         assert not allow_redirects and headers["Accept"] == "application/json"
