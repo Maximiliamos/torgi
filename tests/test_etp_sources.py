@@ -468,3 +468,52 @@ def test_sberbank_healthcheck_uses_json_contract() -> None:
     )
     health = asyncio.run(connector.healthcheck())
     assert health.status == "ok"
+
+
+def test_sistematorg_trade_level_listing_does_not_assign_multi_lot_price() -> None:
+    html = """
+    <table><tr onclick="window.location='/trade_view.php?trade_nid=19431'">
+      <td>19431-ОАОФ</td>
+      <td>Всего лотов: 2. Лот № 1: автомобиль. Лот № 2: Земельный участок.
+          Начальная цена 800 000 руб.</td>
+      <td>Торги объявлены</td>
+    </tr></table>
+    """
+    lots = parse_listing_html(profile("sistematorg.com"), html)
+    assert len(lots) == 1  # One trade record; NOT two verified property lots.
+    assert lots[0].start_price is None
+    assert lots[0].current_price is None
+    assert lots[0].raw_data["trade_level_listing"] is True
+    assert lots[0].raw_data["reported_trade_lots"] == 2
+    assert lots[0].raw_data["individual_lot_identity_verified"] is False
+
+
+def test_sistematorg_detail_rejects_unattributable_multi_lot_price() -> None:
+    html = """
+    <html><body><h1>Торги по продаже имущества</h1>
+    Всего лотов: 2. Лот № 1: автомобиль, начальная цена 100 000 руб.
+    Лот № 2: земельный участок, начальная цена 900 000 руб.
+    Официальная карточка процедуры, имущество должника и периоды заявок.
+    </body></html>
+    """
+    from bankrotai.connectors.etp_sources import SourceSchemaError
+    with pytest.raises(SourceSchemaError, match="cannot attribute a trade-level price"):
+        parse_detail_html(
+            profile("sistematorg.com"), html,
+            detail_url="https://sistematorg.com/trade_view.php?trade_nid=19431",
+        )
+
+
+def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
+    html = """
+    <html><body><h1>Торги по продаже земельного участка</h1>
+    Всего лотов: 1. Лот № 1: земельный участок 45:12:080101:100.
+    Начальная цена 900 000 руб. Размер задатка 90 000 руб.
+    Официальная карточка процедуры с подробным описанием имущества.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("sistematorg.com"), html,
+        detail_url="https://sistematorg.com/trade_view.php?trade_nid=19433",
+    )
+    assert lot.start_price == 900_000
