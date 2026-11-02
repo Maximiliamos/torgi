@@ -142,7 +142,6 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
 
 
 def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
-    """Return one source spec; CDTRF operator runs are always non-reconciling."""
     if source_id == "cdtrf.ru":
         from bankrotai.connectors.registry.cdtrf_sync import operator_sync_spec
         return (operator_sync_spec(),)
