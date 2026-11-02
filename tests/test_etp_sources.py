@@ -552,3 +552,22 @@ def test_unproven_pagination_does_not_count_first_page_as_complete(source_id, lo
         asyncio.run(connector.search({}))
     health = asyncio.run(connector.healthcheck())
     assert health.status == "degraded"
+
+
+@pytest.mark.parametrize(("source_status", "expected"), [
+    ("Торги объявлены", "scheduled"),
+    ("Извещение опубликовано", "scheduled"),
+    ("Прием заявок", "active"),
+    ("Приём заявок завершён", "unknown"),
+    ("Завершен прием заявок", "unknown"),
+    ("Подведение итогов", "unknown"),
+    ("Текущая цена 500 000 руб.", "unknown"),
+    ("Идут торги", "active"),
+    ("Торги завершены", "closed"),
+    ("Торги отменены", "closed"),
+    ("Торги не состоялись", "closed"),
+    ("Торги приостановлены", "paused"),
+])
+def test_official_status_phrases_do_not_create_false_active_or_closed_lots(source_status, expected):
+    from bankrotai.connectors.etp_sources.common import _status
+    assert _status(source_status) == expected
