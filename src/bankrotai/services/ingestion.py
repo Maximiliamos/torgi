@@ -58,6 +58,9 @@ class SourceSyncSpec:
     archive_region_code: str | None = None
     reconcile_missing: bool = True
     max_batches: int | None = None
+    # An operator full-source scan must see the final page even if it
+    # deliberately forbids reconciliation/archival of absent listings.
+    require_source_end: bool = False
 
 
 @dataclass(slots=True)
@@ -492,6 +495,11 @@ class NationwideIngestionService:
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
                 result.complete_source_run = False
+                if spec.require_source_end and not reached_source_end:
+                    raise RuntimeError(
+                        "operator source page limit exhausted before last page: "
+                        f"pages_scanned={result.pages_scanned}, limit={page_limit}"
+                    )
                 result.status = "success"
                 result.phase = "complete"
                 result.elapsed_seconds = time.perf_counter() - wall_started
