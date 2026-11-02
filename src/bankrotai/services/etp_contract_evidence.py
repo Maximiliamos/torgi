@@ -28,11 +28,15 @@ def lot_contract_findings(lot) -> tuple[str, ...]:
 
     uri = str(getattr(lot, "lot_url", "") or "").strip()
     parsed = urlsplit(uri)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
     if not uri:
         issues.append("missing_lot_url")
     elif (parsed.scheme != "https" or parsed.hostname not in _PROFILE_HOSTS.get(source, ())
           or parsed.username is not None or parsed.password is not None
-          or parsed.port not in (None, 443)):
+          or port not in (None, 443)):
         issues.append("unverified_lot_url")
 
     if not str(getattr(lot, "title", "") or "").strip():
