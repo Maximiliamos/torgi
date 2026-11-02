@@ -7,7 +7,7 @@
 - Текущий при проверке `main`: `e4cbf912bb8dbf32331e8a35d938d9f2234a4541`.
 - Последний прошедший production P1: [#41366827021](https://github.com/Maximiliamos/torgi/actions/runs/41366827021), проверка `2026-11-02T00:30:21Z`; `healthy=true`, **8 warnings**.
 - [CDTRF import #41361784775](https://github.com/Maximiliamos/torgi/actions/runs/41361784775): 33/34 страниц, 909 новых, 498 обновлено, затем `detail acceptance collapsed`. Проверка импорт→GEO→S3→WEB на новом SHA не подтверждена.
-- [Общий импорт #41354717203](https://github.com/Maximiliamos/torgi/actions/runs/41354717203): `partial` при загрузке МЭТС и Sistematorg, затем конфликт GEO-lock; нет полного успешного набора всех источников.
+- [Общий импорт #41354717203](https://github.com/Maximiliamos/torgi/actions/runs/41354717203): `partial` при загрузке МЭТС (155 страниц) и Sistematorg (**ровно 500 страниц — предел `max_batches`**, окончание каталога не доказано), затем конфликт GEO-lock; нет полного успешного набора всех источников. Из 16 source-run 14 упали на сетевых тайм-аутах до первой страницы; два статуса `success` не доказывают полный source inventory.
 - Production P11 для `a56203cf` отсутствует, последний принятый GitHub Release — `v0.3.10`.
 - Открытые контрольные [#1023](https://github.com/Maximiliamos/torgi/issues/1023), [#1021](https://github.com/Maximiliamos/torgi/issues/1021), [#1049](https://github.com/Maximiliamos/torgi/issues/1049).
 
