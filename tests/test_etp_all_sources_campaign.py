@@ -32,6 +32,7 @@ def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
     )
     assert isinstance(next(spec for spec in specs if spec.source_id == "cdtrf.ru").filters,
                       cdtrf.CdtrfSyncFilters)
+    assert cdtrf.operator_sync_spec().require_source_end is True
 
 
 def test_all_source_campaign_requires_all_write_guards(monkeypatch):
