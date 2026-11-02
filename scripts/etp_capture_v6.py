@@ -35,6 +35,8 @@ START_OVERRIDES = {
     "arbbitlot.ru": "https://torgi.arbbitlot.ru/public/purchases-all/",
     "electro-torgi.ru": "https://bankrotstvo.electro-torgi.ru/lots",
     "roseltorg.ru": "https://www.roseltorg.ru/search/sale?sale=2&currency=all&status%5B%5D=1&status%5B%5D=0&status%5B%5D=5",
+    "etp-profit.ru": "https://etp-profit.ru/lots",
+    "ausib.ru": "https://ausib.ru/etp/trade/list.html",
 }
 
 DETAIL_PATTERNS = {
@@ -55,6 +57,8 @@ DETAIL_PATTERNS = {
     "fabrikant.ru": r"^/v2/trades/procedure/view/[^/]+/?$",
     "sberbank-ast.ru": r"^/Catalog/NBT/GoodsView/\d+/0/0/\d+/?$",
     "roseltorg.ru": r"^/procedure/\d+/\d+/?$",
+    "etp-profit.ru": r"^/lots/[0-9a-z-]+/?$",
+    "ausib.ru": r"^/trade/view/purchase/general\.html$",
     "lot-online.ru": r"^/index\.php$",
 }
 CHALLENGE = re.compile("проверяем ваш браузер|anti.ddos|checking your browser|ddos-guard|captcha", re.I)
@@ -385,7 +389,8 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
                         events.append({"event": "detail_error", "error": type(exc).__name__})
     except Exception as exc:
         status = "navigation_error"
-        events.append({"event": "navigation_error", "error": type(exc).__name__})
+        events.append({"event": "navigation_error", "error": type(exc).__name__,
+                       "message": str(exc)[:500]})
         record_page(page, folder, "error", events, host)
     finally:
         page.remove_listener("response", on_response)

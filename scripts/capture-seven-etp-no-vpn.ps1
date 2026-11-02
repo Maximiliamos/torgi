@@ -30,8 +30,22 @@ try {
     }
 
     $python = Join-Path $repo '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python)) {
-        throw "Python venv not found: $python"
+    $venvReady = (Test-Path -LiteralPath $python)
+    if ($venvReady) {
+        & $python -c 'import playwright' 2>$null
+        $venvReady = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $venvReady) {
+        $systemPython = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $systemPython) {
+            throw 'Neither the project venv nor system Python is available.'
+        }
+        $python = $systemPython.Source
+        & $python -c 'import playwright' 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Playwright is not installed in the project venv or system Python.'
+        }
+        Write-Host "Using system Python with Playwright: $python"
     }
     $env:PYTHONPATH = Join-Path $repo 'src'
     $arguments = @(
