@@ -13,6 +13,10 @@ from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.domain import NormalizedLot
+from bankrotai.connectors.etp_sources.source_specific import (
+    apply_detail,
+    profit_initial_money,
+)
 
 
 class SourceAccessError(RuntimeError):
@@ -184,7 +188,10 @@ def _status(value: str) -> str:
         return "paused"
     if any(word in lowered for word in ("торги отменен", "торги отменён", "не состоял", "торги заверш", "торги окончен", "аннулирован")):
         return "closed"
-    if any(word in lowered for word in ("торги объявлен", "извещени", "торги назначен")):
+    if any(word in lowered for word in (
+        "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
+        "извещени", "торги назначен"
+    )):
         return "scheduled"
     if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
             or "идут торги" in lowered or "заявки принимаются" in lowered):
@@ -557,6 +564,12 @@ def parse_detail_html(
             raise SourceSchemaError(
                 "sistematorg.com: cannot attribute a trade-level price to an individual lot"
             )
+    if profile.source_id == "ausib.ru":
+        lot_tables = soup.select("table[id^=lotNumber]")
+        if len(lot_tables) != 1:
+            raise SourceSchemaError(
+                "ausib.ru: procedure detail does not prove exactly one independently identified lot"
+            )
     match = profile.lot_url_re.search(detail_url)
     if external_id is None:
         if not match:
@@ -569,7 +582,7 @@ def parse_detail_html(
     if not title:
         title = _label_value(
             text_value,
-            r"(?:наименование имущества|предмет договора \(лота\)|наименование)",
+            r"(?:наименование имущества|предмет договора \(лота\)|предмет торгов|наименование)",
             r".{8,500}?(?=\s+(?:начальн|статус|организатор|дата|сведения)\b)",
         ) or "Лот"
 
@@ -584,6 +597,8 @@ def parse_detail_html(
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
     price = _money(text_value)
+    if price is None and profile.source_id == "etp-profit.ru":
+        price = profit_initial_money(text_value)
     current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
@@ -905,11 +920,21 @@ class HtmlEtpConnector(AuctionConnector):
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
         sale_type, separator, lot_id = identity.rpartition("-")
+        profit_parts = identity.split("-") if self.source_id == "etp-profit.ru" else []
+        if self.source_id == "etp-profit.ru" and (
+            len(profit_parts) != 3
+            or profit_parts[0] not in {"oaof", "otpp"}
+            or not all(part.isdigit() for part in profit_parts[1:])
+        ):
+            raise SourceSchemaError("etp-profit.ru: invalid kind/trade/lot identity")
         detail_url = template.format(
             identity=identity,
             identity_path=identity_path,
             sale_type=sale_type if separator else "",
             lot_id=lot_id if separator else identity,
+            profit_kind=profit_parts[0] if profit_parts else "",
+            profit_trade_id=profit_parts[1] if profit_parts else "",
+            profit_lot_id=profit_parts[2] if profit_parts else "",
         )
         detail_url = _safe_provider_url(self.profile, detail_url)
         response = await asyncio.to_thread(
@@ -924,6 +949,10 @@ class HtmlEtpConnector(AuctionConnector):
             detail_url=detail_url,
             external_id=external_id,
         )
+
+    async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+        detail = await self.fetch_lot(lot.external_id)
+        return apply_detail(lot, detail, version=self.detail_enrichment_version)
 
     async def healthcheck(self) -> ConnectorHealth:
         if self.profile.blocked_reason:
@@ -951,6 +980,10 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
+    if profile.source_id in {"etp-profit.ru", "ausib.ru"}:
+        ProfiledConnector.capabilities = frozenset({
+            "search", "fetch_lot", "healthcheck", "detail_enrichment",
+        })
     if profile.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"

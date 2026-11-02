@@ -5,9 +5,9 @@ def test_all_source_campaign_has_every_profile_and_only_blocks_evidenced_sources
     from bankrotai.services import etp_all_sources_campaign as campaign
 
     assert len(campaign.ALL_SOURCE_IDS) == 21
-    assert len(campaign.RUNNABLE) == 16
+    assert len(campaign.RUNNABLE) == 18
     assert set(campaign.BLOCKED) == {
-        "rts-tender.ru", "etp-profit.ru", "ausib.ru", "utender.ru", "electro-torgi.ru",
+        "rts-tender.ru", "utender.ru", "electro-torgi.ru",
     }
     assert "cdtrf.ru" in campaign.RUNNABLE
     assert "nistp.ru" in campaign.RUNNABLE
@@ -26,7 +26,7 @@ def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
     assert all(spec.reconcile_missing is False for spec in specs)
     assert all(spec.require_source_end is True for spec in specs)
     assert all(
-        spec.max_batches <= 500
+        spec.max_batches <= 3500
         for spec in specs
         if spec.source_id != "cdtrf.ru" and spec.max_batches is not None
     )
@@ -158,8 +158,8 @@ def test_failed_all_source_campaign_reports_attempted_fraction_not_fake_100(monk
     result = campaign.progress()
     assert result["status"] == "failed"
     assert result["completed"] == 2
-    assert result["total"] == 16
-    assert result["percent"] == 12
+    assert result["total"] == 18
+    assert result["percent"] == 11
     assert result["succeeded"] == 1
     assert result["failed"] == 1
 

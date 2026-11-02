@@ -125,7 +125,7 @@ def detail_urls(page, source: str, host: str) -> list[str]:
     # executing JavaScript; checked URL/host validation below still applies.
     onclick_routes = page.locator("[onclick]").evaluate_all(
         """(els) => els.map(e => e.getAttribute('onclick') || '')
-          .flatMap(v => Array.from(v.matchAll(/['\"](\/[^'\"]+)['\"]/g), m => m[1]))
+            .flatMap(v => Array.from(v.matchAll(/['\"](\\/[^'\"]+)['\"]/g), m => m[1]))
           .slice(0, 5000)"""
     )
     links.extend(urljoin(page.url, route) for route in onclick_routes)
