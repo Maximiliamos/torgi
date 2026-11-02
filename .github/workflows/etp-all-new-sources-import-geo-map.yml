@@ -23,6 +23,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TARGET_SHA: ${{ inputs.accepted_sha }}
+      # Reviewed, non-reconciling production allowlist. Keep this explicit:
+      # adding a parser profile alone must never authorize database writes.
+      ETP_ACCEPTED_SOURCE_IDS: m-ets.ru,cdtrf.ru,nistp.ru,alfalot.ru,roseltorg.ru,sberbank-ast.ru,fabrikant.ru,arbbitlot.ru,etpu.ru,sistematorg.com,centerr.ru,aukcioncenter.ru,vertrades.ru,rus-on.ru,zakazrf.ru,utpl.ru,etp-profit.ru,ausib.ru
     steps:
       - name: Exact-SHA checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -84,7 +87,7 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP 'all-new-etp-import.log'
           $job = Start-Job -ArgumentList $log -ScriptBlock {
             param([string]$path)
-            $cmd = 'docker.exe exec -e ETP_ALL_SOURCES_OPERATOR_ENABLED=1 -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_all_sources_campaign import'
+            $cmd = 'docker.exe exec -e ETP_ACCEPTED_SOURCE_IDS -e ETP_ALL_SOURCES_OPERATOR_ENABLED=1 -e CDTRF_OPERATOR_SYNC_ENABLED=1 -e ETP_CANARY_BACKUP_VERIFIED=1 -e ETP_OPERATOR_CANARY_IMPORT_ENABLED=1 bankrotai-home-ingestion-worker python -m bankrotai.services.etp_all_sources_campaign import'
             & $env:ComSpec /d /s /c "$cmd 1> `"$path`" 2>&1"
             Write-Output ([int]$LASTEXITCODE)
           }
