@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 
 from sqlalchemy import func, or_, select
 
@@ -130,7 +131,7 @@ def geocode_source(*, batch_size: int = 250) -> dict:
     """
     if not 1 <= batch_size <= 500:
         raise ValueError("Invalid geocoder batch size")
-    from bankrotai.services.geo_backfill import geocode_pending_lots
+    from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
 
     with SessionLocal() as session:
         ids = list(session.scalars(
@@ -144,24 +145,46 @@ def geocode_source(*, batch_size: int = 250) -> dict:
                     ProcessedLot.current_geo_lat.is_(None),
                     ProcessedLot.current_geo_lon.is_(None),
                 ),
+                or_(
+                    ProcessedLot.cadastral_number.is_not(None),
+                    ProcessedLot.address.is_not(None),
+                ),
             ).order_by(ProcessedLot.id)
         ).all())
     batches = []
     for i in range(0, len(ids), batch_size):
         chunk = ids[i:i + batch_size]
-        response = geocode_pending_lots(
-            SessionLocal, limit=len(chunk), lot_ids=chunk,
-            refresh_strategy=False,
-        )
-        if response.get("status") in ("busy", "paused"):
-            raise RuntimeError("CDTRF source-specific GEO campaign blocked by existing GEO work")
+        # Existing GEO workers use the same distributed lock. Wait instead of
+        # failing the entire source import after the first lock collision.
+        for attempt in range(120):
+            try:
+                response = geocode_pending_lots(
+                    SessionLocal, limit=len(chunk), lot_ids=chunk,
+                    refresh_strategy=False,
+                )
+            except GeoBatchAlreadyRunning:
+                if attempt == 119:
+                    raise RuntimeError("CDTRF GEO lock remained busy") from None
+                time.sleep(30)
+                continue
+            if response.get("status") == "busy":
+                if attempt == 119:
+                    raise RuntimeError("CDTRF GEO lock remained busy")
+                time.sleep(30)
+                continue
+            if response.get("status") != "completed":
+                raise RuntimeError(
+                    "CDTRF GEO was not completed: " + str(response.get("status"))
+                )
+            break
         batches.append({
             "requested_ids": len(chunk),
             "queued": response.get("queued", 0),
             "geocoded": response.get("geocoded", 0),
             "failed": response.get("failed", 0),
         })
-    return {"requested": len(ids), "batches": batches, "after_geo": snapshot()}
+    return {"requested": len(ids), "batches": batches, "after_geo": snapshot(),
+            "scope": "missing_coordinates_with_cadastre_or_address"}
 
 
 def publish_map() -> dict:
