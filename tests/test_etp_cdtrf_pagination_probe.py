@@ -106,12 +106,15 @@ class FullScanSession:
             {"tradeId": 390000 + i,
              "tradeLotId": 500000 + (1 if self.overlap and page == 2 and i == size + 1 else i),
              "categories": ",21,", "actualPrice": 670000}
-            for i in range((page - 1) * size + 1, min(page * size, self.total) + 1)
+            for i in range(
+                (page - 1) * size + 1,
+                min(page * size, self.total + int(self.drift and page >= 2)) + 1,
+            )
         ]
         response = Response(rows)
         response.json = lambda: {
             "success": True,
-            "totalCount": self.total + int(self.drift and page == 2),
+            "totalCount": self.total + int(self.drift and page >= 2),
             "items": rows,
         }
         return response
@@ -142,18 +145,30 @@ def test_full_catalogue_rejects_unsupported_1000_or_silent_server_cap():
         )
 
 
-def test_full_catalogue_detects_overlaps_drift_and_missing_pages():
+def test_full_catalogue_records_live_shift_and_drift_without_claiming_inventory():
+    overlap = scan_complete_cdtrf_catalogue(
+        FullScanSession(205, overlap=True), page_size=100,
+        sleep=lambda delay: None,
+    )
+    assert overlap["cross_page_overlap_count"] == 1
+    assert overlap["live_catalogue_drift"] is True
+    assert overlap["unverified_coverage_gap"] == 1
+    assert overlap["archival_allowed"] is False
+
+    growth = scan_complete_cdtrf_catalogue(
+        FullScanSession(205, drift=True), page_size=100,
+        sleep=lambda delay: None,
+    )
+    assert growth["reported_total_min"] == 205
+    assert growth["reported_total_max"] == 206
+    assert growth["unique_catalogue_lot_ids"] == 206
+    assert growth["live_catalogue_drift"] is True
+    assert growth["complete_source_inventory"] is False
+    assert growth["reconcile_missing"] is False
+
+
+def test_full_catalogue_still_rejects_missing_pages():
     import pytest
-    with pytest.raises(CdtrfCatalogueScanError, match="Overlapping"):
-        scan_complete_cdtrf_catalogue(
-            FullScanSession(205, overlap=True), page_size=100,
-            sleep=lambda delay: None,
-        )
-    with pytest.raises(CdtrfCatalogueScanError, match="total changed"):
-        scan_complete_cdtrf_catalogue(
-            FullScanSession(205, drift=True), page_size=100,
-            sleep=lambda delay: None,
-        )
     with pytest.raises(CdtrfCatalogueScanError, match="page budget"):
         scan_complete_cdtrf_catalogue(
             FullScanSession(205), page_size=100, max_pages=2,
