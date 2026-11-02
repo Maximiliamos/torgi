@@ -418,15 +418,26 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
         try:
-            for source in selected:
+            total_sources = len(selected)
+            for source_index, source in enumerate(selected, 1):
+                start_percent = int((source_index - 1) * 100 / total_sources)
+                print(f"[{start_percent:3d}%] START {source_index}/{total_sources}: {source}", flush=True)
                 ctx = browser.new_context(ignore_https_errors=False, accept_downloads=False)
                 page = ctx.new_page()
                 try:
                     profile = known[source]
                     if source in START_OVERRIDES:
                         profile = replace(profile, catalogue_url=START_OVERRIDES[source])
-                    outcomes.append(scan(page, profile, root, args.max_details,
-                                         args.challenge_timeout))
+                    outcome = scan(page, profile, root, args.max_details,
+                                   args.challenge_timeout)
+                    outcomes.append(outcome)
+                    done_percent = int(source_index * 100 / total_sources)
+                    print(
+                        f"[{done_percent:3d}%] DONE {source}: status={outcome['status']}; "
+                        f"lots={outcome['first_page_links']}; page2={outcome['page_two_distinct']}; "
+                        f"details={outcome['detail_pages_saved']}",
+                        flush=True,
+                    )
                 finally:
                     ctx.close()
                 time.sleep(1.5)

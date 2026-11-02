@@ -587,19 +587,39 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
         asyncio.run(connector.fetch_lot("sistematorg.com:12345:1"))
 
 
-@pytest.mark.parametrize(("source_id", "lot_url"), [
-    ("alfalot.ru", "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345"),
-    ("roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345"),
+@pytest.mark.parametrize(("source_id", "lot_url", "second_lot_url", "next_href", "page_two_url"), [
+    (
+        "alfalot.ru",
+        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345",
+        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12346",
+        "?LotList.pageNum.lots=1&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
+        "LotList.pageNum.lots=1",
+    ),
+    (
+        "roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345",
+        "https://www.roseltorg.ru/procedure/SAMPLE/12346",
+        "?sale=2&status%5B0%5D=1&page=1", "page=1",
+    ),
 ])
-def test_unproven_pagination_does_not_count_first_page_as_complete(source_id, lot_url):
-    html = f"<a href='{lot_url}'>Земельный участок 76:12:0000123:456</a>".encode()
+def test_evidence_backed_get_pagination_fetches_distinct_second_page(
+    source_id, lot_url, second_lot_url, next_href, page_two_url,
+):
+    first = (
+        f"<a href='{lot_url}'>Земельный участок 76:12:0000123:456</a>"
+        f"<a href='{next_href}'>2</a>"
+    ).encode()
+    second = f"<a href='{second_lot_url}'>Квартира 76:12:0000123:457</a>".encode()
+    session = FakeSession([
+        FakeResponse(200, first), FakeResponse(200, second),
+    ])
     connector = SOURCE_CONNECTOR_TYPES[source_id](
-        session=FakeSession(FakeResponse(200, html))
+        session=session
     )
-    with pytest.raises(SourceSchemaError, match="pagination/last-page contract"):
-        asyncio.run(connector.search({}))
-    health = asyncio.run(connector.healthcheck())
-    assert health.status == "degraded"
+    page_one = asyncio.run(connector.search({}))
+    assert page_one.next_cursor == "2"
+    page_two = asyncio.run(connector.search({}, cursor="2"))
+    assert page_two.next_cursor is None
+    assert page_two_url in session.requested_urls[-1]
 
 
 @pytest.mark.parametrize(("source_status", "expected"), [
