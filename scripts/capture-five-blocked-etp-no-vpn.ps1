@@ -3,6 +3,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Test-PlaywrightImport([string]$PythonExe) {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+        & $PythonExe -c 'import playwright' 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 $repo = Split-Path -Parent $PSScriptRoot
 $logRoot = 'D:\BankrotAI\etp-operator-logs'
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
@@ -30,15 +43,13 @@ try {
     $python = Join-Path $repo '.venv\Scripts\python.exe'
     $venvReady = (Test-Path -LiteralPath $python)
     if ($venvReady) {
-        & $python -c 'import playwright' 2>$null
-        $venvReady = ($LASTEXITCODE -eq 0)
+        $venvReady = Test-PlaywrightImport $python
     }
     if (-not $venvReady) {
         $systemPython = Get-Command python -ErrorAction SilentlyContinue
         if (-not $systemPython) { throw 'System Python is not available.' }
         $python = $systemPython.Source
-        & $python -c 'import playwright' 2>$null
-        if ($LASTEXITCODE -ne 0) { throw 'Playwright is not installed.' }
+        if (-not (Test-PlaywrightImport $python)) { throw 'Playwright is not installed.' }
     }
 
     $env:PYTHONPATH = Join-Path $repo 'src'
