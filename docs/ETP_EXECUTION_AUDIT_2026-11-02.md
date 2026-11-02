@@ -33,7 +33,7 @@
 |---|---|---|
 | 1. CDTRF | [#1060](https://github.com/Maximiliamos/torgi/pull/1060), merge `c5a0a2ec` | **Merged in main**, read-only обход допускает изменение live total и сохраняет coverage gap. Всё ещё нужны P11, полный source+GEO+map run, сверка по 4 статусам и выборка 30 карточек |
 | 2. Sistematorg | [#1061](https://github.com/Maximiliamos/torgi/pull/1061), [issue #1065](https://github.com/Maximiliamos/torgi/issues/1065) | **Proposed**, разделение процедуры/лота и безопасная read-only проверка цен. 18/3361 — не исправлено; нужен подтверждённый per-lot detail contract и контролируемый price backfill без выдуманных сумм |
-| 3. GEO | [#1062](https://github.com/Maximiliamos/torgi/pull/1062) | **Proposed**, повтор занятого lock и работа только по адресному/кадастровому evidence. Нужна проверка live GEO, классификация NSPD/VPN transport vs terminal no-match, интеграция с картой |
+| 3. GEO | [#1062](https://github.com/Maximiliamos/torgi/pull/1062), merge `75057f04` | **Merged in main**, повтор занятого lock и отбор по адресному/кадастровому evidence. Live GEO и DB→S3→WEB на новом SHA пока не подтверждены |
 | 4. Универсальный контракт ЭТП | [#1063](https://github.com/Maximiliamos/torgi/pull/1063) | **Proposed**, quality counters, honest campaign progress, read-only validation. Полный контракт R6-DATA-001 с Decimal, статусами, датами и provenance — открыт [#1021](https://github.com/Maximiliamos/torgi/issues/1021) |
 | 5. Качество / безопасность / performance | P1 #41366827021, P13/P16 read-only, #1061/#1063 | **Audit performed, remediation incomplete**. Нужны доказанные исправления stale/unknown, dedupe/sale-only gate, восстановления, нагрузки и управляемая historical repair; не архивировать массово по неполным source runs |
 | 6. ROADMAP / контроль | Этот документ и актуализированный ETP status | **Proposed** evidence matrix. Обновлять только по merge SHA, green CI, exact-SHA production run, DB/GEO/S3/WEB proof. Без таких артефактов не писать `done` |
@@ -60,3 +60,11 @@
 - [#1068](https://github.com/Maximiliamos/torgi/pull/1068), merged `0615edb9` — read-only DNS/TLS диагностика пяти штатных источников. [Phase 3 Health #41425699370](https://github.com/Maximiliamos/torgi/actions/runs/41425699370) показал **0/5 operational**: три TLS-сбоя, read timeout ГИС и validation failure TBankrot. Не объявлять сетевую деградацию исправленной на основании CI.
 - [S5 readiness #41422495215](https://github.com/Maximiliamos/torgi/actions/runs/41422495215) не пройден из-за отсутствия latest exact-SHA P1, а не ошибки парсера. [DR restore #41422096668](https://github.com/Maximiliamos/torgi/actions/runs/41422096668) success.
 - [Issue #1049](https://github.com/Maximiliamos/torgi/issues/1049) дополнен конкретными production evidence и безопасной процедурой диагностики. Требуются запуск диагностики на фактическом Home и green source freshness; команда импорта остаётся под ручным операторским допуском.
+
+## Дополнение 02.11.2026 — после #1062
+
+- [#1062](https://github.com/Maximiliamos/torgi/pull/1062) объединён как `75057f041bf8f5148c04fb91b70f1f21ff7865db` после green CI. Это устранение конфликтов GEO-lock на уровне кода, **не** свидетельство завершившегося геокодирования лотов CDTRF и не приёмка S3/map.
+- [Phase 3 Health #41446225364](https://github.com/Maximiliamos/torgi/actions/runs/41446225364): `healthy=true`, `critical_failure_count=0`, `warning_count=0`, однако только **1 из 5** основных источников `operational` (`torgi.gov.ru`). Успех health **не равен** восстановлению всех коннекторов.
+- [S5 readiness #41446775996](https://github.com/Maximiliamos/torgi/actions/runs/41446775996) — failure; по-прежнему нет доказанного полного успешного source acceptance на требуемом exact-SHA. Не запускать write/import под видом восстановленного S5.
+- [#1063](https://github.com/Maximiliamos/torgi/pull/1063) обновлён поверх #1062, CI ожидается. Он добавляет метрики качества и честный процент источников, но не устраняет 25 691 исторических активных записей без цены.
+- До завершения развёртывания и exact-SHA P1/P11/WEB/S3 нельзя объявлять релиз или CDTRF `production_accepted`.
