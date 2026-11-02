@@ -147,6 +147,15 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
 
+def _sistematorg_lot_count(value: str) -> int | None:
+    """A listing row represents a trade, potentially containing many lots."""
+    match = re.search(r"всего\\s+лотов\\s*[:：]\\s*(\\d+)", value, re.IGNORECASE)
+    if match is None:
+        return None
+    count = int(match.group(1))
+    return count if 1 <= count <= 100_000 else None
+
+
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -375,6 +384,12 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         current_price = _current_money(context)
         if current_price is None:
             current_price = table_current
+        # Sistematorg's table lists *trades*, not individual property lots.
+        # Do not assume a trade-level monetary field is a per-lot price.
+        trade_lots = _sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
+        if profile.source_id == "sistematorg.com" and trade_lots != 1:
+            price = None
+            current_price = None
         lots.append(NormalizedLot(
             external_id=external_id,
             source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -397,6 +412,9 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             raw_data={
                 "listing_url": profile.listing_url,
                 "listing_page": page,
+                "trade_level_listing": profile.source_id == "sistematorg.com",
+                "reported_trade_lots": trade_lots,
+                "individual_lot_identity_verified": profile.source_id != "sistematorg.com",
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
@@ -418,6 +436,12 @@ def parse_detail_html(
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
+    if profile.source_id == "sistematorg.com":
+        trade_lots = _sistematorg_lot_count(text_value)
+        if trade_lots != 1:
+            raise SourceSchemaError(
+                "sistematorg.com: cannot attribute a trade-level price to an individual lot"
+            )
     match = profile.lot_url_re.search(detail_url)
     if external_id is None:
         if not match:
