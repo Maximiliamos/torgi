@@ -26,6 +26,16 @@ def test_workflow_passes_the_reviewed_runnable_allowlist_into_container():
     assert "docker.exe exec -e ETP_ACCEPTED_SOURCE_IDS " in workflow
 
 
+def test_no_vpn_operator_runs_full_campaign_with_progress_and_log():
+    script = Path("scripts/run-all-etp-no-vpn-map.ps1").read_text(encoding="utf-8")
+    assert "p1-data-quality.yml" in script
+    assert "etp-all-new-sources-import-geo-map.yml" in script
+    assert "etp-verified-canary-geo-map.yml" not in script
+    assert "bankrotai.services.etp_all_sources_campaign progress" in script
+    assert "Start-Transcript" in script
+    assert "accepted_sha=$ExpectedSha" in script
+
+
 def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
     from bankrotai.services import etp_all_sources_campaign as campaign
     import bankrotai.connectors.registry.cdtrf_sync as cdtrf
