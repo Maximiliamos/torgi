@@ -241,9 +241,103 @@ def _safe_provider_url(profile: EtpSourceProfile, value: str) -> str:
     return value
 
 
+def _parse_sistematorg_procedure_lots(
+    profile: EtpSourceProfile, html: str | bytes, *, page: int
+) -> list[NormalizedLot]:
+    """Represent source trade rows as individual *candidate* property lots.
+
+    A trade_nid names the whole procedure, not a sellable asset. Neither
+    a procedure-level price nor an unrelated lot's status can be attached
+    to a candidate. Detail-level truth is still mandatory before promotion.
+    """
+    soup = _parse_soup(html)
+    result: list[NormalizedLot] = []
+    seen: set[str] = set()
+    lot_marker = re.compile(r"лот\s*№\s*(\d{1,5})\s*[:.\-]?\s*", re.I)
+    property_words = re.compile(
+        r"недвижим|земельн|участок|квартир|комнат|помещен|здани|"
+        r"гараж|машино.?мест|жилой\s+дом|склад|сооружен", re.I
+    )
+    for row in soup.select("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) < 3:
+            continue
+        procedure_urls: list[str] = []
+        for anchor in row.select("a[href]"):
+            procedure_urls.append(urljoin(profile.listing_url, str(anchor.get("href") or "")))
+        for node in row.select("[onclick]"):
+            for candidate in re.findall(r"['\"]([^'\"]+)['\"]", str(node.get("onclick") or "")):
+                if candidate.startswith(("/", "https://")):
+                    procedure_urls.append(urljoin(profile.listing_url, candidate))
+        trusted: list[tuple[str, re.Match[str]]] = []
+        for url in procedure_urls:
+            try:
+                _safe_provider_url(profile, url)
+            except SourceAccessError:
+                continue
+            matched = profile.lot_url_re.search(url)
+            if matched:
+                trusted.append((url, matched))
+        if not trusted:
+            continue
+        detail_url, match = trusted[0]
+        trade_id = match.group(1)
+        cell_text = _clean(cells[2].get_text(" ", strip=True))
+        markers = list(lot_marker.finditer(cell_text))
+        if not markers:
+            # There is no safe way to infer the lot number from a trade row.
+            continue
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(cell_text)
+            title = _clean(cell_text[marker.end():end])
+            if len(title) < 8 or not property_words.search(title):
+                continue
+            external_id = f"{profile.source_id}:{trade_id}:{marker.group(1)}"
+            if external_id in seen:
+                continue
+            seen.add(external_id)
+            cadastre = _CADASTRAL_RE.search(title)
+            result.append(NormalizedLot(
+                external_id=external_id,
+                source="sistematorg",
+                source_system=profile.source_id,
+                title=title[:500],
+                description=title[:5000],
+                category=_category(title),
+                region_slug=None,
+                region_name=None,
+                address=None,
+                cadastral_number=cadastre.group(1) if cadastre else None,
+                vin=None,
+                area=None,
+                start_price=None,
+                current_price=None,
+                auction_status="unknown",
+                lot_url=detail_url,
+                source_url=detail_url,
+                detail_level="search",
+                raw_data={
+                    "listing_page": page,
+                    "procedure_id": trade_id,
+                    "lot_number": marker.group(1),
+                    "per_lot_detail_verified": False,
+                    "price_unverified": True,
+                    "status_unverified": True,
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "reconcile_missing": False,
+                },
+                platform_name=profile.platform_name,
+                platform_code=profile.platform_code,
+            ))
+    return result
+
+
 def _parse_multi_lot_catalogue(
     profile: EtpSourceProfile, html: str | bytes, *, page: int
 ) -> list[NormalizedLot] | None:
+    if profile.source_id == "sistematorg.com":
+        return _parse_sistematorg_procedure_lots(profile, html, page=page)
     if profile.source_id not in {"nistp.ru", "vertrades.ru"}:
         return None
     from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
@@ -748,7 +842,7 @@ class HtmlEtpConnector(AuctionConnector):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
-        if self.source_id in {"nistp.ru", "vertrades.ru"}:
+        if self.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -800,7 +894,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"nistp.ru", "vertrades.ru"}:
+    if profile.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
