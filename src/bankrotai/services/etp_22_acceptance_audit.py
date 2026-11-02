@@ -113,7 +113,9 @@ def evaluate_source(report: dict) -> dict:
         errors.append(f"detail coverage mismatch: missing={len(catalogue_set - set(details))}, unexpected={len(set(details) - catalogue_set)}")
     if set(persisted) != catalogue_set:
         errors.append(f"DB coverage mismatch: missing={len(catalogue_set - set(persisted))}, unexpected={len(set(persisted) - catalogue_set)}")
-    allowed_hosts = set(profile.allowed_hosts) if profile else {"lot-online.ru", "www.lot-online.ru"}
+    allowed_hosts = set(profile.allowed_hosts) if profile else {
+        "lot-online.ru", "www.lot-online.ru", "catalog.lot-online.ru"
+    }
 
     for key in catalogue_set & set(details):
         row = details[key]
