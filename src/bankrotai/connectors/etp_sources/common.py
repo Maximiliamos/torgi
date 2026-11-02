@@ -827,6 +827,13 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceSchemaError(
                 f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
             )
+        if not (
+            self.profile.supports_get_pagination or self.profile.form_page_field
+            or self.profile.postback_pagination or self.profile.api_kind
+        ):
+            raise SourceSchemaError(
+                f"{self.source_id}: public listing exists but the pagination/last-page contract is not verified"
+            )
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata={
             "source": self.source_id,
             "page": page,
@@ -885,8 +892,14 @@ class HtmlEtpConnector(AuctionConnector):
                 lots = parse_listing_html(self.profile, response.content)
         except Exception as exc:
             return ConnectorHealth("degraded", str(exc), {"source": self.source_id})
-        status = "ok" if lots else "degraded"
-        return ConnectorHealth(status, f"matched {len(lots)} public lot links", {"source": self.source_id})
+        pagination_verified = bool(
+            self.profile.supports_get_pagination or self.profile.form_page_field
+            or self.profile.postback_pagination or self.profile.api_kind
+        )
+        status = "ok" if lots and pagination_verified else "degraded"
+        message = (f"matched {len(lots)} public lot links" if pagination_verified
+                   else "catalogue observed; pagination and last page not verified")
+        return ConnectorHealth(status, message, {"source": self.source_id})
 
 
 def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
