@@ -28,7 +28,12 @@ from dataclasses import replace
 
 # Browser-confirmed catalogue hosts can differ from the corporate root domain.
 START_OVERRIDES = {
-    "lot-online.ru": "https://catalog.lot-online.ru/index.php?dispatch=categories.view&category_id=9876",
+    # These are public routes observed during the 2026-11-02 site audit.
+    # No login, cookie, challenge or blocked endpoint is bypassed.
+    "lot-online.ru": "https://catalog.lot-online.ru/",
+    "cdtrf.ru": "https://torgi.cdtrf.ru/?Declare=true&RecieveReq=true",
+    "arbbitlot.ru": "https://torgi.arbbitlot.ru/public/purchases-all/",
+    "electro-torgi.ru": "https://bankrotstvo.electro-torgi.ru/lots",
     "roseltorg.ru": "https://www.roseltorg.ru/search/sale?sale=2&currency=all&status%5B%5D=1&status%5B%5D=0&status%5B%5D=5",
 }
 
