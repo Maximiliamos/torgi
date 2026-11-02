@@ -77,6 +77,9 @@ def scan_complete_cdtrf_catalogue(
     initial_total: int | None = None
     pages_expected: int | None = None
     property_candidates = 0
+    totals_observed: list[int] = []
+    overlapping_ids = 0
+    observed_rows_total = 0
 
     for page in range(1, max_pages + 1):
         if page > 1:
@@ -98,21 +101,20 @@ def scan_complete_cdtrf_catalogue(
         data = parse_cdtrf_api_page(
             response.json(), page_num=page, page_size=page_size
         )
-        total = data["reported_total"]
+        total = int(data["reported_total"])
+        totals_observed.append(total)
         if initial_total is None:
             initial_total = total
-            pages_expected = ceil(total / page_size) or 1
-            if pages_expected > max_pages:
-                raise CdtrfCatalogueScanError(
-                    "Declared catalogue exceeds configured page budget"
-                )
-        elif total != initial_total:
+        # Active trades can change during a long read-only walk.
+        # Never claim a stable snapshot; retain the widest observed boundary.
+        pages_expected = max(pages_expected or 0, ceil(total / page_size) or 1)
+        if pages_expected > max_pages:
             raise CdtrfCatalogueScanError(
-                "CDTRF total changed during traversal; retry a new scan"
+                "Declared catalogue exceeds configured page budget"
             )
 
         expected_count = min(
-            page_size, max(0, initial_total - (page - 1) * page_size)
+            page_size, max(0, total - (page - 1) * page_size)
         )
         if data["observed_rows"] != expected_count:
             raise CdtrfCatalogueScanError(
@@ -120,11 +122,11 @@ def scan_complete_cdtrf_catalogue(
                 "do not skip a page or mark the scan complete"
             )
         incoming = set(data["observed_lot_ids"])
-        if incoming & seen_ids:
-            raise CdtrfCatalogueScanError(
-                "Overlapping CDTRF lot identities across catalogue pages"
-            )
+        overlapping_ids += len(incoming & seen_ids)
+        # Page shifts in a live catalogue can repeat IDs; this is a
+        # coverage limitation, not evidence of full inventory.
         seen_ids.update(incoming)
+        observed_rows_total += data["observed_rows"]
         property_candidates += len(data["property_candidates"])
         page_report.append({
             "page": page,
@@ -136,7 +138,10 @@ def scan_complete_cdtrf_catalogue(
     else:
         raise CdtrfCatalogueScanError("Page budget exhausted before last page")
 
-    if initial_total is None or len(seen_ids) != initial_total:
+    if initial_total is None:
+        raise CdtrfCatalogueScanError("No catalogue pages were read")
+    live_drift = len(set(totals_observed)) > 1 or overlapping_ids > 0
+    if not live_drift and len(seen_ids) != initial_total:
         raise CdtrfCatalogueScanError("Unmatched observed and declared row count")
     digest = hashlib.sha256(
         "\n".join(sorted(seen_ids)).encode("ascii")
@@ -146,6 +151,12 @@ def scan_complete_cdtrf_catalogue(
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "page_size": page_size,
         "reported_total": initial_total,
+        "reported_total_min": min(totals_observed),
+        "reported_total_max": max(totals_observed),
+        "live_catalogue_drift": live_drift,
+        "cross_page_overlap_count": overlapping_ids,
+        "observed_rows_total": observed_rows_total,
+        "unverified_coverage_gap": max(0, max(totals_observed) - len(seen_ids)),
         "pages_expected": pages_expected,
         "pages_scanned": len(page_report),
         "unique_catalogue_lot_ids": len(seen_ids),
