@@ -1,5 +1,16 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+> **02.11.2026 — проверка шести текущих направлений:** [проверенный реестр
+> исполнения и production evidence](ETP_EXECUTION_AUDIT_2026-11-02.md).
+> Ветка `main` на момент проверки — `e4cbf912`; подготовленные PR
+> [#1060](https://github.com/Maximiliamos/torgi/pull/1060) (ЦДТ),
+> [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg),
+> [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO),
+> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
+> являются **предложенными изменениями**, а не production-acceptance.
+> Требуется green CI, merge, точный production SHA и сквозная приёмка.
+> Количество строк источника не равно числу активных primary или меток карты.
+
 > **Актуальный статус на 02.11.2026:** см.
 > [`ETP_ROLLOUT_STATUS_2026-11-02.md`](ETP_ROLLOUT_STATUS_2026-11-02.md).
 > Текущий этап — **R7-CDTRF production completion and acceptance**. Новый код
