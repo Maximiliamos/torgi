@@ -10,6 +10,7 @@ from bankrotai.connectors.etp_sources import (
     PROFILES,
     SOURCE_CONNECTOR_TYPES,
     SourceAccessError,
+    SourceSchemaError,
     parse_detail_html,
     parse_listing_html,
 )
@@ -536,3 +537,18 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
     assert "fetch_lot" not in connector.capabilities
     with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
         asyncio.run(connector.fetch_lot("sistematorg.com:12345:1"))
+
+
+@pytest.mark.parametrize(("source_id", "lot_url"), [
+    ("alfalot.ru", "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345"),
+    ("roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345"),
+])
+def test_unproven_pagination_does_not_count_first_page_as_complete(source_id, lot_url):
+    html = f"<a href='{lot_url}'>Земельный участок 76:12:0000123:456</a>".encode()
+    connector = SOURCE_CONNECTOR_TYPES[source_id](
+        session=FakeSession(FakeResponse(200, html))
+    )
+    with pytest.raises(SourceSchemaError, match="pagination/last-page contract"):
+        asyncio.run(connector.search({}))
+    health = asyncio.run(connector.healthcheck())
+    assert health.status == "degraded"
