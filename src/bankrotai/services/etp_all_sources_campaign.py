@@ -58,6 +58,20 @@ class SequentialCampaignService(NationwideIngestionService):
 
 
 def _authorized() -> None:
+    # A global write flag is insufficient to certify 16 unrelated source
+    # contracts. Production writes require an explicit, independently reviewed
+    # allowlist. With no approved list the campaign remains read-only.
+    approved = {
+        item.strip() for item in
+        os.getenv("ETP_ACCEPTED_SOURCE_IDS", "").split(",") if item.strip()
+    }
+    if not approved:
+        raise PermissionError("ETP source acceptance missing: ETP_ACCEPTED_SOURCE_IDS")
+    unapproved = set(RUNNABLE) - approved
+    if unapproved:
+        raise PermissionError(
+            "ETP source acceptance missing for: " + ", ".join(sorted(unapproved))
+        )
     required = (
         "ETP_ALL_SOURCES_OPERATOR_ENABLED",
         "ETP_CANARY_BACKUP_VERIFIED",
