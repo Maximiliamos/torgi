@@ -74,11 +74,15 @@ def test_duplicate_links_do_not_duplicate_lots() -> None:
 def test_clickable_table_row_is_parsed_without_executing_javascript() -> None:
     html = """
     <table><tr onclick="window.location='/trade_view.php?trade_nid=66627'">
-      <td>66627-ОАОФ</td><td>Земельный участок площадью 900 кв. м.</td><td>объявлены</td>
+      <td>66627-ОАОФ</td><td>Организатор</td>
+      <td>Должник Всего лотов: 1 Лот № 1: Земельный участок площадью 900 кв. м.</td>
+      <td>Торги объявлены</td>
     </tr></table>
     """
     lots = parse_listing_html(profile("sistematorg.com"), html)
-    assert [lot.external_id for lot in lots] == ["sistematorg.com:66627"]
+    assert [lot.external_id for lot in lots] == ["sistematorg.com:66627:1"]
+    assert lots[0].auction_status == "unknown"
+    assert lots[0].start_price is None
 
 
 def test_unknown_values_remain_null_and_status_unknown() -> None:
@@ -494,3 +498,41 @@ def test_empty_later_catalogue_page_does_not_claim_source_end() -> None:
     assert len(asyncio.run(connector.search({})).items) == 1
     with pytest.raises(RuntimeError, match="no lot links"):
         asyncio.run(connector.search({}, cursor="2"))
+
+
+
+def test_sistematorg_separates_procedure_into_individual_real_estate_lots():
+    html = """
+    <table><tr>
+      <td><a href="/trade_view.php?trade_nid=19431">19431-ОАОФ</a></td>
+      <td>Организатор</td>
+      <td>Должник Всего лотов: 3
+          Лот № 1: Автомобиль КИА РИО, цена 400 000 руб.
+          Лот № 2: Земельный участок 12:06:4601002:152
+          Лот № 3: Квартира 12:05:0702001:1292</td>
+      <td>Торги объявлены</td><td>07.08.2026</td>
+    </tr></table>
+    """
+    lots = parse_listing_html(profile("sistematorg.com"), html)
+    assert [lot.external_id for lot in lots] == [
+        "sistematorg.com:19431:2", "sistematorg.com:19431:3",
+    ]
+    assert [lot.cadastral_number for lot in lots] == [
+        "12:06:4601002:152", "12:05:0702001:1292",
+    ]
+    assert all(lot.start_price is None and lot.current_price is None for lot in lots)
+    assert all(lot.raw_data["per_lot_detail_verified"] is False for lot in lots)
+
+
+def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
+    html = """
+    <table><tr onclick="window.location='/trade_view.php?trade_nid=12345'">
+      <td>12345-ОАОФ</td><td>Организатор</td>
+      <td>Земельный участок 76:12:0000123:456</td>
+    </tr></table>
+    """
+    assert parse_listing_html(profile("sistematorg.com"), html) == []
+    connector = SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
+    assert "fetch_lot" not in connector.capabilities
+    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
+        asyncio.run(connector.fetch_lot("sistematorg.com:12345:1"))
