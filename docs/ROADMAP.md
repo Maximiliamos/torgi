@@ -6,9 +6,11 @@
 > объединён с `main` как `c5a0a2ec`, но production acceptance ещё нет.
 > [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO)
 > объединён как `75057f04`; production GEO/map на этом SHA не принят.
+> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
+> объединён как `3471b4a4`: метрики активных данных и корректное отображение
+> прогресса. Историческое качество данных пока не исправлено.
 > [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg)
-> и [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
-> **предложены**, требуют проверки на новой базе и приёмки.
+> остаётся предложенным, нужен source-level evidence и производство.
 > [#1068](https://github.com/Maximiliamos/torgi/pull/1068) (read-only
 > DNS/TLS диагностика) объединён как `0615edb9`; сетевой сбой 0/5
 > источников ещё не подтверждён как устранённый.
