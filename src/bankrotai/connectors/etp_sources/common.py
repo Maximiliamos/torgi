@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -603,6 +604,7 @@ class HtmlEtpConnector(AuctionConnector):
         self.timeout = timeout
         self._last_response: requests.Response | None = None
         self._last_page = 0
+        self._page_fingerprints: dict[int, str] = {}
         self.session.headers.setdefault(
             "User-Agent",
             "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
@@ -710,6 +712,14 @@ class HtmlEtpConnector(AuctionConnector):
         normalized = filters if isinstance(filters, EtpSearchFilters) else EtpSearchFilters(**(filters or {}))
         page = max(1, int(cursor or normalized.page))
         response = await asyncio.to_thread(self._request, page)
+        fingerprint = hashlib.sha256(response.content).hexdigest()
+        if page > 1 and fingerprint in {
+            value for number, value in self._page_fingerprints.items() if number < page
+        }:
+            raise SourceSchemaError(
+                f"{self.source_id}: repeated catalogue page content at page {page}"
+            )
+        self._page_fingerprints[page] = fingerprint
         if self.profile.api_kind == "sberbank_ast":
             payload = response.json()
             lots = parse_sberbank_json(self.profile, payload, page=page)
@@ -719,8 +729,10 @@ class HtmlEtpConnector(AuctionConnector):
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
-        if not lots and page == 1:
-            raise SourceSchemaError(f"{self.source_id}: no lot links matched the verified listing schema")
+        if not lots:
+            raise SourceSchemaError(
+                f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
+            )
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata={
             "source": self.source_id,
             "page": page,
