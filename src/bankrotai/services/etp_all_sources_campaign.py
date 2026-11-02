@@ -11,6 +11,8 @@ import json
 import os
 import time
 
+from dataclasses import replace
+
 from sqlalchemy import func, or_, select
 
 from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES, EtpSearchFilters
@@ -81,13 +83,14 @@ def _specs() -> tuple[SourceSyncSpec, ...]:
     specs: list[SourceSyncSpec] = []
     for source_id in RUNNABLE:
         if source_id == "cdtrf.ru":
-            specs.append(operator_sync_spec())
+            specs.append(replace(operator_sync_spec(), require_source_end=True))
         else:
             specs.append(SourceSyncSpec(
                 source_id,
                 EtpSearchFilters(page=1),
                 reconcile_missing=False,
                 max_batches=500,
+                require_source_end=True,
             ))
     return tuple(specs)
 
