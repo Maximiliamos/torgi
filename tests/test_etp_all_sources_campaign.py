@@ -44,6 +44,9 @@ def test_all_source_campaign_requires_all_write_guards(monkeypatch):
         "ETP_OPERATOR_CANARY_IMPORT_ENABLED", "CDTRF_OPERATOR_SYNC_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
+    with pytest.raises(PermissionError, match="source acceptance missing"):
+        campaign._authorized()
+    monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
     with pytest.raises(PermissionError, match="authorization missing"):
         campaign._authorized()
 
@@ -75,6 +78,7 @@ def test_all_source_campaign_journal_fields_fit_production_schema(monkeypatch):
         "CDTRF_OPERATOR_SYNC_ENABLED",
     ):
         monkeypatch.setenv(flag, "1")
+    monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
     monkeypatch.setattr(campaign, "SequentialCampaignService", FakeService)
 
     import pytest
@@ -185,3 +189,14 @@ def test_source_snapshot_reports_missing_active_primary_prices(monkeypatch):
     assert source["active_primary_with_geo"] == 100
     assert source["requires_source_acceptance"] is True
     assert result["sources"]["nistp.ru"]["records"] == 0
+
+
+def test_operator_cannot_start_unapproved_all_source_campaign(monkeypatch):
+    import pytest
+    from bankrotai.services import etp_all_sources_campaign as campaign
+    for flag in ("ETP_ALL_SOURCES_OPERATOR_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+                 "ETP_OPERATOR_CANARY_IMPORT_ENABLED", "CDTRF_OPERATOR_SYNC_ENABLED"):
+        monkeypatch.setenv(flag, "1")
+    monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", "cdtrf.ru,m-ets.ru")
+    with pytest.raises(PermissionError, match="acceptance missing for"):
+        campaign._authorized()
