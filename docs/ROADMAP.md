@@ -6,9 +6,11 @@
 > объединён с `main` как `c5a0a2ec`, но production acceptance ещё нет.
 > [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg),
 > [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO),
-> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality),
-> [#1068](https://github.com/Maximiliamos/torgi/pull/1068) (DNS/TLS)
-> **предложены** и ожидают технического приёма.
+> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
+> **предложен** и ожидает технического приёма.
+> [#1068](https://github.com/Maximiliamos/torgi/pull/1068) (read-only
+> DNS/TLS диагностика) объединён как `0615edb9`; сетевой сбой 0/5
+> источников ещё не подтверждён как устранённый.
 > [#1067](https://github.com/Maximiliamos/torgi/pull/1067) (защита от
 > ложного полного импорта) объединён с `main` как `def8206e4`;
 > новая ветка требует отдельной exact-SHA production-проверки.
