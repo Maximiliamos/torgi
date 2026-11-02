@@ -485,8 +485,10 @@ def test_sistematorg_trade_level_listing_does_not_assign_multi_lot_price() -> No
     </tr></table>
     """
     lots = parse_listing_html(profile("sistematorg.com"), html)
-    assert len(lots) == 1  # One trade record; NOT two verified property lots.
+    assert [lot.external_id for lot in lots] == ["sistematorg.com:19431:2"]
     assert lots[0].start_price is None
+    assert lots[0].raw_data["procedure_id"] == "19431"
+    assert lots[0].raw_data["per_lot_detail_verified"] is False
     assert lots[0].current_price is None
     assert lots[0].raw_data["trade_level_listing"] is True
     assert lots[0].raw_data["reported_trade_lots"] == 2

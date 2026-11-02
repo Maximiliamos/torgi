@@ -303,7 +303,12 @@ def _parse_sistematorg_procedure_lots(
             continue
         detail_url, match = trusted[0]
         trade_id = match.group(1)
-        cell_text = _clean(cells[2].get_text(" ", strip=True))
+        # Layouts observed in saved pages use both three and four columns.
+        # Scan the row's data cells rather than assigning a semantic meaning
+        # to one fixed column index.
+        cell_text = _clean(" ".join(cell.get_text(" ", strip=True) for cell in cells[1:]))
+        reported_match = re.search(r"всего\s+лотов\s*:\s*(\d{1,5})", cell_text, re.I)
+        reported_trade_lots = int(reported_match.group(1)) if reported_match else None
         markers = list(lot_marker.finditer(cell_text))
         if not markers:
             # There is no safe way to infer the lot number from a trade row.
@@ -341,6 +346,9 @@ def _parse_sistematorg_procedure_lots(
                     "listing_page": page,
                     "procedure_id": trade_id,
                     "lot_number": marker.group(1),
+                    "trade_level_listing": True,
+                    "reported_trade_lots": reported_trade_lots,
+                    "individual_lot_identity_verified": False,
                     "per_lot_detail_verified": False,
                     "price_unverified": True,
                     "status_unverified": True,

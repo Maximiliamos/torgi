@@ -23,6 +23,14 @@ CADASTRE = re.compile(r"^\d{2}:\d{2}:(?:\d{1,7}:){1,3}\d{1,7}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _valid_coordinates(lat: object, lon: object) -> bool:
+    if (isinstance(lat, bool) or isinstance(lon, bool)
+            or not isinstance(lat, (float, int))
+            or not isinstance(lon, (float, int))):
+        return False
+    return -90 <= lat <= 90 and -180 <= lon <= 180
+
+
 def _amount(value: object) -> Decimal | None:
     """No binary floats or ambiguous/localized amounts in acceptance evidence."""
     if value is None or value == "":
@@ -163,12 +171,7 @@ def evaluate_source(report: dict) -> dict:
         if row.get("source_system") != source:
             errors.append(f"{key}: map source mismatch")
         lat, lon = row.get("latitude"), row.get("longitude")
-        numeric_coordinates = (
-            type(lat) in (float, int) and type(lon) in (float, int)
-        )
-        if not numeric_coordinates or not (
-            -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180
-        ):
+        if not _valid_coordinates(lat, lon):
             errors.append(f"{key}: invalid map coordinates")
         if row.get("geo_evidence") not in {"exact_cadastre", "verified_address", "verified_coordinates"}:
             errors.append(f"{key}: map coordinates lack verifiable provenance")
