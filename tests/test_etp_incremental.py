@@ -207,13 +207,13 @@ def test_cdtrf_failure_classification_redacts_sensitive_error():
 
 
 
-def test_cdtrf_rejection_exposes_rights_risk_without_source_text():
+def test_cdtrf_rejection_exposes_non_property_claim_without_source_text():
     from bankrotai.connectors.registry.etp_incremental import _cdtrf_rejection_code
     from bankrotai.services.etp_cdtrf_canary import CdtrfCanaryError
 
     assert _cdtrf_rejection_code(
-        CdtrfCanaryError("CDTRF_UNSUPPORTED_PROPERTY_RIGHT")
-    ) == "unsupported_property_right"
+        CdtrfCanaryError("CDTRF_NON_PROPERTY_CLAIM")
+    ) == "non_property_claim"
 
 
 def test_optin_five_page_mets_bounded_cursor_and_non_archival(monkeypatch):

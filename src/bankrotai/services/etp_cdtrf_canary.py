@@ -26,15 +26,14 @@ BASE = "https://torgi.cdtrf.ru/trades/"
 # wait over rejecting the whole source before its first durable checkpoint.
 REQUEST_TIMEOUT = (10, 30)
 MAX_RESPONSE = 2_000_000
-# Do not mistake the sale of a share, a lease right, or a receivable for
-# an unrestricted sale of the underlying real-estate object.
-UNSUPPORTED_PROPERTY_RIGHTS = re.compile(
-    r"(?iu)(?:\b\d+\s*/\s*\d+\s*дол[яиею]"
-    r"|дол[яиею]\s+в\s+праве"
-    r"|прав[оа]\s+аренд[ыа]"
-    r"|прав[оа]\s+требовани[яй]"
-    r"|дебиторск)"
+# Shares and lease rights are legitimate property lots selected by CDTRF's
+# official real-estate categories.  They must retain their legal nature, not
+# be silently promoted as an unrestricted sale of the underlying object.
+PROPERTY_RIGHT = re.compile(
+    r"(?iu)(?:\b\d+\s*/\s*\d+\s*дол[яиею]|дол[яиею]\s+в\s+праве|прав[оа]\s+аренд[ыа])"
 )
+# A receivable merely referring to property is not itself a property lot.
+NON_PROPERTY_CLAIM = re.compile(r"(?iu)(?:прав[оа]\s+требовани[яй]|дебиторск)")
 PROPERTY = frozenset({
     "apartment", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
@@ -120,8 +119,9 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
     property_description = str(detail.get("property_description") or "").strip()
     category_label = str(detail.get("category_label") or "").strip()
     evidence = f"{title} {property_description}"
-    if UNSUPPORTED_PROPERTY_RIGHTS.search(evidence):
-        raise CdtrfCanaryError("CDTRF_UNSUPPORTED_PROPERTY_RIGHT")
+    if NON_PROPERTY_CLAIM.search(evidence):
+        raise CdtrfCanaryError("CDTRF_NON_PROPERTY_CLAIM")
+    property_right_kind = "property_right" if PROPERTY_RIGHT.search(evidence) else "ownership"
     if category_label and ("движим" in category_label.casefold()
                            and "недвижим" not in category_label.casefold()):
         raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
@@ -134,8 +134,6 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
     }.get(status)
     if category not in PROPERTY:
         raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
-    if not detail.get("cadastral_number"):
-        raise CdtrfCanaryError("CDTRF_CADASTRAL_MISSING")
     if detail.get("initial_price_rub") is None:
         raise CdtrfCanaryError("CDTRF_PRICE_MISSING")
     if mapped is None:
@@ -146,7 +144,7 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         description=property_description or title,
         category=category, region_slug=None,
         region_name=detail.get("region_label") or None,
-        address=None,  # A region label is NOT a precise property address.
+        address=detail.get("property_address") or None,
         cadastral_number=detail["cadastral_number"],
         vin=None, area=None,
         start_price=float(detail["initial_price_rub"]),
@@ -160,6 +158,9 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
             "source_status_text": detail.get("source_status_text"),
             "source_status_code": status,
             "region_id": detail.get("region_id"),
+            "property_right_kind": property_right_kind,
+            "cadastral_missing": not bool(detail.get("cadastral_number")),
+            "source_coordinates": detail.get("coordinates"),
             "price_periods": detail.get("price_periods", []),
             "current_price_unverified": True,
             "complete_source_inventory": False,

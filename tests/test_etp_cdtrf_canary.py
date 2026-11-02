@@ -80,9 +80,19 @@ def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
     assert lot.auction_status == "scheduled"
     with pytest.raises(CdtrfCanaryError, match="differs"):
         fetch_verified_cdtrf_lot("390364", "390898", session=object())
-    with pytest.raises(CdtrfCanaryError, match="CDTRF_CADASTRAL_MISSING"):
-        monkeypatch.setattr(module, "parse_detail", lambda h, u: {**fake_parse(h,u), "cadastral_number": None})
-        fetch_verified_cdtrf_lot("390364", "390899", session=object())
+    monkeypatch.setattr(
+        module, "parse_detail",
+        lambda h, u: {
+            **fake_parse(h, u), "cadastral_number": None,
+            "property_description": "Земельный участок без кадастрового номера",
+            "category_label": "Земельные участки",
+            "property_address": "Брянская область, г. Брянск, ул. Полевая, 1",
+        },
+    )
+    no_cadastre = fetch_verified_cdtrf_lot("390364", "390899", session=object())
+    assert no_cadastre.cadastral_number is None
+    assert no_cadastre.address == "Брянская область, г. Брянск, ул. Полевая, 1"
+    assert no_cadastre.raw_data["cadastral_missing"] is True
 
 
 def test_http_api_routes_require_optin_and_no_db_mutations(monkeypatch):
@@ -128,16 +138,14 @@ def test_generic_cdtrf_heading_uses_actual_property_description(monkeypatch):
     assert lot.auction_status == "active"
 
 
-@pytest.mark.parametrize("bad_description", [
+@pytest.mark.parametrize("property_description", [
     "Лот 1 — 1/5 доля в праве собственности на земельный участок, "
     "кадастровый номер 32:10:0010101:42",
     "Лот 1 — право аренды земельного участка, "
     "кадастровый номер 32:10:0010101:42",
-    "Лот 1 — право требования по договору на объект недвижимости, "
-    "кадастровый номер 32:10:0010101:42",
 ])
-def test_cdtrf_rights_are_not_misclassified_as_real_estate(
-    monkeypatch, bad_description,
+def test_cdtrf_property_rights_are_retained_with_explicit_legal_kind(
+    monkeypatch, property_description,
 ):
     import bankrotai.services.etp_cdtrf_canary as module
 
@@ -149,12 +157,31 @@ def test_cdtrf_rights_are_not_misclassified_as_real_estate(
     )
     monkeypatch.setattr(module, "parse_detail", lambda html, url: {
         "trade_id": "390364", "trade_lot_id": "390899",
-        "title": "Реализация имущества", "property_description": bad_description,
+        "title": "Реализация имущества", "property_description": property_description,
         "category_label": "Недвижимое имущество",
         "cadastral_number": "32:10:0010101:42",
         "initial_price_rub": "675000.00", "source_status_code": "Declare",
     })
-    with pytest.raises(CdtrfCanaryError, match="UNSUPPORTED_PROPERTY_RIGHT"):
+    lot = fetch_verified_cdtrf_lot("390364", "390899", session=object())
+    assert lot.raw_data["property_right_kind"] == "property_right"
+    assert lot.description == property_description
+
+
+def test_cdtrf_receivable_is_not_misclassified_as_property(monkeypatch):
+    import bankrotai.services.etp_cdtrf_canary as module
+
+    monkeypatch.setattr(module, "_http_get", lambda *a, **k: SimpleNamespace(
+        headers={"Content-Type": "text/html"}, text="<html></html>"
+    ))
+    monkeypatch.setattr(module, "parse_detail", lambda *a, **k: {
+        "trade_id": "390364", "trade_lot_id": "390899",
+        "title": "Реализация имущества",
+        "property_description": "Право требования по договору на объект недвижимости",
+        "category_label": "Недвижимое имущество",
+        "cadastral_number": "32:10:0010101:42",
+        "initial_price_rub": "675000.00", "source_status_code": "Declare",
+    })
+    with pytest.raises(CdtrfCanaryError, match="CDTRF_NON_PROPERTY_CLAIM"):
         fetch_verified_cdtrf_lot("390364", "390899", session=object())
 
 

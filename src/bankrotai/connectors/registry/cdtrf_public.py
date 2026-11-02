@@ -253,6 +253,7 @@ def parse_detail(html: str, url: str) -> dict:
         "external_id": f"cdtrf:{lot_id}",
         "title": title[:600], "category_label": category,
         "property_description": property_description,
+        "property_address": region,
         "region_label": region, "region_id": lot.get("regionID"),
         "cadastral_number": cadastral.group(0) if cadastral else None,
         "initial_price_rub": initial, "current_price_rub": None,
