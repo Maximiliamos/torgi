@@ -58,6 +58,7 @@ class SourceSyncSpec:
     archive_region_code: str | None = None
     reconcile_missing: bool = True
     max_batches: int | None = None
+    require_source_end: bool = False
 
 
 @dataclass(slots=True)
@@ -141,7 +142,6 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
 
 
 def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
-    """Return one source spec; CDTRF operator runs are always non-reconciling."""
     if source_id == "cdtrf.ru":
         from bankrotai.connectors.registry.cdtrf_sync import operator_sync_spec
         return (operator_sync_spec(),)
@@ -492,6 +492,8 @@ class NationwideIngestionService:
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
                 result.complete_source_run = False
+                if spec.require_source_end and not reached_source_end:
+                    raise RuntimeError("operator source page limit exhausted before last page")
                 result.status = "success"
                 result.phase = "complete"
                 result.elapsed_seconds = time.perf_counter() - wall_started
