@@ -251,4 +251,5 @@ def operator_sync_spec():
     return SourceSyncSpec(
         "cdtrf.ru", CdtrfSyncFilters(page_size=100),
         reconcile_missing=False, max_batches=MAX_SCAN_PAGES,
+        require_source_end=True,
     )

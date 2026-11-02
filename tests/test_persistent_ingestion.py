@@ -801,6 +801,45 @@ def test_fast_discovery_never_reconciles_missing_rows(sessions) -> None:
         assert source_run.duration_ms is not None and source_run.duration_ms >= 0
 
 
+
+def test_operator_nonreconciling_requires_last_page_and_does_not_archive(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    service.connector_factory = lambda _source: FakeConnector([[lot("first")], [lot("second")]])
+    run_id = service.create_run(triggered_by="operator", trigger_type="manual_etp", total_sources=1)
+    result = asyncio.run(service.run(run_id, (
+        SourceSyncSpec(
+            "test-source", {}, reconcile_missing=False,
+            max_batches=1, require_source_end=True,
+        ),
+    )))
+    source = result["sources"][0]
+    assert source["status"] == "failed"
+    assert source["complete_source_run"] is False
+    assert source["items_archived"] == 0
+    assert "page limit exhausted before last page" in source["error"]
+    with sessions() as session:
+        first = session.scalar(select(SourceLot).where(SourceLot.external_id == "first"))
+        assert first is not None
+        assert first.is_archived is False
+
+
+def test_operator_nonreconciling_accepts_proven_last_page(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    service.connector_factory = lambda _source: FakeConnector([[lot("first")], [lot("second")]])
+    run_id = service.create_run(triggered_by="operator", trigger_type="manual_etp", total_sources=1)
+    result = asyncio.run(service.run(run_id, (
+        SourceSyncSpec(
+            "test-source", {}, reconcile_missing=False,
+            max_batches=2, require_source_end=True,
+        ),
+    )))
+    source = result["sources"][0]
+    assert source["status"] == "success"
+    assert source["pages_scanned"] == 2
+    assert source["items_archived"] == 0
+    # Intentionally no claim of complete reconciliable inventory.
+    assert source["complete_source_run"] is False
+
 def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
     specs = fast_source_specs(gis_publish_date_from="2026-08-22")
 
