@@ -2,13 +2,16 @@
 
 > **02.11.2026 — проверка шести текущих направлений:** [проверенный реестр
 > исполнения и production evidence](ETP_EXECUTION_AUDIT_2026-11-02.md).
-> Ветка `main` на момент проверки — `e4cbf912`; подготовленные PR
-> [#1060](https://github.com/Maximiliamos/torgi/pull/1060) (ЦДТ),
+> Код [#1060](https://github.com/Maximiliamos/torgi/pull/1060) (read-only ЦДТ)
+> объединён с `main` как `c5a0a2ec`, но production acceptance ещё нет.
 > [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg),
 > [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO),
-> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
-> являются **предложенными изменениями**, а не production-acceptance.
-> Требуется green CI, merge, точный production SHA и сквозная приёмка.
+> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality),
+> [#1067](https://github.com/Maximiliamos/torgi/pull/1067) (page-limit guard),
+> [#1068](https://github.com/Maximiliamos/torgi/pull/1068) (DNS/TLS)
+> **предложены**, ожидают CI и технического приёма.
+> Последняя Phase 3 Health — [failure #41425699370](https://github.com/Maximiliamos/torgi/actions/runs/41425699370), 0/5 основных источников operational.
+> Требуются green CI, same-SHA P1/P11, восстановление source health и E2E-приёмка.
 > Количество строк источника не равно числу активных primary или меток карты.
 
 > **Актуальный статус на 02.11.2026:** см.
