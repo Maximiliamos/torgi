@@ -99,6 +99,29 @@ def test_systemic_ssr_breakage_remains_fail_closed(monkeypatch):
         )
 
 
+def test_content_level_category_rejections_do_not_abort_a_page(monkeypatch):
+    """A broad provider category may legitimately contain non-property cards."""
+    import bankrotai.connectors.registry.cdtrf_sync as module
+
+    def mixed(trade, lot, *, session):
+        if int(lot) - 500000 <= 19:
+            raise CdtrfEvidenceError("CDTRF_CATEGORY_UNVERIFIED")
+        return _lot(trade, lot)
+
+    monkeypatch.setattr(module, "fetch_verified_cdtrf_lot", mixed)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+
+    page = asyncio.run(
+        CdtrfSourceCrawler(_Session()).search(
+            CdtrfSyncFilters(page_size=20), None
+        )
+    )
+
+    assert len(page.items) == 1
+    assert page.metadata["details_rejected"] == 19
+    assert page.metadata["systemic_detail_rejections"] == 0
+
+
 def test_network_failure_remains_fail_closed(monkeypatch):
     import bankrotai.connectors.registry.cdtrf_sync as module
 
