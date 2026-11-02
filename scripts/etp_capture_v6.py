@@ -57,7 +57,7 @@ DETAIL_PATTERNS = {
     "fabrikant.ru": r"^/v2/trades/procedure/view/[^/]+/?$",
     "sberbank-ast.ru": r"^/Catalog/NBT/GoodsView/\d+/0/0/\d+/?$",
     "roseltorg.ru": r"^/procedure/\d+/\d+/?$",
-    "etp-profit.ru": r"^/lots/[0-9a-z-]+/?$",
+    "etp-profit.ru": r"^/(?:oaof|otpp)/\d+/lots/\d+/?$",
     "ausib.ru": r"^/trade/view/purchase/general\.html$",
     "lot-online.ru": r"^/index\.php$",
 }
@@ -120,6 +120,15 @@ def detail_urls(page, source: str, host: str) -> list[str]:
     links = page.locator("a[href]").evaluate_all(
         "(els) => els.map(e => e.href).filter(Boolean).slice(0, 5000)"
     )
+    # Several Ultimeta catalogues expose procedure/detail navigation only in
+    # a table-row onclick handler. Read the literal first-party route without
+    # executing JavaScript; checked URL/host validation below still applies.
+    onclick_routes = page.locator("[onclick]").evaluate_all(
+        """(els) => els.map(e => e.getAttribute('onclick') || '')
+          .flatMap(v => Array.from(v.matchAll(/['\"](\/[^'\"]+)['\"]/g), m => m[1]))
+          .slice(0, 5000)"""
+    )
+    links.extend(urljoin(page.url, route) for route in onclick_routes)
     selected = []
     for link in links:
         p = urlsplit(link)
@@ -131,7 +140,7 @@ def detail_urls(page, source: str, host: str) -> list[str]:
         if source == "alfalot.ru" and "LotCard.lotEntity=" not in p.query:
             continue
         if source in {"sistematorg.com", "rus-on.ru", "aukcioncenter.ru",
-                      "vertrades.ru", "nistp.ru"} and not p.query:
+                      "vertrades.ru", "nistp.ru", "ausib.ru"} and not p.query:
             continue
         if link not in selected:
             selected.append(link)
