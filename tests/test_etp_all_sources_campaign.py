@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_all_source_campaign_has_every_profile_and_only_blocks_evidenced_sources():
     from bankrotai.services import etp_all_sources_campaign as campaign
@@ -11,6 +13,17 @@ def test_all_source_campaign_has_every_profile_and_only_blocks_evidenced_sources
     }
     assert "cdtrf.ru" in campaign.RUNNABLE
     assert "nistp.ru" in campaign.RUNNABLE
+
+
+def test_workflow_passes_the_reviewed_runnable_allowlist_into_container():
+    from bankrotai.services import etp_all_sources_campaign as campaign
+
+    workflow = Path(".github/workflows/etp-all-new-sources-import-geo-map.yml").read_text(
+        encoding="utf-8"
+    )
+    expected = ",".join(campaign.RUNNABLE)
+    assert f"ETP_ACCEPTED_SOURCE_IDS: {expected}" in workflow
+    assert "docker.exe exec -e ETP_ACCEPTED_SOURCE_IDS " in workflow
 
 
 def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
