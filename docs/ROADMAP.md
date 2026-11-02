@@ -4,17 +4,20 @@
 > исполнения и production evidence](ETP_EXECUTION_AUDIT_2026-11-02.md).
 > Код [#1060](https://github.com/Maximiliamos/torgi/pull/1060) (read-only ЦДТ)
 > объединён с `main` как `c5a0a2ec`, но production acceptance ещё нет.
-> [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg),
-> [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO),
-> [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
-> **предложен** и ожидает технического приёма.
+> [#1062](https://github.com/Maximiliamos/torgi/pull/1062) (GEO)
+> объединён как `75057f04`; production GEO/map на этом SHA не принят.
+> [#1061](https://github.com/Maximiliamos/torgi/pull/1061) (Sistematorg)
+> и [#1063](https://github.com/Maximiliamos/torgi/pull/1063) (R6/quality)
+> **предложены**, требуют проверки на новой базе и приёмки.
 > [#1068](https://github.com/Maximiliamos/torgi/pull/1068) (read-only
 > DNS/TLS диагностика) объединён как `0615edb9`; сетевой сбой 0/5
 > источников ещё не подтверждён как устранённый.
 > [#1067](https://github.com/Maximiliamos/torgi/pull/1067) (защита от
 > ложного полного импорта) объединён с `main` как `def8206e4`;
 > новая ветка требует отдельной exact-SHA production-проверки.
-> Последняя Phase 3 Health — [failure #41425699370](https://github.com/Maximiliamos/torgi/actions/runs/41425699370), 0/5 основных источников operational.
+> Более поздняя Phase 3 Health [#41446225364](https://github.com/Maximiliamos/torgi/actions/runs/41446225364)
+> прошла: critical failures 0, но **операционен только 1/5 основных источников**
+> (`torgi.gov.ru`). Остальные четыре остаются под контролем #1049.
 > Требуются green CI, same-SHA P1/P11, восстановление source health и E2E-приёмка.
 > Количество строк источника не равно числу активных primary или меток карты.
 
