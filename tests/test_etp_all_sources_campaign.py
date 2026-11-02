@@ -120,3 +120,66 @@ def test_geocode_campaign_waits_for_the_shared_geo_lock(monkeypatch):
     assert len(calls) == 2
     assert result["requested"] == 1
     assert result["batches"][0]["status"] == "completed"
+
+
+def test_failed_all_source_campaign_reports_attempted_fraction_not_fake_100(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from bankrotai.services import etp_all_sources_campaign as campaign
+
+    rows = [
+        SimpleNamespace(
+            status=status, source_system="example.ru", checkpoint_json={},
+            pages_scanned=1, items_seen=1, items_inserted=1,
+            items_updated=0, items_failed=0, error_message=None,
+        )
+        for status in ("success", "failed")
+    ]
+
+    class Session:
+        def scalar(self, _statement):
+            return SimpleNamespace(id="run-1", status="failed")
+
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: rows)
+
+    @contextmanager
+    def factory():
+        yield Session()
+
+    monkeypatch.setattr(campaign, "SessionLocal", factory)
+    result = campaign.progress()
+    assert result["status"] == "failed"
+    assert result["completed"] == 2
+    assert result["total"] == 16
+    assert result["percent"] == 12
+    assert result["succeeded"] == 1
+    assert result["failed"] == 1
+
+
+def test_source_snapshot_reports_missing_active_primary_prices(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from bankrotai.services import etp_all_sources_campaign as campaign
+
+    class Session:
+        def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [
+                ("sistematorg.com", 3361, 18, 1184, 150, 18, 100),
+            ])
+
+    @contextmanager
+    def factory():
+        yield Session()
+
+    monkeypatch.setattr(campaign, "SessionLocal", factory)
+    result = campaign.snapshot()
+    source = result["sources"]["sistematorg.com"]
+    assert source["records"] == 3361
+    assert source["active_primary"] == 150
+    assert source["active_primary_missing_price"] == 132
+    assert source["active_primary_with_geo"] == 100
+    assert source["requires_source_acceptance"] is True
+    assert result["sources"]["nistp.ru"]["records"] == 0
