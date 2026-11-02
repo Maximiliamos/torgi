@@ -235,6 +235,7 @@ def geocode_all(*, batch_size: int = 250) -> dict:
                 ProcessedLot.is_archived.is_(False),
                 ProcessedLot.duplicate_of_id.is_(None),
                 or_(ProcessedLot.current_geo_lat.is_(None), ProcessedLot.current_geo_lon.is_(None)),
+                or_(ProcessedLot.cadastral_number.is_not(None), ProcessedLot.address.is_not(None)),
             ).order_by(ProcessedLot.id)
         ).all())
     batches = []
@@ -253,10 +254,11 @@ def geocode_all(*, batch_size: int = 250) -> dict:
                 if attempt == 119:
                     raise
                 time.sleep(30)
-        if response.get("status") in {"busy", "paused"}:
-            raise RuntimeError("All-source GEO campaign blocked by existing GEO work")
+        if response.get("status") != "completed":
+            raise RuntimeError("All-source GEO was not completed: " + str(response.get("status")))
         batches.append({"requested": len(chunk), **response})
-    return {"requested": len(ids), "batches": batches, "snapshot": snapshot()}
+    return {"requested": len(ids), "batches": batches, "snapshot": snapshot(),
+            "scope": "missing_coordinates_with_cadastre_or_address"}
 
 
 def publish_map() -> dict:
