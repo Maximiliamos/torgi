@@ -468,3 +468,29 @@ def test_sberbank_healthcheck_uses_json_contract() -> None:
     )
     health = asyncio.run(connector.healthcheck())
     assert health.status == "ok"
+
+
+
+def test_repeated_catalogue_response_on_second_page_fails_closed() -> None:
+    page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
+    session = FakeSession([
+        FakeResponse(200, page, "https://m-ets.ru/search"),
+        FakeResponse(200, page, "https://m-ets.ru/search?page=2"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=session)
+    first = asyncio.run(connector.search({}))
+    assert len(first.items) == 1
+    with pytest.raises(RuntimeError, match="repeated catalogue page"):
+        asyncio.run(connector.search({}, cursor="2"))
+
+
+def test_empty_later_catalogue_page_does_not_claim_source_end() -> None:
+    page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
+    session = FakeSession([
+        FakeResponse(200, page, "https://m-ets.ru/search"),
+        FakeResponse(200, b"<html>empty page</html>", "https://m-ets.ru/search?page=2"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=session)
+    assert len(asyncio.run(connector.search({})).items) == 1
+    with pytest.raises(RuntimeError, match="no lot links"):
+        asyncio.run(connector.search({}, cursor="2"))
