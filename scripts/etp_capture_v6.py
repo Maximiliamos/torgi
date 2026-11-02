@@ -139,16 +139,19 @@ def record_navigation_controls(page, folder: Path, label: str, events: list, hos
     automation target. Inspection does not click or submit anything.
     """
     try:
-        controls = page.locator("a[href], button, input[type=submit], input[type=button], select").evaluate_all(
+        controls = page.locator("a[href], [onclick], button, input[type=submit], input[type=button], select").evaluate_all(
             """(nodes) => nodes.slice(0, 1000).map((el) => {
               const rect = el.getBoundingClientRect();
               const text = (el.innerText || el.getAttribute('aria-label') ||
                             el.getAttribute('value') || '').trim().slice(0, 100);
               const href = el.tagName === 'A' ? el.href : '';
-              const pagination = !!el.closest(
+              const jsAction = el.getAttribute('onclick') || el.getAttribute('href') || '';
+              const postback = jsAction.includes('__doPostBack') ? 'aspnet-postback' :
+                               jsAction.includes('pagenum_send') ? 'form-page-submit' : null;
+              const pagination = !!postback || !!el.closest(
                 '.pagination, .pager, [class*=pagination], [class*=paging], nav[aria-label*=page i]'
               ) || /^(\\d{1,4}|>>|<<|next|prev|далее|назад|следующая|›|«|»)$/.test(text);
-              return {tag:el.tagName.toLowerCase(), text, href,
+              return {tag:el.tagName.toLowerCase(), text, href, postback,
                       x:Math.round(rect.x), y:Math.round(rect.y),
                       visible:rect.width > 0 && rect.height > 0,
                       pagination};
@@ -176,6 +179,7 @@ def record_navigation_controls(page, folder: Path, label: str, events: list, hos
                 "kind": control.get("tag"),
                 "label": label_text[:80],
                 "pagination": is_pagination,
+                "navigation_mechanism": control.get("postback"),
                 "destination": destination,
                 "viewport_x": control.get("x"),
                 "viewport_y": control.get("y"),
@@ -240,7 +244,9 @@ def attempt_page_two(page, before: set[str], source: str, host: str, events: lis
     candidates = [
         "nav[aria-label*='pagination' i] a",
         ".pagination a", ".pager a", "td.pager a",
-        "a[rel=next]", "button[aria-label*='next' i]",
+        "a[onclick*='pagenum_send']", "span[onclick*='pagenum_send']",
+        "a[href*='__doPostBack']", "[onclick*='__doPostBack']",
+        "a[href*='page=2']", "a[rel=next]", "button[aria-label*='next' i]",
         ".pagination button", ".pagination__nav button",
     ]
     for selector in candidates:
