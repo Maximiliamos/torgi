@@ -6,9 +6,18 @@ import ssl
 
 import pytest
 
-from scripts.source_transport_diagnostics import (
-    CORE_SOURCE_HOSTS, _error_category, inspect_transport, survey,
-)
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "source_transport_diagnostics.py"
+_SPEC = spec_from_file_location("source_transport_diagnostics", _SCRIPT)
+assert _SPEC is not None and _SPEC.loader is not None
+_MOD = module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MOD)
+CORE_SOURCE_HOSTS = _MOD.CORE_SOURCE_HOSTS
+_error_category = _MOD._error_category
+inspect_transport = _MOD.inspect_transport
+survey = _MOD.survey
 
 
 class _Connection:
