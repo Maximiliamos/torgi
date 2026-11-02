@@ -108,17 +108,49 @@ def snapshot() -> dict:
                 func.count(ProcessedLot.id).filter(
                     ProcessedLot.current_geo_lat.is_not(None),
                 ),
+                func.count(ProcessedLot.id).filter(
+                    ProcessedLot.is_archived.is_(False),
+                    ProcessedLot.duplicate_of_id.is_(None),
+                    ProcessedLot.auction_status.in_(("active", "scheduled")),
+                ),
+                func.count(ProcessedLot.id).filter(
+                    ProcessedLot.is_archived.is_(False),
+                    ProcessedLot.duplicate_of_id.is_(None),
+                    ProcessedLot.auction_status.in_(("active", "scheduled")),
+                    or_(ProcessedLot.current_price.is_not(None), ProcessedLot.start_price.is_not(None)),
+                ),
+                func.count(ProcessedLot.id).filter(
+                    ProcessedLot.is_archived.is_(False),
+                    ProcessedLot.duplicate_of_id.is_(None),
+                    ProcessedLot.auction_status.in_(("active", "scheduled")),
+                    ProcessedLot.current_geo_lat.is_not(None),
+                    ProcessedLot.current_geo_lon.is_not(None),
+                ),
             )
             .where(ProcessedLot.source_system.in_(ALL_SOURCE_IDS))
             .group_by(ProcessedLot.source_system)
         ).all()
     observed = {
-        source: {"records": int(records), "with_price": int(priced), "with_geo": int(geo)}
-        for source, records, priced, geo in rows
+        source: {
+            "records": int(records),
+            "with_price": int(priced),
+            "with_geo": int(geo),
+            "active_primary": int(active),
+            "active_primary_with_price": int(active_priced),
+            "active_primary_missing_price": int(active) - int(active_priced),
+            "active_primary_with_geo": int(active_geo),
+            "requires_source_acceptance": True,
+        }
+        for source, records, priced, geo, active, active_priced, active_geo in rows
+    }
+    empty = {
+        "records": 0, "with_price": 0, "with_geo": 0, "active_primary": 0,
+        "active_primary_with_price": 0, "active_primary_missing_price": 0,
+        "active_primary_with_geo": 0, "requires_source_acceptance": True,
     }
     return {
         "sources": {
-            source: observed.get(source, {"records": 0, "with_price": 0, "with_geo": 0})
+            source: observed.get(source, dict(empty))
             for source in ALL_SOURCE_IDS
         },
         "blocked": BLOCKED,
@@ -140,6 +172,8 @@ def progress() -> dict:
             .order_by(LotSyncSourceRun.id)
         ).all()
     completed = sum(row.status in {"success", "failed"} for row in rows)
+    succeeded = sum(row.status == "success" for row in rows)
+    failed = sum(row.status == "failed" for row in rows)
     current = next((row for row in rows if row.status == "running"), None)
     source_percent = 0
     if current is not None:
@@ -148,11 +182,13 @@ def progress() -> dict:
         total_pages = int(checkpoint.get("progress_total") or checkpoint.get("total_pages") or 0)
         source_percent = min(99, int(position * 100 / total_pages)) if total_pages else 0
     overall = min(99, int((completed + source_percent / 100) * 100 / len(RUNNABLE)))
-    if run.status in {"success", "partial", "failed"}:
+    # Percent measures sources actually attempted, never campaign success.
+    if completed >= len(RUNNABLE):
         overall = 100
     return {
         "run_id": str(run.id), "status": run.status, "percent": overall,
-        "completed": completed, "total": len(RUNNABLE),
+        "completed": completed, "succeeded": succeeded, "failed": failed,
+        "total": len(RUNNABLE),
         "current_source": current.source_system if current is not None else None,
         "current_source_percent": source_percent,
         "sources": [{
