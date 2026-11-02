@@ -105,13 +105,81 @@ def test_registry_uses_new_parsers_except_for_mature_source_specific_connectors(
             assert isinstance(connector_registry.create(source_id), connector_cls)
 
 
-@pytest.mark.parametrize("source_id", ["rts-tender.ru", "etp-profit.ru", "ausib.ru", "utender.ru", "electro-torgi.ru"])
+@pytest.mark.parametrize("source_id", ["rts-tender.ru", "utender.ru", "electro-torgi.ru"])
 def test_unproven_sources_fail_explicitly(source_id: str) -> None:
     connector = SOURCE_CONNECTOR_TYPES[source_id]()
     with pytest.raises(SourceAccessError):
         asyncio.run(connector.search({}))
     health = asyncio.run(connector.healthcheck())
     assert health.status == "blocked"
+
+
+def test_profit_listing_has_stable_kind_trade_lot_identity_and_pagination() -> None:
+    html = """
+    <article><p>Лот №1</p><a href="/otpp/22740/lots/40662">
+    Земельный участок 22:41:040210:35</a><span>Начальная цена 750 000 руб.</span></article>
+    <a href="/lots?page=2">2</a>
+    """
+    item = parse_listing_html(profile("etp-profit.ru"), html)[0]
+    assert item.external_id == "etp-profit.ru:otpp-22740-40662"
+    assert item.start_price == 750_000
+    assert item.cadastral_number == "22:41:040210:35"
+
+
+def test_profit_detail_accepts_its_labelled_price_without_currency_suffix() -> None:
+    detail = """
+    <html><body><h1>Земельный участок 34:28:040003:1165</h1>
+    Начальная цена продажи 1 398 600. 00
+    Статус торгов по лоту объявлен. Окончание приема заявок 23.11.2026 11:00:00.
+    Полная публичная карточка имущества содержит описание и условия продажи.
+    </body></html>
+    """
+    parsed = parse_detail_html(
+        profile("etp-profit.ru"), detail,
+        detail_url="https://etp-profit.ru/otpp/23376/lots/41432",
+    )
+    assert parsed.start_price == 1_398_600
+    assert parsed.auction_status == "scheduled"
+
+
+def test_ausib_onclick_listing_and_single_lot_detail_are_enriched() -> None:
+    listing = """
+    <table><tr onclick="window.location='/trade/view/purchase/general.html?id=104685887'">
+      <td>17320-ОТПП</td><td>Управляющий</td>
+      <td>Нежилое помещение 27.8 кв.м., 27:23:0050709:453</td>
+      <td>объявлены</td><td>03.11.2026 07:00</td>
+    </tr></table><a href="?page=2">2</a>
+    """
+    item = parse_listing_html(profile("ausib.ru"), listing)[0]
+    assert item.external_id == "ausib.ru:104685887"
+    detail = """
+    <html><body><table id="lotNumber1"><tr><td>Предмет торгов</td>
+    <td>Нежилое помещение 27.8 кв.м., 27:23:0050709:453</td></tr>
+    <tr><td>Начальная цена продажи имущества</td><td>293 000,00 руб.</td></tr>
+    <tr><td>Статус торгов</td><td>объявлены</td></tr></table>
+    Дополнительные публичные сведения карточки процедуры и условия продажи имущества.
+    </body></html>
+    """
+    parsed = parse_detail_html(
+        profile("ausib.ru"), detail,
+        detail_url="https://ausib.ru/trade/view/purchase/general.html?id=104685887",
+        external_id=item.external_id,
+    )
+    assert parsed.start_price == 293_000
+    assert parsed.cadastral_number == "27:23:0050709:453"
+    assert parsed.auction_status == "scheduled"
+
+
+def test_ausib_multi_lot_procedure_fails_closed() -> None:
+    html = "<html><body>" + ("Карточка процедуры " * 10) + """
+      <table id="lotNumber1"><tr><td>Предмет торгов</td><td>Квартира</td></tr></table>
+      <table id="lotNumber2"><tr><td>Предмет торгов</td><td>Гараж</td></tr></table>
+    </body></html>"""
+    with pytest.raises(SourceSchemaError, match="exactly one"):
+        parse_detail_html(
+            profile("ausib.ru"), html,
+            detail_url="https://ausib.ru/trade/view/purchase/general.html?id=104685887",
+        )
 
 
 class FakeResponse:

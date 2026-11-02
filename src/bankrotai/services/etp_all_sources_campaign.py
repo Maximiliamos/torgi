@@ -103,7 +103,10 @@ def _specs() -> tuple[SourceSyncSpec, ...]:
                 source_id,
                 EtpSearchFilters(page=1),
                 reconcile_missing=False,
-                max_batches=500,
+                # Profit exposes about 2667 pages and AUSIB about 1155 in the
+                # 2026-11-02 no-VPN evidence. Exhaust the provider paginator;
+                # never silently call a capped prefix a complete run.
+                max_batches=3500,
                 require_source_end=True,
             ))
     return tuple(specs)
