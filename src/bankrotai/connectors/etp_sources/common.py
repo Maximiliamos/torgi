@@ -162,12 +162,23 @@ def _category(value: str) -> str:
 
 
 def _status(value: str) -> str:
-    lowered = value.lower()
-    if any(word in lowered for word in ("заверш", "окончен", "состоял", "отменен", "отменён")):
-        return "closed"
-    if any(word in lowered for word in ("приостанов", "аннулирован")):
+    """Conservative public-auction status mapping, not keyword-anywhere truth.
+
+    'Приём заявок завершён' is NOT a completed auction; 'Текущая цена'
+    is not an active-status marker. 'Торги объявлены' do not prove
+    that applications have opened. Ambiguous intermediate stages stay unknown.
+    """
+    lowered = _clean(value).lower()
+    if re.search(r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)", lowered):
+        return "unknown"
+    if any(word in lowered for word in ("приостанов",)):
         return "paused"
-    if any(word in lowered for word in ("прием заяв", "приём заяв", "объявлен", "текущ", "идут торги")):
+    if any(word in lowered for word in ("торги отменен", "торги отменён", "не состоял", "торги заверш", "торги окончен", "аннулирован")):
+        return "closed"
+    if any(word in lowered for word in ("торги объявлен", "извещени", "торги назначен")):
+        return "scheduled"
+    if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
+            or "идут торги" in lowered or "заявки принимаются" in lowered):
         return "active"
     return "unknown"
 
