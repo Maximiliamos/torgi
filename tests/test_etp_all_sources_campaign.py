@@ -24,6 +24,7 @@ def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
 
     assert tuple(spec.source_id for spec in specs) == campaign.RUNNABLE
     assert all(spec.reconcile_missing is False for spec in specs)
+    assert all(spec.require_source_end is True for spec in specs)
     assert all(
         spec.max_batches <= 500
         for spec in specs
