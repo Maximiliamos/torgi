@@ -31,7 +31,7 @@
 
 | Направление | Созданный PR / доказательство | Статус и обязательный остаток |
 |---|---|---|
-| 1. CDTRF | [#1060](https://github.com/Maximiliamos/torgi/pull/1060) | **Proposed**, read-only обход допускает изменение live total и сохраняет coverage gap. Нужны CI, merge, P11, полный source+GEO+map run, reconciliation к 4 статусам и выборка 30 карточек |
+| 1. CDTRF | [#1060](https://github.com/Maximiliamos/torgi/pull/1060), merge `c5a0a2ec` | **Merged in main**, read-only обход допускает изменение live total и сохраняет coverage gap. Всё ещё нужны P11, полный source+GEO+map run, сверка по 4 статусам и выборка 30 карточек |
 | 2. Sistematorg | [#1061](https://github.com/Maximiliamos/torgi/pull/1061), [issue #1065](https://github.com/Maximiliamos/torgi/issues/1065) | **Proposed**, разделение процедуры/лота и безопасная read-only проверка цен. 18/3361 — не исправлено; нужен подтверждённый per-lot detail contract и контролируемый price backfill без выдуманных сумм |
 | 3. GEO | [#1062](https://github.com/Maximiliamos/torgi/pull/1062) | **Proposed**, повтор занятого lock и работа только по адресному/кадастровому evidence. Нужна проверка live GEO, классификация NSPD/VPN transport vs terminal no-match, интеграция с картой |
 | 4. Универсальный контракт ЭТП | [#1063](https://github.com/Maximiliamos/torgi/pull/1063) | **Proposed**, quality counters, honest campaign progress, read-only validation. Полный контракт R6-DATA-001 с Decimal, статусами, датами и provenance — открыт [#1021](https://github.com/Maximiliamos/torgi/issues/1021) |
@@ -52,3 +52,11 @@
 ## Критерии публичного заявления «всё выполнено»
 
 Требуются два независимых полных успешных source-run по каждой принятой ЭТП, достоверные идентичности отдельных лотов, цены/статусы, GEO и конкретные точки публичной карты; отсутствуют ложные дубли и чужие координаты, есть exact-SHA production approval, проверка rollback, source freshness и эксплуатационные метрики. Ни один из этих критериев не подтверждается только созданием PR, зелёным unit CI или регистрацией 22 профилей.
+
+## Дополнение к аудиту: 02.11.2026, 11:30 UTC
+
+- [#1060](https://github.com/Maximiliamos/torgi/pull/1060) слит в `main` как `c5a0a2ec`. Это **только код read-only диагностики**, не production-acceptance ЦДТ. Следующий Home/REG.RU deploy и exact-SHA P1/P11 ещё требуют подтверждения.
+- [#1067](https://github.com/Maximiliamos/torgi/pull/1067) предложен P0 fail-closed guard для full-source non-reconciling scans. Причина: прежний Sistematorg сообщил `success` на ровно 500/500 страниц без доказанного конца выдачи. Новый код различает ограниченный preview и заявленный полный импорт; PR ещё не принят.
+- [#1068](https://github.com/Maximiliamos/torgi/pull/1068) — read-only DNS/TLS диагностика пяти штатных источников. [Phase 3 Health #41425699370](https://github.com/Maximiliamos/torgi/actions/runs/41425699370) показал **0/5 operational**: три TLS-сбоя, read timeout ГИС и validation failure TBankrot. Не объявлять сетевую деградацию исправленной на основании CI.
+- [S5 readiness #41422495215](https://github.com/Maximiliamos/torgi/actions/runs/41422495215) не пройден из-за отсутствия latest exact-SHA P1, а не ошибки парсера. [DR restore #41422096668](https://github.com/Maximiliamos/torgi/actions/runs/41422096668) success.
+- [Issue #1049](https://github.com/Maximiliamos/torgi/issues/1049) дополнен конкретными production evidence и безопасной процедурой диагностики. Требуются запуск диагностики на фактическом Home и green source freshness; команда импорта остаётся под ручным операторским допуском.
