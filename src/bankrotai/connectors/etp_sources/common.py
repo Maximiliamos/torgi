@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -170,12 +171,23 @@ def _category(value: str) -> str:
 
 
 def _status(value: str) -> str:
-    lowered = value.lower()
-    if any(word in lowered for word in ("заверш", "окончен", "состоял", "отменен", "отменён")):
-        return "closed"
-    if any(word in lowered for word in ("приостанов", "аннулирован")):
+    """Conservative public-auction status mapping, not keyword-anywhere truth.
+
+    'Приём заявок завершён' is NOT a completed auction; 'Текущая цена'
+    is not an active-status marker. 'Торги объявлены' do not prove
+    that applications have opened. Ambiguous intermediate stages stay unknown.
+    """
+    lowered = _clean(value).lower()
+    if re.search(r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)", lowered):
+        return "unknown"
+    if any(word in lowered for word in ("приостанов",)):
         return "paused"
-    if any(word in lowered for word in ("прием заяв", "приём заяв", "объявлен", "текущ", "идут торги")):
+    if any(word in lowered for word in ("торги отменен", "торги отменён", "не состоял", "торги заверш", "торги окончен", "аннулирован")):
+        return "closed"
+    if any(word in lowered for word in ("торги объявлен", "извещени", "торги назначен")):
+        return "scheduled"
+    if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
+            or "идут торги" in lowered or "заявки принимаются" in lowered):
         return "active"
     return "unknown"
 
@@ -249,9 +261,104 @@ def _safe_provider_url(profile: EtpSourceProfile, value: str) -> str:
     return value
 
 
+def _parse_sistematorg_procedure_lots(
+    profile: EtpSourceProfile, html: str | bytes, *, page: int
+) -> list[NormalizedLot]:
+    """Represent source trade rows as individual *candidate* property lots.
+
+    A trade_nid names the whole procedure, not a sellable asset. Neither
+    a procedure-level price nor an unrelated lot's status can be attached
+    to a candidate. Detail-level truth is still mandatory before promotion.
+    """
+    soup = _parse_soup(html)
+    result: list[NormalizedLot] = []
+    seen: set[str] = set()
+    lot_marker = re.compile(r"лот\s*№\s*(\d{1,5})\s*[:.\-]?\s*", re.I)
+    property_words = re.compile(
+        r"недвижим|земельн|участок|квартир|комнат|помещен|здани|"
+        r"гараж|машино.?мест|жилой\s+дом|склад|сооружен", re.I
+    )
+    for row in soup.select("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) < 3:
+            continue
+        procedure_urls: list[str] = []
+        for anchor in row.select("a[href]"):
+            procedure_urls.append(urljoin(profile.listing_url, str(anchor.get("href") or "")))
+        clickable_nodes = ([row] if row.has_attr("onclick") else []) + row.select("[onclick]")
+        for node in clickable_nodes:
+            for candidate in re.findall(r"['\"]([^'\"]+)['\"]", str(node.get("onclick") or "")):
+                if candidate.startswith(("/", "https://")):
+                    procedure_urls.append(urljoin(profile.listing_url, candidate))
+        trusted: list[tuple[str, re.Match[str]]] = []
+        for url in procedure_urls:
+            try:
+                _safe_provider_url(profile, url)
+            except SourceAccessError:
+                continue
+            matched = profile.lot_url_re.search(url)
+            if matched:
+                trusted.append((url, matched))
+        if not trusted:
+            continue
+        detail_url, match = trusted[0]
+        trade_id = match.group(1)
+        cell_text = _clean(cells[2].get_text(" ", strip=True))
+        markers = list(lot_marker.finditer(cell_text))
+        if not markers:
+            # There is no safe way to infer the lot number from a trade row.
+            continue
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(cell_text)
+            title = _clean(cell_text[marker.end():end])
+            if len(title) < 8 or not property_words.search(title):
+                continue
+            external_id = f"{profile.source_id}:{trade_id}:{marker.group(1)}"
+            if external_id in seen:
+                continue
+            seen.add(external_id)
+            cadastre = _CADASTRAL_RE.search(title)
+            result.append(NormalizedLot(
+                external_id=external_id,
+                source="sistematorg",
+                source_system=profile.source_id,
+                title=title[:500],
+                description=title[:5000],
+                category=_category(title),
+                region_slug=None,
+                region_name=None,
+                address=None,
+                cadastral_number=cadastre.group(1) if cadastre else None,
+                vin=None,
+                area=None,
+                start_price=None,
+                current_price=None,
+                auction_status="unknown",
+                lot_url=detail_url,
+                source_url=detail_url,
+                detail_level="search",
+                raw_data={
+                    "listing_page": page,
+                    "procedure_id": trade_id,
+                    "lot_number": marker.group(1),
+                    "per_lot_detail_verified": False,
+                    "price_unverified": True,
+                    "status_unverified": True,
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "reconcile_missing": False,
+                },
+                platform_name=profile.platform_name,
+                platform_code=profile.platform_code,
+            ))
+    return result
+
+
 def _parse_multi_lot_catalogue(
     profile: EtpSourceProfile, html: str | bytes, *, page: int
 ) -> list[NormalizedLot] | None:
+    if profile.source_id == "sistematorg.com":
+        return _parse_sistematorg_procedure_lots(profile, html, page=page)
     if profile.source_id not in {"nistp.ru", "vertrades.ru"}:
         return None
     from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
@@ -627,6 +734,7 @@ class HtmlEtpConnector(AuctionConnector):
         self.timeout = timeout
         self._last_response: requests.Response | None = None
         self._last_page = 0
+        self._page_fingerprints: dict[int, str] = {}
         self.session.headers.setdefault(
             "User-Agent",
             "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
@@ -734,6 +842,14 @@ class HtmlEtpConnector(AuctionConnector):
         normalized = filters if isinstance(filters, EtpSearchFilters) else EtpSearchFilters(**(filters or {}))
         page = max(1, int(cursor or normalized.page))
         response = await asyncio.to_thread(self._request, page)
+        fingerprint = hashlib.sha256(response.content).hexdigest()
+        if page > 1 and fingerprint in {
+            value for number, value in self._page_fingerprints.items() if number < page
+        }:
+            raise SourceSchemaError(
+                f"{self.source_id}: repeated catalogue page content at page {page}"
+            )
+        self._page_fingerprints[page] = fingerprint
         if self.profile.api_kind == "sberbank_ast":
             payload = response.json()
             lots = parse_sberbank_json(self.profile, payload, page=page)
@@ -743,8 +859,17 @@ class HtmlEtpConnector(AuctionConnector):
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
-        if not lots and page == 1:
-            raise SourceSchemaError(f"{self.source_id}: no lot links matched the verified listing schema")
+        if not lots:
+            raise SourceSchemaError(
+                f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
+            )
+        if not (
+            self.profile.supports_get_pagination or self.profile.form_page_field
+            or self.profile.postback_pagination or self.profile.api_kind
+        ):
+            raise SourceSchemaError(
+                f"{self.source_id}: public listing exists but the pagination/last-page contract is not verified"
+            )
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata={
             "source": self.source_id,
             "page": page,
@@ -760,7 +885,7 @@ class HtmlEtpConnector(AuctionConnector):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
-        if self.source_id in {"nistp.ru", "vertrades.ru"}:
+        if self.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -803,8 +928,14 @@ class HtmlEtpConnector(AuctionConnector):
                 lots = parse_listing_html(self.profile, response.content)
         except Exception as exc:
             return ConnectorHealth("degraded", str(exc), {"source": self.source_id})
-        status = "ok" if lots else "degraded"
-        return ConnectorHealth(status, f"matched {len(lots)} public lot links", {"source": self.source_id})
+        pagination_verified = bool(
+            self.profile.supports_get_pagination or self.profile.form_page_field
+            or self.profile.postback_pagination or self.profile.api_kind
+        )
+        status = "ok" if lots and pagination_verified else "degraded"
+        message = (f"matched {len(lots)} public lot links" if pagination_verified
+                   else "catalogue observed; pagination and last page not verified")
+        return ConnectorHealth(status, message, {"source": self.source_id})
 
 
 def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
@@ -812,7 +943,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"nistp.ru", "vertrades.ru"}:
+    if profile.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__

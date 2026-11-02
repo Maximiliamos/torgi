@@ -28,7 +28,12 @@ from dataclasses import replace
 
 # Browser-confirmed catalogue hosts can differ from the corporate root domain.
 START_OVERRIDES = {
-    "lot-online.ru": "https://catalog.lot-online.ru/index.php?dispatch=categories.view&category_id=9876",
+    # These are public routes observed during the 2026-11-02 site audit.
+    # No login, cookie, challenge or blocked endpoint is bypassed.
+    "lot-online.ru": "https://catalog.lot-online.ru/",
+    "cdtrf.ru": "https://torgi.cdtrf.ru/?Declare=true&RecieveReq=true",
+    "arbbitlot.ru": "https://torgi.arbbitlot.ru/public/purchases-all/",
+    "electro-torgi.ru": "https://bankrotstvo.electro-torgi.ru/lots",
     "roseltorg.ru": "https://www.roseltorg.ru/search/sale?sale=2&currency=all&status%5B%5D=1&status%5B%5D=0&status%5B%5D=5",
 }
 
@@ -131,8 +136,76 @@ def detail_urls(page, source: str, host: str) -> list[str]:
     return selected
 
 
+def record_navigation_controls(page, folder: Path, label: str, events: list, host: str) -> None:
+    """Save visible navigation/paginator controls with viewport positions.
+
+    No input values, cookies, JavaScript source, or free-form lot descriptions
+    are persisted. Coordinates describe *this screenshot only*, not a stable
+    automation target. Inspection does not click or submit anything.
+    """
+    try:
+        controls = page.locator("a[href], [onclick], button, input[type=submit], input[type=button], select").evaluate_all(
+            """(nodes) => nodes.slice(0, 1000).map((el) => {
+              const rect = el.getBoundingClientRect();
+              const text = (el.innerText || el.getAttribute('aria-label') ||
+                            el.getAttribute('value') || '').trim().slice(0, 100);
+              const href = el.tagName === 'A' ? el.href : '';
+              const jsAction = el.getAttribute('onclick') || el.getAttribute('href') || '';
+              const postback = jsAction.includes('__doPostBack') ? 'aspnet-postback' :
+                               jsAction.includes('pagenum_send') ? 'form-page-submit' : null;
+              const pagination = !!postback || !!el.closest(
+                '.pagination, .pager, [class*=pagination], [class*=paging], nav[aria-label*=page i]'
+              ) || /^(\\d{1,4}|>>|<<|next|prev|далее|назад|следующая|›|«|»)$/.test(text);
+              return {tag:el.tagName.toLowerCase(), text, href, postback,
+                      x:Math.round(rect.x), y:Math.round(rect.y),
+                      visible:rect.width > 0 && rect.height > 0,
+                      pagination};
+            }).filter(x => x.visible).slice(0, 300)"""
+        )
+        allowed_labels = {
+            "торги", "все торги", "аукционы", "конкурсы",
+            "публичные предложения", "поиск", "очистить",
+            "применить", "фильтры", "следующая", "назад",
+            "next", "previous", "далее", "поиск лотов",
+            "применить фильтры", "очистить фильтры",
+            "предстоящие торги", "текущие торги", "приостановленные торги",
+        }
+        safe = []
+        for control in controls:
+            label_text = str(control.get("text") or "").strip().lower()
+            is_pagination = bool(control.get("pagination"))
+            if not (is_pagination or label_text in allowed_labels):
+                continue
+            href = str(control.get("href") or "")
+            destination = None
+            if href and (public_url(href, host) or public_url(href, SBER_DETAIL_HOST)):
+                destination = safe_url_label(href)
+            safe.append({
+                "kind": control.get("tag"),
+                "label": label_text[:80],
+                "pagination": is_pagination,
+                "navigation_mechanism": control.get("postback"),
+                "destination": destination,
+                "viewport_x": control.get("x"),
+                "viewport_y": control.get("y"),
+            })
+        (folder / (label + "_navigation.json")).write_text(
+            json.dumps({"page_url": safe_url_label(page.url), "controls": safe,
+                        "coordinate_scope": "current viewport screenshot only"},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        events.append({"event": "navigation_recorded", "stage": label,
+                       "controls": len(safe)})
+    except Exception as exc:
+        events.append({"event": "navigation_capture_failed", "stage": label,
+                       "error": type(exc).__name__})
+
+
 def record_page(page, folder: Path, label: str, events: list, host: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
+    if public_url(page.url, host) or public_url(page.url, SBER_DETAIL_HOST):
+        record_navigation_controls(page, folder, label, events, host)
     try:
         page.screenshot(path=str(folder / (label + ".png")), full_page=False, timeout=15000)
     except Exception as exc:
@@ -176,7 +249,9 @@ def attempt_page_two(page, before: set[str], source: str, host: str, events: lis
     candidates = [
         "nav[aria-label*='pagination' i] a",
         ".pagination a", ".pager a", "td.pager a",
-        "a[rel=next]", "button[aria-label*='next' i]",
+        "a[onclick*='pagenum_send']", "span[onclick*='pagenum_send']",
+        "a[href*='__doPostBack']", "[onclick*='__doPostBack']",
+        "a[href*='page=2']", "a[rel=next]", "button[aria-label*='next' i]",
         ".pagination button", ".pagination__nav button",
     ]
     for selector in candidates:

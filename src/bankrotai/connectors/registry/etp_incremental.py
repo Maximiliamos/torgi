@@ -85,9 +85,17 @@ def _bounded_scope(pages: int) -> str:
 
 
 def _property_ready(lot) -> bool:
+    cadastral_or_verified_cdtrf_detail = bool(
+        lot.cadastral_number
+        or (
+            lot.source_system == "cdtrf.ru"
+            and lot.raw_data.get("evidence") == "url_html_nuxt_identity_match"
+            and lot.raw_data.get("category_evidence") == "lotInfo_and_official_badge"
+        )
+    )
     return bool(
         lot.category in PROPERTY_CATEGORIES
-        and lot.cadastral_number
+        and cadastral_or_verified_cdtrf_detail
         and (lot.start_price is not None or lot.current_price is not None)
         and lot.auction_status in {"scheduled", "active"}
         and lot.lot_url
@@ -175,6 +183,7 @@ def _cdtrf_rejection_code(exc: Exception) -> str:
         return "ssr_schema_changed"
     for marker, code in (
         ("cdtrf_unsupported_property_right", "unsupported_property_right"),
+        ("cdtrf_non_property_claim", "non_property_claim"),
         ("cdtrf_category_unverified", "category_unverified"),
         ("cdtrf_cadastral_missing", "cadastral_missing"),
         ("cdtrf_price_missing", "price_missing"),

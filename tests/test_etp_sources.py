@@ -10,6 +10,7 @@ from bankrotai.connectors.etp_sources import (
     PROFILES,
     SOURCE_CONNECTOR_TYPES,
     SourceAccessError,
+    SourceSchemaError,
     parse_detail_html,
     parse_listing_html,
 )
@@ -74,11 +75,15 @@ def test_duplicate_links_do_not_duplicate_lots() -> None:
 def test_clickable_table_row_is_parsed_without_executing_javascript() -> None:
     html = """
     <table><tr onclick="window.location='/trade_view.php?trade_nid=66627'">
-      <td>66627-ОАОФ</td><td>Земельный участок площадью 900 кв. м.</td><td>объявлены</td>
+      <td>66627-ОАОФ</td><td>Организатор</td>
+      <td>Должник Всего лотов: 1 Лот № 1: Земельный участок площадью 900 кв. м.</td>
+      <td>Торги объявлены</td>
     </tr></table>
     """
     lots = parse_listing_html(profile("sistematorg.com"), html)
-    assert [lot.external_id for lot in lots] == ["sistematorg.com:66627"]
+    assert [lot.external_id for lot in lots] == ["sistematorg.com:66627:1"]
+    assert lots[0].auction_status == "unknown"
+    assert lots[0].start_price is None
 
 
 def test_unknown_values_remain_null_and_status_unknown() -> None:
@@ -517,3 +522,98 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
         detail_url="https://sistematorg.com/trade_view.php?trade_nid=19433",
     )
     assert lot.start_price == 900_000
+def test_repeated_catalogue_response_on_second_page_fails_closed() -> None:
+    page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
+    session = FakeSession([
+        FakeResponse(200, page, "https://m-ets.ru/search"),
+        FakeResponse(200, page, "https://m-ets.ru/search?page=2"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=session)
+    first = asyncio.run(connector.search({}))
+    assert len(first.items) == 1
+    with pytest.raises(RuntimeError, match="repeated catalogue page"):
+        asyncio.run(connector.search({}, cursor="2"))
+
+
+def test_empty_later_catalogue_page_does_not_claim_source_end() -> None:
+    page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
+    session = FakeSession([
+        FakeResponse(200, page, "https://m-ets.ru/search"),
+        FakeResponse(200, b"<html>empty page</html>", "https://m-ets.ru/search?page=2"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=session)
+    assert len(asyncio.run(connector.search({})).items) == 1
+    with pytest.raises(RuntimeError, match="no lot links"):
+        asyncio.run(connector.search({}, cursor="2"))
+
+
+
+def test_sistematorg_separates_procedure_into_individual_real_estate_lots():
+    html = """
+    <table><tr>
+      <td><a href="/trade_view.php?trade_nid=19431">19431-ОАОФ</a></td>
+      <td>Организатор</td>
+      <td>Должник Всего лотов: 3
+          Лот № 1: Автомобиль КИА РИО, цена 400 000 руб.
+          Лот № 2: Земельный участок 12:06:4601002:152
+          Лот № 3: Квартира 12:05:0702001:1292</td>
+      <td>Торги объявлены</td><td>07.08.2026</td>
+    </tr></table>
+    """
+    lots = parse_listing_html(profile("sistematorg.com"), html)
+    assert [lot.external_id for lot in lots] == [
+        "sistematorg.com:19431:2", "sistematorg.com:19431:3",
+    ]
+    assert [lot.cadastral_number for lot in lots] == [
+        "12:06:4601002:152", "12:05:0702001:1292",
+    ]
+    assert all(lot.start_price is None and lot.current_price is None for lot in lots)
+    assert all(lot.raw_data["per_lot_detail_verified"] is False for lot in lots)
+
+
+def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
+    html = """
+    <table><tr onclick="window.location='/trade_view.php?trade_nid=12345'">
+      <td>12345-ОАОФ</td><td>Организатор</td>
+      <td>Земельный участок 76:12:0000123:456</td>
+    </tr></table>
+    """
+    assert parse_listing_html(profile("sistematorg.com"), html) == []
+    connector = SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
+    assert "fetch_lot" not in connector.capabilities
+    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
+        asyncio.run(connector.fetch_lot("sistematorg.com:12345:1"))
+
+
+@pytest.mark.parametrize(("source_id", "lot_url"), [
+    ("alfalot.ru", "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345"),
+    ("roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345"),
+])
+def test_unproven_pagination_does_not_count_first_page_as_complete(source_id, lot_url):
+    html = f"<a href='{lot_url}'>Земельный участок 76:12:0000123:456</a>".encode()
+    connector = SOURCE_CONNECTOR_TYPES[source_id](
+        session=FakeSession(FakeResponse(200, html))
+    )
+    with pytest.raises(SourceSchemaError, match="pagination/last-page contract"):
+        asyncio.run(connector.search({}))
+    health = asyncio.run(connector.healthcheck())
+    assert health.status == "degraded"
+
+
+@pytest.mark.parametrize(("source_status", "expected"), [
+    ("Торги объявлены", "scheduled"),
+    ("Извещение опубликовано", "scheduled"),
+    ("Прием заявок", "active"),
+    ("Приём заявок завершён", "unknown"),
+    ("Завершен прием заявок", "unknown"),
+    ("Подведение итогов", "unknown"),
+    ("Текущая цена 500 000 руб.", "unknown"),
+    ("Идут торги", "active"),
+    ("Торги завершены", "closed"),
+    ("Торги отменены", "closed"),
+    ("Торги не состоялись", "closed"),
+    ("Торги приостановлены", "paused"),
+])
+def test_official_status_phrases_do_not_create_false_active_or_closed_lots(source_status, expected):
+    from bankrotai.connectors.etp_sources.common import _status
+    assert _status(source_status) == expected
