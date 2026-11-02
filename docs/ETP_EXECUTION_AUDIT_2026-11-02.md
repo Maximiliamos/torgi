@@ -34,7 +34,7 @@
 | 1. CDTRF | [#1060](https://github.com/Maximiliamos/torgi/pull/1060), merge `c5a0a2ec` | **Merged in main**, read-only обход допускает изменение live total и сохраняет coverage gap. Всё ещё нужны P11, полный source+GEO+map run, сверка по 4 статусам и выборка 30 карточек |
 | 2. Sistematorg | [#1061](https://github.com/Maximiliamos/torgi/pull/1061), [issue #1065](https://github.com/Maximiliamos/torgi/issues/1065) | **Proposed**, разделение процедуры/лота и безопасная read-only проверка цен. 18/3361 — не исправлено; нужен подтверждённый per-lot detail contract и контролируемый price backfill без выдуманных сумм |
 | 3. GEO | [#1062](https://github.com/Maximiliamos/torgi/pull/1062), merge `75057f04` | **Merged in main**, повтор занятого lock и отбор по адресному/кадастровому evidence. Live GEO и DB→S3→WEB на новом SHA пока не подтверждены |
-| 4. Универсальный контракт ЭТП | [#1063](https://github.com/Maximiliamos/torgi/pull/1063) | **Proposed**, quality counters, honest campaign progress, read-only validation. Полный контракт R6-DATA-001 с Decimal, статусами, датами и provenance — открыт [#1021](https://github.com/Maximiliamos/torgi/issues/1021) |
+| 4. Универсальный контракт ЭТП | [#1063](https://github.com/Maximiliamos/torgi/pull/1063), merge `3471b4a4` | **Merged**, quality counters, honest campaign progress и read-only validation; полный R6-DATA-001 с Decimal, датами, provenance и отдельной source acceptance — всё ещё открыт [#1021](https://github.com/Maximiliamos/torgi/issues/1021) |
 | 5. Качество / безопасность / performance | P1 #41366827021, P13/P16 read-only, #1061/#1063 | **Audit performed, remediation incomplete**. Нужны доказанные исправления stale/unknown, dedupe/sale-only gate, восстановления, нагрузки и управляемая historical repair; не архивировать массово по неполным source runs |
 | 6. ROADMAP / контроль | Этот документ и актуализированный ETP status | **Proposed** evidence matrix. Обновлять только по merge SHA, green CI, exact-SHA production run, DB/GEO/S3/WEB proof. Без таких артефактов не писать `done` |
 
@@ -68,3 +68,8 @@
 - [S5 readiness #41446775996](https://github.com/Maximiliamos/torgi/actions/runs/41446775996) — failure; по-прежнему нет доказанного полного успешного source acceptance на требуемом exact-SHA. Не запускать write/import под видом восстановленного S5.
 - [#1063](https://github.com/Maximiliamos/torgi/pull/1063) обновлён поверх #1062, CI ожидается. Он добавляет метрики качества и честный процент источников, но не устраняет 25 691 исторических активных записей без цены.
 - До завершения развёртывания и exact-SHA P1/P11/WEB/S3 нельзя объявлять релиз или CDTRF `production_accepted`.
+
+## Дополнение после PR #1063
+
+- [PR #1063](https://github.com/Maximiliamos/torgi/pull/1063) объединён в `main` как `3471b4a4bc77be2da8d6172dcbd1fc4a1aee2e07` после green Production reliability и REG.RU S3 diagnostics. Показатели `active_primary_missing_price`, `active_primary_with_geo` и `percent` теперь доступны в коде.
+- Данный merge сам по себе **не** исправляет исходные 25 691 пустых цен, неоднозначные торговые процедуры Sistematorg или недоступные провайдеры; P1/P11 и source-detail acceptance остаются обязательными.
