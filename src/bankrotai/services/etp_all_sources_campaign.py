@@ -11,6 +11,8 @@ import json
 import os
 import time
 
+from dataclasses import replace
+
 from sqlalchemy import func, or_, select
 
 from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES, EtpSearchFilters
@@ -81,13 +83,14 @@ def _specs() -> tuple[SourceSyncSpec, ...]:
     specs: list[SourceSyncSpec] = []
     for source_id in RUNNABLE:
         if source_id == "cdtrf.ru":
-            specs.append(operator_sync_spec())
+            specs.append(replace(operator_sync_spec(), require_source_end=True))
         else:
             specs.append(SourceSyncSpec(
                 source_id,
                 EtpSearchFilters(page=1),
                 reconcile_missing=False,
                 max_batches=500,
+                require_source_end=True,
             ))
     return tuple(specs)
 
@@ -180,7 +183,6 @@ def progress() -> dict:
         source_percent = min(99, int(position * 100 / total_pages)) if total_pages else 0
     overall = min(99, int((completed + source_percent / 100) * 100 / len(RUNNABLE)))
     # Percent measures sources actually attempted, never campaign success.
-    # A failed early run must not read 100% after 2/16 processed sources.
     if completed >= len(RUNNABLE):
         overall = 100
     return {
