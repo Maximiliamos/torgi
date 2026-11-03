@@ -636,11 +636,6 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
     [
         ("aukcioncenter.ru", "/trade/view/purchase/general.html?id=5512", "5512"),
         ("ausib.ru", "/trade/view/purchase/general.html?id=17312", "17312"),
-        (
-            "fabrikant.ru",
-            "/v2/trades/procedure/view/RoEMbNetsW8SvO2KLb7GQA",
-            "RoEMbNetsW8SvO2KLb7GQA",
-        ),
     ],
 )
 def test_procedure_cards_preserve_each_property_lot_identity(
@@ -659,6 +654,24 @@ def test_procedure_cards_preserve_each_property_lot_identity(
     ]
     assert [lot.start_price for lot in lots] == [900_000, 5_200_000]
     assert all(lot.raw_data["per_lot_detail_verified"] is False for lot in lots)
+
+
+def test_fabrikant_next_card_uses_stable_provider_lot_id() -> None:
+    html = """
+    <div data-id="679967052">
+      <span>Аукцион № 5593095-2</span>
+      <a href="https://fabrikant.ru/v2/trades/procedure/view/6KtDsKIF2zfYwTnYd1XXDg">
+        Квартира 58,2 м2, кадастровый номер 21:01:000000:13293
+      </a>
+      <div>2 980 125,00 RUB</div><div>начальная цена</div>
+      <span>Ожидается начало приема заявок</span><span>Торги по банкротству</span>
+    </div>
+    """
+    lot = parse_listing_html(profile("fabrikant.ru"), html)[0]
+    assert lot.external_id == "fabrikant.ru:679967052"
+    assert lot.raw_data["procedure_number"] == "5593095"
+    assert lot.raw_data["lot_number"] == "2"
+    assert lot.start_price == 2_980_125
 
 
 def test_electro_torgi_procedure_card_is_split_without_using_procedure_total() -> None:

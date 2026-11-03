@@ -8,6 +8,68 @@ from bs4 import Tag
 from bankrotai.domain import NormalizedLot
 
 
+def parse_fabrikant_cards(profile, html: str | bytes, *, page: int) -> list[NormalizedLot]:
+    """Parse Next-rendered sale cards by stable lot id, not procedure slug."""
+    from bankrotai.connectors.etp_sources.common import (
+        SourceAccessError, _CADASTRAL_RE, _category, _clean,
+        _parse_soup, _safe_provider_url, _status,
+    )
+
+    soup = _parse_soup(html)
+    property_words = re.compile(
+        r"недвижим|земельн|участок|квартир|комнат|помещен|здани|гараж|кадастров", re.I
+    )
+    result: list[NormalizedLot] = []
+    seen: set[str] = set()
+    for card in soup.select("div[data-id]"):
+        lot_id = str(card.get("data-id") or "")
+        if not lot_id.isdigit() or lot_id in seen:
+            continue
+        text = _clean(card.get_text(" ", strip=True))
+        identity = re.search(r"№\s*(\d{3,12})-(\d{1,5})\b", text)
+        if not identity or not property_words.search(text):
+            continue
+        href = next((urljoin(profile.listing_url, str(a.get("href") or ""))
+                     for a in card.select("a[href]") if "/procedure/view/" in str(a.get("href"))), "")
+        try:
+            _safe_provider_url(profile, href)
+        except SourceAccessError:
+            continue
+        title_node = next((a for a in card.select("a[href]")
+                           if "/procedure/view/" in str(a.get("href"))), None)
+        title = _clean(title_node.get_text(" ", strip=True)) if title_node else text
+        if len(title) < 8:
+            continue
+        price = None
+        for value in card.stripped_strings:
+            amount = re.fullmatch(
+                r"\s*(\d[\d\s\u00a0]*)(?:[,.](\d{1,2}))?\s*(?:RUB|₽|руб\.?)\s*",
+                value, re.I,
+            )
+            if amount:
+                price = float(
+                    re.sub(r"[\s\u00a0]", "", amount.group(1))
+                    + ("." + amount.group(2) if amount.group(2) else "")
+                )
+                break
+        seen.add(lot_id)
+        cadastre = _CADASTRAL_RE.search(title)
+        result.append(NormalizedLot(
+            external_id=f"{profile.source_id}:{lot_id}", source="fabrikant",
+            source_system=profile.source_id, title=title[:500], description=text[:5000],
+            category=_category(title), region_slug=None, region_name=None, address=None,
+            cadastral_number=cadastre.group(1) if cadastre else None, vin=None, area=None,
+            start_price=price, current_price=None, auction_status=_status(text),
+            lot_url=href, source_url=href, detail_level="search", raw_data={
+                "listing_page": page, "procedure_number": identity.group(1),
+                "lot_number": identity.group(2), "provider_lot_id": lot_id,
+                "per_lot_detail_verified": False, "complete_source_inventory": False,
+                "safe_for_archival": False, "reconcile_missing": False,
+            }, platform_name=profile.platform_name, platform_code=profile.platform_code,
+        ))
+    return result
+
+
 def parse_sistematorg_procedure_lots(profile, html: str | bytes, *, page: int) -> list[NormalizedLot]:
     """Keep procedure identity separate from each numbered property lot."""
     from bankrotai.connectors.etp_sources.common import (

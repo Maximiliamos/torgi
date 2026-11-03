@@ -23,8 +23,23 @@ try:
 except ImportError as exc:
     raise SystemExit("Install playwright: python -m pip install playwright && python -m playwright install chromium") from exc
 
-from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
-from dataclasses import replace
+from dataclasses import dataclass, replace
+
+try:
+    from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
+except ModuleNotFoundError:
+    @dataclass(frozen=True, slots=True)
+    class StandaloneProfile:
+        source_id: str
+        name: str
+        catalogue_url: str
+        strategy: str = "capture"
+        note: str = ""
+
+    profile_path = Path(__file__).with_name("etp_capture_profiles.json")
+    PROFILES = tuple(StandaloneProfile(**item) for item in json.loads(
+        profile_path.read_text(encoding="utf-8")
+    ))
 
 # Browser-confirmed catalogue hosts can differ from the corporate root domain.
 START_OVERRIDES = {
@@ -77,6 +92,8 @@ def public_url(url: str, host: str) -> bool:
 
 def is_site_url(url: str, source: str, host: str) -> bool:
     if public_url(url, host):
+        return True
+    if source == "fabrikant.ru" and public_url(url, "fabrikant.ru"):
         return True
     return source == "sberbank-ast.ru" and public_url(url, SBER_DETAIL_HOST)
 
@@ -302,7 +319,8 @@ def attempt_last_page(page, before: set[str], source: str, host: str, events: li
     """Click only a paginator's explicit last/highest-page control."""
     selectors = [
         "nav[aria-label*='pagination' i] a", ".pagination a", ".pager a",
-        "td.pager a", "button[aria-label*='last' i]", "a[aria-label*='last' i]",
+        "[class*='pagination'] a", "[class*='paging'] a", "td.pager a",
+        "button[aria-label*='last' i]", "a[aria-label*='last' i]",
         "button[title*='послед' i]", "a[title*='послед' i]",
     ]
     candidates = []

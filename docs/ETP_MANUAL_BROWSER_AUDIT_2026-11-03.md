@@ -57,3 +57,18 @@ RTS API/pagination, Electro page 2/last/detail, Fabrikant/Aukcioncenter/AUSIB
 multi-lot detail, Roseltorg load-more, Alfalot current, Sberbank last page и
 uTender TLS. После этого — повторные fixtures/tests, затем два read-only полных
 прохода. Лишь после совпадения счётчиков разрешать import → GEO → map.
+
+## Постоянный двухкомпьютерный контур
+
+- ПК №1: разработка, GitHub и тесты с VPN; production остаётся только здесь.
+- ПК №2: без VPN, только Python + Playwright Chromium и read-only collector.
+- Обмен выполняется ZIP-файлами напрямую через AnyDesk. В пакет не входят
+  `.env`, PostgreSQL, Docker, SSH/API-ключи или production-конфигурация.
+- Фазы приёмки: `pilot` (M-ETS, CDTRF, RTS) → `problem` (9 площадок) → `all`.
+- Каждый источник принимается только при доказанных page 1/page 2/last,
+  индивидуальном detail, стабильном lot ID, цене/статусе и двух совпавших
+  полных read-only проходах. Unit-тест сам по себе приёмкой не является.
+
+Пакет узла создаётся `scripts/build-etp-audit-node-package.ps1`, автономный
+запуск на ПК №2 выполняет `scripts/run-etp-audit-node.ps1`. Результаты и логи
+сохраняются в `C:\ETP_AUDIT`, без обращения к production DB/GEO/map.

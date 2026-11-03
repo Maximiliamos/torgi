@@ -63,7 +63,10 @@ class EtpSourceProfile:
 
 
 _SPACE_RE = re.compile(r"\s+")
-_MONEY_RE = re.compile(r"(?<!\d)(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:\.|лей)?)", re.IGNORECASE)
+_MONEY_RE = re.compile(
+    r"(?<!\d)(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|RUB|руб(?:\.|лей)?)",
+    re.IGNORECASE,
+)
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.IGNORECASE)
@@ -294,8 +297,11 @@ def _parse_multi_lot_catalogue(
         "aukcioncenter.ru", "ausib.ru", "fabrikant.ru", "electro-torgi.ru",
     }:
         from bankrotai.connectors.etp_sources.procedure_cards import (
+            parse_fabrikant_cards,
             parse_procedure_card_lots,
         )
+        if profile.source_id == "fabrikant.ru":
+            return parse_fabrikant_cards(profile, html, page=page)
         return parse_procedure_card_lots(profile, html, page=page)
     if profile.source_id == "sistematorg.com":
         from bankrotai.connectors.etp_sources.procedure_cards import (
@@ -492,11 +498,19 @@ def parse_detail_html(
             raise SourceSchemaError(
                 "sistematorg.com: cannot attribute a trade-level price to an individual lot"
             )
-    if profile.source_id == "ausib.ru":
+    if profile.source_id in {"ausib.ru", "aukcioncenter.ru"}:
         lot_tables = soup.select("table[id^=lotNumber]")
-        if len(lot_tables) != 1:
+        selected_table = None
+        if external_id:
+            lot_number = external_id.rpartition(":")[2]
+            if lot_number.isdigit():
+                selected_table = soup.select_one(f"table#lotNumber{lot_number}")
+        if selected_table is not None:
+            soup = BeautifulSoup(str(selected_table), "html.parser")
+            text_value = _clean(soup.get_text(" ", strip=True))
+        elif len(lot_tables) != 1:
             raise SourceSchemaError(
-                "ausib.ru: procedure detail does not prove exactly one independently identified lot"
+                f"{profile.source_id}: procedure detail does not isolate exactly one requested lot"
             )
     match = profile.lot_url_re.search(detail_url)
     if external_id is None:
@@ -843,8 +857,8 @@ class HtmlEtpConnector(AuctionConnector):
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
         if self.source_id in {
-            "nistp.ru", "vertrades.ru", "sistematorg.com", "aukcioncenter.ru",
-            "ausib.ru", "fabrikant.ru", "electro-torgi.ru",
+            "nistp.ru", "vertrades.ru", "sistematorg.com", "fabrikant.ru",
+            "electro-torgi.ru",
         }:
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
@@ -853,6 +867,12 @@ class HtmlEtpConnector(AuctionConnector):
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
         identity = external_id.removeprefix(self.source_id + ":")
+        numbered_procedure = identity
+        if self.source_id in {"ausib.ru", "aukcioncenter.ru"}:
+            procedure_id, separator, lot_number = identity.rpartition(":")
+            if not separator or not procedure_id.isdigit() or not lot_number.isdigit():
+                raise SourceSchemaError(f"{self.source_id}: invalid procedure/lot identity")
+            numbered_procedure = procedure_id
         identity_path = identity
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
@@ -865,7 +885,7 @@ class HtmlEtpConnector(AuctionConnector):
         ):
             raise SourceSchemaError("etp-profit.ru: invalid kind/trade/lot identity")
         detail_url = template.format(
-            identity=identity,
+            identity=numbered_procedure,
             identity_path=identity_path,
             sale_type=sale_type if separator else "",
             lot_id=lot_id if separator else identity,
@@ -922,8 +942,8 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
     if profile.source_id in {
-        "nistp.ru", "vertrades.ru", "sistematorg.com", "aukcioncenter.ru",
-        "ausib.ru", "fabrikant.ru", "electro-torgi.ru",
+        "nistp.ru", "vertrades.ru", "sistematorg.com", "fabrikant.ru",
+        "electro-torgi.ru",
     }:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
