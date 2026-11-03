@@ -7,6 +7,11 @@ on:
         description: Exact deployed main SHA with a successful P1 audit
         required: true
         type: string
+      resume_after_import:
+        description: Reuse the already persisted import and run only GEO plus map publication
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -81,6 +86,7 @@ jobs:
           if (-not $found) { throw 'No fresh restore-verified PostgreSQL backup' }
 
       - name: Sequential non-reconciling import of every new ETP
+        if: ${{ !inputs.resume_after_import }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
