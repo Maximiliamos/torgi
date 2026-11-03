@@ -1648,9 +1648,7 @@ def _geocode_pending_lots_unlocked(
             status="running",
             progress={**result, "percent": percent},
         )
-    result["percent"] = 100.0
-    result["phase"] = "completed"
-    result["status"] = "completed"
+    result.update({"percent": 100.0, "phase": "completed", "status": "completed"})
     result["duration_seconds"] = round(time.monotonic() - started_at, 1)
     result["lots_per_second"] = round(result["processed"] / max(result["duration_seconds"], 0.001), 3)
     _set_progress_state(
