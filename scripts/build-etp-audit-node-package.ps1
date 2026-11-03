@@ -10,12 +10,17 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) `
             -Destination (Join-Path (Join-Path $stage 'scripts') $name)
     }
+    $wheelhouseSource = 'D:\BankrotAI\etp-audit-wheelhouse'
+    if (-not (Test-Path -LiteralPath $wheelhouseSource)) {
+        throw "Offline wheelhouse is missing: $wheelhouseSource"
+    }
+    Copy-Item -LiteralPath $wheelhouseSource -Destination (Join-Path $stage 'wheelhouse') -Recurse
     $readme = @'
 STERDEZ ETP AUDIT NODE
 
 Read-only collector only. It contains no production DB, server keys or secrets.
 
-First run (installs Playwright and its Chromium only):
+First run (installs Playwright from the bundled offline wheelhouse and uses installed Chrome/Edge/Yandex):
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-etp-audit-node.ps1 -Phase pilot -Bootstrap
 
 Later phases:

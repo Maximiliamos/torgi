@@ -499,6 +499,7 @@ def main() -> int:
     cli.add_argument("--max-details", type=int, default=2)
     cli.add_argument("--challenge-timeout", type=int, default=90)
     cli.add_argument("--headless", action="store_true")
+    cli.add_argument("--browser-executable", type=Path)
     args = cli.parse_args()
     if not 0 <= args.max_details <= 3 or not 30 <= args.challenge_timeout <= 180:
         cli.error("max-details must be 0..3 and challenge-timeout 30..180")
@@ -510,7 +511,12 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=False)
     outcomes = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless)
+        launch_options = {"headless": args.headless}
+        if args.browser_executable is not None:
+            if not args.browser_executable.is_file():
+                cli.error(f"browser executable not found: {args.browser_executable}")
+            launch_options["executable_path"] = str(args.browser_executable)
+        browser = p.chromium.launch(**launch_options)
         try:
             total_sources = len(selected)
             for source_index, source in enumerate(selected, 1):
