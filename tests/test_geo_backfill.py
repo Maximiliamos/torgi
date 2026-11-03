@@ -127,6 +127,7 @@ def test_geocode_pending_lots_persists_snapshot(monkeypatch) -> None:
 
     assert result["queued"] == result["processed"] == result["geocoded"] == 1
     assert result["failed"] == 0
+    assert result["status"] == "completed"
     assert result["percent"] == 100.0
     with scope() as session:
         snapshot = session.scalar(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot_id))

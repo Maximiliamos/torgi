@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
     [string]$ExpectedSha,
-    [string]$LogDirectory = 'D:\BankrotAI\etp-operator-logs'
+    [string]$LogDirectory = 'D:\BankrotAI\etp-operator-logs',
+    [switch]$ResumeAfterImport
 )
 
 $ErrorActionPreference = 'Stop'
@@ -176,17 +177,29 @@ try {
     Write-Host "P1: $($p1.url)"
     Wait-P1 -RunId ([long]$p1.databaseId)
 
-    $baseline = Get-LocalImportProgress
+    $baseline = if ($ResumeAfterImport) { $null } else { Get-LocalImportProgress }
     $baselineId = if ($null -ne $baseline) { [string]$baseline.run_id } else { '' }
     $campaignStarted = [datetime]::UtcNow
-    & gh.exe workflow run $campaignWorkflow --repo $repository --ref main `
-        -f "accepted_sha=$ExpectedSha"
+    $campaignArguments = @(
+        'workflow','run',$campaignWorkflow,'--repo',$repository,'--ref','main',
+        '-f',"accepted_sha=$ExpectedSha"
+    )
+    if ($ResumeAfterImport) {
+        $campaignArguments += @('-f','resume_after_import=true')
+        Write-Host '[ 15%] Reusing the persisted all-ETP import; starting GEO and map publication.'
+    }
+    & gh.exe @campaignArguments
     if ($LASTEXITCODE -ne 0) { throw 'Could not dispatch all-ETP campaign' }
     $campaign = Find-NewRun -Workflow $campaignWorkflow -StartedUtc $campaignStarted -Sha $ExpectedSha
     Write-Host "All-ETP campaign: $($campaign.url)"
     Wait-Campaign -RunId ([long]$campaign.databaseId) -BaselineImportRunId $baselineId
 
-    Write-Host '[100%] SUCCESS: all reviewed ETPs imported, geocoded and published.' -ForegroundColor Green
+    $successText = if ($ResumeAfterImport) {
+        'persisted all-ETP import geocoded and published'
+    } else {
+        'all reviewed ETPs imported, geocoded and published'
+    }
+    Write-Host "[100%] SUCCESS: $successText." -ForegroundColor Green
     Write-Host 'Map: https://sterdez.online/map'
     Write-Host "Full log: $logPath"
 } catch {

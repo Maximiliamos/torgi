@@ -36,6 +36,18 @@ def test_no_vpn_operator_runs_full_campaign_with_progress_and_log():
     assert "accepted_sha=$ExpectedSha" in script
 
 
+def test_all_source_campaign_can_resume_at_geo_without_reimporting():
+    workflow = Path(".github/workflows/etp-all-new-sources-import-geo-map.yml").read_text(
+        encoding="utf-8"
+    )
+    script = Path("scripts/run-all-etp-no-vpn-map.ps1").read_text(encoding="utf-8")
+
+    assert "resume_after_import:" in workflow
+    assert "if: ${{ !inputs.resume_after_import }}" in workflow
+    assert "[switch]$ResumeAfterImport" in script
+    assert "resume_after_import=true" in script
+
+
 def test_all_source_specs_are_bounded_non_reconciling(monkeypatch):
     from bankrotai.services import etp_all_sources_campaign as campaign
     import bankrotai.connectors.registry.cdtrf_sync as cdtrf
