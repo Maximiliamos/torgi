@@ -532,10 +532,17 @@ def parse_detail_html(
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
 
-    headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
+    headings: list[str] = [
+        _clean(str(node.get_text(" ", strip=True))) for node in soup.select("h1, h2, h3")
+    ]
     labelled = extract_labelled_detail_fields(soup)
-    title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
-    title = labelled.title or max(title_candidates, key=len, default="")
+    title_candidates: list[str] = [
+        item for item in headings if len(item) >= 8 and "информац" not in item.lower()
+    ]
+    title = labelled.title or ""
+    for candidate in title_candidates:
+        if len(candidate) > len(title):
+            title = candidate
     if not title:
         title = _label_value(
             text_value,

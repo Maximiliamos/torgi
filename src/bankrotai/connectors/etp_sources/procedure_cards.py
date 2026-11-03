@@ -106,7 +106,7 @@ def parse_fabrikant_cards(profile, html: str | bytes, *, page: int) -> list[Norm
         )
         procedure = re.search(r'"procedureNumber":(\d+)', card)
         sequence = re.search(r'"sequenceNumber":(\d+)', card)
-        if not all((url_match, name_match, procedure, sequence)):
+        if url_match is None or name_match is None or procedure is None or sequence is None:
             continue
         try:
             title = json.loads('"' + name_match.group(1) + '"')
