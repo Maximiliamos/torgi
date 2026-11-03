@@ -674,6 +674,27 @@ def test_fabrikant_next_card_uses_stable_provider_lot_id() -> None:
     assert lot.start_price == 2_980_125
 
 
+def test_fabrikant_react_flight_card_uses_stable_provider_lot_id() -> None:
+    flight = (
+        '"data-id":679967052,'
+        '"children":"Ожидается начало приема заявок",'
+        '"url":"https://fabrikant.ru/v2/trades/procedure/view/6KtDsKIF2zfYwTnYd1XXDg",'
+        '"name":"Квартира 58,2 м2, кадастровый номер 21:01:000000:13293",'
+        '"lotId":679967052,"procedureNumber":5593095,"sequenceNumber":2,'
+        '"font-heading text-base font-bold","children":["2 980 125"'
+    )
+    html = f"<script>self.__next_f.push({json.dumps([1, flight], ensure_ascii=False)})</script>"
+
+    lot = parse_listing_html(profile("fabrikant.ru"), html)[0]
+
+    assert lot.external_id == "fabrikant.ru:679967052"
+    assert lot.raw_data["next_flight_evidence"] is True
+    assert lot.raw_data["procedure_number"] == "5593095"
+    assert lot.raw_data["lot_number"] == "2"
+    assert lot.start_price == 2_980_125
+    assert lot.auction_status == "scheduled"
+
+
 def test_electro_torgi_procedure_card_is_split_without_using_procedure_total() -> None:
     html = """
     <div class='trade-card'><a href='/oaof/43054'>43054-ОАОФ</a>
@@ -692,6 +713,40 @@ def test_electro_torgi_procedure_card_is_split_without_using_procedure_total() -
     assert all(lot.auction_status == "active" for lot in lots)
 
 
+def test_legacy_procedure_table_keeps_rows_isolated_and_infers_single_lot() -> None:
+    html = """
+    <div class='page-with-pagination'>
+      <table><tbody>
+        <tr onclick="window.location='/trade/view/purchase/general.html?id=104687084'">
+          <td>17326-OTPP</td>
+          <td>Земельный участок, кадастровый номер 66:12:5203007:170.</td>
+          <td>объявлены</td>
+        </tr>
+        <tr onclick="window.location='/trade/view/purchase/general.html?id=104684153'">
+          <td>17312-OAOF</td>
+          <td>Лот №1: Земельный участок, кадастровый номер 17:05:1702001:3050.
+              Лот №2: Квартира, кадастровый номер 17:18:0105048:2740.</td>
+          <td>идёт приём заявок</td>
+        </tr>
+      </tbody></table>
+      <a href='/etp/trade/list.html?page=2'>2</a>
+    </div>
+    """
+
+    lots = parse_listing_html(profile("ausib.ru"), html)
+
+    assert [lot.external_id for lot in lots] == [
+        "ausib.ru:104687084:1",
+        "ausib.ru:104684153:1",
+        "ausib.ru:104684153:2",
+    ]
+    assert [lot.cadastral_number for lot in lots] == [
+        "66:12:5203007:170",
+        "17:05:1702001:3050",
+        "17:18:0105048:2740",
+    ]
+
+
 def test_mets_card_uses_price_before_caption_not_later_deposit() -> None:
     html = """
     <a href='/243750-1' class='search-comp-item'>
@@ -703,6 +758,54 @@ def test_mets_card_uses_price_before_caption_not_later_deposit() -> None:
     """
     lot = parse_listing_html(profile("m-ets.ru"), html)[0]
     assert lot.start_price == 300_000_000
+
+
+def test_mets_link_card_does_not_mix_adjacent_card_price_or_lot_number() -> None:
+    html = """
+    <div class='search-comp-list card-result-grid'>
+      <a href='/243750-1' class='card--shadow search-comp-item'>
+        <div>243750-МЭТС, Лот №1</div>
+        <div class='price current'>300 000 000 ₽</div>
+        <div class='subtext'>Начальная цена</div>
+        <div>Жилой дом, кадастровый номер 50:08:0050435:1021.</div>
+      </a>
+      <a href='/243749-1' class='card--shadow search-comp-item'>
+        <div>243749-МЭТС, Лот №1</div>
+        <div class='price current'>1 479 500 ₽</div>
+        <div class='subtext'>Начальная цена</div>
+        <div>Земельный участок, кадастровый номер 65:01:0201003:71.</div>
+      </a>
+    </div>
+    """
+
+    lots = parse_listing_html(profile("m-ets.ru"), html)
+
+    assert [lot.start_price for lot in lots] == [300_000_000, 1_479_500]
+    assert [lot.cadastral_number for lot in lots] == [
+        "50:08:0050435:1021",
+        "65:01:0201003:71",
+    ]
+
+
+def test_centerr_ignores_editorial_news_link_that_looks_like_a_lot() -> None:
+    html = """
+    <div class='news-short'><div class='news-body'>
+      Новость об отеле с кадастровым номером 23:49:0302012:1938.
+      <a href='/public/public-offers/lots/view/1170257/'>Ссылка на торги</a>
+    </div></div>
+    <table class='gridTable'><tr class='gridRow'>
+      <td>1</td>
+      <td>Квартира, кадастровый номер 50:16:0502052:582.</td>
+      <td><a href='/public/auctions/lots/view/1171626/'>Открыть лот</a></td>
+    </tr></table>
+    """
+
+    lots = parse_listing_html(profile("centerr.ru"), html)
+
+    assert [lot.external_id for lot in lots] == ["centerr.ru:auctions-1171626"]
+    assert lots[0].cadastral_number == "50:16:0502052:582"
+
+
 def test_repeated_catalogue_response_on_second_page_fails_closed() -> None:
     page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
     session = FakeSession([

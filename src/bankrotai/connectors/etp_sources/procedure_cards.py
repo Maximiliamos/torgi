@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import urljoin
 
@@ -65,6 +66,81 @@ def parse_fabrikant_cards(profile, html: str | bytes, *, page: int) -> list[Norm
                 "lot_number": identity.group(2), "provider_lot_id": lot_id,
                 "per_lot_detail_verified": False, "complete_source_inventory": False,
                 "safe_for_archival": False, "reconcile_missing": False,
+            }, platform_name=profile.platform_name, platform_code=profile.platform_code,
+        ))
+    if result:
+        return result
+
+    # Next.js may return the cards only as public React Flight data rather
+    # than materialized HTML. Decode the JSON chunk strings, but never execute
+    # their JavaScript wrapper.
+    flight_parts: list[str] = []
+    for script in soup.select("script"):
+        payload = script.get_text("", strip=False)
+        if "self.__next_f.push(" not in payload:
+            continue
+        start = payload.find("(") + 1
+        end = payload.rfind(")")
+        if start <= 0 or end <= start:
+            continue
+        try:
+            decoded = json.loads(payload[start:end])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, list) and len(decoded) >= 2 and isinstance(decoded[1], str):
+            flight_parts.append(decoded[1])
+
+    flight = "\n".join(flight_parts)
+    markers = list(re.finditer(r'"data-id":(\d+)', flight))
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(flight)
+        card = flight[marker.start():end]
+        lot_id = marker.group(1)
+        if lot_id in seen or not re.search(rf'"lotId":{re.escape(lot_id)}\b', card):
+            continue
+        url_match = re.search(
+            r'"url":"(https://fabrikant\.ru/v2/trades/procedure/view/[^"?#]+)"', card
+        )
+        name_match = re.search(
+            r'"name":"((?:\\.|[^"\\])*)","lotId":' + re.escape(lot_id), card
+        )
+        procedure = re.search(r'"procedureNumber":(\d+)', card)
+        sequence = re.search(r'"sequenceNumber":(\d+)', card)
+        if not all((url_match, name_match, procedure, sequence)):
+            continue
+        try:
+            title = json.loads('"' + name_match.group(1) + '"')
+        except json.JSONDecodeError:
+            continue
+        if not property_words.search(title):
+            continue
+        href = url_match.group(1)
+        try:
+            _safe_provider_url(profile, href)
+        except SourceAccessError:
+            continue
+        price_match = re.search(
+            r'"font-heading text-base font-bold","children":\["([\d\s\u00a0]+)"', card
+        )
+        price = None
+        if price_match:
+            raw_price = re.sub(r"[\s\u00a0]", "", price_match.group(1))
+            if raw_price.isdigit():
+                price = float(raw_price)
+        seen.add(lot_id)
+        cadastre = _CADASTRAL_RE.search(title)
+        result.append(NormalizedLot(
+            external_id=f"{profile.source_id}:{lot_id}", source="fabrikant",
+            source_system=profile.source_id, title=title[:500], description=title[:5000],
+            category=_category(title), region_slug=None, region_name=None, address=None,
+            cadastral_number=cadastre.group(1) if cadastre else None, vin=None, area=None,
+            start_price=price, current_price=None, auction_status=_status(card),
+            lot_url=href, source_url=href, detail_level="search", raw_data={
+                "listing_page": page, "procedure_number": procedure.group(1),
+                "lot_number": sequence.group(1), "provider_lot_id": lot_id,
+                "next_flight_evidence": True, "per_lot_detail_verified": False,
+                "complete_source_inventory": False, "safe_for_archival": False,
+                "reconcile_missing": False,
             }, platform_name=profile.platform_name, platform_code=profile.platform_code,
         ))
     return result
@@ -157,8 +233,14 @@ def parse_procedure_card_lots(profile, html: str | bytes, *, page: int) -> list[
     )
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
-    containers: list[Tag] = list(soup.select("tr"))
-    containers.extend(node for node in soup.select("article, li, div") if node.find("a", href=True))
+    containers: list[Tag] = [
+        row for row in soup.select("tr")
+        if row.has_attr("onclick") or (row.find("a", href=True) and row.find("tr") is None)
+    ]
+    containers.extend(
+        node for node in soup.select("article, li, div")
+        if node.find("a", href=True) and node.find("tr") is None
+    )
     for container in containers:
         trusted = []
         raw_urls = [str(a.get("href") or "") for a in container.select("a[href]")]
@@ -176,17 +258,29 @@ def parse_procedure_card_lots(profile, html: str | bytes, *, page: int) -> list[
         if not trusted:
             continue
         text_value = _clean(container.get_text(" ", strip=True))
-        markers = list(marker_re.finditer(text_value))
-        if not markers:
-            continue
         href, match = trusted[0]
         procedure_identity = "-".join(part for part in match.groups() if part)
-        for index, marker in enumerate(markers):
-            end = markers[index + 1].start() if index + 1 < len(markers) else len(text_value)
-            segment = _clean(text_value[marker.end():end])
+        markers = list(marker_re.finditer(text_value))
+        if markers:
+            segments = [
+                (
+                    marker.group(1),
+                    _clean(text_value[
+                        marker.end():markers[index + 1].start()
+                        if index + 1 < len(markers) else len(text_value)
+                    ]),
+                )
+                for index, marker in enumerate(markers)
+            ]
+        else:
+            # Legacy table catalogues omit the explicit "Lot No. 1" marker
+            # for ordinary one-lot procedures.  The procedure URL plus the
+            # implicit first lot is still a stable per-lot identity.
+            segments = [("1", text_value)]
+        for lot_number, segment in segments:
             if not procedure_identity or len(segment) < 8 or not property_re.search(segment):
                 continue
-            external_id = f"{profile.source_id}:{procedure_identity}:{marker.group(1)}"
+            external_id = f"{profile.source_id}:{procedure_identity}:{lot_number}"
             if external_id in seen:
                 continue
             seen.add(external_id)
@@ -200,7 +294,7 @@ def parse_procedure_card_lots(profile, html: str | bytes, *, page: int) -> list[
                 auction_status=_status(text_value), lot_url=href, source_url=href,
                 detail_level="search", raw_data={
                     "listing_page": page, "procedure_identity": procedure_identity,
-                    "lot_number": marker.group(1), "trade_level_listing": True,
+                    "lot_number": lot_number, "trade_level_listing": True,
                     "individual_lot_identity_verified": True,
                     "per_lot_detail_verified": False, "complete_source_inventory": False,
                     "safe_for_archival": False, "reconcile_missing": False,

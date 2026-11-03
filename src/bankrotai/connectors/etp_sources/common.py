@@ -64,7 +64,7 @@ class EtpSourceProfile:
 
 _SPACE_RE = re.compile(r"\s+")
 _MONEY_RE = re.compile(
-    r"(?<!\d)(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|RUB|руб(?:\.|лей)?)",
+    r"(?<![\d№#])(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|RUB|руб(?:\.|лей)?)",
     re.IGNORECASE,
 )
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
@@ -212,7 +212,8 @@ def _status(value: str) -> str:
         return "closed"
     if any(word in lowered for word in (
         "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
-        "извещени", "торги назначен"
+        "извещени", "торги назначен", "ожидается начало приема заявок",
+        "ожидается начало приёма заявок",
     )):
         return "scheduled"
     if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
@@ -252,6 +253,12 @@ def _external_id(profile: EtpSourceProfile, href: str, match: re.Match[str]) -> 
 
 
 def _container(anchor: Tag) -> Tag:
+    # M-ETS makes the lot link the card itself.  Walking to a class-matching
+    # ancestor in that layout selects the whole result grid and mixes prices,
+    # titles and lot numbers from adjacent cards.
+    anchor_classes = {str(value).lower() for value in anchor.get("class", [])}
+    if "search-comp-item" in anchor_classes:
+        return anchor
     for name in ("tr", "article", "li"):
         parent = anchor.find_parent(name)
         if parent is not None:
@@ -372,6 +379,13 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     soup = _parse_soup(html)
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
+        # CenterR embeds links to selected auctions in its news sidebar using
+        # the same URL shape as catalogue lots.  Those are editorial promos,
+        # not rows of the paginated source inventory.
+        if profile.source_id == "centerr.ru" and anchor.find_parent(
+            class_=re.compile(r"\bnews-(?:short|body)\b", re.I)
+        ) is not None:
+            continue
         href = urljoin(profile.listing_url, str(anchor.get("href") or "").strip())
         try:
             _safe_provider_url(profile, href)
