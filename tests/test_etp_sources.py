@@ -27,7 +27,6 @@ def profile(source_id: str):
         ("m-ets.ru", "https://m-ets.ru/243003-1", "Жилой дом 78 кв.м., кадастровый номер 50:01:001:123, 4 500 000 руб."),
         ("arbbitlot.ru", "https://torgi.arbbitlot.ru/public/auctions/lots/view/44914/", "Автомобиль LADA GRANTA, VIN XTA219110GY223704, 350 000 руб."),
         ("zakazrf.ru", "https://bankrot.zakazrf.ru/public/public-offers/lots/view/18797/", "Стояночное место 12,5 кв. м, кадастровый номер 16:50:010326:323"),
-        ("fabrikant.ru", "https://fabrikant.ru/v2/trades/procedure/view/RoEMbNetsW8SvO2KLb7GQA", "Земельный участок 1 050 кв. м, 900 000 руб."),
     ],
 )
 def test_profile_parser_extracts_stable_identity_and_fields(source_id: str, href: str, title: str) -> None:
@@ -146,12 +145,12 @@ def test_ausib_onclick_listing_and_single_lot_detail_are_enriched() -> None:
     listing = """
     <table><tr onclick="window.location='/trade/view/purchase/general.html?id=104685887'">
       <td>17320-ОТПП</td><td>Управляющий</td>
-      <td>Нежилое помещение 27.8 кв.м., 27:23:0050709:453</td>
+      <td>Лот № 1: Нежилое помещение 27.8 кв.м., 27:23:0050709:453</td>
       <td>объявлены</td><td>03.11.2026 07:00</td>
     </tr></table><a href="?page=2">2</a>
     """
     item = parse_listing_html(profile("ausib.ru"), listing)[0]
-    assert item.external_id == "ausib.ru:104685887"
+    assert item.external_id == "ausib.ru:104685887:1"
     detail = """
     <html><body><table id="lotNumber1"><tr><td>Предмет торгов</td>
     <td>Нежилое помещение 27.8 кв.м., 27:23:0050709:453</td></tr>
@@ -305,6 +304,27 @@ def test_table_start_price_without_currency_uses_verified_header(source_id: str,
     assert lot.current_price is None
 
 
+def test_detail_label_value_cells_provide_price_address_and_status() -> None:
+    html = """
+    <html><body><table>
+      <tr><td class="tdTitle">Наименование:</td><td class="tdContent">
+        Квартира по адресу: г. Москва, ул. Лесная, д. 5, кв. 2,
+        кадастровый номер: 77:01:0001001:1234
+      </td><td class="tdTitle">Статус:</td><td class="tdContent">Извещение опубликовано</td></tr>
+      <tr><td></td><td></td><td class="tdTitle">Начальная цена, руб.:</td>
+      <td class="tdContent">6 651 000,00</td></tr>
+    </table>Подробные открытые сведения о продаже имущества и условиях участия.</body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"), html,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/224/",
+    )
+    assert lot.title.startswith("Квартира по адресу")
+    assert lot.address == "г. Москва, ул. Лесная, д. 5, кв. 2"
+    assert lot.start_price == 6_651_000
+    assert lot.auction_status == "scheduled"
+
+
 def test_unlabelled_amount_does_not_become_price_without_a_table_header() -> None:
     html = """
     <table><tr><td>Лот</td><td>Стоимость</td></tr>
@@ -398,6 +418,23 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
     assert parse_sberbank_json(
         profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": rubles}]}, page=1
     )[0].start_price == 900000
+
+
+def test_sberbank_uses_precise_geo_address_and_published_status() -> None:
+    from bankrotai.connectors.etp_sources import parse_sberbank_json
+
+    payload = {"PurchaseList": [{"_source": {
+        "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/7/0/0/56230",
+        "title": "Квартира с кадастровым номером 23:01:0101001:12",
+        "purchAmountRUB": "4792752.96",
+        "PurchaseStageTerm": "Опубликована",
+        "Address": "Краснодарский край",
+        "GeoDataAddress": "Краснодарский край, г. Лабинск, ул. Пархоменко, д. 1",
+    }}]}
+    lot = parse_sberbank_json(profile("sberbank-ast.ru"), payload, page=1)[0]
+    assert lot.address == "Краснодарский край, г. Лабинск, ул. Пархоменко, д. 1"
+    assert lot.auction_status == "scheduled"
+    assert lot.start_price == 4_792_752.96
 
 
 def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
@@ -592,6 +629,67 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
         detail_url="https://sistematorg.com/trade_view.php?trade_nid=19433",
     )
     assert lot.start_price == 900_000
+
+
+@pytest.mark.parametrize(
+    ("source_id", "href", "prefix"),
+    [
+        ("aukcioncenter.ru", "/trade/view/purchase/general.html?id=5512", "5512"),
+        ("ausib.ru", "/trade/view/purchase/general.html?id=17312", "17312"),
+        (
+            "fabrikant.ru",
+            "/v2/trades/procedure/view/RoEMbNetsW8SvO2KLb7GQA",
+            "RoEMbNetsW8SvO2KLb7GQA",
+        ),
+    ],
+)
+def test_procedure_cards_preserve_each_property_lot_identity(
+    source_id: str, href: str, prefix: str,
+) -> None:
+    html = f"""
+    <table><tr><td><a href='{href}'>Торги</a></td><td>
+      Лот № 1: Земельный участок 76:12:0000123:456. Начальная цена 900 000 руб.
+      Лот № 2: Автомобиль BMW. Начальная цена 700 000 руб.
+      Лот № 3: Квартира 77:01:0001010:1234. Начальная цена 5 200 000 руб.
+    </td></tr></table>
+    """
+    lots = parse_listing_html(profile(source_id), html)
+    assert [lot.external_id for lot in lots] == [
+        f"{source_id}:{prefix}:1", f"{source_id}:{prefix}:3",
+    ]
+    assert [lot.start_price for lot in lots] == [900_000, 5_200_000]
+    assert all(lot.raw_data["per_lot_detail_verified"] is False for lot in lots)
+
+
+def test_electro_torgi_procedure_card_is_split_without_using_procedure_total() -> None:
+    html = """
+    <div class='trade-card'><a href='/oaof/43054'>43054-ОАОФ</a>
+      Идет прием заявок.
+      Лот 1: Гараж, кадастровый номер 50:56:0000000:4317.
+      Лот 2: Квартира, кадастровый номер 50:12:0100803:6769.
+      2 лота на сумму 11 446 000.00 ₽
+    </div>
+    """
+    lots = parse_listing_html(profile("electro-torgi.ru"), html)
+    assert [lot.external_id for lot in lots] == [
+        "electro-torgi.ru:oaof-43054:1",
+        "electro-torgi.ru:oaof-43054:2",
+    ]
+    assert all(lot.start_price is None for lot in lots)
+    assert all(lot.auction_status == "active" for lot in lots)
+
+
+def test_mets_card_uses_price_before_caption_not_later_deposit() -> None:
+    html = """
+    <a href='/243750-1' class='search-comp-item'>
+      <div class='cost'><span>300 000 000</span><span> ₽</span></div>
+      <div class='title'>Начальная цена</div>
+      <div>Жилой дом, кадастровый номер 50:08:0050435:1021.</div>
+      <div>Размер задатка 15 000 000 ₽</div>
+    </a>
+    """
+    lot = parse_listing_html(profile("m-ets.ru"), html)[0]
+    assert lot.start_price == 300_000_000
 def test_repeated_catalogue_response_on_second_page_fails_closed() -> None:
     page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
     session = FakeSession([

@@ -1,6 +1,9 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
-> **Актуальный статус на 02.11.2026:** см.
+> **Актуальный parser-аудит на 03.11.2026:** см.
+> [`ETP_MANUAL_BROWSER_AUDIT_2026-11-03.md`](ETP_MANUAL_BROWSER_AUDIT_2026-11-03.md).
+> Все 22 страницы проверены вручную; общий write-run пока запрещён из-за
+> неподтверждённых terminal-page/multi-lot контрактов. Предыдущий production-срез:
 > [`ETP_ROLLOUT_STATUS_2026-11-02.md`](ETP_ROLLOUT_STATUS_2026-11-02.md).
 > Текущий этап — **R7-CDTRF production completion and acceptance**. Новый код
 > развернут, exact-SHA P1/Public WEB/functional зелёные, но повторный полный
