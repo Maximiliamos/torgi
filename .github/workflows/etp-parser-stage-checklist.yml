@@ -61,8 +61,22 @@ jobs:
             throw 'ETP diagnostic violated read-only or coverage contract'
           }
           $report | ConvertTo-Json -Depth 9 | Set-Content -LiteralPath $json -Encoding utf8
-          $failed = @($report.sources | Where-Object { $null -ne $_.first_failure }).Count
-          Write-Output ("ETP stage diagnostics: {0} sources, {1} reported failures/blocks" -f $report.sources_checked,$failed)
+          $problemSources = @($report.sources | Where-Object { $null -ne $_.first_failure })
+          Write-Output ("ETP stage diagnostics: {0} sources, {1} reported failures/blocks" -f $report.sources_checked,$problemSources.Count)
+          foreach ($source in $report.sources) {
+            $failure = $source.first_failure
+            if ($null -eq $failure) {
+              Write-Output ("ETP PASS SAMPLE: {0}; pages={1}; lots={2}; full coverage NOT proven" -f $source.source,$source.pages_checked,$source.sample_lots)
+              continue
+            }
+            $stage = [string]$failure.stage
+            $category = [string]$failure.category
+            $page = if ($null -ne $failure.page) { [string]$failure.page } else { "unknown" }
+            Write-Output ("ETP DIAGNOSIS: {0}; stage={1}; category={2}; page={3}; pages_checked={4}; sample_lots={5}" -f $source.source,$stage,$category,$page,$source.pages_checked,$source.sample_lots)
+          }
+          if ($problemSources.Count -gt 0) {
+            Write-Warning ("ETP checklist reports {0} failed/blocked sources; this workflow succeeded only as a diagnostic execution, NOT as source health acceptance." -f $problemSources.Count)
+          }
 
       - name: Upload sanitized per-source stage report and log
         if: always()

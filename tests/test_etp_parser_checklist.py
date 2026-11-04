@@ -126,3 +126,22 @@ def test_fast_source_is_bounded_without_terminal_requirement():
     assert fast.max_batches == 1
     assert fast.require_source_end is False
     assert fast.reconcile_missing is False
+
+
+def test_diagnose_all_progress_includes_per_stage_state(monkeypatch, capsys):
+    monkeypatch.setattr(
+        checklist, "_connector",
+        lambda source: (FakeConnector(source, broken_second=True), object()),
+    )
+    result = asyncio.run(checklist.diagnose_all(
+        ("etpu.ru",), max_pages=2, detail_probes=0, pause_seconds=1.0,
+    ))
+    import json
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    progress = json.loads(line)
+    assert progress["source"] == "etpu.ru"
+    assert progress["failure"]["stage"] == "pagination_next"
+    assert progress["stage_states"]["pagination_next"] == checklist.FAIL
+    assert progress["pages_checked"] == 1
+    assert progress["sample_lots"] == 1
+    assert result["database_writes"] == result["map_writes"] == 0

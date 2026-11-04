@@ -1,0 +1,47 @@
+# ETP parser-stage diagnostic snapshot — 2026-11-05
+
+Source: trusted self-hosted Home runner, [ETP stage checklist run 41915045518](https://github.com/Maximiliamos/torgi/actions/runs/41915045518), artifact `etp-parser-stage-checklist`, timestamp 2026-11-04T21:23 UTC (2026-11-05 00:23 MSK). This is a **two-page / one-detail read-only sample**, not a complete catalogue audit or an ingestion acceptance certificate.
+
+The workflow itself succeeded but **22 of 22 sources reported a first failure/block**. It wrote **zero** production DB records, **zero** map records and archived **zero** lots. Counts below are observed catalogue candidates in the bounded sample; **not saved lots**.
+
+| Source | Pages inspected | Candidate lots | First failure/block | Individual detail stage |
+|---|---:|---:|---|---|
+| m-ets.ru | 2 | 40 | auction_status: unknown_status_in_sample | PASS |
+| cdtrf.ru | 0 | 0 | catalogue_markup: source_schema_or_page_contract, page 1 | NOT_TESTED |
+| nistp.ru | 1 | 33 | pagination_next: source_schema_or_page_contract, page 2 | NOT_TESTED |
+| alfalot.ru | 1 | 2 | auction_status: unknown_status_in_sample | PASS |
+| roseltorg.ru | 0 | 0 | transport: ConnectionError, page 1 | NOT_TESTED |
+| sberbank-ast.ru | 2 | 42 | auction_status: unknown_status_in_sample | PASS |
+| fabrikant.ru | 1 | 9 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| arbbitlot.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| etpu.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| sistematorg.com | 2 | 16 | initial_or_current_price: missing_individual_prices_in_sample | BLOCKED |
+| centerr.ru | 2 | 21 | stable_lot_ids: missing_duplicate_or_wrong_source_id, page 2 | NOT_TESTED |
+| aukcioncenter.ru | 2 | 30 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| vertrades.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | BLOCKED |
+| rus-on.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| zakazrf.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| utpl.ru | 2 | 40 | initial_or_current_price: missing_individual_prices_in_sample | PASS |
+| rts-tender.ru | 0 | 0 | transport: profile_explicitly_blocked | NOT_TESTED |
+| etp-profit.ru | 0 | 0 | transport: tls_certificate_validation, page 1 | NOT_TESTED |
+| ausib.ru | 0 | 0 | transport: provider_access_or_http, page 1 | NOT_TESTED |
+| utender.ru | 0 | 0 | transport: profile_explicitly_blocked | NOT_TESTED |
+| electro-torgi.ru | 0 | 0 | transport: profile_explicitly_blocked | NOT_TESTED |
+| lot-online.ru | 2 | 160 | individual_detail: ConnectorCapabilityError, page 1 | FAIL |
+
+## Interpretation and priorities
+
+1. **P1 data integrity**: `centerr.ru` repeated or incorrect IDs across pages; `nistp.ru` page-2 schema; `cdtrf.ru` changed catalogue contract. Reject any partial full-scan completion or bulk archiving.
+2. **P1 data completeness**: prices and statuses absent from sampled listing records on many sites. A `PASS` detail stage represents just a bounded detail attempt; it **does not** certify individual lot price, status, or source-wide correctness.
+3. **P1 transport**: Roseltorg connection, Profit TLS, AUSIB HTTP/redirect, RTS/uTender/Electro-torgi explicit profile block; do not bypass access controls or TLS verification.
+4. **P1 Lot-online**: catalogue reads 160 items in sample but the generic diagnostic's `fetch_lot` capability is unsupported. This may be a diagnostic interface limitation rather than a regression in the working production Lot-online connector.
+5. **P1 CDTRF separate five-page canary**: [run 41915045547](https://github.com/Maximiliamos/torgi/actions/runs/41915045547) failed with `CdtrfCanaryError: No property candidates; refusing misleading ETP page`.
+6. **P1 Torgi Russia**: [recovery run 41907348778](https://github.com/Maximiliamos/torgi/actions/runs/41907348778) recorded circuit `half_open -> closed` after a real regional probe and queued a targeted fast retry; **this does not prove that the queued retry completed or that fresh lots were saved**.
+
+## Acceptance boundaries
+
+Status `PASS` in a two-page sample is only evidence for the checked stage. For production, verify true terminal page, unique lot identity, independently checked detail fields, two complete comparable scans, authorized non-archiving staged import, post-import PostgreSQL/GEO/map validation, and two successful scheduled runs. The automatic allowlist stays closed for unaccepted new ETP sources.
+
+## Observability fixes
+
+[PR #1089](https://github.com/Maximiliamos/torgi/pull/1089) extends durable Home logs to print sanitized per-source stage states, pages/candidate counts and the first failing stage, plus an explicit warning that a green workflow is *not* a green parser. This document is a one-time ground-truth snapshot and must not be treated as live status; the workflow artifact/API is the current data source.
