@@ -88,3 +88,16 @@ def test_recovery_is_registered_as_periodic_maintenance_not_second_full_cron():
     full = schedule["refresh-nationwide-sources-full"]
     assert full["schedule"].hour == {6, 18}
     assert full["schedule"].minute == {0}
+
+
+def test_catchup_does_not_compete_with_imminent_2100_regular_full():
+    calls = []
+    result = decide_missed_full_run(
+        now=datetime(2026, 11, 4, 17, 30, tzinfo=timezone.utc),
+        has_full_run_after=lambda _: False,
+        enabled_source_count=2,
+        schedule=lambda: calls.append(1),
+    )
+    assert result["status"] == "deferred"
+    assert result["reason"] == "next_regular_window_imminent"
+    assert calls == []
