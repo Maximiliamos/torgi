@@ -118,6 +118,27 @@ def test_cdtrf_catalogue_trade_id_is_not_mistaken_for_verified_lot_id():
     }]
 
 
+def test_rts_live_grid_uses_trade_and_lot_uuids_and_card_price():
+    profile = PROFILE_BY_ID["rts-tender.ru"]
+    html = """
+    <table><tr><td>приём заявок публичное предложение
+      <a href="/v2/trades/7326c642-9dc3-48df-b700-07483158bc4e/lots/aa3ed245-465f-4dfd-8759-f5aeafb3dd3a">Лот 1</a>
+      <a id="lotDescription_21000016080000004071_1"
+         href="/v2/trades/7326c642-9dc3-48df-b700-07483158bc4e/lots/aa3ed245-465f-4dfd-8759-f5aeafb3dd3a">Нежилое помещение, кадастровый номер 43:22:310229:364</a>
+      ОКОНЧАНИЕ ПРИЁМА ЗАЯВОК 30.11.2026 18:00 МСК 266 000,00 ₽
+      ЗАДАТОК 26 600,00 ₽
+    </td></tr></table>
+    """
+    rows = parse_catalogue(profile, html)
+    assert len(rows) == 1
+    assert rows[0]["external_id"] == (
+        "rts-tender.ru:7326c642-9dc3-48df-b700-07483158bc4e:"
+        "aa3ed245-465f-4dfd-8759-f5aeafb3dd3a"
+    )
+    assert rows[0]["listing_price_rub"] == 266000.0
+    assert rows[0]["title"].startswith("Нежилое помещение")
+
+
 def test_trade_table_is_split_by_lot_and_not_registered_as_auction_asset():
     p = PROFILE_BY_ID["nistp.ru"]
     rows = parse_catalogue(p, MULTI)
