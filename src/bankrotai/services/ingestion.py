@@ -91,6 +91,7 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
+    from bankrotai.services.etp_twice_daily import accepted_etp_source_specs
     return (
         SourceSyncSpec(
             "torgi.gov.ru",
@@ -119,21 +120,18 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
                 page_size=96,
             ),
         ),
-        SourceSyncSpec(
-            "torgi-russia.ru",
-            TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
-        ),
-        SourceSyncSpec(
-            "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
-        ),
-    )
+        SourceSyncSpec("torgi-russia.ru", TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1)),
+        SourceSyncSpec("bidexpert.ru", BidExpertSearchFilters(category="all", page=1)),
+    ) + accepted_etp_source_specs()
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
     specs = []
+    from bankrotai.services.etp_twice_daily import ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
     for spec in default_source_specs():
+        if spec.source_id in ACCEPTED_ETP_FOR_AUTOMATIC_INGEST:
+            continue
         filters = spec.filters
         if spec.source_id == "torgi.gov.ru":
             filters = replace(filters, publish_date_from=gis_publish_date_from)
