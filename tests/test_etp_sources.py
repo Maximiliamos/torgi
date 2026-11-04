@@ -280,7 +280,7 @@ class FakeSession:
         self.response = response
         self.headers: dict[str, str] = {}
         self.requested_urls: list[str] = []
-        self.get_params: list[dict[str, str] | None] = []
+        self.get_params: list[list[tuple[str, str]] | None] = []
         self.posts: list[tuple[str, dict[str, str]]] = []
 
     def _next(self):
@@ -640,6 +640,9 @@ def test_nistp_real_get_form_pagination_preserves_filters_and_page_number() -> N
       <input type='hidden' name='pagenum' value='1'>
       <input type='hidden' name='view_type' value='trade'>
       <input name='lot_description' value='land'>
+      <input type='checkbox' name='trade_state[]' value='active' checked>
+      <input type='checkbox' name='trade_state[]' value='closed' checked>
+      <input type='checkbox' name='trade_state[]' value='hidden'>
       <a onclick='pagenum_send(2)'>2</a>
     </form>
     """
@@ -653,9 +656,13 @@ def test_nistp_real_get_form_pagination_preserves_filters_and_page_number() -> N
     assert page.items[0].external_id == "nistp.ru:601501"
     assert session.posts == []
     assert session.get_params[0] is None
-    assert session.get_params[1] == {
-        "pagenum": "2", "view_type": "trade", "lot_description": "land",
-    }
+    assert session.get_params[1] == [
+        ("pagenum", "2"),
+        ("view_type", "trade"),
+        ("lot_description", "land"),
+        ("trade_state[]", "active"),
+        ("trade_state[]", "closed"),
+    ]
     assert session.requested_urls[1] == "https://nistp.ru/bankrot/trade_list.php"
 
 
