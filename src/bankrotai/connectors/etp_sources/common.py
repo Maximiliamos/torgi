@@ -438,6 +438,12 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     soup = _parse_soup(html)
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
+        # CenterR publishes promotional lot links in its news sidebar on
+        # every page. They are not entries of the paginated lot catalogue.
+        if profile.source_id == "centerr.ru" and anchor.find_parent(
+            class_=re.compile(r"\bnews-(?:short|body)\b", re.I)
+        ) is not None:
+            continue
         href = urljoin(profile.listing_url, str(anchor.get("href") or "").strip())
         try:
             _safe_provider_url(profile, href)
@@ -837,6 +843,33 @@ class HtmlEtpConnector(AuctionConnector):
                 self.profile,
                 urljoin(previous.url or self.profile.listing_url, str(form.get("action") or "")),
             )
+            # NISTP's public nodesearch form uses GET for pagination.
+            # Honour the actual HTML form method, retaining every checked
+            # filter and repeated input name. POST can return a plausible
+            # page-1 document even when the user requested page 2.
+            method = str(form.get("method") or "get").strip().lower()
+            if method == "get":
+                params: list[tuple[str, str]] = []
+                for node in form.select("input[name]"):
+                    field_type = str(node.get("type") or "").lower()
+                    if field_type in {"submit", "button", "image", "file"}:
+                        continue
+                    if field_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+                        continue
+                    name = str(node.get("name"))
+                    value = str(page) if name == self.profile.form_page_field else str(node.get("value") or "")
+                    params.append((name, value))
+                if not any(name == self.profile.form_page_field for name, _ in params):
+                    params.append((self.profile.form_page_field, str(page)))
+                response = self._check_response(self.session.get(
+                    action, params=params, timeout=self.timeout, allow_redirects=False,
+                ))
+                self._last_response, self._last_page = response, page
+                return response
+            if method != "post":
+                raise SourceSchemaError(
+                    f"{self.source_id}: unsupported pagination form method"
+                )
         else:
             link = next((
                 node for node in soup.select("a[href]")
