@@ -146,3 +146,22 @@ def test_stock_detail_enrichment_is_not_mistaken_for_unsupported_fetch(monkeypat
     result = asyncio.run(checklist.diagnose_source(source))
     assert result["stages"]["individual_detail"]["state"] == checklist.PASS
     assert result["stages"]["detail_identity"]["state"] == checklist.PASS
+
+
+def test_diagnose_all_progress_includes_per_stage_state(monkeypatch, capsys):
+    monkeypatch.setattr(
+        checklist, "_connector",
+        lambda source: (FakeConnector(source, broken_second=True), object()),
+    )
+    result = asyncio.run(checklist.diagnose_all(
+        ("etpu.ru",), max_pages=2, detail_probes=0, pause_seconds=1.0,
+    ))
+    import json
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    progress = json.loads(line)
+    assert progress["source"] == "etpu.ru"
+    assert progress["failure"]["stage"] == "pagination_next"
+    assert progress["stage_states"]["pagination_next"] == checklist.FAIL
+    assert progress["pages_checked"] == 1
+    assert progress["sample_lots"] == 1
+    assert result["database_writes"] == result["map_writes"] == 0
