@@ -321,6 +321,51 @@ def test_ausib_same_url_302_is_explicitly_detected_without_following() -> None:
     assert connector.session.requested_urls == [url]
 
 
+def test_ausib_one_self_redirect_then_catalogue_200_is_readable(monkeypatch) -> None:
+    from bankrotai.connectors.etp_sources import transport
+
+    monkeypatch.setattr(transport.time, "sleep", lambda _delay: None)
+    url = "https://ausib.ru/etp/trade/list.html"
+    redirect = FakeResponse(302, b"", url)
+    redirect.headers = {"Location": url}
+    final = FakeResponse(200, b"<html>public listing</html>", url)
+    session = FakeSession([redirect, final])
+    connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=session)
+    assert connector._request(1) is final
+    assert session.requested_urls == [url, url]
+    assert not session.posts
+
+
+def test_ausib_persistent_same_url_redirect_stops_after_one_retry(monkeypatch) -> None:
+    from bankrotai.connectors.etp_sources import transport
+
+    monkeypatch.setattr(transport.time, "sleep", lambda _delay: None)
+    url = "https://ausib.ru/etp/trade/list.html"
+    first = FakeResponse(302, b"", url)
+    first.headers = {"Location": url}
+    second = FakeResponse(302, b"", url)
+    second.headers = {"Location": url}
+    session = FakeSession([first, second])
+    connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=session)
+    with pytest.raises(SourceAccessError, match="self-redirect loop"):
+        connector._request(1)
+    assert session.requested_urls == [url, url]
+
+
+def test_ausib_cross_host_redirect_is_not_retried(monkeypatch) -> None:
+    from bankrotai.connectors.etp_sources import transport
+
+    monkeypatch.setattr(transport.time, "sleep", lambda _delay: None)
+    url = "https://ausib.ru/etp/trade/list.html"
+    response = FakeResponse(302, b"", url)
+    response.headers = {"Location": "https://untrusted.example/"}
+    session = FakeSession(response)
+    connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=session)
+    with pytest.raises(SourceAccessError, match="provider redirect was refused"):
+        connector._request(1)
+    assert session.requested_urls == [url]
+
+
 def test_provider_cross_host_redirect_remains_refused() -> None:
     url = "https://ausib.ru/etp/trade/list.html"
     response = FakeResponse(302, b"", url)
