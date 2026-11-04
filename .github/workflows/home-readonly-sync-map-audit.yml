@@ -64,6 +64,11 @@ jobs:
           def stamp(x):
               return x.isoformat() if x is not None else None
 
+          def safe_error(value):
+              if not value:
+                  return None
+              return " ".join(str(value).split())[:500]
+
           all_ids = [s.source_id for s in default_source_specs()]
           enabled_ids = [s.source_id for s in _unpaused_source_specs(default_source_specs())]
           beat = celery_app.conf.beat_schedule
@@ -94,7 +99,8 @@ jobs:
                                    'seen': s.items_seen,
                                    'inserted': s.items_inserted,
                                    'updated': s.items_updated,
-                                   'failed': s.items_failed}
+                                   'failed': s.items_failed,
+                                   'error': safe_error(s.error_message)}
                                   for s in sources]
                   })
               dataset = session.scalar(select(MapDataset)
@@ -217,6 +223,7 @@ jobs:
                       LotSyncSourceRun.status, LotSyncSourceRun.pages_scanned,
                       LotSyncSourceRun.items_seen,
                       LotSyncSourceRun.complete_source_run,
+                      LotSyncSourceRun.error_message,
                   ).join(LotSyncRun, LotSyncRun.id == LotSyncSourceRun.sync_run_id)
                    .where(LotSyncSourceRun.source_system == source)
                    .order_by(LotSyncRun.started_at.desc()).limit(10)
@@ -244,7 +251,9 @@ jobs:
                   "recent_source_runs": [
                       {"started_utc": str(x[0]), "trigger": x[1],
                        "status": x[2], "pages": x[3], "seen": x[4],
-                       "complete": x[5]} for x in history
+                       "complete": x[5],
+                       "error": " ".join(str(x[6]).split())[:500] if x[6] else None}
+                      for x in history
                   ],
                   "database_writes": 0,
               }

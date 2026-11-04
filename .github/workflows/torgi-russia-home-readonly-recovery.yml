@@ -40,6 +40,9 @@ jobs:
           def errorsafe(exc):
               return type(exc).__name__
 
+          def error_detail(exc):
+              return " ".join(str(exc).split())[:500]
+
           report = {
               "audit": "torgi-russia-dns-ssr-2026-11-04",
               "read_only": True, "database_writes": 0,
@@ -113,6 +116,7 @@ jobs:
                   except Exception as exc:
                       sample["status"] = "failed"
                       sample["error_type"] = errorsafe(exc)
+                      sample["error"] = error_detail(exc)
                       report["parser_samples"].append(sample)
                       break
                   report["parser_samples"].append(sample)

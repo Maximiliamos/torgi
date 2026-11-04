@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -111,3 +112,15 @@ def test_torgi_russia_full_automatic_source_must_not_archive_missing_historical_
     assert specs[0].reconcile_missing is False
     assert specs[0].require_source_end is True
     assert source_full_specs("torgi-russia.ru")[0].reconcile_missing is False
+
+
+def test_home_workflows_preserve_bounded_torgi_russia_failure_evidence():
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    audit = (root / "home-readonly-sync-map-audit.yml").read_text(encoding="utf-8")
+    probe = (root / "torgi-russia-home-readonly-recovery.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "LotSyncSourceRun.error_message" in audit
+    assert "safe_error(s.error_message)" in audit
+    assert 'sample["error"] = error_detail(exc)' in probe
+    assert 'str(exc).split())[:500]' in probe
