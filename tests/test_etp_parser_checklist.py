@@ -202,3 +202,65 @@ def test_identity_mismatch_never_counts_as_validated_detail(monkeypatch):
     assert report["stages"]["detail_identity"]["state"] == checklist.FAIL
     assert report["stages"]["individual_detail"]["state"] != checklist.PASS
     assert report["first_failure"]["stage"] == "detail_identity"
+
+
+def test_cdtrf_checklist_uses_official_json_api_without_fake_html_failure(monkeypatch):
+    from bankrotai.services import etp_cdtrf_pagination_probe
+
+    called = {}
+    def fake_scan(session, *, max_pages, delay_seconds):
+        called.update(pages=max_pages, delay=delay_seconds)
+        return {
+            "pages_scanned": 2,
+            "property_hint_candidates": 4,
+            "unique_catalogue_lot_ids": 40,
+            "production_database_writes": 0,
+            "archival_allowed": False,
+        }
+
+    monkeypatch.setattr(etp_cdtrf_pagination_probe, "scan_cdtrf_pages", fake_scan)
+    def refuse_html(_source):
+        raise AssertionError("legacy CDTRF HTML connector must not be queried")
+    monkeypatch.setattr(checklist, "_connector", refuse_html)
+    report = asyncio.run(checklist.diagnose_source("cdtrf.ru"))
+    assert called["pages"] == 2
+    assert report["catalogue_contract"] == "cdtrf_official_public_json"
+    assert report["pages_checked"] == 2
+    assert report["sample_lots"] == 4
+    assert report["catalogue_rows_observed"] == 40
+    assert report["stages"]["catalogue_markup"]["state"] == checklist.PASS
+    assert report["stages"]["pagination_next"]["state"] == checklist.PASS
+    assert report["stages"]["last_page_proven"]["state"] == checklist.NOT_TESTED
+    assert report["stages"]["individual_detail"]["state"] == checklist.NOT_TESTED
+    assert report["production_approved"] is False
+    assert report["database_writes"] == report["map_writes"] == 0
+
+
+def test_cdtrf_valid_json_without_property_candidates_is_not_false_failure(monkeypatch):
+    from bankrotai.services import etp_cdtrf_pagination_probe
+
+    monkeypatch.setattr(etp_cdtrf_pagination_probe, "scan_cdtrf_pages",
+                        lambda *args, **kwargs: {
+                            "pages_scanned": 1,
+                            "property_hint_candidates": 0,
+                            "unique_catalogue_lot_ids": 20,
+                            "production_database_writes": 0,
+                            "archival_allowed": False,
+                        })
+    report = asyncio.run(checklist.diagnose_source("cdtrf.ru"))
+    assert report["stages"]["lot_discovery"]["state"] == checklist.NOT_TESTED
+    assert report["stages"]["catalogue_markup"]["state"] == checklist.PASS
+    assert report["first_failure"] is None
+
+
+def test_cdtrf_official_json_failure_records_catalogue_stage(monkeypatch):
+    from bankrotai.services import etp_cdtrf_pagination_probe
+
+    def broken(*args, **kwargs):
+        raise ValueError("wrong JSON contract private=SECRET")
+
+    monkeypatch.setattr(etp_cdtrf_pagination_probe, "scan_cdtrf_pages", broken)
+    report = asyncio.run(checklist.diagnose_source("cdtrf.ru"))
+    assert report["first_failure"]["stage"] == "catalogue_markup"
+    assert report["stages"]["catalogue_markup"]["state"] == checklist.FAIL
+    assert "SECRET" not in str(report)
