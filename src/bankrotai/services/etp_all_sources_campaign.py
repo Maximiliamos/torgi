@@ -94,6 +94,20 @@ def _authorized() -> None:
         )
 
 
+def _require_accepted_full_campaign(stage: str) -> frozenset[str]:
+    """Never let an old all-ETP import resume into GEO/map without acceptance."""
+    from bankrotai.services.etp_twice_daily import ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+
+    required = set(RUNNABLE)
+    missing = required - ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+    if missing:
+        raise PermissionError(
+            f"ETP {stage} refused: not all sources are independently accepted: "
+            + ", ".join(sorted(missing))
+        )
+    return ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+
+
 def _connector(source_id: str):
     # CDTRF has a separately validated API/detail crawler. Every other source
     # uses its own profile (GET, form POST, ASP.NET postback, or JSON API).
@@ -252,6 +266,7 @@ def run_import() -> dict:
 
 
 def geocode_all(*, batch_size: int = 250) -> dict:
+    approved = _require_accepted_full_campaign("GEO")
     if not 1 <= batch_size <= 500:
         raise ValueError("Invalid GEO batch size")
     from bankrotai.services.geo_backfill import GeoBatchAlreadyRunning, geocode_pending_lots
@@ -259,7 +274,7 @@ def geocode_all(*, batch_size: int = 250) -> dict:
     with SessionLocal() as session:
         ids = list(session.scalars(
             select(ProcessedLot.id).where(
-                ProcessedLot.source_system.in_(ALL_SOURCE_IDS),
+                ProcessedLot.source_system.in_(approved),
                 ProcessedLot.is_archived.is_(False),
                 ProcessedLot.duplicate_of_id.is_(None),
                 or_(ProcessedLot.current_geo_lat.is_(None), ProcessedLot.current_geo_lon.is_(None)),
@@ -290,6 +305,7 @@ def geocode_all(*, batch_size: int = 250) -> dict:
 
 
 def publish_map() -> dict:
+    _require_accepted_full_campaign("map")
     from bankrotai.services.map_builder import build_map_dataset
 
     publication = build_map_dataset(SessionLocal)
