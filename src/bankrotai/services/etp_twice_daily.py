@@ -76,6 +76,14 @@ def etp_beat_schedule() -> dict:
             "schedule": crontab(hour="6,18", minute=0),
             "options": {"expires": 21_600},
         },
+        "recover-missed-scheduled-full": {
+            # Celery crontab does not replay windows missed during Docker/WSL2
+            # downtime. A separate PostgreSQL lease and attempt check prevent
+            # duplicate 09:00/21:00 full scans after Home restarts.
+            "task": "bankrotai.tasks.recover_missed_full_source_sync_task",
+            "schedule": 900.0,
+            "options": {"expires": 600},
+        },
     }
 
 
