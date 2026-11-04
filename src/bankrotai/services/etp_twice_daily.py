@@ -64,3 +64,54 @@ def scheduled_source_inventory() -> dict:
         ),
         "full_inventory_accepted_by_qa": False,
     }
+
+
+def etp_beat_schedule() -> dict:
+    """21-source bounded QA runs beside existing baseline full sync."""
+    from celery.schedules import crontab
+
+    return {
+        "audit-all-direct-etp-profiles": {
+            "task": "bankrotai.tasks.scheduled_etp_readonly_audit_task",
+            "schedule": crontab(hour="6,18", minute=0),
+            "options": {"expires": 21_600},
+        },
+    }
+
+
+def scheduled_etp_readonly_audit_task() -> dict:
+    """Read-only, bounded visibility into all 21 new providers twice per day.
+
+    Lot-online is already included in default nationwide full sync. Never mark
+    this two-page health check as full source acceptance or a production import.
+    """
+    import asyncio
+
+    from bankrotai.services.etp_qa_batch import run_all
+
+    inventory = scheduled_source_inventory()
+    result = asyncio.run(run_all(pages=2, per_page=3, geo_limit=0))
+    if (
+        result.get("source_count") != len(PROFILES)
+        or len(result.get("sources") or ()) != len(PROFILES)
+        or {item.get("source") for item in result.get("sources") or ()}
+           != {profile.source_id for profile in PROFILES}
+        or result.get("qa_only") is not True
+        or result.get("database_writes") != 0
+        or result.get("production_map_writes") != 0
+        or result.get("archival_enabled") is not False
+        or result.get("complete_source_inventory") is not False
+    ):
+        raise RuntimeError("Scheduled ETP preview violated its read-only QA contract")
+    return {
+        **result,
+        "schedule": "06:00/18:00 UTC (09:00/21:00 Europe/Moscow)",
+        "all_etp_source_count": inventory["total_etps"],
+        "lot_online": {
+            "source_id": inventory["baseline"],
+            "scheduled_by": "refresh-nationwide-sources-full",
+            "evaluated_by_this_preview": False,
+        },
+        "production_ingest_approvals": inventory["approved_automatic_ingest"],
+        "full_catalogue_scans_completed": 0,
+    }
