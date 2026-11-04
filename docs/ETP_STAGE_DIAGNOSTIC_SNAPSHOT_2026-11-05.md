@@ -45,3 +45,16 @@ Status `PASS` in a two-page sample is only evidence for the checked stage. For p
 ## Observability fixes
 
 [PR #1089](https://github.com/Maximiliamos/torgi/pull/1089) extends durable Home logs to print sanitized per-source stage states, pages/candidate counts and the first failing stage, plus an explicit warning that a green workflow is *not* a green parser. This document is a one-time ground-truth snapshot and must not be treated as live status; the workflow artifact/API is the current data source.
+
+## Torgi Russia browser evidence (2026-11-05)
+
+- User-loaded public catalogue pages 1 and 2 each exposed 24 distinct `/lot/{id}` links.
+- Their Next.js flight payloads contained `initialLots` and `initialMeta`; page metadata reported
+  `current_page=1/2`, `last_page=209`, `total=5000`, and `per_page=24`.
+- The two pages had disjoint visible lot IDs, so the public unfiltered pagination itself was not repeating.
+- A cookie notice remained visible on page 2 and an advertising modal was observed, but both sit outside
+  the Next.js `initialLots`/`initialMeta` contract consumed by the HTTP parser. They do not require UI clicks.
+- Two individual cards exposed distinct IDs, prices, statuses, dates and regions; the apartment card also
+  exposed cadastral number `55:36:120305:7503` and area `59.5 sq. m`.
+- This does **not** clear production acceptance: the failed production requests use real-estate category and
+  regional query parameters. Region-filtered pages 1 and 2 still require captured evidence.
