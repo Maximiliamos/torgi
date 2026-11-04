@@ -294,3 +294,35 @@ def test_enrichment_does_not_claim_independent_money_validation(monkeypatch):
     assert result["stages"]["individual_detail"]["state"] == checklist.PASS
     assert result["stages"]["individual_detail_price"]["state"] == checklist.NOT_APPLICABLE
     assert result["stages"]["individual_detail_status"]["state"] == checklist.NOT_APPLICABLE
+
+
+def test_terminal_page_with_next_cursor_is_fail_closed(monkeypatch):
+    class Contradiction(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[_lot(self.source)],
+                next_cursor="2",
+                metadata={"source_end_verified": True},
+            )
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (Contradiction(source), object()))
+    result = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert result["stages"]["last_page_proven"]["state"] == checklist.FAIL
+    assert result["first_failure"]["stage"] == "last_page_proven"
+    assert result["first_failure"]["category"] == "terminal_page_has_next_cursor"
+    assert result["database_writes"] == result["map_writes"] == 0
+
+
+def test_partial_detail_success_is_never_green(monkeypatch):
+    class PartiallyBroken(FakeConnector):
+        async def fetch_lot(self, external_id):
+            if external_id == "lot-2":
+                raise ValueError("broken second detail")
+            return _lot(self.source, external_id, detail_level="detail")
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (PartiallyBroken(source), object()))
+    result = asyncio.run(checklist.diagnose_source("etpu.ru", detail_probes=2))
+    assert result["stages"]["individual_detail"]["state"] == checklist.FAIL
+    assert result["stages"]["individual_detail_price"]["state"] == checklist.NOT_TESTED
+    assert result["stages"]["individual_detail_status"]["state"] == checklist.NOT_TESTED
+    assert result["first_failure"]["stage"] == "individual_detail"
