@@ -89,3 +89,17 @@ A fresh operator-run **read-only** probe in the deployed Home ingestion worker c
 - **NISTP**: `nodesearch` declares `method=GET`; requesting `pagenum=2` with preserved filters returned **HTTP 200**, **50,131 bytes**, **14 parsed individual lots** with the first observed IDs `nistp.ru:502369:1`, `nistp.ru:502367:1`, `nistp.ru:502363:1`. The former POST returned HTTP 200 / 29,004 bytes / **0** parsed lots. This validates the proposed GET-vs-POST code correction in #1086 for the observed page 2, **not** the final page, complete inventory or independent price checks.
 - **AUSIB**: `GET https://ausib.ru/etp/trade/list.html` returned HTTP **302** with a Location resolving to **exactly that same complete URL** (identical host/path, zero query keys, `same_full_url=true`). This is a self-redirect loop for that endpoint. Existing fail-closed redirect rejection is justified; it must not be replaced by `allow_redirects=True`. A targeted error classification and regression test were added to #1086; the correct alternative official catalogue contract still needs verifying.
 - **No changes to production PostgreSQL, GEO or map** were performed by these diagnostic probes. New ETP automatic ingestion remains disabled until independent full-source acceptance.
+
+
+### Independent Home read-only AUSIB endpoint resolution (2026-11-04 19:36 UTC)
+
+[Read-only workflow #41898573949](https://github.com/Maximiliamos/torgi/actions/runs/41898573949) **completed success** with no DB writes:
+
+| Official AUSIB path | HTTP | Body bytes | Observed content |
+|---|---:|---:|---|
+| `/` | 302 | 0 | Self-redirect to `/`; no page |
+| `/etp/trade/list.html` | **200** | **44 922** | HTML with official detail links |
+| `/trade/list.html` | 200 | 17 264 | HTML, no recognized lot detail href |
+| `/trade/view/purchase/general.html?id=104599805` | **200** | **35 495** | A publicly reachable detail page with links |
+
+Previously, `/etp/trade/list.html` returned **302 self-redirect** to the same URL from a separate Home request. These two observations demonstrate *intermittent* response behavior, **not** a permanent URL change. Keep the existing verified catalogue route, never follow redirect chains automatically, and allow at most **one bounded retry of the same trusted HTTPS URL** on a self-302. Integrated PR #1086 contains isolated transport implementation and tests for 302→200, 302→302 and cross-origin rejection. A follow-up read-only runner validates real normalized `NormalizedLot` candidate counts and initial-price coverage before the source can advance to acceptance. **No full AUSIB catalogue, price/status/detail validation or production import has been accepted.**
