@@ -215,6 +215,52 @@ def test_ausib_multi_lot_procedure_fails_closed() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("source_id", "detail_url", "external_id", "description", "price", "cadastre"),
+    [
+        (
+            "aukcioncenter.ru",
+            "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103556972",
+            "aukcioncenter.ru:103556972:1",
+            "Земельный участок и жилой дом, кадастровые номера "
+            "24:04:0301008:586 и 24:04:0301008:1576, Красноярский край",
+            "7 200 000,00 руб",
+            "24:04:0301008:586",
+        ),
+        (
+            "ausib.ru",
+            "https://ausib.ru/trade/view/purchase/general.html?id=104687293",
+            "ausib.ru:104687293:1",
+            "Земельный участок, кадастровый номер 66:59:0217004:636",
+            "370 000,00 руб",
+            "66:59:0217004:636",
+        ),
+    ],
+)
+def test_live_procedure_detail_price_contracts(
+    source_id: str,
+    detail_url: str,
+    external_id: str,
+    description: str,
+    price: str,
+    cadastre: str,
+) -> None:
+    html = f"""
+    <html><body><table id="lotNumber1">
+      <tr><td>Предмет торгов</td><td>{description}</td></tr>
+      <tr><td>Начальная цена продажи имущества</td><td>{price}</td></tr>
+      <tr><td>Статус торгов</td><td>Торги объявлены</td></tr>
+    </table>Подробная публичная карточка процедуры и условия продажи имущества.
+    </body></html>
+    """
+    parsed = parse_detail_html(
+        profile(source_id), html, detail_url=detail_url, external_id=external_id,
+    )
+    assert parsed.start_price == (7_200_000 if source_id == "aukcioncenter.ru" else 370_000)
+    assert parsed.cadastral_number == cadastre
+    assert parsed.auction_status == "scheduled"
+
+
 class FakeResponse:
     def __init__(self, status_code: int, content: bytes = b"", url: str = "https://m-ets.ru/search") -> None:
         self.status_code = status_code
@@ -688,6 +734,38 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
         detail_url="https://sistematorg.com/trade_view.php?trade_nid=19433",
     )
     assert lot.start_price == 900_000
+
+
+def test_sistematorg_live_single_lot_price_contract() -> None:
+    html = """
+    <html><body><h1>Торги 20375-ОАОФ</h1>
+    Статус Торги объявлены. Всего лотов: 1. Лот № 1: Земельный участок.
+    Начальная цена 93 240.00 руб. Официальная карточка процедуры содержит
+    сроки приема заявок, сведения о должнике и подробное описание имущества.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("sistematorg.com"), html,
+        detail_url="https://sistematorg.com/trade_view.php?trade_nid=66788",
+    )
+    assert lot.start_price == 93_240
+    assert lot.auction_status == "scheduled"
+
+
+def test_alfalot_upcoming_receivables_are_classified_outside_property() -> None:
+    html = """
+    <table>
+      <tr><td><a href="/app/LotCard/page?LotCard.lotEntity=LT%3Acoreboa1bsm6o0000q1i4mp4hev55ju4">
+        0020626009DS.lot1 Право требования задолженности</a></td>
+        <td>45 133 863,54 руб.</td></tr>
+      <tr><td><a href="/app/LotCard/page?LotCard.lotEntity=LT%3Acoreboa1bsm6o0000q22pcibehbiuhnk">
+        0020626011DS.lot1 Дебиторская задолженность</a></td>
+        <td>5 024 151,34 руб.</td></tr>
+    </table>
+    """
+    lots = parse_listing_html(profile("alfalot.ru"), html)
+    assert [lot.category for lot in lots] == ["receivables", "receivables"]
+    assert all(lot.category not in {"real_estate", "land"} for lot in lots)
 
 
 @pytest.mark.parametrize(

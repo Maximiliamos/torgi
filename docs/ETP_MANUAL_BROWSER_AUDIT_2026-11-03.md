@@ -16,18 +16,18 @@
 | Lot-online | 4 456 активных объектов, 96/страницу, lot URL | Доказать terminal page текущего API-run |
 | CDTRF | 3 086–3 087 live, 155 страниц, 4 статуса и 7 категорий | Полный detail acceptance и сверка всех rejected |
 | NISTP | В одной процедуре несколько `#lotN` | Per-lot detail isolation/цена |
-| Alfalot | LotCard identity | Объединить upcoming и current; сохранённая page 2 повторяется |
+| Alfalot | LotCard identity; текущая upcoming-выдача содержит 2 права требования и корректно классифицируется вне недвижимости | Объединить upcoming и current; сохранённая page 2 повторяется; сейчас нет live property-кандидата для detail acceptance |
 | RTS-tender | Live grid: более 1 000 лотов, UUID trade + UUID lot, цена, статус, Next/Last | Сохранить XHR/API pagination и detail; HTTP-клиент пока не разблокировать |
 | Roseltorg | Procedure/lot identity; detail: цена, статус и точный блок `lot-location` | Реальный load-more/API и фильтр недвижимости |
 | Сбербанк-АСТ | Официальный JSON; detail подтверждает цену, адрес, статус и кадастр | Последняя страница; старый снимок page 2 повторяется |
 | Fabrikant | Live detail разделяет два лота, цены и кадастры | Связать provider lot ID с отдельным lot-detail URL; procedure ID не является lot ID |
 | ARBбитЛот | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
 | ETPU | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
-| Sistematorg | Live single-lot detail имеет отдельную таблицу `table_lot_1`, цену и статус | Реализовать выбор `table_lot_N`; trade ID не является lot ID |
+| Sistematorg | Live single-lot detail 20375-ОАОФ: `table_lot_1`, цена 93 240 RUB и статус; exact-price regression пройден | Multi-lot выбор `table_lot_N` и terminal-page proof; trade ID сам по себе не является lot ID |
 | Centerr | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
-| Аукцион-центр | 498 страниц, multi-lot procedure | Per-lot detail/цена |
+| Аукцион-центр | 498 страниц; single-lot detail 7515-ОАОФ: цена 7 200 000 RUB, адрес и кадастры; regression пройден | Повторная multi-lot detail isolation и terminal-page proof |
 | Profit | Отдельные trade/lot URL, 2 668 страниц | Terminal-page proof |
-| AUSIB | 1 155 страниц; live detail имеет `table#lotNumber1`, цену, статус и кадастр | Terminal-page proof и повторная multi-lot карточка |
+| AUSIB | 1 155 страниц; live detail 17327-ОАОФ: `table#lotNumber1`, цена 370 000 RUB, статус и кадастр; regression пройден | Terminal-page proof и повторная multi-lot карточка |
 | Вердиктъ | Live detail содержит отдельные таблицы `СВЕДЕНИЯ ПО ЛОТУ №N`, цены/кадастры | Реализовать per-lot table selection и terminal page |
 | uTender | Публичная страница не открылась | `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` |
 | RUSSIA OnLine | Отдельный `lot_nid` | Terminal-page proof |
@@ -92,6 +92,15 @@ RTS оставлен blocked: браузерный DOM доказывает фо
 воспроизводимый read-only HTTP/XHR контракт для серверного обхода. uTender
 остаётся недоступен даже без VPN. Lot-online подтверждён как существующий
 штатный источник и не должен повторно импортироваться новым профилем.
+
+Финальные четыре загруженные страницы дали дополнительные точные контракты:
+Sistematorg `66788` — 93 240 RUB; Аукцион-центр `103556972` — 7 200 000 RUB и
+кадастры `24:04:0301008:586`, `24:04:0301008:1576`; AUSIB `104687293` —
+370 000 RUB и кадастр `66:59:0217004:636`. Две текущие карточки Alfalot — права
+требования, поэтому они не являются кандидатами карты недвижимости. Эти форматы
+закреплены regression-тестами; целевой набор source/parser/evidence даёт
+98 passed. Это подтверждает разбор конкретных карточек, но не заменяет два
+полных повторяемых прохода и terminal-page acceptance.
 
 ## Следующий безопасный шаг
 
