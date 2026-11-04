@@ -541,6 +541,9 @@ def scheduled_etp_readonly_audit_task() -> dict[str, Any]:
     result = asyncio.run(run_all(pages=2, per_page=3, geo_limit=0))
     if (
         result.get("source_count") != len(PROFILES)
+        or len(result.get("sources") or ()) != len(PROFILES)
+        or {item.get("source") for item in result.get("sources") or ()}
+           != {profile.source_id for profile in PROFILES}
         or result.get("qa_only") is not True
         or result.get("database_writes") != 0
         or result.get("production_map_writes") != 0
