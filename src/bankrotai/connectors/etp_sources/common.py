@@ -17,6 +17,7 @@ from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     profit_initial_money,
 )
+from bankrotai.connectors.etp_sources.detail_fields import extract_labelled_detail_fields
 
 
 class SourceAccessError(RuntimeError):
@@ -62,7 +63,10 @@ class EtpSourceProfile:
 
 
 _SPACE_RE = re.compile(r"\s+")
-_MONEY_RE = re.compile(r"(?<!\d)(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:\.|лей)?)", re.IGNORECASE)
+_MONEY_RE = re.compile(
+    r"(?<![\d№#])(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(?:₽|RUB|руб(?:\.|лей)?)",
+    re.IGNORECASE,
+)
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.IGNORECASE)
@@ -74,6 +78,20 @@ def _clean(value: str) -> str:
 
 def _money(value: str) -> float | None:
     label = r"(?:начальн\w*\s+(?:\([^)]*\)\s*)?цен\w*|цена\s+лот\w*)"
+    # Card catalogues (notably M-ETS) render ``300 000 000 ₽`` immediately
+    # before the caption ``Начальная цена``.  Looking only after that caption
+    # can jump into a later deposit block and publish the deposit as the price.
+    before = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
+    if before and not re.search(
+        r"размер\s+задатка", value[max(0, before.start() - 60):before.start()], re.IGNORECASE
+    ):
+        raw_before = before.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
+        try:
+            amount = float(raw_before)
+            if 0 < amount < 1e15:
+                return amount
+        except ValueError:
+            pass
     after = re.search(label + r"(?P<between>[^\d]{0,40})" + _MONEY_RE.pattern, value, re.IGNORECASE)
     # Never take another labelled field's value as the initial price.
     if after and re.search(r"текущ\w*\s+цен\w*|задатк\w*", after.group("between"), re.I):
@@ -85,12 +103,16 @@ def _money(value: str) -> float | None:
         if not deposit or _MONEY_RE.search(tail[deposit.end():deposit.end() + 60]):
             raw = after.group(2)
     if raw is None:
-        before = re.search(_MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE)
-        if not before or re.search(
-            r"размер\s+задатка", value[max(0, before.start() - 60):before.start()], re.IGNORECASE
+        fallback_before = re.search(
+            _MONEY_RE.pattern + r"[^\d]{0,40}" + label, value, re.IGNORECASE
+        )
+        if not fallback_before or re.search(
+            r"размер\s+задатка",
+            value[max(0, fallback_before.start() - 60):fallback_before.start()],
+            re.IGNORECASE,
         ):
             return None
-        raw = before.group(1)
+        raw = fallback_before.group(1)
     if not raw:
         return None
     raw = raw.replace(" ", "").replace("\xa0", "").replace(",", ".")
@@ -190,7 +212,8 @@ def _status(value: str) -> str:
         return "closed"
     if any(word in lowered for word in (
         "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
-        "извещени", "торги назначен"
+        "извещени", "торги назначен", "ожидается начало приема заявок",
+        "ожидается начало приёма заявок",
     )):
         return "scheduled"
     if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
@@ -230,6 +253,12 @@ def _external_id(profile: EtpSourceProfile, href: str, match: re.Match[str]) -> 
 
 
 def _container(anchor: Tag) -> Tag:
+    # M-ETS makes the lot link the card itself.  Walking to a class-matching
+    # ancestor in that layout selects the whole result grid and mixes prices,
+    # titles and lot numbers from adjacent cards.
+    anchor_classes = {str(value).lower() for value in anchor.get("class", [])}
+    if "search-comp-item" in anchor_classes:
+        return anchor
     for name in ("tr", "article", "li"):
         parent = anchor.find_parent(name)
         if parent is not None:
@@ -268,112 +297,24 @@ def _safe_provider_url(profile: EtpSourceProfile, value: str) -> str:
     return value
 
 
-def _parse_sistematorg_procedure_lots(
-    profile: EtpSourceProfile, html: str | bytes, *, page: int
-) -> list[NormalizedLot]:
-    """Represent source trade rows as individual *candidate* property lots.
-
-    A trade_nid names the whole procedure, not a sellable asset. Neither
-    a procedure-level price nor an unrelated lot's status can be attached
-    to a candidate. Detail-level truth is still mandatory before promotion.
-    """
-    soup = _parse_soup(html)
-    result: list[NormalizedLot] = []
-    seen: set[str] = set()
-    lot_marker = re.compile(r"лот\s*№\s*(\d{1,5})\s*[:.\-]?\s*", re.I)
-    property_words = re.compile(
-        r"недвижим|земельн|участок|квартир|комнат|помещен|здани|"
-        r"гараж|машино.?мест|жилой\s+дом|склад|сооружен", re.I
-    )
-    for row in soup.select("tr"):
-        cells = row.find_all("td", recursive=False)
-        if len(cells) < 3:
-            continue
-        procedure_urls: list[str] = []
-        for anchor in row.select("a[href]"):
-            procedure_urls.append(urljoin(profile.listing_url, str(anchor.get("href") or "")))
-        clickable_nodes = ([row] if row.has_attr("onclick") else []) + row.select("[onclick]")
-        for node in clickable_nodes:
-            for candidate in re.findall(r"['\"]([^'\"]+)['\"]", str(node.get("onclick") or "")):
-                if candidate.startswith(("/", "https://")):
-                    procedure_urls.append(urljoin(profile.listing_url, candidate))
-        trusted: list[tuple[str, re.Match[str]]] = []
-        for url in procedure_urls:
-            try:
-                _safe_provider_url(profile, url)
-            except SourceAccessError:
-                continue
-            matched = profile.lot_url_re.search(url)
-            if matched:
-                trusted.append((url, matched))
-        if not trusted:
-            continue
-        detail_url, match = trusted[0]
-        trade_id = match.group(1)
-        # Layouts observed in saved pages use both three and four columns.
-        # Scan the row's data cells rather than assigning a semantic meaning
-        # to one fixed column index.
-        cell_text = _clean(" ".join(cell.get_text(" ", strip=True) for cell in cells[1:]))
-        reported_match = re.search(r"всего\s+лотов\s*:\s*(\d{1,5})", cell_text, re.I)
-        reported_trade_lots = int(reported_match.group(1)) if reported_match else None
-        markers = list(lot_marker.finditer(cell_text))
-        if not markers:
-            # There is no safe way to infer the lot number from a trade row.
-            continue
-        for index, marker in enumerate(markers):
-            end = markers[index + 1].start() if index + 1 < len(markers) else len(cell_text)
-            title = _clean(cell_text[marker.end():end])
-            if len(title) < 8 or not property_words.search(title):
-                continue
-            external_id = f"{profile.source_id}:{trade_id}:{marker.group(1)}"
-            if external_id in seen:
-                continue
-            seen.add(external_id)
-            cadastre = _CADASTRAL_RE.search(title)
-            result.append(NormalizedLot(
-                external_id=external_id,
-                source="sistematorg",
-                source_system=profile.source_id,
-                title=title[:500],
-                description=title[:5000],
-                category=_category(title),
-                region_slug=None,
-                region_name=None,
-                address=None,
-                cadastral_number=cadastre.group(1) if cadastre else None,
-                vin=None,
-                area=None,
-                start_price=None,
-                current_price=None,
-                auction_status="unknown",
-                lot_url=detail_url,
-                source_url=detail_url,
-                detail_level="search",
-                raw_data={
-                    "listing_page": page,
-                    "procedure_id": trade_id,
-                    "lot_number": marker.group(1),
-                    "trade_level_listing": True,
-                    "reported_trade_lots": reported_trade_lots,
-                    "individual_lot_identity_verified": False,
-                    "per_lot_detail_verified": False,
-                    "price_unverified": True,
-                    "status_unverified": True,
-                    "complete_source_inventory": False,
-                    "safe_for_archival": False,
-                    "reconcile_missing": False,
-                },
-                platform_name=profile.platform_name,
-                platform_code=profile.platform_code,
-            ))
-    return result
-
-
 def _parse_multi_lot_catalogue(
     profile: EtpSourceProfile, html: str | bytes, *, page: int
 ) -> list[NormalizedLot] | None:
+    if profile.source_id in {
+        "aukcioncenter.ru", "ausib.ru", "fabrikant.ru", "electro-torgi.ru",
+    }:
+        from bankrotai.connectors.etp_sources.procedure_cards import (
+            parse_fabrikant_cards,
+            parse_procedure_card_lots,
+        )
+        if profile.source_id == "fabrikant.ru":
+            return parse_fabrikant_cards(profile, html, page=page)
+        return parse_procedure_card_lots(profile, html, page=page)
     if profile.source_id == "sistematorg.com":
-        return _parse_sistematorg_procedure_lots(profile, html, page=page)
+        from bankrotai.connectors.etp_sources.procedure_cards import (
+            parse_sistematorg_procedure_lots,
+        )
+        return parse_sistematorg_procedure_lots(profile, html, page=page)
     if profile.source_id not in {"nistp.ru", "vertrades.ru"}:
         return None
     from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
@@ -438,6 +379,13 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     soup = _parse_soup(html)
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
+        # CenterR embeds links to selected auctions in its news sidebar using
+        # the same URL shape as catalogue lots.  Those are editorial promos,
+        # not rows of the paginated source inventory.
+        if profile.source_id == "centerr.ru" and anchor.find_parent(
+            class_=re.compile(r"\bnews-(?:short|body)\b", re.I)
+        ) is not None:
+            continue
         href = urljoin(profile.listing_url, str(anchor.get("href") or "").strip())
         try:
             _safe_provider_url(profile, href)
@@ -564,11 +512,19 @@ def parse_detail_html(
             raise SourceSchemaError(
                 "sistematorg.com: cannot attribute a trade-level price to an individual lot"
             )
-    if profile.source_id == "ausib.ru":
+    if profile.source_id in {"ausib.ru", "aukcioncenter.ru"}:
         lot_tables = soup.select("table[id^=lotNumber]")
-        if len(lot_tables) != 1:
+        selected_table = None
+        if external_id:
+            lot_number = external_id.rpartition(":")[2]
+            if lot_number.isdigit():
+                selected_table = soup.select_one(f"table#lotNumber{lot_number}")
+        if selected_table is not None:
+            soup = BeautifulSoup(str(selected_table), "html.parser")
+            text_value = _clean(soup.get_text(" ", strip=True))
+        elif len(lot_tables) != 1:
             raise SourceSchemaError(
-                "ausib.ru: procedure detail does not prove exactly one independently identified lot"
+                f"{profile.source_id}: procedure detail does not isolate exactly one requested lot"
             )
     match = profile.lot_url_re.search(detail_url)
     if external_id is None:
@@ -576,9 +532,35 @@ def parse_detail_html(
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
 
-    headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
-    title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
-    title = max(title_candidates, key=len, default="")
+    headings: list[str] = [
+        _clean(str(node.get_text(" ", strip=True))) for node in soup.select("h1, h2, h3")
+    ]
+    labelled = extract_labelled_detail_fields(soup)
+    # Roseltorg renders the property location as a semantic card rather than
+    # a label/value table.  Keep this provider-specific: a page can also
+    # contain the organiser's postal address and footer address, neither of
+    # which is the lot location.
+    detail_address = labelled.address
+    if detail_address is None and profile.source_id == "roseltorg.ru":
+        location = soup.select_one(".lot-location")
+        if location is not None:
+            candidates = [
+                _clean(value) for value in location.stripped_strings
+                if _clean(value).lower() not in {
+                    "расположение", "как добраться", "© яндекс", "условия использования",
+                }
+            ]
+            detail_address = next((
+                value for value in candidates
+                if len(value) >= 8 and re.search(r"\d", value)
+            ), None)
+    title_candidates: list[str] = [
+        item for item in headings if len(item) >= 8 and "информац" not in item.lower()
+    ]
+    title = labelled.title or ""
+    for candidate in title_candidates:
+        if len(candidate) > len(title):
+            title = candidate
     if not title:
         title = _label_value(
             text_value,
@@ -596,10 +578,11 @@ def parse_detail_html(
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    price = _money(text_value)
+    price = labelled.start_price if labelled.start_price is not None else _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
-    current_price = _current_money(text_value)
+    current_price = (labelled.current_price if labelled.current_price is not None
+                     else _current_money(text_value))
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -609,13 +592,15 @@ def parse_detail_html(
         category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=None,
+        address=detail_address,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(text_value),
+        auction_status=_status(
+            f"Статус торгов {labelled.status}" if labelled.status else text_value
+        ),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -672,7 +657,8 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
                     price = candidate
         except (TypeError, ValueError, OverflowError):
             pass
-        text_value = _clean(" ".join(str(raw.get(key) or "") for key in ("title", "purchName", "Address")))
+        text_value = _clean(" ".join(str(raw.get(key) or "") for key in (
+            "title", "purchName", "GeoDataAddress", "Address")))
         cadastral = _CADASTRAL_RE.search(str(raw.get("cadastralNumber") or text_value))
         vin = _VIN_RE.search(text_value)
         lots.append(NormalizedLot(
@@ -684,13 +670,14 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
             category=_category(text_value),
             region_slug=None,
             region_name=_clean(str(raw.get("RegionNameTerm") or "")) or None,
-            address=_clean(str(raw.get("Address") or "")) or None,
+            address=_clean(str(raw.get("GeoDataAddress") or raw.get("Address") or "")) or None,
             cadastral_number=cadastral.group(1) if cadastral else None,
             vin=vin.group(0).upper() if vin else None,
             area=None,
             start_price=price,
             current_price=None,
-            auction_status=_status(str(raw.get("PurchaseStageTerm") or raw.get("purchStateNameTerm") or "")),
+            auction_status=_status("Извещение опубликовано " + str(
+                raw.get("PurchaseStageTerm") or raw.get("purchStateNameTerm") or "")),
             lot_url=href,
             source_url=href,
             detail_level="search",
@@ -908,7 +895,10 @@ class HtmlEtpConnector(AuctionConnector):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
-        if self.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
+        if self.source_id in {
+            "nistp.ru", "vertrades.ru", "sistematorg.com", "fabrikant.ru",
+            "electro-torgi.ru",
+        }:
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -916,6 +906,12 @@ class HtmlEtpConnector(AuctionConnector):
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
         identity = external_id.removeprefix(self.source_id + ":")
+        numbered_procedure = identity
+        if self.source_id in {"ausib.ru", "aukcioncenter.ru"}:
+            procedure_id, separator, lot_number = identity.rpartition(":")
+            if not separator or not procedure_id.isdigit() or not lot_number.isdigit():
+                raise SourceSchemaError(f"{self.source_id}: invalid procedure/lot identity")
+            numbered_procedure = procedure_id
         identity_path = identity
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
@@ -928,7 +924,7 @@ class HtmlEtpConnector(AuctionConnector):
         ):
             raise SourceSchemaError("etp-profit.ru: invalid kind/trade/lot identity")
         detail_url = template.format(
-            identity=identity,
+            identity=numbered_procedure,
             identity_path=identity_path,
             sale_type=sale_type if separator else "",
             lot_id=lot_id if separator else identity,
@@ -984,7 +980,10 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
-    if profile.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
+    if profile.source_id in {
+        "nistp.ru", "vertrades.ru", "sistematorg.com", "fabrikant.ru",
+        "electro-torgi.ru",
+    }:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__

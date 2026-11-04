@@ -7,9 +7,9 @@ def test_all_source_campaign_has_every_profile_and_only_blocks_evidenced_sources
     from bankrotai.services import etp_all_sources_campaign as campaign
 
     assert len(campaign.ALL_SOURCE_IDS) == 21
-    assert len(campaign.RUNNABLE) == 18
+    assert len(campaign.RUNNABLE) == 19
     assert set(campaign.BLOCKED) == {
-        "rts-tender.ru", "utender.ru", "electro-torgi.ru",
+        "rts-tender.ru", "utender.ru",
     }
     assert "cdtrf.ru" in campaign.RUNNABLE
     assert "nistp.ru" in campaign.RUNNABLE
@@ -193,8 +193,8 @@ def test_failed_all_source_campaign_reports_attempted_fraction_not_fake_100(monk
     result = campaign.progress()
     assert result["status"] == "failed"
     assert result["completed"] == 2
-    assert result["total"] == 18
-    assert result["percent"] == 11
+    assert result["total"] == 19
+    assert result["percent"] == 10
     assert result["succeeded"] == 1
     assert result["failed"] == 1
 
