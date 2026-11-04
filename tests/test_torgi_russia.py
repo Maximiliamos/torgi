@@ -198,6 +198,34 @@ def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:
     assert metadata["per_page"] == 24
 
 
+def test_torgi_russia_parser_ignores_cookie_and_ad_overlays() -> None:
+    html = _nextjs_search_html(
+        [_new_site_lot()], current_page=2, last_page=209, total=5000,
+    ).replace(
+        "<main>",
+        """
+        <div role="dialog" data-ad-popup>
+          <button aria-label="Закрыть">Закрыть</button>
+          <a href="/landing_ad/999">Рекламный объект 999</a>
+        </div>
+        <aside aria-label="Уведомление об использовании cookie">
+          <button>Хорошо</button>
+        </aside>
+        <main>
+        """,
+    )
+
+    records, metadata = TorgiRussiaClient.parse_next_search_payload(
+        html,
+        page_url="https://xn----etbpba5admdlad.xn--p1ai/search?page=2",
+        current_page=2,
+    )
+
+    assert [item["id"] for item in records] == [7180653]
+    assert metadata["has_more"] is True
+    assert metadata["total_pages"] == 209
+
+
 def test_torgi_russia_nextjs_parser_ignores_unlinked_widget_lots() -> None:
     linked = _new_site_lot(lot_id=7180653)
     hidden = _new_site_lot(lot_id=7180654)
@@ -289,6 +317,112 @@ def test_torgi_russia_search_uses_verified_real_estate_categories() -> None:
     assert metadata["transport"] == "public-nextjs-html"
     assert metadata["per_page"] == 24
     assert lots[0].raw_data["transport"] == "public-nextjs-html"
+
+
+def test_torgi_russia_page_two_uses_hydration_api_not_repeated_ssr() -> None:
+    page_two_item = _new_site_lot(lot_id=7254906, region_title="Республика Адыгея")
+
+    class Response:
+        url = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search?page=2"
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [page_two_item], "current_page": 2, "last_page": 4,
+                "total": 85, "per_page": 24,
+            }
+
+    class Session:
+        headers = {}
+
+        def __init__(self):
+            self.called_url = None
+            self.called_params = None
+
+        def get(self, url, *, params=None, timeout=None):
+            self.called_url = url
+            self.called_params = params
+            return Response()
+
+    session = Session()
+    lots, metadata = TorgiRussiaClient(session=session).search_lots(
+        TorgiRussiaSearchFilters(page=2, region_id=1)
+    )
+
+    assert session.called_url.endswith("/api/search")
+    assert ("page", 2) in session.called_params
+    assert ("regions[0]", 1) in session.called_params
+    assert ("categorie_childs[0]", 7) in session.called_params
+    assert [lot.external_id for lot in lots] == ["torgi-russia:7254906"]
+    assert metadata["has_more"] is True
+    assert metadata["total_pages"] == 4
+    assert metadata["transport"] == "public-first-party-json"
+
+
+def test_torgi_russia_page_api_rejects_wrong_page() -> None:
+    class Response:
+        url = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search?page=2"
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [_new_site_lot()], "current_page": 1, "last_page": 4}
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    with pytest.raises(RuntimeError, match="wrong page"):
+        TorgiRussiaClient(session=Session()).search_lots(
+            TorgiRussiaSearchFilters(page=2, region_id=1)
+        )
+
+
+def test_torgi_russia_page_api_proves_partial_terminal_page() -> None:
+    terminal_items = [
+        _new_site_lot(
+            lot_id=7188706 - index,
+            region_title="Республика Адыгея",
+        )
+        for index in range(13)
+    ]
+
+    class Response:
+        url = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search?page=4"
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": terminal_items, "current_page": 4, "last_page": 4,
+                "total": 85, "per_page": 24,
+            }
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(page=4, region_id=1)
+    )
+
+    assert len(lots) == 13
+    assert len({lot.external_id for lot in lots}) == 13
+    assert metadata["total"] == 85
+    assert metadata["per_page"] == 24
+    assert metadata["total_pages"] == 4
+    assert metadata["has_more"] is False
 
 
 def test_torgi_russia_connector_uses_verified_internal_region_filter_ids() -> None:
