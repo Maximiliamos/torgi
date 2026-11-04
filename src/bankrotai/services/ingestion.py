@@ -120,14 +120,8 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
                 page_size=96,
             ),
         ),
-        SourceSyncSpec(
-            "torgi-russia.ru",
-            TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
-        ),
-        SourceSyncSpec(
-            "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
-        ),
+        SourceSyncSpec("torgi-russia.ru", TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1)),
+        SourceSyncSpec("bidexpert.ru", BidExpertSearchFilters(category="all", page=1)),
     ) + accepted_etp_source_specs()
 
 
