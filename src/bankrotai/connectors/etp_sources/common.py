@@ -756,6 +756,14 @@ class HtmlEtpConnector(AuctionConnector):
 
     def _check_response(self, response: requests.Response) -> requests.Response:
         if 300 <= response.status_code < 400:
+            # A real Home AUSIB probe returned 302 Location pointing to the
+            # *identical* catalogue URL. Following it cannot reveal a page;
+            # it would only create a redirect loop. Fail closed and explain.
+            location = (getattr(response, "headers", {}) or {}).get("Location")
+            if location and urljoin(response.url, location) == response.url:
+                raise SourceAccessError(
+                    f"{self.source_id}: provider self-redirect loop (HTTP {response.status_code})"
+                )
             raise SourceAccessError(f"{self.source_id}: provider redirect was refused")
         if response.status_code in {401, 403, 429}:
             raise SourceAccessError(f"{self.source_id}: provider returned HTTP {response.status_code}")
