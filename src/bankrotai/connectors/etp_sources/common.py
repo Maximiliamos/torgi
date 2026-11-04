@@ -824,6 +824,21 @@ class HtmlEtpConnector(AuctionConnector):
                 self.profile,
                 urljoin(previous.url or self.profile.listing_url, str(form.get("action") or "")),
             )
+            # NISTP's real `nodesearch` form declares method=GET. Sending
+            # the page number via POST previously returned HTTP 200 with a
+            # different document (no validated lot links). Respect the
+            # provider's actual form method and retain all search filters.
+            method = str(form.get("method") or "get").strip().lower()
+            if method == "get":
+                response = self._check_response(self.session.get(
+                    action, params=data, timeout=self.timeout, allow_redirects=False
+                ))
+                self._last_response, self._last_page = response, page
+                return response
+            if method != "post":
+                raise SourceSchemaError(
+                    f"{self.source_id}: unsupported pagination form method"
+                )
         else:
             link = next((
                 node for node in soup.select("a[href]")
