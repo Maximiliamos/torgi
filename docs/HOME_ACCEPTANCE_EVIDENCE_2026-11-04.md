@@ -80,3 +80,12 @@ The operator's second Home probe (4 November) returned:
 - Roseltorg: `RemoteDisconnected` (no HTTP status). Public monitoring and official communications reported platform outages/recovery, so one failure cannot be characterized as a parser schema defect.
 
 **No production deploy, database writes, GEO or map activation occurred as a result of this investigation.**
+
+
+### Operator-confirmed live GET page 2 and AUSIB self-redirect (4 Nov 2026)
+
+A fresh operator-run **read-only** probe in the deployed Home ingestion worker confirmed:
+
+- **NISTP**: `nodesearch` declares `method=GET`; requesting `pagenum=2` with preserved filters returned **HTTP 200**, **50,131 bytes**, **14 parsed individual lots** with the first observed IDs `nistp.ru:502369:1`, `nistp.ru:502367:1`, `nistp.ru:502363:1`. The former POST returned HTTP 200 / 29,004 bytes / **0** parsed lots. This validates the proposed GET-vs-POST code correction in #1086 for the observed page 2, **not** the final page, complete inventory or independent price checks.
+- **AUSIB**: `GET https://ausib.ru/etp/trade/list.html` returned HTTP **302** with a Location resolving to **exactly that same complete URL** (identical host/path, zero query keys, `same_full_url=true`). This is a self-redirect loop for that endpoint. Existing fail-closed redirect rejection is justified; it must not be replaced by `allow_redirects=True`. A targeted error classification and regression test were added to #1086; the correct alternative official catalogue contract still needs verifying.
+- **No changes to production PostgreSQL, GEO or map** were performed by these diagnostic probes. New ETP automatic ingestion remains disabled until independent full-source acceptance.
