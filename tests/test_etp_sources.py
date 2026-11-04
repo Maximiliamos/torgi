@@ -15,6 +15,7 @@ from bankrotai.connectors.etp_sources import (
     parse_listing_html,
 )
 from bankrotai.connectors.registry import connector_registry
+from bankrotai.connectors.etp_sources.common import _page_url
 
 
 def profile(source_id: str):
@@ -95,6 +96,19 @@ def test_unknown_values_remain_null_and_status_unknown() -> None:
 
 def test_all_profiles_are_registered() -> None:
     assert set(SOURCE_CONNECTOR_TYPES) <= set(connector_registry.source_ids())
+
+
+def test_cdtrf_catalogue_covers_every_requested_active_property_stage() -> None:
+    url = profile("cdtrf.ru").listing_url
+    for value in (
+        "Declare=true", "RecieveReq=true", "DefinePart=true", "TradeGo=true",
+        "Categories=31%2C32%2C33%2C34%2C21%2C22%2C23", "PageNum=1",
+    ):
+        assert value in url
+
+
+def test_roseltorg_second_page_is_not_rewritten_to_first_page() -> None:
+    assert _page_url(profile("roseltorg.ru"), 2).endswith("&page=2")
 
 
 def test_registry_uses_new_parsers_except_for_mature_source_specific_connectors() -> None:
@@ -925,7 +939,7 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
     (
         "roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345",
         "https://www.roseltorg.ru/procedure/SAMPLE/12346",
-        "?sale=2&status%5B0%5D=1&page=1", "page=1",
+            "?sale=2&status%5B0%5D=1&page=2", "page=2",
     ),
 ])
 def test_evidence_backed_get_pagination_fetches_distinct_second_page(
