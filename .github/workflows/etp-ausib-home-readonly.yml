@@ -34,6 +34,8 @@ jobs:
           from urllib.parse import urlsplit, urljoin
           import requests
           from bs4 import BeautifulSoup
+          from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+          from bankrotai.connectors.etp_sources.common import parse_listing_html
 
           urls = [
               "https://ausib.ru/",
@@ -69,6 +71,26 @@ jobs:
                           rb"/trade/view/purchase/general\.html\?[^\"' >]*id=", response.content
                       )),
                   })
+                  if p.path == "/etp/trade/list.html":
+                      if response.status_code == 302 and target == url:
+                          time.sleep(1)
+                          response = session.get(url, timeout=(8, 18), allow_redirects=False)
+                          info["same_url_bounded_retry_http"] = response.status_code
+                      if response.status_code == 200:
+                          try:
+                              connector = SOURCE_CONNECTOR_TYPES["ausib.ru"]()
+                              items = parse_listing_html(
+                                  connector.profile, response.content, page=1
+                              )
+                              info["normalized_lot_candidates"] = len(items)
+                              info["first_three_source_ids"] = [
+                                  item.external_id for item in items[:3]
+                              ]
+                              info["candidates_with_price"] = sum(
+                                  item.start_price is not None for item in items
+                              )
+                          except Exception as exc:
+                              info["catalogue_parser_error"] = type(exc).__name__
                   if p.path == "/" and response.status_code == 200:
                       soup = BeautifulSoup(response.content, "html.parser")
                       candidates = []
