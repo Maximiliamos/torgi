@@ -45,3 +45,37 @@ Status `PASS` in a two-page sample is only evidence for the checked stage. For p
 ## Observability fixes
 
 [PR #1089](https://github.com/Maximiliamos/torgi/pull/1089) extends durable Home logs to print sanitized per-source stage states, pages/candidate counts and the first failing stage, plus an explicit warning that a green workflow is *not* a green parser. This document is a one-time ground-truth snapshot and must not be treated as live status; the workflow artifact/API is the current data source.
+
+## Torgi Russia browser evidence (2026-11-05)
+
+- User-loaded public catalogue pages 1 and 2 each exposed 24 distinct `/lot/{id}` links.
+- Their Next.js flight payloads contained `initialLots` and `initialMeta`; page metadata reported
+  `current_page=1/2`, `last_page=209`, `total=5000`, and `per_page=24`.
+- The two pages had disjoint visible lot IDs, so the public unfiltered pagination itself was not repeating.
+- A cookie notice remained visible on page 2 and an advertising modal was observed, but both sit outside
+  the Next.js `initialLots`/`initialMeta` contract consumed by the HTTP parser. They do not require UI clicks.
+- Two individual cards exposed distinct IDs, prices, statuses, dates and regions; the apartment card also
+  exposed cadastral number `55:36:120305:7503` and area `59.5 sq. m`.
+- This does **not** clear production acceptance: the failed production requests use real-estate category and
+  regional query parameters. Region-filtered pages 1 and 2 still require captured evidence.
+
+### Region-filtered pagination root cause and fix
+
+- The user opened the verified real-estate query for internal region `1` (Republic of Adygea) and used the
+  site's own pagination control to reach page 2. The hydrated page displayed 24 page-2 lots and reported
+  85 matching lots in four pages.
+- Despite `page=2` in the browser URL, the server HTML still embedded `searchRequest.page=1` and
+  `initialMeta.current_page=1`. JavaScript then fetched the real second page from the first-party
+  `https://api.торги-россии.рф/api/search` endpoint and replaced the visible list.
+- This exactly explains the three production failures after one page: the requests-only connector parsed
+  the repeated page-1 SSR payload, and its repeated-page safety guard correctly stopped the run.
+- The connector now keeps page 1 on public SSR and uses the observed first-party JSON pagination contract
+  for pages 2+, requiring `current_page` to equal the requested page and rejecting invalid, empty advertised,
+  or mismatched responses. Missing-lot reconciliation remains disabled.
+- The user then followed the site's controls through pages 3 and 4. Region 1 reported 85 lots: pages 1–3
+  contain 24 rows and terminal page 4 contains 13 rows. On page 4 both the load-more and next-page controls
+  were disabled. Its first and last IDs were `7188706` and `6578770`.
+- Both terminal-card samples opened successfully. They exposed distinct prices (`2,985,732` and `1,472,372`
+  RUB), statuses, dates, Adygea region and cadastral identifiers (`01:05:2900013:34394` and
+  `01:06:2800004:259`). This confirms the terminal-page and detail contracts for region 1 only; it is not yet
+  evidence for all 86 region buckets or two independent complete source scans.

@@ -38,7 +38,7 @@ from bankrotai.scraper_contracts import (
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
-
+from bankrotai.services.etp_terminal_evidence import reached_verified_terminal
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
+    from bankrotai.services.etp_twice_daily import accepted_etp_source_specs
     return (
         SourceSyncSpec(
             "torgi.gov.ru",
@@ -119,21 +120,19 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
                 page_size=96,
             ),
         ),
-        SourceSyncSpec(
-            "torgi-russia.ru", TorgiRussiaSearchFilters(),
-            reconcile_missing=False, require_source_end=True,
-        ),
-        SourceSyncSpec(
-            "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
-        ),
-    )
+        SourceSyncSpec("torgi-russia.ru", TorgiRussiaSearchFilters(),
+                       reconcile_missing=False, require_source_end=True),
+        SourceSyncSpec("bidexpert.ru", BidExpertSearchFilters(category="all", page=1)),
+    ) + accepted_etp_source_specs()
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
     specs = []
+    from bankrotai.services.etp_twice_daily import ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
     for spec in default_source_specs():
+        if spec.source_id in ACCEPTED_ETP_FOR_AUTOMATIC_INGEST:
+            continue
         filters = spec.filters
         if spec.source_id == "torgi.gov.ru":
             filters = replace(filters, publish_date_from=gis_publish_date_from)
@@ -487,7 +486,7 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
-                    reached_source_end = True
+                    reached_source_end = reached_verified_terminal(spec.source_id, page.metadata)
                     break
                 cursor = page.next_cursor
             if not spec.reconcile_missing:

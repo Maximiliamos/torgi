@@ -7,9 +7,9 @@ def test_all_source_campaign_has_every_profile_and_only_blocks_evidenced_sources
     from bankrotai.services import etp_all_sources_campaign as campaign
 
     assert len(campaign.ALL_SOURCE_IDS) == 21
-    assert len(campaign.RUNNABLE) == 18
+    assert len(campaign.RUNNABLE) == 19
     assert set(campaign.BLOCKED) == {
-        "rts-tender.ru", "utender.ru", "electro-torgi.ru",
+        "rts-tender.ru", "utender.ru",
     }
     assert "cdtrf.ru" in campaign.RUNNABLE
     assert "nistp.ru" in campaign.RUNNABLE
@@ -114,6 +114,13 @@ def test_all_source_campaign_journal_fields_fit_production_schema(monkeypatch):
     ):
         monkeypatch.setenv(flag, "1")
     monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
+    # This test only checks the journal schema after the authorization gate.
+    # Production does not have these independent source approvals.
+    from bankrotai.services import etp_twice_daily
+    monkeypatch.setattr(
+        etp_twice_daily, "ACCEPTED_ETP_FOR_AUTOMATIC_INGEST",
+        frozenset(campaign.RUNNABLE),
+    )
     monkeypatch.setattr(campaign, "SequentialCampaignService", FakeService)
 
     import pytest
@@ -151,6 +158,11 @@ def test_geocode_campaign_waits_for_the_shared_geo_lock(monkeypatch):
             raise geo_backfill.GeoBatchAlreadyRunning("busy")
         return {"status": "completed", "processed": 1}
 
+    from bankrotai.services import etp_twice_daily
+    monkeypatch.setattr(
+        etp_twice_daily, "ACCEPTED_ETP_FOR_AUTOMATIC_INGEST",
+        frozenset(campaign.RUNNABLE),
+    )
     monkeypatch.setattr(campaign, "SessionLocal", session_factory)
     monkeypatch.setattr(campaign, "snapshot", lambda: {})
     monkeypatch.setattr(campaign.time, "sleep", lambda _seconds: None)
@@ -193,8 +205,8 @@ def test_failed_all_source_campaign_reports_attempted_fraction_not_fake_100(monk
     result = campaign.progress()
     assert result["status"] == "failed"
     assert result["completed"] == 2
-    assert result["total"] == 18
-    assert result["percent"] == 11
+    assert result["total"] == 19
+    assert result["percent"] == 10
     assert result["succeeded"] == 1
     assert result["failed"] == 1
 
@@ -235,3 +247,34 @@ def test_operator_cannot_start_unapproved_all_source_campaign(monkeypatch):
     monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", "cdtrf.ru,m-ets.ru")
     with pytest.raises(PermissionError, match="acceptance missing for"):
         campaign._authorized()
+
+
+
+def test_all_source_workflow_env_cannot_override_source_acceptance(monkeypatch):
+    """Reject the existing 19-source allowlist even with all operator flags."""
+    import pytest
+    from bankrotai.services import etp_all_sources_campaign as campaign
+    from bankrotai.services import etp_twice_daily
+
+    for name in (
+        "ETP_ALL_SOURCES_OPERATOR_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED", "CDTRF_OPERATOR_SYNC_ENABLED",
+    ):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
+    assert not etp_twice_daily.ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+    with pytest.raises(PermissionError, match="no independent acceptance"):
+        campaign._authorized()
+
+
+
+def test_resume_after_import_cannot_geocode_or_publish_unaccepted_sources():
+    import pytest
+    from bankrotai.services import etp_all_sources_campaign as campaign
+    from bankrotai.services import etp_twice_daily
+
+    assert not etp_twice_daily.ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+    with pytest.raises(PermissionError, match="independently accepted"):
+        campaign.geocode_all()
+    with pytest.raises(PermissionError, match="independently accepted"):
+        campaign.publish_map()

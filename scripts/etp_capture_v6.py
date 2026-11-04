@@ -23,8 +23,23 @@ try:
 except ImportError as exc:
     raise SystemExit("Install playwright: python -m pip install playwright && python -m playwright install chromium") from exc
 
-from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
-from dataclasses import replace
+from dataclasses import dataclass, replace
+
+try:
+    from bankrotai.connectors.registry.direct_etp_catalogue import PROFILES
+except ModuleNotFoundError:
+    @dataclass(frozen=True, slots=True)
+    class StandaloneProfile:
+        source_id: str
+        name: str
+        catalogue_url: str
+        strategy: str = "capture"
+        note: str = ""
+
+    profile_path = Path(__file__).with_name("etp_capture_profiles.json")
+    PROFILES = tuple(StandaloneProfile(**item) for item in json.loads(
+        profile_path.read_text(encoding="utf-8")
+    ))
 
 # Browser-confirmed catalogue hosts can differ from the corporate root domain.
 START_OVERRIDES = {
@@ -42,7 +57,7 @@ START_OVERRIDES = {
 DETAIL_PATTERNS = {
     "m-ets.ru": r"^/\d{4,9}-\d{1,5}/?$",
     "cdtrf.ru": r"^/trades/\d{3,12}/?$",
-    "rts-tender.ru": r"^/trades/lotCard/[0-9a-f-]{30,40}/?$",
+    "rts-tender.ru": r"^/v2/trades/[0-9a-f-]{30,40}/lots/[0-9a-f-]{30,40}/?$",
     "nistp.ru": r"^/bankrot/(?:trade_view|lot_view)\.php$",
     "alfalot.ru": r"^/app/LotCard/page$",
     "arbbitlot.ru": r"^/public/(?:auctions|public-offers)/lots/view/\d+/?$",
@@ -77,6 +92,8 @@ def public_url(url: str, host: str) -> bool:
 
 def is_site_url(url: str, source: str, host: str) -> bool:
     if public_url(url, host):
+        return True
+    if source == "fabrikant.ru" and public_url(url, "fabrikant.ru"):
         return True
     return source == "sberbank-ast.ru" and public_url(url, SBER_DETAIL_HOST)
 
@@ -298,6 +315,62 @@ def attempt_page_two(page, before: set[str], source: str, host: str, events: lis
     return False, "none"
 
 
+def attempt_last_page(page, before: set[str], source: str, host: str, events: list) -> tuple[bool, str]:
+    """Click only a paginator's explicit last/highest-page control."""
+    selectors = [
+        "nav[aria-label*='pagination' i] a", ".pagination a", ".pager a",
+        "[class*='pagination'] a", "[class*='paging'] a", "td.pager a",
+        "button[aria-label*='last' i]", "a[aria-label*='last' i]",
+        "button[title*='послед' i]", "a[title*='послед' i]",
+    ]
+    candidates = []
+    for selector in selectors:
+        nodes = page.locator(selector)
+        try:
+            length = min(nodes.count(), 100)
+        except Exception:
+            continue
+        for index in range(length):
+            node = nodes.nth(index)
+            try:
+                label = node.inner_text(timeout=1000).strip().lower()
+                aria = (node.get_attribute("aria-label") or "").strip().lower()
+                title = (node.get_attribute("title") or "").strip().lower()
+                numeric = int(label) if label.isdigit() else 0
+                explicit = any(word in f"{label} {aria} {title}" for word in (
+                    "last", "послед", "конец",
+                ))
+                if explicit or numeric > 2:
+                    candidates.append((1 if explicit else 0, numeric, selector, node))
+            except Exception:
+                continue
+    if not candidates:
+        events.append({"event": "last_page_unavailable"})
+        return False, "none"
+    _, _, selector, node = max(candidates, key=lambda item: (item[0], item[1]))
+    try:
+        node.click(timeout=12000)
+        page.wait_for_timeout(1800)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except BrowserTimeout:
+            pass
+        after = set(detail_urls(page, source, host))
+        new_count = len(after - before)
+        events.append({
+            "event": "last_page_attempt", "method": selector,
+            "previous_count": len(before), "last_count": len(after),
+            "new_lot_urls": new_count,
+        })
+        return bool(after and after != before and new_count), selector
+    except Exception as exc:
+        events.append({
+            "event": "last_page_click_failed", "method": selector,
+            "error": type(exc).__name__,
+        })
+        return False, selector
+
+
 def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) -> dict:
     host = urlsplit(profile.catalogue_url).hostname
     folder = base / profile.source_id
@@ -342,6 +415,7 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
     status = "unverified"
     first: list[str] = []
     page_two = False
+    last_page = False
     details = 0
     try:
         response = page.goto(profile.catalogue_url, wait_until="domcontentloaded", timeout=45000)
@@ -368,6 +442,11 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
                     page, set(first), profile.source_id, host, events
                 )
                 record_page(page, folder, "03_catalogue_second_attempt", events, host)
+                second = set(detail_urls(page, profile.source_id, host))
+                last_page, _ = attempt_last_page(
+                    page, second or set(first), profile.source_id, host, events
+                )
+                record_page(page, folder, "04_catalogue_last_attempt", events, host)
                 status = "two_pages_distinct" if page_two else "single_page_only"
                 # Visit a small number of first-party links, never submit forms.
                 for index, link in enumerate(first[:max_details], 1):
@@ -408,6 +487,7 @@ def scan(page, profile, base: Path, max_details: int, challenge_timeout: int) ->
         )
     return {"site": profile.source_id, "status": status, "first_page_links": len(first),
             "page_two_distinct": page_two, "detail_pages_saved": details,
+            "last_page_distinct": last_page,
             "json_responses_saved": network_count, "complete_catalogue_verified": False,
             "production_ready": False, "can_reconcile_missing": False}
 
@@ -419,6 +499,7 @@ def main() -> int:
     cli.add_argument("--max-details", type=int, default=2)
     cli.add_argument("--challenge-timeout", type=int, default=90)
     cli.add_argument("--headless", action="store_true")
+    cli.add_argument("--browser-executable", type=Path)
     args = cli.parse_args()
     if not 0 <= args.max_details <= 3 or not 30 <= args.challenge_timeout <= 180:
         cli.error("max-details must be 0..3 and challenge-timeout 30..180")
@@ -430,7 +511,12 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=False)
     outcomes = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless)
+        launch_options = {"headless": args.headless}
+        if args.browser_executable is not None:
+            if not args.browser_executable.is_file():
+                cli.error(f"browser executable not found: {args.browser_executable}")
+            launch_options["executable_path"] = str(args.browser_executable)
+        browser = p.chromium.launch(**launch_options)
         try:
             total_sources = len(selected)
             for source_index, source in enumerate(selected, 1):
@@ -449,7 +535,7 @@ def main() -> int:
                     print(
                         f"[{done_percent:3d}%] DONE {source}: status={outcome['status']}; "
                         f"lots={outcome['first_page_links']}; page2={outcome['page_two_distinct']}; "
-                        f"details={outcome['detail_pages_saved']}",
+                        f"last={outcome['last_page_distinct']}; details={outcome['detail_pages_saved']}",
                         flush=True,
                     )
                 finally:

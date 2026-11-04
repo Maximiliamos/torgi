@@ -128,6 +128,26 @@ def test_fast_source_is_bounded_without_terminal_requirement():
     assert fast.reconcile_missing is False
 
 
+def test_stock_detail_enrichment_is_not_mistaken_for_unsupported_fetch(monkeypatch):
+    source = "lot-online.ru"
+
+    class Enrichment(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        async def enrich_lot(self, lot):
+            return _lot(self.source, lot.external_id, detail_level="detail")
+
+        async def fetch_lot(self, external_id):
+            raise AssertionError("stock enrichment must be preferred")
+
+    monkeypatch.setattr(
+        checklist, "_connector", lambda s: (Enrichment(s), object()),
+    )
+    result = asyncio.run(checklist.diagnose_source(source))
+    assert result["stages"]["individual_detail"]["state"] == checklist.PASS
+    assert result["stages"]["detail_identity"]["state"] == checklist.PASS
+
+
 def test_diagnose_all_progress_includes_per_stage_state(monkeypatch, capsys):
     monkeypatch.setattr(
         checklist, "_connector",

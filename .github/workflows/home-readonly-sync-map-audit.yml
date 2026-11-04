@@ -1,0 +1,276 @@
+name: Home read-only sync and map chain audit
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/home-readonly-sync-map-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-readonly-sync-map-audit
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'integration/pr1080-pr1085-etp-home-gates-20261104')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Inspect containers and worker pings (never start/stop)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = @(
+            'bankrotai-home-postgres', 'bankrotai-home-redis',
+            'bankrotai-home-secondary', 'bankrotai-home-ingestion-worker',
+            'bankrotai-home-geocoding-worker', 'bankrotai-home-map-worker'
+          )
+          foreach ($name in $names) {
+            $result = docker inspect --format '{{.State.Status}}' $name
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $name" }
+            if ($result.Trim() -ne 'running') { throw "$name is not running" }
+            Write-Output "$name=running"
+          }
+          foreach ($item in @(
+            @{Container='bankrotai-home-ingestion-worker'; Node='ingestion@bankrotai-home'},
+            @{Container='bankrotai-home-geocoding-worker'; Node='geocoding@bankrotai-home'},
+            @{Container='bankrotai-home-map-worker'; Node='map@bankrotai-home'}
+          )) {
+            $ping = docker exec $item.Container celery -A bankrotai.tasks:celery_app inspect ping -d $item.Node --timeout 5
+            if ($LASTEXITCODE -ne 0 -or -not (($ping | Out-String) -match 'pong')) {
+              throw "No Celery pong for $($item.Node)"
+            }
+            Write-Output "$($item.Node)=pong"
+          }
+      - name: Read-only PostgreSQL leases, 09/21 runs, and current MapDataset
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun, MapDataset
+          from bankrotai.services.ingestion import default_source_specs
+          from bankrotai.tasks import _unpaused_source_specs, celery_app
+          from bankrotai.core import get_settings
+          from bankrotai.services.map_object_store import _verify_public_manifest
+
+          def stamp(x):
+              return x.isoformat() if x is not None else None
+
+          def safe_error(value):
+              if not value:
+                  return None
+              return " ".join(str(value).split())[:500]
+
+          all_ids = [s.source_id for s in default_source_specs()]
+          enabled_ids = [s.source_id for s in _unpaused_source_specs(default_source_specs())]
+          beat = celery_app.conf.beat_schedule
+          scheduled = {}
+          for name in ('refresh-nationwide-sources-full', 'probe-source-network-health',
+                       'geocode-pending-lots', 'publish-dirty-map-dataset',
+                       'audit-all-direct-etp-profiles'):
+              if name in beat:
+                  rule = beat[name]
+                  scheduled[name] = {'task': rule['task'], 'cron': str(rule['schedule'])}
+
+          with SessionLocal() as session:
+              runs = session.scalars(
+                  select(LotSyncRun).order_by(LotSyncRun.started_at.desc()).limit(12)
+              ).all()
+              items = []
+              for run in runs:
+                  sources = session.scalars(
+                      select(LotSyncSourceRun).where(LotSyncSourceRun.sync_run_id == run.id)
+                  ).all()
+                  items.append({
+                      'started_at_utc': stamp(run.started_at), 'finished_at_utc': stamp(run.finished_at),
+                      'status': run.status, 'trigger_type': run.trigger_type,
+                      'source_count': len(sources),
+                      'sources': [{'id': s.source_system, 'status': s.status,
+                                   'complete': s.complete_source_run,
+                                   'pages': s.pages_scanned,
+                                   'seen': s.items_seen,
+                                   'inserted': s.items_inserted,
+                                   'updated': s.items_updated,
+                                   'failed': s.items_failed,
+                                   'error': safe_error(s.error_message)}
+                                  for s in sources]
+                  })
+              dataset = session.scalar(select(MapDataset)
+                  .where(MapDataset.is_current.is_(True), MapDataset.status == 'ready'))
+              map_info = None if dataset is None else {
+                  'version': dataset.version,
+                  'published_at_utc': stamp(dataset.published_at),
+                  'point_count': dataset.point_count,
+                  'tile_count': dataset.tile_count,
+              }
+
+          manifest = {'status': 'no_current_map'}
+          if map_info:
+              try:
+                  m = _verify_public_manifest(get_settings(), map_info['version'])
+                  manifest = {
+                      'status': 'verified' if (
+                          m.get('version') == map_info['version']
+                          and int(m.get('point_count', -1)) == int(map_info['point_count'])
+                          and int(m.get('tile_count', -1)) == int(map_info['tile_count'])
+                      ) else 'mismatch',
+                      'version': m.get('version'),
+                      'point_count': m.get('point_count'),
+                      'tile_count': m.get('tile_count'),
+                  }
+              except Exception as exc:
+                  manifest = {'status': 'unavailable', 'error_type': type(exc).__name__}
+          # Read-only rollback readiness: the previous known-good ready
+          # MapDataset must still have a matching publicly readable manifest.
+          with SessionLocal() as session:
+              previous = session.scalars(
+                  select(MapDataset)
+                  .where(MapDataset.status == 'ready', MapDataset.is_current.is_(False))
+                  .order_by(MapDataset.published_at.desc()).limit(2)
+              ).all()
+              previous_info = [
+                  {'version': d.version, 'point_count': d.point_count,
+                   'tile_count': d.tile_count, 'published_at_utc': stamp(d.published_at)}
+                  for d in previous
+              ]
+          rollback = {'status': 'missing', 'candidates': previous_info}
+          if previous_info:
+              candidate = previous_info[0]
+              try:
+                  saved = _verify_public_manifest(get_settings(), candidate['version'])
+                  rollback['status'] = 'verified' if (
+                      saved.get('version') == candidate['version']
+                      and int(saved.get('point_count', -1)) == int(candidate['point_count'])
+                      and int(saved.get('tile_count', -1)) == int(candidate['tile_count'])
+                  ) else 'mismatch'
+              except Exception as exc:
+                  rollback['status'] = 'unavailable'
+                  rollback['error_type'] = type(exc).__name__
+          print(json.dumps({
+              'audit_read_only': True, 'database_writes': 0,
+              'all_configured_source_ids': all_ids,
+              'enabled_source_ids': enabled_ids,
+              'celery_beat': scheduled,
+              'recent_sync_runs': items,
+              'current_map': map_info,
+              'public_s3_manifest': manifest,
+              'rollback_ready_manifest': rollback,
+          }, ensure_ascii=False, default=str))
+          '@
+          $output = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'Read-only Home DB inspection failed' }
+          $report = $output | Select-Object -Last 1 | ConvertFrom-Json
+          if ($report.audit_read_only -ne $true -or $report.database_writes -ne 0) {
+            throw 'Read-only probe contract missing'
+          }
+          $file = Join-Path $env:RUNNER_TEMP 'home-sync-map-audit.json'
+          $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $file -Encoding utf8
+          Write-Output ('Configured sources: {0}; active: {1}; recent syncs: {2}; map: {3}; S3: {4}' -f
+            @($report.all_configured_source_ids).Count,
+            @($report.enabled_source_ids).Count,
+            @($report.recent_sync_runs).Count,
+            $report.current_map.version, $report.public_s3_manifest.status)
+          $summary = @(
+            '## Home source and map chain — read only',
+            '',
+            "- Configured: $(@($report.all_configured_source_ids) -join ', ')",
+            "- Enabled: $(@($report.enabled_source_ids) -join ', ')",
+            "- Current MapDataset: $($report.current_map.version)",
+            "- REG.RU S3 manifest: $($report.public_s3_manifest.status)",
+            "- Previous ready MapDataset manifest (rollback): $($report.rollback_ready_manifest.status)",
+            '',
+            '| Start UTC | Finish UTC | Status | Trigger | Sources |',
+            '|---|---|---|---|---:|'
+          )
+          foreach ($item in @($report.recent_sync_runs)) {
+            $summary += "| $($item.started_at_utc) | $($item.finished_at_utc) | $($item.status) | $($item.trigger_type) | $($item.source_count) |"
+          }
+          $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if ($report.public_s3_manifest.status -ne 'verified') {
+            throw 'Current map and public S3 manifest could not be reconciled'
+          }
+          if ($report.rollback_ready_manifest.status -ne 'verified') {
+            throw 'No verified previous ready MapDataset + public S3 rollback manifest'
+          }
+      - name: Explain Torgi Russia exclusion and historical source health (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = @'
+          import json
+          from sqlalchemy import select, func
+          from bankrotai.db import SessionLocal, SourceLot, SourceHealthState, LotSyncSourceRun, LotSyncRun
+          from bankrotai.tasks import _source_is_paused
+          from bankrotai.services.source_resilience import source_resilience_status
+
+          source = "torgi-russia.ru"
+          with SessionLocal() as session:
+              state = session.scalar(
+                  select(SourceHealthState).where(SourceHealthState.source_system == source)
+              )
+              circuit = source_resilience_status(session, source)
+              history = session.execute(
+                  select(
+                      LotSyncRun.started_at, LotSyncRun.trigger_type,
+                      LotSyncSourceRun.status, LotSyncSourceRun.pages_scanned,
+                      LotSyncSourceRun.items_seen,
+                      LotSyncSourceRun.complete_source_run,
+                      LotSyncSourceRun.error_message,
+                  ).join(LotSyncRun, LotSyncRun.id == LotSyncSourceRun.sync_run_id)
+                   .where(LotSyncSourceRun.source_system == source)
+                   .order_by(LotSyncRun.started_at.desc()).limit(10)
+              ).all()
+              counts = session.execute(
+                  select(func.count(SourceLot.id),
+                         func.count(SourceLot.id).filter(SourceLot.is_active.is_(True)),
+                         func.max(SourceLot.last_seen_at))
+                  .where(SourceLot.source_system == source)
+              ).one()
+              output = {
+                  "source": source,
+                  "paused": _source_is_paused(source),
+                  "circuit_state": circuit["circuit_state"],
+                  "circuit_open_until_utc": str(circuit["circuit_open_until"])
+                                            if circuit["circuit_open_until"] else None,
+                  "last_error_category": circuit["last_error_category"],
+                  "consecutive_operational_failures": circuit["consecutive_operational_failures"],
+                  "health_status": state.status if state is not None else None,
+                  "last_success_utc": str(state.last_success_at) if state else None,
+                  "last_failure_utc": str(state.last_failure_at) if state else None,
+                  "source_lots_total": counts[0],
+                  "source_lots_active": counts[1],
+                  "source_lots_last_seen_utc": str(counts[2]) if counts[2] else None,
+                  "recent_source_runs": [
+                      {"started_utc": str(x[0]), "trigger": x[1],
+                       "status": x[2], "pages": x[3], "seen": x[4],
+                       "complete": x[5],
+                       "error": " ".join(str(x[6]).split())[:500] if x[6] else None}
+                      for x in history
+                  ],
+                  "database_writes": 0,
+              }
+          print(json.dumps(output, ensure_ascii=False))
+          '@
+          $lines = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $lines) { throw 'Torgi Russia read-only probe failed' }
+          $report = $lines | Select-Object -Last 1 | ConvertFrom-Json
+          if ($report.database_writes -ne 0) { throw 'No-write contract missing' }
+          $json = $report | ConvertTo-Json -Depth 6
+          Write-Output $json
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+      - name: Upload sanitized read-only evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: home-sync-map-readonly-${{ github.run_id }}
+          path: ${{ runner.temp }}\\home-sync-map-audit.json
+          if-no-files-found: warn
+          retention-days: 14

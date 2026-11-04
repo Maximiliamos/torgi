@@ -18,6 +18,7 @@ from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
+PUBLIC_API_SEARCH_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search"
 PUBLIC_PAGE_SIZE = 24
 REAL_ESTATE_CATEGORY_IDS = (7, 33, 343, 9, 18, 17, 16)
 # The public catalog's regions[] parameter is an internal sequential filter ID,
@@ -185,22 +186,67 @@ class TorgiRussiaClient:
         if filters.region_id is not None:
             params.append(("regions[]", int(filters.region_id)))
 
-        response = self._get_with_retry(
-            urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
-            params=params,
-        )
-        records, page_meta = self.parse_next_search_payload(
-            response.text,
-            page_url=response.url,
-            current_page=page,
-        )
+        transport = "public-nextjs-html"
+        api_payload: dict | None = None
+        if page == 1:
+            response = self._get_with_retry(
+                urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
+                params=params,
+            )
+            records, page_meta = self.parse_next_search_payload(
+                response.text,
+                page_url=response.url,
+                current_page=page,
+            )
+        else:
+            # The public /search route always embeds page=1 in its SSR flight
+            # payload, even when the browser URL says page=2+. The hydrated UI
+            # obtains the requested page from this first-party API. Reading SSR
+            # again would repeat page 1 and falsely stop every regional scan.
+            api_params: list[tuple[str, str | int]] = [
+                ("search", ""), ("page", page),
+                ("history_only", int(filters.history_only)),
+            ]
+            api_params.extend(
+                (f"categorie_childs[{index}]", category_id)
+                for index, category_id in enumerate(category_ids)
+            )
+            if filters.region_id is not None:
+                api_params.append(("regions[0]", int(filters.region_id)))
+            response = self._get_with_retry(PUBLIC_API_SEARCH_URL, params=api_params)
+            try:
+                candidate = response.json()
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Torgi Russia public page API returned invalid JSON; page={page}"
+                ) from exc
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("data"), list):
+                raise RuntimeError(
+                    f"Torgi Russia public page API schema is invalid; page={page}"
+                )
+            api_payload = candidate
+            observed_page = int(candidate.get("current_page") or 0)
+            if observed_page != page:
+                raise RuntimeError(
+                    "Torgi Russia public page API returned the wrong page; "
+                    f"requested={page} observed={observed_page}"
+                )
+            records = candidate["data"]
+            last_page = max(page, int(candidate.get("last_page") or page))
+            page_meta = {
+                "has_more": page < last_page,
+                "total_pages": last_page,
+                "total": candidate.get("total"),
+                "per_page": candidate.get("per_page"),
+            }
+            transport = "public-first-party-json"
 
         # Do not accept a 200 interstitial, unrecognised SSR schema or
         # silently dropped lot records as an empty/complete catalogue page.
         # A legitimate empty region still carries explicit initialLots=[] and
         # initialMeta with total=0. Never publish missing-lot archival evidence
         # after parsing a page whose data contract cannot be proven.
-        if not records:
+        if not records and transport == "public-nextjs-html":
             flight = self._extract_next_flight_text(response.text)
             initial_lots = self._extract_named_json_value(flight, "initialLots")
             initial_meta = self._extract_named_json_value(flight, "initialMeta")
@@ -223,6 +269,13 @@ class TorgiRussiaClient:
                     "Torgi Russia public search reported positive total but parsed zero lots; "
                     f"page={page} region_id={filters.region_id} total={reported_total}"
                 )
+        elif not records and api_payload is not None and page <= int(
+            api_payload.get("last_page") or page
+        ):
+            raise RuntimeError(
+                "Torgi Russia public page API returned an empty advertised page; "
+                f"page={page} region_id={filters.region_id}"
+            )
 
         if filters.region_id is not None and records:
             source_region_id = int(filters.region_id)
@@ -269,7 +322,7 @@ class TorgiRussiaClient:
         for lot in lots:
             raw = dict(lot.raw_data or {})
             raw["raw_endpoint"] = response.url
-            raw["transport"] = "public-nextjs-html"
+            raw["transport"] = transport
             lot.raw_data = raw
 
         return lots, {
@@ -282,7 +335,7 @@ class TorgiRussiaClient:
             "per_page": page_meta.get("per_page"),
             "raw_endpoint": response.url,
             "region_id": filters.region_id,
-            "transport": "public-nextjs-html",
+            "transport": transport,
         }
 
     def fetch_lot_page(self, external_id: str) -> tuple[str, str]:

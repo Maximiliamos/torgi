@@ -1,13 +1,60 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
-> **Актуальный статус на 02.11.2026:** см.
-> [`ETP_ROLLOUT_STATUS_2026-11-02.md`](ETP_ROLLOUT_STATUS_2026-11-02.md).
-> Текущий этап — **R7-CDTRF production completion and acceptance**. Новый код
-> развернут, exact-SHA P1/Public WEB/functional зелёные, но повторный полный
-> CDTRF import → GEO → map и exact-SHA P11 ещё не завершены. Из 16 запускаемых
-> новых профилей production-записи есть у 3, а успешный полный source-run
-> последней общей кампании есть у 2. Исторические статусы ниже сохраняются как
-> журнал решений и не заменяют актуальный срез.
+> **Актуальный статус и независимый аудит на 04.11.2026:**
+> [статус всех 22 ЭТП с историей 2 ноября](ETP_ROLLOUT_STATUS_2026-11-02.md) ·
+> [независимый аудит исходников / рисков import, GEO, map](ETP_INDEPENDENT_CODE_AUDIT_2026-11-04.md) ·
+> [ручные evidence 3–4 ноября](ETP_MANUAL_BROWSER_AUDIT_2026-11-03.md).
+> **PR #1080**, исходный просмотренный HEAD 4ab3a77 (на тот момент CI queued; не объединён с main).
+> 21 новый профиль + отдельный Lot-online = 22 ЭТП; в коде 19 runnable, 2 blocked.
+> **Не подтверждена independent S3/S4 source acceptance ни для одного из 21 новых профилей.**
+> Текущий этап **R8 — read-only source / detail / pagination acceptance**.
+> Старые 14/21 распознаваемых snapshot-каталогов и 98 локальных regression tests
+> не заменяют доказательство полного каталога. Массовый write-run 19 источников,
+> глобальный GEO и публикация MapDataset до прохождения gates запрещены.
+
+## Текущая очередь R8 — результаты аудита на 4 ноября 2026
+
+Все галочки ниже относятся к подтверждённому завершению, а не к наличию кода.
+Новые этапы вводить без удаления исторического журнала релизов и ADR ниже.
+
+### R8-01. GitHub и воспроизводимость (P1)
+
+- [x] PR [#1080](https://github.com/Maximiliamos/torgi/pull/1080) содержит sample-фикстуры/регрессионные тесты реальных карточек: Sistematorg 93 240 ₽, Аукцион-центр 7 200 000 ₽, AUSIB 370 000 ₽, Alfalot права требования исключаются из недвижимости. Это **проверка конкретных примеров**, не полная приёмка.
+- [x] Два документа актуализированы независимым кодовым аудитом: реестр 22 ЭТП, аудит сценария массового импорта/GEO/map с рисками и критериями выхода.
+- [ ] Получить окончательный **success** CI на точном последнем SHA с тестами Python, mypy, Ruff, Postgres, Web, S3. Последнее проверенное состояние 4ab3a77: CI **queued**; не переносить статус старых SHA.
+- [ ] Сопоставить локальные незакоммиченные изменения агента с PR, исправить замечания, после ревизии объединить в main. Затем actual Home exact-SHA deploy + P1/P11, сверка контейнеров.
+- [ ] Зафиксировать machine-readable read-only evidence по каждой ЭТП, отдельные hash/timestamp source+detail, ссылку на полный replay; не публиковать raw персональные данные.
+
+### R8-02. Обязательные исправления source acceptance (P1; до полного write-run)
+
+- [ ] **Detail gating:** ingestion._persist_page вызывает enrich_lot только при capability detail_enrichment, а generic connector_type у большинства источников её не объявляет. Исключить catalog-only запись как принятую детальную, довести M-ETS до специализированного или проверенного аналогичного пути. Покрыть source-specific тестами.
+- [ ] **Allowlist по доказательствам:** workflow etp-all-new-sources-import-geo-map.yml сейчас содержит 19 перечисленных RUNNABLE, а _authorized() не подтверждает S3/S4 acceptance. Разделить «технически доступен» и «разрешён к записи»; привязать список к exact-SHA и source-specific acceptance evidence. По умолчанию закрыто.
+- [ ] **Безопасность побочных эффектов:** проверить и ограничить глобальные reconcile_cross_source_duplicates и _expire_elapsed_auctions внутри SequentialCampaignService._run_active — они выполняются после non-reconciling specs. При недоступном/неполном источнике не менять чужие продажи/архивы; test+rollback.
+- [ ] **Terminal-page proof:** generic _has_next_page выводит конец по отсутствию link/onclick; при provider drift это ложная успешная полнота. Для каждой ЭТП отдельное подтверждение total/disabled-next/terminal response и защита от исчезновения DOM. Обязательны **две независимые полные read-only выборки** с объяснением разницы цен/статусов/числа лотов.
+- [ ] **Раздельный GEO scope:** geocode_all охватывает все новые source_system, а resume_after_import пропускает импорт без независимой проверки accepted run_id. Привязать к принятым exact external_ids, исходному commit SHA и source audit; публиковать карту только после независимой проверки manifest/S3/public URL и возможности отката.
+- [ ] **Точные деньги:** исправить float и «detail.start_price or lot.start_price» (issue [#1021](https://github.com/Maximiliamos/torgi/issues/1021)); Decimal RUB, происхождение значения, задаток vs стартовая цена, price-null, multi-lot.
+- [ ] **Полнота / наблюдаемость:** показывать отдельно source_attempted, source_successful, source_accepted, persisted, verified_geo, published. 100% попыток даже с failed — не 100% готовности.
+
+### R8-03. Приоритет приёмки отдельных ЭТП (P1)
+
+- [ ] **Первая волна:** МЭТС, ЦДТ, отдельно baseline Lot-online: терминальные страницы, detail ID/price/status, два повторяемых прохода; затем сравнение read-only DB и карты без записи.
+- [ ] **Вторая волна:** Sistematorg (таблицы lot_N и исторические procedure ID), AUSIB (multi-lot table и подтверждение конца), Аукцион-центр (оба кадастра/lot identity и конец); не использовать общую цену торгов.
+- [ ] **Третья волна:** Roseltorg (load-more, адрес lot-location), Sberbank-AST (JSON Total/last), Fabrikant (React Flight ID → detail), Alfalot (SUPCOMING+SCURRENT, фильтр недвижимости и page repeats), NISTP/Vertrades (индивидуальная секция лота).
+- [ ] **Четвёртая волна:** Arbbitlot, ETPU, Centerr, Rus-on, ZakazRF, UTPL, Profit, Electro: postback/GET/terminal page, individual detail и цена/статус. Electro формально runnable, но HTTP lot endpoint ещё не доказан — не пускать в import.
+- [ ] **Blocked:** RTS-tender и uTender до доказанного разрешённого публичного контрактa. Не обходить TLS, anti-bot, CAPTCHA или 429; не считать block пустым успешным списком.
+- [ ] Для каждой из 21 новых ЭТП выставить S3 только по двум полным read-only прогонам, отдельному detail, проверке на реальные категории недвижимости и независимому reviewer; отдельный Lot-online — повторная baseline QA.
+
+### R8-04. Production canary → GEO → map (строго после R8-02 и source S3)
+
+- [ ] Home Docker health на текущем SHA, точные worker images, свежий restore-verified backup + тест восстановления, exact-SHA P1/P11, отсутствие другого import/GEO/map, pre-import SQL collision review.
+- [ ] Canary **по одному S3-источнику** с ограниченными source+external_id, без missing-lot archival, корректные статусы/цены и журнал; сравнение PostgreSQL/SourceLot/ProcessedLot/MapDataset до/после.
+- [ ] Только для подтверждённых imported external_ids прогон GEO: приоритет кадастр/верифицированный адрес/официальные координаты; без центроида и без выдуманной геопозиции; transport errors повторять изолированно.
+- [ ] Предпросмотр версии MapDataset, manifest REG.RU S3, корректные source-фильтры, кликабельные исходные карточки, 30+ sample объектов с разных регионов; keep last good version until independent verification.
+- [ ] При успешном canary — следующий принятый источник, затем регулярный sync и мониторинг изменений DOM/API. Источники S0/S1/S2 не импортировать массово.
+
+**Метрики закрытия R8:** 21/21 independent S3 либо точный список объективно blocked; 0 источников с неразобранными price/identity mismatches; source-specific archived/duplicates = 0 без доказанного события; отдельные фактические счётчики imported, verified GEO и published; публичная карта использует только проверенный MapDataset. Если часть ЭТП объективно недоступна, R8 может быть закрыт как «частичная принятая эксплуатация» без обещания 22/22 активных источников.
+
+---
 
 ## Отложенная задача R6-DATA-001: унификация данных всех парсеров (30.10.2026)
 

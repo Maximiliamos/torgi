@@ -261,7 +261,7 @@ async def diagnose_source(
             stages["initial_or_current_price"] = _entry(
                 PASS if price_count == len(sample) else FAIL,
                 reason="sample_prices_present" if price_count == len(sample)
-                else "missing_individual_prices_in_sample", count=price_count,
+                else "missing_listing_price_in_sample", count=price_count,
             )
             stages["auction_status"] = _entry(
                 PASS if unknown == 0 else FAIL,
@@ -284,8 +284,10 @@ async def diagnose_source(
             details_ok = 0
             for lot in sample[:detail_probes]:
                 try:
-                    detail = await connector.fetch_lot(lot.external_id)
-                    details_ok += 1
+                    if "detail_enrichment" in getattr(connector, "capabilities", ()):
+                        detail = await connector.enrich_lot(lot)
+                    else:
+                        detail = await connector.fetch_lot(lot.external_id)
                     if (detail.external_id != lot.external_id or
                             detail.source_system != source or
                             getattr(detail, "detail_level", None) != "detail"):
@@ -297,6 +299,7 @@ async def diagnose_source(
                             "category": "detail_lot_identity_mismatch",
                         }
                         break
+                    details_ok += 1
                 except Exception as exc:
                     fail("individual_detail", exc, 1)
                     break

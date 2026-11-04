@@ -1,0 +1,91 @@
+name: ETP two-pass read-only source acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'One individual direct ETP (no database writes)'
+        required: true
+        type: choice
+        options:
+          - cdtrf.ru
+          - m-ets.ru
+          - sistematorg.com
+          - nistp.ru
+          - alfalot.ru
+          - roseltorg.ru
+          - sberbank-ast.ru
+          - fabrikant.ru
+          - arbbitlot.ru
+          - etpu.ru
+          - centerr.ru
+          - aukcioncenter.ru
+          - etp-profit.ru
+          - ausib.ru
+          - vertrades.ru
+          - rus-on.ru
+          - zakazrf.ru
+          - utpl.ru
+          - electro-torgi.ru
+          - rts-tender.ru
+          - utender.ru
+      max_pages:
+        description: 'Fail closed if the source exceeds this many pages per pass; 3500 max'
+        required: true
+        default: '3500'
+        type: choice
+        options: ['3500', '1000', '100', '10']
+permissions:
+  contents: read
+
+concurrency:
+  group: etp-two-pass-acceptance-${{ inputs.source }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - name: Check trusted Home adapter and source QA contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted Home ingestion worker is not running'
+          }
+          $module = docker exec bankrotai-home-ingestion-worker python -c "import bankrotai.services.etp_two_pass_acceptance as m; print(m.MAX_AUDIT_PAGES)"
+          if ($LASTEXITCODE -ne 0 -or ($module | Select-Object -Last 1).Trim() -ne '3500') {
+            throw 'Requested source acceptance code has not been deployed to trusted Home worker'
+          }
+      - name: Two complete sequential read-only inventories, last page and detail checks
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = '${{ inputs.source }}'
+          $pages = [int]'${{ inputs.max_pages }}'
+          $output = Join-Path $env:RUNNER_TEMP 'etp-two-pass-acceptance.json'
+          $raw = & docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_two_pass_acceptance --source $source --max-pages $pages --max-detail-probes 30 --delay-seconds 0.5 2>&1
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -or -not $raw) { throw 'Read-only scan did not finish safely' }
+          $report = $raw | Select-Object -Last 1 | ConvertFrom-Json
+          if ($report.production_approved -ne $false -or $report.database_writes -ne 0 -or $report.map_writes -ne 0) {
+            throw 'Untrusted source acceptance claims or unexpected writes'
+          }
+          $report | ConvertTo-Json -Depth 9 | Set-Content -LiteralPath $output -Encoding utf8
+          Write-Output ("Source={0}, status={1}, two_complete_passes={2}, stable_ids={3}, details={4}" -f
+            $source,$report.status,$report.two_complete_passes,
+            $report.stable_identity_set,$report.detail_sample_verified)
+          if ($report.status -ne 'review_required') {
+            throw 'Two-pass complete source/detail evidence is not accepted; source stays disabled'
+          }
+          Write-Output 'Proof collected for independent operator review ONLY; no source enabled automatically'
+      - name: Preserve non-PII read-only source evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: etp-two-pass-readonly-${{ inputs.source }}-${{ github.run_id }}
+          path: ${{ runner.temp }}\\etp-two-pass-acceptance.json
+          if-no-files-found: warn
+          retention-days: 30
