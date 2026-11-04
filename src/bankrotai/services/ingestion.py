@@ -137,7 +137,11 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
         filters = spec.filters
         if spec.source_id == "torgi.gov.ru":
             filters = replace(filters, publish_date_from=gis_publish_date_from)
-        specs.append(replace(\n            spec, filters=filters, reconcile_missing=False, max_batches=1,\n            # A one-page discovery must not inherit full-catalogue terminal proof.\n            require_source_end=False,\n        ))
+        specs.append(replace(
+            spec, filters=filters, reconcile_missing=False, max_batches=1,
+            # A one-page discovery must not inherit full-catalogue terminal proof.
+            require_source_end=False,
+        ))
     return tuple(specs)
 
 
