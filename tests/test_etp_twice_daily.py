@@ -119,3 +119,72 @@ def test_scheduled_audit_fails_if_any_source_result_missing(monkeypatch) -> None
     monkeypatch.setattr(etp_qa_batch, "run_all", bad_report)
     with pytest.raises(RuntimeError, match="read-only QA contract"):
         scheduled_etp_readonly_audit_task.run()
+
+
+@pytest.mark.parametrize("build_fails", [True, False])
+def test_failed_map_publication_rearms_dirty_signal(monkeypatch, build_fails: bool) -> None:
+    """A failed background build must not silently drop its consumed dirty key."""
+    import redis
+    from bankrotai import tasks
+    from bankrotai.services import map_builder
+
+    class FakeLock:
+        def acquire(self, blocking=False):
+            return True
+
+        def release(self):
+            return None
+
+    class FakeRedis:
+        values: dict[str, str] = {}
+
+        @classmethod
+        def from_url(cls, *_args, **_kwargs):
+            return cls()
+
+        def lock(self, *_args, **_kwargs):
+            return FakeLock()
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def set(self, key, value):
+            self.values[key] = str(value)
+
+        def setnx(self, key, value):
+            return self.values.setdefault(key, str(value)) == str(value)
+
+        def pipeline(self, **_kwargs):
+            return self
+
+        def execute(self):
+            return []
+
+        def close(self):
+            pass
+
+    class EmptySession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalar(self, *_args):
+            return None
+
+    def fake_build(_factory):
+        if build_fails:
+            raise RuntimeError("simulated S3 network failure")
+        return {"status": "rejected", "promotion_status": "rejected"}
+
+    monkeypatch.setattr(redis, "Redis", FakeRedis)
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: EmptySession())
+    monkeypatch.setattr(map_builder, "map_source_fingerprint", lambda _session: "source-hash")
+    monkeypatch.setattr(map_builder, "build_map_dataset", fake_build)
+    if build_fails:
+        with pytest.raises(RuntimeError, match="S3 network failure"):
+            tasks.build_map_dataset_task.run()
+    else:
+        assert tasks.build_map_dataset_task.run()["status"] == "rejected"
+    assert FakeRedis.values[tasks._MAP_DIRTY_KEY] == "1"
