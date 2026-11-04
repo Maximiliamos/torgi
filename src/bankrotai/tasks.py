@@ -79,6 +79,7 @@ _P7_RUNNING_STALE_AFTER = timedelta(
     seconds=_P7_WORKFLOW_MONITOR_SECONDS + _P7_STALE_GRACE_SECONDS
 )
 from bankrotai.services.etp_twice_daily import etp_beat_schedule, scheduled_etp_readonly_audit_task as _etp_readonly_audit
+from bankrotai.services.scheduled_sync_catchup import recover_missed_full_source_sync_task as _recover_full
 
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
@@ -163,7 +164,7 @@ celery_app.conf.update(
 )
 
 scheduled_etp_readonly_audit_task = celery_app.task(name="bankrotai.tasks.scheduled_etp_readonly_audit_task", soft_time_limit=3000, time_limit=3600)(_etp_readonly_audit)
-
+recover_missed_full_source_sync_task = celery_app.task(name="bankrotai.tasks.recover_missed_full_source_sync_task")(_recover_full)
 
 class QueueUnavailableError(RuntimeError):
     pass
