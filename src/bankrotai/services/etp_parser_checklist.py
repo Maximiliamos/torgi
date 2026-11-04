@@ -53,7 +53,7 @@ def _http_status(exc: Exception) -> int | None:
         return status
     if type(exc).__name__ not in {"SourceAccessError", "HTTPError"}:
         return None
-    match = re.search(r"\\bHTTP\\s+([1-5]\\d{2})\\b", str(exc))
+    match = re.search(r"\bHTTP\s+([1-5]\d{2})\b", str(exc))
     return int(match.group(1)) if match else None
 
 
