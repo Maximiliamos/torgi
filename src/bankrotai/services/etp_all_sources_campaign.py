@@ -81,6 +81,17 @@ def _authorized() -> None:
     missing = [name for name in required if os.getenv(name) != "1"]
     if missing:
         raise PermissionError("All-source campaign authorization missing: " + ",".join(missing))
+    from bankrotai.services.etp_twice_daily import ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+
+    # An environment variable or runnable connector is not independent source
+    # acceptance. Even an operator workflow with every env switch enabled
+    # must fail closed before DB writes if any scheduled ETP is not reviewed.
+    unaccepted = set(RUNNABLE) - ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+    if unaccepted:
+        raise PermissionError(
+            "All-source production import blocked: no independent acceptance for "
+            + ", ".join(sorted(unaccepted))
+        )
 
 
 def _connector(source_id: str):
