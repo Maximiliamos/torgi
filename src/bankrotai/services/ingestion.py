@@ -91,6 +91,11 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
+    # Keep existing production sources. Newly created direct ETP profiles are
+    # *not* automatically production-approved; source-specific read-only QA is
+    # scheduled separately at the same 09:00/21:00 Moscow cadence.
+    from bankrotai.services.etp_twice_daily import accepted_etp_source_specs
+
     return (
         SourceSyncSpec(
             "torgi.gov.ru",
@@ -127,13 +132,19 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             "bidexpert.ru",
             BidExpertSearchFilters(category="all", page=1),
         ),
-    )
+    ) + accepted_etp_source_specs()
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
     specs = []
+    from bankrotai.services.etp_twice_daily import ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+
     for spec in default_source_specs():
+        # A one-page fast retry cannot refresh the full direct ETP safely.
+        # Approved ETPs are handled only by the scheduled full source run.
+        if spec.source_id in ACCEPTED_ETP_FOR_AUTOMATIC_INGEST:
+            continue
         filters = spec.filters
         if spec.source_id == "torgi.gov.ru":
             filters = replace(filters, publish_date_from=gis_publish_date_from)
