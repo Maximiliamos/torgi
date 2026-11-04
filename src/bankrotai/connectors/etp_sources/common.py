@@ -18,6 +18,7 @@ from bankrotai.connectors.etp_sources.source_specific import (
     profit_initial_money,
 )
 from bankrotai.connectors.etp_sources.detail_fields import extract_labelled_detail_fields
+from bankrotai.connectors.etp_sources.transport import get_catalogue_response
 
 
 class SourceAccessError(RuntimeError):
@@ -806,8 +807,9 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceAccessError(f"{self.source_id}: pagination requires a provider-specific browser/form contract")
         if page <= 1 or self.profile.supports_get_pagination:
             page_url = _safe_provider_url(self.profile, _page_url(self.profile, page))
-            response = self._check_response(self.session.get(
-                page_url, timeout=self.timeout, allow_redirects=False
+            response = self._check_response(get_catalogue_response(
+                self.session, source_id=self.source_id, url=page_url,
+                timeout=self.timeout,
             ))
             self._last_response, self._last_page = response, page
             return response
