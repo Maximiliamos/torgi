@@ -271,6 +271,12 @@ async def diagnose_source(
                 reason="sample_categories_recognised" if categories == len(sample)
                 else "unclassified_sample", count=categories,
             )
+            for stage in ("initial_or_current_price", "auction_status",
+                          "property_classification"):
+                if stages[stage]["state"] == FAIL and report["first_failure"] is None:
+                    report["first_failure"] = {
+                        "stage": stage, "category": stages[stage]["reason"],
+                    }
         if sample and detail_probes:
             # A listing URL is not proof of a fetched and isolated lot detail.
             details_ok = 0
