@@ -673,8 +673,18 @@ def build_map_dataset_task() -> dict:
                 "current_version": current_version,
             }
 
-        result = build_map_dataset(SessionLocal)
-        if result.get("promotion_status") == "published":
+        try:
+            result = build_map_dataset(SessionLocal)
+        except Exception:
+            # The minute watchdog consumed the dirty generation BEFORE
+            # queueing this task. Do not lose that signal on S3/build failure.
+            _mark_map_dirty(client)
+            raise
+        if result.get("promotion_status") != "published":
+            # Failed/rejected map promotion retains the previous good dataset.
+            # Re-arm the retry signal without claiming a successful update.
+            _mark_map_dirty(client)
+        else:
             client.set(_MAP_SOURCE_FINGERPRINT_KEY, source_fingerprint)
             try:
                 cleanup_old_map_datasets_task.delay()
