@@ -536,6 +536,24 @@ def parse_detail_html(
         _clean(str(node.get_text(" ", strip=True))) for node in soup.select("h1, h2, h3")
     ]
     labelled = extract_labelled_detail_fields(soup)
+    # Roseltorg renders the property location as a semantic card rather than
+    # a label/value table.  Keep this provider-specific: a page can also
+    # contain the organiser's postal address and footer address, neither of
+    # which is the lot location.
+    detail_address = labelled.address
+    if detail_address is None and profile.source_id == "roseltorg.ru":
+        location = soup.select_one(".lot-location")
+        if location is not None:
+            candidates = [
+                _clean(value) for value in location.stripped_strings
+                if _clean(value).lower() not in {
+                    "расположение", "как добраться", "© яндекс", "условия использования",
+                }
+            ]
+            detail_address = next((
+                value for value in candidates
+                if len(value) >= 8 and re.search(r"\d", value)
+            ), None)
     title_candidates: list[str] = [
         item for item in headings if len(item) >= 8 and "информац" not in item.lower()
     ]
@@ -574,7 +592,7 @@ def parse_detail_html(
         category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=labelled.address,
+        address=detail_address,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,

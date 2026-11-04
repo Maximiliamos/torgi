@@ -345,6 +345,31 @@ def test_detail_label_value_cells_provide_price_address_and_status() -> None:
     assert lot.auction_status == "scheduled"
 
 
+def test_roseltorg_semantic_location_is_lot_address_not_footer_address() -> None:
+    html = """
+    <html><body>
+      <h1>квартира, площадью 67,8 кв.м., этаж 3</h1>
+      <div>Прием заявок</div><div>Начальная цена 7 300 000,00 ₽</div>
+      <div class="lot-location">
+        <span>Расположение</span>
+        <span>350004, Краснодарский край, г Краснодар, ул Минская, д 121, кв 9</span>
+        <span>© Яндекс</span><a>Условия использования</a><span>Как добраться</span>
+      </div>
+      <footer>Адрес 119435, город Москва, Большой Саввинский переулок, дом 12</footer>
+      <p>Открытая публичная карточка продажи недвижимого имущества.</p>
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("roseltorg.ru"), html,
+        detail_url="https://www.roseltorg.ru/procedure/COM04112600002/1",
+    )
+    assert lot.address == (
+        "350004, Краснодарский край, г Краснодар, ул Минская, д 121, кв 9"
+    )
+    assert lot.start_price == 7_300_000
+    assert lot.auction_status == "active"
+
+
 def test_unlabelled_amount_does_not_become_price_without_a_table_header() -> None:
     html = """
     <table><tr><td>Лот</td><td>Стоимость</td></tr>

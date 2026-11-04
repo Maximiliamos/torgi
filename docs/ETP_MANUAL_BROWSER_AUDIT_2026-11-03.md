@@ -1,4 +1,4 @@
-# Ручная проверка 22 ЭТП — 3 ноября 2026
+# Ручная проверка 22 ЭТП — 3–4 ноября 2026
 
 Проверка выполнена по 22 страницам, которые владелец проекта загрузил без VPN,
 и по сохранённым HTML/скриншотам V6. Это проверка контрактов источников, а не
@@ -12,26 +12,26 @@
 
 | Источник | Что подтверждено вручную | Оставшийся блокер полного обхода |
 |---|---|---|
-| M-ETS | 3 088 лотов, 155 страниц, lot URL и detail | Повторить terminal-page; исправлена подмена цены задатком |
+| M-ETS | 3 086 лотов, 155 страниц, lot URL, цены и detail | Повторить terminal-page; исправлена подмена цены задатком |
 | Lot-online | 4 456 активных объектов, 96/страницу, lot URL | Доказать terminal page текущего API-run |
 | CDTRF | 3 086–3 087 live, 155 страниц, 4 статуса и 7 категорий | Полный detail acceptance и сверка всех rejected |
 | NISTP | В одной процедуре несколько `#lotN` | Per-lot detail isolation/цена |
 | Alfalot | LotCard identity | Объединить upcoming и current; сохранённая page 2 повторяется |
-| RTS-tender | UUID trade + UUID lot, Next/Last | Сохранить HTTP/API pagination; старый numeric regex неверен |
-| Roseltorg | Procedure/lot identity | Реальный load-more/API и фильтр недвижимости |
-| Сбербанк-АСТ | Официальный JSON и точные lot URL | Последняя страница; старый снимок page 2 повторяется |
-| Fabrikant | Процедура может содержать несколько лотов | Выделить lot number/detail; procedure ID не является lot ID |
+| RTS-tender | Live grid: более 1 000 лотов, UUID trade + UUID lot, цена, статус, Next/Last | Сохранить XHR/API pagination и detail; HTTP-клиент пока не разблокировать |
+| Roseltorg | Procedure/lot identity; detail: цена, статус и точный блок `lot-location` | Реальный load-more/API и фильтр недвижимости |
+| Сбербанк-АСТ | Официальный JSON; detail подтверждает цену, адрес, статус и кадастр | Последняя страница; старый снимок page 2 повторяется |
+| Fabrikant | Live detail разделяет два лота, цены и кадастры | Связать provider lot ID с отдельным lot-detail URL; procedure ID не является lot ID |
 | ARBбитЛот | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
 | ETPU | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
-| Sistematorg | Trade rows и число лотов | Per-lot detail/цена; trade ID не является lot ID |
+| Sistematorg | Live single-lot detail имеет отдельную таблицу `table_lot_1`, цену и статус | Реализовать выбор `table_lot_N`; trade ID не является lot ID |
 | Centerr | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
 | Аукцион-центр | 498 страниц, multi-lot procedure | Per-lot detail/цена |
 | Profit | Отдельные trade/lot URL, 2 668 страниц | Terminal-page proof |
-| AUSIB | 1 155 страниц, multi-lot procedure | Per-lot detail/цена |
-| Вердиктъ | `trade#lot-N`, цена/кадастр в строке | Per-lot detail isolation и terminal page |
+| AUSIB | 1 155 страниц; live detail имеет `table#lotNumber1`, цену, статус и кадастр | Terminal-page proof и повторная multi-lot карточка |
+| Вердиктъ | Live detail содержит отдельные таблицы `СВЕДЕНИЯ ПО ЛОТУ №N`, цены/кадастры | Реализовать per-lot table selection и terminal page |
 | uTender | Публичная страница не открылась | `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` |
 | RUSSIA OnLine | Отдельный `lot_nid` | Terminal-page proof |
-| Electro-torgi | 651 страница, статусы/суммы/описания | Exact HTTP paging и per-lot detail |
+| Electro-torgi | 651 страница; UI detail переключает один лот с ценой 883 000 RUB | Найти HTTP endpoint UI-секции лота; URL процедуры сам по себе отдаёт только общую часть |
 | ZakazRF | Отдельные lot URL, ASP.NET paging | Фильтр активной недвижимости и terminal page |
 | UTPL | Отдельные lot URL, ASP.NET paging | Terminal-page proof |
 
@@ -79,6 +79,20 @@ transport/evidence-blocked. Lot-online — отдельный действующ
 `D:\BankrotAI\etp-operator-logs\manual-etp-parser-audit-20261103-v6.json`.
 Raw evidence не публикуется: оно может содержать персональные данные.
 
+### Дополнительная ручная проверка 4 ноября
+
+В повторно загруженных без VPN страницах подтверждены: M-ETS `3086 / 155`,
+CDTRF `3086 / 155` с четырьмя активными статусами и семью категориями,
+RTS с UUID отдельного лота и кнопками `Next Page` / `Last Page`, а также
+детальные поля Сбербанк-АСТ, Росэлторг, Fabrikant, Вердиктъ, AUSIB,
+Electro-torgi и Sistematorg. У Росэлторга исправлено извлечение адреса:
+парсер берёт `.lot-location`, а не адрес оператора из подвала страницы.
+
+RTS оставлен blocked: браузерный DOM доказывает форму данных, но не доказывает
+воспроизводимый read-only HTTP/XHR контракт для серверного обхода. uTender
+остаётся недоступен даже без VPN. Lot-online подтверждён как существующий
+штатный источник и не должен повторно импортироваться новым профилем.
+
 ## Следующий безопасный шаг
 
 Сделать новый no-VPN read-only capture только для контрактов, которых не хватает:
@@ -87,17 +101,10 @@ multi-lot detail, Roseltorg load-more, Alfalot current, Sberbank last page и
 uTender TLS. После этого — повторные fixtures/tests, затем два read-only полных
 прохода. Лишь после совпадения счётчиков разрешать import → GEO → map.
 
-## Постоянный двухкомпьютерный контур
+## Текущий контур проверки
 
-- ПК №1: разработка, GitHub и тесты с VPN; production остаётся только здесь.
-- ПК №2: без VPN, только Python + Playwright Chromium и read-only collector.
-- Обмен выполняется ZIP-файлами напрямую через AnyDesk. В пакет не входят
-  `.env`, PostgreSQL, Docker, SSH/API-ключи или production-конфигурация.
-- Фазы приёмки: `pilot` (M-ETS, CDTRF, RTS) → `problem` (9 площадок) → `all`.
-- Каждый источник принимается только при доказанных page 1/page 2/last,
-  индивидуальном detail, стабильном lot ID, цене/статусе и двух совпавших
-  полных read-only проходах. Unit-тест сам по себе приёмкой не является.
-
-Пакет узла создаётся `scripts/build-etp-audit-node-package.ps1`, автономный
-запуск на ПК №2 выполняет `scripts/run-etp-audit-node.ps1`. Результаты и логи
-сохраняются в `C:\ETP_AUDIT`, без обращения к production DB/GEO/map.
+Вариант со вторым ПК/AnyDesk исключён владельцем проекта. Проверка выполняется
+по страницам, вручную загруженным без VPN во встроенном браузере, и по локальным
+read-only архивам. Каждый источник принимается только при доказанных page 1,
+page 2, last, индивидуальном detail, стабильном lot ID, цене/статусе и двух
+совпавших полных read-only проходах. Unit-тест сам по себе приёмкой не является.
