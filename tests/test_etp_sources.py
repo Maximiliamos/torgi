@@ -318,7 +318,8 @@ def test_ausib_same_url_302_is_explicitly_detected_without_following() -> None:
     connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=FakeSession(response))
     with pytest.raises(SourceAccessError, match="self-redirect loop"):
         asyncio.run(connector.search({}))
-    assert connector.session.requested_urls == [url]
+    # One bounded retry is intentional; a second 302 fails closed.
+    assert connector.session.requested_urls == [url, url]
 
 
 def test_ausib_one_self_redirect_then_catalogue_200_is_readable(monkeypatch) -> None:
