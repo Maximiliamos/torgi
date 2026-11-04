@@ -69,3 +69,14 @@ The subsequent read-only operator probe yielded exact failures:
 Also emitted `XMLParsedAsHTMLWarning` in `common.py:252` during one preview; separate the actual XML response case from ordinary HTML and retain parser diagnostics.
 
 A new **no-write diagnostics module** `src/bankrotai/services/etp_transport_diagnostics.py` has been added to integrated PR #1086 to capture HTTP status, sanitized redirects and NISTP first/second-page form contract without persisting HTML, credentials or personal details. It can be run from the developer worktree via `git show <integration-head>:src/bankrotai/services/etp_transport_diagnostics.py | docker exec -i bankrotai-home-ingestion-worker python -` **without deploying the integration PR**. Its outputs are not yet returned; **no new source is production accepted**.
+
+
+### Home follow-up: confirmed NISTP GET method and ambiguous AUSIB 302
+
+The operator's second Home probe (4 November) returned:
+- NISTP first catalogue HTTP 200, 53 794 bytes, 33 candidates, `nodesearch` form with **method=GET**, 20 next-controls; second page via old code's POST: HTTP 200, 29 004 bytes, 0 candidates, 2 next-controls. Body hashes differ; this is NOT proof of real page 2. **Fix in PR #1086:** respect the form's GET with preserved search parameters, separate regression test. Still needs a live GET probe before declaring the parser fixed in Home.
+- AUSIB catalogue HTTP **302** from `https://ausib.ru/etp/trade/list.html`; the sanitized destination has the **same scheme/host/path**, but previous output deliberately removed its query string. Need query **key names only** and safe redirect-contract proof, not a blind `allow_redirects=True`.
+- ETP Profit continues `SSLCertVerificationError: unable to get local issuer certificate` with `/usr/local/lib/python3.11/site-packages/certifi/cacert.pem`. Never set `verify=False`.
+- Roseltorg: `RemoteDisconnected` (no HTTP status). Public monitoring and official communications reported platform outages/recovery, so one failure cannot be characterized as a parser schema defect.
+
+**No production deploy, database writes, GEO or map activation occurred as a result of this investigation.**
