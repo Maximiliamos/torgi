@@ -122,6 +122,32 @@ jobs:
                   }
               except Exception as exc:
                   manifest = {'status': 'unavailable', 'error_type': type(exc).__name__}
+          # Read-only rollback readiness: the previous known-good ready
+          # MapDataset must still have a matching publicly readable manifest.
+          with SessionLocal() as session:
+              previous = session.scalars(
+                  select(MapDataset)
+                  .where(MapDataset.status == 'ready', MapDataset.is_current.is_(False))
+                  .order_by(MapDataset.published_at.desc()).limit(2)
+              ).all()
+              previous_info = [
+                  {'version': d.version, 'point_count': d.point_count,
+                   'tile_count': d.tile_count, 'published_at_utc': stamp(d.published_at)}
+                  for d in previous
+              ]
+          rollback = {'status': 'missing', 'candidates': previous_info}
+          if previous_info:
+              candidate = previous_info[0]
+              try:
+                  saved = _verify_public_manifest(get_settings(), candidate['version'])
+                  rollback['status'] = 'verified' if (
+                      saved.get('version') == candidate['version']
+                      and int(saved.get('point_count', -1)) == int(candidate['point_count'])
+                      and int(saved.get('tile_count', -1)) == int(candidate['tile_count'])
+                  ) else 'mismatch'
+              except Exception as exc:
+                  rollback['status'] = 'unavailable'
+                  rollback['error_type'] = type(exc).__name__
           print(json.dumps({
               'audit_read_only': True, 'database_writes': 0,
               'all_configured_source_ids': all_ids,
@@ -130,6 +156,7 @@ jobs:
               'recent_sync_runs': items,
               'current_map': map_info,
               'public_s3_manifest': manifest,
+              'rollback_ready_manifest': rollback,
           }, ensure_ascii=False, default=str))
           '@
           $output = $probe | docker exec -i bankrotai-home-ingestion-worker python -
@@ -152,6 +179,7 @@ jobs:
             "- Enabled: $(@($report.enabled_source_ids) -join ', ')",
             "- Current MapDataset: $($report.current_map.version)",
             "- REG.RU S3 manifest: $($report.public_s3_manifest.status)",
+            "- Previous ready MapDataset manifest (rollback): $($report.rollback_ready_manifest.status)",
             '',
             '| Start UTC | Finish UTC | Status | Trigger | Sources |',
             '|---|---|---|---|---:|'
@@ -162,6 +190,9 @@ jobs:
           $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($report.public_s3_manifest.status -ne 'verified') {
             throw 'Current map and public S3 manifest could not be reconciled'
+          }
+          if ($report.rollback_ready_manifest.status -ne 'verified') {
+            throw 'No verified previous ready MapDataset + public S3 rollback manifest'
           }
       - name: Upload sanitized read-only evidence
         if: always()
