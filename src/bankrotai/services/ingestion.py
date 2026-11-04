@@ -38,7 +38,7 @@ from bankrotai.scraper_contracts import (
 from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
-
+from bankrotai.services.etp_terminal_evidence import reached_verified_terminal
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +486,7 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
-                    reached_source_end = True
+                    reached_source_end = reached_verified_terminal(spec.source_id, page.metadata)
                     break
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
