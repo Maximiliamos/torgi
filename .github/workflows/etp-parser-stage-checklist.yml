@@ -1,0 +1,76 @@
+name: ETP parser stage checklist (Home read-only)
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: etp-parser-stage-checklist
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 100
+    steps:
+      - name: Confirm trusted Home worker SHA
+        shell: powershell
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted Home ingestion worker unavailable'
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_run') {
+            if ($env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$') { throw 'Invalid SHA' }
+            $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+            if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$env:EXPECTED_SHA") {
+              throw 'Refusing stale worker SHA'
+            }
+          }
+
+      - name: Diagnose all 22 ETP sources with exact failure stage
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $json = Join-Path $env:RUNNER_TEMP 'etp-parser-stage-checklist.json'
+          $log = Join-Path $env:RUNNER_TEMP 'etp-parser-stage-progress.log'
+          $ErrorActionPreference = 'Continue'
+          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -m bankrotai.services.etp_parser_checklist --all --pages 2 --detail-probes 1 --pause-seconds 1.0 2>&1)
+          $status = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $output | Set-Content -LiteralPath $log -Encoding utf8
+          if ($status -ne 0 -or $output.Count -lt 1) {
+            throw 'ETP diagnostic command failed'
+          }
+          $report = $output[-1] | ConvertFrom-Json
+          if ($report.sources_checked -ne 22 -or
+              $report.database_writes -ne 0 -or $report.map_writes -ne 0 -or
+              $report.archival_enabled -ne $false -or
+              $report.production_approved -ne $false -or
+              $report.complete_source_inventory -ne $false) {
+            throw 'ETP diagnostic violated read-only or coverage contract'
+          }
+          $report | ConvertTo-Json -Depth 9 | Set-Content -LiteralPath $json -Encoding utf8
+          $failed = @($report.sources | Where-Object { $null -ne $_.first_failure }).Count
+          Write-Output ("ETP stage diagnostics: {0} sources, {1} reported failures/blocks" -f $report.sources_checked,$failed)
+
+      - name: Upload sanitized per-source stage report and log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-parser-stage-checklist
+          path: |
+            ${{ runner.temp }}/etp-parser-stage-checklist.json
+            ${{ runner.temp }}/etp-parser-stage-progress.log
+          if-no-files-found: warn
+          retention-days: 30
