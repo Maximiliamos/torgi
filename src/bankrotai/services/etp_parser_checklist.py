@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from bankrotai.connectors.etp_sources import (
-    EtpSearchFilters, PROFILES as DIRECT_PROFILES, SOURCE_CONNECTOR_TYPES,
+    EtpSearchFilters, EtpSourceProfile, PROFILES as DIRECT_PROFILES, SOURCE_CONNECTOR_TYPES,
 )
 
 CHECKS = (
@@ -69,7 +69,9 @@ def _safe_catalogue_host(url: str) -> str | None:
 
 
 def _definitions() -> list[tuple[str, str, Any]]:
-    profiles = [(p.source_id, p.listing_url, p) for p in DIRECT_PROFILES]
+    profiles: list[tuple[str, str, EtpSourceProfile | None]] = [
+        (p.source_id, p.listing_url, p) for p in DIRECT_PROFILES
+    ]
     # The 22-source inventory includes Lot-online as an existing first-party
     # production connector; it is deliberately not scraped by the direct ETP registry.
     profiles.append(("lot-online.ru", "https://lot-online.ru/", None))
