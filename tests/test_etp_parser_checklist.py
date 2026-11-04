@@ -264,3 +264,33 @@ def test_cdtrf_official_json_failure_records_catalogue_stage(monkeypatch):
     assert report["first_failure"]["stage"] == "catalogue_markup"
     assert report["stages"]["catalogue_markup"]["state"] == checklist.FAIL
     assert "SECRET" not in str(report)
+
+
+def test_detail_price_and_status_are_validated_independently(monkeypatch):
+    class MissingMoney(FakeConnector):
+        async def fetch_lot(self, external_id):
+            return _lot(self.source, external_id, detail_level="detail",
+                        start_price=None, current_price=None, auction_status="unknown")
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (MissingMoney(source), object()))
+    result = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert result["stages"]["initial_or_current_price"]["state"] == checklist.PASS
+    assert result["stages"]["auction_status"]["state"] == checklist.PASS
+    assert result["stages"]["individual_detail"]["state"] == checklist.PASS
+    assert result["stages"]["individual_detail_price"]["state"] == checklist.FAIL
+    assert result["stages"]["individual_detail_status"]["state"] == checklist.FAIL
+    assert result["first_failure"]["stage"] == "individual_detail_price"
+
+
+def test_enrichment_does_not_claim_independent_money_validation(monkeypatch):
+    class Enrichment(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+        async def enrich_lot(self, lot):
+            lot.detail_level = "detail"
+            return lot
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (Enrichment(source), object()))
+    result = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert result["stages"]["individual_detail"]["state"] == checklist.PASS
+    assert result["stages"]["individual_detail_price"]["state"] == checklist.NOT_APPLICABLE
+    assert result["stages"]["individual_detail_status"]["state"] == checklist.NOT_APPLICABLE
