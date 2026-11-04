@@ -366,7 +366,9 @@ async def diagnose_source(
         if sample and detail_probes:
             # A listing URL is not proof of a fetched and isolated lot detail.
             details_ok = 0
-            capabilities = getattr(connector, "capabilities", frozenset())
+            capabilities: frozenset[str] = frozenset(
+                getattr(connector, "capabilities", ())
+            )
             can_fetch = "fetch_lot" in capabilities
             can_enrich = "detail_enrichment" in capabilities
             # Mature Lot-online exposes enrich_lot, not fetch_lot. This is a
