@@ -285,12 +285,29 @@ def parse_procedure_card_lots(profile, html: str | bytes, *, page: int) -> list[
                 continue
             seen.add(external_id)
             cadastre = _CADASTRAL_RE.search(segment)
+            start_price = _money(segment)
+            # Electro-torgi labels a single-procedure card with
+            # ``1 lot for the sum <amount> RUB`` instead of ``initial price``.
+            # The amount is attributable only when the provider explicitly
+            # states that the procedure has exactly one lot.  Never spread a
+            # procedure total over several numbered lots.
+            if start_price is None and profile.source_id == "electro-torgi.ru":
+                total = re.search(
+                    r"\b1\s+лот\s+на\s+сумму\s+(\d[\d\s\u00a0]*)(?:[.,](\d{1,2}))?\s*₽",
+                    text_value,
+                    re.I,
+                )
+                if total and len(segments) == 1:
+                    start_price = float(
+                        re.sub(r"[\s\u00a0]", "", total.group(1))
+                        + ("." + total.group(2) if total.group(2) else "")
+                    )
             lots.append(NormalizedLot(
                 external_id=external_id, source=profile.source_id.removesuffix(".ru"),
                 source_system=profile.source_id, title=segment[:500], description=segment[:5000],
                 category=_category(segment), region_slug=None, region_name=None, address=None,
                 cadastral_number=cadastre.group(1) if cadastre else None, vin=None, area=None,
-                start_price=_money(segment), current_price=_current_money(segment),
+                start_price=start_price, current_price=_current_money(segment),
                 auction_status=_status(text_value), lot_url=href, source_url=href,
                 detail_level="search", raw_data={
                     "listing_page": page, "procedure_identity": procedure_identity,

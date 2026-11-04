@@ -104,13 +104,33 @@ def test_registry_uses_new_parsers_except_for_mature_source_specific_connectors(
             assert isinstance(connector_registry.create(source_id), connector_cls)
 
 
-@pytest.mark.parametrize("source_id", ["rts-tender.ru", "utender.ru", "electro-torgi.ru"])
+@pytest.mark.parametrize("source_id", ["rts-tender.ru", "utender.ru"])
 def test_unproven_sources_fail_explicitly(source_id: str) -> None:
     connector = SOURCE_CONNECTOR_TYPES[source_id]()
     with pytest.raises(SourceAccessError):
         asyncio.run(connector.search({}))
     health = asyncio.run(connector.healthcheck())
     assert health.status == "blocked"
+
+
+def test_electro_torgi_live_card_contract_has_price_and_pagination() -> None:
+    html = """
+    <ul><li class="collection-item"><div class="row">
+      <div><a href="/oaof/43054">Торги по реализации имущества должника</a>
+      <p>Номер торгов: <a href="/oaof/43054">43054-ОАОФ</a> Объявлен</p>
+      <p>Лот 1: <span>Гараж, кадастровый номер 50:56:0000000:4317, площадь 19,7 кв.м.</span></p></div>
+      <div><div>1 лот на сумму</div><div>883 000.00 <span>₽</span></div></div>
+    </div></li></ul>
+    <ul class="pagination"><li><a href="/lots?page=2">2</a></li></ul>
+    """
+    profile = next(p for p in PROFILES if p.source_id == "electro-torgi.ru")
+    lots = parse_listing_html(profile, html)
+    assert profile.blocked_reason is None
+    assert profile.supports_get_pagination is True
+    assert len(lots) == 1
+    assert lots[0].external_id == "electro-torgi.ru:oaof-43054:1"
+    assert lots[0].start_price == 883_000
+    assert lots[0].cadastral_number == "50:56:0000000:4317"
 
 
 def test_profit_listing_has_stable_kind_trade_lot_identity_and_pagination() -> None:

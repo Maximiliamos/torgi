@@ -30,7 +30,7 @@ jobs:
       TARGET_SHA: ${{ inputs.accepted_sha }}
       # Reviewed, non-reconciling production allowlist. Keep this explicit:
       # adding a parser profile alone must never authorize database writes.
-      ETP_ACCEPTED_SOURCE_IDS: m-ets.ru,cdtrf.ru,nistp.ru,alfalot.ru,roseltorg.ru,sberbank-ast.ru,fabrikant.ru,arbbitlot.ru,etpu.ru,sistematorg.com,centerr.ru,aukcioncenter.ru,vertrades.ru,rus-on.ru,zakazrf.ru,utpl.ru,etp-profit.ru,ausib.ru
+      ETP_ACCEPTED_SOURCE_IDS: m-ets.ru,cdtrf.ru,nistp.ru,alfalot.ru,roseltorg.ru,sberbank-ast.ru,fabrikant.ru,arbbitlot.ru,etpu.ru,sistematorg.com,centerr.ru,aukcioncenter.ru,vertrades.ru,rus-on.ru,zakazrf.ru,utpl.ru,etp-profit.ru,ausib.ru,electro-torgi.ru
     steps:
       - name: Exact-SHA checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
