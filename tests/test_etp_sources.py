@@ -280,6 +280,7 @@ class FakeSession:
         self.response = response
         self.headers: dict[str, str] = {}
         self.requested_urls: list[str] = []
+        self.get_params: list[dict[str, str] | None] = []
         self.posts: list[tuple[str, dict[str, str]]] = []
 
     def _next(self):
@@ -287,8 +288,9 @@ class FakeSession:
             return self.response.pop(0)
         return self.response
 
-    def get(self, url, *_args, **_kwargs):
+    def get(self, url, *_args, **kwargs):
         self.requested_urls.append(url)
+        self.get_params.append(kwargs.get("params"))
         response = self._next()
         if isinstance(response, Exception):
             raise response
@@ -591,9 +593,9 @@ def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
     assert lot.external_id == "zakazrf.ru:public-offers-18790"
 
 
-def test_form_pagination_posts_page_number() -> None:
+def test_form_pagination_posts_page_number_when_provider_explicitly_uses_post() -> None:
     page_one = b"""
-    <form id='nodesearch' action='/bankrot/trade_list.php'>
+    <form id='nodesearch' method='POST' action='/bankrot/trade_list.php'>
       <input type='hidden' name='pagenum' value='1'>
       <a onclick='pagenum_send(2)'>2</a>
     </form>
@@ -607,6 +609,49 @@ def test_form_pagination_posts_page_number() -> None:
     result = asyncio.run(connector.search({}, cursor="2"))
     assert result.items[0].external_id == "nistp.ru:501500"
     assert session.posts[0][1]["pagenum"] == "2"
+
+
+def test_nistp_real_get_form_pagination_preserves_filters_and_page_number() -> None:
+    # Live Home evidence, 2026-11-04: NISTP nodesearch is method=GET.
+    # Sending its requested second page via POST returned HTTP 200 but no
+    # matching lots, while page 1 contained 33 lot candidates.
+    first = b"""
+    <form id='nodesearch' method='GET' action='/bankrot/trade_list.php'>
+      <input type='hidden' name='pagenum' value='1'>
+      <input type='hidden' name='view_type' value='trade'>
+      <input name='lot_description' value='land'>
+      <a onclick='pagenum_send(2)'>2</a>
+    </form>
+    """
+    second = b"<a href='/bankrot/trade_view.php?trade_nid=601501'>Lot 2</a>"
+    session = FakeSession([
+        FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php"),
+        FakeResponse(200, second, "https://nistp.ru/bankrot/trade_list.php"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
+    page = asyncio.run(connector.search({}, cursor="2"))
+    assert page.items[0].external_id == "nistp.ru:601501"
+    assert session.posts == []
+    assert session.get_params[0] is None
+    assert session.get_params[1] == {
+        "pagenum": "2", "view_type": "trade", "lot_description": "land",
+    }
+    assert session.requested_urls[1] == "https://nistp.ru/bankrot/trade_list.php"
+
+
+def test_nistp_form_pagination_rejects_unknown_http_method() -> None:
+    first = b"""
+    <form id='nodesearch' method='TRACE' action='/bankrot/trade_list.php'>
+      <input name='pagenum' value='1'>
+    </form>
+    """
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](
+        session=FakeSession(
+            FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php")
+        )
+    )
+    with pytest.raises(SourceSchemaError, match="unsupported pagination form method"):
+        asyncio.run(connector.search({}, cursor="2"))
 
 
 def test_form_pagination_rejects_cross_host_action() -> None:
