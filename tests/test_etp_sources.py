@@ -451,7 +451,7 @@ def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
 
 def test_form_pagination_posts_page_number() -> None:
     page_one = b"""
-    <form id='nodesearch' action='/bankrot/trade_list.php'>
+    <form id='nodesearch' method='post' action='/bankrot/trade_list.php'>
       <input type='hidden' name='pagenum' value='1'>
       <a onclick='pagenum_send(2)'>2</a>
     </form>
@@ -707,3 +707,87 @@ def test_evidence_backed_get_pagination_fetches_distinct_second_page(
 def test_official_status_phrases_do_not_create_false_active_or_closed_lots(source_status, expected):
     from bankrotai.connectors.etp_sources.common import _status
     assert _status(source_status) == expected
+
+
+def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_filters():
+    first = b"""
+    <form id='nodesearch' method='get' action='/bankrot/trade_list.php'>
+      <input type='hidden' name='pagenum' value='1'>
+      <input type='hidden' name='searchtype' value='estate'>
+      <input type='checkbox' checked name='region[]' value='76'>
+      <input type='checkbox' checked name='region[]' value='77'>
+      <input type='checkbox' name='region[]' value='78'>
+      <a onclick='pagenum_send(2)'>2</a>
+    </form>
+    """
+    second = b"<a href='/bankrot/trade_view.php?trade_nid=501501'>Page two lot</a>"
+
+    class CaptureGet(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php"),
+                FakeResponse(200, second, "https://nistp.ru/bankrot/trade_list.php"),
+            ])
+            self.query_params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.query_params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = CaptureGet()
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
+    result = asyncio.run(connector.search({}, cursor="2"))
+    assert [x.external_id for x in result.items] == ["nistp.ru:501501"]
+    assert session.posts == []
+    assert session.query_params is not None
+    assert ("pagenum", "2") in session.query_params
+    assert ("searchtype", "estate") in session.query_params
+    assert [v for k, v in session.query_params if k == "region[]"] == ["76", "77"]
+
+
+def test_nistp_rejects_unexpected_form_method():
+    first = b"""
+    <form id='nodesearch' method='delete' action='/bankrot/trade_list.php'>
+      <input name='pagenum' value='1'>
+    </form>
+    """
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=FakeSession(
+        FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php")
+    ))
+    with pytest.raises(SourceSchemaError, match="unsupported pagination form method"):
+        asyncio.run(connector.search({}, cursor="2"))
+
+
+def test_centerr_news_sidebar_does_not_inject_repeated_lots_into_catalogue():
+    site = profile("centerr.ru")
+    promo = ("https://bankrupt.centerr.ru/public/auctions/lots/view/100/")
+    actual = ("https://bankrupt.centerr.ru/public/auctions/lots/view/221/")
+    html = f"""
+    <div class='news-short'>
+      <a href='{promo}'>Важный рекламный лот - земельный участок</a>
+    </div>
+    <div class='news-body'>
+      <a href='{promo}'>Рекламный лот из повторяемого блока</a>
+    </div>
+    <table><tr><td><a href='{actual}'>Земельный участок 50:01:001:123</a></td></tr></table>
+    """
+    lots = parse_listing_html(site, html)
+    assert [lot.external_id for lot in lots] == ["centerr.ru:auctions-221"]
+    assert len(lots) == 1
+
+
+def test_centerr_non_sidebar_catalogue_links_still_preserved():
+    site = profile("centerr.ru")
+    html = """
+    <table><tr><td>
+      <a href='https://bankrupt.centerr.ru/public/auctions/lots/view/221/'>Квартира 1</a>
+    </td></tr><tr><td>
+      <a href='https://bankrupt.centerr.ru/public/contests/lots/view/222/'>Квартира 2</a>
+    </td></tr></table>
+    """
+    lots = parse_listing_html(site, html)
+    assert len(lots) == 2
+    assert {lot.external_id for lot in lots} == {
+        "centerr.ru:auctions-221", "centerr.ru:contests-222",
+    }
