@@ -49,3 +49,23 @@ These statuses are from **one bounded older production inventory implementation*
 - For each of 21 new platforms, prove *two actual full reads* and last-page/detail/source-independent price/status identity. Home inventory of 5 candidates is **not** this proof.
 - Promote only independently accepted source IDs into `default_source_specs`, in small batches with retry/checkpoints, while preserving non-reconciling policy for sources lacking a stable authoritative snapshot.
 - Run controlled import only after staging/backups and exact-SHA acceptance; prove individual items in PostgreSQL, geocoder, public S3 manifest, and a real browser. Do not count generic procedure row as verified individual lot.
+
+
+## 5. User-run Home live parser QA (04 Nov 18:13:12 UTC) and transport evidence
+
+The operator executed in the real `bankrotai-home-ingestion-worker`:
+`python -m bankrotai.services.etp_qa_batch --pages 2 --per-page 3 --geo-limit 0`.
+The result reported **21/21 profiles attempted**, `qa_only=true`, `complete_source_inventory=false`, `database_writes=0`, `production_map_writes=0`, **78 candidates**, **0 GEO by request**. This is bounded preview rather than complete source acceptance or a 22-source full scan. Breakdown: **14 preview without recorded errors, 1 preview with a partial error, 3 unavailable, 3 blocked**.
+
+The subsequent read-only operator probe yielded exact failures:
+
+| Source | Observed result in deployed Home worker | Action |
+|---|---|---|
+| `nistp.ru` | Page 1 **33 lot candidates**, `has_next=True`; page 2 throws `SourceSchemaError: no lot links matched ... page 2` | Compare real form method/action/fields and GET-vs-POST result; do not falsely mark page 1 as terminal |
+| `ausib.ru` | `SourceAccessError: provider redirect was refused` | Obtain HTTP status and sanitized Location host/path. Only permit explicitly trusted HTTPS official hosts and confirm redirected page content |
+| `etp-profit.ru` | `SSLError: CERTIFICATE_VERIFY_FAILED, unable to get local issuer certificate` | Verify public chain, root CA and `requests.certs.where()`; **never use `verify=False`**. Operator webpage indicates transition to two versions of the trading platform from 17 Aug 2026, so confirm correct catalogue |
+| `roseltorg.ru` | `ConnectionError: RemoteDisconnected('Remote end closed connection without response')` | Obtain ordinary no-VPN TLS/browser evidence, avoid unsupported anti-bot workarounds; do not treat as a zero-lot success |
+
+Also emitted `XMLParsedAsHTMLWarning` in `common.py:252` during one preview; separate the actual XML response case from ordinary HTML and retain parser diagnostics.
+
+A new **no-write diagnostics module** `src/bankrotai/services/etp_transport_diagnostics.py` has been added to integrated PR #1086 to capture HTTP status, sanitized redirects and NISTP first/second-page form contract without persisting HTML, credentials or personal details. It can be run from the developer worktree via `git show <integration-head>:src/bankrotai/services/etp_transport_diagnostics.py | docker exec -i bankrotai-home-ingestion-worker python -` **without deploying the integration PR**. Its outputs are not yet returned; **no new source is production accepted**.
