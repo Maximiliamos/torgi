@@ -194,6 +194,69 @@ jobs:
           if ($report.rollback_ready_manifest.status -ne 'verified') {
             throw 'No verified previous ready MapDataset + public S3 rollback manifest'
           }
+      - name: Explain Torgi Russia exclusion and historical source health (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = @'
+          import json
+          from sqlalchemy import select, func
+          from bankrotai.db import SessionLocal, SourceLot, SourceHealthState, LotSyncSourceRun, LotSyncRun
+          from bankrotai.tasks import _source_is_paused
+          from bankrotai.services.source_resilience import source_resilience_status
+
+          source = "torgi-russia.ru"
+          with SessionLocal() as session:
+              state = session.scalar(
+                  select(SourceHealthState).where(SourceHealthState.source_system == source)
+              )
+              circuit = source_resilience_status(session, source)
+              history = session.execute(
+                  select(
+                      LotSyncRun.started_at, LotSyncRun.trigger_type,
+                      LotSyncSourceRun.status, LotSyncSourceRun.pages_scanned,
+                      LotSyncSourceRun.items_seen,
+                      LotSyncSourceRun.complete_source_run,
+                  ).join(LotSyncRun, LotSyncRun.id == LotSyncSourceRun.sync_run_id)
+                   .where(LotSyncSourceRun.source_system == source)
+                   .order_by(LotSyncRun.started_at.desc()).limit(10)
+              ).all()
+              counts = session.execute(
+                  select(func.count(SourceLot.id),
+                         func.count(SourceLot.id).filter(SourceLot.is_active.is_(True)),
+                         func.max(SourceLot.last_seen_at))
+                  .where(SourceLot.source_system == source)
+              ).one()
+              output = {
+                  "source": source,
+                  "paused": _source_is_paused(source),
+                  "circuit_state": circuit["circuit_state"],
+                  "circuit_open_until_utc": str(circuit["circuit_open_until"])
+                                            if circuit["circuit_open_until"] else None,
+                  "last_error_category": circuit["last_error_category"],
+                  "consecutive_operational_failures": circuit["consecutive_operational_failures"],
+                  "health_status": state.status if state is not None else None,
+                  "last_success_utc": str(state.last_success_at) if state else None,
+                  "last_failure_utc": str(state.last_failure_at) if state else None,
+                  "source_lots_total": counts[0],
+                  "source_lots_active": counts[1],
+                  "source_lots_last_seen_utc": str(counts[2]) if counts[2] else None,
+                  "recent_source_runs": [
+                      {"started_utc": str(x[0]), "trigger": x[1],
+                       "status": x[2], "pages": x[3], "seen": x[4],
+                       "complete": x[5]} for x in history
+                  ],
+                  "database_writes": 0,
+              }
+          print(json.dumps(output, ensure_ascii=False))
+          '@
+          $lines = $probe | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $lines) { throw 'Torgi Russia read-only probe failed' }
+          $report = $lines | Select-Object -Last 1 | ConvertFrom-Json
+          if ($report.database_writes -ne 0) { throw 'No-write contract missing' }
+          $json = $report | ConvertTo-Json -Depth 6
+          Write-Output $json
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
       - name: Upload sanitized read-only evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
