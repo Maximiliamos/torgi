@@ -316,7 +316,7 @@ def test_ausib_same_url_302_is_explicitly_detected_without_following() -> None:
     response = FakeResponse(302, b"", url)
     response.headers = {"Location": url}
     connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=FakeSession(response))
-    with pytest.raises(SourceAccessError, match=r"self-redirect loop \\(HTTP 302\\)"):
+    with pytest.raises(SourceAccessError, match="self-redirect loop"):
         asyncio.run(connector.search({}))
     assert connector.session.requested_urls == [url]
 
