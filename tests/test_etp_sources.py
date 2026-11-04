@@ -311,6 +311,26 @@ def test_access_failures_are_not_reported_as_empty_success(status_code: int) -> 
         asyncio.run(connector.search({}))
 
 
+def test_ausib_same_url_302_is_explicitly_detected_without_following() -> None:
+    url = "https://ausib.ru/etp/trade/list.html"
+    response = FakeResponse(302, b"", url)
+    response.headers = {"Location": url}
+    connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=FakeSession(response))
+    with pytest.raises(SourceAccessError, match=r"self-redirect loop \\(HTTP 302\\)"):
+        asyncio.run(connector.search({}))
+    assert connector.session.requested_urls == [url]
+
+
+def test_provider_cross_host_redirect_remains_refused() -> None:
+    url = "https://ausib.ru/etp/trade/list.html"
+    response = FakeResponse(302, b"", url)
+    response.headers = {"Location": "https://untrusted.example/"}
+    connector = SOURCE_CONNECTOR_TYPES["ausib.ru"](session=FakeSession(response))
+    with pytest.raises(SourceAccessError, match="provider redirect was refused"):
+        asyncio.run(connector.search({}))
+    assert connector.session.requested_urls == [url]
+
+
 def test_timeout_marks_health_as_degraded() -> None:
     connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=FakeSession(requests.Timeout("slow provider")))
     health = asyncio.run(connector.healthcheck())
