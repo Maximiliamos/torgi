@@ -168,6 +168,56 @@ async def diagnose_source(
         }
         return report
 
+    if source == "cdtrf.ru":
+        # The catalogue shown in the browser is a hydrated shell. Inspect
+        # the independently verified official /api/Trade/trades JSON endpoint,
+        # not a generic HTML link parser that falsely reports a schema drift.
+        from bankrotai.services.etp_cdtrf_pagination_probe import scan_cdtrf_pages
+        import requests
+        report["catalogue_contract"] = "cdtrf_official_public_json"
+        try:
+            with requests.Session() as session:
+                evidence = await asyncio.to_thread(
+                    scan_cdtrf_pages, session, max_pages=max_pages,
+                    delay_seconds=pause_seconds,
+                )
+        except Exception as exc:
+            fail("transport" if type(exc).__name__ in {
+                "ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout",
+                "SSLError", "HTTPError", "TooManyRedirects",
+            } else "catalogue_markup", exc, 1)
+            return report
+        if evidence.get("production_database_writes") != 0 or evidence.get("archival_allowed") is not False:
+            stages["catalogue_markup"] = _entry(FAIL, reason="read_only_contract_broken")
+            report["first_failure"] = {
+                "stage": "catalogue_markup", "category": "read_only_contract_broken",
+            }
+            return report
+        report["pages_checked"] = int(evidence["pages_scanned"])
+        report["sample_lots"] = int(evidence["property_hint_candidates"])
+        report["catalogue_rows_observed"] = int(evidence["unique_catalogue_lot_ids"])
+        stages["transport"] = _entry(PASS, reason="official_json_api_response")
+        stages["catalogue_markup"] = _entry(PASS, reason="official_json_catalogue_validated")
+        stages["stable_lot_ids"] = _entry(
+            PASS, reason="unique_catalogue_ids_across_sample",
+            count=report["catalogue_rows_observed"],
+        )
+        stages["lot_discovery"] = _entry(
+            PASS if report["sample_lots"] else NOT_TESTED,
+            reason=("property_candidates_observed" if report["sample_lots"]
+                    else "no_property_hints_in_bounded_sample"),
+            count=report["sample_lots"],
+        )
+        stages["pagination_next"] = _entry(
+            PASS if report["pages_checked"] > 1 else NOT_TESTED,
+            reason=("independent_second_json_page" if report["pages_checked"] > 1
+                    else "second_page_not_observed"),
+        )
+        # The official API is evidence for identities and page progression,
+        # NOT verification of property details, status, individual price or
+        # true last page. Those checks intentionally remain NOT_TESTED.
+        return report
+
     connector = None
     try:
         try:
