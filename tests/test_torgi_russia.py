@@ -198,6 +198,34 @@ def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:
     assert metadata["per_page"] == 24
 
 
+def test_torgi_russia_parser_ignores_cookie_and_ad_overlays() -> None:
+    html = _nextjs_search_html(
+        [_new_site_lot()], current_page=2, last_page=209, total=5000,
+    ).replace(
+        "<main>",
+        """
+        <div role="dialog" data-ad-popup>
+          <button aria-label="Закрыть">Закрыть</button>
+          <a href="/landing_ad/999">Рекламный объект 999</a>
+        </div>
+        <aside aria-label="Уведомление об использовании cookie">
+          <button>Хорошо</button>
+        </aside>
+        <main>
+        """,
+    )
+
+    records, metadata = TorgiRussiaClient.parse_next_search_payload(
+        html,
+        page_url="https://xn----etbpba5admdlad.xn--p1ai/search?page=2",
+        current_page=2,
+    )
+
+    assert [item["id"] for item in records] == [7180653]
+    assert metadata["has_more"] is True
+    assert metadata["total_pages"] == 209
+
+
 def test_torgi_russia_nextjs_parser_ignores_unlinked_widget_lots() -> None:
     linked = _new_site_lot(lot_id=7180653)
     hidden = _new_site_lot(lot_id=7180654)
