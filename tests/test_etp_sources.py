@@ -707,3 +707,34 @@ def test_evidence_backed_get_pagination_fetches_distinct_second_page(
 def test_official_status_phrases_do_not_create_false_active_or_closed_lots(source_status, expected):
     from bankrotai.connectors.etp_sources.common import _status
     assert _status(source_status) == expected
+
+
+@pytest.mark.parametrize("status", [
+    "Ожидается начало приема заявок",
+    "Ожидается начало приёма заявок",
+])
+def test_future_application_window_is_scheduled_not_active(status: str) -> None:
+    from bankrotai.connectors.etp_sources.common import _status
+    assert _status(status) == "scheduled"
+
+
+def test_application_window_must_not_be_inferred_from_its_completion_notice() -> None:
+    from bankrotai.connectors.etp_sources.common import _status
+    assert _status("Приём заявок завершён") == "unknown"
+    assert _status("Заявки принимаются") == "active"
+    assert _status("Идут торги") == "active"
+
+
+def test_sberbank_future_application_stage_is_not_published_as_active() -> None:
+    from bankrotai.connectors.etp_sources import parse_sberbank_json
+    item = {
+        "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
+        "title": "Квартира 47:16:0420001:37",
+        "purchAmountRUB": "1200000",
+        "PurchaseStageTerm": "Ожидается начало приема заявок",
+    }
+    results = parse_sberbank_json(profile("sberbank-ast.ru"),
+                                  {"PurchaseList": [{"_source": item}]}, page=1)
+    assert len(results) == 1
+    assert results[0].auction_status == "scheduled"
+    assert results[0].start_price == 1200000
