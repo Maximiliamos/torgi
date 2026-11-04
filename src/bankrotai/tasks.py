@@ -78,6 +78,8 @@ _P7_STALE_GRACE_SECONDS = 5 * 60
 _P7_RUNNING_STALE_AFTER = timedelta(
     seconds=_P7_WORKFLOW_MONITOR_SECONDS + _P7_STALE_GRACE_SECONDS
 )
+from bankrotai.services.etp_twice_daily import etp_beat_schedule, scheduled_etp_readonly_audit_task as _etp_readonly_audit
+
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
     task_track_started=True,
@@ -135,14 +137,7 @@ celery_app.conf.update(
             "args": ("full",),
             "options": {"expires": 21_600},
         },
-        "audit-all-direct-etp-profiles": {
-            # Two bounded, READ-ONLY catalog/detail previews per day. This is
-            # intentionally not a 21-source production import or full sweep.
-            # Celery UTC 06:00/18:00 == Moscow 09:00/21:00.
-            "task": "bankrotai.tasks.scheduled_etp_readonly_audit_task",
-            "schedule": crontab(hour="6,18", minute=0),
-            "options": {"expires": 21_600},
-        },
+        **etp_beat_schedule(),
         "probe-source-network-health": {
             "task": "bankrotai.tasks.probe_source_network_health_task",
             # A small lead lets circuit state settle before each full source run.
@@ -166,6 +161,8 @@ celery_app.conf.update(
         },
     },
 )
+
+scheduled_etp_readonly_audit_task = celery_app.task(name="bankrotai.tasks.scheduled_etp_readonly_audit_task", soft_time_limit=3000, time_limit=3600)(_etp_readonly_audit)
 
 
 class QueueUnavailableError(RuntimeError):
@@ -519,57 +516,6 @@ def publish_dirty_map_dataset_task() -> dict[str, Any]:
         client.close()
 
 
-@celery_app.task(
-    name="bankrotai.tasks.scheduled_etp_readonly_audit_task",
-    soft_time_limit=3000,
-    time_limit=3600,
-)
-def scheduled_etp_readonly_audit_task() -> dict[str, Any]:
-    """Try all 21 direct ETP adapters twice daily without touching lot data.
-
-    The 22nd source, Lot-online, already runs through the existing nationwide
-    production sync. Two-page preview is a health check, NEVER complete-source
-    acceptance. Fail explicitly if that safety contract is broken.
-    """
-    import asyncio
-
-    from bankrotai.connectors.etp_sources import PROFILES
-    from bankrotai.services.etp_qa_batch import run_all
-    from bankrotai.services.etp_twice_daily import scheduled_source_inventory
-
-    inventory = scheduled_source_inventory()
-    result = asyncio.run(run_all(pages=2, per_page=3, geo_limit=0))
-    if (
-        result.get("source_count") != len(PROFILES)
-        or len(result.get("sources") or ()) != len(PROFILES)
-        or {item.get("source") for item in result.get("sources") or ()}
-           != {profile.source_id for profile in PROFILES}
-        or result.get("qa_only") is not True
-        or result.get("database_writes") != 0
-        or result.get("production_map_writes") != 0
-        or result.get("archival_enabled") is not False
-        or result.get("complete_source_inventory") is not False
-    ):
-        raise RuntimeError("Scheduled ETP preview violated its read-only QA contract")
-    logger.info(
-        "Twice-daily ETP read-only QA completed: %s of %s profiles; "
-        "Lot-online is handled by the existing full sync",
-        len(result["sources"]), len(PROFILES),
-    )
-    return {
-        **result,
-        "schedule": "06:00/18:00 UTC (09:00/21:00 Europe/Moscow)",
-        "all_etp_source_count": inventory["total_etps"],
-        "lot_online": {
-            "source_id": inventory["baseline"],
-            "scheduled_by": "refresh-nationwide-sources-full",
-            "evaluated_by_this_preview": False,
-        },
-        "production_ingest_approvals": inventory["approved_automatic_ingest"],
-        "full_catalogue_scans_completed": 0,
-    }
-
-
 @celery_app.task(name="bankrotai.tasks.cleanup_old_map_datasets_task")
 def cleanup_old_map_datasets_task() -> dict[str, Any]:
     """Apply DB + S3 manifest retention while preserving current and rollback versions."""
@@ -673,18 +619,9 @@ def build_map_dataset_task() -> dict:
                 "current_version": current_version,
             }
 
-        try:
-            result = build_map_dataset(SessionLocal)
-        except Exception:
-            # The minute watchdog consumed the dirty generation BEFORE
-            # queueing this task. Do not lose that signal on S3/build failure.
-            _mark_map_dirty(client)
-            raise
-        if result.get("promotion_status") != "published":
-            # Failed/rejected map promotion retains the previous good dataset.
-            # Re-arm the retry signal without claiming a successful update.
-            _mark_map_dirty(client)
-        else:
+        from bankrotai.services.map_publication_retry import build_with_retry_signal
+        result = build_with_retry_signal(build_map_dataset, SessionLocal, client, _mark_map_dirty)
+        if result.get("promotion_status") == "published":
             client.set(_MAP_SOURCE_FINGERPRINT_KEY, source_fingerprint)
             try:
                 cleanup_old_map_datasets_task.delay()
