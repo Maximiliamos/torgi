@@ -1,0 +1,134 @@
+name: Torgi Russia Home live read-only recovery diagnostic
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/torgi-russia-home-readonly-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: torgi-russia-home-readonly-recovery
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'fix/torgi-russia-home-recovery-20261104')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 12
+    steps:
+      - name: Inspect live DNS and bounded real public SSR parser (no DB writes)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          import socket
+          import time
+          from urllib.parse import urlsplit
+          import requests
+          from bankrotai.torgi_russia import (
+              BASE_URL, PUBLIC_SEARCH_PATH, TorgiRussiaClient,
+          )
+          from bankrotai.scraper_contracts import TorgiRussiaSearchFilters
+          from bankrotai.db import SessionLocal, SourceHealthState
+          from bankrotai.services.source_resilience import source_resilience_status
+          from sqlalchemy import select
+
+          def errorsafe(exc):
+              return type(exc).__name__
+
+          report = {
+              "audit": "torgi-russia-dns-ssr-2026-11-04",
+              "read_only": True, "database_writes": 0,
+              "canonical_base_url": BASE_URL,
+              "probe_configured_domain": "torgi-russia.ru",
+          }
+          with SessionLocal() as session:
+              state = session.scalar(select(SourceHealthState).where(
+                  SourceHealthState.source_system == "torgi-russia.ru"
+              ))
+              circuit = source_resilience_status(session, "torgi-russia.ru")
+              report["source_state_before"] = {
+                  "health": state.status if state else None,
+                  "last_error_category": circuit["last_error_category"],
+                  "circuit_state": circuit["circuit_state"],
+                  "consecutive_failures": circuit["consecutive_operational_failures"],
+              }
+          report["dns"] = {}
+          for hostname in ("torgi-russia.ru", "xn----etbpba5admdlad.xn--p1ai"):
+              try:
+                  addresses = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+                  report["dns"][hostname] = {
+                      "resolved": bool(addresses),
+                      "addresses_count": len({item[4][0] for item in addresses}),
+                  }
+              except Exception as exc:
+                  report["dns"][hostname] = {
+                      "resolved": False, "error_type": errorsafe(exc),
+                  }
+          session = requests.Session()
+          session.headers["User-Agent"] = "STERDEZ-readonly-recovery/1.0"
+          report["http"] = {}
+          for url in ("https://torgi-russia.ru/",
+                      BASE_URL + PUBLIC_SEARCH_PATH):
+              label = urlsplit(url).hostname + urlsplit(url).path
+              try:
+                  resp = session.get(url, timeout=(7, 14), allow_redirects=False)
+                  report["http"][label] = {
+                      "status": resp.status_code,
+                      "body_bytes": len(resp.content),
+                      "content_type": (resp.headers.get("content-type") or "").split(";")[0],
+                      "has_location": "Location" in resp.headers,
+                  }
+              except Exception as exc:
+                  report["http"][label] = {"error_type": errorsafe(exc)}
+              time.sleep(1)
+          report["parser_samples"] = []
+          client = TorgiRussiaClient(timeout=15)
+          for region in (1, 23, 77):
+              for page in (1, 2):
+                  sample = {"region_filter_id": region, "page": page}
+                  try:
+                      filters = TorgiRussiaSearchFilters(
+                          category_id="6", history_only=False, page=page, region_id=region
+                      )
+                      lots, meta = client.search_lots(filters)
+                      sample.update({
+                          "status": "validated",
+                          "lot_count": len(lots),
+                          "reported_total": meta.get("total"),
+                          "total_pages": meta.get("total_pages"),
+                          "has_more": meta.get("has_more"),
+                          "unique_ids": len({lot.external_id for lot in lots}),
+                          "missing_price": sum(lot.start_price is None for lot in lots),
+                          "missing_status": sum(
+                              lot.auction_status in {None, "", "unknown"} for lot in lots
+                          ),
+                          "missing_region": sum(not lot.region_name for lot in lots),
+                          "first_two_lot_ids": [lot.external_id for lot in lots[:2]],
+                      })
+                  except Exception as exc:
+                      sample["status"] = "failed"
+                      sample["error_type"] = errorsafe(exc)
+                      report["parser_samples"].append(sample)
+                      break
+                  report["parser_samples"].append(sample)
+                  if not meta.get("has_more"):
+                      break
+                  time.sleep(1)
+          print(json.dumps(report, ensure_ascii=False))
+          '@
+          $output = $code | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) {
+            throw "Torgi Russia diagnostic script did not finish safely"
+          }
+          $result = $output | Select-Object -Last 1 | ConvertFrom-Json
+          if ($result.read_only -ne $true -or $result.database_writes -ne 0) {
+            throw "Read-only contract violated"
+          }
+          $reportJson = $result | ConvertTo-Json -Depth 8
+          $reportJson | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          $reportJson

@@ -1,0 +1,100 @@
+name: Recover Torgi Russia circuit after verified Home deployment
+on:
+  workflow_run:
+    workflows:
+      - Deploy home secondary origin
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: torgi-russia-postdeploy-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Verify exact deployed SHA and local API health (no writes)
+        shell: powershell
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$') {
+            throw 'Untrusted deploy SHA'
+          }
+          foreach ($container in @('bankrotai-home-secondary','bankrotai-home-ingestion-worker')) {
+            $image = (docker inspect --format '{{.Config.Image}}' $container).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $image.EndsWith(':' + $env:EXPECTED_SHA)) {
+              throw "Refusing stale/mismatched Home container: $container"
+            }
+            $running = (docker inspect --format '{{.State.Status}}' $container).Trim()
+            if ($running -ne 'running') { throw "Not running: $container" }
+          }
+          $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:18000/health/ready' -TimeoutSec 15
+          if ($response.StatusCode -ne 200) { throw 'Local API is not ready' }
+      - name: Recover only Torgi Russia source after real SSR proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          from bankrotai.db import session_scope
+          from bankrotai.services.ingestion import default_source_specs
+          from bankrotai.services.source_resilience import (
+              probe_source_endpoint, record_source_probe, source_resilience_status,
+          )
+          from bankrotai.tasks import _source_is_paused, automatic_nationwide_source_retry_task
+
+          source = "torgi-russia.ru"
+          specs = [s for s in default_source_specs() if s.source_id == source]
+          if len(specs) != 1 or specs[0].reconcile_missing or not specs[0].require_source_end:
+              raise RuntimeError("Refusing recovery: non-archiving full scan safety not deployed")
+          if _source_is_paused(source):
+              print(json.dumps({"status": "skipped_manually_paused", "database_writes": 0}))
+              raise SystemExit(0)
+          with session_scope() as session:
+              before = source_resilience_status(session, source)["circuit_state"]
+          if before == "closed":
+              print(json.dumps({"status": "already_recovered", "database_writes": 0}))
+              raise SystemExit(0)
+          if before not in {"open", "half_open"}:
+              raise RuntimeError("Unexpected circuit state; refusing recovery")
+
+          checked = probe_source_endpoint(source, timeout_seconds=8.0)
+          if not checked.get("success") or int(checked.get("validated_lots") or 0) < 1:
+              raise RuntimeError("Actual source SSR/price/status/region probe failed")
+          with session_scope() as session:
+              after = record_source_probe(session, source, success=True)
+          if after["circuit_state"] != "closed":
+              raise RuntimeError("Circuit failed to close after validated parser probe")
+
+          # This targeted FAST scan has max_batches=1 and
+          # reconcile_missing=False. Celery's existing durable ingestion lease
+          # prevents overlap with any nationwide source sweep.
+          queued = automatic_nationwide_source_retry_task.apply_async(
+              args=[source, "fast"], countdown=5
+          )
+          print(json.dumps({
+              "status": "circuit_closed_fast_scan_queued",
+              "source": source,
+              "validated_lots": checked["validated_lots"],
+              "circuit_before": before, "circuit_after": after["circuit_state"],
+              "targeted_task_id": str(queued.id),
+              "automatic_archival_enabled": False,
+          }))
+          '@
+          $lines = $script | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $lines) {
+            throw 'Torgi Russia recovery failed closed'
+          }
+          $report = $lines | Select-Object -Last 1 | ConvertFrom-Json
+          $summary = $report | ConvertTo-Json -Depth 5
+          $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          $summary

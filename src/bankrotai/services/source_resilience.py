@@ -26,7 +26,9 @@ _SOURCE_RETRY_STEPS_SECONDS = (60, 180, 300, 900)
 _SOURCE_PROBE_URLS = {
     "torgi.gov.ru": "https://torgi.gov.ru/",
     "lot-online.ru": "https://lot-online.ru/",
-    "torgi-russia.ru": "https://torgi-russia.ru/",
+    # Torgi Russia is served at the verified IDN portal. The legacy
+    # torgi-russia.ru alias does not resolve from the production Home runner.
+    "torgi-russia.ru": "https://xn----etbpba5admdlad.xn--p1ai/search",
     "bidexpert.ru": "https://bidexpert.ru/",
 }
 
@@ -488,6 +490,13 @@ def sources_due_for_probe(session: Session, *, now: datetime | None = None) -> l
 
 
 def probe_source_endpoint(source_system: str, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    if source_system == "torgi-russia.ru":
+        # A simple HEAD check on the former alias (or HTTP 200 interstitial)
+        # previously prevented automatic recovery for weeks. Verify actual
+        # normalized lots at the real, validated SSR catalogue instead.
+        from bankrotai.services.torgi_russia_health import probe_torgi_russia_catalogue
+
+        return probe_torgi_russia_catalogue(timeout_seconds=timeout_seconds)
     url = _SOURCE_PROBE_URLS.get(source_system)
     if not url:
         return {"success": False, "error": "probe_not_configured", "source_system": source_system}
