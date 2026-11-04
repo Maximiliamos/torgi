@@ -405,7 +405,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
         ):
             parts = path.split("/")
             return len(parts) == 8 and all(part.isdigit() for part in parts[-3:])
-        if path.startswith("/api/etp/checklist/") or if path == "/api/etp/pilots/sources" or (
+        if path.startswith("/api/etp/checklist/") or path == "/api/etp/pilots/sources" or (
             path.startswith("/api/etp/pilots/") and path.endswith(("/preview", "/batch-preview"))
         ):
             return True
