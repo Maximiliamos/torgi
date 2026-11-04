@@ -72,3 +72,10 @@ Status `PASS` in a two-page sample is only evidence for the checked stage. For p
 - The connector now keeps page 1 on public SSR and uses the observed first-party JSON pagination contract
   for pages 2+, requiring `current_page` to equal the requested page and rejecting invalid, empty advertised,
   or mismatched responses. Missing-lot reconciliation remains disabled.
+- The user then followed the site's controls through pages 3 and 4. Region 1 reported 85 lots: pages 1–3
+  contain 24 rows and terminal page 4 contains 13 rows. On page 4 both the load-more and next-page controls
+  were disabled. Its first and last IDs were `7188706` and `6578770`.
+- Both terminal-card samples opened successfully. They exposed distinct prices (`2,985,732` and `1,472,372`
+  RUB), statuses, dates, Adygea region and cadastral identifiers (`01:05:2900013:34394` and
+  `01:06:2800004:259`). This confirms the terminal-page and detail contracts for region 1 only; it is not yet
+  evidence for all 86 region buckets or two independent complete source scans.

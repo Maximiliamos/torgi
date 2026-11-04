@@ -385,6 +385,46 @@ def test_torgi_russia_page_api_rejects_wrong_page() -> None:
         )
 
 
+def test_torgi_russia_page_api_proves_partial_terminal_page() -> None:
+    terminal_items = [
+        _new_site_lot(
+            lot_id=7188706 - index,
+            region_title="Республика Адыгея",
+        )
+        for index in range(13)
+    ]
+
+    class Response:
+        url = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search?page=4"
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": terminal_items, "current_page": 4, "last_page": 4,
+                "total": 85, "per_page": 24,
+            }
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(page=4, region_id=1)
+    )
+
+    assert len(lots) == 13
+    assert len({lot.external_id for lot in lots}) == 13
+    assert metadata["total"] == 85
+    assert metadata["per_page"] == 24
+    assert metadata["total_pages"] == 4
+    assert metadata["has_more"] is False
+
+
 def test_torgi_russia_connector_uses_verified_internal_region_filter_ids() -> None:
     connector = TorgiRussiaConnector()
     assert connector._region_ids == list(PUBLIC_REGION_FILTER_IDS)
