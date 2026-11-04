@@ -114,6 +114,13 @@ def test_all_source_campaign_journal_fields_fit_production_schema(monkeypatch):
     ):
         monkeypatch.setenv(flag, "1")
     monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
+    # This test only checks the journal schema after the authorization gate.
+    # Production does not have these independent source approvals.
+    from bankrotai.services import etp_twice_daily
+    monkeypatch.setattr(
+        etp_twice_daily, "ACCEPTED_ETP_FOR_AUTOMATIC_INGEST",
+        frozenset(campaign.RUNNABLE),
+    )
     monkeypatch.setattr(campaign, "SequentialCampaignService", FakeService)
 
     import pytest
@@ -234,4 +241,22 @@ def test_operator_cannot_start_unapproved_all_source_campaign(monkeypatch):
         monkeypatch.setenv(flag, "1")
     monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", "cdtrf.ru,m-ets.ru")
     with pytest.raises(PermissionError, match="acceptance missing for"):
+        campaign._authorized()
+
+
+
+def test_all_source_workflow_env_cannot_override_source_acceptance(monkeypatch):
+    """Reject the existing 19-source allowlist even with all operator flags."""
+    import pytest
+    from bankrotai.services import etp_all_sources_campaign as campaign
+    from bankrotai.services import etp_twice_daily
+
+    for name in (
+        "ETP_ALL_SOURCES_OPERATOR_ENABLED", "ETP_CANARY_BACKUP_VERIFIED",
+        "ETP_OPERATOR_CANARY_IMPORT_ENABLED", "CDTRF_OPERATOR_SYNC_ENABLED",
+    ):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("ETP_ACCEPTED_SOURCE_IDS", ",".join(campaign.RUNNABLE))
+    assert not etp_twice_daily.ACCEPTED_ETP_FOR_AUTOMATIC_INGEST
+    with pytest.raises(PermissionError, match="no independent acceptance"):
         campaign._authorized()
