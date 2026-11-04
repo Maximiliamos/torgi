@@ -838,8 +838,26 @@ class HtmlEtpConnector(AuctionConnector):
             # provider's actual form method and retain all search filters.
             method = str(form.get("method") or "get").strip().lower()
             if method == "get":
+                # A GET form may contain repeated keys such as trade_state[]
+                # and trade_type[]. Use ordered pairs as browsers do instead
+                # of the POST mapping, which collapses repeated names.
+                params: list[tuple[str, str]] = []
+                for node in form.select("input[name]"):
+                    field_type = str(node.get("type") or "").lower()
+                    if field_type in {"submit", "button", "image", "file"}:
+                        continue
+                    if field_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+                        continue
+                    name = str(node.get("name"))
+                    value = (
+                        str(page) if name == self.profile.form_page_field
+                        else str(node.get("value") or "")
+                    )
+                    params.append((name, value))
+                if not any(name == self.profile.form_page_field for name, _ in params):
+                    params.append((self.profile.form_page_field, str(page)))
                 response = self._check_response(self.session.get(
-                    action, params=data, timeout=self.timeout, allow_redirects=False
+                    action, params=params, timeout=self.timeout, allow_redirects=False
                 ))
                 self._last_response, self._last_page = response, page
                 return response
