@@ -78,6 +78,8 @@ _P7_STALE_GRACE_SECONDS = 5 * 60
 _P7_RUNNING_STALE_AFTER = timedelta(
     seconds=_P7_WORKFLOW_MONITOR_SECONDS + _P7_STALE_GRACE_SECONDS
 )
+from bankrotai.services.etp_twice_daily import etp_beat_schedule, scheduled_etp_readonly_audit_task as _etp_readonly_audit
+
 celery_app = Celery("bankrotai", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
     task_track_started=True,
@@ -88,6 +90,7 @@ celery_app.conf.update(
     task_routes={
         "bankrotai.tasks.bulk_torgi_gov_sync_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.nationwide_lot_sync_task": {"queue": _QUEUE_INGESTION},
+        "bankrotai.tasks.scheduled_etp_readonly_audit_task": {"queue": _QUEUE_MAINTENANCE},
         "bankrotai.tasks.automatic_nationwide_lot_refresh_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.automatic_nationwide_source_retry_task": {"queue": _QUEUE_INGESTION},
         "bankrotai.tasks.probe_source_network_health_task": {"queue": _QUEUE_INGESTION},
@@ -134,6 +137,7 @@ celery_app.conf.update(
             "args": ("full",),
             "options": {"expires": 21_600},
         },
+        **etp_beat_schedule(),
         "probe-source-network-health": {
             "task": "bankrotai.tasks.probe_source_network_health_task",
             # A small lead lets circuit state settle before each full source run.
@@ -157,6 +161,8 @@ celery_app.conf.update(
         },
     },
 )
+
+scheduled_etp_readonly_audit_task = celery_app.task(name="bankrotai.tasks.scheduled_etp_readonly_audit_task", soft_time_limit=3000, time_limit=3600)(_etp_readonly_audit)
 
 
 class QueueUnavailableError(RuntimeError):
@@ -613,7 +619,8 @@ def build_map_dataset_task() -> dict:
                 "current_version": current_version,
             }
 
-        result = build_map_dataset(SessionLocal)
+        from bankrotai.services.map_publication_retry import build_with_retry_signal
+        result = build_with_retry_signal(build_map_dataset, SessionLocal, client, _mark_map_dirty)
         if result.get("promotion_status") == "published":
             client.set(_MAP_SOURCE_FINGERPRINT_KEY, source_fingerprint)
             try:
