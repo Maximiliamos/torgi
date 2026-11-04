@@ -120,14 +120,8 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             ),
         ),
         SourceSyncSpec(
-            "torgi-russia.ru",
-            TorgiRussiaSearchFilters(category_id="6", history_only=False, page=1),
-            # 62k historical provider rows are nearly four weeks stale. A
-            # resumed full run must NOT archive them just because current
-            # public search is smaller, until independent full inventories
-            # prove stable source coverage and status semantics.
-            reconcile_missing=False,
-            require_source_end=True,
+            "torgi-russia.ru", TorgiRussiaSearchFilters(),
+            reconcile_missing=False, require_source_end=True,
         ),
         SourceSyncSpec(
             "bidexpert.ru",
