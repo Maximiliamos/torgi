@@ -190,7 +190,9 @@ def _status(value: str) -> str:
         return "closed"
     if any(word in lowered for word in (
         "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
-        "извещени", "торги назначен"
+        "извещени", "торги назначен",
+        # A future application window is explicitly not open yet.
+        "ожидается начало приема заявок", "ожидается начало приёма заявок",
     )):
         return "scheduled"
     if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
