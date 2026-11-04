@@ -34,8 +34,14 @@ def decide_missed_full_run(
     target = most_recent_full_window(now)
     if enabled_source_count <= 0:
         return {"status": "skipped", "reason": "all_sources_paused"}
-    if now.astimezone(timezone.utc) < target + grace:
+    current = now.astimezone(timezone.utc)
+    if current < target + grace:
         return {"status": "deferred", "reason": "beat_grace_window"}
+    # Starting a full inventory just before the next scheduled slot could
+    # needlessly occupy the single lease during 09:00/21:00. Prefer the
+    # imminent normal slot instead of initiating a duplicate heavy sweep.
+    if target + timedelta(hours=12) - current <= timedelta(minutes=45):
+        return {"status": "deferred", "reason": "next_regular_window_imminent"}
     if has_full_run_after(target):
         return {"status": "skipped", "reason": "full_run_already_started",
                 "expected_window_utc": target.isoformat()}
