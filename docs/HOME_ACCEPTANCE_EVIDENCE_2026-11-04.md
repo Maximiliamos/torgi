@@ -103,3 +103,15 @@ A fresh operator-run **read-only** probe in the deployed Home ingestion worker c
 | `/trade/view/purchase/general.html?id=104599805` | **200** | **35 495** | A publicly reachable detail page with links |
 
 Previously, `/etp/trade/list.html` returned **302 self-redirect** to the same URL from a separate Home request. These two observations demonstrate *intermittent* response behavior, **not** a permanent URL change. Keep the existing verified catalogue route, never follow redirect chains automatically, and allow at most **one bounded retry of the same trusted HTTPS URL** on a self-302. Integrated PR #1086 contains isolated transport implementation and tests for 302→200, 302→302 and cross-origin rejection. A follow-up read-only runner validates real normalized `NormalizedLot` candidate counts and initial-price coverage before the source can advance to acceptance. **No full AUSIB catalogue, price/status/detail validation or production import has been accepted.**
+
+
+### AUSIB listing parser QA on deployed Home (2026-11-04 19:41 UTC)
+
+[Home read-only run #41899274869](https://github.com/Maximiliamos/torgi/actions/runs/41899274869), **success**, no DB writes:
+- Official `/etp/trade/list.html`: HTTP **200**, 44,922 bytes, existing deployed parser returned **15 raw catalogue candidates** with IDs like `ausib.ru:104687702`, `ausib.ru:104687583` and `ausib.ru:104687545`.
+- **0 of those 15 candidates had verified initial prices in this catalogue-only response**. Do not publish or auto-import them as priced lots.
+- The deployed container's output uses bare procedure-like IDs, whereas the revised #1086 `fetch_lot` requires per-lot `ausib.ru:<procedure_id>:<lot_number>`. This is a **version mismatch / unverified per-lot mapping**, not proof that current PR code fails: the #1086 parser has NOT been deployed to Home for this run.
+- Root URL remains self-302, alternative `/trade/list.html` returns HTTP 200 but no recognized detail href; one independent existing detail URL returns HTTP 200.
+- #1086 now implements a **single bounded repeat on the same trusted catalogue URL** only when AUSIB returns identical-URL 302. No cross-host redirects, unbounded loops, DB changes, GEO or map writes. Separate regression tests cover 302→200, persistent 302 and cross-host 302.
+
+**Next acceptance gate:** run the exact #1086 parser in a read-only staging context against real current AUSIB catalogues and selected individual detail cards; validate procedure and numbered lot split, price/status provenance, last page and stability across two full inventories. Neither historical 15 candidates nor this endpoint health run grants S3/S4 acceptance.
