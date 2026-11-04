@@ -58,3 +58,17 @@ Status `PASS` in a two-page sample is only evidence for the checked stage. For p
   exposed cadastral number `55:36:120305:7503` and area `59.5 sq. m`.
 - This does **not** clear production acceptance: the failed production requests use real-estate category and
   regional query parameters. Region-filtered pages 1 and 2 still require captured evidence.
+
+### Region-filtered pagination root cause and fix
+
+- The user opened the verified real-estate query for internal region `1` (Republic of Adygea) and used the
+  site's own pagination control to reach page 2. The hydrated page displayed 24 page-2 lots and reported
+  85 matching lots in four pages.
+- Despite `page=2` in the browser URL, the server HTML still embedded `searchRequest.page=1` and
+  `initialMeta.current_page=1`. JavaScript then fetched the real second page from the first-party
+  `https://api.торги-россии.рф/api/search` endpoint and replaced the visible list.
+- This exactly explains the three production failures after one page: the requests-only connector parsed
+  the repeated page-1 SSR payload, and its repeated-page safety guard correctly stopped the run.
+- The connector now keeps page 1 on public SSR and uses the observed first-party JSON pagination contract
+  for pages 2+, requiring `current_page` to equal the requested page and rejecting invalid, empty advertised,
+  or mismatched responses. Missing-lot reconciliation remains disabled.
