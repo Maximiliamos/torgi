@@ -22,7 +22,8 @@ from bankrotai.connectors.etp_sources import (
 CHECKS = (
     "catalogue_url", "transport", "catalogue_markup", "lot_discovery",
     "stable_lot_ids", "pagination_next", "last_page_proven",
-    "individual_detail", "detail_identity", "initial_or_current_price",
+    "individual_detail", "detail_identity", "individual_detail_price",
+    "individual_detail_status", "initial_or_current_price",
     "auction_status", "property_classification", "cookie_or_tutorial_modal",
     "production_import", "geocoding", "map_publication", "scheduler",
 )
@@ -365,7 +366,13 @@ async def diagnose_source(
                 stages["detail_identity"] = _entry(
                     NOT_APPLICABLE, reason="no_individual_detail_capability"
                 )
+                for field in ("individual_detail_price", "individual_detail_status"):
+                    stages[field] = _entry(
+                        NOT_APPLICABLE, reason="no_individual_detail_capability"
+                    )
             else:
+                price_proven = 0
+                status_proven = 0
                 for lot in sample[:detail_probes]:
                     try:
                         if can_fetch:
@@ -384,6 +391,12 @@ async def diagnose_source(
                             }
                             break
                         details_ok += 1
+                        if can_fetch:
+                            if (getattr(detail, "start_price", None) is not None or
+                                    getattr(detail, "current_price", None) is not None):
+                                price_proven += 1
+                            if str(getattr(detail, "auction_status", "") or "").lower() not in {"", "unknown"}:
+                                status_proven += 1
                     except Exception as exc:
                         fail("individual_detail", exc, 1)
                         break
@@ -391,6 +404,26 @@ async def diagnose_source(
                     stages["individual_detail"] = _entry(PASS, count=details_ok)
                     if stages["detail_identity"]["state"] == NOT_TESTED:
                         stages["detail_identity"] = _entry(PASS, count=details_ok)
+                    if can_enrich and not can_fetch:
+                        # Enrichment retains the listing price/status; it is
+                        # not independent evidence of the detail's money fields.
+                        for field in ("individual_detail_price", "individual_detail_status"):
+                            stages[field] = _entry(
+                                NOT_APPLICABLE, reason="enrichment_does_not_independently_verify_money_or_status"
+                            )
+                    else:
+                        for field, verified, reason in (
+                            ("individual_detail_price", price_proven, "missing_price_in_fetched_detail"),
+                            ("individual_detail_status", status_proven, "unknown_status_in_fetched_detail"),
+                        ):
+                            state = PASS if verified == details_ok else FAIL
+                            stages[field] = _entry(state, reason=(
+                                "verified_in_individual_detail" if state == PASS else reason
+                            ), count=verified)
+                            if state == FAIL and report["first_failure"] is None:
+                                report["first_failure"] = {
+                                    "stage": field, "category": reason,
+                                }
     finally:
         session = getattr(connector, "session", None)
         close = getattr(session, "close", None)
