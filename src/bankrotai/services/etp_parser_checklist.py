@@ -287,6 +287,18 @@ async def diagnose_source(
                 stages["last_page_proven"] = _entry(
                     PASS, reason="declared_total_pages", page=page_number
                 )
+            if (page.next_cursor and
+                    stages["last_page_proven"]["state"] == PASS):
+                # Terminal evidence and a next-page cursor are contradictory.
+                # Never mark this source as having a proven final page.
+                stages["last_page_proven"] = _entry(
+                    FAIL, reason="terminal_page_has_next_cursor", page=page_number
+                )
+                report["first_failure"] = report["first_failure"] or {
+                    "stage": "last_page_proven", "page": page_number,
+                    "category": "terminal_page_has_next_cursor",
+                }
+                return report
             if not page.next_cursor:
                 # A missing next cursor alone must NEVER prove the last page.
                 break
@@ -373,7 +385,8 @@ async def diagnose_source(
             else:
                 price_proven = 0
                 status_proven = 0
-                for lot in sample[:detail_probes]:
+                requested_details = sample[:detail_probes]
+                for lot in requested_details:
                     try:
                         if can_fetch:
                             detail = await connector.fetch_lot(lot.external_id)
@@ -400,10 +413,22 @@ async def diagnose_source(
                     except Exception as exc:
                         fail("individual_detail", exc, 1)
                         break
-                if details_ok:
+                all_details_verified = (
+                    details_ok == len(requested_details)
+                    and stages["detail_identity"]["state"] != FAIL
+                    and stages["individual_detail"]["state"] != FAIL
+                )
+                if not all_details_verified:
+                    if stages["individual_detail"]["state"] == NOT_TESTED:
+                        stages["individual_detail"] = _entry(
+                            FAIL, reason="not_all_requested_details_verified",
+                            count=details_ok,
+                        )
+                    # Independent price/status cannot be proven after any
+                    # partial detail failure or identity mismatch.
+                else:
                     stages["individual_detail"] = _entry(PASS, count=details_ok)
-                    if stages["detail_identity"]["state"] == NOT_TESTED:
-                        stages["detail_identity"] = _entry(PASS, count=details_ok)
+                    stages["detail_identity"] = _entry(PASS, count=details_ok)
                     if can_enrich and not can_fetch:
                         # Enrichment retains the listing price/status; it is
                         # not independent evidence of the detail's money fields.
