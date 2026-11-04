@@ -336,7 +336,13 @@ async def diagnose_all(sources: tuple[str, ...], *, max_pages: int = 2,
         print(json.dumps({
             "progress": index, "total": len(sources),
             "source": source, "failure": item.get("first_failure"),
-        }, ensure_ascii=False), flush=True)
+            "pages_checked": item.get("pages_checked", 0),
+            "sample_lots": item.get("sample_lots", 0),
+            "stage_states": {
+                stage: entry.get("state", NOT_TESTED)
+                for stage, entry in item.get("stages", {}).items()
+            },
+        }, ensure_ascii=False, separators=(",", ":")), flush=True)
         if index < len(sources):
             await asyncio.sleep(pause_seconds)
     return {
