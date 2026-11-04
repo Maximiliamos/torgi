@@ -21,6 +21,8 @@ def _lot(source: str, ident: str = "lot-1", **overrides):
 
 
 class FakeConnector:
+    capabilities = frozenset({"search", "fetch_lot"})
+
     def __init__(self, source: str, *, broken_second: bool = False,
                  duplicate: bool = False):
         self.source = source
@@ -145,3 +147,58 @@ def test_diagnose_all_progress_includes_per_stage_state(monkeypatch, capsys):
     assert progress["pages_checked"] == 1
     assert progress["sample_lots"] == 1
     assert result["database_writes"] == result["map_writes"] == 0
+
+
+def test_http_diagnostic_exposes_only_safe_status_and_no_urls(monkeypatch):
+    from bankrotai.connectors.etp_sources import SourceAccessError
+
+    class Blocked(FakeConnector):
+        async def search(self, filters, cursor=None):
+            raise SourceAccessError("Provider returned HTTP 429 at https://private.example/?token=SECRET")
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (Blocked(source), object()))
+    report = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert report["stages"]["transport"]["state"] == checklist.BLOCKED
+    assert report["first_failure"]["category"] == "provider_http_429"
+    assert report["first_failure"]["http_status"] == 429
+    assert report["stages"]["transport"]["exception_class"] == "SourceAccessError"
+    assert "SECRET" not in str(report)
+    assert "private.example" not in str(report)
+
+
+def test_missing_detail_capability_is_not_a_false_parser_failure(monkeypatch):
+    class ListingOnly(FakeConnector):
+        capabilities = frozenset({"search"})
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (ListingOnly(source), object()))
+    report = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert report["stages"]["individual_detail"]["state"] == checklist.NOT_APPLICABLE
+    assert report["stages"]["detail_identity"]["state"] == checklist.NOT_APPLICABLE
+    assert report["first_failure"] is None
+
+
+def test_enrichment_capability_used_instead_of_missing_fetch_lot(monkeypatch):
+    class EnrichmentOnly(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+        async def enrich_lot(self, lot):
+            lot.detail_level = "detail"
+            return lot
+        async def fetch_lot(self, external_id):
+            raise AssertionError("must not call unadvertised fetch_lot")
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (EnrichmentOnly(source), object()))
+    report = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert report["stages"]["individual_detail"]["state"] == checklist.PASS
+    assert report["stages"]["detail_identity"]["state"] == checklist.PASS
+
+
+def test_identity_mismatch_never_counts_as_validated_detail(monkeypatch):
+    class WrongIdentity(FakeConnector):
+        async def fetch_lot(self, external_id):
+            return _lot(self.source, "wrong-id", detail_level="detail")
+
+    monkeypatch.setattr(checklist, "_connector", lambda source: (WrongIdentity(source), object()))
+    report = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert report["stages"]["detail_identity"]["state"] == checklist.FAIL
+    assert report["stages"]["individual_detail"]["state"] != checklist.PASS
+    assert report["first_failure"]["stage"] == "detail_identity"
