@@ -244,3 +244,26 @@ def test_targeted_lot_rejects_cross_section_native_identity_duplication():
     html = _document(CASES[2]).replace("</body>", other + "</body>")
     with pytest.raises(NistpCardError, match="duplicate_native_lot_identifier"):
         get_nistp_lot(html, trade_nid="502957", lot_number=3)
+
+
+def test_nistp_direct_table_rows_without_tbody_still_use_exact_lot_fields():
+    """Bounded support for HTML cards with direct TR children."""
+    html = _document(CASES[3]).replace("<tbody>", "").replace("</tbody>", "")
+    result = get_nistp_lot(html, trade_nid="502957", lot_number=4)
+    assert result.external_id == "nistp.ru:502957:4"
+    assert result.initial_price_rub == Decimal("3274000.00")
+    assert result.native_lot_nid == "502967"
+
+
+def test_nistp_nested_table_cannot_supply_missing_target_price():
+    html = _document(CASES[3])
+    inner_table = (
+        "<table><tr><td class='label'>Начальная цена</td>"
+        "<td>3274000.00</td></tr></table>"
+    )
+    html = html.replace(
+        '<td class="label">Начальная цена</td><td>3 274 000.00</td>',
+        '<td class="label">Другая сумма</td><td>' + inner_table + '</td>',
+    )
+    with pytest.raises(NistpCardError, match="incomplete_numbered_lot_section"):
+        get_nistp_lot(html, trade_nid="502957", lot_number=4)
