@@ -110,6 +110,33 @@ def failed_pages_from_report(path: Path, *, source: str, last_page: int) -> list
 
 
 
+
+def pinned_failed_targets(path: Path, *, source: str, last_page: int) -> dict[int, str]:
+    """Pin exact IDs from the newer source-safe QA reports, never page substitutes.
+
+    The old page-only QA reports cannot prove that a subsequent 'first candidate'
+    is the same rejected lot; this mode explicitly refuses that ambiguity.
+    """
+    pages = failed_pages_from_report(path, source=source, last_page=last_page)
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    ids = re.compile(
+        r"nistp\.ru:[1-9]\d{0,11}:[1-9]\d{0,4}\Z"
+        if source == "nistp.ru" else r"cdtrf:[1-9]\d{2,11}\Z"
+    )
+    expected: dict[int, str] = {}
+    for entry in data["errors"]:
+        page = entry["page"]
+        identity = entry.get("external_id")
+        if (not isinstance(identity, str) or ids.fullmatch(identity) is None
+                or entry.get("stage") != "detail" or page in expected
+                or identity in expected.values()):
+            raise ValueError("Prior failure report lacks trustworthy exact lot IDs")
+        expected[page] = identity
+    if list(expected) != pages:
+        raise ValueError("Pin order or scope inconsistent")
+    return expected
+
+
 def spaced_pages(last_page: int, count: int) -> list[int]:
     """Evenly spaced, deterministic pages without replacement."""
     if type(last_page) is not int or not 1 <= last_page <= 10_000:
@@ -208,12 +235,16 @@ async def check_nistp_details(
     connector_factory: Callable[[], Any] | None = None,
     sleep: Callable[[float], Any] = time.sleep,
     recheck_pages: list[int] | None = None,
+    pinned_targets: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     pages = (planned_pages(last_page, sample_size) if recheck_pages is None
              else checked_recheck_pages(last_page, recheck_pages))
     requested = sample_size if recheck_pages is None else len(pages)
+    if pinned_targets is not None and set(pinned_targets) != set(pages):
+        raise ValueError("Pinned NISTP ID pages differ from approved recheck pages")
     report = _fresh_report("nistp.ru", requested, last_page)
     report["recheck_only_prior_failure_pages"] = recheck_pages is not None
+    report["exact_original_ids_pinned"] = pinned_targets is not None
     factory = connector_factory or SOURCE_CONNECTOR_TYPES["nistp.ru"]
     pages_requested = 0
     seen_sample_ids: set[str] = set()
@@ -241,14 +272,22 @@ async def check_nistp_details(
                 and row["source_status_text"].casefold().replace("ё", "е")
                 in _ACTIVE_STATE_KEYS
             ]
+            expected_id = pinned_targets.get(page) if pinned_targets else None
+            listed_ids = {item.external_id for item in result.items}
             candidate = next((
                 row for row in sorted(active, key=lambda item: item["provider_external_id"])
-                if row["provider_external_id"] in {
-                    item.external_id for item in result.items
-                }
+                if row["provider_external_id"] in listed_ids
+                and (expected_id is None or row["provider_external_id"] == expected_id)
             ), None)
             if candidate is None:
-                report["skipped_pages"] += 1
+                if expected_id is not None:
+                    report["sample_attempted"] += 1
+                    _record_error(
+                        report, page, "pinned_lot_not_in_active_catalogue_page",
+                        expected_id, stage="catalogue",
+                    )
+                else:
+                    report["skipped_pages"] += 1
                 continue
             identity = candidate["provider_external_id"]
             if identity in seen_sample_ids:
@@ -339,6 +378,8 @@ def check_cdtrf_details(
     pages = (planned_pages(last_page, sample_size) if recheck_pages is None
              else checked_recheck_pages(last_page, recheck_pages))
     requested = sample_size if recheck_pages is None else len(pages)
+    if pinned_targets is not None and set(pinned_targets) != set(pages):
+        raise ValueError("Pinned CDTRF ID pages differ from approved recheck pages")
     report = _fresh_report("cdtrf.ru", requested, last_page)
     report["recheck_only_prior_failure_pages"] = recheck_pages is not None
     own = session or requests.Session()
@@ -356,9 +397,29 @@ def check_cdtrf_details(
             data = fetch_page(own, page)
             candidates = data["property_candidates"]
             if not candidates:
-                report["skipped_pages"] += 1
+                if pinned_targets is not None:
+                    report["sample_attempted"] += 1
+                    _record_error(
+                        report, page, "pinned_lot_not_in_active_catalogue_page",
+                        pinned_targets[page], stage="catalogue",
+                    )
+                else:
+                    report["skipped_pages"] += 1
                 continue
-            candidate = sorted(candidates, key=lambda row: int(row["trade_lot_id"]))[0]
+            expected_id = pinned_targets.get(page) if pinned_targets else None
+            candidate = next((
+                row for row in sorted(candidates, key=lambda item: int(item["trade_lot_id"]))
+                if expected_id is None or row["external_id"] == expected_id
+            ), None)
+            if candidate is None:
+                # Live selected catalogues move. Do NOT silently inspect an
+                # unrelated first lot and claim the old failed identity passed.
+                report["sample_attempted"] += 1
+                _record_error(
+                    report, page, "pinned_lot_not_in_active_catalogue_page",
+                    expected_id, stage="catalogue",
+                )
+                continue
             trade_id, lot_id = candidate["trade_id"], candidate["trade_lot_id"]
             identity = candidate["external_id"]
             if identity in seen_sample_ids:
@@ -424,12 +485,14 @@ def main() -> None:
         parser.error("Delay must be 0.5..10 seconds")
     if bool(args.recheck_nistp_report) != bool(args.recheck_cdtrf_report):
         parser.error("Both previous QA reports must be supplied for a pair recheck")
-    nistp_pages = (failed_pages_from_report(
+    nistp_targets = (pinned_failed_targets(
         args.recheck_nistp_report, source="nistp.ru", last_page=args.nistp_last_page,
     ) if args.recheck_nistp_report else None)
-    cdtrf_pages = (failed_pages_from_report(
+    cdtrf_targets = (pinned_failed_targets(
         args.recheck_cdtrf_report, source="cdtrf.ru", last_page=args.cdtrf_last_page,
     ) if args.recheck_cdtrf_report else None)
+    nistp_pages = list(nistp_targets) if nistp_targets else None
+    cdtrf_pages = list(cdtrf_targets) if cdtrf_targets else None
     args.evidence_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     reports = []
@@ -437,13 +500,13 @@ def main() -> None:
         print("NISTP read-only per-lot detail sample started", file=sys.stderr, flush=True)
         reports.append(asyncio.run(check_nistp_details(
             args.nistp_last_page, args.sample_size, delay_seconds=args.delay_seconds,
-            recheck_pages=nistp_pages,
+            recheck_pages=nistp_pages, pinned_targets=nistp_targets,
         )))
     if args.source in {"cdtrf", "both"}:
         print("CDTRF read-only per-lot detail sample started", file=sys.stderr, flush=True)
         reports.append(check_cdtrf_details(
             args.cdtrf_last_page, args.sample_size, delay_seconds=args.delay_seconds,
-            recheck_pages=cdtrf_pages,
+            recheck_pages=cdtrf_pages, pinned_targets=cdtrf_targets,
         ))
     summary = []
     for report in reports:
