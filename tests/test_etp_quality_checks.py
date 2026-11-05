@@ -113,3 +113,56 @@ def test_procedure_details_cannot_verify_multi_lot_money_by_string_identity():
     result = audit_detail_pair("fabrikant.ru", listing, detail)
     assert result["detail_price_consistency"]["state"] == "NOT_TESTED"
     assert result["detail_status_consistency"]["state"] == "NOT_TESTED"
+
+
+def test_current_price_drift_requires_recency_not_false_match():
+    listing = lot()
+    detail = lot(detail="detail")
+    listing.current_price = 900000
+    detail.current_price = 850000
+    evidence = audit_detail_pair("etpu.ru", listing, detail)
+    assert evidence["detail_price_consistency"]["state"] == "NOT_TESTED"
+    assert evidence["detail_price_consistency"]["reason"] == "current_price_changed_needs_recency"
+
+
+def test_detail_must_not_reuse_unverified_current_price_from_listing():
+    listing = lot()
+    detail = lot(detail="detail")
+    listing.current_price = 900000
+    detail.current_price = None
+    evidence = audit_detail_pair("etpu.ru", listing, detail)
+    assert evidence["detail_price_consistency"]["state"] == "NOT_TESTED"
+
+
+def test_invalid_individual_current_price_fails_closed():
+    listing = lot()
+    detail = lot(detail="detail")
+    detail.current_price = float("inf")
+    evidence = audit_detail_pair("etpu.ru", listing, detail)
+    assert evidence["detail_price_consistency"]["state"] == "FAIL"
+    assert evidence["detail_price_consistency"]["reason"] == "invalid_catalogue_or_detail_money"
+
+
+def test_every_22_source_profile_has_a_quality_audit_path():
+    from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES
+    from bankrotai.services.etp_parser_checklist import source_ids
+
+    all_ids = source_ids()
+    direct_ids = {p.source_id for p in PROFILES}
+    assert len(all_ids) == 22
+    assert len(direct_ids) == 21
+    assert set(all_ids) == direct_ids | {"lot-online.ru"}
+    assert set(SOURCE_CONNECTOR_TYPES) == direct_ids
+    for p in PROFILES:
+        assert p.listing_url.startswith("https://")
+        if p.blocked_reason:
+            continue
+        assert p.allowed_hosts
+        fake = lot(source=p.source_id, external_id=f"{p.source_id}:sample")
+        quality = audit_catalogue_lots(p.source_id, [fake])
+        assert set(quality) == {
+            "lot_id_provenance", "money_integrity",
+            "catalogue_price_coverage", "catalogue_status_coverage",
+        }
+        # Most procedures need separate detail before true per-lot acceptance.
+        assert quality["lot_id_provenance"]["state"] in {"PASS", "NOT_TESTED", "FAIL"}
