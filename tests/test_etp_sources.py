@@ -932,3 +932,13 @@ def test_saved_legacy_etp_get_forms_replace_previous_query(source_id):
     assert session.requested_urls[1] == base.split("?")[0]
     assert session.params is not None
     assert [value for key, value in session.params if key == "pagenum"] == ["2"]
+
+
+def test_nistp_trade_only_markup_never_yields_phantom_single_asset():
+    """Fail closed: a procedure link is not a lot after switching to lot view."""
+    html = """
+    <table><tr><td>
+      <a href="/bankrot/trade_view.php?trade_nid=502957">72113-ОАОФ</a>
+    </td><td>Всего лотов: 10. Машино-место</td></tr></table>
+    """
+    assert parse_listing_html(profile("nistp.ru"), html) == []
