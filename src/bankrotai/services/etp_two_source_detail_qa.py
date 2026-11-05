@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 import requests
 
 from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceAccessError
+from bankrotai.connectors.etp_sources.nistp_detail_sections import NistpCardError
+from bankrotai.connectors.registry.cdtrf_public import CdtrfEvidenceError
 from bankrotai.connectors.etp_sources.common import _parse_soup
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.connectors.registry.captured_etp_api import parse_cdtrf_api_page
@@ -38,6 +40,74 @@ _ALLOWED_SOURCES = frozenset({"nistp", "cdtrf", "both"})
 _CDTRF_SELECTED_STATUSES = ("Declare", "RecieveReq", "DefinePart", "TradeGo")
 _CDTRF_SELECTED_CATEGORIES = "21,22,23,31,32,33,34,41"
 _NON_PROPERTY_RECEIVABLE = re.compile(r"дебиторск|право\s+требован", re.IGNORECASE)
+
+# Only developer-controlled constant exception strings are reportable. Never
+# emit arbitrary exception text or fetched provider HTML / personal details.
+_NISTP_DETAIL_REASONS = frozenset({
+    "invalid_trade_nid", "missing_trade_code", "missing_numbered_lot_sections",
+    "invalid_individual_lot_table_id", "duplicate_lot_section_number",
+    "lot_heading_does_not_match_table", "lot_number_anchor_missing",
+    "multiple_native_lot_identifiers", "duplicate_native_lot_identifier",
+    "duplicate_individual_lot_field", "incomplete_numbered_lot_section",
+    "lot_number_field_mismatch", "invalid_individual_lot_money",
+    "invalid_individual_lot_status", "requested_lot_missing_in_trade_card",
+    "invalid_lot_number",
+})
+_CDTRF_DETAIL_REASONS = {
+    "Invalid CDTRF Nuxt reference": "invalid_nuxt_reference",
+    "No CDTRF SSR data": "missing_nuxt_ssr",
+    "Invalid CDTRF SSR structure": "invalid_nuxt_ssr_structure",
+    "Lot object missing from SSR": "lot_missing_from_ssr",
+    "Trade ID or title disagreement between URL, HTML and Nuxt": "trade_identity_or_title_mismatch",
+    "No stable CDTRF lot identity": "missing_stable_lot_identity",
+    "Price disagreement between HTML and SSR": "html_ssr_initial_price_mismatch",
+    "Invalid public-offer schedule": "invalid_public_offer_schedule",
+    "Malformed price period": "malformed_price_period",
+    "Incomplete price period": "incomplete_price_period",
+    "Invalid CDTRF lot property description": "invalid_property_description",
+    "Invalid CDTRF source detail URL": "invalid_detail_url",
+}
+
+
+def safe_detail_reason(exc: Exception) -> str | None:
+    """Return a fixed PII-safe reason for provider-controlled parser failures."""
+    if isinstance(exc, NistpCardError):
+        reason = str(exc)
+        return reason if reason in _NISTP_DETAIL_REASONS else None
+    if isinstance(exc, CdtrfEvidenceError):
+        return _CDTRF_DETAIL_REASONS.get(str(exc))
+    return None
+
+
+def checked_recheck_pages(last_page: int, pages: list[int]) -> list[int]:
+    if (not isinstance(pages, list) or not 1 <= len(pages) <= 50
+            or any(type(p) is not int or not 1 <= p <= last_page for p in pages)
+            or len(set(pages)) != len(pages)):
+        raise ValueError("Invalid or duplicated recheck pages")
+    return pages
+
+
+def failed_pages_from_report(path: Path, *, source: str, last_page: int) -> list[int]:
+    """Reuse only failure page numbers, not mutable source identities."""
+    if not path.is_file() or path.stat().st_size > 2_000_000:
+        raise ValueError("Prior QA report missing or oversized")
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if (not isinstance(data, dict) or data.get("source") != source
+            or data.get("mode") != "bounded_independent_readonly_lot_detail_sample"
+            or data.get("last_page_from_previous_full_walk") != last_page
+            or data.get("source_accepted") is not False):
+        raise ValueError("Previous QA report has inconsistent source or scope")
+    errors = data.get("errors")
+    if not isinstance(errors, list):
+        raise ValueError("Previous QA report has no error list")
+    pages: list[int] = []
+    for entry in errors:
+        if not isinstance(entry, dict) or type(entry.get("page")) is not int:
+            raise ValueError("Malformed previous QA error")
+        if entry["page"] not in pages:
+            pages.append(entry["page"])
+    return checked_recheck_pages(last_page, pages)
+
 
 
 def spaced_pages(last_page: int, count: int) -> list[int]:
@@ -103,11 +173,16 @@ def _fresh_report(source: str, requested: int, last_page: int) -> dict[str, Any]
 
 
 def _record_error(report: dict[str, Any], page: int, code: str,
-                  external_id: str | None = None) -> None:
+                  external_id: str | None = None, *, stage: str | None = None,
+                  reason: str | None = None) -> None:
     # Never record exception text: provider errors can contain URLs or PII.
     record: dict[str, Any] = {"page": page, "code": code[:96]}
     if external_id is not None:
         record["external_id"] = external_id
+    if stage in {"catalogue", "detail", "comparison"}:
+        record["stage"] = stage
+    if reason is not None:
+        record["reason"] = reason
     report["errors"].append(record)
 
 
@@ -128,18 +203,25 @@ async def check_nistp_details(
     delay_seconds: float = 1.0,
     connector_factory: Callable[[], Any] | None = None,
     sleep: Callable[[float], Any] = time.sleep,
+    recheck_pages: list[int] | None = None,
 ) -> dict[str, Any]:
-    report = _fresh_report("nistp.ru", sample_size, last_page)
+    pages = (planned_pages(last_page, sample_size) if recheck_pages is None
+             else checked_recheck_pages(last_page, recheck_pages))
+    requested = sample_size if recheck_pages is None else len(pages)
+    report = _fresh_report("nistp.ru", requested, last_page)
+    report["recheck_only_prior_failure_pages"] = recheck_pages is not None
     factory = connector_factory or SOURCE_CONNECTOR_TYPES["nistp.ru"]
     pages_requested = 0
     seen_sample_ids: set[str] = set()
-    for page in planned_pages(last_page, sample_size):
-        if report["sample_attempted"] >= sample_size:
+    for page in pages:
+        if report["sample_attempted"] >= requested:
             break
         if pages_requested:
             await asyncio.to_thread(sleep, delay_seconds)
         pages_requested += 1
         connector = factory()
+        identity: str | None = None
+        stage = "catalogue"
         try:
             result = await connector.search({}, cursor=str(page))
             response = connector._last_response
@@ -170,7 +252,9 @@ async def check_nistp_details(
                 continue
             seen_sample_ids.add(identity)
             report["sample_attempted"] += 1
+            stage = "detail"
             detail = await connector.fetch_lot(identity)
+            stage = "comparison"
             if (detail.external_id != identity
                     or detail.source_system != "nistp.ru"
                     or detail.detail_level != "detail"
@@ -206,10 +290,13 @@ async def check_nistp_details(
         except Exception as exc:
             # Stop on explicit provider rate limiting/access denial rather than
             # repeatedly probing against a refusal.
-            _record_error(report, page, type(exc).__name__)
+            _record_error(
+                report, page, type(exc).__name__, identity,
+                stage=stage, reason=safe_detail_reason(exc),
+            )
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
-        print(f"NISTP detail QA: page={page} attempted={report['sample_attempted']}/{sample_size} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
+        print(f"NISTP detail QA: page={page} attempted={report['sample_attempted']}/{requested} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
     return _finish(report)
 
 
@@ -243,8 +330,13 @@ def check_cdtrf_details(
     fetch_detail: Callable[..., Any] = fetch_verified_cdtrf_lot,
     fetch_page: Callable[..., dict[str, Any]] = _cdtrf_page,
     sleep: Callable[[float], Any] = time.sleep,
+    recheck_pages: list[int] | None = None,
 ) -> dict[str, Any]:
-    report = _fresh_report("cdtrf.ru", sample_size, last_page)
+    pages = (planned_pages(last_page, sample_size) if recheck_pages is None
+             else checked_recheck_pages(last_page, recheck_pages))
+    requested = sample_size if recheck_pages is None else len(pages)
+    report = _fresh_report("cdtrf.ru", requested, last_page)
+    report["recheck_only_prior_failure_pages"] = recheck_pages is not None
     own = session or requests.Session()
     pages_requested = 0
     seen_sample_ids: set[str] = set()
@@ -254,6 +346,8 @@ def check_cdtrf_details(
         if pages_requested:
             sleep(delay_seconds)
         pages_requested += 1
+        identity: str | None = None
+        stage = "catalogue"
         try:
             data = fetch_page(own, page)
             candidates = data["property_candidates"]
@@ -268,7 +362,9 @@ def check_cdtrf_details(
                 continue
             seen_sample_ids.add(identity)
             report["sample_attempted"] += 1
+            stage = "detail"
             detail = fetch_detail(trade_id, lot_id, session=own)
+            stage = "comparison"
             raw = detail.raw_data or {}
             if (detail.external_id != identity or detail.source_system != "cdtrf.ru"
                     or raw.get("trade_id") != trade_id
@@ -311,12 +407,22 @@ def main() -> None:
     parser.add_argument("--nistp-last-page", type=int, default=142)
     parser.add_argument("--cdtrf-last-page", type=int, default=64)
     parser.add_argument("--sample-size", type=int, default=30)
+    parser.add_argument("--recheck-nistp-report", type=Path)
+    parser.add_argument("--recheck-cdtrf-report", type=Path)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
     parser.add_argument("--evidence-root", type=Path,
                         default=Path("D:/BankrotAI/etp-evidence/two-source-detail-qa"))
     args = parser.parse_args()
     if not 0.5 <= args.delay_seconds <= 10:
         parser.error("Delay must be 0.5..10 seconds")
+    if bool(args.recheck_nistp_report) != bool(args.recheck_cdtrf_report):
+        parser.error("Both previous QA reports must be supplied for a pair recheck")
+    nistp_pages = (failed_pages_from_report(
+        args.recheck_nistp_report, source="nistp.ru", last_page=args.nistp_last_page,
+    ) if args.recheck_nistp_report else None)
+    cdtrf_pages = (failed_pages_from_report(
+        args.recheck_cdtrf_report, source="cdtrf.ru", last_page=args.cdtrf_last_page,
+    ) if args.recheck_cdtrf_report else None)
     args.evidence_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     reports = []
@@ -324,11 +430,13 @@ def main() -> None:
         print("NISTP read-only per-lot detail sample started", file=sys.stderr, flush=True)
         reports.append(asyncio.run(check_nistp_details(
             args.nistp_last_page, args.sample_size, delay_seconds=args.delay_seconds,
+            recheck_pages=nistp_pages,
         )))
     if args.source in {"cdtrf", "both"}:
         print("CDTRF read-only per-lot detail sample started", file=sys.stderr, flush=True)
         reports.append(check_cdtrf_details(
             args.cdtrf_last_page, args.sample_size, delay_seconds=args.delay_seconds,
+            recheck_pages=cdtrf_pages,
         ))
     summary = []
     for report in reports:
