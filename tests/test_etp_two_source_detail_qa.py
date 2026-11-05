@@ -40,6 +40,7 @@ def test_price_comparison_does_not_confuse_missing_or_subkopeck_values() -> None
     assert not qa._same_initial_price("100", 200)
     assert not qa._same_initial_price(None, 100)
     assert not qa._same_initial_price("NaN", 100)
+    assert not qa._same_initial_price("100.001", 100)
 
 
 def _nistp_observation(status: str = "Прием заявок") -> dict:
