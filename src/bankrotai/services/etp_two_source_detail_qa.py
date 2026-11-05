@@ -340,8 +340,8 @@ def check_cdtrf_details(
     own = session or requests.Session()
     pages_requested = 0
     seen_sample_ids: set[str] = set()
-    for page in planned_pages(last_page, sample_size):
-        if report["sample_attempted"] >= sample_size:
+    for page in pages:
+        if report["sample_attempted"] >= requested:
             break
         if pages_requested:
             sleep(delay_seconds)
@@ -394,10 +394,13 @@ def check_cdtrf_details(
                 "property_right_kind": raw.get("property_right_kind", "unverified"),
             })
         except Exception as exc:
-            _record_error(report, page, type(exc).__name__)
+            _record_error(
+                report, page, type(exc).__name__, identity,
+                stage=stage, reason=safe_detail_reason(exc),
+            )
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
-        print(f"CDTRF detail QA: page={page} attempted={report['sample_attempted']}/{sample_size} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
+        print(f"CDTRF detail QA: page={page} attempted={report['sample_attempted']}/{requested} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
     return _finish(report)
 
 
