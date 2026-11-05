@@ -791,3 +791,37 @@ def test_centerr_non_sidebar_catalogue_links_still_preserved():
     assert {lot.external_id for lot in lots} == {
         "centerr.ru:auctions-221", "centerr.ru:contests-222",
     }
+
+
+def test_nistp_browser_confirmed_get_contract_keeps_all_search_fields():
+    """Observed 2026-11-05: a real public page-2 GET used this form shape."""
+    from bs4 import BeautifulSoup
+    from bankrotai.connectors.etp_sources.pagination import get_form_params
+
+    source_fields = {
+        "lot_description": "",
+        "trade_number": "",
+        "lot_number": "",
+        "trade_org": "",
+        "arbitr_info": "",
+        "debtor_info": "",
+        "app_start_from": "",
+        "app_start_to": "",
+        "app_end_from": "05.12.2026",
+        "app_end_to": "",
+        "view_type": "trade",
+        "pagenum": "1",
+    }
+    body = "<form id='nodesearch' method='get' action='/bankrot/trade_list.php'>"
+    body += "".join(
+        f'<input name="{name}" value="{value}">'
+        for name, value in source_fields.items()
+    )
+    body += "</form>"
+    form = BeautifulSoup(body, "html.parser").find("form")
+    assert form is not None
+    params = get_form_params(form, "pagenum", 2)
+    assert dict(params) == {**source_fields, "pagenum": "2"}
+    assert len(params) == len(source_fields)
+    assert ("view_type", "trade") in params
+    assert ("app_end_from", "05.12.2026") in params
