@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 import hashlib
 import json
 import re
@@ -125,6 +126,7 @@ async def scan_complete_nistp_catalogue(
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
+    diagnose_out_of_scope: bool = False,
 ) -> dict[str, Any]:
     """Walk one independent NISTP pass or fail without claiming completion."""
     if type(max_pages) is not int or not 1 <= max_pages <= MAX_SCAN_PAGES:
@@ -135,6 +137,9 @@ async def scan_complete_nistp_catalogue(
     seen: set[str] = set()
     catalogue_records: list[str] = []
     conservative_status_items = 0
+    out_of_scope_statuses: Counter[str] = Counter()
+    out_of_scope_samples: list[dict[str, Any]] = []
+    out_of_scope_missing_prices = 0
     pages: list[dict[str, Any]] = []
     last_page_proven = False
     scan_started = time.monotonic()
@@ -156,6 +161,7 @@ async def scan_complete_nistp_catalogue(
                 "items": 0,
                 "property_items": 0,
                 "conservative_status_items": 0,
+                "out_of_scope_status_items": 0,
                 "response_url": str(getattr(response, "url", "")),
                 "ids_sha256": hashlib.sha256(b"").hexdigest(),
                 "empty_terminal_page": True,
@@ -193,22 +199,43 @@ async def scan_complete_nistp_catalogue(
                 f"Cross-page duplicate individual-lot identity: {sorted(overlap)[0]}"
             )
         page_conservative_status_items = 0
+        page_out_of_scope_status_items = 0
         for item in observations:
-            if item["listing_price_rub"] is None or item["listing_price_rub"] <= 0:
-                raise NistpCatalogueScanError(
-                    f"Missing individual price: {item['provider_external_id']}"
-                )
             source_status = item["source_status_text"]
             source_status_key = source_status.casefold().replace("ё", "е")
-            if source_status_key not in _ACTIVE_STATE_KEYS:
-                raise NistpCatalogueScanError(
-                    f"Out-of-scope NISTP status: {item['provider_external_id']} "
-                    f"value={source_status!r}"
-                )
-            if _status(source_status) == "unknown":
+            out_of_scope = source_status_key not in _ACTIVE_STATE_KEYS
+            if out_of_scope:
+                if not diagnose_out_of_scope or not source_status.strip():
+                    raise NistpCatalogueScanError(
+                        f"Out-of-scope NISTP status: {item['provider_external_id']} "
+                        f"value={source_status!r}"
+                    )
+                # Record the provider's unexpected row, but never grant active
+                # inventory acceptance from a contaminated filtered catalogue.
+                out_of_scope_statuses[source_status] += 1
+                page_out_of_scope_status_items += 1
+                if len(out_of_scope_samples) < 20:
+                    out_of_scope_samples.append({
+                        "page": page_number,
+                        "external_id": item["provider_external_id"],
+                        "source_status": source_status,
+                    })
+            price = item["listing_price_rub"]
+            if price is None or price <= 0:
+                if not out_of_scope:
+                    raise NistpCatalogueScanError(
+                        f"Missing individual price: {item['provider_external_id']}"
+                    )
+                out_of_scope_missing_prices += 1
+                price_evidence = "MISSING"
+            else:
+                price_evidence = f"{price:.2f}"
+            if not out_of_scope and _status(source_status) == "unknown":
                 page_conservative_status_items += 1
+            # Include *all* observed rows in the stability digest. Filtering
+            # them out would disguise source changes across independent passes.
             catalogue_records.append(
-                f"{item['provider_external_id']}\t{item['listing_price_rub']:.2f}\t"
+                f"{item['provider_external_id']}\t{price_evidence}\t"
                 f"{source_status}\t{int(item['is_property'])}"
             )
         conservative_status_items += page_conservative_status_items
@@ -227,6 +254,7 @@ async def scan_complete_nistp_catalogue(
             "items": len(identities),
             "property_items": len(property_ids),
             "conservative_status_items": page_conservative_status_items,
+            "out_of_scope_status_items": page_out_of_scope_status_items,
             "response_url": str(getattr(response, "url", "")),
             "ids_sha256": hashlib.sha256(
                 "\n".join(sorted(identities)).encode("ascii")
@@ -260,13 +288,18 @@ async def scan_complete_nistp_catalogue(
         "catalogue_records_sha256": records_digest,
         "pages": pages,
         "view_type": "lot",
-        "individual_prices_verified": True,
+        "individual_prices_verified": out_of_scope_missing_prices == 0,
         "individual_statuses_verified": True,
-        "source_statuses_recognized": True,
+        "source_statuses_recognized": not out_of_scope_statuses,
         "active_filter_proven_on_every_page": True,
         "trade_states": list(ACTIVE_SOURCE_STATES),
-        "complete_filtered_inventory": last_page_proven,
-        "normalized_statuses_complete": conservative_status_items == 0,
+        "complete_filtered_inventory": last_page_proven and not out_of_scope_statuses,
+        "effective_active_scope_proven": last_page_proven and not out_of_scope_statuses,
+        "out_of_scope_status_items": sum(out_of_scope_statuses.values()),
+        "out_of_scope_status_counts": dict(sorted(out_of_scope_statuses.items())),
+        "out_of_scope_samples": out_of_scope_samples,
+        "out_of_scope_missing_prices": out_of_scope_missing_prices,
+        "normalized_statuses_complete": conservative_status_items == 0 and not out_of_scope_statuses,
         "conservative_unknown_status_items": conservative_status_items,
         "production_database_writes": 0,
         "map_publication": False,
@@ -282,12 +315,14 @@ async def run_two_independent_passes(
     *,
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
+    diagnose_out_of_scope: bool = False,
 ) -> dict[str, Any]:
     passes = []
     for pass_number in range(1, 3):
         print(f"NISTP independent pass {pass_number}/2", flush=True)
         passes.append(await scan_complete_nistp_catalogue(
             connector_factory(), max_pages=max_pages, delay_seconds=delay_seconds,
+            diagnose_out_of_scope=diagnose_out_of_scope,
         ))
     stable = (
         passes[0]["last_page"] == passes[1]["last_page"]
@@ -304,6 +339,12 @@ async def run_two_independent_passes(
         "active_filter_proven_twice": bool(stable) and all(
             item["active_filter_proven_on_every_page"] for item in passes
         ),
+        "effective_active_scope_proven_twice": bool(stable) and all(
+            item["effective_active_scope_proven"] for item in passes
+        ),
+        "out_of_scope_status_items_by_pass": [
+            item["out_of_scope_status_items"] for item in passes
+        ],
         "trade_states": list(ACTIVE_SOURCE_STATES),
         "production_database_writes": 0,
         "map_publication": False,
@@ -316,14 +357,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
+    parser.add_argument("--diagnose-out-of-scope", action="store_true",
+                        help="Continue through non-active rows; never certify active scope")
     args = parser.parse_args()
     connector_type = SOURCE_CONNECTOR_TYPES["nistp.ru"]
     report = asyncio.run(run_two_independent_passes(
         connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+        diagnose_out_of_scope=args.diagnose_out_of_scope,
     ))
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     if not report["passes_match"]:
         raise SystemExit("NISTP independent full-catalogue passes differ")
+    if not report["effective_active_scope_proven_twice"] and not args.diagnose_out_of_scope:
+        raise SystemExit("NISTP selected active scope is not proven")
 
 
 if __name__ == "__main__":
