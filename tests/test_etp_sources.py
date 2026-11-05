@@ -400,37 +400,55 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
     )[0].start_price == 900000
 
 
+def _nistp_public_lot_row(
+    trade_id: str, code: str, number: int, title: str,
+    price: str = "3 274 000.00",
+) -> str:
+    """Matches the seven-column view_type=lot HTML saved from NISTP."""
+    return (
+        f"<tr><td><a href='/bankrot/trade_view.php?trade_nid={trade_id}'>{code}</a></td>"
+        "<td>Организатор</td>"
+        f"<td>Должник Лот № {number} : {title}</td>"
+        f"<td>{price}</td><td>11.11.2026</td><td>16.12.2026</td>"
+        "<td>Торги объявлены</td></tr>"
+    )
+
+
 def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
-    html = """
-    <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
-    <td>Управляющий</td>
-    <td>Всего лотов: 3 Лот № 1: Земельный участок 76:12:0000123:456
-    Лот № 2: Автомобиль BMW
-    Лот № 3: Квартира 77:01:0001010:1234</td></tr></table>
-    """
+    html = "<table>" + "".join([
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 1, "Земельный участок 76:12:0000123:456", "2 500 000.25"),
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 2, "Автомобиль BMW", "450 000.00"),
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 3, "Квартира 77:01:0001010:1234"),
+    ]) + "</table>"
     lots = parse_listing_html(profile("nistp.ru"), html)
     assert [lot.external_id for lot in lots] == [
         "nistp.ru:1234:1",
         "nistp.ru:1234:3",
     ]
+    assert [lot.start_price for lot in lots] == [2500000.25, 3274000.0]
+    assert [lot.auction_status for lot in lots] == ["scheduled", "scheduled"]
+    assert lots[0].cadastral_number == "76:12:0000123:456"
+    assert lots[1].cadastral_number == "77:01:0001010:1234"
 
 
 def test_nistp_parser_does_not_apply_preview_limit_to_full_page() -> None:
     rows = "".join(
-        f"""<tr><td><a href='/bankrot/trade_view.php?trade_nid={index}'>
-        {70000 + index}-ОАОФ</a></td><td>Управляющий</td>
-        <td>Лот № 1: Земельный участок 76:12:0000123:{1000 + index}</td></tr>"""
+        _nistp_public_lot_row(
+            str(index), f"{70000 + index}-ОАОФ", 1,
+            f"Земельный участок 76:12:0000123:{1000 + index}",
+        )
         for index in range(1, 36)
     )
     lots = parse_listing_html(profile("nistp.ru"), f"<table>{rows}</table>")
     assert len(lots) == 35
 
 
-def test_shared_trade_card_does_not_claim_unproven_per_lot_detail_fetch() -> None:
+def test_nistp_shared_trade_card_exposes_per_lot_detail_capability() -> None:
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"]()
-    assert "fetch_lot" not in connector.capabilities
-    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
-        asyncio.run(connector.fetch_lot("nistp.ru:1234:1"))
+    assert "fetch_lot" in connector.capabilities
+    assert "detail_enrichment" in connector.capabilities
+    with pytest.raises(SourceSchemaError, match="invalid per-lot external_id"):
+        asyncio.run(connector.fetch_lot("nistp.ru:1234"))
 
 
 def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
@@ -451,19 +469,21 @@ def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
 
 def test_form_pagination_posts_page_number() -> None:
     page_one = b"""
-    <form id='nodesearch' action='/bankrot/trade_list.php'>
+    <form id='nodesearch' method='post' action='/bankrot/trade_list.php'>
       <input type='hidden' name='pagenum' value='1'>
       <a onclick='pagenum_send(2)'>2</a>
     </form>
     """
-    page_two = b"<a href='/bankrot/trade_view.php?trade_nid=501500'>Lot on page two</a>"
+    page_two = ("<table>" + _nistp_public_lot_row(
+        "501500", "71874-ОАОФ", 1, "Земельный участок 76:12:0000123:456",
+    ) + "</table>").encode()
     session = FakeSession([
         FakeResponse(200, page_one, "https://nistp.ru/bankrot/trade_list.php"),
         FakeResponse(200, page_two, "https://nistp.ru/bankrot/trade_list.php"),
     ])
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
     result = asyncio.run(connector.search({}, cursor="2"))
-    assert result.items[0].external_id == "nistp.ru:501500"
+    assert result.items[0].external_id == "nistp.ru:501500:1"
     assert session.posts[0][1]["pagenum"] == "2"
 
 
@@ -707,3 +727,219 @@ def test_evidence_backed_get_pagination_fetches_distinct_second_page(
 def test_official_status_phrases_do_not_create_false_active_or_closed_lots(source_status, expected):
     from bankrotai.connectors.etp_sources.common import _status
     assert _status(source_status) == expected
+
+
+def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_filters():
+    first = b"""
+    <form id='nodesearch' method='get' action='/bankrot/trade_list.php'>
+      <input type='hidden' name='pagenum' value='1'>
+      <input type='hidden' name='searchtype' value='estate'>
+      <input type='checkbox' checked name='region[]' value='76'>
+      <input type='checkbox' checked name='region[]' value='77'>
+      <input type='checkbox' name='region[]' value='78'>
+      <a onclick='pagenum_send(2)'>2</a>
+    </form>
+    """
+    second = ("<table>" + _nistp_public_lot_row(
+        "501501", "71875-ОАОФ", 1, "Земельный участок 77:12:0000123:456",
+    ) + "</table>").encode()
+
+    class CaptureGet(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php"),
+                FakeResponse(200, second, "https://nistp.ru/bankrot/trade_list.php"),
+            ])
+            self.query_params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.query_params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = CaptureGet()
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
+    result = asyncio.run(connector.search({}, cursor="2"))
+    assert [x.external_id for x in result.items] == ["nistp.ru:501501:1"]
+    assert session.posts == []
+    assert session.query_params is not None
+    assert ("pagenum", "2") in session.query_params
+    assert ("searchtype", "estate") in session.query_params
+    assert [v for k, v in session.query_params if k == "region[]"] == ["76", "77"]
+
+
+def test_nistp_rejects_unexpected_form_method():
+    first = b"""
+    <form id='nodesearch' method='delete' action='/bankrot/trade_list.php'>
+      <input name='pagenum' value='1'>
+    </form>
+    """
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=FakeSession(
+        FakeResponse(200, first, "https://nistp.ru/bankrot/trade_list.php")
+    ))
+    with pytest.raises(SourceSchemaError, match="unsupported pagination form method"):
+        asyncio.run(connector.search({}, cursor="2"))
+
+
+def test_centerr_news_sidebar_does_not_inject_repeated_lots_into_catalogue():
+    site = profile("centerr.ru")
+    promo = ("https://bankrupt.centerr.ru/public/auctions/lots/view/100/")
+    actual = ("https://bankrupt.centerr.ru/public/auctions/lots/view/221/")
+    html = f"""
+    <div class='news-short'>
+      <a href='{promo}'>Важный рекламный лот - земельный участок</a>
+    </div>
+    <div class='news-body'>
+      <a href='{promo}'>Рекламный лот из повторяемого блока</a>
+    </div>
+    <table><tr><td><a href='{actual}'>Земельный участок 50:01:001:123</a></td></tr></table>
+    """
+    lots = parse_listing_html(site, html)
+    assert [lot.external_id for lot in lots] == ["centerr.ru:auctions-221"]
+    assert len(lots) == 1
+
+
+def test_centerr_non_sidebar_catalogue_links_still_preserved():
+    site = profile("centerr.ru")
+    html = """
+    <table><tr><td>
+      <a href='https://bankrupt.centerr.ru/public/auctions/lots/view/221/'>Квартира 1</a>
+    </td></tr><tr><td>
+      <a href='https://bankrupt.centerr.ru/public/contests/lots/view/222/'>Квартира 2</a>
+    </td></tr></table>
+    """
+    lots = parse_listing_html(site, html)
+    assert len(lots) == 2
+    assert {lot.external_id for lot in lots} == {
+        "centerr.ru:auctions-221", "centerr.ru:contests-222",
+    }
+
+
+def test_nistp_browser_confirmed_get_contract_keeps_all_search_fields():
+    """Observed 2026-11-05: a real public page-2 GET used this form shape."""
+    from bs4 import BeautifulSoup
+    from bankrotai.connectors.etp_sources.pagination import get_form_params
+
+    source_fields = {
+        "lot_description": "",
+        "trade_number": "",
+        "lot_number": "",
+        "trade_org": "",
+        "arbitr_info": "",
+        "debtor_info": "",
+        "app_start_from": "",
+        "app_start_to": "",
+        "app_end_from": "05.12.2026",
+        "app_end_to": "",
+        "view_type": "trade",
+        "pagenum": "1",
+    }
+    body = "<form id='nodesearch' method='get' action='/bankrot/trade_list.php'>"
+    body += "".join(
+        f'<input name="{name}" value="{value}">'
+        for name, value in source_fields.items()
+    )
+    body += "</form>"
+    form = BeautifulSoup(body, "html.parser").find("form")
+    assert form is not None
+    params = get_form_params(form, "pagenum", 2)
+    assert dict(params) == {**source_fields, "pagenum": "2"}
+    assert len(params) == len(source_fields)
+    assert ("view_type", "trade") in params
+    assert ("app_end_from", "05.12.2026") in params
+
+
+def test_nistp_real_get_lot_view_does_not_duplicate_search_query_on_page_two():
+    """Saved real NISTP HTML: empty GET action, selected view_type=lot."""
+    from urllib.parse import parse_qs, urlsplit
+
+    site = profile("nistp.ru")
+    assert site.listing_url.startswith("https://nistp.ru/?")
+    assert "view_type=lot" in site.listing_url
+    first = b"""<html><form id="nodesearch" method="GET" action="">
+      <input name="lot_description" value="">
+      <input name="app_end_from" value="">
+      <input type="radio" name="view_type" value="trade">
+      <input type="radio" name="view_type" value="lot" checked>
+      <input type="hidden" name="pagenum" value="">
+      <a onclick="pagenum_send(2)">2</a>
+    </form></html>"""
+    second = ("<table>" + _nistp_public_lot_row(
+        "502957", "72113-ОАОФ", 4,
+        "Машино-место, 14,3 кв. м, кад. № 77:01:0004002:6614",
+    ) + _nistp_public_lot_row(
+        "502957", "72113-ОАОФ", 5,
+        "Машино-место, 13,3 кв. м, кад. № 77:01:0004002:6633",
+    ) + "</table>").encode()
+
+    class Captured(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, site.listing_url),
+                FakeResponse(200, second, site.listing_url),
+            ])
+            self.second_params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.second_params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = Captured()
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
+    result = asyncio.run(connector.search({}, cursor="2"))
+    assert session.requested_urls[0] == site.listing_url
+    assert session.requested_urls[1] == "https://nistp.ru/"
+    assert session.second_params is not None
+    assert [v for k, v in session.second_params if k == "view_type"] == ["lot"]
+    assert [v for k, v in session.second_params if k == "pagenum"] == ["2"]
+    assert [lot.external_id for lot in result.items] == [
+        "nistp.ru:502957:4", "nistp.ru:502957:5",
+    ]
+    assert [lot.start_price for lot in result.items] == [3274000.0, 3274000.0]
+    assert [lot.cadastral_number for lot in result.items] == [
+        "77:01:0004002:6614", "77:01:0004002:6633",
+    ]
+
+
+@pytest.mark.parametrize("source_id", ["rus-on.ru", "sistematorg.com"])
+def test_saved_legacy_etp_get_forms_replace_previous_query(source_id):
+    """Yandex v7 network: both platforms use GET form #tradesearch, not POST."""
+    base = profile(source_id).listing_url
+    first = b"""<form id="tradesearch" method="GET" action="">
+      <input name="trade_number" value="">
+      <input type="hidden" name="pagenum" value="">
+      <a onclick="pagenum_send(2)">2</a>
+    </form>"""
+
+    class CaptureGet(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, base + "?old=stale"),
+                FakeResponse(200, b"page 2", base + "?pagenum=2"),
+            ])
+            self.params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = CaptureGet()
+    connector = SOURCE_CONNECTOR_TYPES[source_id](session=session)
+    connector._request(2)
+    assert session.posts == []
+    assert len(session.requested_urls) == 2
+    assert session.requested_urls[1] == base.split("?")[0]
+    assert session.params is not None
+    assert [value for key, value in session.params if key == "pagenum"] == ["2"]
+
+
+def test_nistp_trade_only_markup_never_yields_phantom_single_asset():
+    """Fail closed: a procedure link is not a lot after switching to lot view."""
+    html = """
+    <table><tr><td>
+      <a href="/bankrot/trade_view.php?trade_nid=502957">72113-ОАОФ</a>
+    </td><td>Всего лотов: 10. Машино-место</td></tr></table>
+    """
+    assert parse_listing_html(profile("nistp.ru"), html) == []
