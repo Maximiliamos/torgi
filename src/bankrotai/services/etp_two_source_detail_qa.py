@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import re
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -25,7 +26,7 @@ from bankrotai.connectors.etp_sources.common import _parse_soup
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.connectors.registry.captured_etp_api import parse_cdtrf_api_page
 from bankrotai.connectors.registry.direct_etp_catalogue import (
-    PROFILE_BY_ID, parse_nistp_lot_observations,
+    PROFILE_BY_ID, PROPERTY_WORDS, parse_nistp_lot_observations,
 )
 from bankrotai.services.etp_cdtrf_canary import (
     API, MAX_RESPONSE, REQUEST_TIMEOUT, fetch_verified_cdtrf_lot,
@@ -36,6 +37,7 @@ _ALLOWED_SOURCES = frozenset({"nistp", "cdtrf", "both"})
 # Same exact selected partition as the last clean 64-page CDTRF operator walk.
 _CDTRF_SELECTED_STATUSES = ("Declare", "RecieveReq", "DefinePart", "TradeGo")
 _CDTRF_SELECTED_CATEGORIES = "21,22,23,31,32,33,34,41"
+_NON_PROPERTY_RECEIVABLE = re.compile(r"дебиторск|право\s+требован", re.IGNORECASE)
 
 
 def spaced_pages(last_page: int, count: int) -> list[int]:
@@ -130,6 +132,7 @@ async def check_nistp_details(
     report = _fresh_report("nistp.ru", sample_size, last_page)
     factory = connector_factory or SOURCE_CONNECTOR_TYPES["nistp.ru"]
     pages_requested = 0
+    seen_sample_ids: set[str] = set()
     for page in planned_pages(last_page, sample_size):
         if report["sample_attempted"] >= sample_size:
             break
@@ -162,6 +165,10 @@ async def check_nistp_details(
                 report["skipped_pages"] += 1
                 continue
             identity = candidate["provider_external_id"]
+            if identity in seen_sample_ids:
+                _record_error(report, page, "duplicate_sample_identity", identity)
+                continue
+            seen_sample_ids.add(identity)
             report["sample_attempted"] += 1
             detail = await connector.fetch_lot(identity)
             if (detail.external_id != identity
@@ -178,8 +185,10 @@ async def check_nistp_details(
                     or detail.auction_status != catalogue_status):
                 _record_error(report, page, "listing_detail_status_mismatch", identity)
                 continue
-            if detail.category in {"other", "vehicle"}:
-                _record_error(report, page, "detail_property_classification_unverified", identity)
+            detail_text = f"{detail.title} {detail.description}"
+            if (not PROPERTY_WORDS.search(detail_text)
+                    or _NON_PROPERTY_RECEIVABLE.search(detail_text)):
+                _record_error(report, page, "detail_property_evidence_unverified", identity)
                 continue
             report["sample_verified"] += 1
             report["observations"].append({
@@ -188,6 +197,8 @@ async def check_nistp_details(
                 "initial_price_matches_catalogue": True,
                 "normalized_status_matches_catalogue": True,
                 "detail_category": detail.category,
+                "normalized_category_review_required": detail.category == "other",
+                "detail_property_text_confirmed": True,
                 "cadastre_present": bool(detail.cadastral_number),
                 "address_present": bool(detail.address),
                 "deposit_present": detail.deposit_amount is not None,
@@ -247,6 +258,10 @@ def check_cdtrf_details(
             candidate = sorted(candidates, key=lambda row: int(row["trade_lot_id"]))[0]
             trade_id, lot_id = candidate["trade_id"], candidate["trade_lot_id"]
             identity = candidate["external_id"]
+            if identity in seen_sample_ids:
+                _record_error(report, page, "duplicate_sample_identity", identity)
+                continue
+            seen_sample_ids.add(identity)
             report["sample_attempted"] += 1
             detail = fetch_detail(trade_id, lot_id, session=own)
             raw = detail.raw_data or {}
