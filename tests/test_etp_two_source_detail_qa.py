@@ -120,6 +120,30 @@ def _cdtrf_page(_session, page: int) -> dict:
     }]}
 
 
+
+def test_cdtrf_sample_uses_operator_proven_land_category_41_and_four_statuses() -> None:
+    urls = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            urls.append(url)
+            assert kwargs["allow_redirects"] is False
+            return SimpleNamespace(
+                status_code=200,
+                content=b'{"success":true,"totalCount":0,"items":[]}',
+                headers={"Content-Type": "application/json"},
+                json=lambda: {"success": True, "totalCount": 0, "items": []},
+            )
+
+    qa._cdtrf_page(Session(), 1)
+    assert len(urls) == 1
+    assert "Categories=21%2C22%2C23%2C31%2C32%2C33%2C34%2C41" in urls[0]
+    assert "PageSize=100" in urls[0]
+    assert "PageNum=1" in urls[0]
+    for state in ("Declare", "RecieveReq", "DefinePart", "TradeGo"):
+        assert f"{state}=true" in urls[0]
+
+
 def test_cdtrf_detail_checks_trade_lot_and_initial_without_price_conflation() -> None:
     report = qa.check_cdtrf_details(
         1, 1, session=object(), sleep=lambda seconds: None,
