@@ -899,3 +899,36 @@ def test_nistp_real_get_lot_view_does_not_duplicate_search_query_on_page_two():
     assert [lot.cadastral_number for lot in result.items] == [
         "77:01:0004002:6614", "77:01:0004002:6633",
     ]
+
+
+@pytest.mark.parametrize("source_id", ["rus-on.ru", "sistematorg.com"])
+def test_saved_legacy_etp_get_forms_replace_previous_query(source_id):
+    """Yandex v7 network: both platforms use GET form #tradesearch, not POST."""
+    base = profile(source_id).listing_url
+    first = b"""<form id="tradesearch" method="GET" action="">
+      <input name="trade_number" value="">
+      <input type="hidden" name="pagenum" value="">
+      <a onclick="pagenum_send(2)">2</a>
+    </form>"""
+
+    class CaptureGet(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, base + "?old=stale"),
+                FakeResponse(200, b"page 2", base + "?pagenum=2"),
+            ])
+            self.params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = CaptureGet()
+    connector = SOURCE_CONNECTOR_TYPES[source_id](session=session)
+    connector._request(2)
+    assert session.posts == []
+    assert len(session.requested_urls) == 2
+    assert session.requested_urls[1] == base.split("?")[0]
+    assert session.params is not None
+    assert [value for key, value in session.params if key == "pagenum"] == ["2"]
