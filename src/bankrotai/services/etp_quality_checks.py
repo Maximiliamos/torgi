@@ -180,17 +180,25 @@ def audit_detail_pair(source: str, listing: Any, detail: Any) -> dict[str, dict[
     try:
         listed_start = _price(getattr(listing, "start_price", None))
         detail_start = _price(getattr(detail, "start_price", None))
+        listed_current = _price(getattr(listing, "current_price", None))
+        detail_current = _price(getattr(detail, "current_price", None))
     except ValueError:
         price = _stage(FAIL, "invalid_catalogue_or_detail_money")
     else:
-        if listed_start is not None and detail_start is not None:
-            price = (_stage(PASS, "start_price_agrees_with_individual_detail")
-                     if abs(listed_start - detail_start) <= Decimal("0.01")
-                     else _stage(FAIL, "start_price_conflicts_with_individual_detail"))
-        elif detail_start is not None:
-            price = _stage(PASS, "start_price_supplied_by_individual_detail")
+        if (listed_start is not None and detail_start is not None
+                and abs(listed_start - detail_start) > Decimal("0.01")):
+            price = _stage(FAIL, "start_price_conflicts_with_individual_detail")
+        elif (listed_current is not None and detail_current is not None
+                and abs(listed_current - detail_current) > Decimal("0.01")):
+            # An auction's current price may legitimately change after the
+            # catalogue loads. Validate recency instead of declaring fraud.
+            price = _stage(NOT_TESTED, "current_price_changed_needs_recency")
+        elif listed_current is not None and detail_current is None:
+            price = _stage(NOT_TESTED, "listing_current_price_not_in_individual_detail")
+        elif (detail_start is not None or detail_current is not None):
+            price = _stage(PASS, "money_observed_in_individual_detail")
         else:
-            price = _stage(NOT_TESTED, "individual_detail_start_price_missing")
+            price = _stage(NOT_TESTED, "individual_detail_money_missing")
 
     listed_status = str(getattr(listing, "auction_status", "") or "").lower()
     detail_status = str(getattr(detail, "auction_status", "") or "").lower()
