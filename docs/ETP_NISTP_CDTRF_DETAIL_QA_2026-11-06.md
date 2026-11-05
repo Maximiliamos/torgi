@@ -57,3 +57,44 @@ not store raw provider HTML, titles, addresses or debtor data.
   `production_database_writes=0`.
 - A failed sample returns a nonzero exit code but still reports the other
   source. Do not disable safeguards to get a PASS.
+
+## Operator results — 2026-11-05 22:15 UTC (SHA a015b3c)
+
+At the operator's no-VPN workstation, 12 targeted pytest tests passed.
+The bounded 30-per-source read-only detail QA then recorded:
+
+- NISTP: 20 verified, 10 `NistpCardError` (pages
+  10, 15, 20, 25, 30, 39, 54, 117, 132, 12).
+- CDTRF: 23 verified, 7 `CdtrfEvidenceError` (pages
+  9, 14, 46, 55, 57, 59, 61).
+- Both sample passes are **NOT accepted**; no provider record was imported.
+  Only exception class names were retained by SHA a015b3c, so the exact
+  underlying parser conditions remain unknown.
+
+## Targeted failure-only diagnostic
+
+The proposed follow-up `-RecheckFailedOnly` mode reads prior
+`nistp-ru-*.json` and `cdtrf-ru-*.json` from the evidence directory,
+validates the source and reported last-page ranges, and visits **only the 10
+and 7 failed page numbers**. It never rechecks successfully verified sample
+pages unless a source catalogue has drifted.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-etp-nistp-cdtrf-detail-qa-no-vpn.ps1 -RecheckFailedOnly
+```
+
+For known parser errors, `errors[]` now contains a safe `reason` identifier,
+the specific sampled `external_id`, and the `stage` (catalogue/detail/comparison).
+Arbitrary provider or exception text is not included, to avoid leaking personal
+details from HTML or URLs. Unknown parser error messages remain omitted.
+
+**Important:** the old reports identify failure *pages* but not failed IDs.
+This is a new observation at those same pages, not confirmation that the
+same provider records remain there in a live changing catalogue. A clean
+failure-only run does not imply 30/30 nor lift NISTP's 43-terminal-status
+source-scope defect.
+
+Review reason distributions before changing shared-card parsers:
+`requested_lot_missing_in_trade_card`, `missing_numbered_lot_sections`,
+`missing_nuxt_ssr`, `html_ssr_initial_price_mismatch`, and other reasons
+require distinct, conservative fixes.
