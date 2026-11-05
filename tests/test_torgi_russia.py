@@ -331,8 +331,11 @@ def test_torgi_russia_page_two_uses_hydration_api_not_repeated_ssr() -> None:
 
         def json(self):
             return {
-                "data": [page_two_item], "current_page": 2, "last_page": 4,
-                "total": 85, "per_page": 24,
+                "data": [page_two_item],
+                "meta": {
+                    "current_page": 2, "last_page": 4,
+                    "total": 85, "per_page": 24,
+                },
             }
 
     class Session:
@@ -407,10 +410,12 @@ def test_torgi_russia_page_two_ids_differ_from_ssr_page_one() -> None:
                 url=url,
                 payload={
                     "data": [second_item],
-                    "current_page": 2,
-                    "last_page": 2,
-                    "total": 2,
-                    "per_page": 24,
+                    "meta": {
+                        "current_page": 2,
+                        "last_page": 2,
+                        "total": 2,
+                        "per_page": 24,
+                    },
                 },
             )
 
@@ -437,7 +442,10 @@ def test_torgi_russia_page_api_rejects_wrong_page() -> None:
             return None
 
         def json(self):
-            return {"data": [_new_site_lot()], "current_page": 1, "last_page": 4}
+            return {
+                "data": [_new_site_lot()],
+                "meta": {"current_page": 1, "last_page": 4},
+            }
 
     class Session:
         headers = {}
@@ -469,8 +477,11 @@ def test_torgi_russia_page_api_proves_partial_terminal_page() -> None:
 
         def json(self):
             return {
-                "data": terminal_items, "current_page": 4, "last_page": 4,
-                "total": 85, "per_page": 24,
+                "data": terminal_items,
+                "meta": {
+                    "current_page": 4, "last_page": 4,
+                    "total": 85, "per_page": 24,
+                },
             }
 
     class Session:

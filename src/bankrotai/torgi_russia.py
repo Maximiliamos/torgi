@@ -223,6 +223,7 @@ class TorgiRussiaClient:
 
         transport = "public-nextjs-html"
         api_payload: dict | None = None
+        api_meta: dict | None = None
         if page == 1:
             response = self._get_with_retry(
                 urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
@@ -262,19 +263,32 @@ class TorgiRussiaClient:
                     f"Torgi Russia public page API schema is invalid; page={page}"
                 )
             api_payload = candidate
-            observed_page = int(candidate.get("current_page") or 0)
+            candidate_meta = candidate.get("meta")
+            if candidate_meta is None:
+                # Retain compatibility with the briefly observed flat fixture,
+                # but prefer the real Laravel-style {data, links, meta} contract.
+                candidate_meta = {
+                    key: candidate.get(key)
+                    for key in ("current_page", "last_page", "total", "per_page")
+                }
+            if not isinstance(candidate_meta, dict):
+                raise RuntimeError(
+                    f"Torgi Russia public page API pagination schema is invalid; page={page}"
+                )
+            api_meta = candidate_meta
+            observed_page = int(api_meta.get("current_page") or 0)
             if observed_page != page:
                 raise RuntimeError(
                     "Torgi Russia public page API returned the wrong page; "
                     f"requested={page} observed={observed_page}"
                 )
             records = candidate["data"]
-            last_page = max(page, int(candidate.get("last_page") or page))
+            last_page = max(page, int(api_meta.get("last_page") or page))
             page_meta = {
                 "has_more": page < last_page,
                 "total_pages": last_page,
-                "total": candidate.get("total"),
-                "per_page": candidate.get("per_page"),
+                "total": api_meta.get("total"),
+                "per_page": api_meta.get("per_page"),
             }
             transport = "public-first-party-json"
 
@@ -306,8 +320,8 @@ class TorgiRussiaClient:
                     "Torgi Russia public search reported positive total but parsed zero lots; "
                     f"page={page} region_id={filters.region_id} total={reported_total}"
                 )
-        elif not records and api_payload is not None and page <= int(
-            api_payload.get("last_page") or page
+        elif not records and api_payload is not None and api_meta is not None and page <= int(
+            api_meta.get("last_page") or page
         ):
             raise RuntimeError(
                 "Torgi Russia public page API returned an empty advertised page; "
