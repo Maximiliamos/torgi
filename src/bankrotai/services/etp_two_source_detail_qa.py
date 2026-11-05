@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceAccessError
 from bankrotai.connectors.etp_sources.common import _parse_soup
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.connectors.registry.captured_etp_api import parse_cdtrf_api_page
@@ -225,6 +225,10 @@ def _cdtrf_page(session: requests.Session, page: int) -> dict[str, Any]:
         url, allow_redirects=False, timeout=REQUEST_TIMEOUT,
         headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-readonly-detail-QA/1"},
     )
+    if response.status_code in {401, 403, 429}:
+        raise SourceAccessError(
+            f"cdtrf.ru: provider returned HTTP {response.status_code}"
+        )
     if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
         raise ValueError("CDTRF catalogue HTTP/schema refusal")
     if "json" not in response.headers.get("Content-Type", "").casefold():
