@@ -36,6 +36,16 @@ MAX_SCAN_PAGES = 10_000
 _EXTERNAL_ID = re.compile(r"nistp\.ru:[1-9]\d{0,11}:[1-9]\d{0,4}\Z")
 ACTIVE_SOURCE_STATES = ("Торги объявлены", "Прием заявок", "Идут торги")
 _ACTIVE_STATE_KEYS = {value.casefold().replace("ё", "е") for value in ACTIVE_SOURCE_STATES}
+# Known terminal results may leak through a live filtered catalogue. Do not
+# interpret them as active; do not tolerate arbitrary unknown status strings.
+_DIAGNOSTIC_TERMINAL_STATE_KEYS = {
+    "торги завершены", "торги окончены", "торги не состоялись",
+    "прием заявок завершен", "приём заявок завершён",
+    "торги отменены",
+}
+_DIAGNOSTIC_TERMINAL_STATE_KEYS = {
+    value.casefold().replace("ё", "е") for value in _DIAGNOSTIC_TERMINAL_STATE_KEYS
+}
 
 
 class NistpCatalogueScanError(ValueError):
@@ -205,7 +215,7 @@ async def scan_complete_nistp_catalogue(
             source_status_key = source_status.casefold().replace("ё", "е")
             out_of_scope = source_status_key not in _ACTIVE_STATE_KEYS
             if out_of_scope:
-                if not diagnose_out_of_scope or not source_status.strip():
+                if not diagnose_out_of_scope or source_status_key not in _DIAGNOSTIC_TERMINAL_STATE_KEYS:
                     raise NistpCatalogueScanError(
                         f"Out-of-scope NISTP status: {item['provider_external_id']} "
                         f"value={source_status!r}"
@@ -335,7 +345,9 @@ async def run_two_independent_passes(
         "source": "nistp.ru",
         "independent_passes": passes,
         "passes_match": stable,
-        "last_page_proven_twice": bool(stable),
+        "last_page_proven_twice": bool(stable) and all(
+            item["last_page_proven"] for item in passes
+        ),
         "active_filter_proven_twice": bool(stable) and all(
             item["active_filter_proven_on_every_page"] for item in passes
         ),
