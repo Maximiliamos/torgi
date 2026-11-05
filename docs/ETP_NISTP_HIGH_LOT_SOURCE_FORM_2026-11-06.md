@@ -112,3 +112,40 @@ This bounded 7-request check reuses the previous safe driver:
 It does not rerun the successful CDTRF 10/10 network sample.
 The link-shape functionality was added after the first operator run
 and still needs offline tests and live observation before conclusions.
+
+
+## Final operator link-shape evidence — SHA `4bb1e694`
+
+The latest NISTP exact-search run passed **9/9 offline safety tests**
+and observed all 7 exact high-numbered catalogue rows again. Source
+report: `nistp-high-lot-source-form-20261105T235353Z.json`.
+
+For each of seven exact original IDs
+`nistp.ru:502379:{139,179,239,259,339,439,539}`:
+
+- `distinct_lot_scoped_route_candidates=0`.
+- `first_party_link_shapes` contains only
+  `/bankrot/trade_view.php` with query field `trade_nid`.
+- `has_lot_scoped_parameter=false`,
+  `is_only_trade_page_route=true`.
+- `independent_lot_detail_verified=false` and
+  `source_accepted=false`.
+
+**Decision — stop searching the same seven catalogue row links**: the
+specific source-observed routes do not expose a distinct individual
+lot page. This does *not* establish that no other legitimate official
+endpoint exists. A future candidate route must be independently
+observed from source navigation/HTML before fetching or validating it.
+Retain these seven as catalogue-only with no synthetic per-lot detail,
+no copied sibling price/status/property description, no import,
+reconcile, archival or map publication.
+
+Existing NISTP gate remains unresolved: the two 142-page filtered
+catalogue walks observed 43 terminal statuses despite the selected
+active trade-state filters. Do not reclassify them as active or dismiss
+the source-inconsistent selection scope. This blocker is independent of
+the seven high-numbered card details.
+
+CDTRF's last independent 10/10 bounded detail QA remains valid only
+for that specific sample and had two title-source review flags.
+This link-shape run did not request CDTRF again.
