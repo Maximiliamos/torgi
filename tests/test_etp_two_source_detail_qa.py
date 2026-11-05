@@ -356,3 +356,64 @@ def test_cdtrf_failure_report_identifies_exact_lot_stage_and_safe_reason() -> No
         "reason": "html_ssr_initial_price_mismatch",
     }]
     assert report["detail_sample_pass"] is False
+
+
+def test_pinned_failure_ids_are_validated_and_rejected_if_missing(tmp_path) -> None:
+    import json
+
+    file = tmp_path / "prior.json"
+    base = {
+        "source": "cdtrf.ru",
+        "mode": "bounded_independent_readonly_lot_detail_sample",
+        "last_page_from_previous_full_walk": 64,
+        "source_accepted": False,
+        "errors": [{
+            "page": 9, "external_id": "cdtrf:390579",
+            "stage": "detail", "code": "CdtrfEvidenceError",
+        }],
+    }
+    file.write_text(json.dumps(base), encoding="utf-8")
+    assert qa.pinned_failed_targets(file, source="cdtrf.ru", last_page=64) == {
+        9: "cdtrf:390579",
+    }
+    del base["errors"][0]["external_id"]
+    file.write_text(json.dumps(base), encoding="utf-8")
+    with pytest.raises(ValueError, match="trustworthy exact lot IDs"):
+        qa.pinned_failed_targets(file, source="cdtrf.ru", last_page=64)
+
+
+def test_pinned_cdtrf_recheck_does_not_substitute_first_lot_on_changed_page() -> None:
+    report = qa.check_cdtrf_details(
+        1, 1, session=object(), sleep=lambda seconds: None,
+        recheck_pages=[1], pinned_targets={1: "cdtrf:999999"},
+        fetch_page=_cdtrf_page,
+        fetch_detail=lambda trade, lot, session: pytest.fail(
+            "Must not request detail for another lot"
+        ),
+    )
+    assert report["sample_attempted"] == 1
+    assert report["sample_verified"] == 0
+    assert report["detail_sample_pass"] is False
+    assert report["exact_original_ids_pinned"] is True
+    assert report["errors"] == [{
+        "page": 1, "code": "pinned_lot_not_in_active_catalogue_page",
+        "external_id": "cdtrf:999999", "stage": "catalogue",
+    }]
+
+
+def test_pinned_nistp_recheck_does_not_replace_missing_target(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa, "parse_nistp_lot_observations",
+        lambda *args, **kwargs: [_nistp_observation()],
+    )
+    report = asyncio.run(qa.check_nistp_details(
+        1, 1, connector_factory=NistpStub, sleep=lambda seconds: None,
+        recheck_pages=[1], pinned_targets={1: "nistp.ru:502379:139"},
+    ))
+    assert report["sample_attempted"] == 1
+    assert report["sample_verified"] == 0
+    assert report["detail_sample_pass"] is False
+    assert report["errors"] == [{
+        "page": 1, "code": "pinned_lot_not_in_active_catalogue_page",
+        "external_id": "nistp.ru:502379:139", "stage": "catalogue",
+    }]
