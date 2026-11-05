@@ -90,3 +90,25 @@ exact trade/lot identity and status for audit, but do not mark
 verified price, object rights or individual card as complete.
 The 43 terminal source statuses in selected-active filters remain
 a separate unresolved blocker regardless of this result.
+
+
+### Follow-up: inspect only source-owned link shapes (not URL execution)
+
+After the 7/7 source-form result, the probe now records
+`first_party_link_shapes` (safe path and query field **names only**)
+from the *exact matching 7-column lot row*, plus
+`distinct_lot_scoped_route_candidates`.
+
+This is required because `_nistp_lot_observations` currently selects
+the first public trade-level link in the catalogue row. The supplier
+may or may not expose an additional lot-specific route in that row.
+A candidate URL must **never** be fetched speculatively or treated
+as an independent detail proof: even when a distinct per-lot link
+shape is observed, `independent_lot_detail_endpoint_verified=false`
+and `independent_lot_detail_verified=false` stay hardcoded.
+
+This bounded 7-request check reuses the previous safe driver:
+`scripts/run-nistp-high-lot-and-cdtrf-evidence-no-vpn.ps1`.
+It does not rerun the successful CDTRF 10/10 network sample.
+The link-shape functionality was added after the first operator run
+and still needs offline tests and live observation before conclusions.
