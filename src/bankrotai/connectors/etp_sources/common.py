@@ -820,8 +820,13 @@ class HtmlEtpConnector(AuctionConnector):
             method = str(form.get("method") or "get").strip().lower()
             if method == "get":
                 params = get_form_params(form, self.profile.form_page_field, page)
+                # Native browser GET submissions replace the action's query
+                # with form fields. Appending params to previous.url would
+                # duplicate pagenum/view_type and silently reuse wrong filters.
+                parsed_action = urlparse(action)
+                get_action = parsed_action._replace(query="", fragment="").geturl()
                 response = self._check_response(self.session.get(
-                    action, params=params, timeout=self.timeout, allow_redirects=False,
+                    get_action, params=params, timeout=self.timeout, allow_redirects=False,
                 ))
                 self._last_response, self._last_page = response, page
                 return response
