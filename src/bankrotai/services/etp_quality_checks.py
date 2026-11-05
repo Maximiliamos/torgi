@@ -169,6 +169,7 @@ def audit_detail_pair(source: str, listing: Any, detail: Any) -> dict[str, dict[
         return {
             "detail_price_consistency": _stage(FAIL, "detail_identity_mismatch"),
             "detail_status_consistency": _stage(FAIL, "detail_identity_mismatch"),
+            "detail_cadastral_consistency": _stage(FAIL, "detail_identity_mismatch"),
         }
     if (source in PROCEDURE_LEVEL_SOURCES or _raw(listing).get("trade_level_listing") is True
             or _raw(listing).get("individual_lot_identity_verified") is False):
@@ -177,6 +178,7 @@ def audit_detail_pair(source: str, listing: Any, detail: Any) -> dict[str, dict[
         return {
             "detail_price_consistency": _stage(NOT_TESTED, "detail_is_procedure_not_verified_lot"),
             "detail_status_consistency": _stage(NOT_TESTED, "detail_is_procedure_not_verified_lot"),
+            "detail_cadastral_consistency": _stage(NOT_TESTED, "detail_is_procedure_not_verified_lot"),
         }
     try:
         listed_start = _price(getattr(listing, "start_price", None))
@@ -209,7 +211,18 @@ def audit_detail_pair(source: str, listing: Any, detail: Any) -> dict[str, dict[
         status = _stage(NOT_TESTED, "catalogue_detail_status_disagreement_needs_recency")
     else:
         status = _stage(PASS, "individual_detail_status_observed")
+    listed_cadastral = str(getattr(listing, "cadastral_number", "") or "").strip()
+    detail_cadastral = str(getattr(detail, "cadastral_number", "") or "").strip()
+    if listed_cadastral and detail_cadastral and listed_cadastral != detail_cadastral:
+        # A house and its land may legitimately carry different numbers.
+        # Require human/source evidence instead of claiming either is wrong.
+        cadastral = _stage(NOT_TESTED, "cadastral_difference_requires_multi_asset_review")
+    elif detail_cadastral:
+        cadastral = _stage(PASS, "individual_detail_cadastral_observed")
+    else:
+        cadastral = _stage(NOT_TESTED, "detail_cadastral_not_observed")
     return {
         "detail_price_consistency": price,
         "detail_status_consistency": status,
+        "detail_cadastral_consistency": cadastral,
     }
