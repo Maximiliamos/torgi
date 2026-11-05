@@ -1,6 +1,11 @@
 # ETP parser-stage diagnostic snapshot — 2026-11-05
 
-Source: trusted self-hosted Home runner, [ETP stage checklist run 41915045518](https://github.com/Maximiliamos/torgi/actions/runs/41915045518), artifact `etp-parser-stage-checklist`, timestamp 2026-11-04T21:23 UTC (2026-11-05 00:23 MSK). This is a **two-page / one-detail read-only sample**, not a complete catalogue audit or an ingestion acceptance certificate.
+Source: latest successful trusted self-hosted Home result available during this review,
+[ETP stage checklist run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
+artifact `etp-parser-stage-checklist`, timestamp 2026-11-05 04:52 MSK. This is a
+**two-page / one-detail read-only sample**, not a complete catalogue audit or an ingestion
+acceptance certificate. Later source-code fixes are described below but are not promoted to
+`PASS` until a new exact-SHA live artifact verifies them.
 
 The workflow itself succeeded but **22 of 22 sources reported a first failure/block**. It wrote **zero** production DB records, **zero** map records and archived **zero** lots. Counts below are observed catalogue candidates in the bounded sample; **not saved lots**.
 
@@ -28,6 +33,54 @@ The workflow itself succeeded but **22 of 22 sources reported a first failure/bl
 | utender.ru | 0 | 0 | transport: profile_explicitly_blocked | NOT_TESTED |
 | electro-torgi.ru | 0 | 0 | transport: profile_explicitly_blocked | NOT_TESTED |
 | lot-online.ru | 2 | 160 | individual_detail: ConnectorCapabilityError, page 1 | FAIL |
+
+## Complete stage matrix from run 41950118761
+
+Each slash-separated cell follows the order in its heading. `PASS` applies only to the bounded
+observation represented by the artifact. In particular, `PASS` for page 2 is not proof of the
+last page, and `PASS` for one detail is not source-wide field coverage.
+
+| Source | HTTP/catalogue | Lots/ID | Page 2/end | Detail/ID | Price/status/class | DB/GEO/map/09-21 | First failure |
+|---|---|---|---|---|---|---|---|
+| `m-ets.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | PASS/FAIL/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | auction_status: unknown_status_in_sample |
+| `cdtrf.ru` | NOT_TESTED/FAIL | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | catalogue_markup: source_schema_or_page_contract |
+| `nistp.ru` | PASS/PASS | PASS/PASS | FAIL/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | pagination_next: source_schema_or_page_contract |
+| `alfalot.ru` | PASS/PASS | PASS/PASS | NOT_TESTED/NOT_TESTED | PASS/PASS | PASS/FAIL/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | auction_status: unknown_status_in_sample |
+| `roseltorg.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: transport_ConnectionError |
+| `sberbank-ast.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | PASS/FAIL/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | auction_status: unknown_status_in_sample |
+| `fabrikant.ru` | PASS/PASS | PASS/PASS | NOT_TESTED/NOT_TESTED | PASS/PASS | FAIL/FAIL/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `arbbitlot.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/PASS/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `etpu.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/PASS/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `sistematorg.com` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | BLOCKED/NOT_TESTED | FAIL/FAIL/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `centerr.ru` | PASS/PASS | PASS/FAIL | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | stable_lot_ids: missing_duplicate_or_wrong_source_id |
+| `aukcioncenter.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/FAIL/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `vertrades.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | BLOCKED/NOT_TESTED | FAIL/FAIL/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `rus-on.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/PASS/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `zakazrf.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/PASS/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `utpl.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | PASS/PASS | FAIL/PASS/FAIL | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | initial_or_current_price: missing_individual_prices_in_sample |
+| `rts-tender.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: profile_explicitly_blocked |
+| `etp-profit.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: tls_certificate_validation |
+| `ausib.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: provider_access_or_http |
+| `utender.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: profile_explicitly_blocked |
+| `electro-torgi.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: profile_explicitly_blocked |
+| `lot-online.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | FAIL/NOT_TESTED | PASS/PASS/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | individual_detail: unexpected_ConnectorCapabilityError |
+
+## Coverage audit against the required 12 stages
+
+| Required stage | Current machine-readable coverage after checklist v2 | Remaining gap |
+|---|---|---|
+| 1. DNS, HTTPS, HTTP, redirects | PARTIAL: `catalogue_url`, `transport`, sanitized HTTP status/class | DNS, TLS, redirect chain and environment must be separate observations |
+| 2. Correct catalogue and markup | YES: `catalogue_markup`, source contract and CDTRF JSON probe | Requires a fresh live run after each contract change |
+| 3. JavaScript, cookie/tutorial/filter UI | PARTIAL: `cookie_or_tutorial_modal`; HTTP connectors correctly use N/A | Browser-backed sources still need explicit UI/filter evidence |
+| 4. Lot discovery and procedure/lot separation | PARTIAL: `lot_discovery`, `lot_id_provenance` | Procedure-to-lot-to-asset isolation is not proven for every source |
+| 5. Unique IDs and duplicates | YES for bounded samples: `stable_lot_ids`, `lot_id_provenance` | Full-catalogue and PostgreSQL uniqueness are not yet proven |
+| 6. All pages and terminal proof | PARTIAL: `pagination_next`, `pagination_page_contract`, `last_page_proven` | Two independent complete scans and filter-partition coverage are missing |
+| 7. Individual cards | YES for requested probes: `individual_detail`, `detail_identity` | A one-card probe is not source-wide coverage |
+| 8. Price, status, address, cadastre, area, dates | PARTIAL: price, status and cadastre have v2 checks | Address, area and date/time-zone checks need dedicated stages |
+| 9. Catalogue/detail comparison | PARTIAL: price, status and cadastre consistency | Address, area, dates and multi-asset isolation remain missing |
+| 10. PostgreSQL save and update | NO: only coarse `production_import`, intentionally NOT_TESTED | Separate insert/update/dedupe/exact-SHA/rollback evidence is required |
+| 11. Geocoding and map publication | PARTIAL: coarse `geocoding`, `map_publication` placeholders | PostgreSQL-to-GEO-to-MapDataset-to-S3-to-Web counts need end-to-end proof |
+| 12. Scheduled 09:00 and 21:00 MSK runs | NO: coarse `scheduler` placeholder | Record both slots, exact SHA, retries and two consecutive successful cycles |
 
 ## Interpretation and priorities
 
