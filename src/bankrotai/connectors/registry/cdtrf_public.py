@@ -18,6 +18,10 @@ from bs4 import BeautifulSoup
 BASE = "https://torgi.cdtrf.ru"
 DETAIL = re.compile(r"^/trades/([1-9]\d{2,11})/?$")
 CADASTRE = re.compile(r"(?<!\d)\d{2}:\d{1,3}:\d{5,9}:\d{1,9}(?!\d)")
+AREA = re.compile(
+    r"(?<!\d)(\d{1,8}(?:[.,]\d{1,3})?)\s*(?:кв\.?\s*м\.?|м[²2]|m\s*\^?\s*2)\b",
+    re.IGNORECASE,
+)
 DATES = re.compile(r"(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}(?::\d{2})?)\s*-\s*(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}(?::\d{2})?)")
 PROPERTY = re.compile(r"земельн|участок|здани|помещени|квартир|жилой дом|гараж|недвижим|кадастр", re.I)
 MAX_BYTES = 2_000_000
@@ -194,6 +198,15 @@ def _lot_property_text(lot: dict) -> str:
     return _text(BeautifulSoup(" ".join(fragments), "html.parser"))
 
 
+def _unambiguous_area_sqm(text: str) -> float | None:
+    """Return one explicit square-metre value, never guess between objects."""
+    values = {Decimal(match.replace(",", ".")) for match in AREA.findall(text)}
+    if len(values) != 1:
+        return None
+    value = values.pop()
+    return float(value) if value > 0 else None
+
+
 def parse_detail(html: str, url: str) -> dict:
     canonical, trade_id = checked_url(url)
     soup = BeautifulSoup(html, "html.parser")
@@ -239,6 +252,15 @@ def parse_detail(html: str, url: str) -> dict:
     ).get_text(" ", strip=True)
     cadastral = CADASTRE.search(raw_cadastre)
     property_description = _lot_property_text(lot)
+    raw_location = lot.get("location")
+    if raw_location is not None and (
+        not isinstance(raw_location, str) or len(raw_location) > 2_000
+    ):
+        raise CdtrfEvidenceError("Invalid CDTRF property location")
+    property_address = str(raw_location or "").strip() or region
+    area_sqm = _unambiguous_area_sqm(
+        " ".join((str(lot.get("name") or ""), property_description))
+    )
     lat, lon = lot.get("latitude"), lot.get("longitude")
     coords = None
     try:
@@ -253,7 +275,8 @@ def parse_detail(html: str, url: str) -> dict:
         "external_id": f"cdtrf:{lot_id}",
         "title": title[:600], "category_label": category,
         "property_description": property_description,
-        "property_address": region,
+        "property_address": property_address,
+        "area_sqm": area_sqm,
         "region_label": region, "region_id": lot.get("regionID"),
         "cadastral_number": cadastral.group(0) if cadastral else None,
         "initial_price_rub": initial, "current_price_rub": None,

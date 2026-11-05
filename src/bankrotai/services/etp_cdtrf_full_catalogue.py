@@ -26,7 +26,10 @@ CDTRF_PAGE_SIZES = frozenset({20, 50, 100})
 CDTRF_STATUS_PARAMS = (
     "Declare", "RecieveReq", "DefinePart", "TradeGo"
 )
-CDTRF_PROPERTY_CATEGORIES = "21,22,23,31,32,33,34"
+# Category 41 is the provider's land category. It is independently present on
+# verified land-only lots and must not be omitted merely because some mixed
+# real-estate cards also carry one of the building categories below.
+CDTRF_PROPERTY_CATEGORIES = "21,22,23,31,32,33,34,41"
 MAX_SCAN_PAGES = 10_000
 
 

@@ -69,6 +69,8 @@ def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
             "initial_price_rub": "675000.00", "source_status_code": "Declare",
             "source_status_text": "Торги объявлены", "region_label": "Брянская область",
             "region_id": 32, "price_periods": [],
+            "property_address": "Брянская обл, г Брянск, ул Лесная, д 1",
+            "area_sqm": 239.1,
         }
     monkeypatch.setattr(module, "_http_get", fake_get)
     monkeypatch.setattr(module, "parse_detail", fake_parse)
@@ -77,6 +79,8 @@ def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
     assert lot.category == "land"
     assert lot.current_price is None
     assert lot.cadastral_number == "32:10:0010101:42"
+    assert lot.address == "Брянская обл, г Брянск, ул Лесная, д 1"
+    assert lot.area == 239.1
     assert lot.auction_status == "scheduled"
     with pytest.raises(CdtrfCanaryError, match="differs"):
         fetch_verified_cdtrf_lot("390364", "390898", session=object())

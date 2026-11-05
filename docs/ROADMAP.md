@@ -17,6 +17,14 @@
 
 ## История R7-CDTRF — отдельный безопасный пакет (30.10.2026)
 
+**Live browser evidence 05.11.2026:** direct public API and UI pages proved distinct
+pages 1/2 and the incomplete terminal page 524 for the combined `Declare` +
+`RecieveReq` filter. The total moved from 10,472 to 10,475 during observation,
+so this source remains non-reconciling. Two details proved independent trade/lot
+IDs, exact price/status, location, cadastre, area and dates. The parser was
+corrected to retain SSR `location`, one unambiguous square-metre area, and land
+category `41`; a full two-pass exact-SHA run is still required before acceptance.
+
 Ветка `feat/cdtrf-catalog-timeline-20261030` добавляет строгое чтение отдельного времени торгов из реальной структуры `catalog-card__trade-info-item` и преобразование подтверждённых дат начала/окончания заявок, вида торгов, ID сообщения ЕФРСБ и расписания публичного предложения в `NormalizedLot`. Фикстуры основаны на предоставленном браузерном сохранении страницы каталога. Дата подведения итогов **не является** временем начала аукциона. Данные каталога не являются подтверждёнными лотами.
 
 Этот абзац отражает состояние 30.10.2026. Текущий статус и оставшиеся критерии

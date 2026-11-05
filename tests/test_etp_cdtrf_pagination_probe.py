@@ -99,7 +99,7 @@ class FullScanSession:
 
     def get(self, url, *, allow_redirects, timeout, headers):
         params = parse_qs(urlsplit(url).query)
-        assert params["Categories"] == ["21,22,23,31,32,33,34"]
+        assert params["Categories"] == ["21,22,23,31,32,33,34,41"]
         assert all(params[x] == ["true"] for x in (
             "Declare", "RecieveReq", "DefinePart", "TradeGo"
         ))
