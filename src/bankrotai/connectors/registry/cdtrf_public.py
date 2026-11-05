@@ -202,8 +202,18 @@ def parse_detail(html: str, url: str) -> dict:
     title = _text(soup.select_one(".lot__header h1"))
     if (code is None or code.group(1) != trade_id
             or str(trade.get("tradeId")) != trade_id
-            or not title or title != str(lot.get("name", "")).strip()):
-        raise CdtrfEvidenceError("Trade ID or title disagreement between URL, HTML and Nuxt")
+            or (lot.get("tradeId") not in (None, "")
+                and str(lot["tradeId"]) != trade_id)):
+        raise CdtrfEvidenceError("Trade ID disagreement between URL, HTML and Nuxt")
+    # The public H1 can be a trade/procedure headline; the Nuxt lot.name is
+    # independently attached to the exact tradeLotId. Two non-empty titles
+    # can differ without changing the source lot identity. Retain a review
+    # flag rather than silently equating them or fabricating a new title.
+    lot_title_raw = lot.get("name")
+    if not title or not isinstance(lot_title_raw, str) or not lot_title_raw.strip():
+        raise CdtrfEvidenceError("Missing HTML or Nuxt individual lot title")
+    lot_title = lot_title_raw.strip()
+    title_matches = title == lot_title
     lot_id, lot_number = lot.get("tradeLotId"), lot.get("lotNumber")
     if not str(lot_id).isdigit() or not str(lot_number).isdigit():
         raise CdtrfEvidenceError("No stable CDTRF lot identity")
@@ -251,7 +261,10 @@ def parse_detail(html: str, url: str) -> dict:
         "source": "cdtrf.ru", "trade_id": trade_id,
         "trade_lot_id": str(lot_id), "lot_number": str(lot_number),
         "external_id": f"cdtrf:{lot_id}",
-        "title": title[:600], "category_label": category,
+        "title": lot_title[:600], "category_label": category,
+        "html_title_matches_nuxt_lot_name": title_matches,
+        "title_evidence": "verified_nuxt_lot_name",
+        "source_title_disagreement_review_required": not title_matches,
         "property_description": property_description,
         "property_address": region,
         "region_label": region, "region_id": lot.get("regionID"),
