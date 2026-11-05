@@ -23,7 +23,9 @@ pages 1/2 and the incomplete terminal page 524 for the combined `Declare` +
 so this source remains non-reconciling. Two details proved independent trade/lot
 IDs, exact price/status, location, cadastre, area and dates. The parser was
 corrected to retain SSR `location`, one unambiguous square-metre area, and land
-category `41`; a full two-pass exact-SHA run is still required before acceptance.
+category `41`. The corrected live filter returned 6,353 lots instead of 3,089,
+proving that the former filter omitted 3,264 rows; a full two-pass exact-SHA run
+is still required before acceptance.
 
 Ветка `feat/cdtrf-catalog-timeline-20261030` добавляет строгое чтение отдельного времени торгов из реальной структуры `catalog-card__trade-info-item` и преобразование подтверждённых дат начала/окончания заявок, вида торгов, ID сообщения ЕФРСБ и расписания публичного предложения в `NormalizedLot`. Фикстуры основаны на предоставленном браузерном сохранении страницы каталога. Дата подведения итогов **не является** временем начала аукциона. Данные каталога не являются подтверждёнными лотами.
 
