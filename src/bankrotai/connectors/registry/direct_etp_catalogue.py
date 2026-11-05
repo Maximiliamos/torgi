@@ -403,6 +403,12 @@ def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[
         rows = _parse_provider_links(profile, soup, limit)
     unique: dict[str, dict] = {}
     for item in rows:
+        original = unique.get(item["external_id"])
+        if profile.strategy == "nistp_lot_rows" and original is not None and any(
+            original.get(field) != item.get(field)
+            for field in ("listing_price_rub", "cadastral_number", "source_status_text")
+        ):
+            raise EtpCatalogError("NISTP conflicting catalogue rows for one trade/lot ID")
         unique.setdefault(item["external_id"], item)
     return list(unique.values())[:limit]
 
