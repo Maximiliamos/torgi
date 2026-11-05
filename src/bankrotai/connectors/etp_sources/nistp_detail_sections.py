@@ -1,8 +1,8 @@
-"""Read-only extraction of independent lots from a shared NISTP trade card.
+"""Parse separate NISTP lots from provider-owned table_lot_N HTML sections.
 
-A trade_nid identifies a whole trade, not a unique asset. This module never
-requests a page or writes to storage. Do not enable live detail enrichment
-until a provider HTML fixture (not only copied visible text) is validated.
+This pure parser does no IO. The browser-confirmed shared URL identifies a
+trade, while numbered tables identify individual assets and their prices.
+Missing or contradictory identity/price evidence must fail closed.
 """
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 
 class NistpCardError(ValueError):
-    """The shared card did not prove the requested lot or its financial fields."""
+    """The shared card does not prove this requested lot."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,109 +29,142 @@ class NistpLotSection:
     initial_price_rub: Decimal
     deposit_rub: Decimal | None
     status_text: str
+    native_lot_nid: str | None = None
+    address: str | None = None
 
     @property
     def external_id(self) -> str:
         return f"nistp.ru:{self.trade_nid}:{self.lot_number}"
 
 
-# A numbered section must contain the matching "Номер лота" field.
-# Mentions of "Лот № ..." inside auction conditions are not section starts.
-_LOT_HEADING = re.compile(
-    r"(?<!\w)Лот\s*№\s*(?P<lot>\d{1,5})\s+Номер\s+лота\s+(?P=lot)\b",
-    re.IGNORECASE,
-)
 _TRADE_CODE = re.compile(
     r"Идентификационный\s+номер\s+(\d{3,9}-(?:ОАОФ|ОТПП|ЗТПП|ОКОФ|ОКЗФ))\b",
     re.IGNORECASE,
 )
+_TABLE_ID = re.compile(r"table_lot_([1-9]\d{0,4})\Z")
 _CADASTRE = re.compile(r"(?<!\d)\d{2}:\d{2}:\d{5,9}:\d{1,9}(?!\d)")
 _AREA = re.compile(r"\bплощадью\s+(\d{1,8}(?:[.,]\d{1,3})?)\s*кв\.?\s*м\b", re.IGNORECASE)
-_PRICE = re.compile(
-    r"\bНачальная\s+цена\s+(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s+Величина\s+повышения",
-    re.IGNORECASE,
-)
-_DEPOSIT = re.compile(
-    r"\bРазмер\s+задатка,?\s*руб\.?\s+(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\b",
-    re.IGNORECASE,
-)
-_TITLE = re.compile(
-    r"\bНаименование\s+имущества\s+(.+?)(?=\s+[CС]ведения\s+об\s+имуществе\b)",
-    re.IGNORECASE | re.DOTALL,
-)
-_DESCRIPTION = re.compile(
-    r"[CС]ведения\s+об\s+имуществе\b.+?\bописание\s+(.+?)"
-    r"(?=\s+Является\s+объектом\s+недвижимости\b|\s+Местонахождение\s+имущества\b)",
-    re.IGNORECASE | re.DOTALL,
-)
-_STATUS = re.compile(
-    r"\bСтатус\s+торгов\s+"
-    r"(Торги\s+(?:объявлены|отменены|завершены|не\s+состоялись)"
-    r"|При[её]м\s+заявок|Идут\s+торги)"
-    r"(?=\s+Купить\s+лот|\s+Протоколы|$)",
-    re.IGNORECASE,
-)
+_HEADING = re.compile(r"\bЛот\s*№\s*(\d{1,5})\b", re.IGNORECASE)
+_NATIVE_ANCHOR = re.compile(r"lot([1-9]\d{0,11})\Z")
 
 
-def _money(raw: str) -> Decimal:
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _money(raw: str, *, allow_zero: bool = False) -> Decimal:
+    cleaned = raw.replace("\u00a0", "").replace("\u202f", "").replace(" ", "").replace(",", ".")
+    if not re.fullmatch(r"\d{1,15}(?:\.\d{1,2})?", cleaned):
+        raise NistpCardError("invalid_individual_lot_money")
     try:
-        amount = Decimal(raw.replace("\u00a0", "").replace(" ", "").replace(",", "."))
+        amount = Decimal(cleaned)
     except (InvalidOperation, ValueError) as exc:
         raise NistpCardError("invalid_individual_lot_money") from exc
-    if not amount.is_finite() or not (Decimal("0") < amount < Decimal("1e15")):
+    if (not amount.is_finite() or amount >= Decimal("1e15")
+            or (amount < 0 if allow_zero else amount <= 0)):
         raise NistpCardError("invalid_individual_lot_money")
-    if amount != amount.quantize(Decimal("0.01")):
-        raise NistpCardError("invalid_individual_lot_money_precision")
     return amount
+
+
+def _label_values(table: Tag) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for row in table.select("tbody > tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 2 or "label" not in cells[0].get("class", []):
+            continue
+        name = _clean(cells[0].get_text(" ", strip=True)).casefold()
+        value = _clean(cells[1].get_text(" ", strip=True))
+        if name in fields:
+            raise NistpCardError("duplicate_individual_lot_field")
+        fields[name] = value
+    return fields
+
+
+def _field(fields: dict[str, str], label: str) -> str:
+    value = fields.get(label.casefold(), "")
+    if not value:
+        raise NistpCardError("incomplete_numbered_lot_section")
+    return value
 
 
 def parse_nistp_shared_trade_card(
     html: str | bytes, *, trade_nid: str,
 ) -> dict[int, NistpLotSection]:
-    """Keep all per-lot fields inside their own numbered section, fail closed."""
+    """Parse only table_lot_N tables; never leak procedure totals into a lot."""
     if not re.fullmatch(r"[1-9]\d{0,11}", trade_nid):
         raise NistpCardError("invalid_trade_nid")
     soup = BeautifulSoup(html, "html.parser")
-    for node in soup.select("script, style, noscript"):
-        node.decompose()
-    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()
-    trade_code = _TRADE_CODE.search(text)
-    if not trade_code:
+    header = soup.select_one("h1.node_header")
+    trade_code = _TRADE_CODE.search(_clean(header.get_text(" ", strip=True))) if header else None
+    if trade_code is None:
         raise NistpCardError("missing_trade_code")
-    headings = list(_LOT_HEADING.finditer(text))
-    if not headings:
+    tables = soup.select('table[id^="table_lot_"]')
+    if not tables:
         raise NistpCardError("missing_numbered_lot_sections")
+
     result: dict[int, NistpLotSection] = {}
-    for index, heading in enumerate(headings):
-        number = int(heading.group("lot"))
+    native_seen: set[str] = set()
+    for table in tables:
+        matched = _TABLE_ID.fullmatch(str(table.get("id") or ""))
+        if not matched:
+            raise NistpCardError("invalid_individual_lot_table_id")
+        number = int(matched.group(1))
         if number in result:
             raise NistpCardError("duplicate_lot_section_number")
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-        section = text[heading.end():end]
-        title = _TITLE.search(section)
-        description = _DESCRIPTION.search(section)
-        price = _PRICE.search(section)
-        deposit = _DEPOSIT.search(section)
-        status = _STATUS.search(section)
-        if not (title and description and price and status):
+        thead = table.select_one("thead th.table_header")
+        heading = _HEADING.search(_clean(thead.get_text(" ", strip=True))) if thead else None
+        if heading is None or int(heading.group(1)) != number:
+            raise NistpCardError("lot_heading_does_not_match_table")
+        named_anchors = {
+            str(a.get("name")) for a in table.select("thead a[name]")
+        }
+        if f"lot{number}" not in named_anchors:
+            raise NistpCardError("lot_number_anchor_missing")
+        natives = {
+            m.group(1) for a in named_anchors
+            if (m := _NATIVE_ANCHOR.fullmatch(a)) and int(m.group(1)) != number
+        }
+        if len(natives) > 1:
+            raise NistpCardError("multiple_native_lot_identifiers")
+        native = next(iter(natives), None)
+        if native is not None:
+            if native in native_seen:
+                raise NistpCardError("duplicate_native_lot_identifier")
+            native_seen.add(native)
+        fields = _label_values(table)
+        declared_number = _field(fields, "Номер лота")
+        if declared_number != str(number):
+            raise NistpCardError("lot_number_field_mismatch")
+        title = _field(fields, "Наименование имущества")
+        descriptions = [
+            value for label, value in fields.items()
+            if (label.startswith(("cведения об имуществе", "сведения об имуществе"))
+                and "описание" in label)
+        ]
+        if len(descriptions) != 1:
             raise NistpCardError("incomplete_numbered_lot_section")
-        title_text = title.group(1).strip()
-        description_text = description.group(1).strip()
-        if not title_text or not description_text:
-            raise NistpCardError("empty_individual_lot_asset")
-        cadastral = _CADASTRE.search(description_text)
-        area = _AREA.search(description_text)
+        description = descriptions[0]
+        price = _money(_field(fields, "Начальная цена"))
+        deposit_text = fields.get("размер задатка, руб.", "")
+        deposit = _money(deposit_text, allow_zero=True) if deposit_text else None
+        status = _field(fields, "Статус торгов")
+        if not re.search(r"\b(торги|при[её]м заявок)\b", status, re.IGNORECASE):
+            raise NistpCardError("invalid_individual_lot_status")
+        cadastre = _CADASTRE.search(description)
+        area = _AREA.search(description)
         result[number] = NistpLotSection(
             trade_nid=trade_nid,
             trade_code=trade_code.group(1),
             lot_number=number,
-            title=title_text[:500],
-            description=description_text[:5000],
-            cadastral_number=cadastral.group(0) if cadastral else None,
+            title=title[:500],
+            description=description[:5000],
+            cadastral_number=cadastre.group(0) if cadastre else None,
             area_sqm=float(area.group(1).replace(",", ".")) if area else None,
-            initial_price_rub=_money(price.group(1)),
-            deposit_rub=_money(deposit.group(1)) if deposit else None,
-            status_text=status.group(1),
+            initial_price_rub=price,
+            deposit_rub=deposit,
+            status_text=status,
+            native_lot_nid=native,
+            address=fields.get("местонахождение имущества") or None,
         )
     return result
 
@@ -139,7 +172,7 @@ def parse_nistp_shared_trade_card(
 def get_nistp_lot(
     html: str | bytes, *, trade_nid: str, lot_number: int,
 ) -> NistpLotSection:
-    """Return precisely this lot, not the first asset in a shared trade card."""
+    """Return precisely the requested numbered asset from the shared page."""
     if not 1 <= lot_number <= 99_999:
         raise NistpCardError("invalid_lot_number")
     sections = parse_nistp_shared_trade_card(html, trade_nid=trade_nid)
