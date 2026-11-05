@@ -267,3 +267,16 @@ def test_nistp_nested_table_cannot_supply_missing_target_price():
     )
     with pytest.raises(NistpCardError, match="incomplete_numbered_lot_section"):
         get_nistp_lot(html, trade_nid="502957", lot_number=4)
+
+
+def test_misnumbered_target_table_reports_heading_before_native_anchor_error():
+    # A deliberate table_lot_4 -> table_lot_5 tamper leaves "lot4" and
+    # the native anchor intact. The primary identity error must be reported
+    # consistently in both whole-card and exact-lot parsing modes.
+    wrong = _document(CASES[3]).replace(
+        'id="table_lot_4"', 'id="table_lot_5"',
+    )
+    with pytest.raises(NistpCardError, match="lot_heading_does_not_match_table"):
+        parse_nistp_shared_trade_card(wrong, trade_nid="502957")
+    with pytest.raises(NistpCardError, match="lot_heading_does_not_match_table"):
+        get_nistp_lot(wrong, trade_nid="502957", lot_number=5)
