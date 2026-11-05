@@ -532,6 +532,9 @@ def main() -> None:
             "attempted": report["sample_attempted"],
             "verified": report["sample_verified"],
             "sample_pass": report["detail_sample_pass"],
+            "exact_original_ids_pinned": report["exact_original_ids_pinned"],
+            "source_title_disagreement_review_count":
+                report["source_title_disagreement_review_count"],
             "errors": report["error_counts"],
             "reasons": report["reason_counts"],
             "failed_lots": [
