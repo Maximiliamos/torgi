@@ -243,6 +243,7 @@ def check_cdtrf_details(
     report = _fresh_report("cdtrf.ru", sample_size, last_page)
     own = session or requests.Session()
     pages_requested = 0
+    seen_sample_ids: set[str] = set()
     for page in planned_pages(last_page, sample_size):
         if report["sample_attempted"] >= sample_size:
             break
