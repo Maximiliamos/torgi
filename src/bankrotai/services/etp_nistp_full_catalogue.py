@@ -1,0 +1,219 @@
+"""Complete read-only NISTP lot-catalogue walk with explicit last-page proof.
+
+The scanner never writes to PostgreSQL, publishes a map, reconciles missing
+lots, or archives records.  A successful pass proves only that the selected
+``view_type=lot`` catalogue was walked to its visibly selected final page.
+Two matching independent passes are required before the result is stable.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import re
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any
+
+import requests
+from bs4 import BeautifulSoup, Tag
+
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources.common import _parse_soup, _status
+from bankrotai.connectors.registry.direct_etp_catalogue import (
+    PROFILE_BY_ID,
+    parse_nistp_lot_observations,
+)
+
+MAX_SCAN_PAGES = 10_000
+_EXTERNAL_ID = re.compile(r"nistp\.ru:[1-9]\d{0,11}:[1-9]\d{0,4}\Z")
+
+
+class NistpCatalogueScanError(ValueError):
+    """The observed catalogue does not prove a safe complete page walk."""
+
+
+async def _search_page_with_retries(
+    connector: Any,
+    page_number: int,
+    *,
+    sleep: Callable[[float], None],
+    attempts: int = 3,
+) -> Any:
+    for attempt in range(1, attempts + 1):
+        try:
+            return await connector.search({}, cursor=str(page_number))
+        except requests.RequestException:
+            if attempt >= attempts:
+                raise
+            await asyncio.to_thread(sleep, float(2 ** (attempt - 1)))
+    raise AssertionError("unreachable retry loop")
+
+
+def _selected_page_is_visible(html: bytes | str, page: int) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    for node in soup.select("li.active, .pagination .active"):
+        text = " ".join(node.get_text(" ", strip=True).split())
+        if text == str(page):
+            return True
+        if any(
+            re.search(rf"pagenum_send\(\s*{page}\s*\)", str(child.get("onclick") or ""))
+            for child in node.select("[onclick]")
+        ):
+            return True
+    return False
+
+
+async def scan_complete_nistp_catalogue(
+    connector: Any,
+    *,
+    max_pages: int = MAX_SCAN_PAGES,
+    delay_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Walk one independent NISTP pass or fail without claiming completion."""
+    if type(max_pages) is not int or not 1 <= max_pages <= MAX_SCAN_PAGES:
+        raise NistpCatalogueScanError("Unsafe max_pages")
+    if not 0 <= delay_seconds <= 10:
+        raise NistpCatalogueScanError("Delay must be 0..10 seconds")
+
+    seen: set[str] = set()
+    pages: list[dict[str, Any]] = []
+    last_page_proven = False
+
+    for page_number in range(1, max_pages + 1):
+        if page_number > 1:
+            await asyncio.to_thread(sleep, delay_seconds)
+        result = await _search_page_with_retries(
+            connector, page_number, sleep=sleep,
+        )
+        response = getattr(connector, "_last_response", None)
+        if response is None or not getattr(response, "content", b""):
+            raise NistpCatalogueScanError("NISTP response evidence is unavailable")
+        if not _selected_page_is_visible(response.content, page_number):
+            raise NistpCatalogueScanError(
+                f"NISTP page {page_number} is not visibly selected"
+            )
+
+        observations = parse_nistp_lot_observations(
+            PROFILE_BY_ID["nistp.ru"], _parse_soup(response.content).decode(), limit=100,
+        )
+        identities = [item["provider_external_id"] for item in observations]
+        if not identities or any(not _EXTERNAL_ID.fullmatch(value) for value in identities):
+            raise NistpCatalogueScanError("Invalid or empty individual-lot identity page")
+        if len(set(identities)) != len(identities):
+            raise NistpCatalogueScanError("Duplicate individual-lot identity within page")
+        overlap = seen.intersection(identities)
+        if overlap:
+            raise NistpCatalogueScanError(
+                f"Cross-page duplicate individual-lot identity: {sorted(overlap)[0]}"
+            )
+        for item in observations:
+            if item["listing_price_rub"] is None or item["listing_price_rub"] <= 0:
+                raise NistpCatalogueScanError(
+                    f"Missing individual price: {item['provider_external_id']}"
+                )
+            if _status(item["source_status_text"]) == "unknown":
+                raise NistpCatalogueScanError(
+                    f"Unrecognized individual status: {item['provider_external_id']}"
+                )
+        property_ids = {
+            item["provider_external_id"] for item in observations if item["is_property"]
+        }
+        if property_ids != {item.external_id for item in result.items}:
+            raise NistpCatalogueScanError("Property candidate set differs from catalogue parser")
+        seen.update(identities)
+
+        expected_next = str(page_number + 1)
+        if result.next_cursor not in {None, expected_next}:
+            raise NistpCatalogueScanError("Non-sequential NISTP pagination cursor")
+        pages.append({
+            "page": page_number,
+            "items": len(identities),
+            "property_items": len(property_ids),
+            "response_url": str(getattr(response, "url", "")),
+            "ids_sha256": hashlib.sha256(
+                "\n".join(sorted(identities)).encode("ascii")
+            ).hexdigest(),
+        })
+        print(
+            f"NISTP readonly page={page_number} items={len(identities)} "
+            f"unique={len(seen)} next={result.next_cursor or 'none'}",
+            flush=True,
+        )
+        if result.next_cursor is None:
+            last_page_proven = True
+            break
+    else:
+        raise NistpCatalogueScanError("Page budget exhausted before final page")
+
+    digest = hashlib.sha256("\n".join(sorted(seen)).encode("ascii")).hexdigest()
+    return {
+        "source": "nistp.ru",
+        "mode": "full_readonly_lot_catalogue_walk",
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "pages_scanned": len(pages),
+        "last_page": pages[-1]["page"],
+        "last_page_proven": last_page_proven,
+        "unique_lot_ids": len(seen),
+        "lot_ids_sha256": digest,
+        "pages": pages,
+        "view_type": "lot",
+        "individual_prices_verified": True,
+        "individual_statuses_verified": True,
+        "production_database_writes": 0,
+        "map_publication": False,
+        "complete_source_inventory": False,
+        "stable_point_in_time_snapshot": False,
+        "archival_allowed": False,
+        "reconcile_missing": False,
+    }
+
+
+async def run_two_independent_passes(
+    connector_factory: Callable[[], Any],
+    *,
+    max_pages: int = MAX_SCAN_PAGES,
+    delay_seconds: float = 1.0,
+) -> dict[str, Any]:
+    passes = []
+    for pass_number in range(1, 3):
+        print(f"NISTP independent pass {pass_number}/2", flush=True)
+        passes.append(await scan_complete_nistp_catalogue(
+            connector_factory(), max_pages=max_pages, delay_seconds=delay_seconds,
+        ))
+    stable = (
+        passes[0]["last_page"] == passes[1]["last_page"]
+        and passes[0]["unique_lot_ids"] == passes[1]["unique_lot_ids"]
+        and passes[0]["lot_ids_sha256"] == passes[1]["lot_ids_sha256"]
+    )
+    return {
+        "source": "nistp.ru",
+        "independent_passes": passes,
+        "passes_match": stable,
+        "last_page_proven_twice": bool(stable),
+        "production_database_writes": 0,
+        "map_publication": False,
+        "archival_allowed": False,
+        "reconcile_missing": False,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
+    parser.add_argument("--delay-seconds", type=float, default=1.0)
+    args = parser.parse_args()
+    connector_type = SOURCE_CONNECTOR_TYPES["nistp.ru"]
+    report = asyncio.run(run_two_independent_passes(
+        connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+    ))
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    if not report["passes_match"]:
+        raise SystemExit("NISTP independent full-catalogue passes differ")
+
+
+if __name__ == "__main__":
+    main()

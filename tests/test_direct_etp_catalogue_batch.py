@@ -239,3 +239,21 @@ def test_nistp_conflicting_duplicate_property_lot_rejected():
     """
     with pytest.raises(EtpCatalogError, match="conflicting catalogue rows"):
         parse_catalogue(PROFILE_BY_ID["nistp.ru"], duplicate)
+
+
+def test_nistp_non_property_rows_remain_structural_observations_only():
+    from bankrotai.connectors.registry.direct_etp_catalogue import (
+        parse_nistp_lot_observations,
+    )
+
+    html = """
+    <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=498758">71271-ОАОФ</a></td>
+    <td>Организатор</td><td>Должник Лот № 4: Автомобиль CHEVROLET NIVA VIN X9L21230090278558</td>
+    <td>246 600.00</td><td>19.10.2026</td><td>24.11.2026</td><td>Прием заявок</td></tr></table>
+    """
+    profile = PROFILE_BY_ID["nistp.ru"]
+    assert parse_catalogue(profile, html) == []
+    rows = parse_nistp_lot_observations(profile, html)
+    assert rows[0]["provider_external_id"] == "nistp.ru:498758:4"
+    assert rows[0]["listing_price_rub"] == 246600.0
+    assert rows[0]["is_property"] is False

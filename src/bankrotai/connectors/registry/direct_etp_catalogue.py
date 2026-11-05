@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import asdict, dataclass
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -199,6 +199,26 @@ def _parse_nistp_lot_rows(profile: EtpProfile, soup: BeautifulSoup, limit: int) 
     stable identity; price and status come from columns 4 and 7 of *that row*.
     """
     items: list[dict] = []
+    for observed in _nistp_lot_observations(profile, soup, limit=limit):
+        if not observed["is_property"]:
+            continue
+        items.append(_candidate(
+            profile,
+            trade=observed["trade"],
+            lot=observed["lot"],
+            title=observed["title"],
+            url=observed["catalogue_detail_link"],
+            price=observed["listing_price_rub"],
+            status=observed["source_status_text"],
+        ))
+    return items
+
+
+def _nistp_lot_observations(
+    profile: EtpProfile, soup: BeautifulSoup, *, limit: int,
+) -> list[dict]:
+    """Return every structurally valid NISTP lot row, including non-property assets."""
+    items: list[dict] = []
     for tr in soup.select("tr"):
         cells = tr.find_all("td", recursive=False)
         if len(cells) != 7:
@@ -213,16 +233,41 @@ def _parse_nistp_lot_rows(profile: EtpProfile, soup: BeautifulSoup, limit: int) 
         title = asset_text[parts[0].end():]
         try:
             url = _first_provider_link(profile, cells[:3])
-            items.append(_candidate(
-                profile, trade=trade, lot=parts[0].group(1), title=title,
-                url=url, price=_money(cells[3].get_text(" ", strip=True)),
-                status=cells[6].get_text(" ", strip=True),
-            ))
+            provider_ids = parse_qs(urlparse(url).query).get("trade_nid", [])
+            if len(provider_ids) != 1 or not re.fullmatch(r"[1-9]\d{0,11}", provider_ids[0]):
+                continue
+            lot = parts[0].group(1)
+            items.append({
+                "source": profile.source_id,
+                "external_id": f"{trade}:{lot}",
+                "provider_external_id": f"{profile.source_id}:{provider_ids[0]}:{lot}",
+                "provider_id": provider_ids[0],
+                "trade": trade,
+                "lot": lot,
+                "title": _clean(title),
+                "catalogue_detail_link": url,
+                "listing_price_rub": _money(cells[3].get_text(" ", strip=True)),
+                "source_status_text": _clean(cells[6].get_text(" ", strip=True), 80),
+                "is_property": bool(PROPERTY_WORDS.search(title)),
+            })
         except EtpCatalogError:
             continue
         if len(items) >= limit:
             break
     return items
+
+
+def parse_nistp_lot_observations(
+    profile: EtpProfile, html: str, *, limit: int = 100,
+) -> list[dict]:
+    """Public structural observations used to prove pagination without ingesting vehicles."""
+    if profile.source_id != "nistp.ru" or profile.strategy != "nistp_lot_rows":
+        raise EtpCatalogError("NISTP lot observations require the NISTP profile")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be 1..100")
+    return _nistp_lot_observations(
+        profile, BeautifulSoup(html, "html.parser"), limit=limit,
+    )
 
 
 def _parse_trade_tables(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:

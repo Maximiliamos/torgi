@@ -745,7 +745,7 @@ class HtmlEtpConnector(AuctionConnector):
         )
 
     @property
-    def source_id(self) -> str:  # type: ignore[override]
+    def source_id(self) -> str:
         return self.profile.source_id
 
     def _check_response(self, response: requests.Response) -> requests.Response:
@@ -884,7 +884,21 @@ class HtmlEtpConnector(AuctionConnector):
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
-        if not lots:
+        structurally_valid_empty_nistp_page = False
+        if not lots and self.source_id == "nistp.ru":
+            from bankrotai.connectors.registry.direct_etp_catalogue import (
+                PROFILE_BY_ID, parse_nistp_lot_observations,
+            )
+            observations = parse_nistp_lot_observations(
+                PROFILE_BY_ID["nistp.ru"], _parse_soup(response.content).decode(), limit=100,
+            )
+            structurally_valid_empty_nistp_page = bool(observations)
+            if structurally_valid_empty_nistp_page:
+                next_cursor = (
+                    str(page + 1)
+                    if _has_next_page(self.profile, response.content, page) else None
+                )
+        if not lots and not structurally_valid_empty_nistp_page:
             raise SourceSchemaError(
                 f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
             )
