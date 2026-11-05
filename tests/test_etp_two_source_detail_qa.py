@@ -417,3 +417,23 @@ def test_pinned_nistp_recheck_does_not_replace_missing_target(monkeypatch) -> No
         "page": 1, "code": "pinned_lot_not_in_active_catalogue_page",
         "external_id": "nistp.ru:502379:139", "stage": "catalogue",
     }]
+
+
+def test_cdtrf_lot_title_difference_is_audited_not_hidden() -> None:
+    def divergent_title(trade, lot, session):
+        detail = _detail("cdtrf.ru", f"cdtrf:{lot}", price=200.00, status="scheduled")
+        detail.raw_data.update({
+            "html_title_matches_nuxt_lot_name": False,
+            "source_title_disagreement_review_required": True,
+        })
+        return detail
+
+    report = qa.check_cdtrf_details(
+        1, 1, session=object(), sleep=lambda seconds: None,
+        fetch_page=_cdtrf_page, fetch_detail=divergent_title,
+    )
+    assert report["sample_verified"] == 1
+    assert report["source_title_disagreement_review_count"] == 1
+    assert report["source_accepted"] is False
+    assert report["observations"][0]["html_title_matches_nuxt_lot_name"] is False
+    assert report["observations"][0]["source_title_disagreement_review_required"] is True
