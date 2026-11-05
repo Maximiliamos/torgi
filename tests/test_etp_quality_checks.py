@@ -164,5 +164,13 @@ def test_every_22_source_profile_has_a_quality_audit_path():
             "lot_id_provenance", "money_integrity",
             "catalogue_price_coverage", "catalogue_status_coverage",
         }
-        # Most procedures need separate detail before true per-lot acceptance.
-        assert quality["lot_id_provenance"]["state"] in {"PASS", "NOT_TESTED", "FAIL"}
+        from bankrotai.services.etp_quality_checks import (
+            PROCEDURE_LEVEL_SOURCES, COMPOSITE_LOT_SOURCES,
+        )
+        if p.source_id in PROCEDURE_LEVEL_SOURCES:
+            expected = "NOT_TESTED"
+        elif p.source_id in COMPOSITE_LOT_SOURCES:
+            expected = "FAIL"
+        else:
+            expected = "PASS"
+        assert quality["lot_id_provenance"]["state"] == expected
