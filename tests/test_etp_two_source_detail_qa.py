@@ -19,6 +19,7 @@ def _detail(source: str, identity: str, *, price: float, status: str):
             else {"trade_id": "390364", "trade_lot_id": "390899", "property_right_kind": "ownership"}
         ),
         start_price=price, auction_status=status, category="land",
+        title="Земельный участок", description="Земельный участок, площадь 600 кв. м",
         cadastral_number="32:10:0010101:42", address=None, deposit_amount=None,
     )
 
@@ -81,6 +82,29 @@ def test_nistp_sample_verifies_detail_without_granting_source_acceptance(monkeyp
     assert report["source_accepted"] is False
     assert report["archival_allowed"] is False
     assert report["production_database_writes"] == 0
+
+
+
+def test_nistp_machine_space_not_false_failed_by_generic_other_category(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa, "parse_nistp_lot_observations",
+        lambda *args, **kwargs: [_nistp_observation()],
+    )
+
+    class ParkingStub(NistpStub):
+        async def fetch_lot(self, identity):
+            detail = await super().fetch_lot(identity)
+            detail.title = "Машино-место"
+            detail.description = "Машино-место в подземном паркинге"
+            detail.category = "other"
+            return detail
+
+    report = asyncio.run(qa.check_nistp_details(
+        1, 1, connector_factory=ParkingStub, sleep=lambda seconds: None,
+    ))
+    assert report["detail_sample_pass"] is True
+    assert report["observations"][0]["normalized_category_review_required"] is True
+    assert report["source_accepted"] is False
 
 
 def test_nistp_rejects_price_mismatch_and_does_not_mark_pass(monkeypatch) -> None:
@@ -156,6 +180,21 @@ def test_cdtrf_detail_checks_trade_lot_and_initial_without_price_conflation() ->
     assert report["detail_sample_pass"] is True
     assert report["observations"][0]["catalogue_actual_price_not_assumed_initial"] is True
     assert report["source_accepted"] is False
+
+
+
+def test_cdtrf_repeat_identity_never_counts_as_two_independent_details() -> None:
+    source_row = _cdtrf_page(None, 1)
+    report = qa.check_cdtrf_details(
+        2, 2, session=object(), sleep=lambda seconds: None,
+        fetch_page=lambda session, page: source_row,
+        fetch_detail=lambda trade, lot, session: _detail(
+            "cdtrf.ru", f"cdtrf:{lot}", price=200.00, status="scheduled",
+        ),
+    )
+    assert report["sample_attempted"] == 1
+    assert report["error_counts"] == {"duplicate_sample_identity": 1}
+    assert report["detail_sample_pass"] is False
 
 
 def test_cdtrf_wrong_lot_fails_without_acceptance() -> None:
