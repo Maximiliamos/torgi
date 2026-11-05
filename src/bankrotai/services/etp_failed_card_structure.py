@@ -18,11 +18,11 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from bankrotai.connectors.etp_sources.nistp_detail_sections import NistpCardError
+from bankrotai.connectors.etp_sources import SourceAccessError
 from bankrotai.connectors.registry.cdtrf_public import (
     CdtrfEvidenceError, _ssr_lot, _text, money,
 )
-from bankrotai.services.etp_cdtrf_canary import API, REQUEST_TIMEOUT
+from bankrotai.services.etp_cdtrf_canary import REQUEST_TIMEOUT
 from bankrotai.services.etp_two_source_detail_qa import _cdtrf_page
 
 NISTP_ID = re.compile(r"nistp\.ru:([1-9]\d{0,11}):([1-9]\d{0,4})\Z")
@@ -218,10 +218,10 @@ def scan_cdtrf(session: requests.Session, failures: list[dict[str, Any]]) -> lis
         }
         try:
             data = _cdtrf_page(session, item["page"])
-        except (requests.RequestException, ValueError) as exc:
+        except (requests.RequestException, ValueError, SourceAccessError) as exc:
             row["catalogue_issue_class"] = type(exc).__name__
             output.append(row)
-            if "HTTP 429" in str(exc) or "HTTP 403" in str(exc):
+            if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
             continue
         candidates = [
