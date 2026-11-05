@@ -214,6 +214,8 @@ def is_recognized_source_status(value: str) -> bool:
         lowered,
     ):
         return True
+    if lowered == "подведение итогов":
+        return True
     return _status(value) != "unknown"
 
 

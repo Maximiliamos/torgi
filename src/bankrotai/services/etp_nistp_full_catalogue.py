@@ -73,6 +73,8 @@ def _selected_page_is_visible(html: bytes | str, page: int) -> bool:
 async def scan_complete_nistp_catalogue(
     connector: Any,
     *,
+    start_page: int = 1,
+    collect_status_errors: bool = False,
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
@@ -80,17 +82,20 @@ async def scan_complete_nistp_catalogue(
     """Walk one independent NISTP pass or fail without claiming completion."""
     if type(max_pages) is not int or not 1 <= max_pages <= MAX_SCAN_PAGES:
         raise NistpCatalogueScanError("Unsafe max_pages")
+    if type(start_page) is not int or not 1 <= start_page <= max_pages:
+        raise NistpCatalogueScanError("Unsafe start_page")
     if not 0 <= delay_seconds <= 10:
         raise NistpCatalogueScanError("Delay must be 0..10 seconds")
 
     seen: set[str] = set()
     catalogue_records: list[str] = []
     conservative_status_items = 0
+    status_errors: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     last_page_proven = False
 
-    for page_number in range(1, max_pages + 1):
-        if page_number > 1:
+    for page_number in range(start_page, max_pages + 1):
+        if page_number > start_page:
             await asyncio.to_thread(sleep, delay_seconds)
         result = await _search_page_with_retries(
             connector, page_number, sleep=sleep,
@@ -124,10 +129,17 @@ async def scan_complete_nistp_catalogue(
                 )
             source_status = item["source_status_text"]
             if not is_recognized_source_status(source_status):
-                raise NistpCatalogueScanError(
-                    f"Unrecognized individual status: {item['provider_external_id']} "
-                    f"value={source_status!r}"
-                )
+                error = {
+                    "page": page_number,
+                    "external_id": item["provider_external_id"],
+                    "source_status_text": source_status,
+                }
+                status_errors.append(error)
+                if not collect_status_errors:
+                    raise NistpCatalogueScanError(
+                        f"Unrecognized individual status: {item['provider_external_id']} "
+                        f"value={source_status!r}"
+                    )
             if _status(source_status) == "unknown":
                 page_conservative_status_items += 1
             catalogue_records.append(
@@ -173,6 +185,7 @@ async def scan_complete_nistp_catalogue(
     return {
         "source": "nistp.ru",
         "mode": "full_readonly_lot_catalogue_walk",
+        "start_page": start_page,
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "pages_scanned": len(pages),
         "last_page": pages[-1]["page"],
@@ -183,8 +196,9 @@ async def scan_complete_nistp_catalogue(
         "pages": pages,
         "view_type": "lot",
         "individual_prices_verified": True,
-        "individual_statuses_verified": True,
-        "source_statuses_recognized": True,
+        "individual_statuses_verified": not status_errors,
+        "source_statuses_recognized": not status_errors,
+        "unrecognized_source_statuses": status_errors,
         "normalized_statuses_complete": conservative_status_items == 0,
         "conservative_unknown_status_items": conservative_status_items,
         "production_database_writes": 0,
@@ -230,14 +244,26 @@ async def run_two_independent_passes(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
+    parser.add_argument("--start-page", type=int, default=1)
+    parser.add_argument("--single-pass", action="store_true")
+    parser.add_argument("--collect-status-errors", action="store_true")
     parser.add_argument("--delay-seconds", type=float, default=1.0)
     args = parser.parse_args()
     connector_type = SOURCE_CONNECTOR_TYPES["nistp.ru"]
-    report = asyncio.run(run_two_independent_passes(
-        connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
-    ))
+    if args.single_pass:
+        report = asyncio.run(scan_complete_nistp_catalogue(
+            connector_type(), start_page=args.start_page,
+            collect_status_errors=args.collect_status_errors,
+            max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+        ))
+    else:
+        if args.start_page != 1 or args.collect_status_errors:
+            parser.error("tail/status collection is only valid with --single-pass")
+        report = asyncio.run(run_two_independent_passes(
+            connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+        ))
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-    if not report["passes_match"]:
+    if not args.single_pass and not report["passes_match"]:
         raise SystemExit("NISTP independent full-catalogue passes differ")
 
 

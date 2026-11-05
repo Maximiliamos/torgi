@@ -9,6 +9,10 @@ New-Item -ItemType Directory -Path $root -Force | Out-Null
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $log = Join-Path $root "nistp-two-pass-$stamp.log"
 $reportPath = Join-Path $root "nistp-two-pass-$stamp.json"
+$previousConsoleEncoding = [Console]::OutputEncoding
+$previousPythonUtf8 = $env:PYTHONUTF8
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONUTF8 = '1'
 
 Write-Host 'NISTP full read-only scan from the checked-out source revision.'
 Write-Host 'No PostgreSQL writes, reconciliation, archival, GEO or map publication.'
@@ -28,6 +32,12 @@ try {
     $pythonExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $savedErrorActionPreference
+    [Console]::OutputEncoding = $previousConsoleEncoding
+    if ($null -eq $previousPythonUtf8) {
+        Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONUTF8 = $previousPythonUtf8
+    }
 }
 if ($pythonExitCode -ne 0 -or $output.Count -lt 1) {
     throw "NISTP read-only scan failed; log=$log"

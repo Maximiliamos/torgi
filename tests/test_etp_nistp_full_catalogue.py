@@ -161,3 +161,20 @@ def test_transient_network_failure_is_retried_without_skipping_page() -> None:
     ))
     assert attempts == 3
     assert result["unique_lot_ids"] == 1
+
+
+def test_tail_preflight_collects_all_unknown_statuses_before_reporting() -> None:
+    connector = _Connector([
+        [_lot("nistp.ru:501:1")],
+        [_lot("nistp.ru:502:1", status="unknown")],
+        [_lot("nistp.ru:503:1", status="unknown")],
+    ])
+    result = asyncio.run(scan_complete_nistp_catalogue(
+        connector, start_page=2, collect_status_errors=True, delay_seconds=0,
+    ))
+    assert result["start_page"] == 2
+    assert result["last_page"] == 3
+    assert result["source_statuses_recognized"] is False
+    assert [item["external_id"] for item in result["unrecognized_source_statuses"]] == [
+        "nistp.ru:502:1", "nistp.ru:503:1",
+    ]

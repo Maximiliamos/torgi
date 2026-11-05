@@ -764,6 +764,17 @@ def test_application_intake_ended_is_recognized_but_conservatively_unknown():
     assert _status(source_status) == "unknown"
 
 
+def test_results_pending_is_recognized_but_conservatively_unknown():
+    from bankrotai.connectors.etp_sources.common import (
+        _status,
+        is_recognized_source_status,
+    )
+
+    source_status = "Подведение итогов"
+    assert is_recognized_source_status(source_status) is True
+    assert _status(source_status) == "unknown"
+
+
 def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_filters():
     first = b"""
     <form id='nodesearch' method='get' action='/bankrot/trade_list.php'>
