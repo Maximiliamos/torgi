@@ -153,6 +153,41 @@ class TorgiRussiaClient:
                 time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
         raise RuntimeError("Torgi Russia request retry loop exhausted unexpectedly")
 
+    def _post_json_with_retry(self, url: str, *, payload: dict[str, object]):
+        """POST the browser-observed JSON contract with bounded retries."""
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+        }
+        for attempt in range(len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = self.session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code in TORGI_RUSSIA_RETRY_STATUS_CODES:
+                    if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                        response.raise_for_status()
+                        return response
+                    time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                response.raise_for_status()
+                return response
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                    raise
+                time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("Torgi Russia JSON request retry loop exhausted unexpectedly")
+
     def find_by_cadastral_numbers(self, values: list[str]) -> TorgiRussiaDetails | None:
         cadastral_numbers = [normalize_cadastral_number(value) for value in values if value]
         for cadastral_number in dict.fromkeys(cadastral_numbers):
@@ -203,17 +238,19 @@ class TorgiRussiaClient:
             # payload, even when the browser URL says page=2+. The hydrated UI
             # obtains the requested page from this first-party API. Reading SSR
             # again would repeat page 1 and falsely stop every regional scan.
-            api_params: list[tuple[str, str | int]] = [
-                ("search", ""), ("page", page),
-                ("history_only", int(filters.history_only)),
-            ]
-            api_params.extend(
-                (f"categorie_childs[{index}]", category_id)
-                for index, category_id in enumerate(category_ids)
-            )
+            request_payload: dict[str, object] = {
+                "search": "",
+                "history_only": int(filters.history_only),
+                "categorie_childs": list(category_ids),
+                "regions": [],
+                "page": page,
+            }
             if filters.region_id is not None:
-                api_params.append(("regions[0]", int(filters.region_id)))
-            response = self._get_with_retry(PUBLIC_API_SEARCH_URL, params=api_params)
+                request_payload["regions"] = [int(filters.region_id)]
+            response = self._post_json_with_retry(
+                PUBLIC_API_SEARCH_URL,
+                payload=request_payload,
+            )
             try:
                 candidate = response.json()
             except (TypeError, ValueError) as exc:
