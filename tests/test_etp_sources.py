@@ -846,3 +846,56 @@ def test_nistp_browser_confirmed_get_contract_keeps_all_search_fields():
     assert len(params) == len(source_fields)
     assert ("view_type", "trade") in params
     assert ("app_end_from", "05.12.2026") in params
+
+
+def test_nistp_real_get_lot_view_does_not_duplicate_search_query_on_page_two():
+    """Saved real NISTP HTML: empty GET action, selected view_type=lot."""
+    from urllib.parse import parse_qs, urlsplit
+
+    site = profile("nistp.ru")
+    assert site.listing_url.startswith("https://nistp.ru/?")
+    assert "view_type=lot" in site.listing_url
+    first = b"""<html><form id="nodesearch" method="GET" action="">
+      <input name="lot_description" value="">
+      <input name="app_end_from" value="">
+      <input type="radio" name="view_type" value="trade">
+      <input type="radio" name="view_type" value="lot" checked>
+      <input type="hidden" name="pagenum" value="">
+      <a onclick="pagenum_send(2)">2</a>
+    </form></html>"""
+    second = ("<table>" + _nistp_public_lot_row(
+        "502957", "72113-ОАОФ", 4,
+        "Машино-место, 14,3 кв. м, кад. № 77:01:0004002:6614",
+    ) + _nistp_public_lot_row(
+        "502957", "72113-ОАОФ", 5,
+        "Машино-место, 13,3 кв. м, кад. № 77:01:0004002:6633",
+    ) + "</table>").encode()
+
+    class Captured(FakeSession):
+        def __init__(self):
+            super().__init__([
+                FakeResponse(200, first, site.listing_url),
+                FakeResponse(200, second, site.listing_url),
+            ])
+            self.second_params = None
+
+        def get(self, url, *args, **kwargs):
+            if "params" in kwargs:
+                self.second_params = kwargs["params"]
+            return super().get(url, *args, **kwargs)
+
+    session = Captured()
+    connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
+    result = asyncio.run(connector.search({}, cursor="2"))
+    assert session.requested_urls[0] == site.listing_url
+    assert session.requested_urls[1] == "https://nistp.ru/"
+    assert session.second_params is not None
+    assert [v for k, v in session.second_params if k == "view_type"] == ["lot"]
+    assert [v for k, v in session.second_params if k == "pagenum"] == ["2"]
+    assert [lot.external_id for lot in result.items] == [
+        "nistp.ru:502957:4", "nistp.ru:502957:5",
+    ]
+    assert [lot.start_price for lot in result.items] == [3274000.0, 3274000.0]
+    assert [lot.cadastral_number for lot in result.items] == [
+        "77:01:0004002:6614", "77:01:0004002:6633",
+    ]
