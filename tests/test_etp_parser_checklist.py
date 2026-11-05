@@ -348,6 +348,9 @@ def test_v2_catalogue_coverage_inspects_every_lot_not_only_detail_sample(monkeyp
     assert item["stages"]["catalogue_price_coverage"]["state"] == checklist.NOT_TESTED
     assert item["stages"]["catalogue_price_coverage"]["count"] == 1
     assert item["stages"]["catalogue_status_coverage"]["state"] == checklist.NOT_TESTED
+    # Generic page and item counts are parser echoes, not independent
+    # evidence that the provider delivered the requested page.
+    assert item["stages"]["pagination_page_contract"]["state"] == checklist.NOT_TESTED
     assert item["stages"]["initial_or_current_price"]["state"] == checklist.PASS
     assert item["page_observations"] == [{
         "page": 1, "candidate_count": 2,
