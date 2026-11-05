@@ -18,12 +18,16 @@ from urllib.parse import urlsplit
 from bankrotai.connectors.etp_sources import (
     EtpSearchFilters, EtpSourceProfile, PROFILES as DIRECT_PROFILES, SOURCE_CONNECTOR_TYPES,
 )
+from bankrotai.services.etp_quality_checks import audit_catalogue_lots, audit_detail_pair
 
 CHECKS = (
     "catalogue_url", "transport", "catalogue_markup", "lot_discovery",
     "stable_lot_ids", "pagination_next", "last_page_proven",
     "individual_detail", "detail_identity", "individual_detail_price",
-    "individual_detail_status", "initial_or_current_price",
+    "individual_detail_status", "detail_price_consistency",
+    "detail_status_consistency", "lot_id_provenance", "money_integrity",
+    "catalogue_price_coverage", "catalogue_status_coverage",
+    "pagination_page_contract", "initial_or_current_price",
     "auction_status", "property_classification", "cookie_or_tutorial_modal",
     "production_import", "geocoding", "map_publication", "scheduler",
 )
@@ -230,6 +234,8 @@ async def diagnose_source(
         cursor: str | None = None
         seen: set[str] = set()
         sample: list[Any] = []
+        observed_lots: list[Any] = []
+        report["page_observations"] = []
         next_observed = False
         for page_number in range(1, max_pages + 1):
             try:
@@ -275,8 +281,50 @@ async def diagnose_source(
                 PASS, reason="syntactically_unique_sample_ids", count=len(seen)
             )
             sample.extend(items[:detail_probes])
+            observed_lots.extend(items)
             report["sample_lots"] += len(items)
             metadata = page.metadata if isinstance(page.metadata, dict) else {}
+            report["page_observations"].append({
+                "page": page_number, "candidate_count": len(items),
+                "has_next_cursor": bool(page.next_cursor),
+                "reported_total": metadata.get("total_items")
+                if type(metadata.get("total_items")) is int else None,
+            })
+            # Source metadata must describe the page that was really read.
+            # A connector returning page 1 for a requested page 2 cannot pass.
+            response_page = metadata.get("page")
+            returned_count = metadata.get("items_on_page")
+            page_mismatch = (
+                (type(response_page) is int and response_page != page_number)
+                or (type(returned_count) is int and returned_count != len(items))
+            )
+            reported_total = metadata.get("total_items")
+            if (source == "sberbank-ast.ru" and type(reported_total) is int
+                    and reported_total >= 0):
+                # Sberbank's verified public request has pagesize=21.
+                has_more_by_total = reported_total > 21 * page_number
+                if bool(page.next_cursor) != has_more_by_total:
+                    page_mismatch = True
+            if page_mismatch:
+                stages["pagination_page_contract"] = _entry(
+                    FAIL, reason="returned_page_or_total_disagrees_with_request",
+                    page=page_number,
+                )
+                report["first_failure"] = report["first_failure"] or {
+                    "stage": "pagination_page_contract", "page": page_number,
+                    "category": "returned_page_or_total_disagrees_with_request",
+                }
+                return report
+            stages["pagination_page_contract"] = _entry(
+                PASS if (type(response_page) is int or type(returned_count) is int
+                         or (source == "sberbank-ast.ru" and type(reported_total) is int))
+                else NOT_TESTED,
+                reason=("source_page_metadata_consistent" if
+                        (type(response_page) is int or type(returned_count) is int
+                         or (source == "sberbank-ast.ru" and type(reported_total) is int))
+                        else "source_did_not_return_independent_page_metadata"),
+                page=page_number,
+            )
             if metadata.get("source_end_verified") is True:
                 stages["last_page_proven"] = _entry(
                     PASS, reason="connector_source_end_verified", page=page_number
@@ -329,6 +377,14 @@ async def diagnose_source(
             stages["pagination_next"] = _entry(
                 NOT_TESTED, reason="no_next_page_observed_no_terminal_proof"
             )
+        # These checks use EVERY observed listing lot, not just the small
+        # individual-detail probe subset. No URL, title or private ID logged.
+        for stage, entry in audit_catalogue_lots(source, observed_lots).items():
+            stages[stage] = entry
+            if entry["state"] == FAIL and report["first_failure"] is None:
+                report["first_failure"] = {
+                    "stage": stage, "category": entry["reason"],
+                }
         if sample:
             price_count = sum(
                 getattr(lot, "start_price", None) is not None or
@@ -388,6 +444,7 @@ async def diagnose_source(
                 price_proven = 0
                 status_proven = 0
                 requested_details = sample[:detail_probes]
+                pair_quality: list[dict[str, dict[str, Any]]] = []
                 for lot in requested_details:
                     try:
                         if can_fetch:
@@ -407,6 +464,7 @@ async def diagnose_source(
                             break
                         details_ok += 1
                         if can_fetch:
+                            pair_quality.append(audit_detail_pair(source, lot, detail))
                             if (getattr(detail, "start_price", None) is not None or
                                     getattr(detail, "current_price", None) is not None):
                                 price_proven += 1
@@ -439,6 +497,18 @@ async def diagnose_source(
                                 NOT_APPLICABLE, reason="enrichment_does_not_independently_verify_money_or_status"
                             )
                     else:
+                        for field in ("detail_price_consistency", "detail_status_consistency"):
+                            observations = [pair[field] for pair in pair_quality]
+                            if any(item["state"] == FAIL for item in observations):
+                                state = FAIL
+                                reason = next(item["reason"] for item in observations if item["state"] == FAIL)
+                            elif any(item["state"] != PASS for item in observations):
+                                state, reason = NOT_TESTED, "individual_lot_proof_incomplete"
+                            else:
+                                state, reason = PASS, "all_probed_detail_pairs_consistent"
+                            stages[field] = _entry(state, reason=reason, count=len(observations))
+                            if state == FAIL and report["first_failure"] is None:
+                                report["first_failure"] = {"stage": field, "category": reason}
                         for field, verified, reason in (
                             ("individual_detail_price", price_proven, "missing_price_in_fetched_detail"),
                             ("individual_detail_status", status_proven, "unknown_status_in_fetched_detail"),
