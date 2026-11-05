@@ -133,6 +133,18 @@ def parse_nistp_shared_trade_card(
         if number in section_numbers_seen:
             raise NistpCardError("duplicate_lot_section_number")
         section_numbers_seen.add(number)
+        # Validate table/heading identity *before* classifying named anchors.
+        # Otherwise an incorrectly numbered table (table_lot_5 with a
+        # "lot4" heading) misclassifies the heading anchor as a second
+        # native identity and masks the actual error.
+        if target_lot_number is None or number == target_lot_number:
+            thead = table.select_one("thead th.table_header")
+            heading = (
+                _HEADING.search(_clean(thead.get_text(" ", strip=True)))
+                if thead else None
+            )
+            if heading is None or int(heading.group(1)) != number:
+                raise NistpCardError("lot_heading_does_not_match_table")
         # Check cross-section identity collisions even for unrelated malformed
         # field tables. Do not accept a forged duplicate of the requested lot.
         named_anchors = {
@@ -153,10 +165,6 @@ def parse_nistp_shared_trade_card(
             # Other sections can be incomplete or have a different contract.
             # Their title/price/status must never enter the requested lot.
             continue
-        thead = table.select_one("thead th.table_header")
-        heading = _HEADING.search(_clean(thead.get_text(" ", strip=True))) if thead else None
-        if heading is None or int(heading.group(1)) != number:
-            raise NistpCardError("lot_heading_does_not_match_table")
         if f"lot{number}" not in named_anchors:
             raise NistpCardError("lot_number_anchor_missing")
         fields = _label_values(table)
