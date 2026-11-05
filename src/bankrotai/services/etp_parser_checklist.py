@@ -182,9 +182,9 @@ async def diagnose_source(
         import requests
         report["catalogue_contract"] = "cdtrf_official_public_json"
         try:
-            with requests.Session() as session:
+            with requests.Session() as cdtrf_session:
                 evidence = await asyncio.to_thread(
-                    scan_cdtrf_pages, session, max_pages=max_pages,
+                    scan_cdtrf_pages, cdtrf_session, max_pages=max_pages,
                     delay_seconds=pause_seconds,
                 )
         except Exception as exc:
