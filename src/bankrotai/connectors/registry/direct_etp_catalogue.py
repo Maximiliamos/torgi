@@ -27,7 +27,7 @@ PROPERTY_WORDS = re.compile(
 CADASTRE = re.compile(r"(?<!\d)\d{2}:\d{1,3}:\d{5,9}:\d{1,9}(?!\d)")
 TRADE_ID = re.compile(r"\b\d{3,9}-(?:ОАОФ|ОТПП|ЗТПП|ОКОФ|ОКЗФ)\b", re.IGNORECASE)
 LOT_SECTIONS = re.compile(r"Лот\s*№\s*(\d{1,5})\s*[:.\-]\s*", re.IGNORECASE)
-DECIMAL = re.compile(r"^\s*(\d[\d \u00a0\u202f]*)(?:,(\d{1,2}))?\s*$")
+DECIMAL = re.compile(r"^\s*(\d[\d \u00a0\u202f]*)(?:[.,](\d{1,2}))?\s*$")
 MARKERS = frozenset({"published", "active", "closed", "unknown"})
 MAX_RESPONSE_BYTES = 2_000_000
 
@@ -54,8 +54,10 @@ PROFILES: tuple[EtpProfile, ...] = (
     EtpProfile("cdtrf.ru", "Центр дистанционных торгов",
                "https://torgi.cdtrf.ru/", "cdtrf_cards",
                "SSR catalogue + Nuxt detail parser; pagination JS/API not yet verified"),
-    EtpProfile("nistp.ru", "Новые информационные сервисы", "https://nistp.ru/bankrot/trade_list.php", "trade_rows",
-               "Public trade table containing embedded numbered lots"),
+    EtpProfile("nistp.ru", "Новые информационные сервисы",
+               "https://nistp.ru/?lot_description=&trade_number=&lot_number=&trade_org=&arbitr_info=&debtor_info=&app_start_from=&app_start_to=&app_end_from=&app_end_to=&view_type=lot&pagenum=",
+               "nistp_lot_rows",
+               "Browser-confirmed GET lot-mode rows (not trade-mode procedures)"),
     EtpProfile("alfalot.ru", "Альфалот",
                "https://etp.alfalot.ru/app/LotList/page?LotList.pageNum.lots=0&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
                "alfalot_lots", "Public upcoming-sale lots; current/paused require separate pages"),
@@ -190,6 +192,39 @@ def _parse_lot_tables(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> l
     return items
 
 
+def _parse_nistp_lot_rows(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:
+    """NISTP view_type=lot: one asset per 7-column public catalogue row.
+
+    The trade URL may repeat across many rows. Its lot number is part of the
+    stable identity; price and status come from columns 4 and 7 of *that row*.
+    """
+    items: list[dict] = []
+    for tr in soup.select("tr"):
+        cells = tr.find_all("td", recursive=False)
+        if len(cells) != 7:
+            continue
+        trade = _clean(cells[0].get_text(" ", strip=True))
+        if not TRADE_ID.fullmatch(trade):
+            continue
+        asset_text = _clean(cells[2].get_text(" ", strip=True), 6000)
+        parts = list(LOT_SECTIONS.finditer(asset_text))
+        if len(parts) != 1:
+            continue
+        title = asset_text[parts[0].end():]
+        try:
+            url = _first_provider_link(profile, cells[:3])
+            items.append(_candidate(
+                profile, trade=trade, lot=parts[0].group(1), title=title,
+                url=url, price=_money(cells[3].get_text(" ", strip=True)),
+                status=cells[6].get_text(" ", strip=True),
+            ))
+        except EtpCatalogError:
+            continue
+        if len(items) >= limit:
+            break
+    return items
+
+
 def _parse_trade_tables(profile: EtpProfile, soup: BeautifulSoup, limit: int) -> list[dict]:
     items = []
     for tr in soup.select("tr"):
@@ -309,7 +344,7 @@ def _parse_alfalot_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) ->
 
 
 def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[dict]:
-    if profile.strategy not in {"trade_rows", "table_lots", "links", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}:
+    if profile.strategy not in {"trade_rows", "nistp_lot_rows", "table_lots", "links", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}:
         raise EtpCatalogError("No verified HTML extractor for this source")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be 1..100")
@@ -354,7 +389,9 @@ def parse_catalogue(profile: EtpProfile, html: str, *, limit: int = 30) -> list[
             }
             for item in observed["property_candidates"]
         ]
-    if profile.strategy == "table_lots":
+    if profile.strategy == "nistp_lot_rows":
+        rows = _parse_nistp_lot_rows(profile, soup, limit)
+    elif profile.strategy == "table_lots":
         rows = _parse_lot_tables(profile, soup, limit)
     elif profile.strategy == "alfalot_lots":
         rows = _parse_alfalot_lots(profile, soup, limit)
