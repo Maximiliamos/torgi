@@ -1,7 +1,7 @@
 """Regression tests from NISTP's shared 10-lot trade evidence, 05 Nov 2026.
 
-The source fixture is sanitized and synthetic HTML, reconstructed from the
-browser-visible text. Real provider DOM is NOT yet independently verified.
+The synthetic fixture mirrors the verified provider table_lot_N DOM from
+the user-supplied HTML (2026-11-05), without contacts or credentials.
 """
 from __future__ import annotations
 
@@ -111,11 +111,11 @@ def test_duplicate_section_number_fails_closed():
 def test_missing_per_lot_price_never_falls_back_to_another_lot_or_deposit():
     data = _document(*CASES[3:5])
     data = data.replace(
-        "<td>Начальная цена</td><td>3 274 000.00</td>",
-        "<td>Начальная цена</td><td>не указана</td>",
+        '<td class="label">Начальная цена</td><td>3 274 000.00</td>',
+        '<td class="label">Начальная цена</td><td>не указана</td>',
         1,
     )
-    with pytest.raises(NistpCardError, match="incomplete_numbered_lot_section"):
+    with pytest.raises(NistpCardError, match="invalid_individual_lot_money"):
         parse_nistp_shared_trade_card(data, trade_nid="502957")
 
 
@@ -178,3 +178,26 @@ def test_lot_price_cannot_be_replaced_by_arbitrary_text():
     )
     with pytest.raises(NistpCardError, match="invalid_individual_lot_money"):
         parse_nistp_shared_trade_card(sample, trade_nid="502957")
+
+
+def test_real_dom_has_earlier_agent_popup_h1_before_procedure_heading():
+    html = _document(CASES[3]).replace(
+        "<html><body>",
+        "<html><body><h1 class='node_header'>Купить лот через агента</h1>",
+    )
+    details = get_nistp_lot(html, trade_nid="502957", lot_number=4)
+    assert details.trade_code == "72113-ОАОФ"
+    assert details.native_lot_nid == "502967"
+
+
+def test_lot_table_does_not_accept_wrong_or_missing_native_anchor():
+    html = _document(CASES[3])
+    no_lot_anchor = html.replace('<a name="lot4"></a>', "")
+    with pytest.raises(NistpCardError, match="lot_number_anchor_missing"):
+        parse_nistp_shared_trade_card(no_lot_anchor, trade_nid="502957")
+    two_native_ids = html.replace(
+        '<a name="lot502967"></a>',
+        '<a name="lot502967"></a><a name="lot999999"></a>',
+    )
+    with pytest.raises(NistpCardError, match="multiple_native_lot_identifiers"):
+        parse_nistp_shared_trade_card(two_native_ids, trade_nid="502957")
