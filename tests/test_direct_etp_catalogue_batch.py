@@ -225,3 +225,17 @@ def test_duplicate_or_invalid_source_rejected_before_network():
     with pytest.raises(ValueError):
         batch_probe(session=session, ids=("unlisted-etp.ru",))
     assert session.urls == []
+
+
+def test_nistp_conflicting_duplicate_property_lot_rejected():
+    duplicate = """
+    <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=502957">72113-ОАОФ</a></td>
+    <td>Организатор</td><td>Должник Лот № 4 : Машино-место 77:01:0004002:6614</td>
+    <td>3 274 000.00</td><td>11.11.2026</td><td>16.12.2026</td><td>Торги объявлены</td></tr>
+    <tr><td><a href="/bankrot/trade_view.php?trade_nid=502957">72113-ОАОФ</a></td>
+    <td>Организатор</td><td>Должник Лот № 4 : Машино-место 77:01:0004002:6633</td>
+    <td>3 535 000.00</td><td>11.11.2026</td><td>16.12.2026</td><td>Торги объявлены</td></tr>
+    </table>
+    """
+    with pytest.raises(EtpCatalogError, match="conflicting catalogue rows"):
+        parse_catalogue(PROFILE_BY_ID["nistp.ru"], duplicate)
