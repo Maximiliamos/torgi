@@ -28,13 +28,20 @@ PER_LOT = """
 <td>Прием заявок</td></tr></table>
 """
 MULTI = """
-<table><tr><th>Торги</th><th>Организатор</th><th>Должник</th>
-</tr><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
+<table>
+<tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
 <td>Управляющий</td>
-<td>Всего лотов: 3 Лот № 1: Земельный участок кадастровый номер
-76:12:0000123:456 Лот № 2: Автомобиль BMW
-Лот № 3: Квартира в Москве, кадастровый номер 77:01:0001010:1234</td>
-</tr></table>
+<td>Должник Лот № 1 : Земельный участок кадастровый номер 76:12:0000123:456</td>
+<td>2 500 000.25</td><td>12.11.2026</td><td>17.12.2026</td><td>Торги объявлены</td></tr>
+<tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
+<td>Управляющий</td>
+<td>Должник Лот № 2 : Автомобиль BMW</td>
+<td>450 000.00</td><td>12.11.2026</td><td>17.12.2026</td><td>Торги объявлены</td></tr>
+<tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
+<td>Управляющий</td>
+<td>Должник Лот № 3 : Квартира, кадастровый номер 77:01:0001010:1234</td>
+<td>3 274 000.00</td><td>12.11.2026</td><td>17.12.2026</td><td>Торги объявлены</td></tr>
+</table>
 """
 
 
@@ -44,7 +51,7 @@ def test_all_twenty_distinct_first_party_etps_have_canonical_url_and_plan():
     for profile in PROFILES:
         assert urlsplit(profile.catalogue_url).scheme == "https"
         assert urlsplit(profile.catalogue_url).hostname
-        assert profile.strategy in {"existing", "table_lots", "trade_rows", "links", "research", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}
+        assert profile.strategy in {"existing", "table_lots", "trade_rows", "nistp_lot_rows", "links", "research", "alfalot_lots", "verdict_lots", "cdtrf_cards", "rts_grid_cards"}
         assert safe_url(profile, profile.catalogue_url) == profile.catalogue_url
 
 
@@ -124,7 +131,8 @@ def test_trade_table_is_split_by_lot_and_not_registered_as_auction_asset():
     assert [x["external_id"] for x in rows] == [
         "71874-ОАОФ:1", "71874-ОАОФ:3",
     ]
-    assert all(x["listing_price_rub"] is None for x in rows)
+    assert [x["listing_price_rub"] for x in rows] == [2500000.25, 3274000.0]
+    assert all(x["source_status_text"] == "Торги объявлены" for x in rows)
     assert all(x["ready_for_ingestion"] is False for x in rows)
     assert all(x["catalogue_detail_link"].startswith("https://nistp.ru/") for x in rows)
 
