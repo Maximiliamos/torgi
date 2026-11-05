@@ -380,6 +380,7 @@ def check_cdtrf_details(
     fetch_page: Callable[..., dict[str, Any]] = _cdtrf_page,
     sleep: Callable[[float], Any] = time.sleep,
     recheck_pages: list[int] | None = None,
+    pinned_targets: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     pages = (planned_pages(last_page, sample_size) if recheck_pages is None
              else checked_recheck_pages(last_page, recheck_pages))
@@ -388,6 +389,7 @@ def check_cdtrf_details(
         raise ValueError("Pinned CDTRF ID pages differ from approved recheck pages")
     report = _fresh_report("cdtrf.ru", requested, last_page)
     report["recheck_only_prior_failure_pages"] = recheck_pages is not None
+    report["exact_original_ids_pinned"] = pinned_targets is not None
     own = session or requests.Session()
     pages_requested = 0
     seen_sample_ids: set[str] = set()
