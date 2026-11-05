@@ -400,26 +400,43 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
     )[0].start_price == 900000
 
 
+def _nistp_public_lot_row(
+    trade_id: str, code: str, number: int, title: str,
+    price: str = "3 274 000.00",
+) -> str:
+    """Matches the seven-column view_type=lot HTML saved from NISTP."""
+    return (
+        f"<tr><td><a href='/bankrot/trade_view.php?trade_nid={trade_id}'>{code}</a></td>"
+        "<td>Организатор</td>"
+        f"<td>Должник Лот № {number} : {title}</td>"
+        f"<td>{price}</td><td>11.11.2026</td><td>16.12.2026</td>"
+        "<td>Торги объявлены</td></tr>"
+    )
+
+
 def test_nistp_multi_lot_trade_preserves_each_property_identity() -> None:
-    html = """
-    <table><tr><td><a href="/bankrot/trade_view.php?trade_nid=1234">71874-ОАОФ</a></td>
-    <td>Управляющий</td>
-    <td>Всего лотов: 3 Лот № 1: Земельный участок 76:12:0000123:456
-    Лот № 2: Автомобиль BMW
-    Лот № 3: Квартира 77:01:0001010:1234</td></tr></table>
-    """
+    html = "<table>" + "".join([
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 1, "Земельный участок 76:12:0000123:456", "2 500 000.25"),
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 2, "Автомобиль BMW", "450 000.00"),
+        _nistp_public_lot_row("1234", "71874-ОАОФ", 3, "Квартира 77:01:0001010:1234"),
+    ]) + "</table>"
     lots = parse_listing_html(profile("nistp.ru"), html)
     assert [lot.external_id for lot in lots] == [
         "nistp.ru:1234:1",
         "nistp.ru:1234:3",
     ]
+    assert [lot.start_price for lot in lots] == [2500000.25, 3274000.0]
+    assert [lot.auction_status for lot in lots] == ["scheduled", "scheduled"]
+    assert lots[0].cadastral_number == "76:12:0000123:456"
+    assert lots[1].cadastral_number == "77:01:0001010:1234"
 
 
 def test_nistp_parser_does_not_apply_preview_limit_to_full_page() -> None:
     rows = "".join(
-        f"""<tr><td><a href='/bankrot/trade_view.php?trade_nid={index}'>
-        {70000 + index}-ОАОФ</a></td><td>Управляющий</td>
-        <td>Лот № 1: Земельный участок 76:12:0000123:{1000 + index}</td></tr>"""
+        _nistp_public_lot_row(
+            str(index), f"{70000 + index}-ОАОФ", 1,
+            f"Земельный участок 76:12:0000123:{1000 + index}",
+        )
         for index in range(1, 36)
     )
     lots = parse_listing_html(profile("nistp.ru"), f"<table>{rows}</table>")
@@ -456,14 +473,16 @@ def test_form_pagination_posts_page_number() -> None:
       <a onclick='pagenum_send(2)'>2</a>
     </form>
     """
-    page_two = b"<a href='/bankrot/trade_view.php?trade_nid=501500'>Lot on page two</a>"
+    page_two = ("<table>" + _nistp_public_lot_row(
+        "501500", "71874-ОАОФ", 1, "Земельный участок 76:12:0000123:456",
+    ) + "</table>").encode()
     session = FakeSession([
         FakeResponse(200, page_one, "https://nistp.ru/bankrot/trade_list.php"),
         FakeResponse(200, page_two, "https://nistp.ru/bankrot/trade_list.php"),
     ])
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
     result = asyncio.run(connector.search({}, cursor="2"))
-    assert result.items[0].external_id == "nistp.ru:501500"
+    assert result.items[0].external_id == "nistp.ru:501500:1"
     assert session.posts[0][1]["pagenum"] == "2"
 
 
@@ -720,7 +739,9 @@ def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_fil
       <a onclick='pagenum_send(2)'>2</a>
     </form>
     """
-    second = b"<a href='/bankrot/trade_view.php?trade_nid=501501'>Page two lot</a>"
+    second = ("<table>" + _nistp_public_lot_row(
+        "501501", "71875-ОАОФ", 1, "Земельный участок 77:12:0000123:456",
+    ) + "</table>").encode()
 
     class CaptureGet(FakeSession):
         def __init__(self):
@@ -738,7 +759,7 @@ def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_fil
     session = CaptureGet()
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
     result = asyncio.run(connector.search({}, cursor="2"))
-    assert [x.external_id for x in result.items] == ["nistp.ru:501501"]
+    assert [x.external_id for x in result.items] == ["nistp.ru:501501:1"]
     assert session.posts == []
     assert session.query_params is not None
     assert ("pagenum", "2") in session.query_params
