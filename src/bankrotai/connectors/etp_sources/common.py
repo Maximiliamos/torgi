@@ -6,11 +6,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.etp_sources.pagination import (
+    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
+)
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
@@ -384,6 +387,11 @@ def _parse_multi_lot_catalogue(
         raise SourceSchemaError(f"{profile.source_id}: page exceeds the verified per-page lot limit")
     identified = [item for item in observations if item.get("external_id")]
     if not identified:
+        # NISTP is explicitly configured to return individual lot rows.
+        # Never fall through to the generic single-link parser: its trade_nid
+        # would otherwise become a phantom single asset.
+        if profile.source_id == "nistp.ru":
+            return []
         return None
     lots: list[NormalizedLot] = []
     for item in identified:
@@ -438,6 +446,12 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     soup = _parse_soup(html)
     candidates: dict[str, tuple[str, str, Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
+        # CenterR publishes promotional lot links in its news sidebar on
+        # every page. They are not entries of the paginated lot catalogue.
+        if profile.source_id == "centerr.ru" and anchor.find_parent(
+            class_=re.compile(r"\bnews-(?:short|body)\b", re.I)
+        ) is not None:
+            continue
         href = urljoin(profile.listing_url, str(anchor.get("href") or "").strip())
         try:
             _safe_provider_url(profile, href)
@@ -714,39 +728,6 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
     return lots
 
 
-def _has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bool:
-    soup = _parse_soup(html)
-    if profile.form_page_field:
-        return any(
-            _clean(node.get_text(" ", strip=True)) == str(page + 1)
-            and re.search(rf"pagenum_send\(\s*{page + 1}\s*\)", str(node.get("onclick") or ""))
-            for node in soup.select("[onclick]")
-        )
-    if profile.postback_pagination:
-        return any(
-            _clean(node.get_text(" ", strip=True)) == str(page + 1)
-            and "__doPostBack" in str(node.get("href") or "")
-            for node in soup.select("a[href]")
-        )
-    if not profile.supports_get_pagination or not profile.page_parameter:
-        return False
-    expected = str(profile.first_page_value + page)
-    for anchor in soup.select("a[href]"):
-        query = parse_qs(urlparse(urljoin(profile.listing_url, str(anchor.get("href") or ""))).query)
-        if expected in query.get(profile.page_parameter, []):
-            return True
-    return False
-
-
-def _page_url(profile: EtpSourceProfile, page: int) -> str:
-    if page <= 1 or not profile.page_parameter:
-        return profile.listing_url
-    parsed = urlparse(profile.listing_url)
-    query = parse_qs(parsed.query, keep_blank_values=True)
-    query[profile.page_parameter] = [str(profile.first_page_value + page - 1)]
-    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
-
-
 class HtmlEtpConnector(AuctionConnector):
     profile: EtpSourceProfile
     capabilities = frozenset({"search", "fetch_lot", "healthcheck"})
@@ -837,6 +818,27 @@ class HtmlEtpConnector(AuctionConnector):
                 self.profile,
                 urljoin(previous.url or self.profile.listing_url, str(form.get("action") or "")),
             )
+            # NISTP's public nodesearch form uses GET for pagination.
+            # Honour the actual HTML form method, retaining every checked
+            # filter and repeated input name. POST can return a plausible
+            # page-1 document even when the user requested page 2.
+            method = str(form.get("method") or "get").strip().lower()
+            if method == "get":
+                params = get_form_params(form, self.profile.form_page_field, page)
+                # Native browser GET submissions replace the action's query
+                # with form fields. Appending params to previous.url would
+                # duplicate pagenum/view_type and silently reuse wrong filters.
+                parsed_action = urlparse(action)
+                get_action = parsed_action._replace(query="", fragment="").geturl()
+                response = self._check_response(self.session.get(
+                    get_action, params=params, timeout=self.timeout, allow_redirects=False,
+                ))
+                self._last_response, self._last_page = response, page
+                return response
+            if method != "post":
+                raise SourceSchemaError(
+                    f"{self.source_id}: unsupported pagination form method"
+                )
         else:
             link = next((
                 node for node in soup.select("a[href]")
