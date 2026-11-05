@@ -174,3 +174,30 @@ def test_every_22_source_profile_has_a_quality_audit_path():
         else:
             expected = "PASS"
         assert quality["lot_id_provenance"]["state"] == expected
+
+
+def test_detail_cadastral_number_mismatch_requires_multi_asset_review():
+    listing = lot()
+    detail = lot(detail="detail")
+    listing.cadastral_number = "76:12:0000123:456"
+    detail.cadastral_number = "76:12:0000123:457"
+    evidence = audit_detail_pair("etpu.ru", listing, detail)
+    assert evidence["detail_cadastral_consistency"]["state"] == "NOT_TESTED"
+    assert evidence["detail_cadastral_consistency"]["reason"] == (
+        "cadastral_difference_requires_multi_asset_review"
+    )
+    assert "76:12" not in str(evidence)
+
+
+def test_detail_cadastral_number_requires_observed_field():
+    listing = lot()
+    detail = lot(detail="detail")
+    listing.cadastral_number = "76:12:0000123:456"
+    detail.cadastral_number = None
+    assert audit_detail_pair("etpu.ru", listing, detail)[
+        "detail_cadastral_consistency"
+    ]["state"] == "NOT_TESTED"
+    detail.cadastral_number = "76:12:0000123:456"
+    assert audit_detail_pair("etpu.ru", listing, detail)[
+        "detail_cadastral_consistency"
+    ]["state"] == "PASS"
