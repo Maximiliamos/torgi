@@ -910,7 +910,10 @@ class HtmlEtpConnector(AuctionConnector):
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         if self.profile.blocked_reason:
             raise SourceAccessError(self.profile.blocked_reason)
-        if self.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
+        if self.source_id == "nistp.ru":
+            from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
+            return await fetch_nistp_lot(self, external_id)
+        if self.source_id in {"vertrades.ru", "sistematorg.com"}:
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -953,6 +956,9 @@ class HtmlEtpConnector(AuctionConnector):
         )
 
     async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+        if self.source_id == "nistp.ru":
+            from bankrotai.connectors.etp_sources.nistp_detail_adapter import enrich_nistp_lot
+            return await enrich_nistp_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
         return apply_detail(lot, detail, version=self.detail_enrichment_version)
 
@@ -982,11 +988,11 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"etp-profit.ru", "ausib.ru"}:
+    if profile.source_id in {"etp-profit.ru", "ausib.ru", "nistp.ru"}:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
-    if profile.source_id in {"nistp.ru", "vertrades.ru", "sistematorg.com"}:
+    if profile.source_id in {"vertrades.ru", "sistematorg.com"}:
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
