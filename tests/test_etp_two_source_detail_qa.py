@@ -239,3 +239,120 @@ def test_cdtrf_closed_detail_cannot_pass_selected_active_sample() -> None:
     )
     assert report["error_counts"] == {"detail_status_out_of_selected_scope": 1}
     assert report["detail_sample_pass"] is False
+
+
+def test_only_whitelisted_detail_reasons_are_recorded() -> None:
+    from bankrotai.connectors.etp_sources.nistp_detail_sections import NistpCardError
+    from bankrotai.connectors.registry.cdtrf_public import CdtrfEvidenceError
+
+    assert qa.safe_detail_reason(NistpCardError("missing_trade_code")) == "missing_trade_code"
+    assert qa.safe_detail_reason(
+        CdtrfEvidenceError("No CDTRF SSR data")
+    ) == "missing_nuxt_ssr"
+    assert qa.safe_detail_reason(
+        NistpCardError("personal details from source")
+    ) is None
+    assert qa.safe_detail_reason(ValueError("https://secret.example/private")) is None
+
+
+def test_recheck_failure_pages_are_loaded_from_bounded_previous_report(tmp_path) -> None:
+    import json
+
+    report = tmp_path / "nistp-ru-previous.json"
+    record = {
+        "source": "nistp.ru",
+        "mode": "bounded_independent_readonly_lot_detail_sample",
+        "last_page_from_previous_full_walk": 142,
+        "source_accepted": False,
+        "errors": [
+            {"page": 10, "code": "NistpCardError"},
+            {"page": 15, "code": "NistpCardError"},
+            {"page": 10, "code": "NistpCardError"},
+        ],
+    }
+    report.write_text(json.dumps(record), encoding="utf-8")
+    assert qa.failed_pages_from_report(
+        report, source="nistp.ru", last_page=142,
+    ) == [10, 15]
+    with pytest.raises(ValueError, match="inconsistent"):
+        qa.failed_pages_from_report(report, source="cdtrf.ru", last_page=64)
+    record["errors"] = [{"page": 143, "code": "NistpCardError"}]
+    report.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid"):
+        qa.failed_pages_from_report(report, source="nistp.ru", last_page=142)
+
+
+def test_recheck_nistp_is_limited_to_supplied_failed_pages(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa, "parse_nistp_lot_observations",
+        lambda *args, **kwargs: [_nistp_observation()],
+    )
+    report = asyncio.run(qa.check_nistp_details(
+        2, 2, connector_factory=NistpStub,
+        sleep=lambda seconds: None, recheck_pages=[1],
+    ))
+    assert report["sample_requested"] == 1
+    assert report["sample_attempted"] == 1
+    assert report["sample_verified"] == 1
+    assert report["recheck_only_prior_failure_pages"] is True
+    assert report["source_accepted"] is False
+
+
+def test_recheck_cdtrf_is_limited_to_supplied_failed_pages() -> None:
+    report = qa.check_cdtrf_details(
+        2, 2, session=object(), sleep=lambda seconds: None,
+        recheck_pages=[1], fetch_page=_cdtrf_page,
+        fetch_detail=lambda trade, lot, session: _detail(
+            "cdtrf.ru", f"cdtrf:{lot}", price=200.00, status="scheduled",
+        ),
+    )
+    assert report["sample_requested"] == 1
+    assert report["sample_attempted"] == 1
+    assert report["sample_verified"] == 1
+    assert report["recheck_only_prior_failure_pages"] is True
+    assert report["source_accepted"] is False
+
+
+def test_nistp_failure_report_identifies_exact_lot_stage_and_safe_reason(monkeypatch) -> None:
+    from bankrotai.connectors.etp_sources.nistp_detail_sections import NistpCardError
+
+    monkeypatch.setattr(
+        qa, "parse_nistp_lot_observations",
+        lambda *args, **kwargs: [_nistp_observation()],
+    )
+
+    class BrokenCard(NistpStub):
+        async def fetch_lot(self, identity):
+            raise NistpCardError("requested_lot_missing_in_trade_card")
+
+    report = asyncio.run(qa.check_nistp_details(
+        1, 1, connector_factory=BrokenCard,
+        sleep=lambda seconds: None, recheck_pages=[1],
+    ))
+    assert report["error_counts"] == {"NistpCardError": 1}
+    assert report["errors"] == [{
+        "page": 1, "code": "NistpCardError",
+        "external_id": "nistp.ru:501045:2",
+        "stage": "detail",
+        "reason": "requested_lot_missing_in_trade_card",
+    }]
+    assert report["detail_sample_pass"] is False
+
+
+def test_cdtrf_failure_report_identifies_exact_lot_stage_and_safe_reason() -> None:
+    from bankrotai.connectors.registry.cdtrf_public import CdtrfEvidenceError
+
+    def broken_detail(trade, lot, session):
+        raise CdtrfEvidenceError("Price disagreement between HTML and SSR")
+
+    report = qa.check_cdtrf_details(
+        1, 1, session=object(), sleep=lambda seconds: None,
+        fetch_page=_cdtrf_page, fetch_detail=broken_detail, recheck_pages=[1],
+    )
+    assert report["errors"] == [{
+        "page": 1, "code": "CdtrfEvidenceError",
+        "external_id": "cdtrf:390899",
+        "stage": "detail",
+        "reason": "html_ssr_initial_price_mismatch",
+    }]
+    assert report["detail_sample_pass"] is False
