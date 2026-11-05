@@ -20,6 +20,7 @@ from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     profit_initial_money,
 )
+from bankrotai.connectors.etp_sources.status_normalization import _status
 
 
 class SourceAccessError(RuntimeError):
@@ -175,48 +176,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
-
-def _status(value: str) -> str:
-    """Conservative public-auction status mapping, not keyword-anywhere truth.
-
-    'Приём заявок завершён' is NOT a completed auction; 'Текущая цена'
-    is not an active-status marker. 'Торги объявлены' do not prove
-    that applications have opened. Ambiguous intermediate stages stay unknown.
-    """
-    lowered = _clean(value).lower()
-    if re.search(r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)", lowered):
-        return "unknown"
-    if any(word in lowered for word in ("приостанов",)):
-        return "paused"
-    if any(word in lowered for word in ("торги отменен", "торги отменён", "не состоял", "торги заверш", "торги окончен", "аннулирован")):
-        return "closed"
-    if any(word in lowered for word in (
-        "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
-        "извещени", "торги назначен"
-    )):
-        return "scheduled"
-    if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
-            or "идут торги" in lowered or "заявки принимаются" in lowered):
-        return "active"
-    return "unknown"
-
-
-def is_recognized_source_status(value: str) -> bool:
-    """Recognize an explicit source state without forcing an unsafe normalized state.
-
-    In particular, the end of application intake does not prove that an auction
-    has completed, so it intentionally remains ``unknown`` after normalization.
-    """
-    lowered = _clean(value).lower()
-    if re.search(
-        r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)",
-        lowered,
-    ):
-        return True
-    if lowered == "подведение итогов":
-        return True
-    return _status(value) != "unknown"
 
 
 def _datetime_after(value: str, label: str) -> datetime | None:
