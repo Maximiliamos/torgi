@@ -17,6 +17,13 @@ $env:PYTHONPATH = Join-Path $repo 'src'
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
 
+# Cheap syntax gate before running any live provider request.
+& python.exe -m py_compile `
+    (Join-Path $repo 'src/bankrotai/services/etp_two_source_detail_qa.py') `
+    (Join-Path $repo 'tests/test_etp_two_source_detail_qa.py')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Read-only detail QA failed Python syntax preflight'
+}
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 Write-Host '====== NISTP + CDTRF: READ-ONLY DETAIL SAMPLE ======'
 Write-Host "Checked-out SHA: $revision"
