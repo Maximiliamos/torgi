@@ -426,11 +426,12 @@ def test_nistp_parser_does_not_apply_preview_limit_to_full_page() -> None:
     assert len(lots) == 35
 
 
-def test_shared_trade_card_does_not_claim_unproven_per_lot_detail_fetch() -> None:
+def test_nistp_shared_trade_card_exposes_per_lot_detail_capability() -> None:
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"]()
-    assert "fetch_lot" not in connector.capabilities
-    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
-        asyncio.run(connector.fetch_lot("nistp.ru:1234:1"))
+    assert "fetch_lot" in connector.capabilities
+    assert "detail_enrichment" in connector.capabilities
+    with pytest.raises(SourceSchemaError, match="invalid per-lot external_id"):
+        asyncio.run(connector.fetch_lot("nistp.ru:1234"))
 
 
 def test_fetch_lot_reconstructs_shared_engine_detail_url() -> None:
