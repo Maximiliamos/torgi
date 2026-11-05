@@ -17,6 +17,7 @@ NOT_TESTED = "NOT_TESTED"
 # property. They cannot certify independent per-lot identity from the link alone.
 PROCEDURE_LEVEL_SOURCES = frozenset({
     "fabrikant.ru", "ausib.ru", "aukcioncenter.ru", "roseltorg.ru",
+    "cdtrf.ru",
 })
 COMPOSITE_LOT_SOURCES = frozenset({
     "nistp.ru", "vertrades.ru", "sistematorg.com",
