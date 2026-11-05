@@ -153,6 +153,41 @@ class TorgiRussiaClient:
                 time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
         raise RuntimeError("Torgi Russia request retry loop exhausted unexpectedly")
 
+    def _post_json_with_retry(self, url: str, *, payload: dict[str, object]):
+        """POST the browser-observed JSON contract with bounded retries."""
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+        }
+        for attempt in range(len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = self.session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code in TORGI_RUSSIA_RETRY_STATUS_CODES:
+                    if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                        response.raise_for_status()
+                        return response
+                    time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                response.raise_for_status()
+                return response
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt >= len(TORGI_RUSSIA_RETRY_DELAYS_SECONDS):
+                    raise
+                time.sleep(TORGI_RUSSIA_RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("Torgi Russia JSON request retry loop exhausted unexpectedly")
+
     def find_by_cadastral_numbers(self, values: list[str]) -> TorgiRussiaDetails | None:
         cadastral_numbers = [normalize_cadastral_number(value) for value in values if value]
         for cadastral_number in dict.fromkeys(cadastral_numbers):
@@ -188,6 +223,7 @@ class TorgiRussiaClient:
 
         transport = "public-nextjs-html"
         api_payload: dict | None = None
+        api_meta: dict | None = None
         if page == 1:
             response = self._get_with_retry(
                 urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
@@ -203,17 +239,19 @@ class TorgiRussiaClient:
             # payload, even when the browser URL says page=2+. The hydrated UI
             # obtains the requested page from this first-party API. Reading SSR
             # again would repeat page 1 and falsely stop every regional scan.
-            api_params: list[tuple[str, str | int]] = [
-                ("search", ""), ("page", page),
-                ("history_only", int(filters.history_only)),
-            ]
-            api_params.extend(
-                (f"categorie_childs[{index}]", category_id)
-                for index, category_id in enumerate(category_ids)
-            )
+            request_payload: dict[str, object] = {
+                "search": "",
+                "history_only": int(filters.history_only),
+                "categorie_childs": list(category_ids),
+                "regions": [],
+                "page": page,
+            }
             if filters.region_id is not None:
-                api_params.append(("regions[0]", int(filters.region_id)))
-            response = self._get_with_retry(PUBLIC_API_SEARCH_URL, params=api_params)
+                request_payload["regions"] = [int(filters.region_id)]
+            response = self._post_json_with_retry(
+                PUBLIC_API_SEARCH_URL,
+                payload=request_payload,
+            )
             try:
                 candidate = response.json()
             except (TypeError, ValueError) as exc:
@@ -225,19 +263,32 @@ class TorgiRussiaClient:
                     f"Torgi Russia public page API schema is invalid; page={page}"
                 )
             api_payload = candidate
-            observed_page = int(candidate.get("current_page") or 0)
+            candidate_meta = candidate.get("meta")
+            if candidate_meta is None:
+                # Retain compatibility with the briefly observed flat fixture,
+                # but prefer the real Laravel-style {data, links, meta} contract.
+                candidate_meta = {
+                    key: candidate.get(key)
+                    for key in ("current_page", "last_page", "total", "per_page")
+                }
+            if not isinstance(candidate_meta, dict):
+                raise RuntimeError(
+                    f"Torgi Russia public page API pagination schema is invalid; page={page}"
+                )
+            api_meta = candidate_meta
+            observed_page = int(api_meta.get("current_page") or 0)
             if observed_page != page:
                 raise RuntimeError(
                     "Torgi Russia public page API returned the wrong page; "
                     f"requested={page} observed={observed_page}"
                 )
             records = candidate["data"]
-            last_page = max(page, int(candidate.get("last_page") or page))
+            last_page = max(page, int(api_meta.get("last_page") or page))
             page_meta = {
                 "has_more": page < last_page,
                 "total_pages": last_page,
-                "total": candidate.get("total"),
-                "per_page": candidate.get("per_page"),
+                "total": api_meta.get("total"),
+                "per_page": api_meta.get("per_page"),
             }
             transport = "public-first-party-json"
 
@@ -269,8 +320,8 @@ class TorgiRussiaClient:
                     "Torgi Russia public search reported positive total but parsed zero lots; "
                     f"page={page} region_id={filters.region_id} total={reported_total}"
                 )
-        elif not records and api_payload is not None and page <= int(
-            api_payload.get("last_page") or page
+        elif not records and api_payload is not None and api_meta is not None and page <= int(
+            api_meta.get("last_page") or page
         ):
             raise RuntimeError(
                 "Torgi Russia public page API returned an empty advertised page; "
