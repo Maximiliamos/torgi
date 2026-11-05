@@ -68,7 +68,12 @@ def _money(raw: str, *, allow_zero: bool = False) -> Decimal:
 
 def _label_values(table: Tag) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for row in table.select("tbody > tr"):
+    # Some provider cards omit an explicit <tbody>; other cards contain it.
+    # Consider only direct rows belonging to THIS numbered lot table, never
+    # inner procedure/nested tables (whose prices belong to other entities).
+    for row in table.select("tr"):
+        if row.find_parent("table") is not table:
+            continue
         cells = row.find_all("td", recursive=False)
         if len(cells) != 2 or "label" not in cells[0].get("class", []):
             continue
