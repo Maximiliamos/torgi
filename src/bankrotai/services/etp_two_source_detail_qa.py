@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 import requests
 
@@ -27,12 +28,14 @@ from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILE_BY_ID, parse_nistp_lot_observations,
 )
 from bankrotai.services.etp_cdtrf_canary import (
-    MAX_RESPONSE, REQUEST_TIMEOUT, fetch_verified_cdtrf_lot,
+    API, MAX_RESPONSE, REQUEST_TIMEOUT, fetch_verified_cdtrf_lot,
 )
-from bankrotai.services.etp_cdtrf_full_catalogue import _url
 from bankrotai.services.etp_nistp_full_catalogue import _ACTIVE_STATE_KEYS
 
 _ALLOWED_SOURCES = frozenset({"nistp", "cdtrf", "both"})
+# Same exact selected partition as the last clean 64-page CDTRF operator walk.
+_CDTRF_SELECTED_STATUSES = ("Declare", "RecieveReq", "DefinePart", "TradeGo")
+_CDTRF_SELECTED_CATEGORIES = "21,22,23,31,32,33,34,41"
 
 
 def spaced_pages(last_page: int, count: int) -> list[int]:
@@ -78,6 +81,7 @@ def _fresh_report(source: str, requested: int, last_page: int) -> dict[str, Any]
         "mode": "bounded_independent_readonly_lot_detail_sample",
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "last_page_from_previous_full_walk": last_page,
+        "selected_cdtrf_categories": _CDTRF_SELECTED_CATEGORIES if source == "cdtrf.ru" else None,
         "sample_requested": requested,
         "sample_attempted": 0,
         "sample_verified": 0,
@@ -199,8 +203,15 @@ async def check_nistp_details(
 
 
 def _cdtrf_page(session: requests.Session, page: int) -> dict[str, Any]:
+    params = [(name, "true") for name in _CDTRF_SELECTED_STATUSES]
+    params.extend([
+        ("Categories", _CDTRF_SELECTED_CATEGORIES),
+        ("PageSize", "100"),
+        ("PageNum", str(page)),
+    ])
+    url = f"{API}?{urlencode(params)}"
     response = session.get(
-        _url(page, 100), allow_redirects=False, timeout=REQUEST_TIMEOUT,
+        url, allow_redirects=False, timeout=REQUEST_TIMEOUT,
         headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-readonly-detail-QA/1"},
     )
     if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
