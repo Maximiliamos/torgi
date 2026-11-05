@@ -30,7 +30,11 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 Write-Host '====== NISTP + CDTRF: READ-ONLY DETAIL SAMPLE ======'
 Write-Host "Checked-out SHA: $revision"
-Write-Host "Sample per source: $SampleSize; NISTP last page: $NistpLastPage; CDTRF last page: $CdtrfLastPage"
+if ($RecheckFailedOnly) {
+    Write-Host "Mode: original-ID-pinned failed-lot recheck; last pages NISTP=$NistpLastPage CDTRF=$CdtrfLastPage"
+} else {
+    Write-Host "Mode: fresh stratified bounded sample; target per source: $SampleSize; last pages NISTP=$NistpLastPage CDTRF=$CdtrfLastPage"
+}
 Write-Host 'No PostgreSQL, reconcile, archive, GEO or map publication.'
 
 $arguments = @(
