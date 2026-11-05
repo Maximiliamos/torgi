@@ -43,6 +43,8 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
             raise ValueError("etp_invalid_money") from exc
         if not amount.is_finite() or not (Decimal(0) < amount < Decimal("1e15")):
             raise ValueError("etp_invalid_money")
+        if amount != amount.quantize(Decimal("0.01")):
+            raise ValueError("etp_invalid_money_precision")
         return amount
 
     listing_start = checked_amount(lot.start_price)
