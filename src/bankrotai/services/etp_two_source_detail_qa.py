@@ -27,7 +27,7 @@ from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILE_BY_ID, parse_nistp_lot_observations,
 )
 from bankrotai.services.etp_cdtrf_canary import (
-    API, MAX_RESPONSE, REQUEST_TIMEOUT, fetch_verified_cdtrf_lot,
+    MAX_RESPONSE, REQUEST_TIMEOUT, fetch_verified_cdtrf_lot,
 )
 from bankrotai.services.etp_cdtrf_full_catalogue import _url
 from bankrotai.services.etp_nistp_full_catalogue import _ACTIVE_STATE_KEYS
@@ -123,11 +123,13 @@ async def check_nistp_details(
 ) -> dict[str, Any]:
     report = _fresh_report("nistp.ru", sample_size, last_page)
     factory = connector_factory or SOURCE_CONNECTOR_TYPES["nistp.ru"]
+    pages_requested = 0
     for page in planned_pages(last_page, sample_size):
         if report["sample_attempted"] >= sample_size:
             break
-        if report["observations"] or report["skipped_pages"]:
+        if pages_requested:
             await asyncio.to_thread(sleep, delay_seconds)
+        pages_requested += 1
         connector = factory()
         try:
             result = await connector.search({}, cursor=str(page))
@@ -190,6 +192,7 @@ async def check_nistp_details(
             _record_error(report, page, type(exc).__name__)
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
+        print(f"NISTP detail QA: page={page} attempted={report['sample_attempted']}/{sample_size} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
     return _finish(report)
 
 
@@ -215,11 +218,13 @@ def check_cdtrf_details(
 ) -> dict[str, Any]:
     report = _fresh_report("cdtrf.ru", sample_size, last_page)
     own = session or requests.Session()
+    pages_requested = 0
     for page in planned_pages(last_page, sample_size):
         if report["sample_attempted"] >= sample_size:
             break
-        if report["observations"] or report["skipped_pages"]:
+        if pages_requested:
             sleep(delay_seconds)
+        pages_requested += 1
         try:
             data = fetch_page(own, page)
             candidates = data["property_candidates"]
@@ -263,6 +268,7 @@ def check_cdtrf_details(
             _record_error(report, page, type(exc).__name__)
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
+        print(f"CDTRF detail QA: page={page} attempted={report['sample_attempted']}/{sample_size} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
     return _finish(report)
 
 
