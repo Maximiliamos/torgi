@@ -25,7 +25,8 @@ CHECKS = (
     "stable_lot_ids", "pagination_next", "last_page_proven",
     "individual_detail", "detail_identity", "individual_detail_price",
     "individual_detail_status", "detail_price_consistency",
-    "detail_status_consistency", "lot_id_provenance", "money_integrity",
+    "detail_status_consistency", "detail_cadastral_consistency",
+    "lot_id_provenance", "money_integrity",
     "catalogue_price_coverage", "catalogue_status_coverage",
     "pagination_page_contract", "initial_or_current_price",
     "auction_status", "property_classification", "cookie_or_tutorial_modal",
@@ -303,7 +304,9 @@ async def diagnose_source(
                     and reported_total >= 0):
                 # Sberbank's verified public request has pagesize=21.
                 has_more_by_total = reported_total > 21 * page_number
-                if bool(page.next_cursor) != has_more_by_total:
+                minimum_rows_seen = (page_number - 1) * 21 + len(items)
+                if (bool(page.next_cursor) != has_more_by_total
+                        or minimum_rows_seen > reported_total):
                     page_mismatch = True
             if page_mismatch:
                 stages["pagination_page_contract"] = _entry(
@@ -501,7 +504,10 @@ async def diagnose_source(
                                 NOT_APPLICABLE, reason="enrichment_does_not_independently_verify_money_or_status"
                             )
                     else:
-                        for field in ("detail_price_consistency", "detail_status_consistency"):
+                        for field in (
+                            "detail_price_consistency", "detail_status_consistency",
+                            "detail_cadastral_consistency",
+                        ):
                             observations = [pair[field] for pair in pair_quality]
                             if any(item["state"] == FAIL for item in observations):
                                 state = FAIL
