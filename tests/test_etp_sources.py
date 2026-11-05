@@ -776,16 +776,19 @@ def test_results_pending_is_recognized_but_conservatively_unknown():
 
 
 def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_filters():
-    first = b"""
+    first = """
     <form id='nodesearch' method='get' action='/bankrot/trade_list.php'>
       <input type='hidden' name='pagenum' value='1'>
       <input type='hidden' name='searchtype' value='estate'>
       <input type='checkbox' checked name='region[]' value='76'>
       <input type='checkbox' checked name='region[]' value='77'>
       <input type='checkbox' name='region[]' value='78'>
+      <input type='checkbox' checked name='trade_state[]' value='Торги объявлены'>
+      <input type='checkbox' checked name='trade_state[]' value='Прием заявок'>
+      <input type='checkbox' checked name='trade_state[]' value='Идут торги'>
       <a onclick='pagenum_send(2)'>2</a>
     </form>
-    """
+    """.encode()
     second = ("<table>" + _nistp_public_lot_row(
         "501501", "71875-ОАОФ", 1, "Земельный участок 77:12:0000123:456",
     ) + "</table>").encode()
@@ -812,6 +815,18 @@ def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_fil
     assert ("pagenum", "2") in session.query_params
     assert ("searchtype", "estate") in session.query_params
     assert [v for k, v in session.query_params if k == "region[]"] == ["76", "77"]
+    assert [v for k, v in session.query_params if k == "trade_state[]"] == [
+        "Торги объявлены", "Прием заявок", "Идут торги",
+    ]
+
+
+def test_nistp_profile_starts_with_only_active_trade_state_filters():
+    from urllib.parse import parse_qs, urlparse
+
+    query = parse_qs(urlparse(profile("nistp.ru").listing_url).query)
+    assert query["trade_state[]"] == [
+        "Торги объявлены", "Прием заявок", "Идут торги",
+    ]
 
 
 def test_nistp_rejects_unexpected_form_method():

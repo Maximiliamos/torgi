@@ -14,7 +14,7 @@ $previousPythonUtf8 = $env:PYTHONUTF8
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONUTF8 = '1'
 
-Write-Host 'NISTP full read-only scan from the checked-out source revision.'
+Write-Host 'NISTP active-catalogue two-pass scan from the checked-out source revision.'
 Write-Host 'No PostgreSQL writes, reconciliation, archival, GEO or map publication.'
 $revision = (& git.exe rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $revision) {
@@ -49,6 +49,8 @@ if ($pythonExitCode -ne 0 -or $output.Count -lt 1) {
 $report = $output[-1] | ConvertFrom-Json
 if ($report.source -ne 'nistp.ru' -or $report.passes_match -ne $true -or
     $report.last_page_proven_twice -ne $true -or
+    $report.active_filter_proven_twice -ne $true -or
+    $report.trade_states.Count -ne 3 -or
     $report.production_database_writes -ne 0 -or
     $report.map_publication -ne $false -or
     $report.archival_allowed -ne $false -or

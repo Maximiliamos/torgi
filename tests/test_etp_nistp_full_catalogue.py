@@ -57,6 +57,11 @@ class _Connector:
             )
         self._last_response = _Response(
             content=(
+                "<form id='nodesearch'>"
+                "<input checked name='trade_state[]' value='Торги объявлены'>"
+                "<input checked name='trade_state[]' value='Прием заявок'>"
+                "<input checked name='trade_state[]' value='Идут торги'>"
+                "</form>"
                 f"<table>{''.join(rows)}</table>"
                 f"<ul class='pagination'><li class='active'>"
                 f"<a onclick='pagenum_send({page})'>{page}</a></li></ul>"
@@ -78,6 +83,10 @@ def test_full_walk_proves_selected_last_page_and_unique_individual_lots() -> Non
     assert report["last_page_proven"] is True
     assert report["last_page"] == 2
     assert report["unique_lot_ids"] == 3
+    assert report["active_filter_proven_on_every_page"] is True
+    assert report["trade_states"] == [
+        "Торги объявлены", "Прием заявок", "Идут торги",
+    ]
     assert report["production_database_writes"] == 0
     assert report["archival_allowed"] is False
 
@@ -91,14 +100,12 @@ def test_full_walk_rejects_missing_individual_price_or_status(bad: NormalizedLot
         asyncio.run(scan_complete_nistp_catalogue(_Connector([[bad]]), delay_seconds=0))
 
 
-def test_full_walk_preserves_application_intake_ended_as_safe_unknown() -> None:
-    report = asyncio.run(scan_complete_nistp_catalogue(
-        _Connector([[_lot("nistp.ru:499191:1", status="applications_closed")]]),
-        delay_seconds=0,
-    ))
-    assert report["source_statuses_recognized"] is True
-    assert report["normalized_statuses_complete"] is False
-    assert report["conservative_unknown_status_items"] == 1
+def test_active_walk_rejects_application_intake_ended_as_out_of_scope() -> None:
+    with pytest.raises(NistpCatalogueScanError, match="Out-of-scope NISTP status"):
+        asyncio.run(scan_complete_nistp_catalogue(
+            _Connector([[_lot("nistp.ru:499191:1", status="applications_closed")]]),
+            delay_seconds=0,
+        ))
 
 
 def test_full_walk_rejects_cross_page_duplicate_identity() -> None:
@@ -143,6 +150,22 @@ def test_absent_selected_page_marker_never_proves_completion() -> None:
         asyncio.run(scan_complete_nistp_catalogue(connector, delay_seconds=0))
 
 
+def test_missing_active_filter_selection_never_proves_catalogue_scope() -> None:
+    connector = _Connector([[_lot("nistp.ru:501:1")]])
+    original = connector.search
+
+    async def search(filters, cursor=None):
+        result = await original(filters, cursor=cursor)
+        connector._last_response.content = connector._last_response.content.replace(
+            b"<input checked", b"<input"
+        )
+        return result
+
+    connector.search = search
+    with pytest.raises(NistpCatalogueScanError, match="active trade_state filters"):
+        asyncio.run(scan_complete_nistp_catalogue(connector, delay_seconds=0))
+
+
 def test_transient_network_failure_is_retried_without_skipping_page() -> None:
     connector = _Connector([[_lot("nistp.ru:501:1")]])
     original = connector.search
@@ -163,23 +186,6 @@ def test_transient_network_failure_is_retried_without_skipping_page() -> None:
     assert result["unique_lot_ids"] == 1
 
 
-def test_tail_preflight_collects_all_unknown_statuses_before_reporting() -> None:
-    connector = _Connector([
-        [_lot("nistp.ru:501:1")],
-        [_lot("nistp.ru:502:1", status="unknown")],
-        [_lot("nistp.ru:503:1", status="unknown")],
-    ])
-    result = asyncio.run(scan_complete_nistp_catalogue(
-        connector, start_page=2, collect_status_errors=True, delay_seconds=0,
-    ))
-    assert result["start_page"] == 2
-    assert result["last_page"] == 3
-    assert result["source_statuses_recognized"] is False
-    assert [item["external_id"] for item in result["unrecognized_source_statuses"]] == [
-        "nistp.ru:502:1", "nistp.ru:503:1",
-    ]
-
-
 def test_selected_schema_correct_empty_page_proves_terminal_sentinel() -> None:
     from bankrotai.connectors.etp_sources import SourceSchemaError
 
@@ -192,6 +198,11 @@ def test_selected_schema_correct_empty_page_proves_terminal_sentinel() -> None:
             return await original(filters, cursor=cursor)
         connector._last_response = _Response(
             content="""
+            <form id='nodesearch'>
+            <input checked name='trade_state[]' value='Торги объявлены'>
+            <input checked name='trade_state[]' value='Прием заявок'>
+            <input checked name='trade_state[]' value='Идут торги'>
+            </form>
             <ul class='pagination'><li class='active'><a>2</a></li></ul>
             <table><tr><td>Код торгов</td><td>Организатор</td><td>Должник</td>
             <td>Начальная цена</td><td>Начало приема заявок</td>

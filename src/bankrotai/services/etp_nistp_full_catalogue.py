@@ -1,8 +1,8 @@
-"""Complete read-only NISTP lot-catalogue walk with explicit last-page proof.
+"""Complete read-only NISTP active-lot catalogue walk with last-page proof.
 
 The scanner never writes to PostgreSQL, publishes a map, reconciles missing
 lots, or archives records.  A successful pass proves only that the selected
-``view_type=lot`` catalogue was walked to its visibly selected final page.
+filtered ``view_type=lot`` catalogue was walked to its visibly selected final page.
 Two matching independent passes are required before the result is stable.
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceSchem
 from bankrotai.connectors.etp_sources.common import (
     _parse_soup,
     _status,
-    is_recognized_source_status,
 )
 from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILE_BY_ID,
@@ -34,6 +33,8 @@ from bankrotai.connectors.registry.direct_etp_catalogue import (
 
 MAX_SCAN_PAGES = 10_000
 _EXTERNAL_ID = re.compile(r"nistp\.ru:[1-9]\d{0,11}:[1-9]\d{0,4}\Z")
+ACTIVE_SOURCE_STATES = ("Торги объявлены", "Прием заявок", "Идут торги")
+_ACTIVE_STATE_KEYS = {value.casefold().replace("ё", "е") for value in ACTIVE_SOURCE_STATES}
 
 
 class NistpCatalogueScanError(ValueError):
@@ -71,10 +72,23 @@ def _selected_page_is_visible(html: bytes | str, page: int) -> bool:
     return False
 
 
+def _active_filters_are_visible(html: bytes | str) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    selected = [
+        " ".join(str(node.get("value") or "").split()).casefold().replace("ё", "е")
+        for node in soup.select('input[name="trade_state[]"][checked]')
+    ]
+    return len(selected) == 3 and set(selected) == _ACTIVE_STATE_KEYS
+
+
 def _is_valid_empty_terminal_page(response: Any, page: int) -> bool:
     """Accept only NISTP's selected, schema-correct empty page without a successor."""
     content = getattr(response, "content", b"")
-    if not content or not _selected_page_is_visible(content, page):
+    if (
+        not content
+        or not _selected_page_is_visible(content, page)
+        or not _active_filters_are_visible(content)
+    ):
         return False
     query_pages = parse_qs(urlparse(str(getattr(response, "url", ""))).query).get(
         "pagenum", []
@@ -108,8 +122,6 @@ def _is_valid_empty_terminal_page(response: Any, page: int) -> bool:
 async def scan_complete_nistp_catalogue(
     connector: Any,
     *,
-    start_page: int = 1,
-    collect_status_errors: bool = False,
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
@@ -117,21 +129,18 @@ async def scan_complete_nistp_catalogue(
     """Walk one independent NISTP pass or fail without claiming completion."""
     if type(max_pages) is not int or not 1 <= max_pages <= MAX_SCAN_PAGES:
         raise NistpCatalogueScanError("Unsafe max_pages")
-    if type(start_page) is not int or not 1 <= start_page <= max_pages:
-        raise NistpCatalogueScanError("Unsafe start_page")
     if not 0 <= delay_seconds <= 10:
         raise NistpCatalogueScanError("Delay must be 0..10 seconds")
 
     seen: set[str] = set()
     catalogue_records: list[str] = []
     conservative_status_items = 0
-    status_errors: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     last_page_proven = False
     scan_started = time.monotonic()
 
-    for page_number in range(start_page, max_pages + 1):
-        if page_number > start_page:
+    for page_number in range(1, max_pages + 1):
+        if page_number > 1:
             await asyncio.to_thread(sleep, delay_seconds)
         print(f"NISTP requesting page={page_number}...", flush=True)
         try:
@@ -165,6 +174,10 @@ async def scan_complete_nistp_catalogue(
             raise NistpCatalogueScanError(
                 f"NISTP page {page_number} is not visibly selected"
             )
+        if not _active_filters_are_visible(response.content):
+            raise NistpCatalogueScanError(
+                f"NISTP active trade_state filters are not selected on page {page_number}"
+            )
 
         observations = parse_nistp_lot_observations(
             PROFILE_BY_ID["nistp.ru"], _parse_soup(response.content).decode(), limit=100,
@@ -186,18 +199,12 @@ async def scan_complete_nistp_catalogue(
                     f"Missing individual price: {item['provider_external_id']}"
                 )
             source_status = item["source_status_text"]
-            if not is_recognized_source_status(source_status):
-                error = {
-                    "page": page_number,
-                    "external_id": item["provider_external_id"],
-                    "source_status_text": source_status,
-                }
-                status_errors.append(error)
-                if not collect_status_errors:
-                    raise NistpCatalogueScanError(
-                        f"Unrecognized individual status: {item['provider_external_id']} "
-                        f"value={source_status!r}"
-                    )
+            source_status_key = source_status.casefold().replace("ё", "е")
+            if source_status_key not in _ACTIVE_STATE_KEYS:
+                raise NistpCatalogueScanError(
+                    f"Out-of-scope NISTP status: {item['provider_external_id']} "
+                    f"value={source_status!r}"
+                )
             if _status(source_status) == "unknown":
                 page_conservative_status_items += 1
             catalogue_records.append(
@@ -243,8 +250,7 @@ async def scan_complete_nistp_catalogue(
     ).hexdigest()
     return {
         "source": "nistp.ru",
-        "mode": "full_readonly_lot_catalogue_walk",
-        "start_page": start_page,
+        "mode": "full_readonly_active_lot_catalogue_walk",
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "pages_scanned": len(pages),
         "last_page": pages[-1]["page"],
@@ -255,9 +261,11 @@ async def scan_complete_nistp_catalogue(
         "pages": pages,
         "view_type": "lot",
         "individual_prices_verified": True,
-        "individual_statuses_verified": not status_errors,
-        "source_statuses_recognized": not status_errors,
-        "unrecognized_source_statuses": status_errors,
+        "individual_statuses_verified": True,
+        "source_statuses_recognized": True,
+        "active_filter_proven_on_every_page": True,
+        "trade_states": list(ACTIVE_SOURCE_STATES),
+        "complete_filtered_inventory": last_page_proven,
         "normalized_statuses_complete": conservative_status_items == 0,
         "conservative_unknown_status_items": conservative_status_items,
         "production_database_writes": 0,
@@ -293,6 +301,10 @@ async def run_two_independent_passes(
         "independent_passes": passes,
         "passes_match": stable,
         "last_page_proven_twice": bool(stable),
+        "active_filter_proven_twice": bool(stable) and all(
+            item["active_filter_proven_on_every_page"] for item in passes
+        ),
+        "trade_states": list(ACTIVE_SOURCE_STATES),
         "production_database_writes": 0,
         "map_publication": False,
         "archival_allowed": False,
@@ -303,26 +315,14 @@ async def run_two_independent_passes(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
-    parser.add_argument("--start-page", type=int, default=1)
-    parser.add_argument("--single-pass", action="store_true")
-    parser.add_argument("--collect-status-errors", action="store_true")
     parser.add_argument("--delay-seconds", type=float, default=1.0)
     args = parser.parse_args()
     connector_type = SOURCE_CONNECTOR_TYPES["nistp.ru"]
-    if args.single_pass:
-        report = asyncio.run(scan_complete_nistp_catalogue(
-            connector_type(), start_page=args.start_page,
-            collect_status_errors=args.collect_status_errors,
-            max_pages=args.max_pages, delay_seconds=args.delay_seconds,
-        ))
-    else:
-        if args.start_page != 1 or args.collect_status_errors:
-            parser.error("tail/status collection is only valid with --single-pass")
-        report = asyncio.run(run_two_independent_passes(
-            connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
-        ))
+    report = asyncio.run(run_two_independent_passes(
+        connector_type, max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+    ))
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-    if not args.single_pass and not report["passes_match"]:
+    if not report["passes_match"]:
         raise SystemExit("NISTP independent full-catalogue passes differ")
 
 
