@@ -10,7 +10,7 @@ from bankrotai.services import etp_parser_checklist as checklist
 def _lot(source: str, ident: str = "lot-1", **overrides):
     data = {
         "source_system": source,
-        "external_id": ident,
+        "external_id": f"{source}:{ident}",
         "start_price": 120000.0,
         "current_price": None,
         "auction_status": "active",
@@ -316,7 +316,7 @@ def test_terminal_page_with_next_cursor_is_fail_closed(monkeypatch):
 def test_partial_detail_success_is_never_green(monkeypatch):
     class PartiallyBroken(FakeConnector):
         async def fetch_lot(self, external_id):
-            if external_id == "lot-2":
+            if external_id == f"{self.source}:lot-2":
                 raise ValueError("broken second detail")
             return _lot(self.source, external_id, detail_level="detail")
 
