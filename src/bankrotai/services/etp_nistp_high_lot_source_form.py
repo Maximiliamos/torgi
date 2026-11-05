@@ -19,7 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.connectors.registry.direct_etp_catalogue import (
-    PROFILE_BY_ID, TRADE_ID, LOT_SECTIONS, parse_nistp_lot_observations,
+    PROFILE_BY_ID, LOT_SECTIONS, parse_nistp_lot_observations,
 )
 from bankrotai.connectors.etp_sources.nistp_detail_sections import _TRADE_CODE
 from bankrotai.connectors.etp_sources.common import _parse_soup
@@ -109,19 +109,23 @@ def _safe_row_link_shapes(
             continue
         for a in row.select("a[href]"):
             href = str(a.get("href") or "").strip()
-            url = urlsplit(urljoin(PAGE, href))
-            if (url.scheme != "https" or url.hostname != "nistp.ru"
-                    or url.port is not None or url.username or url.password
-                    or not url.path.startswith("/bankrot/")):
+            try:
+                url = urlsplit(urljoin(PAGE, href))
+                if (url.scheme != "https" or url.hostname != "nistp.ru"
+                        or url.port is not None or url.username or url.password
+                        or not url.path.startswith("/bankrot/")):
+                    continue
+                query = parse_qs(url.query, keep_blank_values=True)
+            except ValueError:
+                # Invalid ports/brackets/URLs must not abort source evidence.
                 continue
             keys = tuple(sorted(
-                key for key in parse_qs(url.query, keep_blank_values=True)
+                key for key in query
                 if re.fullmatch(r"[a-zA-Z0-9_]{1,40}", key)
             ))
             if len(keys) > 12:
                 continue
             shape = (url.path[:120], keys)
-            query = parse_qs(url.query)
             lot_fields = ("lot_nid", "lot_id", "lot_num", "lot_number")
             # Native lot_nid may not equal its visible numbered section.
             lot_param_present = any(key in query for key in lot_fields)
