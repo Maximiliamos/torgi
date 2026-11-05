@@ -10,7 +10,7 @@ from bankrotai.services import etp_parser_checklist as checklist
 def _lot(source: str, ident: str = "lot-1", **overrides):
     data = {
         "source_system": source,
-        "external_id": f"{source}:{ident}",
+        "external_id": ident if ident.startswith(source + ":") else f"{source}:{ident}",
         "start_price": 120000.0,
         "current_price": None,
         "auction_status": "active",
