@@ -13,12 +13,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.connectors.registry.direct_etp_catalogue import (
-    PROFILE_BY_ID, parse_nistp_lot_observations,
+    PROFILE_BY_ID, TRADE_ID, LOT_SECTIONS, parse_nistp_lot_observations,
 )
 from bankrotai.connectors.etp_sources.nistp_detail_sections import _TRADE_CODE
 from bankrotai.connectors.etp_sources.common import _parse_soup
@@ -88,6 +89,54 @@ def extract_trade_code(content: bytes) -> str:
     return codes.pop()
 
 
+def _safe_row_link_shapes(
+    soup: BeautifulSoup, *, trade_code: str, lot_number: int,
+) -> list[dict[str, Any]]:
+    """Inspect static hrefs in the *exact lot row*, not arbitrary page links.
+
+    Never fetch a discovered href automatically. Emit first-party path and
+    query parameter names only (never link URLs, tokens, debtor details).
+    """
+    discovered: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    for row in soup.select("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 7:
+            continue
+        if cells[0].get_text(" ", strip=True).strip() != trade_code:
+            continue
+        pieces = list(LOT_SECTIONS.finditer(cells[2].get_text(" ", strip=True)))
+        if len(pieces) != 1 or int(pieces[0].group(1)) != lot_number:
+            continue
+        for a in row.select("a[href]"):
+            href = str(a.get("href") or "").strip()
+            url = urlsplit(urljoin(PAGE, href))
+            if (url.scheme != "https" or url.hostname != "nistp.ru"
+                    or url.port is not None or url.username or url.password
+                    or not url.path.startswith("/bankrot/")):
+                continue
+            keys = tuple(sorted(
+                key for key in parse_qs(url.query, keep_blank_values=True)
+                if re.fullmatch(r"[a-zA-Z0-9_]{1,40}", key)
+            ))
+            if len(keys) > 12:
+                continue
+            shape = (url.path[:120], keys)
+            query = parse_qs(url.query)
+            lot_fields = ("lot_nid", "lot_id", "lot_num", "lot_number")
+            # Native lot_nid may not equal its visible numbered section.
+            lot_param_present = any(key in query for key in lot_fields)
+            discovered[shape] = {
+                "path": shape[0],
+                "query_field_names": list(keys),
+                "has_lot_scoped_parameter": lot_param_present,
+                "is_only_trade_page_route": (
+                    shape[0] == "/bankrot/trade_view.php"
+                    and not lot_param_present
+                ),
+            }
+    return list(discovered.values())[:20]
+
+
 def inspect_exact_source_search(
     html: bytes, *, trade_code: str, number: int,
 ) -> dict[str, Any]:
@@ -116,6 +165,9 @@ def inspect_exact_source_search(
         item["provider_external_id"] for item in observations
         if item["provider_external_id"] != expected_id
     ]
+    link_shapes = _safe_row_link_shapes(
+        soup, trade_code=trade_code, lot_number=number,
+    )
     status = matches[0]["source_status_text"] if len(matches) == 1 else None
     status_key = (
         status.casefold().replace("ё", "е") if status is not None else None
@@ -128,6 +180,11 @@ def inspect_exact_source_search(
         "returned_rows": len(observations),
         "exact_matching_rows": len(matches),
         "other_ids_returned_count": len(returned_unexpected),
+        "first_party_link_shapes": link_shapes,
+        "distinct_lot_scoped_route_candidates": sum(
+            shape["has_lot_scoped_parameter"] for shape in link_shapes
+        ),
+        "independent_lot_detail_endpoint_verified": False,
         "exact_row_price_present": (
             type(price) in (int, float) and price > 0
         ),
