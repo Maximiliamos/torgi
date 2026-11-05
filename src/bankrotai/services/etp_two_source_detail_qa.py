@@ -235,6 +235,27 @@ def _finish(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def _emit_page_progress(
+    source: str, report: dict[str, Any], page: int, requested: int,
+    *, started: float, errors_before: int, verified_before: int,
+) -> None:
+    """Always report one line per page, including early continue and refusal."""
+    if len(report["errors"]) > errors_before:
+        outcome = report["errors"][-1]["code"]
+    elif report["sample_verified"] > verified_before:
+        outcome = "verified"
+    else:
+        outcome = "no_eligible_candidate"
+    elapsed = max(0.0, time.monotonic() - started)
+    print(
+        f"{source} detail QA: page={page} "
+        f"attempted={report['sample_attempted']}/{requested} "
+        f"verified={report['sample_verified']} issues={len(report['errors'])} "
+        f"outcome={outcome} elapsed_s={elapsed:.1f}",
+        file=sys.stderr, flush=True,
+    )
+
+
 async def check_nistp_details(
     last_page: int, sample_size: int, *,
     delay_seconds: float = 1.0,
@@ -260,6 +281,9 @@ async def check_nistp_details(
         if pages_requested:
             await asyncio.to_thread(sleep, delay_seconds)
         pages_requested += 1
+        page_started = time.monotonic()
+        errors_before = len(report["errors"])
+        verified_before = report["sample_verified"]
         connector = factory()
         identity: str | None = None
         stage = "catalogue"
@@ -345,7 +369,11 @@ async def check_nistp_details(
             )
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
-        print(f"NISTP detail QA: page={page} attempted={report['sample_attempted']}/{requested} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
+        finally:
+            _emit_page_progress(
+                "NISTP", report, page, requested, started=page_started,
+                errors_before=errors_before, verified_before=verified_before,
+            )
     return _finish(report)
 
 
@@ -399,6 +427,9 @@ def check_cdtrf_details(
         if pages_requested:
             sleep(delay_seconds)
         pages_requested += 1
+        page_started = time.monotonic()
+        errors_before = len(report["errors"])
+        verified_before = report["sample_verified"]
         identity: str | None = None
         stage = "catalogue"
         try:
@@ -479,7 +510,11 @@ def check_cdtrf_details(
             )
             if any(code in str(exc) for code in ("HTTP 429", "HTTP 403", "HTTP 401")):
                 break
-        print(f"CDTRF detail QA: page={page} attempted={report['sample_attempted']}/{requested} verified={report['sample_verified']} issues={len(report['errors'])}", file=sys.stderr, flush=True)
+        finally:
+            _emit_page_progress(
+                "CDTRF", report, page, requested, started=page_started,
+                errors_before=errors_before, verified_before=verified_before,
+            )
     return _finish(report)
 
 
