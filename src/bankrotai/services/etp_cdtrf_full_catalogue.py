@@ -47,6 +47,37 @@ def _url(page: int, page_size: int) -> str:
     return f"{API}?{urlencode(params)}"
 
 
+def _request_page(
+    session: requests.Session, url: str, *,
+    delay_seconds: float, sleep: Callable[[float], None],
+) -> requests.Response:
+    """Retry only transient transport/5xx failures with a bounded backoff."""
+    last_error: requests.RequestException | None = None
+    for attempt in range(3):
+        try:
+            response = session.get(
+                url,
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "TORGI-CDTRF-full-readonly-audit/1",
+                },
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+            sleep(delay_seconds * (attempt + 1))
+            continue
+        if response.status_code not in {502, 503, 504} or attempt == 2:
+            return response
+        sleep(delay_seconds * (attempt + 1))
+    raise CdtrfCatalogueScanError(
+        "CDTRF API transient transport failure after bounded retries"
+    ) from last_error
+
+
 def scan_complete_cdtrf_catalogue(
     session: requests.Session,
     *,
@@ -87,14 +118,9 @@ def scan_complete_cdtrf_catalogue(
     for page in range(1, max_pages + 1):
         if page > 1:
             sleep(delay_seconds)
-        response = session.get(
-            _url(page, page_size),
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "TORGI-CDTRF-full-readonly-audit/1",
-            },
+        response = _request_page(
+            session, _url(page, page_size),
+            delay_seconds=delay_seconds, sleep=sleep,
         )
         if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
             raise CdtrfCatalogueScanError("CDTRF API status/size failed")

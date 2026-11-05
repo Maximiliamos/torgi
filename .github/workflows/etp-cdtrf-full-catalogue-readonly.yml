@@ -29,23 +29,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify canonical Home worker
+      - name: Verify exact-SHA Home Python runtime
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path 'src/bankrotai/services/etp_cdtrf_full_catalogue.py')) {
             throw 'Exact checked out CDTRF scanner missing'
           }
-          $worker = @(docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}')
-          if ($LASTEXITCODE -ne 0 -or $worker -ne 'bankrotai-home-ingestion-worker') {
-            throw 'Canonical Home ingestion worker is unavailable'
-          }
+          $python = Get-Command python.exe -ErrorAction Stop
+          & $python.Source -c "import requests; print('Home Python dependencies available')"
+          if ($LASTEXITCODE -ne 0) { throw 'Home Python requests dependency unavailable' }
 
       - name: Run two full CDTRF catalogue passes without DB writes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $src = (Resolve-Path 'src/bankrotai/services/etp_cdtrf_full_catalogue.py').Path
+          $env:PYTHONPATH = (Resolve-Path 'src').Path
           $revision = (git rev-parse HEAD).Trim()
           $passReports = @()
           foreach ($pass in @(1,2)) {
@@ -54,7 +53,7 @@ jobs:
             foreach ($pageSize in @(100,50,20)) {
               Write-Output ("CDTRF independent pass {0}/2; page_size={1}; revision={2}" -f $pass,$pageSize,$revision)
               $ErrorActionPreference = 'Continue'
-              $output = @(Get-Content -LiteralPath $src -Raw | docker exec -i bankrotai-home-ingestion-worker python -c "import sys; code=sys.stdin.read().lstrip(chr(65279)); exec(compile(code,'cdtrf_full_readonly','exec'), {'__name__':'__main__'})" --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
+              $output = @(& python.exe -m bankrotai.services.etp_cdtrf_full_catalogue --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
               $exitCode = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
               if ($exitCode -ne 0) {

@@ -179,3 +179,30 @@ def test_full_catalogue_still_rejects_missing_pages():
         scan_complete_cdtrf_catalogue(
             FullScanSession(205), page_size=100, max_pages=2,
         )
+
+
+def test_full_catalogue_retries_transient_timeout_without_skipping_page():
+    import requests
+
+    class Flaky(FullScanSession):
+        def __init__(self):
+            super().__init__(20)
+            self.attempts = 0
+
+        def get(self, url, *, allow_redirects, timeout, headers):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise requests.exceptions.ReadTimeout("temporary")
+            return super().get(
+                url, allow_redirects=allow_redirects,
+                timeout=timeout, headers=headers,
+            )
+
+    delays = []
+    session = Flaky()
+    report = scan_complete_cdtrf_catalogue(
+        session, page_size=20, delay_seconds=1, sleep=delays.append,
+    )
+    assert session.attempts == 2
+    assert delays == [1]
+    assert report["pages_scanned"] == 1
