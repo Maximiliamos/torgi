@@ -315,14 +315,18 @@ async def diagnose_source(
                     "category": "returned_page_or_total_disagrees_with_request",
                 }
                 return report
+            # Most generic connectors merely echo the requested page number
+            # and their own parsed row count. Neither proves the provider
+            # actually returned the requested page, so do NOT paint green.
+            independent_page_proof = (
+                (metadata.get("response_page_verified") is True
+                 and type(response_page) is int)
+                or (source == "sberbank-ast.ru" and type(reported_total) is int)
+            )
             stages["pagination_page_contract"] = _entry(
-                PASS if (type(response_page) is int or type(returned_count) is int
-                         or (source == "sberbank-ast.ru" and type(reported_total) is int))
-                else NOT_TESTED,
-                reason=("source_page_metadata_consistent" if
-                        (type(response_page) is int or type(returned_count) is int
-                         or (source == "sberbank-ast.ru" and type(reported_total) is int))
-                        else "source_did_not_return_independent_page_metadata"),
+                PASS if independent_page_proof else NOT_TESTED,
+                reason=("independent_page_total_consistent" if independent_page_proof
+                        else "requested_page_echo_not_independent_proof"),
                 page=page_number,
             )
             if metadata.get("source_end_verified") is True:
