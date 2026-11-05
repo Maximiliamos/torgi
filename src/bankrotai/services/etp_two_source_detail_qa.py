@@ -190,6 +190,10 @@ def _finish(report: dict[str, Any]) -> dict[str, Any]:
     report["error_counts"] = dict(sorted(Counter(
         item["code"] for item in report["errors"]
     ).items()))
+    report["reason_counts"] = dict(sorted(Counter(
+        item.get("reason") or "unclassified_" + item["code"]
+        for item in report["errors"]
+    ).items()))
     report["detail_sample_pass"] = (
         report["sample_attempted"] == report["sample_requested"]
         and report["sample_verified"] == report["sample_requested"]
@@ -452,6 +456,12 @@ def main() -> None:
             "verified": report["sample_verified"],
             "sample_pass": report["detail_sample_pass"],
             "errors": report["error_counts"],
+            "reasons": report["reason_counts"],
+            "failed_lots": [
+                {"page": item["page"], "external_id": item.get("external_id"),
+                 "stage": item.get("stage"), "reason": item.get("reason")}
+                for item in report["errors"][:50]
+            ],
             "evidence_path": str(path),
             "source_accepted": False,
         })
