@@ -9,6 +9,17 @@ acceptance certificate. Later source-code fixes are described below but are not 
 
 The workflow itself succeeded but **22 of 22 sources reported a first failure/block**. It wrote **zero** production DB records, **zero** map records and archived **zero** lots. Counts below are observed catalogue candidates in the bounded sample; **not saved lots**.
 
+## GitHub state checked on 2026-11-05
+
+- #1089 (actionable per-source diagnostics), #1093 (NISTP GET pagination and CenterR IDs),
+  and #1103 (NISTP shared-card per-lot detail) are merged into `main`.
+- #1098 (this checklist v2) and #1105 (NISTP filtered full-catalogue proof) remain open;
+  #1086 remains a Draft integration PR.
+- The three checklist workflow events after run 41950118761 were `skipped`, so they provide no
+  newer 22-source artifact. The matrix below therefore remains the latest common live baseline.
+- A merged code fix or a browser capture is recorded as subsequent evidence, but it does not
+  silently replace an old live `FAIL`/`NOT_TESTED` with `PASS`.
+
 | Source | Pages inspected | Candidate lots | First failure/block | Individual detail stage |
 |---|---:|---:|---|---|
 | m-ets.ru | 2 | 40 | auction_status: unknown_status_in_sample | PASS |
@@ -65,22 +76,34 @@ last page, and `PASS` for one detail is not source-wide field coverage.
 | `electro-torgi.ru` | BLOCKED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | transport: profile_explicitly_blocked |
 | `lot-online.ru` | PASS/PASS | PASS/PASS | PASS/NOT_TESTED | FAIL/NOT_TESTED | PASS/PASS/PASS | NOT_TESTED/NOT_TESTED/NOT_TESTED/NOT_TESTED | individual_detail: unexpected_ConnectorCapabilityError |
 
+## Subsequent source evidence (kept separate from the common artifact)
+
+| Source | Newly completed evidence | Still not completed |
+|---|---|---|
+| `nistp.ru` | #1093 merged the real GET pagination contract with repeated checked filters; #1103 merged isolated per-lot parsing for shared trade cards. User-loaded catalogue/card evidence confirmed composite IDs, individual price/status and non-property rows without treating them as real estate. The active catalogue filter is explicitly limited to `Торги объявлены`, `Прием заявок`, `Идут торги`; the browser showed 143 pages. | #1105 is still open and no successful exact-SHA two-pass active-catalogue report has been attached yet. Therefore `last_page_proven`, `two_pass_catalogue_match`, PostgreSQL/GEO/map/web and both schedules remain `NOT_TESTED`. No mass archival is allowed. |
+| `centerr.ru` | #1093 merged exclusion of repeated news/sidebar links from catalogue lot IDs, with regression tests. | No newer Home artifact has re-run the real source after the merge, so the old live ID failure is not promoted to `PASS`. Full pagination, details, prices and downstream stages remain `NOT_TESTED`. |
+| Other 20 registered ETP entries | No newer qualifying common Home artifact was found after run 41950118761. Their bounded statuses remain exactly as recorded in the matrix above. | Any code-only fix or isolated browser view still needs a fresh exact-SHA source run and the applicable acceptance stages. |
+
+`torgi-russia.ru` is a separate production source rather than one of these 22 registered direct-ETP
+entries. Its browser/API evidence and remaining production blockers are recorded in the dedicated
+appendix below; it must not be inserted as a fake 23rd row or substituted for an ETP.
+
 ## Coverage audit against the required 12 stages
 
 | Required stage | Current machine-readable coverage after checklist v2 | Remaining gap |
 |---|---|---|
-| 1. DNS, HTTPS, HTTP, redirects | PARTIAL: `catalogue_url`, `transport`, sanitized HTTP status/class | DNS, TLS, redirect chain and environment must be separate observations |
+| 1. DNS, HTTPS, HTTP, redirects | DECLARED: separate `dns_resolution`, `tls_certificate`, `http_response`, `redirect_chain`, plus `catalogue_url`/`transport` | Bounded connector runs do not yet populate every separate observation |
 | 2. Correct catalogue and markup | YES: `catalogue_markup`, source contract and CDTRF JSON probe | Requires a fresh live run after each contract change |
-| 3. JavaScript, cookie/tutorial/filter UI | PARTIAL: `cookie_or_tutorial_modal`; HTTP connectors correctly use N/A | Browser-backed sources still need explicit UI/filter evidence |
-| 4. Lot discovery and procedure/lot separation | PARTIAL: `lot_discovery`, `lot_id_provenance` | Procedure-to-lot-to-asset isolation is not proven for every source |
+| 3. JavaScript, cookie/tutorial/filter UI | DECLARED: `browser_javascript`, `cookie_or_tutorial_modal`, `catalogue_filter_state`; HTTP-only UI stages use N/A only when genuinely inapplicable | Browser-backed sources still need explicit UI/filter evidence |
+| 4. Lot discovery and procedure/lot separation | DECLARED: `lot_discovery`, `procedure_lot_separation`, `lot_id_provenance` | Procedure-to-lot-to-asset isolation is not proven for every source |
 | 5. Unique IDs and duplicates | YES for bounded samples: `stable_lot_ids`, `lot_id_provenance` | Full-catalogue and PostgreSQL uniqueness are not yet proven |
-| 6. All pages and terminal proof | PARTIAL: `pagination_next`, `pagination_page_contract`, `last_page_proven` | Two independent complete scans and filter-partition coverage are missing |
+| 6. All pages and terminal proof | DECLARED: `pagination_next`, `pagination_page_contract`, `last_page_proven`, `two_pass_catalogue_match` | Two independent complete scans and filter-partition coverage are still missing for unaccepted sources |
 | 7. Individual cards | YES for requested probes: `individual_detail`, `detail_identity` | A one-card probe is not source-wide coverage |
-| 8. Price, status, address, cadastre, area, dates | PARTIAL: price, status and cadastre have v2 checks | Address, area and date/time-zone checks need dedicated stages |
-| 9. Catalogue/detail comparison | PARTIAL: price, status and cadastre consistency | Address, area, dates and multi-asset isolation remain missing |
-| 10. PostgreSQL save and update | NO: only coarse `production_import`, intentionally NOT_TESTED | Separate insert/update/dedupe/exact-SHA/rollback evidence is required |
-| 11. Geocoding and map publication | PARTIAL: coarse `geocoding`, `map_publication` placeholders | PostgreSQL-to-GEO-to-MapDataset-to-S3-to-Web counts need end-to-end proof |
-| 12. Scheduled 09:00 and 21:00 MSK runs | NO: coarse `scheduler` placeholder | Record both slots, exact SHA, retries and two consecutive successful cycles |
+| 8. Price, status, address, cadastre, area, dates | DECLARED: separate detail price/status/address/cadastral/area/date stages | Most sources still lack source-wide live field evidence |
+| 9. Catalogue/detail comparison | DECLARED: separate price/status/address/cadastral/area/date consistency stages | Multi-asset isolation and fresh-card comparisons remain incomplete |
+| 10. PostgreSQL save and update | DECLARED: backup/restore, import, insert, update, dedupe and mass-archival guard stages | All intentionally remain `NOT_TESTED` until an authorized staged import |
+| 11. Geocoding and map publication | DECLARED: GEO, MapDataset, map/S3 publication, website visibility, lot links and Sources filter | PostgreSQL-to-Web counts still require end-to-end proof |
+| 12. Scheduled 09:00 and 21:00 MSK runs | DECLARED: separate 09:00, 21:00 and two-consecutive-cycle stages | Record both slots, exact SHA, retries and two consecutive successful cycles |
 
 ## Interpretation and priorities
 

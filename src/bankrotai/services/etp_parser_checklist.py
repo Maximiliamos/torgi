@@ -21,16 +21,27 @@ from bankrotai.connectors.etp_sources import (
 from bankrotai.services.etp_quality_checks import audit_catalogue_lots, audit_detail_pair
 
 CHECKS = (
-    "catalogue_url", "transport", "catalogue_markup", "lot_discovery",
+    "catalogue_url", "dns_resolution", "tls_certificate", "http_response",
+    "redirect_chain", "transport", "catalogue_markup", "browser_javascript",
+    "catalogue_filter_state", "lot_discovery", "procedure_lot_separation",
     "stable_lot_ids", "pagination_next", "last_page_proven",
+    "two_pass_catalogue_match",
     "individual_detail", "detail_identity", "individual_detail_price",
     "individual_detail_status", "detail_price_consistency",
     "detail_status_consistency", "detail_cadastral_consistency",
+    "detail_address", "detail_cadastral", "detail_area", "detail_dates",
+    "detail_address_consistency", "detail_area_consistency",
+    "detail_dates_consistency",
     "lot_id_provenance", "money_integrity",
     "catalogue_price_coverage", "catalogue_status_coverage",
     "pagination_page_contract", "initial_or_current_price",
     "auction_status", "property_classification", "cookie_or_tutorial_modal",
-    "production_import", "geocoding", "map_publication", "scheduler",
+    "postgres_backup_restore", "production_import", "postgres_insert",
+    "postgres_update", "postgres_deduplication", "mass_archival_guard",
+    "geocoding", "map_dataset_build", "map_publication", "s3_publication",
+    "website_visibility", "website_lot_links", "website_source_filter",
+    "scheduler", "scheduler_09_msk", "scheduler_21_msk",
+    "scheduler_two_consecutive_cycles",
 )
 NOT_TESTED = "NOT_TESTED"
 PASS = "PASS"
@@ -139,6 +150,9 @@ async def diagnose_source(
     # HTTP and API parsers don't click browser modals. Browser coverage is
     # NOT_TESTED, not an invented green check or a failure.
     stages["cookie_or_tutorial_modal"] = _entry(
+        NOT_APPLICABLE, reason="http_or_api_connector_no_browser_ui"
+    )
+    stages["browser_javascript"] = _entry(
         NOT_APPLICABLE, reason="http_or_api_connector_no_browser_ui"
     )
     report: dict[str, Any] = {

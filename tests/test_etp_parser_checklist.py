@@ -56,6 +56,28 @@ def test_registry_exactly_22_including_lot_online():
     assert "lot-online.ru" in sources
 
 
+def test_checklist_explicitly_covers_all_required_acceptance_steps():
+    required = {
+        "dns_resolution", "tls_certificate", "http_response", "redirect_chain",
+        "catalogue_markup", "browser_javascript", "cookie_or_tutorial_modal",
+        "catalogue_filter_state", "lot_discovery", "procedure_lot_separation",
+        "stable_lot_ids", "pagination_next", "last_page_proven",
+        "two_pass_catalogue_match", "individual_detail", "detail_identity",
+        "individual_detail_price", "individual_detail_status", "detail_address",
+        "detail_cadastral",
+        "detail_cadastral_consistency", "detail_area", "detail_dates",
+        "detail_price_consistency", "detail_status_consistency",
+        "detail_address_consistency", "detail_area_consistency",
+        "detail_dates_consistency", "postgres_backup_restore", "postgres_insert",
+        "postgres_update", "postgres_deduplication", "mass_archival_guard",
+        "geocoding", "map_dataset_build", "s3_publication", "website_visibility",
+        "website_lot_links", "website_source_filter", "scheduler_09_msk",
+        "scheduler_21_msk", "scheduler_two_consecutive_cycles",
+    }
+    assert len(checklist.CHECKS) == len(set(checklist.CHECKS))
+    assert required <= set(checklist.CHECKS)
+
+
 def test_live_sample_exposes_unknown_terminal_page_without_claiming_import(monkeypatch):
     source = "etpu.ru"
     monkeypatch.setattr(
@@ -71,6 +93,9 @@ def test_live_sample_exposes_unknown_terminal_page_without_claiming_import(monke
     assert stages["individual_detail"]["state"] == checklist.PASS
     assert stages["detail_identity"]["state"] == checklist.PASS
     assert stages["cookie_or_tutorial_modal"]["state"] == checklist.NOT_APPLICABLE
+    assert stages["browser_javascript"]["state"] == checklist.NOT_APPLICABLE
+    assert stages["postgres_backup_restore"]["state"] == checklist.NOT_TESTED
+    assert stages["scheduler_09_msk"]["state"] == checklist.NOT_TESTED
     assert result["production_approved"] is False
     assert result["database_writes"] == result["map_writes"] == 0
 
