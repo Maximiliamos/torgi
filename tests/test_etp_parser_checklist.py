@@ -403,3 +403,19 @@ def test_v2_detail_price_disagreement_is_not_mistaken_for_valid_price(monkeypatc
     assert item["stages"]["detail_price_consistency"]["state"] == checklist.FAIL
     assert item["first_failure"]["stage"] == "detail_price_consistency"
     assert item["production_approved"] is False
+
+
+def test_v2_sberbank_total_smaller_than_observed_rows_fails_closed(monkeypatch):
+    class WrongTotal(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[_lot(self.source)],
+                next_cursor=None,
+                metadata={"page": 1, "total_items": 0, "items_on_page": 1},
+            )
+
+    monkeypatch.setattr(checklist, "_connector",
+                        lambda source: (WrongTotal(source), object()))
+    item = asyncio.run(checklist.diagnose_source("sberbank-ast.ru"))
+    assert item["stages"]["pagination_page_contract"]["state"] == checklist.FAIL
+    assert item["first_failure"]["category"] == "returned_page_or_total_disagrees_with_request"
