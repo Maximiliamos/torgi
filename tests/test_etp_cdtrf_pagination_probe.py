@@ -31,7 +31,13 @@ class Session:
 
     def get(self, url, *, allow_redirects, timeout, headers):
         assert url.startswith("https://torgi.cdtrf.ru/api/Trade/trades?")
-        assert "PageSize=20" in url
+        params = parse_qs(urlsplit(url).query)
+        assert params == {
+            "Declare": ["true"],
+            "RecieveReq": ["true"],
+            "PageSize": ["20"],
+            "PageNum": [str(len(self.calls) + 1)],
+        }
         assert allow_redirects is False
         assert timeout == (10, 30)
         assert "json" in headers["Accept"]
