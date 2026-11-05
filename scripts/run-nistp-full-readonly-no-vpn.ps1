@@ -28,7 +28,10 @@ try {
     $output = @(& python.exe -m `
         bankrotai.services.etp_nistp_full_catalogue `
         --max-pages $MaxPages --delay-seconds $DelaySeconds 2>&1 |
-        Tee-Object -FilePath $log)
+        Tee-Object -FilePath $log | ForEach-Object {
+            Write-Host $_
+            $_
+        })
     $pythonExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $savedErrorActionPreference

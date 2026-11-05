@@ -178,3 +178,31 @@ def test_tail_preflight_collects_all_unknown_statuses_before_reporting() -> None
     assert [item["external_id"] for item in result["unrecognized_source_statuses"]] == [
         "nistp.ru:502:1", "nistp.ru:503:1",
     ]
+
+
+def test_selected_schema_correct_empty_page_proves_terminal_sentinel() -> None:
+    from bankrotai.connectors.etp_sources import SourceSchemaError
+
+    connector = _Connector([[_lot("nistp.ru:501:1")], []])
+    original = connector.search
+
+    async def search(filters, cursor=None):
+        page = int(cursor)
+        if page == 1:
+            return await original(filters, cursor=cursor)
+        connector._last_response = _Response(
+            content="""
+            <ul class='pagination'><li class='active'><a>2</a></li></ul>
+            <table><tr><td>Код торгов</td><td>Организатор</td><td>Должник</td>
+            <td>Начальная цена</td><td>Начало приема заявок</td>
+            <td>Конец приема заявок</td><td>Состояние</td></tr></table>
+            """.encode(),
+            url="https://nistp.ru/?view_type=lot&pagenum=2",
+        )
+        raise SourceSchemaError("empty")
+
+    connector.search = search
+    report = asyncio.run(scan_complete_nistp_catalogue(connector, delay_seconds=0))
+    assert report["last_page"] == 2
+    assert report["last_page_proven"] is True
+    assert report["pages"][-1]["empty_terminal_page"] is True

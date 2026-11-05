@@ -16,11 +16,12 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceSchemaError
 from bankrotai.connectors.etp_sources.common import (
     _parse_soup,
     _status,
@@ -70,6 +71,40 @@ def _selected_page_is_visible(html: bytes | str, page: int) -> bool:
     return False
 
 
+def _is_valid_empty_terminal_page(response: Any, page: int) -> bool:
+    """Accept only NISTP's selected, schema-correct empty page without a successor."""
+    content = getattr(response, "content", b"")
+    if not content or not _selected_page_is_visible(content, page):
+        return False
+    query_pages = parse_qs(urlparse(str(getattr(response, "url", ""))).query).get(
+        "pagenum", []
+    )
+    if query_pages and query_pages != [str(page)]:
+        return False
+    soup = BeautifulSoup(content, "html.parser")
+    headers = " ".join(
+        " ".join(node.get_text(" ", strip=True).split()).lower()
+        for node in soup.select("th, tr:first-child td")
+    )
+    required_headers = (
+        "код торгов", "организатор", "должник", "начальная цена",
+        "начало приема заявок", "конец приема заявок", "состояние",
+    )
+    if not all(header in headers for header in required_headers):
+        return False
+    if any(len(row.find_all("td", recursive=False)) == 7 for row in soup.select("tr")[1:]):
+        return False
+    next_page = page + 1
+    for node in soup.select("a, [onclick]"):
+        text = " ".join(node.get_text(" ", strip=True).split())
+        onclick = str(node.get("onclick") or "")
+        if text == str(next_page) or re.search(
+            rf"pagenum_send\(\s*{next_page}\s*\)", onclick
+        ):
+            return False
+    return True
+
+
 async def scan_complete_nistp_catalogue(
     connector: Any,
     *,
@@ -93,13 +128,36 @@ async def scan_complete_nistp_catalogue(
     status_errors: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     last_page_proven = False
+    scan_started = time.monotonic()
 
     for page_number in range(start_page, max_pages + 1):
         if page_number > start_page:
             await asyncio.to_thread(sleep, delay_seconds)
-        result = await _search_page_with_retries(
-            connector, page_number, sleep=sleep,
-        )
+        print(f"NISTP requesting page={page_number}...", flush=True)
+        try:
+            result = await _search_page_with_retries(
+                connector, page_number, sleep=sleep,
+            )
+        except SourceSchemaError:
+            response = getattr(connector, "_last_response", None)
+            if not _is_valid_empty_terminal_page(response, page_number):
+                raise
+            pages.append({
+                "page": page_number,
+                "items": 0,
+                "property_items": 0,
+                "conservative_status_items": 0,
+                "response_url": str(getattr(response, "url", "")),
+                "ids_sha256": hashlib.sha256(b"").hexdigest(),
+                "empty_terminal_page": True,
+            })
+            last_page_proven = True
+            print(
+                f"NISTP readonly page={page_number} items=0 terminal=proven "
+                f"elapsed={time.monotonic() - scan_started:.1f}s",
+                flush=True,
+            )
+            break
         response = getattr(connector, "_last_response", None)
         if response is None or not getattr(response, "content", b""):
             raise NistpCatalogueScanError("NISTP response evidence is unavailable")
@@ -169,7 +227,8 @@ async def scan_complete_nistp_catalogue(
         })
         print(
             f"NISTP readonly page={page_number} items={len(identities)} "
-            f"unique={len(seen)} next={result.next_cursor or 'none'}",
+            f"unique={len(seen)} next={result.next_cursor or 'none'} "
+            f"elapsed={time.monotonic() - scan_started:.1f}s",
             flush=True,
         )
         if result.next_cursor is None:

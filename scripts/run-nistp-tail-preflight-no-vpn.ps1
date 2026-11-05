@@ -28,7 +28,10 @@ try {
         bankrotai.services.etp_nistp_full_catalogue `
         --single-pass --collect-status-errors `
         --start-page $StartPage --max-pages $MaxPages `
-        --delay-seconds $DelaySeconds 2>&1 | Tee-Object -FilePath $log)
+        --delay-seconds $DelaySeconds 2>&1 | Tee-Object -FilePath $log | ForEach-Object {
+            Write-Host $_
+            $_
+        })
     $pythonExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousPreference
