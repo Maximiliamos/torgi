@@ -437,3 +437,47 @@ def test_cdtrf_lot_title_difference_is_audited_not_hidden() -> None:
     assert report["source_accepted"] is False
     assert report["observations"][0]["html_title_matches_nuxt_lot_name"] is False
     assert report["observations"][0]["source_title_disagreement_review_required"] is True
+
+
+def test_cdtrf_missing_pinned_lot_emits_immediate_progress_line(capsys) -> None:
+    report = qa.check_cdtrf_details(
+        1, 1, session=object(), sleep=lambda seconds: None,
+        recheck_pages=[1], pinned_targets={1: "cdtrf:999999"},
+        fetch_page=_cdtrf_page,
+        fetch_detail=lambda trade, lot, session: pytest.fail("unexpected detail call"),
+    )
+    output = capsys.readouterr().err
+    assert "CDTRF detail QA: page=1" in output
+    assert "outcome=pinned_lot_not_in_active_catalogue_page" in output
+    assert "elapsed_s=" in output
+    assert report["detail_sample_pass"] is False
+
+
+def test_nistp_missing_pinned_lot_emits_immediate_progress_line(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        qa, "parse_nistp_lot_observations",
+        lambda *args, **kwargs: [_nistp_observation()],
+    )
+    report = asyncio.run(qa.check_nistp_details(
+        1, 1, connector_factory=NistpStub, sleep=lambda seconds: None,
+        recheck_pages=[1], pinned_targets={1: "nistp.ru:502379:139"},
+    ))
+    output = capsys.readouterr().err
+    assert "NISTP detail QA: page=1" in output
+    assert "outcome=pinned_lot_not_in_active_catalogue_page" in output
+    assert "elapsed_s=" in output
+    assert report["detail_sample_pass"] is False
+
+
+def test_cdtrf_access_refusal_still_emits_progress(capsys) -> None:
+    class Denied:
+        def get(self, url, **kwargs):
+            return SimpleNamespace(status_code=429, content=b"", headers={})
+
+    report = qa.check_cdtrf_details(
+        2, 2, session=Denied(), sleep=lambda seconds: None,
+    )
+    stderr = capsys.readouterr().err
+    assert stderr.count("CDTRF detail QA: page=") == 1
+    assert "outcome=SourceAccessError" in stderr
+    assert report["detail_sample_pass"] is False
