@@ -202,6 +202,21 @@ def _status(value: str) -> str:
     return "unknown"
 
 
+def is_recognized_source_status(value: str) -> bool:
+    """Recognize an explicit source state without forcing an unsafe normalized state.
+
+    In particular, the end of application intake does not prove that an auction
+    has completed, so it intentionally remains ``unknown`` after normalization.
+    """
+    lowered = _clean(value).lower()
+    if re.search(
+        r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)",
+        lowered,
+    ):
+        return True
+    return _status(value) != "unknown"
+
+
 def _datetime_after(value: str, label: str) -> datetime | None:
     match = re.search(label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", value, re.I)
     if not match:

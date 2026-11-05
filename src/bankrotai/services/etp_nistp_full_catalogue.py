@@ -21,7 +21,11 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
-from bankrotai.connectors.etp_sources.common import _parse_soup, _status
+from bankrotai.connectors.etp_sources.common import (
+    _parse_soup,
+    _status,
+    is_recognized_source_status,
+)
 from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILE_BY_ID,
     parse_nistp_lot_observations,
@@ -80,6 +84,8 @@ async def scan_complete_nistp_catalogue(
         raise NistpCatalogueScanError("Delay must be 0..10 seconds")
 
     seen: set[str] = set()
+    catalogue_records: list[str] = []
+    conservative_status_items = 0
     pages: list[dict[str, Any]] = []
     last_page_proven = False
 
@@ -110,15 +116,25 @@ async def scan_complete_nistp_catalogue(
             raise NistpCatalogueScanError(
                 f"Cross-page duplicate individual-lot identity: {sorted(overlap)[0]}"
             )
+        page_conservative_status_items = 0
         for item in observations:
             if item["listing_price_rub"] is None or item["listing_price_rub"] <= 0:
                 raise NistpCatalogueScanError(
                     f"Missing individual price: {item['provider_external_id']}"
                 )
-            if _status(item["source_status_text"]) == "unknown":
+            source_status = item["source_status_text"]
+            if not is_recognized_source_status(source_status):
                 raise NistpCatalogueScanError(
-                    f"Unrecognized individual status: {item['provider_external_id']}"
+                    f"Unrecognized individual status: {item['provider_external_id']} "
+                    f"value={source_status!r}"
                 )
+            if _status(source_status) == "unknown":
+                page_conservative_status_items += 1
+            catalogue_records.append(
+                f"{item['provider_external_id']}\t{item['listing_price_rub']:.2f}\t"
+                f"{source_status}\t{int(item['is_property'])}"
+            )
+        conservative_status_items += page_conservative_status_items
         property_ids = {
             item["provider_external_id"] for item in observations if item["is_property"]
         }
@@ -133,6 +149,7 @@ async def scan_complete_nistp_catalogue(
             "page": page_number,
             "items": len(identities),
             "property_items": len(property_ids),
+            "conservative_status_items": page_conservative_status_items,
             "response_url": str(getattr(response, "url", "")),
             "ids_sha256": hashlib.sha256(
                 "\n".join(sorted(identities)).encode("ascii")
@@ -150,6 +167,9 @@ async def scan_complete_nistp_catalogue(
         raise NistpCatalogueScanError("Page budget exhausted before final page")
 
     digest = hashlib.sha256("\n".join(sorted(seen)).encode("ascii")).hexdigest()
+    records_digest = hashlib.sha256(
+        "\n".join(sorted(catalogue_records)).encode("utf-8")
+    ).hexdigest()
     return {
         "source": "nistp.ru",
         "mode": "full_readonly_lot_catalogue_walk",
@@ -159,10 +179,14 @@ async def scan_complete_nistp_catalogue(
         "last_page_proven": last_page_proven,
         "unique_lot_ids": len(seen),
         "lot_ids_sha256": digest,
+        "catalogue_records_sha256": records_digest,
         "pages": pages,
         "view_type": "lot",
         "individual_prices_verified": True,
         "individual_statuses_verified": True,
+        "source_statuses_recognized": True,
+        "normalized_statuses_complete": conservative_status_items == 0,
+        "conservative_unknown_status_items": conservative_status_items,
         "production_database_writes": 0,
         "map_publication": False,
         "complete_source_inventory": False,
@@ -188,6 +212,8 @@ async def run_two_independent_passes(
         passes[0]["last_page"] == passes[1]["last_page"]
         and passes[0]["unique_lot_ids"] == passes[1]["unique_lot_ids"]
         and passes[0]["lot_ids_sha256"] == passes[1]["lot_ids_sha256"]
+        and passes[0]["catalogue_records_sha256"]
+        == passes[1]["catalogue_records_sha256"]
     )
     return {
         "source": "nistp.ru",

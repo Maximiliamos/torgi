@@ -42,7 +42,10 @@ class _Connector:
         rows = []
         for item in self.pages[page - 1]:
             _, provider_id, lot_number = item.external_id.split(":")
-            status = "Прием заявок" if item.auction_status == "active" else "Неясно"
+            status = {
+                "active": "Прием заявок",
+                "applications_closed": "Прием заявок завершен",
+            }.get(item.auction_status, "Неясно")
             rows.append(
                 "<tr>"
                 f"<td>70000-ОАОФ</td><td>Организатор</td>"
@@ -88,6 +91,16 @@ def test_full_walk_rejects_missing_individual_price_or_status(bad: NormalizedLot
         asyncio.run(scan_complete_nistp_catalogue(_Connector([[bad]]), delay_seconds=0))
 
 
+def test_full_walk_preserves_application_intake_ended_as_safe_unknown() -> None:
+    report = asyncio.run(scan_complete_nistp_catalogue(
+        _Connector([[_lot("nistp.ru:499191:1", status="applications_closed")]]),
+        delay_seconds=0,
+    ))
+    assert report["source_statuses_recognized"] is True
+    assert report["normalized_statuses_complete"] is False
+    assert report["conservative_unknown_status_items"] == 1
+
+
 def test_full_walk_rejects_cross_page_duplicate_identity() -> None:
     connector = _Connector([[_lot("nistp.ru:501:1")], [_lot("nistp.ru:501:1")]])
     with pytest.raises(NistpCatalogueScanError, match="Cross-page duplicate"):
@@ -104,6 +117,18 @@ def test_two_passes_must_match_exact_identity_digest() -> None:
     ))
     assert result["passes_match"] is True
     assert result["last_page_proven_twice"] is True
+
+
+def test_two_passes_must_also_match_prices_and_source_statuses() -> None:
+    reports = [
+        [[_lot("nistp.ru:501:1", price=100)]],
+        [[_lot("nistp.ru:501:1", price=200)]],
+    ]
+    result = asyncio.run(run_two_independent_passes(
+        lambda: _Connector(reports.pop(0)), delay_seconds=0,
+    ))
+    assert result["passes_match"] is False
+    assert result["last_page_proven_twice"] is False
 
 
 def test_absent_selected_page_marker_never_proves_completion() -> None:

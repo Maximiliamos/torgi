@@ -753,6 +753,17 @@ def test_official_status_phrases_do_not_create_false_active_or_closed_lots(sourc
     assert _status(source_status) == expected
 
 
+def test_application_intake_ended_is_recognized_but_conservatively_unknown():
+    from bankrotai.connectors.etp_sources.common import (
+        _status,
+        is_recognized_source_status,
+    )
+
+    source_status = "Прием заявок завершен"
+    assert is_recognized_source_status(source_status) is True
+    assert _status(source_status) == "unknown"
+
+
 def test_nistp_get_form_pagination_uses_actual_provider_method_and_preserves_filters():
     first = b"""
     <form id='nodesearch' method='get' action='/bankrot/trade_list.php'>
