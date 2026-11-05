@@ -96,6 +96,7 @@ def test_live_sample_exposes_unknown_terminal_page_without_claiming_import(monke
     assert stages["browser_javascript"]["state"] == checklist.NOT_APPLICABLE
     assert stages["postgres_backup_restore"]["state"] == checklist.NOT_TESTED
     assert stages["scheduler_09_msk"]["state"] == checklist.NOT_TESTED
+    assert result["catalogue_endpoint"] == "https://bankrupt.etpu.ru/public/purchases-all/"
     assert result["production_approved"] is False
     assert result["database_writes"] == result["map_writes"] == 0
 
@@ -187,6 +188,7 @@ def test_http_diagnostic_exposes_only_safe_status_and_no_urls(monkeypatch):
     assert report["first_failure"]["category"] == "provider_http_429"
     assert report["first_failure"]["http_status"] == 429
     assert report["stages"]["transport"]["exception_class"] == "SourceAccessError"
+    assert report["first_failure"]["endpoint"] == "https://bankrupt.etpu.ru/public/purchases-all/"
     assert "SECRET" not in str(report)
     assert "private.example" not in str(report)
 
@@ -379,7 +381,9 @@ def test_v2_catalogue_coverage_inspects_every_lot_not_only_detail_sample(monkeyp
     assert item["stages"]["initial_or_current_price"]["state"] == checklist.PASS
     assert item["page_observations"] == [{
         "page": 1, "candidate_count": 2,
-        "has_next_cursor": False, "reported_total": None,
+        "has_next_cursor": False,
+        "endpoint": "https://bankrupt.etpu.ru/public/purchases-all/",
+        "query_keys": [], "reported_total": None,
     }]
 
 

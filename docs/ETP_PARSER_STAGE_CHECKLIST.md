@@ -48,9 +48,10 @@ evidence that PostgreSQL, GEO, S3, the public website or either schedule ran.
 
 A stage reports `PASS`, `FAIL`, `BLOCKED`, `NOT_TESTED`, or
 `N/A`. `first_failure` identifies the earliest observed exception
-category and page, where available. Provider URL query strings, HTML,
-raw exception text, account identities and individual lot data are
-not logged. Browser cookie/tutorial popups do not apply to HTTP-only
+category and page, where available. Reports retain a sanitized HTTPS
+endpoint (scheme, host and path) plus query parameter names, HTTP status
+and exception class; query values, HTML, raw exception text, account
+identities and individual lot data are not logged. Browser cookie/tutorial popups do not apply to HTTP-only
 connectors; real browser adapters must assess them independently.
 
 The single-page or two-page sample cannot establish:

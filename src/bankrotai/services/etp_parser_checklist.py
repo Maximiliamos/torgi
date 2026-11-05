@@ -13,7 +13,7 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from bankrotai.connectors.etp_sources import (
     EtpSearchFilters, EtpSourceProfile, PROFILES as DIRECT_PROFILES, SOURCE_CONNECTOR_TYPES,
@@ -101,6 +101,22 @@ def _safe_catalogue_host(url: str) -> str | None:
         return None
 
 
+def _safe_endpoint_evidence(url: str) -> tuple[str | None, list[str]]:
+    """Return a reproducible first-party path and query names, never query values."""
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.port):
+            return None, []
+        endpoint = f"https://{parsed.hostname}{parsed.path or '/'}"
+        query_keys = sorted({name for name, _ in parse_qsl(
+            parsed.query, keep_blank_values=True,
+        )})
+        return endpoint, query_keys
+    except ValueError:
+        return None, []
+
+
 def _definitions() -> list[tuple[str, str, Any]]:
     profiles: list[tuple[str, str, EtpSourceProfile | None]] = [
         (p.source_id, p.listing_url, p) for p in DIRECT_PROFILES
@@ -142,6 +158,7 @@ async def diagnose_source(
     if source not in registry:
         raise ValueError("unknown_etp_source")
     url, profile = registry[source]
+    catalogue_endpoint, catalogue_query_keys = _safe_endpoint_evidence(url)
     stages = {key: _entry() for key in CHECKS}
     stages["catalogue_url"] = _entry(
         PASS if _safe_catalogue_host(url) else FAIL,
@@ -158,12 +175,15 @@ async def diagnose_source(
     report: dict[str, Any] = {
         "source": source, "checked_at_utc": datetime.now(timezone.utc).isoformat(),
         "catalogue_host": _safe_catalogue_host(url),
+        "catalogue_endpoint": catalogue_endpoint,
+        "catalogue_query_keys": catalogue_query_keys,
         "stages": stages, "pages_checked": 0, "sample_lots": 0,
         "sample_only": True, "complete_source_inventory": False,
         "production_approved": False, "database_writes": 0,
         "map_writes": 0, "archival_enabled": False,
         "first_failure": None,
     }
+    connector = None
 
     def fail(stage: str, exc: Exception, page: int) -> None:
         state, reason = _error_kind(exc)
@@ -172,10 +192,22 @@ async def diagnose_source(
         if status is not None:
             stages[stage]["http_status"] = status
         stages[stage]["exception_class"] = type(exc).__name__[:60]
+        response = getattr(exc, "response", None)
+        response_url = str(getattr(response, "url", "") or "")
+        if not response_url:
+            last_response = getattr(connector, "_last_response", None)
+            response_url = str(getattr(last_response, "url", "") or url)
+        endpoint, query_keys = _safe_endpoint_evidence(response_url)
+        if endpoint:
+            stages[stage]["endpoint"] = endpoint
+        if query_keys:
+            stages[stage]["query_keys"] = query_keys
         if state != NOT_APPLICABLE and report["first_failure"] is None:
             report["first_failure"] = {
                 "stage": stage, "page": page, "category": reason,
                 **({"http_status": status} if status is not None else {}),
+                **({"endpoint": endpoint} if endpoint else {}),
+                **({"query_keys": query_keys} if query_keys else {}),
             }
 
     if stages["catalogue_url"]["state"] != PASS:
@@ -238,7 +270,6 @@ async def diagnose_source(
         # true last page. Those checks intentionally remain NOT_TESTED.
         return report
 
-    connector = None
     try:
         try:
             connector, filters = _connector(source)
@@ -302,6 +333,12 @@ async def diagnose_source(
             report["page_observations"].append({
                 "page": page_number, "candidate_count": len(items),
                 "has_next_cursor": bool(page.next_cursor),
+                "endpoint": _safe_endpoint_evidence(
+                    str(metadata.get("response_url") or url)
+                )[0],
+                "query_keys": _safe_endpoint_evidence(
+                    str(metadata.get("response_url") or url)
+                )[1],
                 "reported_total": metadata.get("total_items")
                 if type(metadata.get("total_items")) is int else None,
             })
