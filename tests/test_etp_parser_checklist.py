@@ -326,3 +326,77 @@ def test_partial_detail_success_is_never_green(monkeypatch):
     assert result["stages"]["individual_detail_price"]["state"] == checklist.NOT_TESTED
     assert result["stages"]["individual_detail_status"]["state"] == checklist.NOT_TESTED
     assert result["first_failure"]["stage"] == "individual_detail"
+
+
+def test_v2_catalogue_coverage_inspects_every_lot_not_only_detail_sample(monkeypatch):
+    class MixedQuality(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[
+                    _lot(self.source, "good"),
+                    _lot(self.source, "missing", start_price=None,
+                         current_price=None, auction_status="unknown"),
+                ],
+                next_cursor=None,
+                metadata={"page": 1, "items_on_page": 2},
+            )
+
+    monkeypatch.setattr(checklist, "_connector",
+                        lambda source: (MixedQuality(source), object()))
+    item = asyncio.run(checklist.diagnose_source("etpu.ru", detail_probes=1))
+    assert item["sample_lots"] == 2
+    assert item["stages"]["catalogue_price_coverage"]["state"] == checklist.NOT_TESTED
+    assert item["stages"]["catalogue_price_coverage"]["count"] == 1
+    assert item["stages"]["catalogue_status_coverage"]["state"] == checklist.NOT_TESTED
+    assert item["stages"]["initial_or_current_price"]["state"] == checklist.PASS
+    assert item["page_observations"] == [{
+        "page": 1, "candidate_count": 2,
+        "has_next_cursor": False, "reported_total": None,
+    }]
+
+
+def test_v2_requested_page_disagreement_fails_before_fake_green(monkeypatch):
+    class ReplayedPage(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[_lot(self.source)],
+                next_cursor=None,
+                metadata={"page": 2, "items_on_page": 1},
+            )
+
+    monkeypatch.setattr(checklist, "_connector",
+                        lambda source: (ReplayedPage(source), object()))
+    item = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert item["first_failure"]["stage"] == "pagination_page_contract"
+    assert item["stages"]["pagination_page_contract"]["state"] == checklist.FAIL
+
+
+def test_v2_sberbank_total_requires_second_page_even_without_next_cursor(monkeypatch):
+    class MissingNext(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(
+                items=[_lot(self.source)],
+                next_cursor=None,
+                metadata={"page": 1, "total_items": 22, "items_on_page": 1},
+            )
+
+    monkeypatch.setattr(checklist, "_connector",
+                        lambda source: (MissingNext(source), object()))
+    item = asyncio.run(checklist.diagnose_source("sberbank-ast.ru"))
+    assert item["first_failure"]["stage"] == "pagination_page_contract"
+    assert item["stages"]["pagination_page_contract"]["state"] == checklist.FAIL
+
+
+def test_v2_detail_price_disagreement_is_not_mistaken_for_valid_price(monkeypatch):
+    class WrongPrice(FakeConnector):
+        async def fetch_lot(self, external_id):
+            return _lot(self.source, external_id, detail_level="detail",
+                        start_price=10000)
+
+    monkeypatch.setattr(checklist, "_connector",
+                        lambda source: (WrongPrice(source), object()))
+    item = asyncio.run(checklist.diagnose_source("etpu.ru"))
+    assert item["stages"]["individual_detail_price"]["state"] == checklist.PASS
+    assert item["stages"]["detail_price_consistency"]["state"] == checklist.FAIL
+    assert item["first_failure"]["stage"] == "detail_price_consistency"
+    assert item["production_approved"] is False
