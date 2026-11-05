@@ -94,8 +94,12 @@ def parse_nistp_shared_trade_card(
     if not re.fullmatch(r"[1-9]\d{0,11}", trade_nid):
         raise NistpCardError("invalid_trade_nid")
     soup = BeautifulSoup(html, "html.parser")
-    header = soup.select_one("h1.node_header")
-    trade_code = _TRADE_CODE.search(_clean(header.get_text(" ", strip=True))) if header else None
+    # NISTP's modal has an earlier <h1 class=node_header> ("Купить лот
+    # через агента"). Select the actual procedure heading by its code.
+    trade_code = next((
+        match for header in soup.select("h1.node_header")
+        if (match := _TRADE_CODE.search(_clean(header.get_text(" ", strip=True))))
+    ), None)
     if trade_code is None:
         raise NistpCardError("missing_trade_code")
     tables = soup.select('table[id^="table_lot_"]')
