@@ -74,7 +74,9 @@ def audit_catalogue_lots(source: str, observed: Iterable[Any]) -> dict[str, dict
     for lot in lots:
         ident = str(getattr(lot, "external_id", "") or "")
         raw = _raw(lot)
-        if not ident.startswith(source + ":") or getattr(lot, "source_system", None) != source:
+        if (not ident
+                or getattr(lot, "source_system", None) != source
+                or (source != "lot-online.ru" and not ident.startswith(source + ":"))):
             wrong_id += 1
         elif source in COMPOSITE_LOT_SOURCES:
             parts = ident[len(source) + 1:].split(":")
