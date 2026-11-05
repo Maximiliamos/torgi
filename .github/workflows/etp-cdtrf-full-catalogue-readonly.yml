@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - feat/cdtrf-catalog-timeline-20261030
-      - feat/etp-checklist-v2-quality-20261105
     paths:
       - '.github/workflows/etp-cdtrf-full-catalogue-readonly.yml'
       - 'src/bankrotai/services/etp_cdtrf_full_catalogue.py'

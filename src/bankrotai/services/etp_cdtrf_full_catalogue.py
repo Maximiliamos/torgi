@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from math import ceil
@@ -85,6 +86,7 @@ def scan_complete_cdtrf_catalogue(
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[dict[str, int]], None] | None = None,
 ) -> dict:
     """Read every page declared by CDTRF or fail without marking completion.
 
@@ -162,6 +164,13 @@ def scan_complete_cdtrf_catalogue(
             "observed_rows": data["observed_rows"],
             "property_hint_candidates": len(data["property_candidates"]),
         })
+        if progress is not None:
+            progress({
+                "page": page,
+                "pages_expected": pages_expected,
+                "observed_rows_total": observed_rows_total,
+                "unique_catalogue_lot_ids": len(seen_ids),
+            })
         if page == pages_expected:
             break
     else:
@@ -211,11 +220,25 @@ def main() -> None:
                         default=100)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
+    parser.add_argument("--progress", action="store_true")
     args = parser.parse_args()
+    progress = None
+    if args.progress:
+        def print_progress(event: dict[str, int]) -> None:
+            print(
+                "CDTRF progress: "
+                f"page={event['page']}/{event['pages_expected']} "
+                f"rows={event['observed_rows_total']} "
+                f"unique_ids={event['unique_catalogue_lot_ids']}",
+                file=sys.stderr, flush=True,
+            )
+
+        progress = print_progress
     with requests.Session() as session:
         report = scan_complete_cdtrf_catalogue(
             session, page_size=args.page_size,
             max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+            progress=progress,
         )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
 
