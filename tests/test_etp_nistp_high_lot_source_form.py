@@ -173,7 +173,7 @@ def test_link_candidates_do_not_upgrade_catalogue_scope_to_detail(monkeypatch):
             for s in probe.ACTIVE_SOURCE_STATES
         )
         + "</form><table><tr><td>72113-ОАОФ</td><td></td>"
-        "<td>Лот № 259 <a href='/bankrot/lot_view.php?lot_nid=777'>Открыть</a></td>"
+        "<td>Лот № 259: <a href='/bankrot/lot_view.php?lot_nid=777'>Открыть</a></td>"
         "<td>100</td><td></td><td></td><td>Прием заявок</td>"
         "</tr></table></html>"
     )
@@ -193,3 +193,18 @@ def test_link_candidates_do_not_upgrade_catalogue_scope_to_detail(monkeypatch):
     assert output["independent_lot_detail_endpoint_verified"] is False
     assert output["independent_lot_detail_verified"] is False
     assert output["source_accepted"] is False
+
+
+def test_link_census_requires_source_valid_lot_number_delimiter():
+    """Row links cannot confer evidence when the provider lot header is invalid."""
+    from bs4 import BeautifulSoup
+
+    malformed_row = (
+        "<tr><td>72113-ОАОФ</td><td></td>"
+        "<td>Лот № 259 <a href='/bankrot/lot_view.php?lot_nid=777'>Link</a></td>"
+        "<td>100</td><td></td><td></td><td>Прием заявок</td></tr>"
+    )
+    assert probe._safe_row_link_shapes(
+        BeautifulSoup(malformed_row, "html.parser"),
+        trade_code="72113-ОАОФ", lot_number=259,
+    ) == []
