@@ -211,6 +211,24 @@ def test_cdtrf_wrong_lot_fails_without_acceptance() -> None:
     assert report["archival_allowed"] is False
 
 
+
+def test_cdtrf_http_429_stops_without_further_provider_requests() -> None:
+    class RateLimitedSession:
+        calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(status_code=429, content=b"", headers={})
+
+    session = RateLimitedSession()
+    report = qa.check_cdtrf_details(
+        2, 2, session=session, sleep=lambda seconds: None,
+    )
+    assert session.calls == 1
+    assert report["error_counts"] == {"SourceAccessError": 1}
+    assert report["detail_sample_pass"] is False
+
+
 def test_cdtrf_closed_detail_cannot_pass_selected_active_sample() -> None:
     report = qa.check_cdtrf_details(
         1, 1, session=object(), sleep=lambda seconds: None,
