@@ -226,6 +226,12 @@ def _finish(report: dict[str, Any]) -> dict[str, Any]:
         and report["sample_verified"] == report["sample_requested"]
         and not report["errors"]
     )
+    # A validated Nuxt title is the source-of-truth for the individual lot,
+    # while a different HTML H1 remains a separate operational review flag.
+    report["source_title_disagreement_review_count"] = sum(
+        item.get("source_title_disagreement_review_required") is True
+        for item in report["observations"]
+    )
     return report
 
 
@@ -452,6 +458,12 @@ def check_cdtrf_details(
                 "verified_trade_and_lot_identity": True,
                 "initial_price_verified_in_detail": True,
                 "catalogue_actual_price_not_assumed_initial": True,
+                "html_title_matches_nuxt_lot_name": raw.get(
+                    "html_title_matches_nuxt_lot_name"
+                ),
+                "source_title_disagreement_review_required": raw.get(
+                    "source_title_disagreement_review_required", False
+                ),
                 "detail_status": detail.auction_status,
                 "detail_category": detail.category,
                 "cadastre_present": bool(detail.cadastral_number),
