@@ -45,6 +45,7 @@ class _Connector:
             status = {
                 "active": "Прием заявок",
                 "applications_closed": "Прием заявок завершен",
+                "closed": "Торги завершены",
             }.get(item.auction_status, "Неясно")
             rows.append(
                 "<tr>"
@@ -106,6 +107,61 @@ def test_active_walk_rejects_application_intake_ended_as_out_of_scope() -> None:
             _Connector([[_lot("nistp.ru:499191:1", status="applications_closed")]]),
             delay_seconds=0,
         ))
+
+
+
+def test_diagnostic_continues_known_terminal_row_without_active_acceptance() -> None:
+    connector = _Connector([
+        [_lot("nistp.ru:501:1"), _lot("nistp.ru:501:2", status="closed")],
+        [_lot("nistp.ru:502:1")],
+    ])
+    report = asyncio.run(scan_complete_nistp_catalogue(
+        connector, delay_seconds=0, diagnose_out_of_scope=True,
+    ))
+    assert report["last_page_proven"] is True
+    assert report["unique_lot_ids"] == 3
+    assert report["out_of_scope_status_items"] == 1
+    assert report["out_of_scope_status_counts"] == {"Торги завершены": 1}
+    assert report["out_of_scope_samples"] == [
+        {"page": 1, "external_id": "nistp.ru:501:2", "source_status": "Торги завершены"},
+    ]
+    assert report["complete_filtered_inventory"] is False
+    assert report["effective_active_scope_proven"] is False
+    assert report["archival_allowed"] is False
+    assert report["production_database_writes"] == 0
+
+
+def test_known_terminal_row_still_fails_in_strict_mode() -> None:
+    with pytest.raises(NistpCatalogueScanError, match="Out-of-scope"):
+        asyncio.run(scan_complete_nistp_catalogue(
+            _Connector([[_lot("nistp.ru:501:2", status="closed")]]),
+            delay_seconds=0,
+        ))
+
+
+def test_diagnostic_does_not_ignore_unknown_status() -> None:
+    with pytest.raises(NistpCatalogueScanError, match="Out-of-scope"):
+        asyncio.run(scan_complete_nistp_catalogue(
+            _Connector([[_lot("nistp.ru:501:3", status="unknown")]]),
+            delay_seconds=0, diagnose_out_of_scope=True,
+        ))
+
+
+def test_matching_diagnostic_passes_never_prove_active_scope() -> None:
+    reports = [
+        [[_lot("nistp.ru:501:2", status="closed")]],
+        [[_lot("nistp.ru:501:2", status="closed")]],
+    ]
+    result = asyncio.run(run_two_independent_passes(
+        lambda: _Connector(reports.pop(0)),
+        delay_seconds=0, diagnose_out_of_scope=True,
+    ))
+    assert result["passes_match"] is True
+    assert result["last_page_proven_twice"] is True
+    assert result["active_filter_proven_twice"] is True
+    assert result["effective_active_scope_proven_twice"] is False
+    assert result["out_of_scope_status_items_by_pass"] == [1, 1]
+    assert result["archival_allowed"] is False
 
 
 def test_full_walk_rejects_cross_page_duplicate_identity() -> None:
