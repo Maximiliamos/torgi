@@ -29,7 +29,7 @@ def _lot(*, identity="etp-profit.ru:otpp-22740-40662",
 ])
 def test_cross_lot_or_unverified_card_is_rejected_before_mutation(detail):
     listing = _lot()
-    other = _lot(detail_level="detail", **detail)
+    other = _lot(**{"detail_level": "detail", **detail})
     with pytest.raises(ValueError, match="etp_detail_"):
         apply_detail(listing, other, version=1)
     assert listing.start_price == 1_000_000
@@ -88,9 +88,16 @@ def test_nonsensical_money_is_rejected_before_enrichment(price):
     assert listing.detail_level == "search"
 
 
-def test_detail_start_price_matches_within_one_kopeck():
+def test_verified_detail_preserves_two_decimal_money():
+    listing = _lot(start_price=1000000.01)
+    detail = _lot(start_price=1000000.01, detail_level="detail")
+    updated = apply_detail(listing, detail, version=1)
+    assert updated.start_price == 1000000.01
+    assert updated.raw_data["detail_start_price_verified"] is True
+
+
+def test_more_than_two_decimal_places_is_not_accepted_as_verified_rub():
     listing = _lot(start_price=1000000.00)
     detail = _lot(start_price=1000000.009, detail_level="detail")
-    updated = apply_detail(listing, detail, version=1)
-    assert updated.start_price == 1000000.009
-    assert updated.raw_data["detail_start_price_verified"] is True
+    with pytest.raises(ValueError, match="etp_invalid_money_precision"):
+        apply_detail(listing, detail, version=1)
