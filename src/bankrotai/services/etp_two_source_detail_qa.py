@@ -60,7 +60,9 @@ def _money(value: object) -> Decimal | None:
         if value is None or isinstance(value, bool):
             return None
         number = Decimal(str(value))
-        return number if number.is_finite() and number > 0 else None
+        if not number.is_finite() or number <= 0:
+            return None
+        return number if number == number.quantize(Decimal("0.01")) else None
     except (InvalidOperation, ValueError, TypeError):
         return None
 
