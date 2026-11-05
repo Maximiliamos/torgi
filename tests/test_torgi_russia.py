@@ -340,11 +340,13 @@ def test_torgi_russia_page_two_uses_hydration_api_not_repeated_ssr() -> None:
 
         def __init__(self):
             self.called_url = None
-            self.called_params = None
+            self.called_json = None
+            self.called_headers = None
 
-        def get(self, url, *, params=None, timeout=None):
+        def post(self, url, *, json=None, headers=None, timeout=None):
             self.called_url = url
-            self.called_params = params
+            self.called_json = json
+            self.called_headers = headers
             return Response()
 
     session = Session()
@@ -353,13 +355,77 @@ def test_torgi_russia_page_two_uses_hydration_api_not_repeated_ssr() -> None:
     )
 
     assert session.called_url.endswith("/api/search")
-    assert ("page", 2) in session.called_params
-    assert ("regions[0]", 1) in session.called_params
-    assert ("categorie_childs[0]", 7) in session.called_params
+    assert session.called_json == {
+        "search": "",
+        "history_only": 0,
+        "categorie_childs": [7, 33, 343, 9, 18, 17, 16],
+        "regions": [1],
+        "page": 2,
+    }
+    assert session.called_headers == {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": "https://xn----etbpba5admdlad.xn--p1ai",
+        "Referer": "https://xn----etbpba5admdlad.xn--p1ai/",
+    }
     assert [lot.external_id for lot in lots] == ["torgi-russia:7254906"]
     assert metadata["has_more"] is True
     assert metadata["total_pages"] == 4
     assert metadata["transport"] == "public-first-party-json"
+
+
+def test_torgi_russia_page_two_ids_differ_from_ssr_page_one() -> None:
+    first_item = _new_site_lot(lot_id=7255000, region_title="Республика Адыгея")
+    second_item = _new_site_lot(lot_id=7254906, region_title="Республика Адыгея")
+
+    class Response:
+        def __init__(self, *, url: str, text: str = "", payload: dict | None = None):
+            self.url = url
+            self.text = text
+            self.content = text.encode()
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class Session:
+        headers = {}
+
+        def get(self, url, *, params=None, timeout=None):
+            return Response(
+                url=f"{url}?page=1",
+                text=_nextjs_search_html(
+                    [first_item], current_page=1, last_page=2, total=2
+                ),
+            )
+
+        def post(self, url, *, json=None, headers=None, timeout=None):
+            return Response(
+                url=url,
+                payload={
+                    "data": [second_item],
+                    "current_page": 2,
+                    "last_page": 2,
+                    "total": 2,
+                    "per_page": 24,
+                },
+            )
+
+    client = TorgiRussiaClient(session=Session())
+    page_one, _ = client.search_lots(
+        TorgiRussiaSearchFilters(page=1, region_id=1)
+    )
+    page_two, metadata = client.search_lots(
+        TorgiRussiaSearchFilters(page=2, region_id=1)
+    )
+
+    assert {lot.external_id for lot in page_one}.isdisjoint(
+        lot.external_id for lot in page_two
+    )
+    assert metadata["has_more"] is False
 
 
 def test_torgi_russia_page_api_rejects_wrong_page() -> None:
@@ -376,7 +442,7 @@ def test_torgi_russia_page_api_rejects_wrong_page() -> None:
     class Session:
         headers = {}
 
-        def get(self, _url, *, params=None, timeout=None):
+        def post(self, _url, *, json=None, headers=None, timeout=None):
             return Response()
 
     with pytest.raises(RuntimeError, match="wrong page"):
@@ -410,7 +476,7 @@ def test_torgi_russia_page_api_proves_partial_terminal_page() -> None:
     class Session:
         headers = {}
 
-        def get(self, _url, *, params=None, timeout=None):
+        def post(self, _url, *, json=None, headers=None, timeout=None):
             return Response()
 
     lots, metadata = TorgiRussiaClient(session=Session()).search_lots(

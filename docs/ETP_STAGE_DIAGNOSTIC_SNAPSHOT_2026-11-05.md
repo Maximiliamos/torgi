@@ -79,3 +79,9 @@ Status `PASS` in a two-page sample is only evidence for the checked stage. For p
   RUB), statuses, dates, Adygea region and cadastral identifiers (`01:05:2900013:34394` and
   `01:06:2800004:259`). This confirms the terminal-page and detail contracts for region 1 only; it is not yet
   evidence for all 86 region buckets or two independent complete source scans.
+- The first exact-SHA production reconciliation after this change failed closed on region 1 page 2 with
+  HTTP 405 because the connector used `GET`. A no-VPN browser DevTools capture then proved the actual
+  contract: `POST https://api.торги-россии.рф/api/search`, JSON body with `search`, `history_only`,
+  `categorie_childs`, `regions`, and `page`, plus JSON `Accept`/`Content-Type`. The connector now reproduces
+  that request instead of encoding filters into the query string. The failed run saw 23 existing page-1 rows,
+  changed none, and archived none; `reconcile_missing=False` remains mandatory until two complete passes.
