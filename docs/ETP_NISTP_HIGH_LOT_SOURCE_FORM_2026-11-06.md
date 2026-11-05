@@ -54,3 +54,39 @@ New NISTP evidence is saved as UTF-8
 `nistp-high-lot-source-form-<UTC timestamp>.json`.
 Do not turn the catalogue-only evidence into an individual detail
 acceptance without a separate, source-proven field-level contract.
+
+## Operator result — 2026-11-05T23:41:19Z, SHA a66d04b
+
+The new no-VPN source form probe completed. Offline regression suite:
+**5 passed in 1.18s**. Exactly seven approved trade 502379
+high-numbered lots (139, 179, 239, 259, 339, 439, 539)
+returned `outcome=catalogue_row_only`; the report summary states:
+
+```json
+{"observed":7,"catalogue_only_rows_proven":7,"errors":[],"independent_lot_detail_verified":false,"source_accepted":false,"production_database_writes":0}
+```
+
+Evidence: `D:\BankrotAI\etp-evidence\two-source-detail-qa\nistp-high-lot-source-form-20261105T234119Z.json`.
+
+**Interpretation:** Exact public searchable lot rows have been verified.
+The source does not thereby provide an independently verified
+numbered detail section for those high numbers. The earlier shared
+trade card exposed only 100 numbered tables, highest 128. No alternate
+official per-lot detail endpoint was verified in this operation.
+The source remains blocked for production, archival and GEO/map.
+
+CDTRF was **not queried live** during this run: the runner rechecked
+only the archived successful 10/10 read-only detail QA JSON, with two
+HTML/Nuxt title review flags.
+
+### Next evidence gate
+
+Inspect the exact filtered listing's first-party link/action
+structure for an independently source-backed per-lot detail route,
+without guessing an endpoint or joining arbitrary other-lot fields.
+If no public individual section exists, explicitly quarantine
+the high-numbered lot details as *catalogue-only*; retain
+exact trade/lot identity and status for audit, but do not mark
+verified price, object rights or individual card as complete.
+The 43 terminal source statuses in selected-active filters remain
+a separate unresolved blocker regardless of this result.
