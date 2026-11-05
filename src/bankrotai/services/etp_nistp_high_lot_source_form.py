@@ -21,6 +21,7 @@ from bankrotai.connectors.registry.direct_etp_catalogue import (
     PROFILE_BY_ID, parse_nistp_lot_observations,
 )
 from bankrotai.connectors.etp_sources.nistp_detail_sections import _TRADE_CODE
+from bankrotai.connectors.etp_sources.common import _parse_soup
 from bankrotai.services.etp_nistp_full_catalogue import (
     ACTIVE_SOURCE_STATES, _ACTIVE_STATE_KEYS, _active_filters_are_visible,
 )
@@ -103,7 +104,7 @@ def inspect_exact_source_search(
         and inputs.get("lot_number") == str(number)
     )
     observations = parse_nistp_lot_observations(
-        PROFILE_BY_ID[SOURCE], html.decode("utf-8", errors="replace"),
+        PROFILE_BY_ID[SOURCE], _parse_soup(html).decode(),
         limit=100,
     )
     expected_id = f"{SOURCE}:{TRADE_ID}:{number}"
