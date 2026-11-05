@@ -380,8 +380,8 @@ def main() -> None:
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     if not report["passes_match"]:
         raise SystemExit("NISTP independent full-catalogue passes differ")
-    if not report["effective_active_scope_proven_twice"] and not args.diagnose_out_of_scope:
-        raise SystemExit("NISTP selected active scope is not proven")
+    if not report["effective_active_scope_proven_twice"]:
+        raise SystemExit("NISTP diagnostic completed but active scope is NOT accepted")
 
 
 if __name__ == "__main__":
