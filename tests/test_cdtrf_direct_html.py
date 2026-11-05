@@ -200,3 +200,35 @@ def test_pilot_reads_source_but_cannot_archive_or_mutate_db(monkeypatch):
     assert report["inspected"] == 1
     assert report["detail_records"][0]["trade_lot_id"] == "390899"
     assert session.urls == ["https://torgi.cdtrf.ru/", URL]
+
+
+def test_cdtrf_two_nonempty_titles_may_differ_with_verified_trade_lot_and_price():
+    """Observed for CDTRF 390579 and 389553: all IDs, initial money agree."""
+    original = build_detail()
+    different_h1 = original.replace(
+        "<h1>нежилое помещение (гараж)</h1>",
+        "<h1>Общие сведения о торгах</h1>",
+    )
+    detail = parse_detail(different_h1, URL)
+    assert detail["trade_id"] == "390364"
+    assert detail["trade_lot_id"] == "390899"
+    assert detail["initial_price_rub"] == "675000.00"
+    assert detail["title"] == "нежилое помещение (гараж)"
+    assert detail["html_title_matches_nuxt_lot_name"] is False
+    assert detail["source_title_disagreement_review_required"] is True
+    assert detail["title_evidence"] == "verified_nuxt_lot_name"
+    assert detail["ready_for_ingestion"] is False
+
+
+def test_cdtrf_title_disagreement_does_not_bypass_identity_price_or_missing_titles():
+    changed = build_detail().replace(
+        "<h1>нежилое помещение (гараж)</h1>",
+        "<h1>Общие сведения о торгах</h1>",
+    )
+    for unsafe in (
+        changed.replace("Код торгов: 390364", "Код торгов: 390365"),
+        changed.replace("675 000,00 ₽", "675 001,00 ₽"),
+        changed.replace("<h1>Общие сведения о торгах</h1>", "<h1></h1>"),
+    ):
+        with pytest.raises(CdtrfEvidenceError):
+            parse_detail(unsafe, URL)
