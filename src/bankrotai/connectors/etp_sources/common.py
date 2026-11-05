@@ -387,6 +387,11 @@ def _parse_multi_lot_catalogue(
         raise SourceSchemaError(f"{profile.source_id}: page exceeds the verified per-page lot limit")
     identified = [item for item in observations if item.get("external_id")]
     if not identified:
+        # NISTP is explicitly configured to return individual lot rows.
+        # Never fall through to the generic single-link parser: its trade_nid
+        # would otherwise become a phantom single asset.
+        if profile.source_id == "nistp.ru":
+            return []
         return None
     lots: list[NormalizedLot] = []
     for item in identified:
