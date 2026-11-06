@@ -9,6 +9,17 @@
 
 ## 1. State: implementation advanced; production acceptance NOT complete
 
+Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks
+(Production reliability run 42135005571, S3 diagnostics 42135005538).
+221 focused local tests passed. #1118 is still OPEN; main is `ead3f686`;
+merge/deployment/source acceptance have not been established. The checklist
+now includes the last evidenced result for all 22 sources and explicit gaps
+against the 12 required areas. The full detailed machine-stage expansion in
+open #1098 has not been integrated into this stack.
+The CDTRF comparison wrapper marks stable snapshot true, but both raw per-pass
+reports keep it false; retain only the proven equal 6,351-ID sets with no
+observed duplicates/gaps, not provider point-in-time snapshot acceptance.
+
 Integration review on 2026-11-06: branch `codex/etp-stack-integration-20261106`
 preserves the complete stack through #1117 and already contains current main.
 115 focused NISTP/CDTRF tests and Ruff passed. Fixed the #1105 CI type error

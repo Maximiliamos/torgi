@@ -1,5 +1,14 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
+`ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
+from the 05 November bounded Home baseline for the other 20 sources.
+Integration #1118 at `831814f` passed 10/10 CI checks; 221 local focused tests
+passed. Main remains `ead3f686`; integration merge, deployment and source
+acceptance remain pending. The 12-area coverage audit explicitly records
+the unintegrated detailed machine-stage expansion from #1098 and outstanding
+DB/GEO/map/09–21 proof. Matching CDTRF ID digests do not prove an atomic snapshot.
+
 Integration update 2026-11-06: the complete #1105–#1117 stack is preserved in
 `codex/etp-stack-integration-20261106` and includes current main without a merge
 conflict. 115 focused NISTP/CDTRF tests and Ruff pass. Corrected the #1105

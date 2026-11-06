@@ -8,11 +8,18 @@ stops, not certifying a complete source scan.
 
 ## NISTP + CDTRF: operator-verified milestone (2026-11-06)
 
-Integration follow-up: 115 focused tests, Ruff and mypy for the three corrected
-modules pass on the integration branch. Source-ID mutability and nullable
-diagnostic values are corrected without relaxing lot identity or price guards.
-Merge, CI for the integrated SHA, deployment and production acceptance remain
-pending. Source blockers #1115/#1116 remain open.
+Verified on 2026-11-06: integration [PR #1118](https://github.com/Maximiliamos/torgi/pull/1118)
+is OPEN at `831814fa5bbe65ec11b4280495db9165c22e7693`, with **10/10 CI checks PASS**:
+[Production reliability](https://github.com/Maximiliamos/torgi/actions/runs/42135005571)
+and [S3 diagnostics](https://github.com/Maximiliamos/torgi/actions/runs/42135005538).
+Local focused suites passed **221 tests** (115 source/detail + 106 catalogue/structure).
+CI ran full mypy successfully with pinned dependencies; local ambient GEO typing
+errors do not override that CI result. Source-ID mutability and nullable diagnostic
+values are corrected without relaxing lot identity or price guards.
+Current `main` remains `ead3f6866aa28b7249c83a7915e1a78004154dd1`.
+Merge and deployment of #1118 are **NOT_TESTED / not performed**; source blockers
+#1115/#1116 remain open. Passing PostgreSQL CI tests did not import source lots
+into the production database. Passing S3 diagnostics did not publish a new map.
 
 **Scope = source parser fixes and read-only diagnosis, NOT S0–S7 acceptance.**
 The source-level work for this iteration is documented in
@@ -23,10 +30,10 @@ automatically ingest or replace the deeper no-VPN 10/30-lot evidence.
 | Stage / evidence | NISTP (`nistp.ru`) | CDTRF (`cdtrf.ru`) |
 | --- | --- | --- |
 | Official catalogue/page contract | **PASS for two read-only 142-page walks:** 2,716 stable IDs and matching record digest | **PASS for two selected 64-page walks:** 6,351 stable IDs, identical digest |
-| Source-selected active scope | **BLOCKED**: 43 terminal statuses (40 completed, 2 failed, 1 cancelled) leaked through selected active filters — [#1116](https://github.com/Maximiliamos/torgi/issues/1116) | **PARTIAL**: selected categories/statuses only, not full source inventory; catalogue drift observed |
+| Source-selected active scope | **BLOCKED**: 43 terminal statuses (40 completed, 2 failed, 1 cancelled) leaked through selected active filters — [#1116](https://github.com/Maximiliamos/torgi/issues/1116) | **NOT_TESTED** for provider-wide completeness; the selected category/status partition was traversed twice |
 | Individual detail + ID + price (fresh live sample) | **9/10 PASS, 1 BLOCKED**: `nistp.ru:502379:259`; no section for requested high lot | **10/10 PASS**, 2 HTML/Nuxt lot-title divergence review flags (identity/initial price checked) |
 | Missing/exceptional per-lot details | **7/7 exact catalogue rows PASS, 0/7 individual sections:** 139,179,239,259,339,439,539; common trade-only URL, [#1115](https://github.com/Maximiliamos/torgi/issues/1115) | Older seven failed IDs are no longer on their original selected pages; **0/7 revalidated**, not a corrected-lot score |
-| Non-destructive offline tests | **83/83** broader focused tests on prior SHA; **9/9** NISTP link-shape diagnostic | Same broader focused suite **83/83**, independent fresh 10/10 read-only evidence |
+| Non-destructive offline tests / integrated CI | **PASS**: 221 focused local tests across both sources and catalogue/structure regressions; 10/10 CI at `831814f` | Same integrated validation; fresh 10/10 source sample is separate live evidence |
 | `complete_source_inventory` / `production_import` / GEO / map / `scheduler` | **NOT ACCEPTED / NOT TESTED here** | **NOT ACCEPTED by this new QA; staging/production E2E NOT TESTED here** |
 
 All staged-source and detail-readiness observations in this snapshot
@@ -37,6 +44,23 @@ unmerged on the last GitHub inspection; no automatic allowlist, production
 write, GEO, archival or map activation may follow from these scores.
 The zero-write claim applies to these *new diagnostic runs* only; older
 CDTRF production records are described separately in the 02.11 snapshot.
+
+Directly inspected local evidence (not GitHub artifacts):
+
+- NISTP: `D:\BankrotAI\etp-evidence\nistp-diagnostic-20261106-002031.log`:
+  two 142-page walks, 2,716 IDs and 43 terminal-status rows per pass.
+  Examples: `501045:2` page 53, `500370:3` page 63, cancelled `499277:1` page 77.
+  The cause of filtering leakage remains unproven; do not replace it with a hypothesis.
+- CDTRF: `D:\BankrotAI\etp-evidence\cdtrf-full-readonly\cdtrf-pass-{1,2}-20261105T212709Z.json`:
+  revision `426619f`, 64/64 pages, 6,351 IDs per pass, zero observed overlap/gap,
+  matching digest `d2bc4f63001daaa29d3326b6544a8276577ce9e8e327990b72ffab093c937261`.
+  These are later passes than the earlier 6,352-ID walk that observed live drift.
+  Both per-pass reports retain `stable_point_in_time_snapshot=false`. The wrapper
+  comparison's `true` value is an overstatement: equal ID sets do not prove an atomic
+  provider snapshot or unchanged prices/statuses. Keep snapshot proof NOT_TESTED.
+- Fresh details: `D:\BankrotAI\etp-evidence\two-source-detail-qa\nistp-ru-20261105T233118Z.json`
+  and `cdtrf-ru-20261105T233118Z.json`: respectively 9/10 and 10/10;
+  CDTRF has two title-review flags. These reports do not test the integrated SHA live.
 
 **Operator checklist to move source status forward (do not auto-check):**
 
@@ -57,6 +81,8 @@ CDTRF production records are described separately in the 02.11 snapshot.
       title-review cases explicitly recorded.
 - [ ] Review and merge stacked #1105–#1114 **after** CI and source-contract
       review; record final merge SHA and deployment separately.
+- [x] Preserve the stack through #1117 in integration PR #1118; correct CI
+      typing failures; verify 10/10 CI checks at `831814f`.
 - [ ] Resolve NISTP [#1116](https://github.com/Maximiliamos/torgi/issues/1116)
       status-filter leakage; two **clean** active-scope passes.
 - [ ] Resolve or explicitly quarantine [#1115](https://github.com/Maximiliamos/torgi/issues/1115)
@@ -71,6 +97,69 @@ CDTRF production records are described separately in the 02.11 snapshot.
 - [ ] Resume the next ETP source **CenterR**, then **Sistematorg**
       price completeness and separately **Торги России** incident;
       keep independent P1 workstreams and source-specific blockers.
+
+## All 22 ETPs: latest evidenced source-stage status (updated 2026-11-06)
+
+For the other 20 sources the latest common live baseline is
+[Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
+artifact `etp-parser-stage-checklist`, inspected locally. The three later listed
+workflow events were skipped and provide no new result. Old FAIL/BLOCKED entries
+below mean **last observed result**, not a claim that the site is still broken now.
+For all bounded samples, PASS applies only to observed rows. Counts are catalogue
+candidates, not saved PostgreSQL lots. Source-specific newer NISTP/CDTRF evidence
+is explicitly substituted in those two rows only.
+
+| ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
+| --- | --- | --- | --- | --- |
+| МЭТС `m-ets.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / PASS / FAIL | Unknown statuses in sample |
+| ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
+| НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
+| Альфалот `alfalot.ru` | PASS, 2 candidates | Page 2 and last NOT_TESTED | PASS / PASS / FAIL | Unknown statuses; property classification FAIL |
+| Росэлторг `roseltorg.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED: ConnectionError |
+| Сбербанк-АСТ `sberbank-ast.ru` | PASS, 42 candidates | Page 2 PASS; last NOT_TESTED | PASS / PASS / FAIL | Unknown statuses; property classification FAIL |
+| Фабрикант `fabrikant.ru` | PASS, 9 candidates | Page 2 and last NOT_TESTED | PASS / FAIL / FAIL | Missing individual prices and statuses |
+| АРБбитЛот `arbbitlot.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / PASS | Missing individual prices |
+| Уральская ЭТП `etpu.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / PASS | Missing individual prices; classification FAIL |
+| Систематорг `sistematorg.com` | PASS, 16 candidates | Page 2 PASS; last NOT_TESTED | BLOCKED / FAIL / FAIL | Individual-lot isolation, prices and statuses |
+| Центр реализации `centerr.ru` | Catalogue PASS; IDs FAIL, 21 candidates | Page 2 and last NOT_TESTED | NOT_TESTED | Duplicate/wrong IDs observed on page 2; #1093 code fix merged, live retest pending |
+| Аукцион-центр `aukcioncenter.ru` | PASS, 30 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / FAIL | Prices, statuses and classification |
+| Вердиктъ `vertrades.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | BLOCKED / FAIL / FAIL | Individual details, prices and statuses |
+| RUSSIA OnLine `rus-on.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / PASS | Missing individual prices |
+| ЗаказРФ `zakazrf.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / PASS | Missing individual prices; classification FAIL |
+| Объединённая ЭТП `utpl.ru` | PASS, 40 candidates | Page 2 PASS; last NOT_TESTED | PASS / FAIL / PASS | Missing individual prices; classification FAIL |
+| РТС-тендер `rts-tender.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED by explicit profile restriction |
+| Профит `etp-profit.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED: TLS validation |
+| Аукционы Сибири `ausib.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED: provider HTTP/access |
+| uTender `utender.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED by explicit profile restriction |
+| Электро-торги `electro-torgi.ru` | NOT_TESTED | NOT_TESTED | NOT_TESTED | Transport BLOCKED by explicit profile restriction |
+| Lot-online `lot-online.ru` | PASS, 160 candidates | Page 2 PASS; last NOT_TESTED | FAIL / PASS / PASS | Diagnostic fetch_lot capability unsupported; working production importer is a separate path |
+
+For all 22 rows, this evidence does not establish new source-scoped PostgreSQL
+insert/update/deduplication, backup restore, GEO, MapDataset/S3/website publication,
+or successful 09:00/21:00 MSK cycles: these acceptance stages remain NOT_TESTED.
+Historical production data are not reset or reclassified by this checklist.
+Torgi Russia is a separate source outside these 22 entries.
+
+## Coverage of the 12 required acceptance stages
+
+The current integrated machine schema still has 17 aggregate checks. Detailed
+stage expansion exists in the separate open #1098 branch and is not included
+in #1118. The following records that gap without claiming implementation:
+
+| Required area | Current coverage / missing evidence |
+| --- | --- |
+| 1. DNS / HTTPS / HTTP / redirects | Aggregate transport exists; separate recorded DNS/TLS/redirect steps pending |
+| 2. Correct catalogue / markup | Implemented; source-specific live contract required |
+| 3. JavaScript / cookie / tutorial / filters | Cookie/tutorial check exists; separate JS and effective-filter evidence pending |
+| 4. Procedure versus individual lot | Lot discovery exists; isolation is source-specific and incomplete for unaccepted sources |
+| 5. Unique IDs / no duplicates | Implemented for observed pages; full DB uniqueness NOT_TESTED |
+| 6. Every page / terminal / two passes | Source-specific full NISTP/CDTRF evidence above; general bounded probe cannot prove end |
+| 7. Individual cards | Implemented for samples; full coverage NOT_TESTED |
+| 8. Price / status / address / cadastre / area / dates | Aggregate price/status exists; dedicated field completeness checks pending integration |
+| 9. Catalogue versus card | Source-specific QA exists for identity/price/status; all-field consistency remains incomplete |
+| 10. PostgreSQL save / update / dedupe / restore | Acceptance protocol defined; source-specific staging/production proof NOT_TESTED |
+| 11. GEO / dataset / S3 / actual website / links / filters | Aggregate GEO/map checks exist; detailed E2E proof NOT_TESTED |
+| 12. 09:00 / 21:00 MSK repeat cycles | Aggregate scheduler exists; independent evidence for both slots and consecutive cycles NOT_TESTED |
 
 ## Run on trusted Home ingestion worker
 
