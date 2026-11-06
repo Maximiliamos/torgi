@@ -303,6 +303,9 @@ def test_five_page_trial_is_scheduled_without_enabling_archival():
         and scheduled[source].max_batches == 5
         for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru")
     )
+    assert scheduled["nistp.ru"].max_detail_attempts_per_page == 2
+    assert scheduled["m-ets.ru"].max_detail_attempts_per_page is None
+    assert scheduled["cdtrf.ru"].max_detail_attempts_per_page is None
     assert "alfalot.ru" not in scheduled
     for pages in (0, 6):
         with pytest.raises(ValueError, match="bounded"):
