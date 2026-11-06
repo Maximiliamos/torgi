@@ -55,6 +55,7 @@ def _html(
     statuses: tuple[str, ...] = ("0", "1"),
     prices: tuple[str, ...] | None = None,
     next_href: str | None = None,
+    selected_page_visible: bool = True,
 ) -> str:
     price_values = prices or tuple("100.00" for _ in identities)
     category_options = "".join(
@@ -73,12 +74,17 @@ def _html(
             '<a class="next link" aria-label="Следующая страница" '
             f'href="{next_href}"></a>'
         )
+    page_marker = (
+        f'<span class="active">{page}</span>'
+        if selected_page_visible
+        else f"<span>{page}</span>"
+    )
     return f"""
     <html><head><meta itemprop="offerCount" content="{total}"></head><body>
       <select name="search_category" multiple>{category_options}</select>
       <select name="stat" multiple>{status_options}</select>
       <div class="search-results-info"><div class="value">{total}</div></div>
-      <div class="paginator"><span class="active">{page}</span>{next_link}</div>
+      <div class="paginator">{page_marker}{next_link}</div>
       {''.join(_card(identity, price=price) for identity, price in zip(identities, price_values))}
     </body></html>
     """
@@ -142,6 +148,31 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["geocoding"] is False
     assert report["map_publication"] is False
     assert "244381-1" not in str(report)
+
+
+def test_raw_first_page_may_omit_active_marker_but_later_page_may_not() -> None:
+    pages = _good_pages()
+    pages[0] = _html(
+        1,
+        ["244381-1", "244360-1"],
+        total=3,
+        next_page=2,
+        selected_page_visible=False,
+    )
+    report = scan_complete_mets_catalogue(
+        _Session(pages), max_pages=10, delay_seconds=0,
+    )
+    assert report["last_page_proven"] is True
+
+    pages[1] = _html(
+        2,
+        ["215028-291"],
+        total=3,
+        next_page=None,
+        selected_page_visible=False,
+    )
+    with pytest.raises(MetsCatalogueScanError, match="page 2 is not visibly selected"):
+        scan_complete_mets_catalogue(_Session(pages), delay_seconds=0)
 
 
 def test_two_matching_independent_passes_close_sessions() -> None:

@@ -106,7 +106,17 @@ def _reported_total(soup: BeautifulSoup) -> int:
 
 
 def _selected_page_is_visible(soup: BeautifulSoup, page_number: int) -> bool:
+    paginators = soup.select(".paginator")
+    if len(paginators) != 1:
+        return False
     active = soup.select(".paginator .active")
+    # The provider's raw first-page HTML omits an active page marker.  The
+    # response URL is independently required to equal the unpaged catalogue
+    # URL, and the next control is verified below as the exact filtered page 2.
+    # Later pages must retain their explicit visible marker so an SSR fallback
+    # that repeats page 1 cannot pass as real pagination.
+    if page_number == 1 and not active:
+        return True
     return len(active) == 1 and active[0].get_text(" ", strip=True) == str(page_number)
 
 
