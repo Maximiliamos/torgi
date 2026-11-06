@@ -25,8 +25,8 @@ real estate. No DB/reconcile/archive/GEO/map action was enabled.
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.
-Integration #1118 at `831814f` passed 10/10 CI checks; 221 local focused tests
-passed. Main remains `ead3f686`; integration merge, deployment and source
+Integration #1118 at `831814f` passed 10/10 CI checks and 221 local focused
+tests, then merged to `main` as `837f22a`. Post-merge deployment and source
 acceptance remain pending. The 12-area coverage audit explicitly records
 the unintegrated detailed machine-stage expansion from #1098 and outstanding
 DB/GEO/map/09–21 proof. Matching CDTRF ID digests do not prove an atomic snapshot.

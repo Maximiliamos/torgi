@@ -9,16 +9,17 @@ stops, not certifying a complete source scan.
 ## NISTP + CDTRF: operator-verified milestone (2026-11-06)
 
 Verified on 2026-11-06: integration [PR #1118](https://github.com/Maximiliamos/torgi/pull/1118)
-is OPEN at `831814fa5bbe65ec11b4280495db9165c22e7693`, with **10/10 CI checks PASS**:
+at code head `831814fa5bbe65ec11b4280495db9165c22e7693` passed **10/10 CI checks** and
+was merged to `main` as `837f22af93ca3890d6ea32f759bc5ec9a1e1a87a`:
 [Production reliability](https://github.com/Maximiliamos/torgi/actions/runs/42135005571)
 and [S3 diagnostics](https://github.com/Maximiliamos/torgi/actions/runs/42135005538).
 Local focused suites passed **221 tests** (115 source/detail + 106 catalogue/structure).
 CI ran full mypy successfully with pinned dependencies; local ambient GEO typing
 errors do not override that CI result. Source-ID mutability and nullable diagnostic
 values are corrected without relaxing lot identity or price guards.
-Current `main` remains `ead3f6866aa28b7249c83a7915e1a78004154dd1`.
-Merge and deployment of #1118 are **NOT_TESTED / not performed**; source blockers
-#1115/#1116 remain open. Passing PostgreSQL CI tests did not import source lots
+Current `main` is `837f22af93ca3890d6ea32f759bc5ec9a1e1a87a` after that merge.
+Post-merge deployment and source acceptance remain **NOT_TESTED**; source
+blockers #1115/#1116 remain open. Passing PostgreSQL CI tests did not import source lots
 into the production database. Passing S3 diagnostics did not publish a new map.
 
 **Scope = source parser fixes and read-only diagnosis, NOT S0–S7 acceptance.**
@@ -79,10 +80,10 @@ Directly inspected local evidence (not GitHub artifacts):
       lot-specific href; *catalogue-only* limitation documented.
 - [x] Fresh no-VPN NISTP 9/10 and CDTRF 10/10 sample observed; two CDTRF
       title-review cases explicitly recorded.
-- [ ] Review and merge stacked #1105–#1114 **after** CI and source-contract
-      review; record final merge SHA and deployment separately.
+- [x] Review and integrate the #1105–#1114 stack through #1118 after CI and
+      source-contract review; final merge SHA is `837f22a`. Deployment remains separate.
 - [x] Preserve the stack through #1117 in integration PR #1118; correct CI
-      typing failures; verify 10/10 CI checks at `831814f`.
+      typing failures; verify 10/10 CI checks at `831814f`; merge as `837f22a`.
 - [ ] Resolve NISTP [#1116](https://github.com/Maximiliamos/torgi/issues/1116)
       status-filter leakage; two **clean** active-scope passes.
 - [ ] Resolve or explicitly quarantine [#1115](https://github.com/Maximiliamos/torgi/issues/1115)
