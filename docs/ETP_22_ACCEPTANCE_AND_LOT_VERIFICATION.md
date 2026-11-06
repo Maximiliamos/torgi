@@ -66,6 +66,21 @@ archival, staging-write canary, GEO or map publication follows from
 these read-only observations. Production CDTRF records from earlier
 campaigns are separate historical facts, not writes from these probes.
 
+## 2026-11-06 — M-ETS selected-catalogue implementation gate
+
+Commit `74eaa4a` implements, but has not yet run live, a two-pass read-only
+walk of the exact browser-confirmed seven-category, announced/application-
+intake catalogue. Offline tests prove fail-closed filter preservation,
+sequential pagination, duplicate rejection, URL/registration identity,
+positive catalogue price, selected status, record-digest stability and an
+incomplete terminal page. The resulting evidence can establish only
+`complete_selected_filter_inventory`; it must retain
+`complete_source_inventory=false` because standalone land (11) and
+agricultural real estate (40) are absent. It also retains zero writes,
+no reconciliation/archival/GEO/map, and no individual-detail proof. Live
+two-pass output, expanded category scope and every downstream acceptance gate
+remain `NOT_TESTED`.
+
 ## Read-only audit invocation
 
 ```powershell

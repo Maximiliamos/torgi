@@ -102,12 +102,15 @@ Directly inspected local evidence (not GitHub artifacts):
 
 Subsequent browser observations for M-ETS/Alfalot/Sberbank-AST are recorded in
 [the 06 November browser report](ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md).
-M-ETS tabs repeated page 1 (page 2/end unproven); land/agricultural categories
-were excluded. Alfalot's one-row hall had a connection-error banner; the larger
-official search needs its own paging contract. Sberbank loaded unfiltered or
-privatization results, with the bankruptcy checkbox unchecked; public client code
-caps displayed results at 10,000. These are additional scope/pagination blockers,
-not resolved source status failures or new source acceptance.
+M-ETS pages 1/2/153 are distinct and page 153 is browser-proven terminal for
+the exact 3,056-item seven-category filter. Code commit `74eaa4a` implements a
+two-pass full read-only proof and passes 29 focused tests, but its real no-VPN
+execution remains `NOT_TESTED`; standalone land/agricultural categories remain
+excluded. Alfalot's `stateFilter_GD` is confirmed as «прием заявки», while its
+raw client paging request and property-only scope remain unproven. Sberbank
+loaded unfiltered or privatization results, with the bankruptcy checkbox
+unchecked; public client code caps displayed results at 10,000. These are
+additional scope/pagination blockers, not new source acceptance.
 
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
@@ -120,7 +123,7 @@ is explicitly substituted in those two rows only.
 
 | ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
 | --- | --- | --- | --- | --- |
-| МЭТС `m-ets.ru` | PASS, 56 distinct browser-observed IDs on pages 1/2/153 | Page 2 PASS; page 153 terminal PASS in browser; automated full walk NOT_TESTED | 2/2 detail PASS / price PASS / scheduled status PASS; active-detail status NOT_TESTED | Seven-category scope omits standalone land/agricultural filters; two complete automated walks pending |
+| МЭТС `m-ets.ru` | PASS, 56 distinct browser-observed IDs on pages 1/2/153; strict full-walk implementation/tests PASS at `74eaa4a` | Page 2 PASS; page 153 terminal PASS in browser; live automated two-pass walk NOT_TESTED | Browser 2/2 detail PASS / price PASS / scheduled status PASS; catalogue price/status code tested; active-detail status NOT_TESTED | Seven-category scope omits standalone land/agricultural filters; run two complete no-VPN walks, then expand scope |
 | ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
 | НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
 | Альфалот `alfalot.ru` | PASS for 22 distinct IDs on active-filter pages 2/3; page 1 identity set not retained | Page 2 PASS; page 3 terminal PASS in browser; HTTP request contract NOT_TESTED | 2/2 property detail / price / `Идет прием заявок` status PASS | `stateFilter_GD` proves «прием заявки»; procedure types remain mixed and property-scope classification FAIL |

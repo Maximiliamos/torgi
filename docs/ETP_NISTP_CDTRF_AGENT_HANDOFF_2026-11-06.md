@@ -7,6 +7,13 @@
 > This is a snapshot from operator-supplied no-VPN PowerShell logs and
 > GitHub code/PRs, **not evidence of production deployment**.
 
+> **Subsequent independent M-ETS follow-up (2026-11-06):** code commit
+> `74eaa4a` on `codex/mets-full-readonly-20261106` adds a zero-write full
+> two-pass runner for the browser-confirmed seven-category filter. Its 29
+> focused tests pass, but a live no-VPN execution is `NOT_TESTED`; category
+> IDs 11/40, individual active-card validation, DB/GEO/map and scheduling are
+> still open. This does not alter the NISTP/CDTRF acceptance state below.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks
