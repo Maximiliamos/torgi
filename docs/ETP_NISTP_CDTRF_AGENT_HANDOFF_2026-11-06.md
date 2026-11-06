@@ -25,6 +25,11 @@
 > the full page 152 had no Next. Completeness remains FAIL; pass 2 was not
 > started. Probe pages 152/153/154 before revising the terminal contract.
 
+> Tail probe `3b951b88` proved pages 152/153/154 are distinct and full at
+> newer total 3,082; page 154 omitted Next prematurely. #1124 continues only
+> when a full page plus reported total proves another page, and still requires
+> exact total/incomplete terminal. Direct pages 155/156 remain pending.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

@@ -36,6 +36,12 @@ unique IDs without duplicates. Reported total remained 3,059, but full page
 and did not begin pass 2. Next action is a short hashed tail probe of pages
 152/153/154, not another full walk and not a weaker terminal rule.
 
+Tail probe `3b951b88` then found 20 distinct-hash items on each of pages
+152/153/154 at total 3,082. Page 154 omitted Next prematurely. PR #1124 adds
+fail-closed continuation from a full page only when the reported total proves
+more rows remain; completion still requires exact total and an incomplete last
+page. Probe 155/156 before rerunning both full passes.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

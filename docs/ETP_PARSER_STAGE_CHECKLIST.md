@@ -125,6 +125,12 @@ duplicates, while the stable visible total stayed 3,059. Page 152 was full but
 had no Next, so completeness is **FAIL** pending direct 152/153/154 tail proof;
 pass 2 was not started. No archival or reconciliation is allowed.
 
+Tail probe `3b951b88` proved distinct full pages 152/153/154 at newer total
+3,082; page 154 had no Next although arithmetic requires page 155 with two
+items. PR #1124 now permits reported-total continuation only after a full page
+with missing Next, while retaining exact page/filter/ID checks. Direct 155/156
+proof and a new complete run are still required.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed

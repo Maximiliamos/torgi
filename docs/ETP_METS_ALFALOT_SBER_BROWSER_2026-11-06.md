@@ -17,6 +17,13 @@ paginator to agree on active page and next target. This bounded preflight ended
 at the intentional two-page budget and is **not** a terminal-page or two-pass
 proof. It performed no database, reconciliation, archival, GEO or map writes.
 
+Tail probe `3b951b88` later observed total 3,082: pages 152, 153 and 154
+each contained 20 cards with three distinct canonical-ID hashes. Both pagers
+showed the requested page; 152 linked to 153, 153 linked to 154, and full page
+154 omitted Next. Thus the UI can hide Next one page before the reported-total
+terminal page. Page 155/156 direct evidence remains required before another
+full walk.
+
 The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
 3,040 unique IDs without a duplicate or field-contract failure. The provider
 reported 3,059 throughout, but page 152 was full (20 cards) and both pagers

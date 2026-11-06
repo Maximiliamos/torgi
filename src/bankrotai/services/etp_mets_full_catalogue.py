@@ -327,6 +327,7 @@ def scan_complete_mets_catalogue(
     first_page_size: int | None = None
     reported_total: int | None = None
     last_page_proven = False
+    computed_next_pages: list[int] = []
     started = time.monotonic()
 
     for page_number in range(1, max_pages + 1):
@@ -355,7 +356,16 @@ def scan_complete_mets_catalogue(
             for external_id, price, status, title in observations
         )
         status_counts = Counter(item[2] for item in observations)
-        next_page = parsed["next_page"]
+        ui_next_page = parsed["next_page"]
+        next_page = ui_next_page
+        if next_page is None and len(seen) < reported_total:
+            expected_last = math.ceil(reported_total / first_page_size)
+            if page_number >= expected_last:
+                raise MetsCatalogueScanError(
+                    "M-ETS paginator ended before the reported total was collected"
+                )
+            next_page = page_number + 1
+            computed_next_pages.append(page_number)
         if next_page is not None and len(ids) != first_page_size:
             raise MetsCatalogueScanError(
                 "M-ETS non-terminal page size differs from the first page"
@@ -373,12 +383,20 @@ def scan_complete_mets_catalogue(
                     for external_id, price, status, title in observations
                 )).encode("utf-8")
             ).hexdigest(),
+            "ui_next_page": ui_next_page,
             "next_page": next_page,
+            "next_source": (
+                "ui" if ui_next_page is not None
+                else "reported_total" if next_page is not None
+                else "terminal"
+            ),
         })
         print(
             f"M-ETS readonly page={page_number} items={len(ids)} "
             f"unique={len(seen)} total={reported_total} "
-            f"next={next_page or 'none'} elapsed={time.monotonic() - started:.1f}s",
+            f"next={next_page or 'none'} "
+            f"next_source={pages[-1]['next_source']} "
+            f"elapsed={time.monotonic() - started:.1f}s",
             flush=True,
         )
         if next_page is None:
@@ -423,6 +441,7 @@ def scan_complete_mets_catalogue(
             "\n".join(sorted(records)).encode("utf-8")
         ).hexdigest(),
         "pages": pages,
+        "computed_next_after_pages": computed_next_pages,
         "catalogue_prices_verified": True,
         "catalogue_statuses_verified": True,
         "complete_selected_filter_inventory": last_page_proven,

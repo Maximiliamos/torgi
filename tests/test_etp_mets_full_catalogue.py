@@ -141,6 +141,7 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["unique_lot_ids"] == 3
     assert report["last_page"] == 2
     assert report["last_page_proven"] is True
+    assert report["computed_next_after_pages"] == []
     assert report["complete_selected_filter_inventory"] is True
     assert report["catalogue_prices_verified"] is True
     assert report["catalogue_statuses_verified"] is True
@@ -154,6 +155,37 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["geocoding"] is False
     assert report["map_publication"] is False
     assert "244381-1" not in str(report)
+
+
+def test_reported_total_continues_after_premature_missing_next() -> None:
+    pages = [
+        _html(
+            1,
+            ["244381-1", "244360-1"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+        _html(
+            2,
+            ["215028-291"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+    ]
+    session = _Session(pages)
+    report = scan_complete_mets_catalogue(
+        session, max_pages=10, delay_seconds=0,
+    )
+
+    assert session.calls == [APARTMENTS_URL, f"{APARTMENTS_URL}&page=2"]
+    assert report["unique_lot_ids"] == 3
+    assert report["last_page_proven"] is True
+    assert report["computed_next_after_pages"] == [1]
+    assert report["pages"][0]["ui_next_page"] is None
+    assert report["pages"][0]["next_source"] == "reported_total"
+    assert report["pages"][1]["next_source"] == "terminal"
 
 
 def test_all_duplicate_paginators_must_agree_on_active_page() -> None:
