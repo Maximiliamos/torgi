@@ -68,7 +68,12 @@ def _money(raw: str, *, allow_zero: bool = False) -> Decimal:
 
 def _label_values(table: Tag) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for row in table.select("tbody > tr"):
+    # Some provider cards omit an explicit <tbody>; other cards contain it.
+    # Consider only direct rows belonging to THIS numbered lot table, never
+    # inner procedure/nested tables (whose prices belong to other entities).
+    for row in table.select("tr"):
+        if row.find_parent("table") is not table:
+            continue
         cells = row.find_all("td", recursive=False)
         if len(cells) != 2 or "label" not in cells[0].get("class", []):
             continue
@@ -89,10 +94,21 @@ def _field(fields: dict[str, str], label: str) -> str:
 
 def parse_nistp_shared_trade_card(
     html: str | bytes, *, trade_nid: str,
+    target_lot_number: int | None = None,
 ) -> dict[int, NistpLotSection]:
-    """Parse only table_lot_N tables; never leak procedure totals into a lot."""
+    """Parse source-numbered tables, optionally validating only one lot's fields.
+
+    The full-card mode still requires every table's fields to be valid.
+    Targeted mode does not let a defective unrelated asset on a shared page
+    prevent verification of a correctly numbered individual asset. Both
+    modes refuse duplicated section numbers and native identities.
+    """
     if not re.fullmatch(r"[1-9]\d{0,11}", trade_nid):
         raise NistpCardError("invalid_trade_nid")
+    if target_lot_number is not None and (
+        type(target_lot_number) is not int or not 1 <= target_lot_number <= 99_999
+    ):
+        raise NistpCardError("invalid_lot_number")
     soup = BeautifulSoup(html, "html.parser")
     # NISTP's modal has an earlier <h1 class=node_header> ("Купить лот
     # через агента"). Select the actual procedure heading by its code.
@@ -108,22 +124,32 @@ def parse_nistp_shared_trade_card(
 
     result: dict[int, NistpLotSection] = {}
     native_seen: set[str] = set()
+    section_numbers_seen: set[int] = set()
     for table in tables:
         matched = _TABLE_ID.fullmatch(str(table.get("id") or ""))
         if not matched:
             raise NistpCardError("invalid_individual_lot_table_id")
         number = int(matched.group(1))
-        if number in result:
+        if number in section_numbers_seen:
             raise NistpCardError("duplicate_lot_section_number")
-        thead = table.select_one("thead th.table_header")
-        heading = _HEADING.search(_clean(thead.get_text(" ", strip=True))) if thead else None
-        if heading is None or int(heading.group(1)) != number:
-            raise NistpCardError("lot_heading_does_not_match_table")
+        section_numbers_seen.add(number)
+        # Validate table/heading identity *before* classifying named anchors.
+        # Otherwise an incorrectly numbered table (table_lot_5 with a
+        # "lot4" heading) misclassifies the heading anchor as a second
+        # native identity and masks the actual error.
+        if target_lot_number is None or number == target_lot_number:
+            thead = table.select_one("thead th.table_header")
+            heading = (
+                _HEADING.search(_clean(thead.get_text(" ", strip=True)))
+                if thead else None
+            )
+            if heading is None or int(heading.group(1)) != number:
+                raise NistpCardError("lot_heading_does_not_match_table")
+        # Check cross-section identity collisions even for unrelated malformed
+        # field tables. Do not accept a forged duplicate of the requested lot.
         named_anchors = {
             str(a.get("name")) for a in table.select("thead a[name]")
         }
-        if f"lot{number}" not in named_anchors:
-            raise NistpCardError("lot_number_anchor_missing")
         natives = {
             m.group(1) for a in named_anchors
             if (m := _NATIVE_ANCHOR.fullmatch(a)) and int(m.group(1)) != number
@@ -135,6 +161,12 @@ def parse_nistp_shared_trade_card(
             if native in native_seen:
                 raise NistpCardError("duplicate_native_lot_identifier")
             native_seen.add(native)
+        if target_lot_number is not None and number != target_lot_number:
+            # Other sections can be incomplete or have a different contract.
+            # Their title/price/status must never enter the requested lot.
+            continue
+        if f"lot{number}" not in named_anchors:
+            raise NistpCardError("lot_number_anchor_missing")
         fields = _label_values(table)
         declared_number = _field(fields, "Номер лота")
         if declared_number != str(number):
@@ -179,7 +211,9 @@ def get_nistp_lot(
     """Return precisely the requested numbered asset from the shared page."""
     if not 1 <= lot_number <= 99_999:
         raise NistpCardError("invalid_lot_number")
-    sections = parse_nistp_shared_trade_card(html, trade_nid=trade_nid)
+    sections = parse_nistp_shared_trade_card(
+        html, trade_nid=trade_nid, target_lot_number=lot_number,
+    )
     try:
         return sections[lot_number]
     except KeyError as exc:

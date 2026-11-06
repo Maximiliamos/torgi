@@ -26,6 +26,46 @@ Updated 2026-11-02. This is an acceptance protocol, **not** a claim that
 8. Run exact-SHA P1/P11 and real production post-deploy monitoring only after
    review of the code, the staged canary, rollback and source-specific contracts.
 
+## 2026-11-06 — NISTP and CDTRF source-specific evidence gates
+
+The parser correction/read-only investigation **iteration is complete**,
+but neither source receives new production acceptance on this basis. Review
+the full [agent handoff](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md)
+and [stage checklist](ETP_PARSER_STAGE_CHECKLIST.md) before changing source
+acceptance flags.
+
+- **NISTP:** two 142-page selected-catalogue walks (2,716 stable IDs)
+  do not prove **active** source scope, because 43 terminal statuses were
+  returned under active checkboxes ([#1116](https://github.com/Maximiliamos/torgi/issues/1116)).
+  The fresh 9/10 individual-card sample cannot prove the seven
+  high-numbered `502379` details; seven exact catalogue rows and zero
+  own lot-scoped links were observed ([#1115](https://github.com/Maximiliamos/torgi/issues/1115)).
+  Quarantine their **detail completeness**, do not invent a per-lot
+  price, property right or geocoding evidence.
+- **CDTRF:** two selected 64-page catalogue walks (6,351 IDs) are not
+  provider-wide completeness. A **fresh 10/10** individual-lot sample
+  passed identity and price guards; two HTML-vs-Nuxt lot-title
+  discrepancies are retained for review. Seven original failed IDs
+  drifted off their previous page positions and were **not** retested
+  successfully by exact original ID. Complete the source-specific
+  30-card, backup, staging and map/WEB acceptance gates before
+  granting any additional production permission.
+- **Release/CI:** [#1105](https://github.com/Maximiliamos/torgi/pull/1105)
+  → [#1108](https://github.com/Maximiliamos/torgi/pull/1108)
+  → [#1109](https://github.com/Maximiliamos/torgi/pull/1109)
+  → [#1110](https://github.com/Maximiliamos/torgi/pull/1110)
+  → [#1111](https://github.com/Maximiliamos/torgi/pull/1111)
+  → [#1112](https://github.com/Maximiliamos/torgi/pull/1112)
+  → [#1113](https://github.com/Maximiliamos/torgi/pull/1113)
+  → [#1114](https://github.com/Maximiliamos/torgi/pull/1114)
+  were open/unmerged when inspected. Operator's offline 83/83 and
+  9/9 passes are **not** proof of merged CI, deployment or production E2E.
+
+No automatic source allowlist expansion, missing-lot reconciliation,
+archival, staging-write canary, GEO or map publication follows from
+these read-only observations. Production CDTRF records from earlier
+campaigns are separate historical facts, not writes from these probes.
+
 ## Read-only audit invocation
 
 ```powershell

@@ -20,6 +20,7 @@ from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     profit_initial_money,
 )
+from bankrotai.connectors.etp_sources.status_normalization import _status
 
 
 class SourceAccessError(RuntimeError):
@@ -175,31 +176,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
-
-def _status(value: str) -> str:
-    """Conservative public-auction status mapping, not keyword-anywhere truth.
-
-    'Приём заявок завершён' is NOT a completed auction; 'Текущая цена'
-    is not an active-status marker. 'Торги объявлены' do not prove
-    that applications have opened. Ambiguous intermediate stages stay unknown.
-    """
-    lowered = _clean(value).lower()
-    if re.search(r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)", lowered):
-        return "unknown"
-    if any(word in lowered for word in ("приостанов",)):
-        return "paused"
-    if any(word in lowered for word in ("торги отменен", "торги отменён", "не состоял", "торги заверш", "торги окончен", "аннулирован")):
-        return "closed"
-    if any(word in lowered for word in (
-        "торги объявлен", "статус торгов объявлен", "статус торгов по лоту объявлен",
-        "извещени", "торги назначен"
-    )):
-        return "scheduled"
-    if (re.search(r"при[её]м\s+заявок(?!\s+заверш)", lowered)
-            or "идут торги" in lowered or "заявки принимаются" in lowered):
-        return "active"
-    return "unknown"
 
 
 def _datetime_after(value: str, label: str) -> datetime | None:
@@ -734,6 +710,7 @@ class HtmlEtpConnector(AuctionConnector):
     safe_for_reconciliation = False
 
     def __init__(self, *, session: requests.Session | None = None, timeout: float = 25.0) -> None:
+        self.source_id = self.profile.source_id
         self.session = session or requests.Session()
         self.timeout = timeout
         self._last_response: requests.Response | None = None
@@ -743,10 +720,6 @@ class HtmlEtpConnector(AuctionConnector):
             "User-Agent",
             "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
         )
-
-    @property
-    def source_id(self) -> str:  # type: ignore[override]
-        return self.profile.source_id
 
     def _check_response(self, response: requests.Response) -> requests.Response:
         if 300 <= response.status_code < 400:
@@ -884,7 +857,21 @@ class HtmlEtpConnector(AuctionConnector):
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
-        if not lots:
+        structurally_valid_empty_nistp_page = False
+        if not lots and self.source_id == "nistp.ru":
+            from bankrotai.connectors.registry.direct_etp_catalogue import (
+                PROFILE_BY_ID, parse_nistp_lot_observations,
+            )
+            observations = parse_nistp_lot_observations(
+                PROFILE_BY_ID["nistp.ru"], _parse_soup(response.content).decode(), limit=100,
+            )
+            structurally_valid_empty_nistp_page = bool(observations)
+            if structurally_valid_empty_nistp_page:
+                next_cursor = (
+                    str(page + 1)
+                    if _has_next_page(self.profile, response.content, page) else None
+                )
+        if not lots and not structurally_valid_empty_nistp_page:
             raise SourceSchemaError(
                 f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
             )

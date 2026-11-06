@@ -163,6 +163,16 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
             "source_coordinates": detail.get("coordinates"),
             "price_periods": detail.get("price_periods", []),
             "current_price_unverified": True,
+            # A divergent H1 is not evidence of a different lot when the
+            # official trade ID, tradeLotId and individual price still match.
+            # Preserve this visible disagreement for operator review.
+            "html_title_matches_nuxt_lot_name": detail.get(
+                "html_title_matches_nuxt_lot_name", True
+            ),
+            "source_title_disagreement_review_required": detail.get(
+                "source_title_disagreement_review_required", False
+            ),
+            "title_evidence": detail.get("title_evidence", "legacy_html_nuxt_match"),
             "complete_source_inventory": False,
         },
         procedure_number=trade_id, platform_name="ЦДТ",

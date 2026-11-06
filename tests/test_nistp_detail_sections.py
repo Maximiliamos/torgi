@@ -201,3 +201,82 @@ def test_lot_table_does_not_accept_wrong_or_missing_native_anchor():
     )
     with pytest.raises(NistpCardError, match="multiple_native_lot_identifiers"):
         parse_nistp_shared_trade_card(two_native_ids, trade_nid="502957")
+
+
+def test_targeted_lot_ignores_unrelated_incomplete_fields_but_not_duplicate_number():
+    """Real 494080:3 had correct own fields but bad other numbered sections."""
+    valid = CASES[2]  # numbered lot 3
+    incomplete = _section(CASES[0]).replace(
+        '<td class="label">Наименование имущества</td>', '<td class="bad">Наименование имущества</td>'
+    )
+    html = _document(valid).replace("</body>", incomplete + "</body>")
+    with pytest.raises(NistpCardError, match="incomplete_numbered_lot_section"):
+        parse_nistp_shared_trade_card(html, trade_nid="502957")
+    exact = get_nistp_lot(html, trade_nid="502957", lot_number=3)
+    assert exact.external_id == "nistp.ru:502957:3"
+    assert exact.initial_price_rub == Decimal("3135000.00")
+    assert exact.cadastral_number == "77:01:0004002:6699"
+    assert exact.native_lot_nid == "502966"
+    with pytest.raises(NistpCardError, match="duplicate_lot_section_number"):
+        get_nistp_lot(
+            html.replace("</body>", _section(valid) + "</body>"),
+            trade_nid="502957", lot_number=3,
+        )
+
+
+def test_targeted_lot_remains_fail_closed_on_missing_139_and_forged_price():
+    truncated = _document(CASES[0], CASES[1])
+    with pytest.raises(NistpCardError, match="requested_lot_missing_in_trade_card"):
+        get_nistp_lot(truncated, trade_nid="502379", lot_number=139)
+    missing_target_price = _document(CASES[2]).replace(
+        '<td class="label">Начальная цена</td><td>3 135 000.00</td>',
+        '<td class="label">Начальная цена</td><td>не указана</td>',
+    )
+    with pytest.raises(NistpCardError, match="invalid_individual_lot_money"):
+        get_nistp_lot(missing_target_price, trade_nid="502957", lot_number=3)
+
+
+def test_targeted_lot_rejects_cross_section_native_identity_duplication():
+    """No neighbouring section may claim the requested lot's native identity."""
+    other = _section(CASES[0]).replace(
+        'name="lot502964"', 'name="lot502966"',
+    )
+    html = _document(CASES[2]).replace("</body>", other + "</body>")
+    with pytest.raises(NistpCardError, match="duplicate_native_lot_identifier"):
+        get_nistp_lot(html, trade_nid="502957", lot_number=3)
+
+
+def test_nistp_direct_table_rows_without_tbody_still_use_exact_lot_fields():
+    """Bounded support for HTML cards with direct TR children."""
+    html = _document(CASES[3]).replace("<tbody>", "").replace("</tbody>", "")
+    result = get_nistp_lot(html, trade_nid="502957", lot_number=4)
+    assert result.external_id == "nistp.ru:502957:4"
+    assert result.initial_price_rub == Decimal("3274000.00")
+    assert result.native_lot_nid == "502967"
+
+
+def test_nistp_nested_table_cannot_supply_missing_target_price():
+    html = _document(CASES[3])
+    inner_table = (
+        "<table><tr><td class='label'>Начальная цена</td>"
+        "<td>3274000.00</td></tr></table>"
+    )
+    html = html.replace(
+        '<td class="label">Начальная цена</td><td>3 274 000.00</td>',
+        '<td class="label">Другая сумма</td><td>' + inner_table + '</td>',
+    )
+    with pytest.raises(NistpCardError, match="incomplete_numbered_lot_section"):
+        get_nistp_lot(html, trade_nid="502957", lot_number=4)
+
+
+def test_misnumbered_target_table_reports_heading_before_native_anchor_error():
+    # A deliberate table_lot_4 -> table_lot_5 tamper leaves "lot4" and
+    # the native anchor intact. The primary identity error must be reported
+    # consistently in both whole-card and exact-lot parsing modes.
+    wrong = _document(CASES[3]).replace(
+        'id="table_lot_4"', 'id="table_lot_5"',
+    )
+    with pytest.raises(NistpCardError, match="lot_heading_does_not_match_table"):
+        parse_nistp_shared_trade_card(wrong, trade_nid="502957")
+    with pytest.raises(NistpCardError, match="lot_heading_does_not_match_table"):
+        get_nistp_lot(wrong, trade_nid="502957", lot_number=5)
