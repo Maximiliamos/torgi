@@ -30,6 +30,10 @@
 > when a full page plus reported total proves another page, and still requires
 > exact total/incomplete terminal. Direct pages 155/156 remain pending.
 
+> First 155/156 probe saw HTTP 308 on page 156 but aborted before retaining
+> page-155 structure. Updated probe persists each successful page and a
+> sanitized redirect summary; the full scanner still rejects redirects.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

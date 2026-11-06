@@ -533,7 +533,55 @@ def probe_mets_pages(
     try:
         for page_number in page_numbers:
             print(f"M-ETS tail probe requesting page={page_number}...", flush=True)
-            response = _request_page(active_session, page_number, sleep=time.sleep)
+            url = _page_url(page_number)
+            response = active_session.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+                headers={
+                    "User-Agent": "TORGI-METS-full-readonly-audit/1",
+                    "Accept": "text/html",
+                },
+            )
+            status_code = int(response.status_code)
+            if getattr(response, "url", url) != url:
+                raise MetsCatalogueScanError(
+                    "M-ETS probe response URL differs from requested URL"
+                )
+            if status_code != 200:
+                location = urljoin(BASE, response.headers.get("Location", ""))
+                parsed_location = urlsplit(location)
+                location_query = parse_qs(parsed_location.query)
+                safe_location = None
+                if (
+                    parsed_location.scheme == "https"
+                    and parsed_location.netloc == "m-ets.ru"
+                    and parsed_location.path == "/search"
+                ):
+                    safe_location = {
+                        "path": parsed_location.path,
+                        "page": location_query.get("page", [None])[-1],
+                        "filter_preserved": (
+                            {key: value for key, value in location_query.items()
+                             if key != "page"}
+                            == parse_qs(urlsplit(APARTMENTS_URL).query)
+                        ),
+                    }
+                results.append({
+                    "page": page_number,
+                    "http_status": status_code,
+                    "redirect": safe_location,
+                })
+                print(
+                    f"M-ETS tail probe page={page_number} "
+                    f"http_status={status_code} redirect={safe_location}",
+                    flush=True,
+                )
+                continue
+            if len(response.content) > MAX_HTML_BYTES:
+                raise MetsCatalogueScanError("M-ETS probe response exceeds size limit")
+            if "text/html" not in response.headers.get("Content-Type", "").lower():
+                raise MetsCatalogueScanError("M-ETS probe response is not HTML")
             soup = BeautifulSoup(response.text, "html.parser")
             filter_error = None
             try:
@@ -568,6 +616,7 @@ def probe_mets_pages(
                 })
             results.append({
                 "page": page_number,
+                "http_status": status_code,
                 "reported_total": total,
                 "total_error": total_error,
                 "filter_error": filter_error,
@@ -578,6 +627,11 @@ def probe_mets_pages(
                 ).hexdigest(),
                 "paginators": paginator_rows,
             })
+            print(
+                f"M-ETS tail probe page={page_number} http_status=200 "
+                f"cards={len(soup.select('.card-so'))} total={total}",
+                flush=True,
+            )
     finally:
         if owned_session:
             active_session.close()

@@ -24,6 +24,12 @@ showed the requested page; 152 linked to 153, 153 linked to 154, and full page
 terminal page. Page 155/156 direct evidence remains required before another
 full walk.
 
+The next bounded probe reached page 155, then page 156 returned HTTP 308. The
+first probe version aborted before serializing page 155, so its card count/hash
+is not claimed. The diagnostic now records each 200 result before later
+redirects and stores only a sanitized same-host redirect page/filter summary;
+the production scanner continues to reject redirects.
+
 The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
 3,040 unique IDs without a duplicate or field-contract failure. The provider
 reported 3,059 throughout, but page 152 was full (20 cards) and both pagers

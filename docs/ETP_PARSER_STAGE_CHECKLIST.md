@@ -131,6 +131,10 @@ items. PR #1124 now permits reported-total continuation only after a full page
 with missing Next, while retaining exact page/filter/ID checks. Direct 155/156
 proof and a new complete run are still required.
 
+Direct page 156 returned HTTP 308 after page 155 was fetched, but the original
+probe aborted before retaining page-155 structure. Re-run the tolerant
+read-only probe; redirect handling remains forbidden in the full scanner.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed

@@ -106,6 +106,16 @@ class _Response:
         self.url = url
 
 
+class _RedirectResponse:
+    status_code = 308
+    text = ""
+    content = b""
+    headers = {"Location": f"{APARTMENTS_URL}&page=155"}
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+
 class _Session:
     def __init__(self, pages: list[str]) -> None:
         self.pages = pages
@@ -122,6 +132,16 @@ class _Session:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _ProbeSession(_Session):
+    def get(self, url, *, timeout, allow_redirects, headers):
+        if len(self.calls) == len(self.pages):
+            self.calls.append(url)
+            return _RedirectResponse(url)
+        return super().get(
+            url, timeout=timeout, allow_redirects=allow_redirects, headers=headers,
+        )
 
 
 def _good_pages(*, last_price: str = "300.00") -> list[str]:
@@ -253,17 +273,22 @@ def test_tail_probe_reports_only_bounded_hashed_structure() -> None:
         _html(153, ["244360-1"], total=3059, next_page=None, paginator_count=2),
         _html(154, ["244381-1"], total=3059, next_page=None, paginator_count=2),
     ]
-    report = probe_mets_pages([152, 153, 154], _Session(pages))
+    report = probe_mets_pages([152, 153, 154, 156], _ProbeSession(pages))
 
     assert report["mode"] == "tail_readonly_probe"
-    assert report["requested_pages"] == [152, 153, 154]
-    assert [item["canonical_id_count"] for item in report["results"]] == [1, 1, 1]
+    assert report["requested_pages"] == [152, 153, 154, 156]
+    assert [item["canonical_id_count"] for item in report["results"][:3]] == [1, 1, 1]
     assert report["results"][0]["canonical_ids_sha256"] == report["results"][2]["canonical_ids_sha256"]
     assert report["results"][0]["canonical_ids_sha256"] != report["results"][1]["canonical_ids_sha256"]
     assert report["results"][0]["paginators"] == [
         {"active_texts": ["152"], "next_pages": []},
         {"active_texts": ["152"], "next_pages": []},
     ]
+    assert report["results"][3] == {
+        "page": 156,
+        "http_status": 308,
+        "redirect": {"path": "/search", "page": "155", "filter_preserved": True},
+    }
     assert "244381-1" not in str(report)
     assert report["production_database_writes"] == 0
     assert report["archival_allowed"] is False

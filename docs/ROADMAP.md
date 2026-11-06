@@ -42,6 +42,10 @@ fail-closed continuation from a full page only when the reported total proves
 more rows remain; completion still requires exact total and an incomplete last
 page. Probe 155/156 before rerunning both full passes.
 
+Initial 155/156 probe observed HTTP 308 on page 156 but lost the already-fetched
+155 summary when it aborted. The probe now persists per-page 200 evidence plus
+sanitized redirect target/status; the full scanner still fails on redirects.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.
