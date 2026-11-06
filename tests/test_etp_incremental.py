@@ -164,9 +164,8 @@ def test_etp_optin_specs_never_allow_archiving_or_change_default_sources():
     specs = etp_incremental_source_specs()
     assert {s.source_id for s in specs} == {"m-ets.ru", "cdtrf.ru"}
     assert all(s.reconcile_missing is False and s.max_batches == 2 for s in specs)
-    assert not {s.source_id for s in specs}.intersection(
-        {s.source_id for s in default_source_specs()}
-    )
+    scheduled = {s.source_id: s for s in default_source_specs()}
+    assert all(scheduled[source].reconcile_missing is False for source in {"m-ets.ru", "cdtrf.ru"})
 
 
 def test_cdtrf_scans_next_candidate_when_first_detail_identity_fails(monkeypatch):
@@ -281,7 +280,7 @@ def test_optin_five_page_cdtrf_cursor_and_source_details(monkeypatch):
     assert len(set(identities)) == 5
 
 
-def test_five_page_trial_is_explicit_optin_and_does_not_enable_archival():
+def test_five_page_trial_is_scheduled_without_enabling_archival():
     from bankrotai.services.etp_incremental_specs import (
         etp_five_page_source_specs, etp_incremental_source_specs,
     )
@@ -297,9 +296,17 @@ def test_five_page_trial_is_explicit_optin_and_does_not_enable_archival():
         for s in specs
     )
     assert all(s.filters.max_pages == 2 for s in etp_incremental_source_specs())
-    assert not {s.source_id for s in specs}.intersection(
-        {s.source_id for s in default_source_specs()}
+    scheduled = {s.source_id: s for s in default_source_specs()}
+    assert {"m-ets.ru", "cdtrf.ru", "nistp.ru"} <= set(scheduled)
+    assert all(
+        scheduled[source].reconcile_missing is False
+        and scheduled[source].max_batches == 5
+        for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru")
     )
+    assert scheduled["nistp.ru"].max_detail_attempts_per_page == 2
+    assert scheduled["m-ets.ru"].max_detail_attempts_per_page is None
+    assert scheduled["cdtrf.ru"].max_detail_attempts_per_page is None
+    assert "alfalot.ru" not in scheduled
     for pages in (0, 6):
         with pytest.raises(ValueError, match="bounded"):
             EtpIncrementalFilters("m-ets.ru", max_pages=pages)

@@ -29,20 +29,19 @@ from bankrotai.logic import (
     reconcile_cross_source_duplicates,
 )
 from bankrotai.scraper_contracts import (
-    BidExpertSearchFilters,
-    LotOnlineSearchFilters,
-    TBankrotSearchFilters,
-    TorgiGovSearchFilters,
-    TorgiRussiaSearchFilters,
+    LotOnlineSearchFilters, TBankrotSearchFilters, TorgiGovSearchFilters,
 )
-from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
+from bankrotai.scrapers import (
+    LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
+)
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+from bankrotai.services.etp_nistp_schedule_guard import (
+    catalogue_row_eligible_for_detail, independent_detail_proven,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
 MIN_COVERAGE_GUARD_BASELINE = 20
 MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
@@ -59,6 +58,7 @@ class SourceSyncSpec:
     reconcile_missing: bool = True
     max_batches: int | None = None
     require_source_end: bool = False
+    max_detail_attempts_per_page: int | None = None
 
 
 @dataclass(slots=True)
@@ -91,43 +91,9 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
-    return (
-        SourceSyncSpec(
-            "torgi.gov.ru",
-            TorgiGovSearchFilters(
-                type_transaction="SALE",
-                category_code=TorgiGovClient.REAL_ESTATE_ROOT_CATEGORY_CODES,
-                lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
-                page=1,
-                page_size=100,
-            ),
-        ),
-        SourceSyncSpec(
-            "tbankrot.ru",
-            TBankrotSearchFilters(
-                category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
-                page=1,
-                page_size=100,
-            ),
-        ),
-        SourceSyncSpec(
-            "lot-online.ru",
-            LotOnlineSearchFilters(
-                category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
-                archive_mode="false",
-                page=1,
-                page_size=96,
-            ),
-        ),
-        SourceSyncSpec(
-            "torgi-russia.ru", TorgiRussiaSearchFilters(),
-            reconcile_missing=False, require_source_end=True,
-        ),
-        SourceSyncSpec(
-            "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
-        ),
-    )
+    from bankrotai.services.ingestion_spec_builders import core_source_specs
+    from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
+    return core_source_specs() + scheduled_etp_source_specs()
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
@@ -482,7 +448,10 @@ class NationwideIngestionService:
                 if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
-                await self._persist_page(run_id, result, page.items, connector=connector)
+                await self._persist_page(
+                    run_id, result, page.items, connector=connector,
+                    max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
+                )
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
@@ -657,18 +626,28 @@ class NationwideIngestionService:
         lots: list[Any],
         *,
         connector: AuctionConnector | None = None,
+        max_detail_attempts_per_page: int | None = None,
     ) -> None:
         batch_started = time.perf_counter()
+        if max_detail_attempts_per_page is not None and not (
+            type(max_detail_attempts_per_page) is int
+            and 1 <= max_detail_attempts_per_page <= 5
+        ):
+            raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
         for lot in lots:
             if not is_sale_real_estate_lot(lot):
+                continue
+            if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
                 continue
             if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
                 result.items_duplicates += 1
                 continue
             page_ids.add(lot.external_id)
             accepted.append(lot)
+        if max_detail_attempts_per_page is not None:
+            accepted = accepted[:max_detail_attempts_per_page]
         if accepted and connector is not None and "detail_enrichment" in connector.capabilities:
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
@@ -733,6 +712,10 @@ class NationwideIngestionService:
                 run_id,
                 asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
             )
+        if result.source_system == "nistp.ru":
+            proven = [lot for lot in accepted if independent_detail_proven(lot)]
+            result.items_failed += len(accepted) - len(proven)
+            accepted = proven
         with self.session_factory() as session:
             bind = session.get_bind()
 

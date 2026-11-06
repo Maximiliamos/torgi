@@ -231,7 +231,9 @@ def test_cdtrf_operator_source_is_disabled_without_three_gates(monkeypatch):
         "ETP_OPERATOR_CANARY_IMPORT_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
-    assert "cdtrf.ru" not in [x.source_id for x in default_source_specs()]
+    scheduled = next(x for x in default_source_specs() if x.source_id == "cdtrf.ru")
+    assert scheduled.reconcile_missing is False
+    assert scheduled.max_batches == 5
     with pytest.raises(PermissionError):
         source_full_specs("cdtrf.ru")
     for name in (

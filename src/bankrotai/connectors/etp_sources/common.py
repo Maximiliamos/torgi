@@ -405,6 +405,7 @@ def _parse_multi_lot_catalogue(
                 "listing_page": page,
                 "trade_id": item.get("trade"),
                 "lot_number": item.get("lot"),
+                "catalogue_source_status_text": str(item.get("source_status_text") or ""),
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,

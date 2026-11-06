@@ -65,6 +65,7 @@ async def fetch_nistp_lot(connector: HtmlEtpConnector, external_id: str) -> Norm
             "native_lot_nid": section.native_lot_nid,
             "individual_lot_identity_verified": True,
             "detail_start_price_verified": True,
+            "detail_status_normalized": _status(section.status_text),
             "detail_deposit_verified": section.deposit_rub is not None,
             "complete_source_inventory": False,
             "safe_for_archival": False,

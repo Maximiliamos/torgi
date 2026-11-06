@@ -1,5 +1,44 @@
 # ETP stage checklist — operator contract
 
+## 2026-11-06 — 09:00/21:00 MSK bounded scheduled discovery, PR #1128
+
+**Engineering change under review**: [PR #1128](https://github.com/Maximiliamos/torgi/pull/1128)
+extends the existing Celery `automatic_nationwide_lot_refresh_task("full")`
+at **06:00 and 18:00 UTC** (09:00/21:00 Moscow time).
+It does **not** add a second scheduler. The scheduled source set
+contains **M-ETS, CDTRF and NISTP** with **5-page limits** and
+`reconcile_missing=False`. M-ETS/CDTRF have at most two individual
+details per page. NISTP also has a two-detail-attempt-per-page limit,
+but only source rows with one of the **three exact provider active
+statuses** can be considered; only independently validated per-lot
+identity, matching initial price and active individual detail status
+may be persisted. Missing NISTP high-numbered sections (issue #1115)
+and terminal source states (issue #1116) must remain excluded.
+
+**Alfalot is NOT enabled**: production backend still targets
+`SUPCOMING`; the official `stateFilter_GD` request+pagination
+contract is missing. Adding a source to a 5-page discovery schedule
+does not prove full inventory, active scope, all details, or
+source-wide production acceptance.
+
+| Gate | Status in PR review |
+| --- | --- |
+| Source specs and Celery 09:00/21:00 wiring | IMPLEMENTED for 3 sources, **not merged/deployed** at document authoring |
+| Exact NISTP status+per-lot detail/price before write | IMPLEMENTED, awaiting PR CI/new Home evidence |
+| Missing-lot archival via source reconciliation | DISABLED (`reconcile_missing=False`) |
+| Global deduplication, independently expired-lot policies, GEO and map dirtiness | Still part of **existing core ingestion**; not a strictly read-only task |
+| Source 09:00/21:00 execution and 3-source per-run success | **NOT_TESTED until exact-SHA Home deploy and DB run records** |
+| Alfalot | **BLOCKED**, no scheduled spec |
+| S0–S7 / 22-source acceptance | UNCHANGED; NISTP #1115/#1116 remain open |
+
+**Operator verification after merge:** confirm deployed worker+beat image
+matches the merge SHA; inspect the **next** scheduled source runs in
+`LotSyncRun`/`LotSyncSourceRun` with trigger `celery-beat`, each source
+pages/items/inserted/updated/archived/errors; check runtime pause/
+circuit and lease. The 21:00 MSK tick preceding PR merge ran **old
+main** and is not evidence that the three new sources were scheduled.
+
+
 The bounded `etp_parser_checklist` module provides a **live read-only,
 stage-by-stage diagnostic for all 22 registered target sources**, including
 the existing Lot-online connector. It never imports, reconciles, geocodes,

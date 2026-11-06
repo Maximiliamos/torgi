@@ -55,9 +55,9 @@ def test_registry_preserves_source_specific_pilots_only():
         assert not isinstance(connector_registry.create(sid), DirectEtpPilotConnector)
 
 
-def test_pilots_are_not_enabled_in_default_nationwide_sync():
+def test_only_approved_non_archiving_pilots_are_enabled_in_default_sync():
     scheduled = {x.source_id for x in default_source_specs()}
-    assert not scheduled.intersection(PILOT_SOURCE_IDS)
+    assert scheduled.intersection(PILOT_SOURCE_IDS) == {"cdtrf.ru", "nistp.ru"}
 
 
 def test_preview_recovers_candidate_but_cannot_mutate_database():

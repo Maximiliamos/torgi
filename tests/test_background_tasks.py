@@ -328,7 +328,7 @@ def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> No
     assert created == {
         "triggered_by": "celery-beat",
         "trigger_type": "scheduled_fast",
-        "total_sources": 4,
+        "total_sources": 7,
     }
 
 

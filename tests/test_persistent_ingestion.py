@@ -843,7 +843,8 @@ def test_operator_nonreconciling_accepts_proven_last_page(sessions) -> None:
 def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
     specs = fast_source_specs(gis_publish_date_from="2026-08-22")
 
-    assert len(specs) == 5
+    assert len(specs) == 8
+    assert {"m-ets.ru", "cdtrf.ru", "nistp.ru"} <= {spec.source_id for spec in specs}
     assert all(spec.reconcile_missing is False and spec.max_batches == 1 for spec in specs)
     assert specs[0].filters.publish_date_from == "2026-08-22"
 
@@ -1262,3 +1263,144 @@ def test_p14_new_confirmed_active_can_restore_unknown_batch_source(sessions) -> 
         assert [row.new_status for row in session.scalars(
             select(LotStatusHistory).where(LotStatusHistory.lot_id == projection.id).order_by(LotStatusHistory.id)
         ).all()] == ["active", "unknown", "active"]
+
+
+
+def test_scheduled_nistp_persists_only_independently_verified_active_lots(sessions) -> None:
+    """A leaked terminal row and a missing shared-trade section never enter DB."""
+    class NistpConnector(FakeConnector):
+        source_id = "nistp.ru"
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.detail_attempts: list[str] = []
+
+        @staticmethod
+        def item(external_id: str, *, status: str = "Прием заявок") -> NormalizedLot:
+            candidate = lot(external_id)
+            candidate.source = "nistp"
+            candidate.source_system = "nistp.ru"
+            candidate.auction_status = "active"
+            candidate.lot_url = "https://nistp.ru/bankrot/trade_view.php?trade_nid=502957"
+            candidate.source_url = candidate.lot_url
+            candidate.raw_data = {
+                "region_code": "76",
+                "trade_id": "72113-ОАОФ",
+                "lot_number": external_id.rsplit(":", 1)[-1],
+                "catalogue_source_status_text": status,
+            }
+            return candidate
+
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            return ConnectorPage(items=[
+                self.item("nistp.ru:502957:4"),
+                self.item("nistp.ru:502379:259"),  # no individual section
+                self.item("nistp.ru:502957:5", status="Торги завершены"),
+                self.item("nistp.ru:502957:6", status="Неизвестно"),
+                self.item("nistp.ru:502957:7"),  # over the per-page attempt cap
+            ])
+
+        async def enrich_lot(self, item: NormalizedLot) -> NormalizedLot:
+            self.detail_attempts.append(item.external_id)
+            if item.external_id == "nistp.ru:502379:259":
+                raise ValueError("requested_lot_missing_in_trade_card")
+            item.detail_level = "detail"
+            item.raw_data.update({
+                "detail_enrichment_status": "success",
+                "individual_lot_identity_verified": True,
+                "detail_start_price_verified": True,
+                "detail_status_normalized": "active",
+            })
+            return item
+
+    connector = NistpConnector()
+    service = NationwideIngestionService(
+        sessions, connector_factory=lambda _source: connector,
+    )
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(run_id, (
+        SourceSyncSpec(
+            "nistp.ru", {}, reconcile_missing=False, max_batches=5,
+            max_detail_attempts_per_page=2,
+        ),
+    )))
+    source = output["sources"][0]
+    assert connector.detail_attempts == [
+        "nistp.ru:502957:4", "nistp.ru:502379:259",
+    ]
+    assert source["items_inserted"] == 1
+    assert source["items_failed"] == 1
+    assert source["items_archived"] == 0
+    assert source["complete_source_run"] is False
+    with sessions() as session:
+        rows = session.scalars(select(SourceLot)).all()
+        assert [row.external_id for row in rows] == ["nistp.ru:502957:4"]
+        assert rows[0].raw_data["individual_lot_identity_verified"] is True
+        assert rows[0].raw_data["detail_status_normalized"] == "active"
+
+
+def test_scheduled_nistp_rejects_unknown_detail_status_even_if_listing_active(sessions) -> None:
+    class UnprovenNistp(FakeConnector):
+        source_id = "nistp.ru"
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            value = lot("nistp.ru:502957:4")
+            value.source = "nistp"
+            value.source_system = "nistp.ru"
+            value.raw_data = {
+                "catalogue_source_status_text": "Прием заявок",
+                "trade_id": "72113-ОАОФ",
+            }
+            return ConnectorPage(items=[value])
+
+        async def enrich_lot(self, item: NormalizedLot) -> NormalizedLot:
+            item.detail_level = "detail"
+            item.raw_data.update({
+                "detail_enrichment_status": "success",
+                "individual_lot_identity_verified": True,
+                "detail_start_price_verified": True,
+                "detail_status_normalized": "unknown",
+            })
+            return item
+
+    service = NationwideIngestionService(
+        sessions, connector_factory=lambda _source: UnprovenNistp(),
+    )
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+    output = asyncio.run(service.run(run_id, (
+        SourceSyncSpec("nistp.ru", {}, reconcile_missing=False, max_batches=5),
+    )))
+    assert output["sources"][0]["items_seen"] == 0
+    assert output["sources"][0]["items_failed"] == 1
+    with sessions() as session:
+        assert session.scalars(select(SourceLot)).all() == []
+
+
+def test_scheduled_nistp_detail_cap_fails_closed_on_bad_configuration(sessions) -> None:
+    class OneNistp(FakeConnector):
+        source_id = "nistp.ru"
+
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            item = lot("nistp.ru:502957:4")
+            item.source = "nistp"
+            item.source_system = "nistp.ru"
+            item.raw_data["catalogue_source_status_text"] = "Прием заявок"
+            return ConnectorPage(items=[item])
+
+    service = NationwideIngestionService(
+        sessions, connector_factory=lambda _source: OneNistp(),
+    )
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+    output = asyncio.run(service.run(run_id, (
+        SourceSyncSpec(
+            "nistp.ru", {}, reconcile_missing=False, max_batches=5,
+            max_detail_attempts_per_page=6,
+        ),
+    )))
+    assert output["sources"][0]["status"] == "failed"
+    with sessions() as session:
+        assert session.scalars(select(SourceLot)).all() == []
