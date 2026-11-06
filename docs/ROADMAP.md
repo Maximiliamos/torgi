@@ -11,6 +11,17 @@ property-only scope remain missing. Sberbank-AST is still unfiltered: the
 bankruptcy checkbox is unchecked and its informational landing is not a result
 catalogue. No full two-pass walk or production acceptance follows from this.
 
+M-ETS implementation follow-up 2026-11-06: code commit `74eaa4a` adds a
+strict full two-pass read-only runner with page-by-page progress, exact selected
+category/status checks, sequential next-link validation, catalogue ID/price/
+status digests and an incomplete-terminal-page proof. **29 focused tests pass**
+with Ruff/mypy/PowerShell parsing clean. The full local repository run produced
+1,232 pass / 12 skip and two unrelated environment failures: stale installed
+distribution `0.1.0` versus project `0.3.10`, and an existing naive local-time
+versus UTC lease assertion. A real no-VPN two-pass run is still `NOT_TESTED`;
+the seven-category filter still omits category 11 land and 40 agricultural
+real estate. No DB/reconcile/archive/GEO/map action was enabled.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

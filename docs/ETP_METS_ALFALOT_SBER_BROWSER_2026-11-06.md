@@ -33,6 +33,26 @@ reconciliation, archival, GEO or map publication occurred.
   `Торги в стадии приема заявок` is still required to verify the live current
   price path independently of catalogue text.
 
+### M-ETS full-walk implementation (not live evidence)
+
+- Code commit `74eaa4a12bcc2601afe334445ceffbe9be7c3433` adds
+  `etp_mets_full_catalogue.py` and `run-mets-full-readonly-no-vpn.ps1`.
+- The scanner verifies on every page the exact seven selected category IDs,
+  status IDs 0/1, visible current page, unchanged `offerCount`, sequential
+  next link preserving the encoded filter, canonical URL versus
+  `trade-МЭТС, Лот №`, positive catalogue price and one of the two selected
+  source statuses. It rejects within/cross-page duplicate IDs.
+- Completion requires the calculated last page, no next control, an incomplete
+  last page, and `unique IDs == offerCount`; two passes must match ID and
+  price/status/title record digests. Reports always retain
+  `complete_source_inventory=false`, `category_scope_complete=false`,
+  `reconcile_missing=false` and `archival_allowed=false`.
+- 29 focused M-ETS tests pass; Ruff, focused mypy and PowerShell syntax parsing
+  pass. Full repository run: 1,232 passed, 12 skipped, with two unrelated local
+  environment failures (stale installed distribution metadata and an existing
+  UTC/local-naive lease comparison). The actual no-VPN source run has not yet
+  happened and remains `NOT_TESTED`.
+
 ## Alfalot
 
 - The operator intentionally selected **`прием заявки`**, not `все`. On both
@@ -82,8 +102,8 @@ reconciliation, archival, GEO or map publication occurred.
 
 ## Remaining acceptance
 
-For all three sources, two full independent filtered walks, full ID uniqueness,
-expanded representative detail samples, staging persistence/update/deduplication,
-backup restore, GEO, MapDataset/S3/website publication and the 09:00/21:00 MSK
-cycles remain unproven. Browser pagination evidence must not enable missing-lot
-archival.
+For all three sources, live two-pass filtered walks (the M-ETS runner is only
+implemented/tested so far), expanded representative detail samples, staging
+persistence/update/deduplication, backup restore, GEO, MapDataset/S3/website
+publication and the 09:00/21:00 MSK cycles remain unproven. Browser pagination
+evidence must not enable missing-lot archival.
