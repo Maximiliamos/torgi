@@ -1,12 +1,15 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
 Browser follow-up 2026-11-06: see
-`ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. Three sources need scope proof
-before parser acceptance: M-ETS omitted land/agricultural categories and loaded
-page 1 in all three tabs; Alfalot's hall is a one-row connection-error state while
-its official search has property lots; Sberbank's loaded catalogue was outside
-bankruptcy scope and its UI caps counts at 10,000. Fresh request/response and
-per-lot cards are required before changing status/pagination contracts.
+`ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. M-ETS pages 1/2/153 are now
+distinct and page 153 is an incomplete terminal page for the observed
+seven-category filter; two exact cards match identity/initial price/status.
+Alfalot's selected `stateFilter_GD` is confirmed as «прием заявки»: page 2 has
+20 lots, terminal page 3 has 2, and two property cards independently report
+`Идет прием заявок` with their own prices. The raw client pagination request and
+property-only scope remain missing. Sberbank-AST is still unfiltered: the
+bankruptcy checkbox is unchecked and its informational landing is not a result
+catalogue. No full two-pass walk or production acceptance follows from this.
 
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
