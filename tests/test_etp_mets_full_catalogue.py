@@ -7,6 +7,7 @@ import pytest
 from bankrotai.connectors.registry.mets_public import APARTMENTS_URL
 from bankrotai.services.etp_mets_full_catalogue import (
     MetsCatalogueScanError,
+    probe_mets_pages,
     run_two_independent_passes,
     scan_complete_mets_catalogue,
 )
@@ -55,6 +56,8 @@ def _html(
     statuses: tuple[str, ...] = ("0", "1"),
     prices: tuple[str, ...] | None = None,
     next_href: str | None = None,
+    selected_page_visible: bool = True,
+    paginator_count: int = 1,
 ) -> str:
     price_values = prices or tuple("100.00" for _ in identities)
     category_options = "".join(
@@ -73,12 +76,21 @@ def _html(
             '<a class="next link" aria-label="Следующая страница" '
             f'href="{next_href}"></a>'
         )
+    page_marker = (
+        f'<span class="active">{page}</span>'
+        if selected_page_visible
+        else f"<span>{page}</span>"
+    )
+    paginators = "".join(
+        f'<div class="paginator">{page_marker}{next_link}</div>'
+        for _ in range(paginator_count)
+    )
     return f"""
     <html><head><meta itemprop="offerCount" content="{total}"></head><body>
       <select name="search_category" multiple>{category_options}</select>
       <select name="stat" multiple>{status_options}</select>
       <div class="search-results-info"><div class="value">{total}</div></div>
-      <div class="paginator"><span class="active">{page}</span>{next_link}</div>
+      {paginators}
       {''.join(_card(identity, price=price) for identity, price in zip(identities, price_values))}
     </body></html>
     """
@@ -91,6 +103,16 @@ class _Response:
     def __init__(self, html: str, url: str) -> None:
         self.text = html
         self.content = html.encode()
+        self.url = url
+
+
+class _RedirectResponse:
+    status_code = 308
+    text = ""
+    content = b""
+    headers = {"Location": f"{APARTMENTS_URL}&page=155"}
+
+    def __init__(self, url: str) -> None:
         self.url = url
 
 
@@ -112,6 +134,16 @@ class _Session:
         self.closed = True
 
 
+class _ProbeSession(_Session):
+    def get(self, url, *, timeout, allow_redirects, headers):
+        if len(self.calls) == len(self.pages):
+            self.calls.append(url)
+            return _RedirectResponse(url)
+        return super().get(
+            url, timeout=timeout, allow_redirects=allow_redirects, headers=headers,
+        )
+
+
 def _good_pages(*, last_price: str = "300.00") -> list[str]:
     return [
         _html(1, ["244381-1", "244360-1"], total=3, next_page=2),
@@ -129,6 +161,7 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["unique_lot_ids"] == 3
     assert report["last_page"] == 2
     assert report["last_page_proven"] is True
+    assert report["computed_next_after_pages"] == []
     assert report["complete_selected_filter_inventory"] is True
     assert report["catalogue_prices_verified"] is True
     assert report["catalogue_statuses_verified"] is True
@@ -142,6 +175,123 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["geocoding"] is False
     assert report["map_publication"] is False
     assert "244381-1" not in str(report)
+
+
+def test_reported_total_continues_after_premature_missing_next() -> None:
+    pages = [
+        _html(
+            1,
+            ["244381-1", "244360-1"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+        _html(
+            2,
+            ["215028-291"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+    ]
+    session = _Session(pages)
+    report = scan_complete_mets_catalogue(
+        session, max_pages=10, delay_seconds=0,
+    )
+
+    assert session.calls == [APARTMENTS_URL, f"{APARTMENTS_URL}&page=2"]
+    assert report["unique_lot_ids"] == 3
+    assert report["last_page_proven"] is True
+    assert report["computed_next_after_pages"] == [1]
+    assert report["pages"][0]["ui_next_page"] is None
+    assert report["pages"][0]["next_source"] == "reported_total"
+    assert report["pages"][1]["next_source"] == "terminal"
+
+
+def test_all_duplicate_paginators_must_agree_on_active_page() -> None:
+    pages = [
+        _html(
+            1,
+            ["244381-1", "244360-1"],
+            total=3,
+            next_page=2,
+            paginator_count=2,
+        ),
+        _html(
+            2,
+            ["215028-291"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+    ]
+    report = scan_complete_mets_catalogue(
+        _Session(pages), max_pages=10, delay_seconds=0,
+    )
+    assert report["last_page_proven"] is True
+
+    valid_first = pages[0]
+    pages[0] = _html(
+        1,
+        ["244381-1", "244360-1"],
+        total=3,
+        next_page=2,
+        selected_page_visible=False,
+        paginator_count=2,
+    )
+    with pytest.raises(
+        MetsCatalogueScanError,
+        match=r'page 1 is not visibly selected; paginator=.*"active_count": 0',
+    ):
+        scan_complete_mets_catalogue(_Session(pages), delay_seconds=0)
+
+    conflicting = valid_first.replace(
+        '<span class="active">1</span>',
+        '<span class="active">2</span>',
+        1,
+    )
+    with pytest.raises(MetsCatalogueScanError, match="page 1 is not visibly selected"):
+        scan_complete_mets_catalogue(_Session([conflicting]), delay_seconds=0)
+
+
+def test_duplicate_paginator_next_controls_must_agree() -> None:
+    page = _html(
+        1,
+        ["244381-1", "244360-1"],
+        total=3,
+        next_page=2,
+        paginator_count=2,
+    )
+    inconsistent = page.replace('aria-label="Следующая страница"', "", 1)
+    with pytest.raises(MetsCatalogueScanError, match="next controls disagree"):
+        scan_complete_mets_catalogue(_Session([inconsistent]), delay_seconds=0)
+
+
+def test_tail_probe_reports_only_bounded_hashed_structure() -> None:
+    pages = [
+        _html(152, ["244381-1"], total=3059, next_page=None, paginator_count=2),
+        _html(153, ["244360-1"], total=3059, next_page=None, paginator_count=2),
+        _html(154, ["244381-1"], total=3059, next_page=None, paginator_count=2),
+    ]
+    report = probe_mets_pages([152, 153, 154, 156], _ProbeSession(pages))
+
+    assert report["mode"] == "tail_readonly_probe"
+    assert report["requested_pages"] == [152, 153, 154, 156]
+    assert [item["canonical_id_count"] for item in report["results"][:3]] == [1, 1, 1]
+    assert report["results"][0]["canonical_ids_sha256"] == report["results"][2]["canonical_ids_sha256"]
+    assert report["results"][0]["canonical_ids_sha256"] != report["results"][1]["canonical_ids_sha256"]
+    assert report["results"][0]["paginators"] == [
+        {"active_texts": ["152"], "next_pages": []},
+        {"active_texts": ["152"], "next_pages": []},
+    ]
+    assert report["results"][3] == {
+        "page": 156,
+        "http_status": 308,
+        "redirect": {"path": "/search", "page": "155", "filter_preserved": True},
+    }
+    assert "244381-1" not in str(report)
+    assert report["production_database_writes"] == 0
+    assert report["archival_allowed"] is False
 
 
 def test_two_matching_independent_passes_close_sessions() -> None:

@@ -8,6 +8,55 @@ reconciliation, archival, GEO or map publication occurred.
 
 ## M-ETS
 
+Live no-VPN parser preflight update (2026-11-06): SHA `9f75b5679c8dc5284e7780e2c8e7755d24503b97`
+successfully parsed pages 1 and 2 with 20 items each, 40 unique IDs, stable
+reported total 3,057 and exact sequential next targets 2 and 3. Raw HTML has
+two paginator blocks (upper/lower); both page-1 blocks contained the same
+`span.active.startpage` text `1`. The parser now requires every duplicated
+paginator to agree on active page and next target. This bounded preflight ended
+at the intentional two-page budget and is **not** a terminal-page or two-pass
+proof. It performed no database, reconciliation, archival, GEO or map writes.
+
+Tail probe `3b951b88` later observed total 3,082: pages 152, 153 and 154
+each contained 20 cards with three distinct canonical-ID hashes. Both pagers
+showed the requested page; 152 linked to 153, 153 linked to 154, and full page
+154 omitted Next. Thus the UI can hide Next one page before the reported-total
+terminal page. Page 155/156 direct evidence remains required before another
+full walk.
+
+The next bounded probe reached page 155, then page 156 returned HTTP 308. The
+first probe version aborted before serializing page 155, so its card count/hash
+is not claimed. The diagnostic now records each 200 result before later
+redirects and stores only a sanitized same-host redirect page/filter summary;
+the production scanner continues to reject redirects.
+
+Repeat tail probe `1e3b9b91` completed the proof at a newer live total 3,083:
+page 155 returned HTTP 200 with three canonical IDs and two agreeing active
+155 pagers without Next. Page 156 returned HTTP 308 to filtered page 155.
+Therefore the selected catalogue terminal contract is the exact reported-total
+page with an incomplete final page; the scanner need not follow the out-of-range
+redirect. Two new complete matching passes remain required because the live
+catalogue changed during this investigation.
+
+The final no-VPN run at exact SHA
+`d1241be51f2eba8e79526632aa68abd8b5c4e38d` completed those two passes.
+Each pass traversed 155 pages and found exactly 3,083 unique IDs; the ID digest
+and the price/status/title record digest matched. Page 155 contained three
+items both times. The exact selected categories/statuses, positive catalogue
+prices and allowed statuses were verified on every page. Evidence:
+`D:\BankrotAI\etp-evidence\mets-full-readonly\mets-two-pass-20261106T163655Z.json`.
+This proves the complete **selected seven-category/status-0-or-1 inventory at
+those two observation times**, not the complete provider inventory or a stable
+atomic provider snapshot. The run made zero production database writes and did
+not reconcile, archive, geocode or publish a map.
+
+The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
+3,040 unique IDs without a duplicate or field-contract failure. The provider
+reported 3,059 throughout, but page 152 was full (20 cards) and both pagers
+omitted Next. The scanner correctly rejected this as terminal: 19 reported
+items were not reached and pass 2 did not start. A bounded pages 152/153/154
+tail probe is required before changing pagination logic.
+
 - The selected catalogue URL remains the seven-category search
   `/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9`.
   Page 1, page 2 and page 153 were loaded as separate tabs.
@@ -33,7 +82,7 @@ reconciliation, archival, GEO or map publication occurred.
   `Торги в стадии приема заявок` is still required to verify the live current
   price path independently of catalogue text.
 
-### M-ETS full-walk implementation (not live evidence)
+### M-ETS full-walk implementation and live evidence
 
 - Code commit `74eaa4a12bcc2601afe334445ceffbe9be7c3433` adds
   `etp_mets_full_catalogue.py` and `run-mets-full-readonly-no-vpn.ps1`.
@@ -50,8 +99,8 @@ reconciliation, archival, GEO or map publication occurred.
 - 29 focused M-ETS tests pass; Ruff, focused mypy and PowerShell syntax parsing
   pass. Full repository run: 1,232 passed, 12 skipped, with two unrelated local
   environment failures (stale installed distribution metadata and an existing
-  UTC/local-naive lease comparison). The actual no-VPN source run has not yet
-  happened and remains `NOT_TESTED`.
+  UTC/local-naive lease comparison). The exact-SHA no-VPN two-pass selected
+  catalogue walk is now `PASS` as described above.
 
 ## Alfalot
 
@@ -102,8 +151,9 @@ reconciliation, archival, GEO or map publication occurred.
 
 ## Remaining acceptance
 
-For all three sources, live two-pass filtered walks (the M-ETS runner is only
-implemented/tested so far), expanded representative detail samples, staging
-persistence/update/deduplication, backup restore, GEO, MapDataset/S3/website
+For Alfalot and Sberbank-AST, live two-pass filtered walks remain unproven.
+M-ETS has two matching selected-filter walks, but expanded representative
+detail samples and complete category scope remain unproven. For all three,
+staging persistence/update/deduplication, backup restore, GEO, MapDataset/S3/website
 publication and the 09:00/21:00 MSK cycles remain unproven. Browser pagination
 evidence must not enable missing-lot archival.

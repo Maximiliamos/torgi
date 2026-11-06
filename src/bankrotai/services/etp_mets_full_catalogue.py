@@ -106,17 +106,60 @@ def _reported_total(soup: BeautifulSoup) -> int:
 
 
 def _selected_page_is_visible(soup: BeautifulSoup, page_number: int) -> bool:
+    paginators = soup.select(".paginator")
+    if not paginators:
+        return False
+    for paginator in paginators:
+        active = paginator.select(".active")
+        if (
+            len(active) != 1
+            or active[0].get_text(" ", strip=True) != str(page_number)
+        ):
+            return False
+    return True
+
+
+def _paginator_marker_summary(soup: BeautifulSoup) -> str:
+    """Return bounded, non-lot structural evidence for parser failures."""
     active = soup.select(".paginator .active")
-    return len(active) == 1 and active[0].get_text(" ", strip=True) == str(page_number)
+    markers = [
+        {
+            "tag": marker.name,
+            "classes": sorted(str(value) for value in marker.get("class", [])),
+            "text": marker.get_text(" ", strip=True)[:40],
+        }
+        for marker in active[:5]
+    ]
+    return json.dumps(
+        {
+            "paginator_count": len(soup.select(".paginator")),
+            "active_count": len(active),
+            "active_markers": markers,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def _next_page(soup: BeautifulSoup, page_number: int) -> int | None:
-    links = soup.select('div.paginator a.next.link[aria-label="Следующая страница"]')
-    if not links:
+    paginators = soup.select("div.paginator")
+    if not paginators:
+        raise MetsCatalogueScanError("M-ETS paginator is absent")
+    links_by_paginator = [
+        paginator.select('a.next.link[aria-label="Следующая страница"]')
+        for paginator in paginators
+    ]
+    if any(len(links) > 1 for links in links_by_paginator):
+        raise MetsCatalogueScanError("M-ETS paginator has multiple local next controls")
+    present = [links[0] for links in links_by_paginator if links]
+    if not present:
         return None
-    if len(links) != 1:
-        raise MetsCatalogueScanError("M-ETS paginator has multiple next controls")
-    href = urljoin(BASE, str(links[0].get("href") or ""))
+    if len(present) != len(paginators):
+        raise MetsCatalogueScanError("M-ETS paginator next controls disagree")
+    hrefs = {urljoin(BASE, str(link.get("href") or "")) for link in present}
+    if len(hrefs) != 1:
+        raise MetsCatalogueScanError("M-ETS paginator next targets disagree")
+    href = hrefs.pop()
     parsed = urlsplit(href)
     expected_query = parse_qs(urlsplit(APARTMENTS_URL).query)
     actual_query = parse_qs(parsed.query)
@@ -200,7 +243,8 @@ def _parse_page(html: str, page_number: int) -> dict[str, Any]:
     _verify_selected_filters(soup)
     if not _selected_page_is_visible(soup, page_number):
         raise MetsCatalogueScanError(
-            f"M-ETS requested page {page_number} is not visibly selected"
+            f"M-ETS requested page {page_number} is not visibly selected; "
+            f"paginator={_paginator_marker_summary(soup)}"
         )
     total = _reported_total(soup)
     cards = soup.select(".card-so")
@@ -283,6 +327,7 @@ def scan_complete_mets_catalogue(
     first_page_size: int | None = None
     reported_total: int | None = None
     last_page_proven = False
+    computed_next_pages: list[int] = []
     started = time.monotonic()
 
     for page_number in range(1, max_pages + 1):
@@ -311,7 +356,16 @@ def scan_complete_mets_catalogue(
             for external_id, price, status, title in observations
         )
         status_counts = Counter(item[2] for item in observations)
-        next_page = parsed["next_page"]
+        ui_next_page = parsed["next_page"]
+        next_page = ui_next_page
+        if next_page is None and len(seen) < reported_total:
+            expected_last = math.ceil(reported_total / first_page_size)
+            if page_number >= expected_last:
+                raise MetsCatalogueScanError(
+                    "M-ETS paginator ended before the reported total was collected"
+                )
+            next_page = page_number + 1
+            computed_next_pages.append(page_number)
         if next_page is not None and len(ids) != first_page_size:
             raise MetsCatalogueScanError(
                 "M-ETS non-terminal page size differs from the first page"
@@ -329,12 +383,20 @@ def scan_complete_mets_catalogue(
                     for external_id, price, status, title in observations
                 )).encode("utf-8")
             ).hexdigest(),
+            "ui_next_page": ui_next_page,
             "next_page": next_page,
+            "next_source": (
+                "ui" if ui_next_page is not None
+                else "reported_total" if next_page is not None
+                else "terminal"
+            ),
         })
         print(
             f"M-ETS readonly page={page_number} items={len(ids)} "
             f"unique={len(seen)} total={reported_total} "
-            f"next={next_page or 'none'} elapsed={time.monotonic() - started:.1f}s",
+            f"next={next_page or 'none'} "
+            f"next_source={pages[-1]['next_source']} "
+            f"elapsed={time.monotonic() - started:.1f}s",
             flush=True,
         )
         if next_page is None:
@@ -379,6 +441,7 @@ def scan_complete_mets_catalogue(
             "\n".join(sorted(records)).encode("utf-8")
         ).hexdigest(),
         "pages": pages,
+        "computed_next_after_pages": computed_next_pages,
         "catalogue_prices_verified": True,
         "catalogue_statuses_verified": True,
         "complete_selected_filter_inventory": last_page_proven,
@@ -451,11 +514,156 @@ def run_two_independent_passes(
     }
 
 
+def probe_mets_pages(
+    page_numbers: list[int],
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Capture bounded, non-lot structural evidence for selected pages."""
+    if (
+        not page_numbers
+        or len(page_numbers) > 10
+        or len(set(page_numbers)) != len(page_numbers)
+        or any(type(page) is not int or not 1 <= page <= MAX_SCAN_PAGES
+               for page in page_numbers)
+    ):
+        raise MetsCatalogueScanError("Unsafe M-ETS probe page selection")
+    owned_session = session is None
+    active_session = session or requests.Session()
+    results: list[dict[str, Any]] = []
+    try:
+        for page_number in page_numbers:
+            print(f"M-ETS tail probe requesting page={page_number}...", flush=True)
+            url = _page_url(page_number)
+            response = active_session.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+                headers={
+                    "User-Agent": "TORGI-METS-full-readonly-audit/1",
+                    "Accept": "text/html",
+                },
+            )
+            status_code = int(response.status_code)
+            if getattr(response, "url", url) != url:
+                raise MetsCatalogueScanError(
+                    "M-ETS probe response URL differs from requested URL"
+                )
+            if status_code != 200:
+                location = urljoin(BASE, response.headers.get("Location", ""))
+                parsed_location = urlsplit(location)
+                location_query = parse_qs(parsed_location.query)
+                safe_location = None
+                if (
+                    parsed_location.scheme == "https"
+                    and parsed_location.netloc == "m-ets.ru"
+                    and parsed_location.path == "/search"
+                ):
+                    safe_location = {
+                        "path": parsed_location.path,
+                        "page": location_query.get("page", [None])[-1],
+                        "filter_preserved": (
+                            {key: value for key, value in location_query.items()
+                             if key != "page"}
+                            == parse_qs(urlsplit(APARTMENTS_URL).query)
+                        ),
+                    }
+                results.append({
+                    "page": page_number,
+                    "http_status": status_code,
+                    "redirect": safe_location,
+                })
+                print(
+                    f"M-ETS tail probe page={page_number} "
+                    f"http_status={status_code} redirect={safe_location}",
+                    flush=True,
+                )
+                continue
+            if len(response.content) > MAX_HTML_BYTES:
+                raise MetsCatalogueScanError("M-ETS probe response exceeds size limit")
+            if "text/html" not in response.headers.get("Content-Type", "").lower():
+                raise MetsCatalogueScanError("M-ETS probe response is not HTML")
+            soup = BeautifulSoup(response.text, "html.parser")
+            filter_error = None
+            try:
+                _verify_selected_filters(soup)
+            except MetsCatalogueScanError as exc:
+                filter_error = str(exc)
+            total = None
+            total_error = None
+            try:
+                total = _reported_total(soup)
+            except MetsCatalogueScanError as exc:
+                total_error = str(exc)
+            canonical_ids = sorted({
+                value.rsplit("/", 1)[-1]
+                for value in discover_lot_urls(response.text, limit=50)
+            })
+            paginator_rows = []
+            for paginator in soup.select("div.paginator")[:5]:
+                active_texts = [
+                    marker.get_text(" ", strip=True)[:40]
+                    for marker in paginator.select(".active")[:5]
+                ]
+                next_pages = []
+                for link in paginator.select(
+                    'a.next.link[aria-label="Следующая страница"]'
+                )[:5]:
+                    query = parse_qs(urlsplit(str(link.get("href") or "")).query)
+                    next_pages.extend(query.get("page", [])[:2])
+                paginator_rows.append({
+                    "active_texts": active_texts,
+                    "next_pages": next_pages,
+                })
+            results.append({
+                "page": page_number,
+                "http_status": status_code,
+                "reported_total": total,
+                "total_error": total_error,
+                "filter_error": filter_error,
+                "card_count": len(soup.select(".card-so")),
+                "canonical_id_count": len(canonical_ids),
+                "canonical_ids_sha256": hashlib.sha256(
+                    "\n".join(canonical_ids).encode("ascii")
+                ).hexdigest(),
+                "paginators": paginator_rows,
+            })
+            print(
+                f"M-ETS tail probe page={page_number} http_status=200 "
+                f"cards={len(soup.select('.card-so'))} total={total}",
+                flush=True,
+            )
+    finally:
+        if owned_session:
+            active_session.close()
+    return {
+        "source": "m-ets.ru",
+        "mode": "tail_readonly_probe",
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "requested_pages": page_numbers,
+        "results": results,
+        "production_database_writes": 0,
+        "archival_allowed": False,
+        "reconcile_missing": False,
+        "geocoding": False,
+        "map_publication": False,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
+    parser.add_argument("--probe-pages")
     args = parser.parse_args()
+    if args.probe_pages:
+        try:
+            pages = [int(value) for value in args.probe_pages.split(",")]
+        except ValueError as exc:
+            raise SystemExit("M-ETS probe pages must be comma-separated integers") from exc
+        print(json.dumps(
+            probe_mets_pages(pages), ensure_ascii=False, sort_keys=True,
+        ))
+        return
     report = run_two_independent_passes(
         max_pages=args.max_pages,
         delay_seconds=args.delay_seconds,

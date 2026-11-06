@@ -14,6 +14,38 @@
 > IDs 11/40, individual active-card validation, DB/GEO/map and scheduling are
 > still open. This does not alter the NISTP/CDTRF acceptance state below.
 
+> **M-ETS live preflight update:** SHA `9f75b567` parsed no-VPN pages 1/2
+> (20 + 20 items, 40 unique, total 3,057, next 2/3). Raw HTML contains two
+> agreeing paginator blocks. PR #1124 enforces agreement across both. This is
+> not final-page/two-pass acceptance and made no DB/GEO/map changes. Home
+> deployment of prior merged SHA `0029c004` succeeded in run 42207409497.
+
+> **M-ETS full-attempt update:** `ddb1763b` reached page 152 with 3,040
+> unique IDs and no duplicates, but the stable reported total was 3,059 and
+> the full page 152 had no Next. Completeness remains FAIL; pass 2 was not
+> started. Probe pages 152/153/154 before revising the terminal contract.
+
+> Tail probe `3b951b88` proved pages 152/153/154 are distinct and full at
+> newer total 3,082; page 154 omitted Next prematurely. #1124 continues only
+> when a full page plus reported total proves another page, and still requires
+> exact total/incomplete terminal. Direct pages 155/156 remain pending.
+
+> First 155/156 probe saw HTTP 308 on page 156 but aborted before retaining
+> page-155 structure. Updated probe persists each successful page and a
+> sanitized redirect summary; the full scanner still rejects redirects.
+
+> Repeat tail probe `1e3b9b91` proved page 155 terminal at total 3,083 with
+> three cards and no Next; page 156 returned HTTP 308 to filtered page 155.
+> Terminal proof now passes for that snapshot, but two matching complete
+> walks remain pending because live totals changed between probes.
+
+> Final M-ETS proof at exact SHA `d1241be5`: two independent no-VPN passes
+> each traversed 155 pages and found 3,083 unique IDs. ID digest
+> `3c0cfe95...e2e01b` and catalogue-record digest `cee582e5...61f6e1` match;
+> terminal page 155 contained three cards both times. Selected-filter catalogue
+> pagination/IDs/prices/statuses now pass. Complete provider scope, active
+> individual-detail validation, DB/GEO/map and scheduling remain unproved.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

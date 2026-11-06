@@ -1,15 +1,17 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
-Browser follow-up 2026-11-06: see
-`ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. M-ETS pages 1/2/153 are now
-distinct and page 153 is an incomplete terminal page for the observed
-seven-category filter; two exact cards match identity/initial price/status.
+Browser/read-only follow-up 2026-11-06: see
+`ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. M-ETS exact SHA `d1241be5`
+completed two matching selected-filter walks: 155 pages, 3,083 unique IDs,
+identical ID and catalogue-record digests, and three items on terminal page
+155. Two exact detail cards also match identity/initial price/status.
 Alfalot's selected `stateFilter_GD` is confirmed as «прием заявки»: page 2 has
 20 lots, terminal page 3 has 2, and two property cards independently report
 `Идет прием заявок` with their own prices. The raw client pagination request and
 property-only scope remain missing. Sberbank-AST is still unfiltered: the
 bankruptcy checkbox is unchecked and its informational landing is not a result
-catalogue. No full two-pass walk or production acceptance follows from this.
+catalogue. No Alfalot/Sberbank two-pass walk or production acceptance follows
+from this.
 
 M-ETS implementation follow-up 2026-11-06: code commit `74eaa4a` adds a
 strict full two-pass read-only runner with page-by-page progress, exact selected
@@ -18,9 +20,49 @@ status digests and an incomplete-terminal-page proof. **29 focused tests pass**
 with Ruff/mypy/PowerShell parsing clean. The full local repository run produced
 1,232 pass / 12 skip and two unrelated environment failures: stale installed
 distribution `0.1.0` versus project `0.3.10`, and an existing naive local-time
-versus UTC lease assertion. A real no-VPN two-pass run is still `NOT_TESTED`;
-the seven-category filter still omits category 11 land and 40 agricultural
+versus UTC lease assertion. A real no-VPN two-pass run is now `PASS` for the
+selected filter at exact SHA `d1241be5`; the seven-category filter still omits
+category 11 land and 40 agricultural
 real estate. No DB/reconcile/archive/GEO/map action was enabled.
+
+M-ETS live preflight follow-up: after fixing the Windows checkout import in
+merged #1123, SHA `9f75b567` parsed pages 1/2 without VPN: 20 + 20 items,
+40 unique IDs, total 3,057 and next targets 2/3. The provider emits two
+agreeing paginator blocks; PR #1124 now validates both rather than requiring
+one global pager. This was an intentional two-page budget stop, not a complete
+walk. Main SHA `0029c004` deployed successfully on Home in run 42207409497,
+including backup/migrations, public REG.RU S3 manifest and local API checks.
+
+M-ETS full-attempt follow-up: SHA `ddb1763b` parsed 152 pages and 3,040
+unique IDs without duplicates. Reported total remained 3,059, but full page
+152 exposed no Next; the scanner failed closed because 19 items were unreached
+and did not begin pass 2. Next action is a short hashed tail probe of pages
+152/153/154, not another full walk and not a weaker terminal rule.
+
+Tail probe `3b951b88` then found 20 distinct-hash items on each of pages
+152/153/154 at total 3,082. Page 154 omitted Next prematurely. PR #1124 adds
+fail-closed continuation from a full page only when the reported total proves
+more rows remain; completion still requires exact total and an incomplete last
+page. Probe 155/156 before rerunning both full passes.
+
+Initial 155/156 probe observed HTTP 308 on page 156 but lost the already-fetched
+155 summary when it aborted. The probe now persists per-page 200 evidence plus
+sanitized redirect target/status; the full scanner still fails on redirects.
+
+Repeat tail probe `1e3b9b91` established page 155 as the terminal page at
+live total 3,083: three cards, no Next, agreeing active markers. Page 156
+returned HTTP 308 to filtered page 155. The terminal contract is now proven
+for that snapshot. At that point two complete matching passes were the next
+required step; the final run below subsequently completed them.
+
+Final M-ETS selected-filter proof: exact SHA `d1241be5` completed two
+independent 155-page walks with 3,083 unique IDs in each. ID digest
+`3c0cfe95...e2e01b` and price/status/title record digest
+`cee582e5...61f6e1` match; terminal page 155 contained three items in both
+passes. This closes selected-filter catalogue pagination, identity, catalogue
+price and status proof. It does **not** close complete provider scope,
+individual active-card validation, PostgreSQL, reconciliation/archival, GEO,
+MapDataset/S3/WEB or 09:00/21:00 scheduling.
 
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
