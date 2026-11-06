@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from bankrotai.connectors.registry.mets_public import APARTMENTS_URL
@@ -8,6 +10,17 @@ from bankrotai.services.etp_mets_full_catalogue import (
     run_two_independent_passes,
     scan_complete_mets_catalogue,
 )
+
+
+def test_windows_runner_imports_scanner_from_checked_out_source() -> None:
+    script = (
+        Path(__file__).parents[1] / "scripts" / "run-mets-full-readonly-no-vpn.ps1"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "$sourceRoot = Join-Path $repo 'src'" in script
+    assert "$env:PYTHONPATH = $sourceRoot" in script
+    assert "git.exe -C $repo rev-parse HEAD" in script
+    assert "Remove-Item Env:PYTHONPATH" in script
 
 
 def _card(
