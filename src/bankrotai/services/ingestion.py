@@ -57,6 +57,7 @@ class SourceSyncSpec:
     reconcile_missing: bool = True
     max_batches: int | None = None
     require_source_end: bool = False
+    max_detail_attempts_per_page: int | None = None
 
 
 @dataclass(slots=True)
@@ -481,7 +482,10 @@ class NationwideIngestionService:
                 if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
-                await self._persist_page(run_id, result, page.items, connector=connector)
+                await self._persist_page(
+                    run_id, result, page.items, connector=connector,
+                    max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
+                )
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
@@ -656,18 +660,41 @@ class NationwideIngestionService:
         lots: list[Any],
         *,
         connector: AuctionConnector | None = None,
+        max_detail_attempts_per_page: int | None = None,
     ) -> None:
         batch_started = time.perf_counter()
+        if max_detail_attempts_per_page is not None and not (
+            type(max_detail_attempts_per_page) is int
+            and 1 <= max_detail_attempts_per_page <= 5
+        ):
+            raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
         for lot in lots:
             if not is_sale_real_estate_lot(lot):
                 continue
+            if result.source_system == "nistp.ru":
+                # The NISTP provider leaked 43 terminal lots into its checked
+                # active-status selection. Require the exact per-row state.
+                raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+                source_status = " ".join(
+                    str(raw.get("catalogue_source_status_text") or "").split()
+                ).casefold().replace("ё", "е")
+                if (
+                    source_status not in {
+                        "торги объявлены", "прием заявок", "идут торги",
+                    }
+                    or lot.auction_status not in {"active", "scheduled"}
+                    or lot.start_price is None or lot.start_price <= 0
+                ):
+                    continue
             if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
                 result.items_duplicates += 1
                 continue
             page_ids.add(lot.external_id)
             accepted.append(lot)
+        if max_detail_attempts_per_page is not None:
+            accepted = accepted[:max_detail_attempts_per_page]
         if accepted and connector is not None and "detail_enrichment" in connector.capabilities:
             with self.session_factory() as lookup_session:
                 existing_lot_online = {
@@ -732,6 +759,25 @@ class NationwideIngestionService:
                 run_id,
                 asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
             )
+        if result.source_system == "nistp.ru":
+            # A source catalogue row is NOT an independently verified lot.
+            # In particular, shared trade 502379 does not expose high-numbered
+            # per-lot sections. Never persist a failed/unknown detail as active.
+            proven = []
+            for lot in accepted:
+                raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
+                if (
+                    lot.detail_level == "detail"
+                    and raw.get("detail_enrichment_status") == "success"
+                    and raw.get("individual_lot_identity_verified") is True
+                    and raw.get("detail_start_price_verified") is True
+                    and lot.auction_status in {"active", "scheduled"}
+                    and lot.start_price is not None and lot.start_price > 0
+                ):
+                    proven.append(lot)
+                else:
+                    result.items_failed += 1
+            accepted = proven
         with self.session_factory() as session:
             bind = session.get_bind()
 
