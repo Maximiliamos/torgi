@@ -771,6 +771,7 @@ class NationwideIngestionService:
                     and raw.get("detail_enrichment_status") == "success"
                     and raw.get("individual_lot_identity_verified") is True
                     and raw.get("detail_start_price_verified") is True
+                    and raw.get("detail_status_normalized") in {"active", "scheduled"}
                     and lot.auction_status in {"active", "scheduled"}
                     and lot.start_price is not None and lot.start_price > 0
                 ):
