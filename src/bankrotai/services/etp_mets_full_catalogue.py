@@ -495,11 +495,102 @@ def run_two_independent_passes(
     }
 
 
+def probe_mets_pages(
+    page_numbers: list[int],
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Capture bounded, non-lot structural evidence for selected pages."""
+    if (
+        not page_numbers
+        or len(page_numbers) > 10
+        or len(set(page_numbers)) != len(page_numbers)
+        or any(type(page) is not int or not 1 <= page <= MAX_SCAN_PAGES
+               for page in page_numbers)
+    ):
+        raise MetsCatalogueScanError("Unsafe M-ETS probe page selection")
+    owned_session = session is None
+    active_session = session or requests.Session()
+    results: list[dict[str, Any]] = []
+    try:
+        for page_number in page_numbers:
+            print(f"M-ETS tail probe requesting page={page_number}...", flush=True)
+            response = _request_page(active_session, page_number, sleep=time.sleep)
+            soup = BeautifulSoup(response.text, "html.parser")
+            filter_error = None
+            try:
+                _verify_selected_filters(soup)
+            except MetsCatalogueScanError as exc:
+                filter_error = str(exc)
+            total = None
+            total_error = None
+            try:
+                total = _reported_total(soup)
+            except MetsCatalogueScanError as exc:
+                total_error = str(exc)
+            canonical_ids = sorted({
+                value.rsplit("/", 1)[-1]
+                for value in discover_lot_urls(response.text, limit=50)
+            })
+            paginator_rows = []
+            for paginator in soup.select("div.paginator")[:5]:
+                active_texts = [
+                    marker.get_text(" ", strip=True)[:40]
+                    for marker in paginator.select(".active")[:5]
+                ]
+                next_pages = []
+                for link in paginator.select(
+                    'a.next.link[aria-label="Следующая страница"]'
+                )[:5]:
+                    query = parse_qs(urlsplit(str(link.get("href") or "")).query)
+                    next_pages.extend(query.get("page", [])[:2])
+                paginator_rows.append({
+                    "active_texts": active_texts,
+                    "next_pages": next_pages,
+                })
+            results.append({
+                "page": page_number,
+                "reported_total": total,
+                "total_error": total_error,
+                "filter_error": filter_error,
+                "card_count": len(soup.select(".card-so")),
+                "canonical_id_count": len(canonical_ids),
+                "canonical_ids_sha256": hashlib.sha256(
+                    "\n".join(canonical_ids).encode("ascii")
+                ).hexdigest(),
+                "paginators": paginator_rows,
+            })
+    finally:
+        if owned_session:
+            active_session.close()
+    return {
+        "source": "m-ets.ru",
+        "mode": "tail_readonly_probe",
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "requested_pages": page_numbers,
+        "results": results,
+        "production_database_writes": 0,
+        "archival_allowed": False,
+        "reconcile_missing": False,
+        "geocoding": False,
+        "map_publication": False,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
+    parser.add_argument("--probe-pages")
     args = parser.parse_args()
+    if args.probe_pages:
+        try:
+            pages = [int(value) for value in args.probe_pages.split(",")]
+        except ValueError as exc:
+            raise SystemExit("M-ETS probe pages must be comma-separated integers") from exc
+        print(json.dumps(
+            probe_mets_pages(pages), ensure_ascii=False, sort_keys=True,
+        ))
+        return
     report = run_two_independent_passes(
         max_pages=args.max_pages,
         delay_seconds=args.delay_seconds,

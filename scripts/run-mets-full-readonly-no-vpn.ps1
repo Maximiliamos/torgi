@@ -1,14 +1,16 @@
 param(
     [int]$MaxPages = 500,
-    [double]$DelaySeconds = 1.0
+    [double]$DelaySeconds = 1.0,
+    [int[]]$ProbePages = @()
 )
 
 $ErrorActionPreference = 'Stop'
 $root = 'D:\BankrotAI\etp-evidence\mets-full-readonly'
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-$log = Join-Path $root "mets-two-pass-$stamp.log"
-$reportPath = Join-Path $root "mets-two-pass-$stamp.json"
+$modeName = if ($ProbePages.Count -gt 0) { 'tail-probe' } else { 'two-pass' }
+$log = Join-Path $root "mets-$modeName-$stamp.log"
+$reportPath = Join-Path $root "mets-$modeName-$stamp.json"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceRoot = Join-Path $repo 'src'
 $previousConsoleEncoding = [Console]::OutputEncoding
@@ -22,7 +24,11 @@ if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
     $env:PYTHONPATH = "$sourceRoot$([IO.Path]::PathSeparator)$previousPythonPath"
 }
 
-Write-Host 'M-ETS selected-catalogue two-pass read-only scan from the checked-out revision.'
+if ($ProbePages.Count -gt 0) {
+    Write-Host "M-ETS selected-catalogue tail probe: pages=$($ProbePages -join ',')."
+} else {
+    Write-Host 'M-ETS selected-catalogue two-pass read-only scan from the checked-out revision.'
+}
 Write-Host 'Scope: seven selected property categories; announced + application-intake states.'
 Write-Host 'No PostgreSQL writes, reconciliation, archival, GEO or map publication.'
 $revision = (& git.exe -C $repo rev-parse HEAD).Trim()
@@ -31,12 +37,20 @@ if ($LASTEXITCODE -ne 0 -or -not $revision) {
 }
 Write-Host "M-ETS read-only scanner revision: $revision; max_pages=$MaxPages"
 
+$pythonArguments = @(
+    '-m',
+    'bankrotai.services.etp_mets_full_catalogue'
+)
+if ($ProbePages.Count -gt 0) {
+    $pythonArguments += @('--probe-pages', ($ProbePages -join ','))
+} else {
+    $pythonArguments += @('--max-pages', $MaxPages, '--delay-seconds', $DelaySeconds)
+}
+
 $savedErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $output = @(& python.exe -m `
-        bankrotai.services.etp_mets_full_catalogue `
-        --max-pages $MaxPages --delay-seconds $DelaySeconds 2>&1 |
+    $output = @(& python.exe @pythonArguments 2>&1 |
         Tee-Object -FilePath $log | ForEach-Object {
             Write-Host $_
             $_
@@ -61,6 +75,22 @@ if ($pythonExitCode -ne 0 -or $output.Count -lt 1) {
 }
 
 $report = $output[-1] | ConvertFrom-Json
+if ($ProbePages.Count -gt 0) {
+    if ($report.source -ne 'm-ets.ru' -or
+        $report.mode -ne 'tail_readonly_probe' -or
+        $report.production_database_writes -ne 0 -or
+        $report.archival_allowed -ne $false -or
+        $report.reconcile_missing -ne $false -or
+        $report.geocoding -ne $false -or
+        $report.map_publication -ne $false) {
+        throw "M-ETS tail probe violated its read-only contract; log=$log"
+    }
+    $report | Add-Member -NotePropertyName scanner_revision -NotePropertyValue $revision
+    $report | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $reportPath -Encoding utf8
+    Write-Host "M-ETS tail probe saved: $reportPath"
+    Write-Host "Full log: $log"
+    return
+}
 if ($report.source -ne 'm-ets.ru' -or
     $report.passes_match -ne $true -or
     $report.last_page_proven_twice -ne $true -or

@@ -17,6 +17,13 @@ paginator to agree on active page and next target. This bounded preflight ended
 at the intentional two-page budget and is **not** a terminal-page or two-pass
 proof. It performed no database, reconciliation, archival, GEO or map writes.
 
+The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
+3,040 unique IDs without a duplicate or field-contract failure. The provider
+reported 3,059 throughout, but page 152 was full (20 cards) and both pagers
+omitted Next. The scanner correctly rejected this as terminal: 19 reported
+items were not reached and pass 2 did not start. A bounded pages 152/153/154
+tail probe is required before changing pagination logic.
+
 - The selected catalogue URL remains the seven-category search
   `/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9`.
   Page 1, page 2 and page 153 were loaded as separate tabs.

@@ -30,6 +30,12 @@ one global pager. This was an intentional two-page budget stop, not a complete
 walk. Main SHA `0029c004` deployed successfully on Home in run 42207409497,
 including backup/migrations, public REG.RU S3 manifest and local API checks.
 
+M-ETS full-attempt follow-up: SHA `ddb1763b` parsed 152 pages and 3,040
+unique IDs without duplicates. Reported total remained 3,059, but full page
+152 exposed no Next; the scanner failed closed because 19 items were unreached
+and did not begin pass 2. Next action is a short hashed tail probe of pages
+152/153/154, not another full walk and not a weaker terminal rule.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

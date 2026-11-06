@@ -20,6 +20,11 @@
 > not final-page/two-pass acceptance and made no DB/GEO/map changes. Home
 > deployment of prior merged SHA `0029c004` succeeded in run 42207409497.
 
+> **M-ETS full-attempt update:** `ddb1763b` reached page 152 with 3,040
+> unique IDs and no duplicates, but the stable reported total was 3,059 and
+> the full page 152 had no Next. Completeness remains FAIL; pass 2 was not
+> started. Probe pages 152/153/154 before revising the terminal contract.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

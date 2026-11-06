@@ -7,6 +7,7 @@ import pytest
 from bankrotai.connectors.registry.mets_public import APARTMENTS_URL
 from bankrotai.services.etp_mets_full_catalogue import (
     MetsCatalogueScanError,
+    probe_mets_pages,
     run_two_independent_passes,
     scan_complete_mets_catalogue,
 )
@@ -212,6 +213,28 @@ def test_duplicate_paginator_next_controls_must_agree() -> None:
     inconsistent = page.replace('aria-label="Следующая страница"', "", 1)
     with pytest.raises(MetsCatalogueScanError, match="next controls disagree"):
         scan_complete_mets_catalogue(_Session([inconsistent]), delay_seconds=0)
+
+
+def test_tail_probe_reports_only_bounded_hashed_structure() -> None:
+    pages = [
+        _html(152, ["244381-1"], total=3059, next_page=None, paginator_count=2),
+        _html(153, ["244360-1"], total=3059, next_page=None, paginator_count=2),
+        _html(154, ["244381-1"], total=3059, next_page=None, paginator_count=2),
+    ]
+    report = probe_mets_pages([152, 153, 154], _Session(pages))
+
+    assert report["mode"] == "tail_readonly_probe"
+    assert report["requested_pages"] == [152, 153, 154]
+    assert [item["canonical_id_count"] for item in report["results"]] == [1, 1, 1]
+    assert report["results"][0]["canonical_ids_sha256"] == report["results"][2]["canonical_ids_sha256"]
+    assert report["results"][0]["canonical_ids_sha256"] != report["results"][1]["canonical_ids_sha256"]
+    assert report["results"][0]["paginators"] == [
+        {"active_texts": ["152"], "next_pages": []},
+        {"active_texts": ["152"], "next_pages": []},
+    ]
+    assert "244381-1" not in str(report)
+    assert report["production_database_writes"] == 0
+    assert report["archival_allowed"] is False
 
 
 def test_two_matching_independent_passes_close_sessions() -> None:
