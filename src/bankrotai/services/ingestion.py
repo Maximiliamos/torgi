@@ -41,8 +41,6 @@ from bankrotai.services.batch_persistence import persist_changed_lots_batch
 
 
 logger = logging.getLogger(__name__)
-
-
 ACTIVE_STATUSES = {"active", "published", "open", "scheduled", "applications_submission"}
 MIN_COVERAGE_GUARD_BASELINE = 20
 MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
@@ -128,12 +126,8 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             BidExpertSearchFilters(category="all", page=1),
         ),
     )
-    # Operator-approved ETP discovery windows share the same 09:00/21:00
-    # cycle.  Import lazily to avoid a module cycle: the helper owns
-    # SourceSyncSpec values and imports this module for the dataclass.
     from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
     return core_specs + scheduled_etp_source_specs()
-
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
