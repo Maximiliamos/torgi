@@ -24,9 +24,9 @@ def etp_incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
 
 
 def etp_five_page_source_specs() -> tuple[SourceSyncSpec, ...]:
-    """Opt-in five-page trial, still not complete-source or archive-safe.
+    """Five-page bounded trial, not complete-source or archive-safe.
 
-    Excludes these sources from the normal default polling scheduler. Each
+    Called by the approved schedule and available to manual operators. Each
     page validates at most two details; a caller must separately prove source
     coverage and never reconcile missing lots based on this finite window.
     """
@@ -58,5 +58,6 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
         SourceSyncSpec(
             "nistp.ru", EtpSearchFilters(page=1),
             reconcile_missing=False, max_batches=5,
+            max_detail_attempts_per_page=2,
         ),
     )
