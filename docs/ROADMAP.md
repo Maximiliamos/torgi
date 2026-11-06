@@ -46,6 +46,12 @@ Initial 155/156 probe observed HTTP 308 on page 156 but lost the already-fetched
 155 summary when it aborted. The probe now persists per-page 200 evidence plus
 sanitized redirect target/status; the full scanner still fails on redirects.
 
+Repeat tail probe `1e3b9b91` established page 155 as the terminal page at
+live total 3,083: three cards, no Next, agreeing active markers. Page 156
+returned HTTP 308 to filtered page 155. The terminal contract is now proven
+for this snapshot; run two complete passes next and require identical ID and
+price/status/title digests before selected-scope acceptance.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

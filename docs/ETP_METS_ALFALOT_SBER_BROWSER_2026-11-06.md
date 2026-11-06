@@ -30,6 +30,14 @@ is not claimed. The diagnostic now records each 200 result before later
 redirects and stores only a sanitized same-host redirect page/filter summary;
 the production scanner continues to reject redirects.
 
+Repeat tail probe `1e3b9b91` completed the proof at a newer live total 3,083:
+page 155 returned HTTP 200 with three canonical IDs and two agreeing active
+155 pagers without Next. Page 156 returned HTTP 308 to filtered page 155.
+Therefore the selected catalogue terminal contract is the exact reported-total
+page with an incomplete final page; the scanner need not follow the out-of-range
+redirect. Two new complete matching passes remain required because the live
+catalogue changed during this investigation.
+
 The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
 3,040 unique IDs without a duplicate or field-contract failure. The provider
 reported 3,059 throughout, but page 152 was full (20 cards) and both pagers

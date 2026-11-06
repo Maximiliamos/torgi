@@ -135,6 +135,12 @@ Direct page 156 returned HTTP 308 after page 155 was fetched, but the original
 probe aborted before retaining page-155 structure. Re-run the tolerant
 read-only probe; redirect handling remains forbidden in the full scanner.
 
+Repeat tail probe `1e3b9b91` proved terminal page 155 at total 3,083: three
+cards, no Next, both active markers 155. Page 156 returned HTTP 308 to the same
+filtered page 155. Terminal-page contract is now PASS for this snapshot;
+two complete matching passes remain `NOT_TESTED` because totals drifted
+3,059 → 3,082 → 3,083 between independent observations.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed
@@ -146,7 +152,7 @@ is explicitly substituted in those two rows only.
 
 | ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
 | --- | --- | --- | --- | --- |
-| МЭТС `m-ets.ru` | PASS through live pages 1–152: 3,040 unique IDs, reported total 3,059 | FAIL at full page 152: no Next but 19 reported items unreached; pass 2 NOT_TESTED | Earlier browser 2/2 detail PASS / price PASS / scheduled status PASS; active-detail status NOT_TESTED | Direct 152/153/154 tail proof; no reconciliation/archival; selected scope omits land/agricultural categories |
+| МЭТС `m-ets.ru` | PASS through live pages 1–152: 3,040 unique IDs; later tail total 3,083 | Terminal page 155 PASS in tail probe: 3 cards; page 156 redirects to 155; two matching full passes NOT_TESTED | Earlier browser 2/2 detail PASS / price PASS / scheduled status PASS; active-detail status NOT_TESTED | Repeat two complete passes; no reconciliation/archival; selected scope omits land/agricultural categories |
 | ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
 | НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
 | Альфалот `alfalot.ru` | PASS for 22 distinct IDs on active-filter pages 2/3; page 1 identity set not retained | Page 2 PASS; page 3 terminal PASS in browser; HTTP request contract NOT_TESTED | 2/2 property detail / price / `Идет прием заявок` status PASS | `stateFilter_GD` proves «прием заявки»; procedure types remain mixed and property-scope classification FAIL |

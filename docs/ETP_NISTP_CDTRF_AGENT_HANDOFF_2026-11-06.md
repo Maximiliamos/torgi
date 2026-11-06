@@ -34,6 +34,11 @@
 > page-155 structure. Updated probe persists each successful page and a
 > sanitized redirect summary; the full scanner still rejects redirects.
 
+> Repeat tail probe `1e3b9b91` proved page 155 terminal at total 3,083 with
+> three cards and no Next; page 156 returned HTTP 308 to filtered page 155.
+> Terminal proof now passes for that snapshot, but two matching complete
+> walks remain pending because live totals changed between probes.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks
