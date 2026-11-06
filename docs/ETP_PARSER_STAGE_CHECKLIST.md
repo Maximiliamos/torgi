@@ -17,10 +17,12 @@ Local focused suites passed **221 tests** (115 source/detail + 106 catalogue/str
 CI ran full mypy successfully with pinned dependencies; local ambient GEO typing
 errors do not override that CI result. Source-ID mutability and nullable diagnostic
 values are corrected without relaxing lot identity or price guards.
-Current `main` is `837f22af93ca3890d6ea32f759bc5ec9a1e1a87a` after that merge.
-Post-merge deployment and source acceptance remain **NOT_TESTED**; source
-blockers #1115/#1116 remain open. Passing PostgreSQL CI tests did not import source lots
-into the production database. Passing S3 diagnostics did not publish a new map.
+Those changes remain in current `main` `dfd82647a23a6d8878cbfa33c0fc14e0da724f50`.
+Exact-SHA platform deployment is now `PASS` in the Home/REG.RU/Cloudflare runs
+listed in the M-ETS update below, but NISTP/CDTRF source acceptance remains
+open and blockers #1115/#1116 remain unresolved. Passing PostgreSQL CI tests
+did not import source lots into the production database. Platform S3/WEB
+deployment is not proof that either source completed import/GEO/map acceptance.
 
 **Scope = source parser fixes and read-only diagnosis, NOT S0–S7 acceptance.**
 The source-level work for this iteration is documented in
@@ -149,6 +151,20 @@ and the two selected catalogue statuses are `PASS`. `complete_source_inventory`,
 active individual-detail validation, PostgreSQL persistence, reconciliation,
 archival, GEO, map publication and scheduling remain `NOT_TESTED`/false.
 
+PR #1124 merged to `main` as `dfd82647`. Exact-SHA Home deploy
+[42258748126](https://github.com/Maximiliamos/torgi/actions/runs/42258748126),
+post-merge reliability
+[42258748412](https://github.com/Maximiliamos/torgi/actions/runs/42258748412),
+REG.RU/public WEB smoke
+[42258748246](https://github.com/Maximiliamos/torgi/actions/runs/42258748246),
+and Cloudflare edge deploy
+[42258748168](https://github.com/Maximiliamos/torgi/actions/runs/42258748168)
+are `PASS`. Post-deploy trusted-Home M-ETS run
+[42259466314](https://github.com/Maximiliamos/torgi/actions/runs/42259466314)
+verified five pages, 100 distinct catalogue IDs and 10/10 limited details
+with zero rejects. It was read-only: zero DB writes and no reconciliation,
+archival, GEO or map publication.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed
@@ -160,7 +176,7 @@ is explicitly substituted in those two rows only.
 
 | ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
 | --- | --- | --- | --- | --- |
-| МЭТС `m-ets.ru` | PASS for selected scope at `d1241be5`: 3,083 unique IDs twice; matching ID/record digests | 155 pages twice PASS; terminal page 155 has 3 cards; page 154 continuation derived from reported total | Catalogue price/status PASS across both walks; earlier browser 2/2 scheduled detail PASS; active-detail status NOT_TESTED | Complete source scope still false: categories 11/40 omitted; no PostgreSQL/reconciliation/archival/GEO/map/schedule acceptance |
+| МЭТС `m-ets.ru` | PASS for selected scope at `d1241be5`: 3,083 unique IDs twice; deployed in `dfd82647`; post-deploy 100/100 IDs across 5 pages | 155 pages twice PASS; terminal page 155 has 3 cards; page 154 continuation derived from reported total | Catalogue price/status PASS across both walks; post-deploy limited details 10/10 PASS; active-detail completeness NOT_TESTED | Complete source scope still false: categories 11/40 omitted; no source PostgreSQL/reconciliation/archival/GEO/map/schedule acceptance |
 | ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
 | НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
 | Альфалот `alfalot.ru` | PASS for 22 distinct IDs on active-filter pages 2/3; page 1 identity set not retained | Page 2 PASS; page 3 terminal PASS in browser; HTTP request contract NOT_TESTED | 2/2 property detail / price / `Идет прием заявок` status PASS | `stateFilter_GD` proves «прием заявки»; procedure types remain mixed and property-scope classification FAIL |
@@ -202,12 +218,12 @@ in #1118. The following records that gap without claiming implementation:
 | 3. JavaScript / cookie / tutorial / filters | Cookie/tutorial check exists; separate JS and effective-filter evidence pending |
 | 4. Procedure versus individual lot | Lot discovery exists; isolation is source-specific and incomplete for unaccepted sources |
 | 5. Unique IDs / no duplicates | Implemented for observed pages; full DB uniqueness NOT_TESTED |
-| 6. Every page / terminal / two passes | Source-specific full NISTP/CDTRF evidence above; general bounded probe cannot prove end |
+| 6. Every page / terminal / two passes | Source-specific full M-ETS/NISTP/CDTRF evidence above; general bounded probe cannot prove end |
 | 7. Individual cards | Implemented for samples; full coverage NOT_TESTED |
 | 8. Price / status / address / cadastre / area / dates | Aggregate price/status exists; dedicated field completeness checks pending integration |
 | 9. Catalogue versus card | Source-specific QA exists for identity/price/status; all-field consistency remains incomplete |
 | 10. PostgreSQL save / update / dedupe / restore | Acceptance protocol defined; source-specific staging/production proof NOT_TESTED |
-| 11. GEO / dataset / S3 / actual website / links / filters | Aggregate GEO/map checks exist; detailed E2E proof NOT_TESTED |
+| 11. GEO / dataset / S3 / actual website / links / filters | Exact-SHA platform deploy and public WEB smoke PASS for `dfd82647`; source-specific M-ETS import/GEO/map/filter E2E remains NOT_TESTED |
 | 12. 09:00 / 21:00 MSK repeat cycles | Aggregate scheduler exists; independent evidence for both slots and consecutive cycles NOT_TESTED |
 
 ## Run on trusted Home ingestion worker
