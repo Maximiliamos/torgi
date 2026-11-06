@@ -1,6 +1,32 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
-> **Актуальный статус на 02.11.2026:** см.
+## 06.11.2026 — R7/NISTP + CDTRF: этап исправления парсеров и read-only QA выполнен, production acceptance открыт
+
+**Текущий операционный срез**: [передача следующему агенту и полная хронология](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md) и [ETP stage checklist](ETP_PARSER_STAGE_CHECKLIST.md). Исторический срез 02.11 ниже описывает ранее развернутый production, а не новые read-only PR. **Ни один из PR #1105–#1114 не был merged на момент проверки**; отсутствие свежего CI и exact-SHA deployment доказательств не означает успех.
+
+| Веха | Наблюдаемый факт | Результат |
+| --- | --- | --- |
+| NISTP полный каталог | 2 × 142 страницы, 2 716 стабильных ID; но 43 терминальных статуса в active-filtered выдаче | Каталог обойдён, **scope заблокирован** [#1116](https://github.com/Maximiliamos/torgi/issues/1116) |
+| NISTP индивидуальные лоты | Первоначально 20/30; после фиксов 4/10 прежних ошибок исправлены; новая выборка **9/10** | Парсер улучшен, но `502379:259` не имеет проверенной индивидуальной секции |
+| NISTP высокие лоты | 7/7 точных строк официального каталога; **0/7** собственных URL, только `trade_view.php?trade_nid=502379`; общая карточка содержала 100 секций с максимумом №128 | `catalogue-only`, не выдавать за подтверждённые detail: [#1115](https://github.com/Maximiliamos/torgi/issues/1115) |
+| CDTRF выбранный каталог | 2 × 64 страницы, 6 351 уникальный ID, стабильный digest, live drift | Выбранная часть каталога подтверждена, **не вся площадка** |
+| CDTRF индивидуальные лоты | Изначально 23/30; новый live sample **10/10**, 2 HTML/Nuxt title flags с совпадающими ID/ценой | Фиксы работают на новой выборке; семь ранее проблемных ID сместились с прежних страниц |
+| Offline/оператор | 80/80, затем 83/83 focused tests; отдельный source-form/link census 9/9 | Локально проверено на отдельных SHA, **не CI/merge/deploy** |
+| Производственный допуск | Новые QA не писали в PostgreSQL; ни одна из работ не разрешала reconcile, archive, GEO, MapDataset | `source_accepted=false`, автоматический импорт/приёмку **не включать** |
+
+**Статус задач:**
+- **Завершено на этом этапе** — NISTP и CDTRF: диагностические и parser-fix PR, точные отказы без подмены ID, сохранённые причины, bounded samples, документирование ограничений.
+- **P0 next** — инженерное ревью/CI и последовательная интеграция PR [#1105](https://github.com/Maximiliamos/torgi/pull/1105) → [#1108](https://github.com/Maximiliamos/torgi/pull/1108) → [#1109](https://github.com/Maximiliamos/torgi/pull/1109) → [#1110](https://github.com/Maximiliamos/torgi/pull/1110) → [#1111](https://github.com/Maximiliamos/torgi/pull/1111) → [#1112](https://github.com/Maximiliamos/torgi/pull/1112) → [#1113](https://github.com/Maximiliamos/torgi/pull/1113) → [#1114](https://github.com/Maximiliamos/torgi/pull/1114). **Не сливать автоматически** без проверки совместимости с `main`; source acceptance не включать при merge.
+- **P1 NISTP** — выяснить 43 неактивных записи в отфильтрованном каталоге [#1116](https://github.com/Maximiliamos/torgi/issues/1116), изолировать семь каталог-only high-lots [#1115](https://github.com/Maximiliamos/torgi/issues/1115), перепроверить финальный active-scope контракт на двух полных циклах только после фикса.
+- **P1 CDTRF** — ревью двух HTML/Nuxt расхождений, свежая выборка ≥30 разных категорий, доказательство полноты нужного каталога, backup→staging DB canary→GEO/map→P11/scheduler gates **после отдельного подтверждения владельца**.
+- **P1 следующая ЭТП для разработки** — **CenterR**: реальные IDs vs боковые промоссылки, пагинация/последняя страница, лот/цена/статус/detail; далее **Sistematorg** (исторически только 18/3 361 цен), отдельно recovery **Торги России**. Не переносить зелёные оценки NISTP/CDTRF на эти источники.
+- **P1 дорожный контракт** — выполнить единый `NormalizedLot` [#1021](https://github.com/Maximiliamos/torgi/issues/1021) после источниковых контрактов; сохранить Decimal/provenance/timezone/idempotency и запрет выдуманных цен.
+
+**Agent handoff**: [обязательная последовательность с критерием завершения каждого шага](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md). Этапы `implemented → tested → merged → deployed → production_accepted` должны оставаться раздельными. Не объявлять ЭТП «готовой в production» по зелёной выборке 10/10.
+
+---
+
+> **Исторический статус на 02.11.2026:** см.
 > [`ETP_ROLLOUT_STATUS_2026-11-02.md`](ETP_ROLLOUT_STATUS_2026-11-02.md).
 > Текущий этап — **R7-CDTRF production completion and acceptance**. Новый код
 > развернут, exact-SHA P1/Public WEB/functional зелёные, но повторный полный
