@@ -39,6 +39,13 @@
 > Terminal proof now passes for that snapshot, but two matching complete
 > walks remain pending because live totals changed between probes.
 
+> Final M-ETS proof at exact SHA `d1241be5`: two independent no-VPN passes
+> each traversed 155 pages and found 3,083 unique IDs. ID digest
+> `3c0cfe95...e2e01b` and catalogue-record digest `cee582e5...61f6e1` match;
+> terminal page 155 contained three cards both times. Selected-filter catalogue
+> pagination/IDs/prices/statuses now pass. Complete provider scope, active
+> individual-detail validation, DB/GEO/map and scheduling remain unproved.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

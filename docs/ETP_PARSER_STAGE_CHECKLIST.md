@@ -103,11 +103,12 @@ Directly inspected local evidence (not GitHub artifacts):
 
 Subsequent browser observations for M-ETS/Alfalot/Sberbank-AST are recorded in
 [the 06 November browser report](ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md).
-M-ETS pages 1/2/153 are distinct and page 153 is browser-proven terminal for
-the exact 3,056-item seven-category filter. Code commit `74eaa4a` implements a
-two-pass full read-only proof and passes 29 focused tests, but its real no-VPN
-execution remains `NOT_TESTED`; standalone land/agricultural categories remain
-excluded. Alfalot's `stateFilter_GD` is confirmed as «прием заявки», while its
+M-ETS exact SHA `d1241be5` completed two matching no-VPN read-only passes over
+the selected seven-category/status-0-or-1 catalogue: 155 pages and 3,083
+unique IDs per pass, identical ID and price/status/title record digests, with
+three items on terminal page 155. Standalone land/agricultural categories
+remain excluded, so complete provider inventory is not proved. Alfalot's
+`stateFilter_GD` is confirmed as «прием заявки», while its
 raw client paging request and property-only scope remain unproven. Sberbank
 loaded unfiltered or privatization results, with the bankruptcy checkbox
 unchecked; public client code caps displayed results at 10,000. These are
@@ -138,8 +139,15 @@ read-only probe; redirect handling remains forbidden in the full scanner.
 Repeat tail probe `1e3b9b91` proved terminal page 155 at total 3,083: three
 cards, no Next, both active markers 155. Page 156 returned HTTP 308 to the same
 filtered page 155. Terminal-page contract is now PASS for this snapshot;
-two complete matching passes remain `NOT_TESTED` because totals drifted
-3,059 → 3,082 → 3,083 between independent observations.
+the later exact-SHA full proof superseded this pending state.
+
+Final run `d1241be5` completed two independent 155-page passes with 3,083
+unique IDs each. ID digest `3c0cfe95...e2e01b` and catalogue-record digest
+`cee582e5...61f6e1` match; page 155 had three items in both passes. Therefore
+selected-filter pagination, terminal-page proof, unique IDs, catalogue prices
+and the two selected catalogue statuses are `PASS`. `complete_source_inventory`,
+active individual-detail validation, PostgreSQL persistence, reconciliation,
+archival, GEO, map publication and scheduling remain `NOT_TESTED`/false.
 
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
@@ -152,7 +160,7 @@ is explicitly substituted in those two rows only.
 
 | ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
 | --- | --- | --- | --- | --- |
-| МЭТС `m-ets.ru` | PASS through live pages 1–152: 3,040 unique IDs; later tail total 3,083 | Terminal page 155 PASS in tail probe: 3 cards; page 156 redirects to 155; two matching full passes NOT_TESTED | Earlier browser 2/2 detail PASS / price PASS / scheduled status PASS; active-detail status NOT_TESTED | Repeat two complete passes; no reconciliation/archival; selected scope omits land/agricultural categories |
+| МЭТС `m-ets.ru` | PASS for selected scope at `d1241be5`: 3,083 unique IDs twice; matching ID/record digests | 155 pages twice PASS; terminal page 155 has 3 cards; page 154 continuation derived from reported total | Catalogue price/status PASS across both walks; earlier browser 2/2 scheduled detail PASS; active-detail status NOT_TESTED | Complete source scope still false: categories 11/40 omitted; no PostgreSQL/reconciliation/archival/GEO/map/schedule acceptance |
 | ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
 | НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
 | Альфалот `alfalot.ru` | PASS for 22 distinct IDs on active-filter pages 2/3; page 1 identity set not retained | Page 2 PASS; page 3 terminal PASS in browser; HTTP request contract NOT_TESTED | 2/2 property detail / price / `Идет прием заявок` status PASS | `stateFilter_GD` proves «прием заявки»; procedure types remain mixed and property-scope classification FAIL |
