@@ -27,3 +27,28 @@ def test_source_circuit_recovery_is_explicit_and_guarded() -> None:
     assert "LotSyncRun.lease_expires_at > utc_now()" in text
     assert "commit()" in text  # Opt-in recovery health state, never source lot writes.
     assert "PROBING=" in text
+
+
+_RESUME = _ROOT / "scripts" / "resume-partial-standard-geo-map-no-vpn.ps1"
+
+
+def test_partial_geo_map_resume_heredocs_are_valid_python() -> None:
+    script = _RESUME.read_text(encoding="utf-8")
+    snippets = re.findall(r"(?ms)^\s*\$(?:preflight|geoScript|mapScript) = @'\n(.*?)\n'@$", script)
+    assert len(snippets) == 3
+    for snippet in snippets:
+        ast.parse(snippet, filename=str(_RESUME))
+
+
+def test_partial_geo_map_resume_requires_exact_known_failure() -> None:
+    script = _RESUME.read_text(encoding="utf-8")
+    assert "-AcceptSixSourcePartial" in script
+    assert 'run.status != "partial"' in script
+    assert 'run.trigger_type != "manual_full"' in script
+    assert 'set(by_name) != wanted | {"torgi-russia.ru"}' in script
+    assert '"Torgi Russia public region filter was not applied:"' in script
+    assert 'bad.items_inserted or bad.items_updated or bad.items_archived' in script
+    assert "LotSyncRun.lease_expires_at > utc_now()" in script
+    assert "Geocoding aborted by guarded backfill" in script
+    assert "MAP_CURRENT=" in script
+    assert "schedule_nationwide_lot_sync" not in script
