@@ -120,6 +120,28 @@ def _selected_page_is_visible(soup: BeautifulSoup, page_number: int) -> bool:
     return len(active) == 1 and active[0].get_text(" ", strip=True) == str(page_number)
 
 
+def _paginator_marker_summary(soup: BeautifulSoup) -> str:
+    """Return bounded, non-lot structural evidence for parser failures."""
+    active = soup.select(".paginator .active")
+    markers = [
+        {
+            "tag": marker.name,
+            "classes": sorted(str(value) for value in marker.get("class", [])),
+            "text": marker.get_text(" ", strip=True)[:40],
+        }
+        for marker in active[:5]
+    ]
+    return json.dumps(
+        {
+            "paginator_count": len(soup.select(".paginator")),
+            "active_count": len(active),
+            "active_markers": markers,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _next_page(soup: BeautifulSoup, page_number: int) -> int | None:
     links = soup.select('div.paginator a.next.link[aria-label="Следующая страница"]')
     if not links:
@@ -210,7 +232,8 @@ def _parse_page(html: str, page_number: int) -> dict[str, Any]:
     _verify_selected_filters(soup)
     if not _selected_page_is_visible(soup, page_number):
         raise MetsCatalogueScanError(
-            f"M-ETS requested page {page_number} is not visibly selected"
+            f"M-ETS requested page {page_number} is not visibly selected; "
+            f"paginator={_paginator_marker_summary(soup)}"
         )
     total = _reported_total(soup)
     cards = soup.select(".card-so")

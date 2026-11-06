@@ -171,7 +171,10 @@ def test_raw_first_page_may_omit_active_marker_but_later_page_may_not() -> None:
         next_page=None,
         selected_page_visible=False,
     )
-    with pytest.raises(MetsCatalogueScanError, match="page 2 is not visibly selected"):
+    with pytest.raises(
+        MetsCatalogueScanError,
+        match=r'page 2 is not visibly selected; paginator=.*"active_count": 0',
+    ):
         scan_complete_mets_catalogue(_Session(pages), delay_seconds=0)
 
 
