@@ -1,5 +1,13 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+Browser follow-up 2026-11-06: see
+`ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. Three sources need scope proof
+before parser acceptance: M-ETS omitted land/agricultural categories and loaded
+page 1 in all three tabs; Alfalot's hall is a one-row connection-error state while
+its official search has property lots; Sberbank's loaded catalogue was outside
+bankruptcy scope and its UI caps counts at 10,000. Fresh request/response and
+per-lot cards are required before changing status/pagination contracts.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

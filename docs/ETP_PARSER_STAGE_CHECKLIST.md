@@ -100,6 +100,15 @@ Directly inspected local evidence (not GitHub artifacts):
 
 ## All 22 ETPs: latest evidenced source-stage status (updated 2026-11-06)
 
+Subsequent browser observations for M-ETS/Alfalot/Sberbank-AST are recorded in
+[the 06 November browser report](ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md).
+M-ETS tabs repeated page 1 (page 2/end unproven); land/agricultural categories
+were excluded. Alfalot's one-row hall had a connection-error banner; the larger
+official search needs its own paging contract. Sberbank loaded unfiltered or
+privatization results, with the bankruptcy checkbox unchecked; public client code
+caps displayed results at 10,000. These are additional scope/pagination blockers,
+not resolved source status failures or new source acceptance.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed
