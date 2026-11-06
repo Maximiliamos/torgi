@@ -6,6 +6,66 @@ the existing Lot-online connector. It never imports, reconciles, geocodes,
 archives or publishes data. Its purpose is explaining why an ETP adapter
 stops, not certifying a complete source scan.
 
+## NISTP + CDTRF: operator-verified milestone (2026-11-06)
+
+**Scope = source parser fixes and read-only diagnosis, NOT S0–S7 acceptance.**
+The source-level work for this iteration is documented in
+[ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md).
+The stage diagnostic below runs on up to two pages; it does **not**
+automatically ingest or replace the deeper no-VPN 10/30-lot evidence.
+
+| Stage / evidence | NISTP (`nistp.ru`) | CDTRF (`cdtrf.ru`) |
+| --- | --- | --- |
+| Official catalogue/page contract | **PASS for two read-only 142-page walks:** 2,716 stable IDs and matching record digest | **PASS for two selected 64-page walks:** 6,351 stable IDs, identical digest |
+| Source-selected active scope | **BLOCKED**: 43 terminal statuses (40 completed, 2 failed, 1 cancelled) leaked through selected active filters — [#1116](https://github.com/Maximiliamos/torgi/issues/1116) | **PARTIAL**: selected categories/statuses only, not full source inventory; catalogue drift observed |
+| Individual detail + ID + price (fresh live sample) | **9/10 PASS, 1 BLOCKED**: `nistp.ru:502379:259`; no section for requested high lot | **10/10 PASS**, 2 HTML/Nuxt lot-title divergence review flags (identity/initial price checked) |
+| Missing/exceptional per-lot details | **7/7 exact catalogue rows PASS, 0/7 individual sections:** 139,179,239,259,339,439,539; common trade-only URL, [#1115](https://github.com/Maximiliamos/torgi/issues/1115) | Older seven failed IDs are no longer on their original selected pages; **0/7 revalidated**, not a corrected-lot score |
+| Non-destructive offline tests | **83/83** broader focused tests on prior SHA; **9/9** NISTP link-shape diagnostic | Same broader focused suite **83/83**, independent fresh 10/10 read-only evidence |
+| `complete_source_inventory` / `production_import` / GEO / map / `scheduler` | **NOT ACCEPTED / NOT TESTED here** | **NOT ACCEPTED by this new QA; staging/production E2E NOT TESTED here** |
+
+All staged-source and detail-readiness observations in this snapshot
+are **independent operator Windows logs**, not GitHub CI. Source PR stack
+[#1105](https://github.com/Maximiliamos/torgi/pull/1105) through
+[#1114](https://github.com/Maximiliamos/torgi/pull/1114) remained open,
+unmerged on the last GitHub inspection; no automatic allowlist, production
+write, GEO, archival or map activation may follow from these scores.
+The zero-write claim applies to these *new diagnostic runs* only; older
+CDTRF production records are described separately in the 02.11 snapshot.
+
+**Operator checklist to move source status forward (do not auto-check):**
+
+- [x] NISTP two full selected-catalogue traversals with matching IDs/hashes
+      (coverage observed, **active-scope completeness NOT certified**).
+- [x] CDTRF two full **selected-catalogue** traversals with matching IDs/hashes
+      (not complete provider inventory).
+- [x] NISTP parser recognizes own numbered lot fields without borrowing
+      fields from malformed sibling sections; four earlier errors recovered.
+- [x] CDTRF HTML/NUXT verified title discrepancy handled without weakening
+      `tradeId`, `tradeLotId`, source code and initial price guards.
+- [x] Original failed IDs are pinned; changed catalogue pages cannot
+      silently substitute another candidate; per-page progress shown.
+- [x] NISTP high-numbered seven catalogue rows found independently via
+      official exact-trade/lot search; same seven link census has no
+      lot-specific href; *catalogue-only* limitation documented.
+- [x] Fresh no-VPN NISTP 9/10 and CDTRF 10/10 sample observed; two CDTRF
+      title-review cases explicitly recorded.
+- [ ] Review and merge stacked #1105–#1114 **after** CI and source-contract
+      review; record final merge SHA and deployment separately.
+- [ ] Resolve NISTP [#1116](https://github.com/Maximiliamos/torgi/issues/1116)
+      status-filter leakage; two **clean** active-scope passes.
+- [ ] Resolve or explicitly quarantine [#1115](https://github.com/Maximiliamos/torgi/issues/1115)
+      missing high-number detail sections; do not claim per-lot price
+      verification from catalogue rows.
+- [ ] CDTRF review two diverging titles; representative >=30 current
+      details, complete source-scoped acceptance plan, stable page evidence.
+- [ ] Independent staging canary and restore-verified backup; P11 exact SHA,
+      PostgreSQL/GEO/MapDataset/WEB reconciliation, scheduled runs.
+- [ ] **Only then** amend source allowlists / production accepted states
+      on documented owner approval. Never change these flags based on QA alone.
+- [ ] Resume the next ETP source **CenterR**, then **Sistematorg**
+      price completeness and separately **Торги России** incident;
+      keep independent P1 workstreams and source-specific blockers.
+
 ## Run on trusted Home ingestion worker
 
 ```powershell
