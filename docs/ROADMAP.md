@@ -1,5 +1,22 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+M-ETS merge/deployment update 2026-11-06: PR
+[#1124](https://github.com/Maximiliamos/torgi/pull/1124) merged to `main` as
+`dfd82647a23a6d8878cbfa33c0fc14e0da724f50`. Exact-SHA Home deploy
+[42258748126](https://github.com/Maximiliamos/torgi/actions/runs/42258748126),
+post-merge reliability
+[42258748412](https://github.com/Maximiliamos/torgi/actions/runs/42258748412),
+REG.RU deploy/public WEB smoke
+[42258748246](https://github.com/Maximiliamos/torgi/actions/runs/42258748246),
+and Cloudflare edge deploy
+[42258748168](https://github.com/Maximiliamos/torgi/actions/runs/42258748168)
+all passed after no-VPN relay recovery. Trusted-Home post-deploy M-ETS run
+[42259466314](https://github.com/Maximiliamos/torgi/actions/runs/42259466314)
+verified five pages, 100 distinct catalogue IDs and 10/10 limited details with
+zero rejects. The run made zero DB writes and did not reconcile, archive,
+geocode or publish M-ETS lots. Thus parser deployment and selected-catalogue
+readability are `PASS`; M-ETS production import/GEO/map/scheduling remain open.
+
 Browser/read-only follow-up 2026-11-06: see
 `ETP_METS_ALFALOT_SBER_BROWSER_2026-11-06.md`. M-ETS exact SHA `d1241be5`
 completed two matching selected-filter walks: 155 pages, 3,083 unique IDs,
@@ -68,8 +85,10 @@ Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.
 Integration #1118 at `831814f` passed 10/10 CI checks and 221 local focused
-tests, then merged to `main` as `837f22a`. Post-merge deployment and source
-acceptance remain pending. The 12-area coverage audit explicitly records
+tests, then merged to `main` as `837f22a`. Later M-ETS PR #1124 merged and
+deployed as `dfd82647` with the successful exact-SHA runs listed above.
+NISTP/CDTRF source acceptance blockers and M-ETS production import remain
+pending. The 12-area coverage audit explicitly records
 the unintegrated detailed machine-stage expansion from #1098 and outstanding
 DB/GEO/map/09–21 proof. Matching CDTRF ID digests do not prove an atomic snapshot.
 
@@ -77,8 +96,9 @@ Integration update 2026-11-06: the complete #1105–#1117 stack is preserved in
 `codex/etp-stack-integration-20261106` and includes current main without a merge
 conflict. 115 focused NISTP/CDTRF tests and Ruff pass. Corrected the #1105
 source_id type failure and later nullable diagnostic guards; focused mypy passes.
-Integrated CI, merge and deployment are pending; #1115/#1116 and downstream
-source acceptance remain open. No production import/GEO/map was run.
+That integration was subsequently merged through #1118; #1115/#1116 and
+downstream source acceptance remain open. No new source production
+import/GEO/map was run by the evidence described here.
 
 ## 06.11.2026 — R7/NISTP + CDTRF: этап исправления парсеров и read-only QA выполнен, production acceptance открыт
 

@@ -9,10 +9,11 @@
 
 > **Subsequent independent M-ETS follow-up (2026-11-06):** code commit
 > `74eaa4a` on `codex/mets-full-readonly-20261106` adds a zero-write full
-> two-pass runner for the browser-confirmed seven-category filter. Its 29
-> focused tests pass, but a live no-VPN execution is `NOT_TESTED`; category
-> IDs 11/40, individual active-card validation, DB/GEO/map and scheduling are
-> still open. This does not alter the NISTP/CDTRF acceptance state below.
+> two-pass runner for the browser-confirmed seven-category filter. Its focused
+> tests pass; the later exact-SHA two-pass and deployment results below replace
+> the earlier `NOT_TESTED` live-run state. Category IDs 11/40, complete active
+> detail validation, DB/GEO/map and scheduling are still open. This does not
+> alter the NISTP/CDTRF acceptance state below.
 
 > **M-ETS live preflight update:** SHA `9f75b567` parsed no-VPN pages 1/2
 > (20 + 20 items, 40 unique, total 3,057, next 2/3). Raw HTML contains two
@@ -46,13 +47,21 @@
 > pagination/IDs/prices/statuses now pass. Complete provider scope, active
 > individual-detail validation, DB/GEO/map and scheduling remain unproved.
 
+> PR #1124 merged as `dfd82647`. Home deploy 42258748126, reliability
+> 42258748412, REG.RU/public WEB smoke 42258748246 and Cloudflare deploy
+> 42258748168 passed on that exact SHA. Post-deploy M-ETS run 42259466314
+> verified five pages, 100 distinct IDs and 10/10 limited details with zero
+> rejects and zero writes. This proves deployment/readability, not source
+> production import, reconciliation, archival, GEO or map publication.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks
 (Production reliability run 42135005571, S3 diagnostics 42135005538).
 221 focused local tests passed. #1118 merged to `main` as `837f22a`;
-post-merge deployment/source acceptance have not been established. The checklist
-now includes the last evidenced result for all 22 sources and explicit gaps
+the changes remain present in current deployed `main` `dfd82647`. Exact-SHA
+platform deployment passed, while NISTP/CDTRF source acceptance did not. The
+checklist now includes the last evidenced result for all 22 sources and explicit gaps
 against the 12 required areas. The full detailed machine-stage expansion in
 open #1098 has not been integrated into this stack.
 The CDTRF comparison wrapper marks stable snapshot true, but both raw per-pass
@@ -65,8 +74,8 @@ preserves the complete stack through #1117 and already contains current main.
 (`source_id` writable base attribute overridden by read-only property), plus
 nullable numeric/regex guards in later diagnostics. Focused mypy passes;
 full local mypy additionally reports six existing GEO request-parameter typing
-errors, which must be checked against CI dependencies. No deployment or source
-acceptance follows from these local checks.
+errors, which were superseded by passing pinned CI. Deployment proves the code
+is present, but no source acceptance follows from these local checks alone.
 
 | Track | Verified as done | Remains open |
 | --- | --- | --- |
@@ -74,7 +83,7 @@ acceptance follows from these local checks.
 | NISTP individual detail | Original 30-card sample: 20/30; after targeted parser fixes, 4/10 previously failed cards recovered; fresh sample **9/10** | Procedure `502379` high lot numbers 139/179/239/259/339/439/539: exact catalogue rows verified **7/7**, but no independent detail section or lot-specific row link; [#1115](https://github.com/Maximiliamos/torgi/issues/1115) |
 | CDTRF selected catalogue | Two 64-page walks, **6,351 distinct IDs** each with matching digest, no observed gaps/duplicates in checked selected partition | `complete_source_inventory=false` and `stable_point_in_time_snapshot=false`; live catalogue drifts. These selected-catalogue scans are not all-source acceptance |
 | CDTRF individual detail | Original 30-card sample 23/30; HTML vs Nuxt discrepancy isolated, code fixed without relaxing URL/trade/lot ID and initial-price checks. **Fresh 10/10 detail sample PASS**; 2 title disagreements flagged for review | Prior exact 7 IDs shifted off former catalogue pages so targeted original-ID recheck **0/7**; do not claim these seven recovered or assume absent site-wide |
-| QA and diagnostics | Operator proved 80/80, then 83/83 regression tests on preceding commits; latest NISTP link-shape diagnostic 9/9 tests, 7/7 catalogue rows. Read-only reports saved locally | New doc-only handoff and complete stacked PR CI/merge/deploy still need independent verification; no signed production release/acceptance was established |
+| QA and diagnostics | Operator proved 80/80, then 83/83 regression tests on preceding commits; latest NISTP link-shape diagnostic 9/9 tests, 7/7 catalogue rows. Stack integrated by #1118; later exact-SHA platform deploy passed | NISTP/CDTRF production import/GEO/map/scheduler acceptance remains unproved; local read-only reports are not signed release evidence |
 
 **Interpretation:** the parser coding and evidence-first diagnosis phase for
 these **two sources is done for now**. The owner can prioritize other source
@@ -83,12 +92,12 @@ production CDTRF records existed before these QA runs (see
 [2026-11-02 rollout snapshot](ETP_ROLLOUT_STATUS_2026-11-02.md));
 `production_database_writes=0` applies only to **these new QA probes**.
 
-## 2. PR stack: preserve order and status
+## 2. PR stack: integrated through #1118; retain history
 
-All were **open and unmerged at the last GitHub read (2026-11-06)**.
-The parent of each subsequent PR is the preceding feature branch.
-Never rebase/merge directly without examining the delta against `main` and
-running the required CI; stale historical README/rollout counts are not proof.
+The source changes below were stacked historically, then preserved and merged
+through integration PR #1118. Individual stack PRs may remain open or obsolete;
+do not merge them again without comparing their delta to current `main`.
+The parent of each subsequent historical PR was the preceding feature branch.
 
 1. [#1105](https://github.com/Maximiliamos/torgi/pull/1105): NISTP two full read-only catalogue passes (base `main`, not Draft at last check).
 2. [#1108](https://github.com/Maximiliamos/torgi/pull/1108): explicit out-of-scope terminal-status diagnostics.
@@ -99,8 +108,8 @@ running the required CI; stale historical README/rollout counts are not proof.
 7. [#1113](https://github.com/Maximiliamos/torgi/pull/1113): always-on per-page outcome/elapsed progress; explicit fresh versus old-ID recheck.
 8. [#1114](https://github.com/Maximiliamos/torgi/pull/1114): strictly read-only NISTP official high-lot exact search and safe first-party link-shape inspection.
 
-All source changes are restricted to **reviewed Draft/stacked or base PR
-branches**, not certified `main`; no broad production enablement is authorized.
+Their integrated code is in `main`, but no broad production source enablement
+is authorized. Merge/deployment state and source acceptance are separate.
 
 ## 3. Exact operator evidence and chronology
 

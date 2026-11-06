@@ -50,6 +50,24 @@ those two observation times**, not the complete provider inventory or a stable
 atomic provider snapshot. The run made zero production database writes and did
 not reconcile, archive, geocode or publish a map.
 
+PR [#1124](https://github.com/Maximiliamos/torgi/pull/1124) then merged this
+scanner and its evidence documentation to `main` as
+`dfd82647a23a6d8878cbfa33c0fc14e0da724f50`. Exact-SHA Home deployment
+[42258748126](https://github.com/Maximiliamos/torgi/actions/runs/42258748126),
+post-merge reliability
+[42258748412](https://github.com/Maximiliamos/torgi/actions/runs/42258748412),
+REG.RU deployment/public WEB smoke
+[42258748246](https://github.com/Maximiliamos/torgi/actions/runs/42258748246),
+and Cloudflare edge deployment
+[42258748168](https://github.com/Maximiliamos/torgi/actions/runs/42258748168)
+all completed successfully. The post-deploy trusted-Home bounded M-ETS run
+[42259466314](https://github.com/Maximiliamos/torgi/actions/runs/42259466314)
+read five pages with 100 distinct catalogue IDs and validated 10/10 limited
+details with zero rejects. It retained zero DB writes and false flags for
+complete source inventory, reconciliation, archival and map publication.
+These deployment checks prove the code is deployed and the selected connector
+still reads live data; they do not constitute a M-ETS production import.
+
 The subsequent full attempt at SHA `ddb1763b` parsed pages 1–152 and proved
 3,040 unique IDs without a duplicate or field-contract failure. The provider
 reported 3,059 throughout, but page 152 was full (20 cards) and both pagers
