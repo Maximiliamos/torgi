@@ -22,6 +22,14 @@ versus UTC lease assertion. A real no-VPN two-pass run is still `NOT_TESTED`;
 the seven-category filter still omits category 11 land and 40 agricultural
 real estate. No DB/reconcile/archive/GEO/map action was enabled.
 
+M-ETS live preflight follow-up: after fixing the Windows checkout import in
+merged #1123, SHA `9f75b567` parsed pages 1/2 without VPN: 20 + 20 items,
+40 unique IDs, total 3,057 and next targets 2/3. The provider emits two
+agreeing paginator blocks; PR #1124 now validates both rather than requiring
+one global pager. This was an intentional two-page budget stop, not a complete
+walk. Main SHA `0029c004` deployed successfully on Home in run 42207409497,
+including backup/migrations, public REG.RU S3 manifest and local API checks.
+
 Checklist refreshed 2026-11-06: all 22 ETPs have an evidence-scoped row in
 `ETP_PARSER_STAGE_CHECKLIST.md`, with newer NISTP/CDTRF reports kept distinct
 from the 05 November bounded Home baseline for the other 20 sources.

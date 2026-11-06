@@ -14,6 +14,12 @@
 > IDs 11/40, individual active-card validation, DB/GEO/map and scheduling are
 > still open. This does not alter the NISTP/CDTRF acceptance state below.
 
+> **M-ETS live preflight update:** SHA `9f75b567` parsed no-VPN pages 1/2
+> (20 + 20 items, 40 unique, total 3,057, next 2/3). Raw HTML contains two
+> agreeing paginator blocks. PR #1124 enforces agreement across both. This is
+> not final-page/two-pass acceptance and made no DB/GEO/map changes. Home
+> deployment of prior merged SHA `0029c004` succeeded in run 42207409497.
+
 ## 1. State: implementation advanced; production acceptance NOT complete
 
 Checklist refresh 2026-11-06: #1118 at `831814f` passed all 10 CI checks

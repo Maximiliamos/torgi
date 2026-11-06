@@ -8,6 +8,15 @@ reconciliation, archival, GEO or map publication occurred.
 
 ## M-ETS
 
+Live no-VPN parser preflight update (2026-11-06): SHA `9f75b5679c8dc5284e7780e2c8e7755d24503b97`
+successfully parsed pages 1 and 2 with 20 items each, 40 unique IDs, stable
+reported total 3,057 and exact sequential next targets 2 and 3. Raw HTML has
+two paginator blocks (upper/lower); both page-1 blocks contained the same
+`span.active.startpage` text `1`. The parser now requires every duplicated
+paginator to agree on active page and next target. This bounded preflight ended
+at the intentional two-page budget and is **not** a terminal-page or two-pass
+proof. It performed no database, reconciliation, archival, GEO or map writes.
+
 - The selected catalogue URL remains the seven-category search
   `/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9`.
   Page 1, page 2 and page 153 were loaded as separate tabs.

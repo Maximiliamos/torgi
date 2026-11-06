@@ -113,6 +113,13 @@ loaded unfiltered or privatization results, with the bankruptcy checkbox
 unchecked; public client code caps displayed results at 10,000. These are
 additional scope/pagination blockers, not new source acceptance.
 
+Later no-VPN parser preflight at `9f75b567` observed live total 3,057 and
+successfully parsed pages 1/2 (20 + 20, 40 unique) with next targets 2/3. The
+one-item increase is live drift from the earlier browser snapshot, not an
+error. Two agreeing upper/lower paginator blocks are now contract-checked.
+The preflight intentionally stopped at page budget 2, so final page and two
+full passes remain `NOT_TESTED`.
+
 For the other 20 sources the latest common live baseline is
 [Home run 41950118761](https://github.com/Maximiliamos/torgi/actions/runs/41950118761),
 artifact `etp-parser-stage-checklist`, inspected locally. The three later listed
@@ -124,7 +131,7 @@ is explicitly substituted in those two rows only.
 
 | ETP | Catalogue and IDs | Pagination proof | Individual detail / price / status | Remaining blocker |
 | --- | --- | --- | --- | --- |
-| МЭТС `m-ets.ru` | PASS, 56 distinct browser-observed IDs on pages 1/2/153; strict full-walk implementation/tests PASS at `74eaa4a` | Page 2 PASS; page 153 terminal PASS in browser; live automated two-pass walk NOT_TESTED | Browser 2/2 detail PASS / price PASS / scheduled status PASS; catalogue price/status code tested; active-detail status NOT_TESTED | Seven-category scope omits standalone land/agricultural filters; run two complete no-VPN walks, then expand scope |
+| МЭТС `m-ets.ru` | PASS for live parser pages 1/2: 40 unique IDs, total 3,057 | Exact next 2/3 PASS; earlier page 153 terminal in browser; current terminal/two full passes NOT_TESTED | Earlier browser 2/2 detail PASS / price PASS / scheduled status PASS; active-detail status NOT_TESTED | Upper/lower pagers agree; selected scope still omits standalone land/agricultural categories |
 | ЦДТ `cdtrf.ru` | PASS, 6,351 IDs per selected walk | 64 pages twice PASS, matching ID digest | Fresh 10/10 PASS for identity/initial price/status | Two title-review flags; >=30 fresh representative cards, full scope and downstream acceptance pending |
 | НИСТП `nistp.ru` | PASS, 2,716 IDs per walk | 142 pages twice PASS, matching ID/record digests | Fresh 9/10; requested high section BLOCKED | 43 terminal statuses (#1116), seven catalogue-only high lots (#1115) |
 | Альфалот `alfalot.ru` | PASS for 22 distinct IDs on active-filter pages 2/3; page 1 identity set not retained | Page 2 PASS; page 3 terminal PASS in browser; HTTP request contract NOT_TESTED | 2/2 property detail / price / `Идет прием заявок` status PASS | `stateFilter_GD` proves «прием заявки»; procedure types remain mixed and property-scope classification FAIL |
