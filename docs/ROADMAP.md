@@ -1,5 +1,12 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+Integration update 2026-11-06: the complete #1105–#1117 stack is preserved in
+`codex/etp-stack-integration-20261106` and includes current main without a merge
+conflict. 115 focused NISTP/CDTRF tests and Ruff pass. Corrected the #1105
+source_id type failure and later nullable diagnostic guards; focused mypy passes.
+Integrated CI, merge and deployment are pending; #1115/#1116 and downstream
+source acceptance remain open. No production import/GEO/map was run.
+
 ## 06.11.2026 — R7/NISTP + CDTRF: этап исправления парсеров и read-only QA выполнен, production acceptance открыт
 
 **Текущий операционный срез**: [передача следующему агенту и полная хронология](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md) и [ETP stage checklist](ETP_PARSER_STAGE_CHECKLIST.md). Исторический срез 02.11 ниже описывает ранее развернутый production, а не новые read-only PR. **Ни один из PR #1105–#1114 не был merged на момент проверки**; отсутствие свежего CI и exact-SHA deployment доказательств не означает успех.

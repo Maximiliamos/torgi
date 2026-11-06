@@ -190,13 +190,13 @@ def inspect_exact_source_search(
         ),
         "independent_lot_detail_endpoint_verified": False,
         "exact_row_price_present": (
-            type(price) in (int, float) and price > 0
+            isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
         ),
         "exact_row_in_selected_active_states": status_key in _ACTIVE_STATE_KEYS,
         "exact_search_scope_proven": (
             query_echo_proven and _active_filters_are_visible(html)
             and len(matches) == 1 and not returned_unexpected
-            and type(price) in (int, float) and price > 0
+            and isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
             and status_key in _ACTIVE_STATE_KEYS
         ),
         "independent_lot_detail_verified": False,

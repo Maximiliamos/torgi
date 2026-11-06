@@ -710,6 +710,7 @@ class HtmlEtpConnector(AuctionConnector):
     safe_for_reconciliation = False
 
     def __init__(self, *, session: requests.Session | None = None, timeout: float = 25.0) -> None:
+        self.source_id = self.profile.source_id
         self.session = session or requests.Session()
         self.timeout = timeout
         self._last_response: requests.Response | None = None
@@ -719,10 +720,6 @@ class HtmlEtpConnector(AuctionConnector):
             "User-Agent",
             "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
         )
-
-    @property
-    def source_id(self) -> str:
-        return self.profile.source_id
 
     def _check_response(self, response: requests.Response) -> requests.Response:
         if 300 <= response.status_code < 400:

@@ -145,11 +145,11 @@ def cdtrf_structure(soup: BeautifulSoup, trade_id: str, lot_id: str) -> dict[str
         lot, trade = _ssr_lot(soup)
     except (CdtrfEvidenceError, TypeError, KeyError, IndexError, ValueError):
         return {"nuxt_structure_parsed": False, "html_trade_code_matches_api":
-                bool(code) and code.group(1) == trade_id}
+                code is not None and code.group(1) == trade_id}
     nuxt_trade = str(trade.get("tradeId"))
     nuxt_lot = str(lot.get("tradeLotId"))
     nuxt_name = str(lot.get("name") or "").strip()
-    html_trade_matches = bool(code) and code.group(1) == trade_id
+    html_trade_matches = code is not None and code.group(1) == trade_id
     ssr_trade_matches = nuxt_trade == trade_id
     ssr_lot_matches = nuxt_lot == lot_id
     name_matches = bool(title and nuxt_name and title == nuxt_name)

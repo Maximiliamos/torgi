@@ -9,6 +9,15 @@
 
 ## 1. State: implementation advanced; production acceptance NOT complete
 
+Integration review on 2026-11-06: branch `codex/etp-stack-integration-20261106`
+preserves the complete stack through #1117 and already contains current main.
+115 focused NISTP/CDTRF tests and Ruff passed. Fixed the #1105 CI type error
+(`source_id` writable base attribute overridden by read-only property), plus
+nullable numeric/regex guards in later diagnostics. Focused mypy passes;
+full local mypy additionally reports six existing GEO request-parameter typing
+errors, which must be checked against CI dependencies. No deployment or source
+acceptance follows from these local checks.
+
 | Track | Verified as done | Remains open |
 | --- | --- | --- |
 | NISTP active-filtered catalogue | Two independent 142-page walks, 2,716 unique IDs each, identical ID and record digests, known terminal page | **43 terminal-state rows** leaked through active filter; `effective_active_scope_proven=false` (issue [#1116](https://github.com/Maximiliamos/torgi/issues/1116)). Two clean active-scope scans not proven |

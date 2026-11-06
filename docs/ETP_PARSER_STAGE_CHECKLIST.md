@@ -8,6 +8,12 @@ stops, not certifying a complete source scan.
 
 ## NISTP + CDTRF: operator-verified milestone (2026-11-06)
 
+Integration follow-up: 115 focused tests, Ruff and mypy for the three corrected
+modules pass on the integration branch. Source-ID mutability and nullable
+diagnostic values are corrected without relaxing lot identity or price guards.
+Merge, CI for the integrated SHA, deployment and production acceptance remain
+pending. Source blockers #1115/#1116 remain open.
+
 **Scope = source parser fixes and read-only diagnosis, NOT S0–S7 acceptance.**
 The source-level work for this iteration is documented in
 [ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md](ETP_NISTP_CDTRF_AGENT_HANDOFF_2026-11-06.md).
