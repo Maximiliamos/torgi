@@ -91,7 +91,7 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
-    return (
+    core_specs = (
         SourceSyncSpec(
             "torgi.gov.ru",
             TorgiGovSearchFilters(
@@ -128,6 +128,11 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
             BidExpertSearchFilters(category="all", page=1),
         ),
     )
+    # Operator-approved ETP discovery windows share the same 09:00/21:00
+    # cycle.  Import lazily to avoid a module cycle: the helper owns
+    # SourceSyncSpec values and imports this module for the dataclass.
+    from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
+    return core_specs + scheduled_etp_source_specs()
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:

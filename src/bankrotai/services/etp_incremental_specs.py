@@ -1,7 +1,8 @@
-"""Explicit, opt-in two-page ETP sync specs, never default or archive-safe."""
+"""Bounded ETP sync specs which are never complete or archive-safe."""
 from __future__ import annotations
 
 from bankrotai.connectors.registry.etp_incremental import EtpIncrementalFilters
+from bankrotai.connectors.etp_sources.common import EtpSearchFilters
 from bankrotai.services.ingestion import SourceSyncSpec
 
 
@@ -38,6 +39,24 @@ def etp_five_page_source_specs() -> tuple[SourceSyncSpec, ...]:
         SourceSyncSpec(
             "cdtrf.ru",
             EtpIncrementalFilters("cdtrf.ru", max_detail_requests=2, max_pages=5),
+            reconcile_missing=False, max_batches=5,
+        ),
+    )
+
+
+def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
+    """Safe 09:00/21:00 discovery windows for ETPs approved by the operator.
+
+    These runs intentionally never claim complete inventory and must never
+    reconcile or archive missing lots.  NISTP is bounded while its selected
+    active catalogue still contains provider rows with terminal statuses.
+    Alfalot is not returned here until the browser-confirmed ``stateFilter_GD``
+    request contract is captured; the legacy SUPCOMING URL is a different
+    (upcoming) catalogue and must not be scheduled as active applications.
+    """
+    return etp_five_page_source_specs() + (
+        SourceSyncSpec(
+            "nistp.ru", EtpSearchFilters(page=1),
             reconcile_missing=False, max_batches=5,
         ),
     )
