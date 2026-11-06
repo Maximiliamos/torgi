@@ -28,7 +28,12 @@ from bankrotai.logic import (
     persist_lot,
     reconcile_cross_source_duplicates,
 )
-from bankrotai.scrapers import is_sale_real_estate_lot
+from bankrotai.scraper_contracts import (
+    LotOnlineSearchFilters, TBankrotSearchFilters, TorgiGovSearchFilters,
+)
+from bankrotai.scrapers import (
+    LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
+)
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.etp_nistp_schedule_guard import (
