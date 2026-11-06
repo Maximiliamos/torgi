@@ -107,17 +107,16 @@ def _reported_total(soup: BeautifulSoup) -> int:
 
 def _selected_page_is_visible(soup: BeautifulSoup, page_number: int) -> bool:
     paginators = soup.select(".paginator")
-    if len(paginators) != 1:
+    if not paginators:
         return False
-    active = soup.select(".paginator .active")
-    # The provider's raw first-page HTML omits an active page marker.  The
-    # response URL is independently required to equal the unpaged catalogue
-    # URL, and the next control is verified below as the exact filtered page 2.
-    # Later pages must retain their explicit visible marker so an SSR fallback
-    # that repeats page 1 cannot pass as real pagination.
-    if page_number == 1 and not active:
-        return True
-    return len(active) == 1 and active[0].get_text(" ", strip=True) == str(page_number)
+    for paginator in paginators:
+        active = paginator.select(".active")
+        if (
+            len(active) != 1
+            or active[0].get_text(" ", strip=True) != str(page_number)
+        ):
+            return False
+    return True
 
 
 def _paginator_marker_summary(soup: BeautifulSoup) -> str:
@@ -143,12 +142,24 @@ def _paginator_marker_summary(soup: BeautifulSoup) -> str:
 
 
 def _next_page(soup: BeautifulSoup, page_number: int) -> int | None:
-    links = soup.select('div.paginator a.next.link[aria-label="Следующая страница"]')
-    if not links:
+    paginators = soup.select("div.paginator")
+    if not paginators:
+        raise MetsCatalogueScanError("M-ETS paginator is absent")
+    links_by_paginator = [
+        paginator.select('a.next.link[aria-label="Следующая страница"]')
+        for paginator in paginators
+    ]
+    if any(len(links) > 1 for links in links_by_paginator):
+        raise MetsCatalogueScanError("M-ETS paginator has multiple local next controls")
+    present = [links[0] for links in links_by_paginator if links]
+    if not present:
         return None
-    if len(links) != 1:
-        raise MetsCatalogueScanError("M-ETS paginator has multiple next controls")
-    href = urljoin(BASE, str(links[0].get("href") or ""))
+    if len(present) != len(paginators):
+        raise MetsCatalogueScanError("M-ETS paginator next controls disagree")
+    hrefs = {urljoin(BASE, str(link.get("href") or "")) for link in present}
+    if len(hrefs) != 1:
+        raise MetsCatalogueScanError("M-ETS paginator next targets disagree")
+    href = hrefs.pop()
     parsed = urlsplit(href)
     expected_query = parse_qs(urlsplit(APARTMENTS_URL).query)
     actual_query = parse_qs(parsed.query)

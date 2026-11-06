@@ -56,6 +56,7 @@ def _html(
     prices: tuple[str, ...] | None = None,
     next_href: str | None = None,
     selected_page_visible: bool = True,
+    paginator_count: int = 1,
 ) -> str:
     price_values = prices or tuple("100.00" for _ in identities)
     category_options = "".join(
@@ -79,12 +80,16 @@ def _html(
         if selected_page_visible
         else f"<span>{page}</span>"
     )
+    paginators = "".join(
+        f'<div class="paginator">{page_marker}{next_link}</div>'
+        for _ in range(paginator_count)
+    )
     return f"""
     <html><head><meta itemprop="offerCount" content="{total}"></head><body>
       <select name="search_category" multiple>{category_options}</select>
       <select name="stat" multiple>{status_options}</select>
       <div class="search-results-info"><div class="value">{total}</div></div>
-      <div class="paginator">{page_marker}{next_link}</div>
+      {paginators}
       {''.join(_card(identity, price=price) for identity, price in zip(identities, price_values))}
     </body></html>
     """
@@ -150,32 +155,63 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert "244381-1" not in str(report)
 
 
-def test_raw_first_page_may_omit_active_marker_but_later_page_may_not() -> None:
-    pages = _good_pages()
+def test_all_duplicate_paginators_must_agree_on_active_page() -> None:
+    pages = [
+        _html(
+            1,
+            ["244381-1", "244360-1"],
+            total=3,
+            next_page=2,
+            paginator_count=2,
+        ),
+        _html(
+            2,
+            ["215028-291"],
+            total=3,
+            next_page=None,
+            paginator_count=2,
+        ),
+    ]
+    report = scan_complete_mets_catalogue(
+        _Session(pages), max_pages=10, delay_seconds=0,
+    )
+    assert report["last_page_proven"] is True
+
+    valid_first = pages[0]
     pages[0] = _html(
         1,
         ["244381-1", "244360-1"],
         total=3,
         next_page=2,
         selected_page_visible=False,
-    )
-    report = scan_complete_mets_catalogue(
-        _Session(pages), max_pages=10, delay_seconds=0,
-    )
-    assert report["last_page_proven"] is True
-
-    pages[1] = _html(
-        2,
-        ["215028-291"],
-        total=3,
-        next_page=None,
-        selected_page_visible=False,
+        paginator_count=2,
     )
     with pytest.raises(
         MetsCatalogueScanError,
-        match=r'page 2 is not visibly selected; paginator=.*"active_count": 0',
+        match=r'page 1 is not visibly selected; paginator=.*"active_count": 0',
     ):
         scan_complete_mets_catalogue(_Session(pages), delay_seconds=0)
+
+    conflicting = valid_first.replace(
+        '<span class="active">1</span>',
+        '<span class="active">2</span>',
+        1,
+    )
+    with pytest.raises(MetsCatalogueScanError, match="page 1 is not visibly selected"):
+        scan_complete_mets_catalogue(_Session([conflicting]), delay_seconds=0)
+
+
+def test_duplicate_paginator_next_controls_must_agree() -> None:
+    page = _html(
+        1,
+        ["244381-1", "244360-1"],
+        total=3,
+        next_page=2,
+        paginator_count=2,
+    )
+    inconsistent = page.replace('aria-label="Следующая страница"', "", 1)
+    with pytest.raises(MetsCatalogueScanError, match="next controls disagree"):
+        scan_complete_mets_catalogue(_Session([inconsistent]), delay_seconds=0)
 
 
 def test_two_matching_independent_passes_close_sessions() -> None:
