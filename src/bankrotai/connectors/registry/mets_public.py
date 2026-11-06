@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -16,6 +17,9 @@ from bs4 import BeautifulSoup
 from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError, ConnectorPage
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import classify_category
+
+if TYPE_CHECKING:
+    from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
 
 BASE = "https://m-ets.ru"
 # User-observed search filter for seven real-estate category IDs; full paging unverified.
@@ -303,13 +307,21 @@ class MetsConnector(AuctionConnector):
 
     def __init__(self, *, session: requests.Session | None = None) -> None:
         self.pilot = MetsPublicPilot(session=session)
+        self._source_crawler: MetsSourceCrawler | None = None
 
     async def search(self, filters=None, cursor=None) -> ConnectorPage:
+        from bankrotai.connectors.registry.mets_sync import (
+            MetsSourceCrawler, MetsSyncFilters,
+        )
         from bankrotai.connectors.registry.etp_incremental import (
             EtpIncrementalFilters, incremental_mets_search,
         )
         import asyncio
 
+        if isinstance(filters, MetsSyncFilters):
+            if self._source_crawler is None:
+                self._source_crawler = MetsSourceCrawler(self.pilot)
+            return await self._source_crawler.search(filters, cursor)
         if not isinstance(filters, EtpIncrementalFilters) or filters.source_id != self.source_id:
             raise ConnectorCapabilityError(
                 "M-ETS only supports explicitly scoped non-archival incremental filters"

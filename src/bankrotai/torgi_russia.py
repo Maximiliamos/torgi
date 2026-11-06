@@ -332,9 +332,20 @@ class TorgiRussiaClient:
             source_region_id = int(filters.region_id)
             expected_code = PUBLIC_REGION_FILTER_EXPECTATIONS.get(source_region_id)
             raw_titles = {
-                str(item.get("region_title") or "").strip()
+                str(
+                    item.get("region_title")
+                    or (
+                        item.get("region", {}).get("title")
+                        if isinstance(item.get("region"), dict) else ""
+                    )
+                    or ""
+                ).strip()
                 for item in records
                 if item.get("region_title")
+                or (
+                    isinstance(item.get("region"), dict)
+                    and item.get("region", {}).get("title")
+                )
             }
             if source_region_id not in PUBLIC_REGION_FILTER_EXPECTATIONS:
                 raise RuntimeError(

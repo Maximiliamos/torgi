@@ -655,6 +655,35 @@ def test_torgi_russia_rejects_ignored_region_filter() -> None:
         raise AssertionError("ignored region filter must fail closed")
 
 
+def test_torgi_russia_region_guard_accepts_nested_live_region_shape() -> None:
+    item = _new_site_lot(region_title="Республика Адыгея")
+    item["region"] = {"title": item.pop("region_title")}
+    html = _nextjs_search_html([item], total=1)
+
+    class Response:
+        url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1&regions%5B%5D=1"
+        text = html
+        status_code = 200
+        content = html.encode()
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        headers = {}
+
+        def get(self, _url, *, params=None, timeout=None):
+            return Response()
+
+    lots, _metadata = TorgiRussiaClient(session=Session()).search_lots(
+        TorgiRussiaSearchFilters(region_id=1)
+    )
+
+    assert len(lots) == 1
+    assert lots[0].region_slug == "01"
+    assert lots[0].region_name == "Республика Адыгея"
+
+
 def test_torgi_russia_retries_incomplete_http_body() -> None:
     item = _new_site_lot()
     html = _nextjs_search_html([item], total=1)

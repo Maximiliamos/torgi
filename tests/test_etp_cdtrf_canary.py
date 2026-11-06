@@ -233,7 +233,9 @@ def test_cdtrf_operator_source_is_disabled_without_three_gates(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     scheduled = next(x for x in default_source_specs() if x.source_id == "cdtrf.ru")
     assert scheduled.reconcile_missing is False
-    assert scheduled.max_batches == 5
+    assert scheduled.max_batches == 500
+    assert scheduled.require_source_end is True
+    assert scheduled.filters.page_size == 100
     with pytest.raises(PermissionError):
         source_full_specs("cdtrf.ru")
     for name in (

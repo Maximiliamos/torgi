@@ -280,7 +280,7 @@ def test_optin_five_page_cdtrf_cursor_and_source_details(monkeypatch):
     assert len(set(identities)) == 5
 
 
-def test_five_page_trial_is_scheduled_without_enabling_archival():
+def test_full_selected_catalogues_are_scheduled_without_enabling_archival():
     from bankrotai.services.etp_incremental_specs import (
         etp_five_page_source_specs, etp_incremental_source_specs,
     )
@@ -300,10 +300,13 @@ def test_five_page_trial_is_scheduled_without_enabling_archival():
     assert {"m-ets.ru", "cdtrf.ru", "nistp.ru"} <= set(scheduled)
     assert all(
         scheduled[source].reconcile_missing is False
-        and scheduled[source].max_batches == 5
+        and scheduled[source].max_batches == 500
+        and scheduled[source].require_source_end is True
         for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru")
     )
-    assert scheduled["nistp.ru"].max_detail_attempts_per_page == 2
+    assert scheduled["nistp.ru"].max_detail_attempts_per_page is None
+    assert scheduled["m-ets.ru"].filters.max_pages == 500
+    assert scheduled["cdtrf.ru"].filters.page_size == 100
     assert scheduled["m-ets.ru"].max_detail_attempts_per_page is None
     assert scheduled["cdtrf.ru"].max_detail_attempts_per_page is None
     assert "alfalot.ru" not in scheduled
