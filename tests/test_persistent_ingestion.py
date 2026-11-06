@@ -843,7 +843,8 @@ def test_operator_nonreconciling_accepts_proven_last_page(sessions) -> None:
 def test_fast_source_specs_are_bounded_and_gis_uses_overlap_date() -> None:
     specs = fast_source_specs(gis_publish_date_from="2026-08-22")
 
-    assert len(specs) == 5
+    assert len(specs) == 8
+    assert {"m-ets.ru", "cdtrf.ru", "nistp.ru"} <= {spec.source_id for spec in specs}
     assert all(spec.reconcile_missing is False and spec.max_batches == 1 for spec in specs)
     assert specs[0].filters.publish_date_from == "2026-08-22"
 
