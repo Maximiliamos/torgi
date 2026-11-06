@@ -1,5 +1,37 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+## 07.11.2026 — разбор production run и переход от 5-page к full selected catalogue
+
+- [x] PostgreSQL независимо подтвердил run
+  `26ca1925-068f-4d86-ad7b-53d6482f5c21`: `partial`, шесть success и
+  fail-closed `torgi-russia.ru`; 1,899 inserts, 6,068 updates и 35 архивов.
+  Все 35 архивов относятся только к `torgi.gov.ru` и имеют причину
+  `missing_after_two_complete_syncs`. Более поздних nationwide runs нет.
+- [x] Фоновый map worker после импорта опубликовал current ready dataset
+  `20261106T212400126715Z-r6-bundle-s3`: 67,991 points, 81,655 tiles,
+  `published_at=2026-11-06 21:25:17`. Публичная S3-проверка из текущей
+  VPN-сети зависает и должна быть повторена без VPN; старый partial-resume
+  запрещает повтор после уже существующего более нового MapDataset.
+- [x] Причина `torgi-russia.ru` найдена: live SSR records содержат регион в
+  `region.title`, а guard проверял только legacy `region_title`. Нормализатор
+  уже сохранял эти 23 строки как код `01`, поэтому исправляется только форма
+  доказательства региона; проверка несовпадения остаётся fail-closed.
+- [x] Штатные МЭТС/ЦДТ/НИСТП specs переведены с пяти страниц на полный
+  доказанный выбранный каталог: `max_batches=500`, `require_source_end=True`,
+  `reconcile_missing=False`. NISTP больше не ограничен двумя деталями/страницу;
+  catalogue-only и terminal-leak строки по-прежнему не получают ложной
+  индивидуальной приёмки.
+- [x] ЦДТ использует `CdtrfSyncFilters(page_size=100)` с total/page/ID/detail
+  guards. МЭТС получил stateful full crawler с total, page size, cross-page ID,
+  detail identity, catalogue/detail price и status checks. Никакой из трёх
+  источников не получает missing-lot archival.
+- [ ] Merge/точный Home-deploy нового PR; затем один no-VPN полный операторский
+  прогон с restore-verified backup, всеми семью источниками, bounded GEO до
+  исчерпания очереди и immutable MapDataset/S3 verification.
+- [ ] После реального прогона записать страницы/seen/insert/update/fail каждого
+  источника. Полный выбранный пагинатор не закрывает NISTP #1115/#1116 и не
+  доказывает provider-wide M-ETS scope (категории 11/40 всё ещё вне фильтра).
+
 ## 06.11.2026 — Подключение МЭТС/ЦДТ/НИСТП к штатному 09:00/21:00, PR #1128
 
 - [x] **Разработка:** три источника включены в `default_source_specs()`,

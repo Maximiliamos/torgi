@@ -1,5 +1,26 @@
 # ETP stage checklist — operator contract
 
+## 2026-11-07 — фактический run и full selected-catalogue scheduling
+
+Production DB run `26ca1925-068f-4d86-ad7b-53d6482f5c21` независимо
+подтверждён: `torgi.gov.ru`, Lot-online, BidExpert, НИСТП, ЦДТ и МЭТС имеют
+source-run `success`; «Торги России» остановлены region guard до insert/update/
+archive. Пятистраничный результат НИСТП 10, ЦДТ 5, МЭТС 4 — это лимит старого
+кода, а не размер каталогов. Фоновый MapDataset после run существует, но это не
+заменяет новый full-source + GEO + public-S3 acceptance.
+
+| Источник | Реальный run 06/07.11 | Новая штатная спецификация | Оставшийся блокер |
+| --- | --- | --- | --- |
+| Торги России | FAIL после page 1; 23 unchanged candidates, 0 insert/update/archive | `region_title` + live nested `region.title`, строгий expected region code сохраняется | Нужен no-VPN source-only/full повтор и terminal proof |
+| НИСТП | 5 pages, 10 inserts, archive 0 | до 500 pages, обязательный source end, все eligible details, reconcile off | #1115 catalogue-only; #1116 43 terminal leaks |
+| ЦДТ | 5 pages, 2 inserts/3 updates, archive 0 | API page size 100, total/last-page/ID/detail guards, reconcile off | Live full production result ещё NOT_TESTED |
+| МЭТС | 5 pages, 4 unchanged, archive 0 | stateful full selected catalogue, total/terminal/cross-page/detail price+status checks, reconcile off | Категории 11/40 вне доказанного selected scope |
+
+Статус этапа 12 остаётся `NOT_TESTED` до двух реальных успешных штатных
+09:00/21:00 циклов на развёрнутом SHA. Кодовый full paginator нельзя помечать
+PASS до no-VPN Home run. Исторический раздел PR #1128 ниже фиксирует прежний
+5-page контракт и теперь считается superseded новой реализацией.
+
 ## 2026-11-06 — 09:00/21:00 MSK bounded scheduled discovery, PR #1128
 
 **Engineering change under review**: [PR #1128](https://github.com/Maximiliamos/torgi/pull/1128)
