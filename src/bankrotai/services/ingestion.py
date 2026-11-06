@@ -28,16 +28,12 @@ from bankrotai.logic import (
     persist_lot,
     reconcile_cross_source_duplicates,
 )
-from bankrotai.scraper_contracts import (
-    BidExpertSearchFilters,
-    LotOnlineSearchFilters,
-    TBankrotSearchFilters,
-    TorgiGovSearchFilters,
-    TorgiRussiaSearchFilters,
-)
-from bankrotai.scrapers import LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot
+from bankrotai.scrapers import is_sale_real_estate_lot
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+from bankrotai.services.etp_nistp_schedule_guard import (
+    catalogue_row_eligible_for_detail, independent_detail_proven,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -90,45 +86,10 @@ class SourceSyncResult:
 
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
-    core_specs = (
-        SourceSyncSpec(
-            "torgi.gov.ru",
-            TorgiGovSearchFilters(
-                type_transaction="SALE",
-                category_code=TorgiGovClient.REAL_ESTATE_ROOT_CATEGORY_CODES,
-                lot_status=TorgiGovClient.DEFAULT_LOT_STATUS,
-                page=1,
-                page_size=100,
-            ),
-        ),
-        SourceSyncSpec(
-            "tbankrot.ru",
-            TBankrotSearchFilters(
-                category_codes=TBankrotClient.REAL_ESTATE_CATEGORY_CODES,
-                page=1,
-                page_size=100,
-            ),
-        ),
-        SourceSyncSpec(
-            "lot-online.ru",
-            LotOnlineSearchFilters(
-                category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
-                archive_mode="false",
-                page=1,
-                page_size=96,
-            ),
-        ),
-        SourceSyncSpec(
-            "torgi-russia.ru", TorgiRussiaSearchFilters(),
-            reconcile_missing=False, require_source_end=True,
-        ),
-        SourceSyncSpec(
-            "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
-        ),
-    )
+    from bankrotai.services.ingestion_spec_builders import core_source_specs
     from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
-    return core_specs + scheduled_etp_source_specs()
+    return core_source_specs() + scheduled_etp_source_specs()
+
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
     """Bounded discovery for the UI; it never proves coverage or reconciles missing lots."""
@@ -673,21 +634,8 @@ class NationwideIngestionService:
         for lot in lots:
             if not is_sale_real_estate_lot(lot):
                 continue
-            if result.source_system == "nistp.ru":
-                # The NISTP provider leaked 43 terminal lots into its checked
-                # active-status selection. Require the exact per-row state.
-                raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
-                source_status = " ".join(
-                    str(raw.get("catalogue_source_status_text") or "").split()
-                ).casefold().replace("ё", "е")
-                if (
-                    source_status not in {
-                        "торги объявлены", "прием заявок", "идут торги",
-                    }
-                    or lot.auction_status not in {"active", "scheduled"}
-                    or lot.start_price is None or lot.start_price <= 0
-                ):
-                    continue
+            if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
+                continue
             if lot.external_id in result.seen_external_ids or lot.external_id in page_ids:
                 result.items_duplicates += 1
                 continue
@@ -760,24 +708,8 @@ class NationwideIngestionService:
                 asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
             )
         if result.source_system == "nistp.ru":
-            # A source catalogue row is NOT an independently verified lot.
-            # In particular, shared trade 502379 does not expose high-numbered
-            # per-lot sections. Never persist a failed/unknown detail as active.
-            proven = []
-            for lot in accepted:
-                raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
-                if (
-                    lot.detail_level == "detail"
-                    and raw.get("detail_enrichment_status") == "success"
-                    and raw.get("individual_lot_identity_verified") is True
-                    and raw.get("detail_start_price_verified") is True
-                    and raw.get("detail_status_normalized") in {"active", "scheduled"}
-                    and lot.auction_status in {"active", "scheduled"}
-                    and lot.start_price is not None and lot.start_price > 0
-                ):
-                    proven.append(lot)
-                else:
-                    result.items_failed += 1
+            proven = [lot for lot in accepted if independent_detail_proven(lot)]
+            result.items_failed += len(accepted) - len(proven)
             accepted = proven
         with self.session_factory() as session:
             bind = session.get_bind()
