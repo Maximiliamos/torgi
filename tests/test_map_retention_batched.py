@@ -86,6 +86,7 @@ def test_retention_is_bounded_restartable_and_preserves_live_map():
     # DELETE must use the already-materialized primary-key batch rather than
     # DELETE ... IN (SELECT ... LIMIT), which timed out in production.
     delete_sql = []
+
     def capture_delete_sql(_conn, _cursor, statement, _params, _context, _executemany):
         if statement.lstrip().upper().startswith("DELETE FROM MAP_TILES"):
             delete_sql.append(statement.upper())
