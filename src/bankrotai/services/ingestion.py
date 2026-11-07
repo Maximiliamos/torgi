@@ -229,6 +229,9 @@ class NationwideIngestionService:
         heartbeat_thread.start()
         try:
             payload = await self._run_active(run_id, specs)
+        except Exception as exc:
+            logger.exception("Nationwide synchronization %s failed before finalization", run_id)
+            payload = {"status": "failed", "sources": [], "expired_after_auction": 0, "profile": {}, "error": str(exc)}
         finally:
             stop_heartbeat.set()
             heartbeat_thread.join()
@@ -520,8 +523,7 @@ class NationwideIngestionService:
             result.phase = "complete"
             result.progress_current = result.progress_total
         except Exception as exc:
-            # A failed reconciliation must never be presented as complete
-            # coverage, even if pagination reached the final source page.
+            # Never present failed reconciliation as complete coverage.
             result.complete_source_run = False
             result.status = "failed"
             result.phase = "failed"
@@ -870,9 +872,7 @@ class NationwideIngestionService:
                     archived += 1
                 if index % batch_size == 0 and progress_callback is not None:
                     progress_callback(index, total)
-            # Missing-lot reconciliation is fail-closed: do not make partial
-            # archival durable if any row, canonical promotion, or checkpoint
-            # update fails before the source reconciliation completes.
+            # One commit keeps missing-lot reconciliation fail-closed.
             session.commit()
             if progress_callback is not None:
                 progress_callback(total, total)
