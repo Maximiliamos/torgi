@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bankrotai.db import Base, BackgroundTaskState, LotSyncRun, MapDataset
+from bankrotai.db import Base, BackgroundTaskState, LotSyncRun, MapDataset, ProcessedLot
 from bankrotai.services import map_builder
 
 
@@ -101,3 +101,44 @@ def test_active_ingestion_blocks_publication():
         s.add(LotSyncRun(id="active", trigger_type="manual", status="running"))
         s.commit()
         assert "ingestion_in_progress" in map_builder.map_publication_blockers(s)
+
+
+def test_exact_fingerprint_detects_non_timestamp_price_and_status_edits():
+    """A live change to a non-max timestamp row cannot silently publish old tiles."""
+    factory = _db()
+    with factory() as session:
+        session.add(ProcessedLot(
+            source_system="fixture", external_id="one", title="Plot",
+            category="land", region_code="76", auction_status="active",
+            current_geo_lat=57.62, current_geo_lon=39.89,
+            start_price=100, current_price=90,
+        ))
+        session.commit()
+        before = map_builder.map_source_fingerprint(session)
+        lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "one"))
+        lot.current_price = 80
+        session.commit()
+        after_price = map_builder.map_source_fingerprint(session)
+        assert before != after_price
+        lot.auction_status = "closed"
+        session.commit()
+        after_status = map_builder.map_source_fingerprint(session)
+        assert after_price != after_status
+        lot.current_geo_lat = 57.61
+        session.commit()
+        assert after_status != map_builder.map_source_fingerprint(session)
+
+
+def test_exact_fingerprint_ignores_non_map_fields():
+    factory = _db()
+    with factory() as session:
+        session.add(ProcessedLot(
+            source_system="fixture", external_id="two", title="Plot",
+            category="land", current_geo_lat=57.62, current_geo_lon=39.89,
+        ))
+        session.commit()
+        before = map_builder.map_source_fingerprint(session)
+        lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "two"))
+        lot.description = "Non-public description update"
+        session.commit()
+        assert map_builder.map_source_fingerprint(session) == before
