@@ -8,13 +8,14 @@ param(
     [string]$BackupScript = '',
     [ValidateRange(1, 500)][int]$GeoBatchSize = 500,
     [ValidateRange(1, 64)][int]$GeoMaxBatches = 64,
-    [switch]$ConfirmProductionWrites
+    [switch]$ConfirmProductionWrites,
+    [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
 if (-not $BackupScript) {
     $BackupScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'backup-home-postgres.ps1'
 }
-if (-not $ConfirmProductionWrites) { throw 'Specify -ConfirmProductionWrites to authorize the full PostgreSQL/GEO/map campaign.' }
+if (-not $ConfirmProductionWrites -and -not $DryRun) { throw 'Specify -ConfirmProductionWrites to authorize the full PostgreSQL/GEO/map campaign.' }
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $ingest = 'bankrotai-home-ingestion-worker'
 $geo = 'bankrotai-home-geocoding-worker'
@@ -81,6 +82,29 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
         $state.new_source_filter_types.'cdtrf.ru' -ne 'CdtrfSyncFilters' -or
         $state.new_source_filter_types.'nistp.ru' -ne 'EtpSearchFilters') {
         throw 'Preflight BLOCKED: not all seven expected operational sources are eligible. No import has started.'
+    }
+
+    # Run independent DB/lease/contract validation before expensive restore or sync.
+    # The probe explicitly starts a read-only transaction; even stale leases block.
+    $sourceGatePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'preflight_live_source_gate.py'
+    if (-not (Test-Path -LiteralPath $sourceGatePath -PathType Leaf)) {
+        throw "Read-only source gate missing: $sourceGatePath"
+    }
+    $sourceGateOutput = @(Get-Content -LiteralPath $sourceGatePath -Raw |
+        & docker.exe exec -i $ingest python -)
+    $sourceGateExitCode = $LASTEXITCODE
+    if ($sourceGateExitCode -ne 0 -or -not $sourceGateOutput.Count -or
+        $sourceGateOutput[-1] -notmatch '^SOURCE_PREFLIGHT=') {
+        throw "Read-only source gate failed: $($sourceGateOutput -join '; ')"
+    }
+    $sourceGate = ($sourceGateOutput[-1] -replace '^SOURCE_PREFLIGHT=', '') | ConvertFrom-Json
+    if ($sourceGate.pass -ne $true) {
+        throw "Read-only source gate blocked: $($sourceGate.errors -join '; ')"
+    }
+    if ($DryRun) {
+        Write-Host 'DRY_RUN_PASS: live source, database, pause/circuit, lease and SHA gates passed.'
+        Write-Warning 'Backup freshness and disk/S3 capacity have NOT been proved; no production operation authorized.'
+        return
     }
 
     if (-not (Test-Path -LiteralPath $BackupScript -PathType Leaf)) {
