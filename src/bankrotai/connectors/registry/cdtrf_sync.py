@@ -13,6 +13,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from bankrotai.connectors.registry.detail_transport import DetailWorkers
 from math import ceil
 
 import requests
@@ -39,10 +40,12 @@ SYSTEMIC_DETAIL_REJECTION_CODES = frozenset({
 })
 
 
-def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Session):
+def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Session, limiter=None):
     """Retry only transient transport/5xx errors, never identity or 403/429."""
     for attempt in range(3):
         try:
+            if limiter is not None:
+                limiter.acquire(f"https://torgi.cdtrf.ru/trades/{trade_id}")
             return fetch_verified_cdtrf_lot(trade_id, lot_id, session=session)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt == 2:
@@ -60,6 +63,8 @@ class CdtrfSyncFilters:
     page_size: int = 100
     max_pages: int = MAX_SCAN_PAGES
     detail_delay_seconds: float = 0.5
+    detail_concurrency: int = 2
+    detail_requests_per_second: float | None = None
 
     def __post_init__(self):
         if type(self.page_size) is not int or self.page_size not in CDTRF_PAGE_SIZES:
@@ -68,6 +73,10 @@ class CdtrfSyncFilters:
             raise ValueError("Unsafe CDTRF max_pages")
         if not 0.5 <= self.detail_delay_seconds <= 10:
             raise ValueError("CDTRF detail_delay_seconds must be 0.5..10")
+        if type(self.detail_concurrency) is not int or not 1 <= self.detail_concurrency <= 4:
+            raise ValueError("Unsafe CDTRF detail_concurrency")
+        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 10:
+            raise ValueError("Unsafe CDTRF detail_requests_per_second")
 
 
 class CdtrfSourceCrawler:
@@ -162,38 +171,31 @@ class CdtrfSourceCrawler:
 
         accepted = []
         rejected: dict[str, int] = {}
-        for index, hit in enumerate(data["property_candidates"]):
-            if str(hit["trade_lot_id"]) not in new_ids:
-                continue
-            if index:
-                time.sleep(filters.detail_delay_seconds)
+        candidates = [
+            hit for hit in data["property_candidates"]
+            if str(hit["trade_lot_id"]) in new_ids
+        ]
+        rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
+        workers = DetailWorkers(self.session, filters.detail_concurrency, rate)
+
+        def verify(hit):
             try:
                 lot = _verified_detail_with_retry(
-                    str(hit["trade_id"]), str(hit["trade_lot_id"]), self.session
+                    str(hit["trade_id"]), str(hit["trade_lot_id"]),
+                    workers.session(), workers.limiter,
                 )
             except (CdtrfCanaryError, CdtrfEvidenceError) as exc:
-                # Different records may legitimately lack property details,
-                # contain a non-property asset, or have a trade-level HTML
-                # page showing a different lot ID. None is evidence that the
-                # requested lot is verified; reject just that candidate.
-                # The page-wide rejection threshold below fails closed if
-                # the provider's detail structure has changed systemically.
                 code = _cdtrf_rejection_code(exc)
                 if code == "http_or_network_error":
-                    # A provider block, 429 or other explicit HTTP refusal
-                    # is not a normal missing lot; stop without archival.
                     raise CdtrfCatalogueScanError(
                         "CDTRF detail HTTP failure; no source reconciliation"
                     ) from exc
-                rejected[code] = rejected.get(code, 0) + 1
-                continue
+                return None, code
             except requests.RequestException as exc:
                 raise CdtrfCatalogueScanError(
                     "CDTRF detail network failure; no source reconciliation"
                 ) from exc
             except ValueError as exc:
-                # Never hide an unexpected programming/data error under a
-                # generic 'unverified candidate' counter.
                 raise CdtrfCatalogueScanError(
                     "CDTRF unexpected detail validation failure"
                 ) from exc
@@ -203,8 +205,7 @@ class CdtrfSourceCrawler:
                 and lot.lot_url
                 and lot.start_price is not None
             )):
-                rejected["property_not_eligible"] = rejected.get("property_not_eligible", 0) + 1
-                continue
+                return None, "property_not_eligible"
             if lot.external_id != hit["external_id"]:
                 raise CdtrfCatalogueScanError("CDTRF API/detail lot identity mismatch")
             lot.raw_data = {
@@ -213,7 +214,15 @@ class CdtrfSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
             }
-            accepted.append(lot)
+            return lot, None
+
+        # Details only are concurrent; catalogue cursor/coverage remain serial.
+        with workers.pool() as executor:
+            for lot, code in executor.map(verify, candidates):
+                if code:
+                    rejected[code] = rejected.get(code, 0) + 1
+                elif lot is not None:
+                    accepted.append(lot)
         inspected = len(data["property_candidates"])
         # Content-level exclusions are normal within CDTRF's broad real-estate
         # categories (for example a movable asset mixed into a trade, or a
@@ -249,6 +258,8 @@ class CdtrfSourceCrawler:
                 "property_hint_candidates": inspected,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
+                "detail_attempts": len(candidates),
+                "detail_concurrency": filters.detail_concurrency,
                 "systemic_detail_rejections": systemic_rejections,
                 "catalogue_total_changes": self._total_changes,
                 "catalogue_overlap_rows_skipped": len(overlapping_ids),
