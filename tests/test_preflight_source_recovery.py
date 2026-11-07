@@ -27,6 +27,21 @@ def snapshot():
 
 
 class PreflightTests(unittest.TestCase):
+    def test_operator_dry_run_preserves_fail_closed_gates(self):
+        root = Path(__file__).resolve().parents[1] / "scripts"
+        full = (root / "run-standard-sources-geo-map-no-vpn.ps1").read_text(
+            encoding="utf-8"
+        )
+        assert full.index("if ($capacityState.allowed -ne $true)") < full.index(
+            "if ($DryRun)"
+        ) < full.index("    & $BackupScript -VerifyRestore")
+        resume = (root / "resume-partial-standard-geo-map-no-vpn.ps1").read_text(
+            encoding="utf-8"
+        )
+        assert resume.index("if (-not $DryRun)") < resume.index("Start-Transcript")
+        assert resume.index("    return") < resume.index("    $geoScript = @'")
+        assert "Six-source partial GEO/Map publication is disabled fail-closed" in resume
+
     def test_successful_seven_source_coverage(self):
         r = mod.assess(snapshot())
         self.assertTrue(r["allowed"])
