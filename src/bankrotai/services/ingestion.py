@@ -869,10 +869,11 @@ class NationwideIngestionService:
                     row.archive_reason = "missing_after_two_complete_syncs"
                     self._reconcile_processed_after_source_archive(session, row, row.archived_at)
                     archived += 1
-                if index % batch_size == 0:
-                    session.commit()
-                    if progress_callback is not None:
-                        progress_callback(index, total)
+                if index % batch_size == 0 and progress_callback is not None:
+                    progress_callback(index, total)
+            # Missing-lot reconciliation is fail-closed: do not make partial
+            # archival durable if any row, canonical promotion, or checkpoint
+            # update fails before the source reconciliation completes.
             session.commit()
             if progress_callback is not None:
                 progress_callback(total, total)
