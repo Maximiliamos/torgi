@@ -1456,3 +1456,112 @@ def test_quarantined_source_record_finishes_partial_and_skips_archival(sessions)
     with sessions() as session:
         rows = session.scalars(select(SourceLot)).all()
         assert {row.external_id for row in rows} == {"existing-not-seen", "valid-new"}
+
+
+@pytest.mark.parametrize(
+    "source_system",
+    (
+        "torgi.gov.ru",
+        "lot-online.ru",
+        "torgi-russia.ru",
+        "bidexpert.ru",
+        "m-ets.ru",
+        "cdtrf.ru",
+        "nistp.ru",
+    ),
+)
+def test_all_seven_sources_quarantine_malformed_normalized_record_before_persistence(
+    sessions, source_system: str,
+) -> None:
+    valid = lot("valid")
+    valid.source_system = source_system
+    valid.source = source_system
+    malformed = lot("broken")
+    malformed.source_system = source_system
+    malformed.source = source_system
+    malformed.title = ""
+
+    connector = FakeConnector([[valid, malformed]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(
+        run_id,
+        (SourceSyncSpec(
+            source_system, {}, reconcile_missing=False, require_source_end=True,
+        ),),
+    ))
+
+    source = output["sources"][0]
+    assert output["status"] == "partial"
+    assert source["status"] == "partial"
+    assert source["complete_source_run"] is False
+    assert source["quarantined_records"] == 1
+    assert source["quarantine_reasons"] == {"empty_title": 1}
+    assert source["items_archived"] == 0
+    with sessions() as session:
+        rows = session.scalars(
+            select(SourceLot).where(SourceLot.source_system == source_system)
+        ).all()
+        assert [row.external_id for row in rows] == ["valid"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    (
+        ("external_id", "", "empty_external_id"),
+        ("title", "   ", "empty_title"),
+        ("source_system", "wrong-source", "source_system_mismatch"),
+    ),
+)
+def test_normalized_quarantine_rejects_identity_contract_errors(
+    sessions, field: str, value: str, reason: str,
+) -> None:
+    malformed = lot("broken")
+    setattr(malformed, field, value)
+    connector = FakeConnector([[malformed]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(
+        run_id,
+        (SourceSyncSpec(
+            "test-source", {}, reconcile_missing=False, require_source_end=True,
+        ),),
+    ))
+
+    source = output["sources"][0]
+    assert source["status"] == "partial"
+    assert source["quarantine_reasons"] == {reason: 1}
+    with sessions() as session:
+        assert session.scalars(select(SourceLot)).all() == []
+
+
+def test_four_malformed_normalized_records_fail_source_without_writes(sessions) -> None:
+    broken = []
+    for index in range(4):
+        candidate = lot(f"broken-{index}")
+        candidate.title = ""
+        broken.append(candidate)
+
+    connector = FakeConnector([broken])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(
+        run_id,
+        (SourceSyncSpec(
+            "test-source", {}, reconcile_missing=False, require_source_end=True,
+        ),),
+    ))
+
+    source = output["sources"][0]
+    assert output["status"] == "failed"
+    assert source["status"] == "failed"
+    assert "systemic malformed normalized records" in str(source["error"])
+    assert source["items_archived"] == 0
+    with sessions() as session:
+        assert session.scalars(select(SourceLot)).all() == []
