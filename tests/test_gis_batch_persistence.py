@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, func, select, update
+from datetime import datetime
+from time import perf_counter
+
+from sqlalchemy import create_engine, event, func, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -219,3 +222,109 @@ def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral(
         assert again.canonical_lot_id == old_canonical_id
         assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 1
         assert float(again.current_price or 0) == 400_000
+
+
+def test_semantic_skip_preserves_detail_metadata_and_advances_transport_fingerprint() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-skip-1")
+        first = make_lot("gis-skip")
+        first.raw_data["listing_fingerprint"] = "transport-old"
+        first.raw_data["detail_enrichment_status"] = "success"
+        first.raw_data["detail_enrichment_version"] = 4
+        persist_changed_lots_batch(session, [first], "run-skip-1")
+        session.commit()
+
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "gis-skip"))
+        assert source is not None
+        source.source_updated_at = datetime(2026, 11, 8, 10, 0)
+        session.commit()
+
+        second = make_lot("gis-skip")
+        second.raw_data["listing_fingerprint"] = "transport-new"
+        second.raw_data["updated_at"] = "2026-11-08T09:00:00"
+        add_run(session, "run-skip-2")
+        stats = persist_changed_lots_batch(session, [second], "run-skip-2")
+        session.commit()
+        session.expire_all()
+
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "gis-skip"))
+        assert source is not None
+        assert stats.received == 1
+        assert stats.semantic_skipped == 1
+        assert stats.persisted == 0
+        assert stats.chunks == 1
+        assert source.last_sync_run_id == "run-skip-2"
+        assert source.raw_data["listing_fingerprint"] == "transport-new"
+        assert source.raw_data["detail_enrichment_status"] == "success"
+        assert source.raw_data["detail_enrichment_version"] == 4
+        assert source.source_updated_at == datetime(2026, 11, 8, 10, 0)
+        assert session.scalar(select(func.count()).select_from(LotPriceEvent)) == 1
+        assert session.scalar(select(func.count()).select_from(LotStatusHistory)) == 1
+
+
+def test_batch_semantic_skip_sql_benchmark(capsys) -> None:
+    factory = sessions()
+    engine = factory.kw["bind"]
+    lots = [make_lot(f"bench-{index}") for index in range(1585)]
+    with factory() as session:
+        add_run(session, "run-bench-1")
+        persist_changed_lots_batch(session, lots, "run-bench-1")
+        session.commit()
+
+        unchanged = [make_lot(f"bench-{index}") for index in range(1585)]
+        for lot in unchanged:
+            lot.raw_data["listing_fingerprint"] = "transport-revision-2"
+        add_run(session, "run-bench-2")
+
+        skip_sql = 0
+
+        def count_skip(*_args, **_kwargs) -> None:
+            nonlocal skip_sql
+            skip_sql += 1
+
+        event.listen(engine, "before_cursor_execute", count_skip)
+        started = perf_counter()
+        skip_stats = persist_changed_lots_batch(session, unchanged, "run-bench-2")
+        session.commit()
+        skip_ms = (perf_counter() - started) * 1000
+        event.remove(engine, "before_cursor_execute", count_skip)
+
+        changed = [make_lot(f"bench-{index}") for index in range(1585)]
+        for lot in changed:
+            lot.current_price = 499_999
+            lot.raw_data["listing_fingerprint"] = "transport-revision-3"
+        add_run(session, "run-bench-3")
+
+        changed_sql = 0
+
+        def count_changed(*_args, **_kwargs) -> None:
+            nonlocal changed_sql
+            changed_sql += 1
+
+        event.listen(engine, "before_cursor_execute", count_changed)
+        started = perf_counter()
+        changed_stats = persist_changed_lots_batch(session, changed, "run-bench-3")
+        session.commit()
+        changed_ms = (perf_counter() - started) * 1000
+        event.remove(engine, "before_cursor_execute", count_changed)
+
+    with capsys.disabled():
+        print(
+            "BATCH_PERSISTENCE_BENCHMARK "
+            f"rows=1585 batch_size=500 "
+            f"semantic_skip_sql={skip_sql} semantic_skip_commits=1 "
+            f"semantic_skip_ms={skip_ms:.3f} "
+            f"full_change_sql={changed_sql} full_change_commits=1 "
+            f"full_change_ms={changed_ms:.3f}"
+        )
+
+    assert skip_stats.semantic_skipped == 1585
+    assert skip_stats.persisted == 0
+    assert skip_stats.chunks == 4
+    assert changed_stats.semantic_skipped == 0
+    assert changed_stats.persisted == 1585
+    assert changed_stats.chunks == 4
+    assert skip_sql == 12
+    assert changed_sql == 24
+
