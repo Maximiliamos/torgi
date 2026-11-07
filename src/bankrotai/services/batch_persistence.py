@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, case, insert, or_, select, update
+from sqlalchemy import and_, bindparam, case, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -338,25 +338,37 @@ def _persist_changed_lots_chunk(
         else:
             remaining.append(lot)
     if unchanged_ids:
-        session.execute(
-            update(SourceLot).where(
-                SourceLot.source_system == lots[0].source_system,
-                SourceLot.external_id.in_(unchanged_ids),
-            ).values(
-                raw_data=case(
-                    unchanged_raw_by_id,
-                    value=SourceLot.external_id,
-                    else_=SourceLot.raw_data,
+        source_table = SourceLot.__table__
+        observed_at = utc_now()
+        metadata_update = (
+            update(source_table)
+            .where(
+                source_table.c.source_system == bindparam("p_source_system"),
+                source_table.c.external_id == bindparam("p_external_id"),
+            )
+            .values(
+                raw_data=bindparam("p_raw_data", type_=source_table.c.raw_data.type),
+                source_updated_at=bindparam(
+                    "p_source_updated_at", type_=source_table.c.source_updated_at.type
                 ),
-                source_updated_at=case(
-                    unchanged_source_updated_by_id,
-                    value=SourceLot.external_id,
-                    else_=SourceLot.source_updated_at,
-                ),
-                last_seen_at=utc_now(),
-                last_sync_run_id=run_id,
+                last_seen_at=bindparam("p_last_seen_at", type_=source_table.c.last_seen_at.type),
+                last_sync_run_id=bindparam("p_last_sync_run_id"),
                 missing_successful_runs=0,
             )
+        )
+        session.execute(
+            metadata_update,
+            [
+                {
+                    "p_source_system": lots[0].source_system,
+                    "p_external_id": external_id,
+                    "p_raw_data": unchanged_raw_by_id[external_id],
+                    "p_source_updated_at": unchanged_source_updated_by_id[external_id],
+                    "p_last_seen_at": observed_at,
+                    "p_last_sync_run_id": run_id,
+                }
+                for external_id in unchanged_ids
+            ],
         )
     semantic_skipped = len(unchanged_ids)
     lots = remaining
