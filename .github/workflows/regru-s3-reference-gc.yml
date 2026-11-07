@@ -196,7 +196,11 @@ jobs:
           for prefix in bundles/v1/ indexes/v1/
           do
             count=$(aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api list-objects-v2 \
-              --bucket "$BUCKET" --prefix "$prefix" --query 'length(Contents)' --output text)
+              --bucket "$BUCKET" --prefix "$prefix" --output json \
+              | python -c 'import json,sys; print(len(json.load(sys.stdin).get("Contents", [])))')
+            case "$count" in
+              ''|*[!0-9]*) echo "Invalid S3 object count for $prefix: $count" >&2; exit 1 ;;
+            esac
             echo "$prefix remaining=$count"
             remaining=$((remaining + count))
           done

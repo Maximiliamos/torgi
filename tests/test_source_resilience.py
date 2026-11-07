@@ -239,3 +239,23 @@ def test_retry_decision_separates_network_and_operator_action_errors():
     assert auth["schedule"] is False
     assert auth["reason"] == "non_retryable"
     assert auth["last_error_category"] == "authentication"
+
+def test_catalogue_consistency_failures_are_parser_contract_not_network_outage():
+    for message in (
+        "M-ETS reported total changed during ingestion",
+        "Torgi Russia public search dropped malformed lot records",
+        "M-ETS terminal identity count differs from total",
+    ):
+        value = classify_source_error(message)
+        assert value.category == "parser_contract"
+        assert value.operational is False
+        assert value.retryable is True
+
+
+def test_approved_etp_sources_have_recovery_probe_urls():
+    from bankrotai.services import source_resilience
+
+    for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru"):
+        assert source in source_resilience._SOURCE_PROBE_URLS
+        assert source_resilience._SOURCE_PROBE_URLS[source].startswith("https://")
+

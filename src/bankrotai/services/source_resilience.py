@@ -30,6 +30,13 @@ _SOURCE_PROBE_URLS = {
     # torgi-russia.ru alias does not resolve from the production Home runner.
     "torgi-russia.ru": "https://xn----etbpba5admdlad.xn--p1ai/search",
     "bidexpert.ru": "https://bidexpert.ru/",
+    # These sources participate in the approved seven-source production set.
+    # A circuit probe only proves that the public source is reachable again;
+    # the ingestion connector still performs its own fail-closed parser and
+    # identity checks before any data is accepted.
+    "m-ets.ru": "https://m-ets.ru/",
+    "cdtrf.ru": "https://torgi.cdtrf.ru/",
+    "nistp.ru": "https://nistp.ru/",
 }
 
 
@@ -161,6 +168,21 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
         return SourceFailureClassification("parser_contract", False, True, raw[:1000], status)
     if any(marker in message for marker in ("validation", "invalid payload", "invalid response")):
         return SourceFailureClassification("validation", False, True, raw[:1000], status)
+    if any(
+        marker in message
+        for marker in (
+            "reported total changed during ingestion",
+            "dropped malformed lot records",
+            "page proof mismatch",
+            "terminal identity count differs from total",
+            "page size contradicts reported total",
+        )
+    ):
+        # These are catalogue/parser consistency failures, not evidence that
+        # the Home host lost network connectivity. Treating them as an
+        # operational outage used to open a circuit that M-ETS could not
+        # automatically recover from after the parser itself was repaired.
+        return SourceFailureClassification("parser_contract", False, True, raw[:1000], status)
     if any(
         marker in message
         for marker in (

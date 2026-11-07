@@ -1,0 +1,107 @@
+name: Recover source circuits after verified Home deployment
+
+on:
+  workflow_run:
+    workflows: ["Deploy home secondary origin"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-circuit-postdeploy-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 20
+    steps:
+      - name: Verify exact deployed worker when deployment-triggered
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $worker) { throw 'Home ingestion worker unavailable' }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_run') {
+            $expected = '${{ github.event.workflow_run.head_sha }}'
+            if ($expected -notmatch '^[a-f0-9]{40}$' -or $worker -ne "bankrotai-home-api:$expected") {
+              throw 'Home ingestion worker SHA mismatch'
+            }
+          }
+
+      - name: Probe and recover only due source circuits
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          from bankrotai.db import session_scope
+          from bankrotai.services.source_resilience import (
+              probe_source_endpoint,
+              record_source_probe,
+              source_resilience_status,
+              sources_due_for_probe,
+          )
+          from bankrotai.services.ingestion import default_source_specs
+          from bankrotai.tasks import _source_is_paused
+
+          approved = {
+              "torgi.gov.ru",
+              "lot-online.ru",
+              "torgi-russia.ru",
+              "bidexpert.ru",
+              "m-ets.ru",
+              "cdtrf.ru",
+              "nistp.ru",
+          }
+          configured = {s.source_id for s in default_source_specs()}
+          if not approved <= configured:
+              raise RuntimeError(f"Approved source configuration missing: {sorted(approved-configured)}")
+
+          with session_scope() as session:
+              due = [s for s in sources_due_for_probe(session) if s in approved]
+
+          results = []
+          for source in due:
+              if _source_is_paused(source):
+                  results.append({"source": source, "status": "paused"})
+                  continue
+              probe = probe_source_endpoint(source, timeout_seconds=20.0)
+              with session_scope() as session:
+                  state = record_source_probe(
+                      session,
+                      source,
+                      success=bool(probe.get("success")),
+                      error=probe.get("error"),
+                  )
+              results.append({
+                  "source": source,
+                  "probe_success": bool(probe.get("success")),
+                  "http_status": probe.get("http_status"),
+                  "validated_lots": probe.get("validated_lots"),
+                  "circuit_state": state.get("circuit_state"),
+                  "error_category": (probe.get("classification") or {}).get("category"),
+              })
+
+          with session_scope() as session:
+              final = {
+                  source: source_resilience_status(session, source)["circuit_state"]
+                  for source in sorted(approved)
+              }
+
+          blocked = sorted(source for source, state in final.items() if state in {"open", "half_open"})
+          print(json.dumps({"due": due, "results": results, "final": final, "blocked": blocked}, ensure_ascii=False))
+          if blocked:
+              raise SystemExit("Source circuits remain blocked: " + ",".join(blocked))
+          '@
+          $out = $script | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $out) { throw 'Source circuit recovery did not reach all-seven-ready state' }
+          ($out | Select-Object -Last 1) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
