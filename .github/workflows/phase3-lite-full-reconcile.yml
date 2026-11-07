@@ -1,20 +1,11 @@
 name: Phase 3 Lite full source reconciliation
 # Final acceptance rerun marker: 2026-10-07. No runtime policy change.
 
+# Integration safety: until the seven-source preflight and exact-SHA publication
+# proof are deployed, never schedule production ingestion from a code merge.
+# Operators may launch this workflow explicitly with workflow_dispatch only.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/phase3-lite-full-reconcile.yml'
-      - '.github/workflows/home-secondary-deploy.yml'
-      - 'src/bankrotai/services/map_builder.py'
-      - 'src/bankrotai/services/ingestion.py'
-      - 'src/bankrotai/tasks.py'
-      - 'src/bankrotai/scrapers.py'
-      - 'src/bankrotai/core.py'
-      - 'src/bankrotai/torgi_russia.py'
-      - 'src/bankrotai/connectors/registry/torgi_russia.py'
 
 permissions:
   actions: read
