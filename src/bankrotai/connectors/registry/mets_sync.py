@@ -6,6 +6,7 @@ import hashlib
 import math
 import re
 import time
+import threading
 from dataclasses import dataclass
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from decimal import Decimal
@@ -60,7 +61,7 @@ class MetsSourceCrawler:
         self._prior_digest: str | None = None
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
-        self._custom_detail_lock = __import__("threading").Lock()
+        self._custom_detail_lock = threading.Lock()
 
     def _search(self, filters: MetsSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
