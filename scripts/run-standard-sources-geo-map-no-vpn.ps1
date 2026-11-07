@@ -116,7 +116,12 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
     if (-not (Get-Command python.exe -ErrorAction SilentlyContinue)) {
         throw 'python.exe required for read-only capacity evidence verification'
     }
-    $capacityRows = @(& python.exe $capacityGatePath --backup-dir $BackupDirectory --s3-evidence $S3CapacityEvidencePath)
+    $bucketLines = @(& docker.exe exec $ingest python -c 'from bankrotai.core import get_settings; print(get_settings().map_object_store_bucket or "")')
+    if ($LASTEXITCODE -ne 0 -or -not $bucketLines.Count -or -not $bucketLines[-1].Trim()) {
+        throw 'Cannot independently verify configured MapDataset S3 bucket'
+    }
+    $expectedBucket = $bucketLines[-1].Trim()
+    $capacityRows = @(& python.exe $capacityGatePath --backup-dir $BackupDirectory --s3-evidence $S3CapacityEvidencePath --expected-bucket $expectedBucket)
     $capacityExitCode = $LASTEXITCODE
     if ($capacityExitCode -ne 0 -or -not $capacityRows.Count -or
         $capacityRows[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
