@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: one-time-regru-s3-orphan-cleanup
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   cleanup:
@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           for version in             20260924T225230284059Z-s3             20260924T222246446795Z-s3             20260924T214633134097Z-s3             20260924T205816771500Z-s3             20260924T205000633559Z-s3             20260924T204308197270Z-s3
           do
-            aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api list-objects-v2               --bucket "$BUCKET" --prefix "datasets/$version/"               --query '{Count:KeyCount,Bytes:sum(Contents[].Size)}' --output json
+            aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api list-objects-v2               --bucket "$BUCKET" --prefix "datasets/$version/" --max-items 1               --query '{Count:KeyCount,Sample:Contents[0].Key}' --output json
           done
 
       - name: Delete only DB-orphaned legacy dataset prefixes
