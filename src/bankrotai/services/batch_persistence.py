@@ -323,10 +323,17 @@ def _persist_changed_lots_chunk(
             # transport fields (for example listing_fingerprint) to advance.
             unchanged_raw_by_id[lot.external_id] = {**previous_raw, **projected_raw}
             incoming_source_updated = projected_source["source_updated_at"]
+            previous_source_updated = source.source_updated_at
             unchanged_source_updated_by_id[lot.external_id] = (
                 incoming_source_updated
-                if incoming_source_updated is not None
-                else source.source_updated_at
+                if (
+                    incoming_source_updated is not None
+                    and (
+                        previous_source_updated is None
+                        or incoming_source_updated >= previous_source_updated
+                    )
+                )
+                else previous_source_updated
             )
         else:
             remaining.append(lot)
