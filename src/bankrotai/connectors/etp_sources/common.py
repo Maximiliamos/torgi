@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -16,6 +15,7 @@ from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
+from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
@@ -734,29 +734,10 @@ class HtmlEtpConnector(AuctionConnector):
         return response
 
     def _read_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        """Retry only transient failures for read-only public ETP requests."""
-        caller = getattr(self.session, method)
-        attempts = len(self.RETRY_DELAYS_SECONDS) + 1
-        for attempt in range(attempts):
-            try:
-                response = caller(url, **kwargs)
-            except (
-                requests.Timeout,
-                requests.ConnectionError,
-                requests.exceptions.ChunkedEncodingError,
-            ):
-                if attempt == attempts - 1:
-                    raise
-                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
-                continue
-            status = int(getattr(response, "status_code", 0) or 0)
-            if status == 429 or 500 <= status <= 504:
-                if attempt == attempts - 1:
-                    return self._check_response(response)
-                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
-                continue
-            return self._check_response(response)
-        raise RuntimeError(f"{self.source_id}: transient retry loop exhausted")
+        response = request_with_retries(
+            self.session, method, url, delays=self.RETRY_DELAYS_SECONDS, **kwargs
+        )
+        return self._check_response(response)
 
     def _request(self, page: int) -> requests.Response:
         if self.profile.blocked_reason:
