@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
 from sqlalchemy import create_engine, event, func, select, update
@@ -222,6 +222,43 @@ def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral(
         assert again.canonical_lot_id == old_canonical_id
         assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 1
         assert float(again.current_price or 0) == 400_000
+
+
+def test_cdtrf_equivalent_timezone_deadline_skips_but_real_deadline_change_persists() -> None:
+    factory = sessions()
+    moscow = timezone(timedelta(hours=3))
+    with factory() as session:
+        add_run(session, "run-deadline-1")
+        first = make_lot("cdtrf-deadline", source_system="cdtrf.ru")
+        first.application_deadline = datetime(2026, 12, 20, 18, 0, tzinfo=moscow)
+        persist_changed_lots_batch(session, [first], "run-deadline-1")
+        session.commit()
+
+        add_run(session, "run-deadline-2")
+        equivalent = make_lot("cdtrf-deadline", source_system="cdtrf.ru")
+        equivalent.application_deadline = datetime(2026, 12, 20, 18, 0, tzinfo=moscow)
+        same_stats = persist_changed_lots_batch(session, [equivalent], "run-deadline-2")
+        session.commit()
+        assert same_stats.semantic_skipped == 1
+        assert same_stats.persisted == 0
+
+        add_run(session, "run-deadline-3")
+        changed = make_lot("cdtrf-deadline", source_system="cdtrf.ru")
+        changed.application_deadline = datetime(2026, 12, 20, 18, 1, tzinfo=moscow)
+        changed_stats = persist_changed_lots_batch(session, [changed], "run-deadline-3")
+        session.commit()
+        session.expire_all()
+
+        source = session.scalar(
+            select(SourceLot).where(
+                SourceLot.source_system == "cdtrf.ru",
+                SourceLot.external_id == "cdtrf-deadline",
+            )
+        )
+        assert changed_stats.semantic_skipped == 0
+        assert changed_stats.persisted == 1
+        assert source is not None
+        assert source.application_deadline == datetime(2026, 12, 20, 15, 1)
 
 
 def test_semantic_skip_preserves_detail_metadata_and_advances_transport_fingerprint() -> None:
