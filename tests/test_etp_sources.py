@@ -224,10 +224,28 @@ class FakeSession:
 
 
 @pytest.mark.parametrize("status_code", [401, 403, 429])
-def test_access_failures_are_not_reported_as_empty_success(status_code: int) -> None:
+def test_access_failures_are_not_reported_as_empty_success(
+    status_code: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("bankrotai.connectors.etp_sources.common.time.sleep", lambda _seconds: None)
     connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=FakeSession(FakeResponse(status_code)))
     with pytest.raises(SourceAccessError, match=str(status_code)):
         asyncio.run(connector.search({}))
+
+
+def test_transient_etp_timeout_is_retried_without_skipping_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("bankrotai.connectors.etp_sources.common.time.sleep", lambda _seconds: None)
+    body = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok 50:01:001:123</a>"
+    session = FakeSession([
+        requests.Timeout("temporary"),
+        FakeResponse(200, body, "https://m-ets.ru/search"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=session)
+    result = asyncio.run(connector.search({}))
+    assert [lot.external_id for lot in result.items] == ["m-ets.ru:243003-1"]
+    assert len(session.requested_urls) == 2
 
 
 def test_timeout_marks_health_as_degraded() -> None:
