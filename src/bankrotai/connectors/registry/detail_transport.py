@@ -51,7 +51,7 @@ class DetailWorkers:
     def session(self) -> requests.Session:
         session = getattr(self._local, "session", None)
         if session is None:
-            if type(self.source_session) is requests.Session:
+            if isinstance(self.source_session, requests.Session):
                 session = requests.Session()
                 session.headers.update(self.source_session.headers)
                 session.cookies.update(self.source_session.cookies)
