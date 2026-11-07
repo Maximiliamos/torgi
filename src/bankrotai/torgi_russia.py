@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
+from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
 
 
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
@@ -373,30 +374,33 @@ class TorgiRussiaClient:
                         f"observed={sorted(observed_codes)} titles={sorted(raw_titles)}"
                     )
 
+        recovered_records: list = []
+        recovery_failures: dict[str, str] = {}
+        for item in records:
+            if isinstance(item, dict) and not str(item.get("title") or "").strip():
+                try:
+                    item = recover_empty_title(
+                        item,
+                        base_url=BASE_URL,
+                        get_with_retry=self._get_with_retry,
+                        extract_records=self._extract_public_lot_records,
+                        parse_price=parse_money,
+                    )
+                except (RuntimeError, ValueError, requests.RequestException) as exc:
+                    recovery_failures[str(item.get("id"))] = type(exc).__name__
+            recovered_records.append(item)
+        records = recovered_records
+
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
         if len(lots) != len(records):
-            rejection_counts: dict[str, int] = {}
-            for item in records:
-                if not isinstance(item, dict):
-                    reason = "record_not_object"
-                else:
-                    raw_id = item.get("id")
-                    if isinstance(raw_id, bool) or not (
-                        isinstance(raw_id, int)
-                        or (isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit())
-                    ):
-                        reason = f"invalid_id_type:{type(raw_id).__name__}"
-                    elif not str(item.get("title") or "").strip():
-                        reason = "empty_title"
-                    else:
-                        reason = "unknown_parser_drop"
-                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            rejection_counts = classify_rejections(records, lots)
             raise RuntimeError(
                 "Torgi Russia public search dropped malformed lot records; "
                 f"page={page} region_id={filters.region_id} "
                 f"records={len(records)} normalized={len(lots)} "
-                f"rejections={json.dumps(rejection_counts, sort_keys=True)}"
+                f"rejections={json.dumps(rejection_counts, sort_keys=True)} "
+                f"recovery_failures={json.dumps(recovery_failures, sort_keys=True)}"
             )
         for lot in lots:
             raw = dict(lot.raw_data or {})
@@ -716,6 +720,9 @@ class TorgiRussiaClient:
                         "marketplace": item.get("marketplace") or item.get("marketplace_title"),
                         "trade_type": trade_type_value,
                         "trade_form": item.get("trade_form"),
+                        "title_evidence": item.get("title_evidence") or "catalogue",
+                        "title_evidence_url": item.get("title_evidence_url"),
+                        "title_evidence_external_id": item.get("title_evidence_external_id"),
                         "begin_offer_time": item.get("begin_offer_time"),
                         "status_id": item.get("status_id"),
                         "days_remaining": item.get("days_remaining"),

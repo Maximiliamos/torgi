@@ -43,6 +43,23 @@ class FakeSession:
         return FakeResponse(self.html)
 
 
+class RoutedResponse(FakeResponse):
+    def __init__(self, html, url):
+        super().__init__(html)
+        self.url = url
+
+
+class RoutedSession:
+    def __init__(self, routes):
+        self.headers = {}
+        self.routes = routes
+        self.urls = []
+
+    def get(self, url, *args, **kwargs):
+        self.urls.append(url)
+        return RoutedResponse(self.routes[url], url)
+
+
 def test_html_interstitial_is_not_accepted_as_empty_source_page():
     client = TorgiRussiaClient(session=FakeSession("<html><h1>Проверка браузера</h1></html>"))
     with pytest.raises(RuntimeError, match="SSR schema is missing or invalid"):
@@ -66,8 +83,92 @@ def test_bad_lot_record_reports_safe_rejection_reason():
     records = [{"id": 42, "title": "", "region_title": "Республика Адыгея"}]
     client = TorgiRussiaClient(session=FakeSession(html_with_meta(records, total=1)))
 
-    with pytest.raises(RuntimeError, match="empty_title"):
+    with pytest.raises(RuntimeError, match="empty_title") as error:
         client.search_lots(TorgiRussiaSearchFilters(region_id=1))
+    assert "unknown_parser_drop" not in str(error.value)
+
+
+def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
+    search_record = {
+        "id": 7266197,
+        "title": "",
+        "region_title": "Воронежская область",
+        "start_price": 35612.46,
+        "current_price": 35612.46,
+        "status": {"title": "Идёт приём заявок"},
+    }
+    detail_record = {
+        **search_record,
+        "source_links": [
+            {"link": "https://m-ets.ru/242937-2", "title": "Лот на ЭТП"},
+            {"link": "https://m-ets.ru/242937", "title": "Торги на ЭТП"},
+        ],
+    }
+    detail_html = html_with_meta([detail_record], total=1)
+    mets_html = (
+        '<html><head><meta itemprop="sku" content="242937-МЭТС-2"></head><body>'
+        '<h1>242937-МЭТС</h1><h2 class="lot-title">Земельный участок 600 кв. м</h2>'
+        '<div class="lot-regnumber">Идентификационный номер: 242937-МЭТС-2</div>'
+        '<div class="lot-cost-item price"><div class="value">35 612,46 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Торги в стадии приема заявок</div></div>'
+        '<span itemprop="description">Земельный участок в Воронежской области</span>'
+        '</body></html>'
+    )
+    search_url = "https://xn----etbpba5admdlad.xn--p1ai/search"
+    detail_url = "https://xn----etbpba5admdlad.xn--p1ai/lot/7266197"
+    mets_url = "https://m-ets.ru/242937-2"
+    session = RoutedSession({
+        search_url: html_with_meta([search_record], total=1),
+        detail_url: detail_html,
+        mets_url: mets_html,
+    })
+    client = TorgiRussiaClient(session=session)
+
+    lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=36))
+
+    assert metadata["loaded"] == 1
+    assert lots[0].external_id == "torgi-russia:7266197"
+    assert lots[0].title == "Земельный участок 600 кв. м"
+    assert lots[0].raw_data["title_evidence"] == "official_mets_detail"
+    assert lots[0].raw_data["title_evidence_url"] == mets_url
+    assert lots[0].raw_data["title_evidence_external_id"] == "242937-2"
+    assert session.urls == [search_url, detail_url, mets_url]
+
+
+def test_empty_title_fallback_rejects_mets_price_mismatch():
+    search_record = {
+        "id": 7266197,
+        "title": "",
+        "region_title": "Воронежская область",
+        "start_price": 35612.46,
+    }
+    detail_record = {
+        **search_record,
+        "source_links": [{"link": "https://m-ets.ru/242937-2"}],
+    }
+    mets_html = (
+        '<html><head><meta itemprop="sku" content="242937-МЭТС-2"></head><body>'
+        '<h1>242937-МЭТС</h1><h2 class="lot-title">Чужой объект</h2>'
+        '<div>Идентификационный номер: 242937-МЭТС-2</div>'
+        '<div class="lot-cost-item price"><div class="value">99 999 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '</body></html>'
+    )
+    search_url = "https://xn----etbpba5admdlad.xn--p1ai/search"
+    detail_url = "https://xn----etbpba5admdlad.xn--p1ai/lot/7266197"
+    mets_url = "https://m-ets.ru/242937-2"
+    client = TorgiRussiaClient(session=RoutedSession({
+        search_url: html_with_meta([search_record], total=1),
+        detail_url: html_with_meta([detail_record], total=1),
+        mets_url: mets_html,
+    }))
+
+    with pytest.raises(RuntimeError, match='rejections={"empty_title": 1}') as error:
+        client.search_lots(TorgiRussiaSearchFilters(region_id=36))
+    assert 'recovery_failures={"7266197": "RuntimeError"}' in str(error.value)
+    assert "unknown_parser_drop" not in str(error.value)
 
 
 def test_legitimate_zero_region_stays_zero_with_proven_ssr_meta():
