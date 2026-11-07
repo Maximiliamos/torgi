@@ -21,6 +21,8 @@ def _lot(source: str, ident: str = "lot-1", **overrides):
 
 
 class FakeConnector:
+    capabilities = frozenset({"search", "fetch_lot"})
+
     def __init__(self, source: str, *, broken_second: bool = False,
                  duplicate: bool = False):
         self.source = source

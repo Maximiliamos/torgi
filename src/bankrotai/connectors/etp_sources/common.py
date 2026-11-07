@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup, Tag
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
+from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
@@ -105,7 +106,6 @@ def _money(value: str) -> float | None:
         return None
 
 
-
 def _current_money(value: str) -> float | None:
     """A current price requires its own explicit label."""
     match = re.search(
@@ -165,7 +165,6 @@ def _sistematorg_lot_count(value: str) -> int | None:
     count = int(match.group(1))
     return count if 1 <= count <= 100_000 else None
 
-
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -177,7 +176,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
 
 def _datetime_after(value: str, label: str) -> datetime | None:
     match = re.search(label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", value, re.I)
@@ -470,8 +468,9 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
     for title, href, container, match in candidates.values():
+        ambiguous_row = has_multiple_lot_links(profile, container)
         context = _clean(container.get_text(" ", strip=True))
-        if container.name == "tr":
+        if container.name == "tr" and not ambiguous_row:
             cell_titles = [_clean(cell.get_text(" ", strip=True)) for cell in container.select("td")]
             title = max((cell for cell in cell_titles if 4 <= len(cell) <= 1000), key=len, default=title)
         if len(title) < 4 or title.isdigit():
@@ -483,6 +482,8 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             title = max(alternatives, key=len, default=title)
         if len(title) < 4 or title.isdigit():
             continue
+        if ambiguous_row:
+            context = title
         external_id = _external_id(profile, href, match)
         if external_id in seen:
             continue
@@ -499,9 +500,10 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         if current_price is None:
             current_price = table_current
         # Sistematorg's table lists *trades*, not individual property lots.
-        # Do not assume a trade-level monetary field is a per-lot price.
+        # A row with several distinct lot links is equally unsafe: row-level
+        # price/status/cadastre may belong to another lot in the procedure.
         trade_lots = _sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
-        if profile.source_id == "sistematorg.com" and trade_lots != 1:
+        if ambiguous_row or (profile.source_id == "sistematorg.com" and trade_lots != 1):
             price = None
             current_price = None
         lots.append(NormalizedLot(
@@ -528,7 +530,10 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "listing_page": page,
                 "trade_level_listing": profile.source_id == "sistematorg.com",
                 "reported_trade_lots": trade_lots,
-                "individual_lot_identity_verified": profile.source_id != "sistematorg.com",
+                "ambiguous_multi_lot_row": ambiguous_row,
+                "individual_lot_identity_verified": (
+                    profile.source_id != "sistematorg.com" and not ambiguous_row
+                ),
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
