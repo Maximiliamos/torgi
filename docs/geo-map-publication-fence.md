@@ -21,6 +21,8 @@ A map candidate captures `map_source_fingerprint` before rendering. It is checke
 ## Reproducible profile plan (permission-free local fixtures)
 Warm and cold runs should report: p50/p95 provider request latency, cache hits, retries, resolved/failed work items, resolver wall time, DB save/chunk time, waiting for GEO lease, map select/render/tile commit time, S3 upload and manifest verification separately, and end-to-end critical path. Compare sequential `ingestion -> GEO -> map` with GEO overlap on a **disposable database only**. Hold point count, cache temperature, worker count, region mix and S3 mock latency constant. `pytest -q tests/test_map_publication_fence.py` exercises synthetic blockers, concurrent source changes, old-dataset preservation, and retry.
 
+**Instrumentation added in this branch:** GEO now reports `selection_duration_ms`, `resolve_duration_ms`, and `save_duration_ms`; Map reports `selection_duration_ms`, `tile_duration_ms`, `object_store_duration_ms`, and `promotion_duration_ms` in addition to its existing totals. These are phase timers, not benchmark observations.
+
 **Measurements:** no executable repository/DB snapshot or production metric exports were available to this review. Consequently no empirical GEO or Map time deltas are claimed. Existing `duration_seconds`, `build_duration_ms` and `duration_ms` are instrumentation surfaces, not a benchmark result.
 
 ## Release gate
