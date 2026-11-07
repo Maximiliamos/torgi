@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import get_settings
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
-from bankrotai.db import MapDataset, MapTile, ProcessedLot
+from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
     yandex_cluster_feature,
     yandex_feature_collection,
@@ -99,6 +99,32 @@ def map_source_fingerprint(session: Session) -> str:
         )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def map_publication_blockers(session: Session) -> list[str]:
+    """Reject publication while upstream ingestion/GEO writes are in flight.
+
+    A running source run or GEO task can change source membership or
+    coordinates after tiles are generated. Stale historical failures are not
+    treated as running work; callers must separately enforce run success.
+    """
+    blockers: list[str] = []
+    active_runs = int(session.scalar(
+        select(func.count(LotSyncRun.id)).where(
+            LotSyncRun.status.in_(("queued", "running"))
+        )
+    ) or 0)
+    if active_runs:
+        blockers.append("ingestion_in_progress")
+    active_geo = int(session.scalar(
+        select(func.count(BackgroundTaskState.id)).where(
+            BackgroundTaskState.task_type.in_(("geocoding", "geo_backfill")),
+            BackgroundTaskState.status.in_(("queued", "running")),
+        )
+    ) or 0)
+    if active_geo:
+        blockers.append("geo_in_progress")
+    return blockers
+
 
 def cleanup_map_datasets(
     session_factory: Callable[[], Session],
@@ -429,6 +455,17 @@ def _promote_map_dataset(
                 "current_dataset_id": current_id,
             }
 
+        blockers = map_publication_blockers(session)
+        if blockers:
+            dataset.status = "rejected"
+            session.commit()
+            return {
+                "status": "rejected",
+                "reason": "upstream_work_in_progress",
+                "blockers": blockers,
+                "current_dataset_id": current_id,
+            }
+
         # Fail closed when ingestion/GEO changed eligible map input.
         # The final check runs under the existing promotion transaction.
         if expected_source_fingerprint is not None and (
@@ -727,6 +764,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
+        with session_factory() as session:
+            blockers = map_publication_blockers(session)
+            if blockers:
+                raise RuntimeError(f"Map publication blocked by upstream work: {blockers}")
         # Avoid uploading a candidate already made stale by a GEO/source write.
         with session_factory() as session:
             if map_source_fingerprint(session) != expected_source_fingerprint:
