@@ -15,7 +15,7 @@ def test_release_artifacts_require_sigstore_and_exact_sha_identity() -> None:
     assert "attestations: write" in content
     assert "artifact-metadata: write" in content
     assert "Attest release evidence with GitHub OIDC and Sigstore" in content
-    assert "actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26" in content
+    assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in content
     assert "Verify signed release evidence against accepted commit" in content
     assert 'gh attestation verify "$artifact"' in content
     assert '--source-digest "$ACCEPTED_SHA"' in content
