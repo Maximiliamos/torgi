@@ -28,6 +28,7 @@ from bankrotai.services.map_bundle_store import (
     publish_dataset_to_regional_bundles,
 )
 from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
+from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -66,39 +67,14 @@ def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
 
 
 def map_source_fingerprint(session: Session) -> str:
-    """Return a cheap durable signature for map-affecting source state.
-
-    The signature intentionally avoids scanning map_tiles. ProcessedLot.last_update
-    changes on ordinary ORM updates, while row count/id sum cover membership
-    changes. Geo observation time gives an additional guard for coordinate writes.
-    """
-    row = session.execute(
-        select(
-            func.count(ProcessedLot.id),
-            func.coalesce(func.sum(ProcessedLot.id), 0),
-            func.max(ProcessedLot.last_update),
-            func.max(ProcessedLot.current_geo_observed_at),
-        ).where(
-            ProcessedLot.duplicate_of_id.is_(None),
-            ProcessedLot.is_archived.is_(False),
-            ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
-            ProcessedLot.current_geo_lon.between(-180.0, 180.0),
-        )
-    ).one()
-    count, id_sum, last_update, last_geo = row
+    """Hash actual public map inputs, not timestamp approximations."""
     settings = get_settings()
-    payload = "|".join(
-        (
-            MAP_DATASET_REVISION,
-            "1" if settings.map_object_store_enabled else "0",
-            settings.map_object_store_layout,
-            str(int(count or 0)),
-            str(int(id_sum or 0)),
-            last_update.isoformat() if last_update is not None else "",
-            last_geo.isoformat() if last_geo is not None else "",
-        )
+    return exact_map_input_fingerprint(
+        session, revision=MAP_DATASET_REVISION,
+        layout=settings.map_object_store_layout,
+        object_store_enabled=settings.map_object_store_enabled,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 def map_publication_blockers(session: Session) -> list[str]:
     """Reject publication while upstream ingestion/GEO writes are in flight.
@@ -435,6 +411,12 @@ def _promote_map_dataset(
             # the new row current. This transaction-level table lock conflicts
             # with another publisher while continuing to allow ordinary SELECTs.
             session.execute(text("LOCK TABLE map_datasets IN SHARE ROW EXCLUSIVE MODE"))
+            # Serialize publication with active writes to canonical/geo columns.
+            # Source rows can change after building but not between this
+            # validation and the atomic current-dataset switch.
+            session.execute(text("LOCK TABLE processed_lots IN SHARE MODE"))
+            session.execute(text("LOCK TABLE lot_sync_runs IN SHARE MODE"))
+            session.execute(text("LOCK TABLE background_task_states IN SHARE MODE"))
         current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update())
         dataset = session.scalar(select(MapDataset).where(MapDataset.id == dataset_id).with_for_update())
         if dataset is None:
