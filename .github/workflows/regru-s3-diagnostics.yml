@@ -344,30 +344,28 @@ jobs:
           import os
           from pathlib import Path
 
-          import botocore.session
-          from botocore.config import Config
+          import subprocess
 
           root = Path(os.environ["RUNNER_TEMP"]) / "s3-gc"
-          client = botocore.session.get_session().create_client(
-              "s3",
-              endpoint_url=os.environ["MAP_OBJECT_STORE_ENDPOINT"],
-              region_name=os.environ["MAP_OBJECT_STORE_REGION"],
-              aws_access_key_id=os.environ["MAP_OBJECT_STORE_ACCESS_KEY"],
-              aws_secret_access_key=os.environ["MAP_OBJECT_STORE_SECRET_KEY"],
-              config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-          )
           bucket = os.environ["MAP_OBJECT_STORE_BUCKET"]
+          base = [
+              "aws", "--endpoint-url", os.environ["MAP_OBJECT_STORE_ENDPOINT"],
+              "--region", os.environ["MAP_OBJECT_STORE_REGION"], "s3api",
+          ]
           contents = []
           token = None
           while True:
-              request = {"Bucket": bucket, "MaxKeys": 1000}
+              request = base + [
+                  "list-objects-v2", "--bucket", bucket, "--max-keys", "1000",
+                  "--no-paginate", "--output", "json",
+              ]
               if token:
-                  request["ContinuationToken"] = token
-              page = client.list_objects_v2(**request)
+                  request += ["--continuation-token", token]
+              page = json.loads(subprocess.check_output(request, text=True))
               contents.extend({
                   "Key": row["Key"],
                   "Size": int(row["Size"]),
-                  "LastModified": row["LastModified"].isoformat(),
+                  "LastModified": row["LastModified"],
               } for row in page.get("Contents", []))
               if not page.get("IsTruncated"):
                   break
@@ -387,8 +385,10 @@ jobs:
               version = key[len(prefix):-len(suffix)]
               if not version or "/" in version:
                   continue
-              body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
-              (root / "manifests" / f"{version}.json").write_bytes(body)
+              output = root / "manifests" / f"{version}.json"
+              subprocess.check_call(base + [
+                  "get-object", "--bucket", bucket, "--key", key, str(output),
+              ], stdout=subprocess.DEVNULL)
               manifest_count += 1
           print(json.dumps({"objects": len(contents), "manifests": manifest_count}))
           PY
