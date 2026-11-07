@@ -295,7 +295,7 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
     assert 'mode=f"source:{source}"' in workflow
     assert "phase3-lite-targeted-retry" in workflow
     assert "Final source gate failed after targeted retries" in workflow
-    assert "$nonReconcilingFullSources = @('m-ets.ru','cdtrf.ru','nistp.ru')" in workflow
+    assert "$nonReconcilingFullSources = @('torgi-russia.ru','m-ets.ru','cdtrf.ru','nistp.ru')" in workflow
     assert "all configured sources ->" in workflow
     assert "Post-retry MapDataset was not promoted within 20 minutes" in workflow
     assert "$source:" not in workflow
