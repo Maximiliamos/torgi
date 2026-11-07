@@ -31,10 +31,23 @@ jobs:
               rows = list(session.scalars(
                   select(MapDataset).order_by(MapDataset.id.desc()).limit(20)
               ))
-              current = next(
-                  (row for row in rows if bool(row.is_current) and row.status == "ready"),
-                  None,
+              current = session.scalar(
+                  select(MapDataset)
+                  .where(MapDataset.is_current.is_(True), MapDataset.status == "ready")
+                  .order_by(MapDataset.id.desc())
               )
+              recent_ready = list(session.scalars(
+                  select(MapDataset)
+                  .where(MapDataset.status == "ready")
+                  .order_by(MapDataset.id.desc())
+                  .limit(5)
+              ))
+              failed_count = len(list(session.scalars(
+                  select(MapDataset.id).where(MapDataset.status == "failed")
+              )))
+              building_count = len(list(session.scalars(
+                  select(MapDataset.id).where(MapDataset.status == "building")
+              )))
               print(json.dumps({
                   "current": None if current is None else {
                       "id": current.id,
@@ -44,6 +57,16 @@ jobs:
                       "tile_count": current.tile_count,
                       "status": current.status,
                   },
+                  "recent_ready": [{
+                      "id": row.id,
+                      "version": row.version,
+                      "published_at": row.published_at,
+                      "point_count": row.point_count,
+                      "tile_count": row.tile_count,
+                      "is_current": bool(row.is_current),
+                  } for row in recent_ready],
+                  "failed_count": failed_count,
+                  "building_count": building_count,
                   "recent": [{
                       "id": row.id,
                       "version": row.version,
