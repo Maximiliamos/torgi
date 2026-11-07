@@ -271,6 +271,8 @@ def _persist_changed_lots_chunk(
     # fingerprint gate. Skip only when *both* persisted projections match.
     # Preserve observation/coverage liveness via one set-based UPDATE.
     unchanged_ids: list[str] = []
+    unchanged_raw_by_id: dict[str, dict[str, Any]] = {}
+    unchanged_source_updated_by_id: dict[str, Any] = {}
     remaining: list[NormalizedLot] = []
     for lot in lots:
         source = existing_links.get(lot.external_id)
@@ -292,6 +294,19 @@ def _persist_changed_lots_chunk(
         )
         if processed_same and not compare_source_values(source, projected_source).changed:
             unchanged_ids.append(lot.external_id)
+            previous_raw = source.raw_data if isinstance(source.raw_data, dict) else {}
+            projected_raw = projected_source["raw_data"] if isinstance(projected_source["raw_data"], dict) else {}
+            # A semantic skip must still advance transport/freshness evidence.
+            # Preserve previous detail-only metadata if a direct batch caller
+            # supplies only a catalogue projection, while allowing fresh
+            # transport fields (for example listing_fingerprint) to advance.
+            unchanged_raw_by_id[lot.external_id] = {**previous_raw, **projected_raw}
+            incoming_source_updated = projected_source["source_updated_at"]
+            unchanged_source_updated_by_id[lot.external_id] = (
+                incoming_source_updated
+                if incoming_source_updated is not None
+                else source.source_updated_at
+            )
         else:
             remaining.append(lot)
     if unchanged_ids:
@@ -300,7 +315,18 @@ def _persist_changed_lots_chunk(
                 SourceLot.source_system == lots[0].source_system,
                 SourceLot.external_id.in_(unchanged_ids),
             ).values(
-                last_seen_at=utc_now(), last_sync_run_id=run_id,
+                raw_data=case(
+                    unchanged_raw_by_id,
+                    value=SourceLot.external_id,
+                    else_=SourceLot.raw_data,
+                ),
+                source_updated_at=case(
+                    unchanged_source_updated_by_id,
+                    value=SourceLot.external_id,
+                    else_=SourceLot.source_updated_at,
+                ),
+                last_seen_at=utc_now(),
+                last_sync_run_id=run_id,
                 missing_successful_runs=0,
             )
         )
