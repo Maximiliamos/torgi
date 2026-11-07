@@ -83,6 +83,16 @@ def test_retention_is_bounded_restartable_and_preserves_live_map():
     assert second["tile_budget_exhausted"] is False
     assert deleted_per_statement and max(deleted_per_statement) <= 2
 
+    # DELETE must use the already-materialized primary-key batch rather than
+    # DELETE ... IN (SELECT ... LIMIT), which timed out in production.
+    delete_sql = []
+    def capture_delete_sql(_conn, _cursor, statement, _params, _context, _executemany):
+        if statement.lstrip().upper().startswith("DELETE FROM MAP_TILES"):
+            delete_sql.append(statement.upper())
+    event.listen(engine, "before_cursor_execute", capture_delete_sql)
+    cleanup_map_datasets(factory, now=now, apply=True, tile_batch_size=2, max_tiles_per_run=2)
+    assert all("SELECT MAP_TILES.ID" not in statement for statement in delete_sql)
+
     with factory() as session:
         versions = set(session.scalars(select(MapDataset.version)))
         assert versions == {"current", "rollback"}
