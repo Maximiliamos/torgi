@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import and_, case, insert, or_, select
+from sqlalchemy import and_, case, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from bankrotai.db import CanonicalLot, LotPriceEvent, LotStatusHistory, ProcessedLot, SourceLot, utc_now
 from bankrotai.domain import NormalizedLot
+from bankrotai.services.detail_freshness import compare_source_values
 from bankrotai.logic import (
     _canonical_key,
     _raw_value,
@@ -266,6 +267,47 @@ def _persist_changed_lots_chunk(
             )
         ).all()
     }
+    # Extra guard for direct batch callers, beyond ingestion.py's older
+    # fingerprint gate. Skip only when *both* persisted projections match.
+    # Preserve observation/coverage liveness via one set-based UPDATE.
+    unchanged_ids: list[str] = []
+    remaining: list[NormalizedLot] = []
+    for lot in lots:
+        source = existing_links.get(lot.external_id)
+        processed_row = existing_processed.get(lot.external_id)
+        if source is None or processed_row is None or source.processed_lot_id != processed_row.id:
+            remaining.append(lot)
+            continue
+        proposed_processed = _processed_values(lot, processed_row)
+        # Comparing every stored processed field prevents losing updates in
+        # fields that do not also exist on SourceLot.
+        processed_same = all(
+            getattr(processed_row, key) == val
+            for key, val in proposed_processed.items()
+            if key != "last_update"
+        )
+        projected_source = _source_values(
+            lot, run_id=run_id, canonical_lot_id=source.canonical_lot_id,
+            processed_lot_id=processed_row.id, existing=source,
+        )
+        if processed_same and not compare_source_values(source, projected_source).changed:
+            unchanged_ids.append(lot.external_id)
+        else:
+            remaining.append(lot)
+    if unchanged_ids:
+        session.execute(
+            update(SourceLot).where(
+                SourceLot.source_system == lots[0].source_system,
+                SourceLot.external_id.in_(unchanged_ids),
+            ).values(
+                last_seen_at=utc_now(), last_sync_run_id=run_id,
+                missing_successful_runs=0,
+            )
+        )
+    lots = remaining
+    if not lots:
+        return
+
     old_status_by_id = {external_id: row.auction_status for external_id, row in existing_processed.items()}
     old_price_by_id = {external_id: row.current_price for external_id, row in existing_processed.items()}
     protected_ids = {external_id for external_id, row in existing_processed.items() if row.review_status is not None}
