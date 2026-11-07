@@ -185,3 +185,39 @@ def test_manifest_precondition_failure_is_not_silently_overwritten():
         )
     assert reject.call_count == 1
     assert reject.call_args.kwargs["headers"]["If-None-Match"] == "*"
+
+
+def test_geo_failure_during_build_rejects_candidate_and_preserves_old():
+    from datetime import timedelta
+    factory = _db()
+    old, new = _ids(factory)
+    with factory() as session:
+        candidate = session.get(MapDataset, new)
+        session.add(BackgroundTaskState(
+            task_id="geo-failed-this-build", task_type="geocoding",
+            status="failed", finished_at=candidate.created_at + timedelta(seconds=1),
+        ))
+        session.commit()
+    result = map_builder._promote_map_dataset(
+        factory, dataset_id=new, expected_current_id=old,
+    )
+    assert result["reason"] == "upstream_work_in_progress"
+    assert "geo_failed_during_build" in result["blockers"]
+    _assert_old_preserved(factory)
+
+
+def test_historical_geo_failure_does_not_poison_new_build():
+    from datetime import timedelta
+
+    factory = _db()
+    _, new = _ids(factory)
+    with factory() as session:
+        candidate = session.get(MapDataset, new)
+        session.add(BackgroundTaskState(
+            task_id="old-geo-failure", task_type="geocoding", status="failed",
+            finished_at=candidate.created_at - timedelta(days=3),
+        ))
+        session.commit()
+        assert map_builder.map_publication_blockers(
+            session, since=candidate.created_at
+        ) == []
