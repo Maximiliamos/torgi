@@ -13,7 +13,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from bankrotai.connectors.registry.detail_transport import DetailWorkers
+from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from math import ceil
 
 import requests
@@ -90,6 +90,8 @@ class CdtrfSourceCrawler:
         self._total_changes = 0
         self._expected_page = 1
         self._prior_digest: str | None = None
+        self._detail_limiter: HostRateLimiter | None = None
+        self._detail_rate: float | None = None
 
     def _search(self, filters: CdtrfSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -176,7 +178,15 @@ class CdtrfSourceCrawler:
             if str(hit["trade_lot_id"]) in new_ids
         ]
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
-        workers = DetailWorkers(self.session, filters.detail_concurrency, rate)
+        if self._detail_limiter is None:
+            self._detail_limiter = HostRateLimiter(rate)
+            self._detail_rate = rate
+        elif self._detail_rate != rate:
+            raise CdtrfCatalogueScanError("CDTRF detail rate changed within one crawl")
+        workers = DetailWorkers(
+            self.session, filters.detail_concurrency, rate,
+            limiter=self._detail_limiter,
+        )
 
         def verify(hit):
             try:
@@ -218,7 +228,7 @@ class CdtrfSourceCrawler:
 
         # Details only are concurrent; catalogue cursor/coverage remain serial.
         with workers.pool() as executor:
-            for lot, code in executor.map(verify, candidates):
+            for lot, code in workers.map_ordered(executor, verify, candidates):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
