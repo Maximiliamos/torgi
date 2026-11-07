@@ -22,6 +22,15 @@ def current_reconciliation_lock() -> asyncio.Lock | None:
     return _RECONCILIATION_LOCK.get()
 
 
+async def run_serialized_reconciliation(action: Callable[[], int]) -> int:
+    """Serialize fail-closed missing-lot archival within one nationwide run."""
+    lock = current_reconciliation_lock()
+    if lock is None:
+        return action()
+    async with lock:
+        return action()
+
+
 async def run_bounded_sources(
     run_id: str,
     specs: tuple[SourceSyncSpec, ...],
