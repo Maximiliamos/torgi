@@ -11,13 +11,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 
-# SourceLot audit/liveness metadata changes on *every* successful observation.
-# Never include these in a semantic fingerprint.
-AUDIT_FIELDS = frozenset({
-    "id", "created_at", "first_seen_at", "last_seen_at",
-    "last_sync_run_id", "missing_successful_runs", "raw_data",
-    "source_updated_at",
-})
 # Changes to a trusted source revision affect freshness, not necessarily the
 # actual business content. These raw fields are deliberately not used as the
 # business fingerprint; their parsed projections ARE compared below.
@@ -27,14 +20,6 @@ VOLATILE_RAW_FIELDS = frozenset({
     "detail_enrichment_status", "detail_enrichment_version",
     "source_scope", "complete_source_inventory",
 })
-# Only raw-only business data that has no consistently populated SourceLot
-# projection is considered. Unknown raw fields are *not* silently treated as
-# reliable evidence of a business change.
-RAW_BUSINESS_FIELDS = (
-    "photos", "photo_urls", "images", "image_urls", "gallery",
-    "image_url", "photo_url", "main_image", "thumbnail_url",
-    "minimal_blocks", "dates",
-)
 # All SourceLot business fields, including procedure deadlines, status, prices,
 # and legal/operational attributes, are compared via their persisted columns.
 SOURCE_BUSINESS_FIELDS = (
