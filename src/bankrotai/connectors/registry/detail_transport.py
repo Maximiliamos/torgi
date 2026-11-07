@@ -62,6 +62,14 @@ class DetailWorkers:
         self._local = threading.local()
         self._sessions: list[requests.Session] = []
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def acquire(self, url: str) -> None:
+        if self._stop.is_set():
+            raise RuntimeError("Detail batch cancelled after fatal peer failure")
+        self.limiter.acquire(url)
+        if self._stop.is_set():
+            raise RuntimeError("Detail batch cancelled after fatal peer failure")
 
     def session(self) -> requests.Session:
         session = getattr(self._local, "session", None)
@@ -117,6 +125,7 @@ class DetailWorkers:
                         index = pending.pop(future)
                         buffered[index] = future.result()
                 except BaseException:
+                    self._stop.set()
                     for future in pending:
                         future.cancel()
                     raise
@@ -128,6 +137,8 @@ class DetailWorkers:
                     yield buffered.pop(next_output)
                     next_output += 1
         finally:
+            if pending:
+                self._stop.set()
             for future in pending:
                 future.cancel()
 
