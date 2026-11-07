@@ -1,39 +1,52 @@
-# Seven-source fast preflight and safe recovery (draft / read-only)
+# Seven-source preflight and source recovery — implementation and blockers
 
-This PR intentionally does **not** activate a production resume or bypass existing fail-closed controls.
+## Safety / scope
 
-## Audited execution paths
+This draft PR changes only the Phase 3 workflow, the two operator scripts, new read-only validation modules/tests and this audit. `ingestion.py`, source connectors, database schema and GEO/MapDataset implementation are unchanged. No production ingestion, GEO, PostgreSQL mutation, S3 publication or map promotion has been invoked during PR development.
 
-- `.github/workflows/phase3-lite-full-reconcile.yml`: `push` to main can trigger the heavyweight run. Scheduling occurs before a verified backup/restore and free-capacity proof. Existing retry uses `mode=source:<name>`, i.e. a targeted **fresh** source run; it does not prove cursor resume. Multiple successful sources are preserved in final in-memory acceptance but not rolled back/replayed.
-- `scripts/run-standard-sources-geo-map-no-vpn.ps1`: SHA and worker-image checks, seven source IDs, pause/circuit, lease, backup and isolated restore verification already exist; no explicit disk/S3 capacity gate before scheduling. Backup verification may be expensive, so lightweight preflight should precede it; verify restore must still finish **before** writes.
-- `scripts/resume-partial-standard-geo-map-no-vpn.ps1`: pinned older SHA/Run ID and a specifically accepted six-source partial. **Not** an arbitrary seven-source source-run resumer. It runs GEO/map and must not be repurposed without a new proof of complete coverage.
-- `scripts/backup-home-postgres.ps1`: custom-format dump, pg_restore --list, isolated networkless PostgreSQL restore and row-count/schema checks. It writes a local dump and an operations snapshot; it is not a read-only command. Backup-retention eligibility checks metadata and file existence, but does not recompute hashes during retention. A successful restore proves database recovery, not an S3 object-store recovery.
+## Implemented
 
-## Required live fast gate (before any queue or heavy crawl)
+1. **Workflow:** `.github/workflows/phase3-lite-full-reconcile.yml` checks out the exact SHA, verifies the ingestion worker image tag, pipes the checked-in read-only source probe to the running worker, verifies existing backup/disk/S3 quota evidence on the Windows runner, then requires a fresh isolated backup/restore *before* the existing durable run scheduler. All checks fail closed. SHA checks do not claim to prove the actual immutable image digest; this remains a limitation when mutable tags are permitted.
+2. **Read-only live source gate:** `scripts/preflight_live_source_gate.py` requires exactly seven operational sources, typed full-catalogue filter contracts, paused TBankrot, no pause/circuit/global block, DB read-only transaction and zero queued/running durable leases (including stale leases). Unknown state blocks.
+3. **Backup/disk/S3 gate:** `scripts/preflight_capacity_guard.py` checks the newest local backup's metadata, SHA256 of the *actual dump*, latest successful isolated restore, schema revision and age (24h), map-storage anomaly, local free disk (minimum 10 GiB or 2× dump size) and a signed S3 free/required capacity attestation (maximum 1h old and minimum projected usage 512 MiB).
+4. **Manual campaign:** `scripts/run-standard-sources-geo-map-no-vpn.ps1` adds a no-ingestion `-DryRun` and the read-only source probe; for approved real execution it also requires passing backup/disk/S3 capacity checks *before* a fresh restore and durable scheduling. `-DryRun` intentionally reports only partial source/SHA validation: it does not certify storage capacity.
+5. **Legacy partial continuation:** `scripts/resume-partial-standard-geo-map-no-vpn.ps1` no longer contains executable GEO/MapDataset publication code and requires explicit SHA and Run ID. It supports diagnostic `-DryRun` only. Six successes and one failed region-filter guard must **never** be treated as seven-source map eligibility.
+6. **Recovery planning:** `scripts/preflight_source_recovery.py` classifies previously successful source rows as reusable and failures as blocked or candidate checkpoints only. An apparently valid cursor never authorizes a write; valid candidates still return `allowed=false`. Existing workflow retries only failed sources with a fresh source-specific run; it does **not** resume from arbitrary cursor.
 
-1. Exact expected 40-hex SHA equals GitHub ref, checkout, all worker-image digests/labels, and currently loaded parser/config revision; reject mutable-image-tag ambiguity.
-2. Exactly seven approved source identities with the expected reconcile policies and typed filters. TBankrot must remain excluded and paused. Fail on any source pause, circuit, global block, unexpected source, or invalid source-end contract.
-3. Read-only DB connectivity/schema checks, inspect queued/running leases including expired/stale leases. Do not silently reclaim a lease inside a read-only preflight; release/reclaim requires separately approved transactional scheduling.
-4. Confirm most recent *verified* backup generation with a revalidated SHA256, restore proof, matching PostgreSQL schema and restore time before live writes. Avoid redoing an expensive restore if the existing proof is fresh, tied to exact backup hash and accepted under policy.
-5. Prove free local bytes at backup, PostgreSQL, Docker and log paths, with explicit growth/headroom. Establish S3 quota/available budget via a trusted provider quota API or operator attestation. If quota unknown, **block** rather than inferring free capacity from a successful HEAD or LIST.
-6. Only then permit separately approved production execution; never let `--dry-run` call scheduling, backup, GEO, map publication, or DB writes.
+## Capacity evidence contract
 
-## Checkpoint reuse policy
+Workflow configuration on Windows runner:
 
-A cursor is **not** a resume contract. Require a durable persisted page boundary, source ID, exact SHA and parser version, canonical filter digest, stable ordering/pagination identity, already-committed results, page boundary inclusivity/exclusivity, and a stable source-end contract. Reject expired cursors, changing filters, changing parser, unknown pagination semantics and reconciliation-enabled resume. Revalidating a checkpoint does not authorize using it: ingestion engine must independently support atomic resume/checkpoint commits. `ingestion.py` is intentionally unchanged; for now failed sources may be retried from start using existing targeted-source scheduling *after* separate authorization. All successful source runs must be accounted for and no failed source may trigger missing-lot reconciliation.
+- GitHub repository variable `TORGI_S3_CAPACITY_EVIDENCE_PATH`: fully qualified local JSON evidence file produced by a **trusted provider quota collector** (not a human guess).
+- GitHub secret `TORGI_CAPACITY_EVIDENCE_HMAC_KEY`: confidential shared verification key, at least 32 characters.
+- `D:\BankrotAI\dr-backups`: local verified backup directory; must include a fresh dump + matching metadata.
 
-## Dry-run
+Evidence JSON fields are `bucket`, `checked_at` (UTC ISO 8601), `free_bytes` (integer), `required_bytes` (integer), `source="provider_quota_api"`, and `hmac_sha256` over the UTF-8 JSON with the first five keys sorted and compact separators. Verify the actual bucket identity against deployment settings **before enabling production**. The signature authenticates who generated the evidence; it cannot prove that quota values were fetched from REG.RU. No trusted REG.RU quota adapter is implemented yet, therefore **do not configure fabricated evidence and do not merge**. Missing evidence blocks ingestion before heavy crawl.
+
+## Checkpoint resume: exact unresolved interface
+
+Existing targeted `mode=source:<source_id>` retries failed sources from the beginning without repeating successful source runs. True page-level resume requires durable fields in each checkpoint: `source_id`, exact `run_sha`, parser version, canonical filter digest, cursor, stable ordering/search snapshot identity, committed page boundary, and source-end proof, plus an ingestion API that atomically verifies these values **in the transaction that claims the lease and resumes**. The existing checkpoint contracts were not verified to persist all these fields; no ability to resume from a cursor is claimed. Implementing this atomically would require changing `ingestion.py` or an agreed delegated resume API and coordinating with PR #1141. Neither change is authorized here.
+
+## Tests and reproducibility
 
 ```bash
-python scripts/preflight_source_recovery.py --snapshot /path/to/redacted-readonly-evidence.json
-python -m unittest discover -s tests -p test_preflight_source_recovery.py
+PYTHONPATH=src pytest -q tests/test_preflight_source_recovery.py tests/test_preflight_live_source_gate.py tests/test_preflight_capacity_guard.py
+PYTHONPATH=src pytest -m 'not postgres'
+PYTHONPATH=src pytest -m postgres
+ruff check src tests
+mypy src/bankrotai
+python scripts/preflight_source_recovery.py --snapshot path/to/redacted-proof.json
+python scripts/preflight_capacity_guard.py --backup-dir path/to/verified-backups --s3-evidence path/to/signed-evidence.json
 ```
 
-The evaluator takes explicit JSON evidence instead of connecting to services. `allowed` is false when any recovery candidate exists, even if its evidence validates: candidate classification is advisory only. No mock evidence is presented as a live production pass. Capture the snapshot from trusted read-only probes in a separate change; it is unsafe to invent values or default unknown capacity to passing.
+These new tests use synthetic local fixtures and never call a live database/S3. PostgreSQL integration tests belong only on isolated test services. Full workflow tests are not yet proven green; do not treat a queued run as success. The module-size guard and immutable-action checks run in the existing CI. Benchmark results must be measured, not derived from a synthetic fixture or asserted in this document.
 
-## Outstanding implementation / rollout blockers
+## Remaining release blockers
 
-- Tie read-only evidence collection to the actual home runner, DB, object-store billing/quota endpoint and docker image digest, with credentials redacted.
-- Add a gate before the scheduling step in the full workflow and both operator entrypoints; test on a fake Docker/GitHub adapter and isolated filesystem first. Review interactions with other parallel agents before editing shared workflows.
-- Test exact-SHA drift, multiple leases, paused sources, backup hash tampering, restore mismatch, disk/S3 exhaustion, cursor expiry, schema revision, fingerprint/filter mutation, partial-source reconciliation and retry idempotency.
-- Run the offline suite on CI; this branch has not executed any production ingestion, PostgreSQL write, GEO operation or map publication.
+1. A genuinely trustworthy, read-only REG.RU quota collector and independently checked bucket identity; evidence signing without actual provider retrieval is insufficient.
+2. Integration tests on the self-hosted Windows runner for the new PowerShell gates and a dry-run with Docker mocks.
+3. Exact immutable image digest/attestation, not only an equality of mutable tags.
+4. Prove source-run checkpoint provenance/atomic resume contract with the ingestion owner before enabling cursor continuation.
+5. Independent review and green CI after current main rebasing or merging under normal branch protection.
+
+The restored backup verifies PostgreSQL data integrity, not restoration of published S3 objects.
