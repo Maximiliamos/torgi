@@ -352,26 +352,15 @@ jobs:
               "aws", "--endpoint-url", os.environ["MAP_OBJECT_STORE_ENDPOINT"],
               "--region", os.environ["MAP_OBJECT_STORE_REGION"], "s3api",
           ]
-          contents = []
-          token = None
-          while True:
-              request = base + [
-                  "list-objects-v2", "--bucket", bucket, "--max-keys", "1000",
-                  "--no-paginate", "--output", "json",
-              ]
-              if token:
-                  request += ["--continuation-token", token]
-              page = json.loads(subprocess.check_output(request, text=True))
-              contents.extend({
+          # AWS CLI paginates ListObjectsV2 to completion in one process.
+          listing = json.loads(subprocess.check_output(base + [
+              "list-objects-v2", "--bucket", bucket, "--output", "json",
+          ], text=True))
+          contents = [{
                   "Key": row["Key"],
                   "Size": int(row["Size"]),
                   "LastModified": row["LastModified"],
-              } for row in page.get("Contents", []))
-              if not page.get("IsTruncated"):
-                  break
-              token = page.get("NextContinuationToken")
-              if not token:
-                  raise RuntimeError("Truncated S3 inventory omitted continuation token")
+              } for row in listing.get("Contents", [])]
           inventory = {"Contents": contents, "IsTruncated": False}
           (root / "inventory.json").write_text(
               json.dumps(inventory, ensure_ascii=False), encoding="utf-8",
