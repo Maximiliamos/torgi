@@ -31,10 +31,9 @@ async def fetch_nistp_lot(connector: HtmlEtpConnector, external_id: str) -> Norm
         connector.profile, f"https://nistp.ru/bankrot/trade_view.php?trade_nid={trade_nid}"
     )
     response = await asyncio.to_thread(
-        connector.session.get, detail_url,
+        connector._read_request, "get", detail_url,
         timeout=connector.timeout, allow_redirects=False,
     )
-    connector._check_response(response)
     section = get_nistp_lot(
         response.content, trade_nid=trade_nid, lot_number=int(lot_text),
     )
