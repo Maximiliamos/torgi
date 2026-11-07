@@ -395,6 +395,7 @@ def _promote_map_dataset(
     dataset_id: int,
     expected_current_id: int | None,
     dimension_failures: list[dict[str, object]] | None = None,
+    expected_source_fingerprint: str | None = None,
 ) -> dict:
     """Serialize and atomically promote one completely built dataset."""
     with session_factory() as session:
@@ -425,6 +426,20 @@ def _promote_map_dataset(
             return {
                 "status": "rejected",
                 "reason": "current_dataset_changed",
+                "current_dataset_id": current_id,
+            }
+
+        # Fail closed when ingestion/GEO changed eligible map input.
+        # The final check runs under the existing promotion transaction.
+        if expected_source_fingerprint is not None and (
+            map_source_fingerprint(session) != expected_source_fingerprint
+        ):
+            dataset.status = "rejected"
+            session.commit()
+            logger.warning("Map dataset %s rejected: source changed during build", dataset.version)
+            return {
+                "status": "rejected",
+                "reason": "source_changed_during_build",
                 "current_dataset_id": current_id,
             }
 
@@ -533,6 +548,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
 
     try:
         with session_factory() as session:
+            expected_source_fingerprint = map_source_fingerprint(session)
             source_lot_count = int(session.scalar(select(func.count(ProcessedLot.id))) or 0)
             rows = session.execute(
                 select(
@@ -711,6 +727,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
+        # Avoid uploading a candidate already made stale by a GEO/source write.
+        with session_factory() as session:
+            if map_source_fingerprint(session) != expected_source_fingerprint:
+                raise RuntimeError("Map source changed during tile build; candidate not publishable")
         if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT:
             object_store = publish_dataset_to_regional_bundles(
                 session_factory,
@@ -728,6 +748,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             dataset_id=dataset_id,
             expected_current_id=expected_current_id,
             dimension_failures=dimension_failures,
+            expected_source_fingerprint=expected_source_fingerprint,
         )
         promotion_completed = True
         total_duration_ms = round((time.monotonic() - started) * 1000)
