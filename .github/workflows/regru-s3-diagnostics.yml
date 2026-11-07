@@ -233,7 +233,7 @@ jobs:
           PY
 
       - name: Estimate regional bundle reduction from existing S3 tiles
-        if: env.HAS_S3_CREDENTIALS == 'true'
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         run: |
           set -euo pipefail
