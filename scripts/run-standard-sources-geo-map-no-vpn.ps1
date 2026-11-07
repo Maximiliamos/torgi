@@ -9,7 +9,9 @@ param(
     [ValidateRange(1, 500)][int]$GeoBatchSize = 500,
     [ValidateRange(1, 64)][int]$GeoMaxBatches = 64,
     [switch]$ConfirmProductionWrites,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$S3CapacityEvidencePath = '',
+    [string]$BackupDirectory = 'D:\\BankrotAI\\dr-backups'
 )
 $ErrorActionPreference = 'Stop'
 if (-not $BackupScript) {
@@ -105,6 +107,30 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
         Write-Host 'DRY_RUN_PASS: live source, database, pause/circuit, lease and SHA gates passed.'
         Write-Warning 'Backup freshness and disk/S3 capacity have NOT been proved; no production operation authorized.'
         return
+    }
+
+    # A last-known good restore and fresh independently signed provider quota
+    # are mandatory even when the operator has explicitly confirmed writes.
+    # Unknown quota is a hard block, not a warning.
+    if (-not $S3CapacityEvidencePath) {
+        throw 'S3 capacity evidence is required; no full ingestion started.'
+    }
+    $capacityGatePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'preflight_capacity_guard.py'
+    if (-not (Test-Path -LiteralPath $capacityGatePath -PathType Leaf)) {
+        throw "Capacity gate missing: $capacityGatePath"
+    }
+    if (-not (Get-Command python.exe -ErrorAction SilentlyContinue)) {
+        throw 'python.exe required for read-only capacity evidence verification'
+    }
+    $capacityRows = @(& python.exe $capacityGatePath --backup-dir $BackupDirectory --s3-evidence $S3CapacityEvidencePath)
+    $capacityExitCode = $LASTEXITCODE
+    if ($capacityExitCode -ne 0 -or -not $capacityRows.Count -or
+        $capacityRows[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
+        throw "Backup/disk/S3 capacity gate failed: $($capacityRows -join '; ')"
+    }
+    $capacityState = ($capacityRows[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
+    if ($capacityState.allowed -ne $true) {
+        throw "Backup/disk/S3 capacity gate blocked: $($capacityState.errors -join '; ')"
     }
 
     if (-not (Test-Path -LiteralPath $BackupScript -PathType Leaf)) {
