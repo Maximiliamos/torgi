@@ -365,3 +365,41 @@ def test_postgres_canonical_source_consistency_duplicates_and_orphans(engine) ->
         assert duplicate_groups == []
         assert orphan_sources == 0
         assert orphan_geo == 0
+
+
+def test_map_publication_source_lock_blocks_concurrent_pg_write(engine) -> None:
+    """Use a disposable CI PostgreSQL schema; no production connection."""
+    from sqlalchemy.exc import OperationalError
+    from bankrotai.services.map_builder import map_source_fingerprint
+
+    with Session(engine) as session:
+        session.add(_lot(
+            "map-publication-lock", current_geo_lat=57.6261,
+            current_geo_lon=39.8845, current_price=100,
+        ))
+        session.commit()
+        lot_id = session.scalar(
+            select(ProcessedLot.id).where(ProcessedLot.external_id == "map-publication-lock")
+        )
+    with Session(engine) as publisher:
+        publisher.execute(text("LOCK TABLE processed_lots IN SHARE MODE"))
+        expected = map_source_fingerprint(publisher)
+        # Independent connection must not write while promotion holds the lock.
+        with Session(engine) as writer:
+            writer.execute(text("SET LOCAL lock_timeout = '150ms'"))
+            with pytest.raises(OperationalError):
+                writer.execute(
+                    text("UPDATE processed_lots SET current_price = 90 WHERE id = :id"),
+                    {"id": lot_id},
+                )
+            writer.rollback()
+        assert map_source_fingerprint(publisher) == expected
+        publisher.commit()
+    with Session(engine) as writer:
+        writer.execute(
+            text("UPDATE processed_lots SET current_price = 90 WHERE id = :id"),
+            {"id": lot_id},
+        )
+        writer.commit()
+    with Session(engine) as session:
+        assert map_source_fingerprint(session) != expected
