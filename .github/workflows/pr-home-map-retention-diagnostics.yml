@@ -42,12 +42,26 @@ jobs:
                   .order_by(MapDataset.id.desc())
                   .limit(5)
               ))
-              failed_count = len(list(session.scalars(
-                  select(MapDataset.id).where(MapDataset.status == "failed")
-              )))
+              failed_rows = list(session.scalars(
+                  select(MapDataset)
+                  .where(MapDataset.status == "failed")
+                  .order_by(MapDataset.id.desc())
+              ))
+              failed_count = len(failed_rows)
               building_count = len(list(session.scalars(
                   select(MapDataset.id).where(MapDataset.status == "building")
               )))
+              legacy_versions = (
+                  "20260924T225230284059Z-s3",
+                  "20260924T222246446795Z-s3",
+                  "20260924T214633134097Z-s3",
+                  "20260924T205816771500Z-s3",
+                  "20260924T205000633559Z-s3",
+                  "20260924T204308197270Z-s3",
+              )
+              legacy_rows = list(session.scalars(
+                  select(MapDataset).where(MapDataset.version.in_(legacy_versions))
+              ))
               print(json.dumps({
                   "current": None if current is None else {
                       "id": current.id,
@@ -66,7 +80,15 @@ jobs:
                       "is_current": bool(row.is_current),
                   } for row in recent_ready],
                   "failed_count": failed_count,
+                  "failed_versions": [row.version for row in failed_rows],
                   "building_count": building_count,
+                  "legacy_db_rows": [{
+                      "id": row.id,
+                      "version": row.version,
+                      "status": row.status,
+                      "is_current": bool(row.is_current),
+                      "published_at": row.published_at,
+                  } for row in legacy_rows],
                   "recent": [{
                       "id": row.id,
                       "version": row.version,
