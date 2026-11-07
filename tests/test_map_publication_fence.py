@@ -142,3 +142,46 @@ def test_exact_fingerprint_ignores_non_map_fields():
         lot.description = "Non-public description update"
         session.commit()
         assert map_builder.map_source_fingerprint(session) == before
+
+
+def test_signed_manifest_is_create_only():
+    from datetime import datetime, timezone
+    from bankrotai.services.map_object_store import _signed_headers
+
+    args = dict(
+        method="PUT", endpoint="https://s3.example.test",
+        bucket="maps", key="datasets/v1/manifest.json",
+        body=b"{}", content_type="application/json; charset=utf-8",
+        cache_control="public, max-age=60",
+        access_key="ACCESS", secret_key="SECRET", region="ru-1",
+        now=datetime(2026, 11, 8, tzinfo=timezone.utc),
+    )
+    _, normal = _signed_headers(**args)
+    _, guarded = _signed_headers(**args, create_only=True)
+    assert "If-None-Match" not in normal
+    assert guarded["If-None-Match"] == "*"
+    assert "if-none-match" in guarded["Authorization"]
+    assert guarded["Authorization"] != normal["Authorization"]
+
+
+def test_manifest_precondition_failure_is_not_silently_overwritten():
+    from unittest.mock import Mock
+    from bankrotai.core import AppSettings
+    from bankrotai.services.map_object_store import _put_object
+
+    settings = AppSettings(
+        map_object_store_enabled=True,
+        map_object_store_endpoint="https://s3.example.test",
+        map_object_store_bucket="maps",
+        map_object_store_access_key="ACCESS",
+        map_object_store_secret_key="SECRET",
+    )
+    reject = Mock(return_value=Mock(status_code=412, text="already exists"))
+    import pytest
+    with pytest.raises(RuntimeError, match="412"):
+        _put_object(
+            settings, "datasets/v1/manifest.json", b"{}",
+            cache_control="public, max-age=60", put=reject, create_only=True,
+        )
+    assert reject.call_count == 1
+    assert reject.call_args.kwargs["headers"]["If-None-Match"] == "*"
