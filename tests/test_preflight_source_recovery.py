@@ -62,6 +62,20 @@ class PreflightTests(unittest.TestCase):
                     next(x for x in s["sources"] if x["source_id"] == "cdtrf.ru")["items_archived"] = 1
                 self.assertFalse(mod.assess(s)["allowed"])
 
+    def test_unknown_capacity_and_backup_fail_closed(self):
+        for field in ("s3_free_bytes", "disk_required_bytes", "backup_sha256_valid"):
+            with self.subTest(field=field):
+                snap = snapshot()
+                snap.pop(field)
+                self.assertFalse(mod.assess(snap)["allowed"])
+
+    def test_successful_source_requires_end_and_no_failed_items(self):
+        for field, value in (("source_end_verified", False), ("items_failed", 1)):
+            with self.subTest(field=field):
+                snap = snapshot()
+                snap["sources"][0][field] = value
+                self.assertFalse(mod.assess(snap)["allowed"])
+
     def test_failed_run_needs_validated_checkpoint_and_no_reconciliation(self):
         s = snapshot()
         row = s["sources"][0]
@@ -73,6 +87,8 @@ class PreflightTests(unittest.TestCase):
                                    filter_digest="f" * 64))
         self.assertEqual("candidate_only_no_writes",
                          mod.assess(s)["sources"][row["source_id"]]["action"])
+        self.assertFalse(mod.assess(s)["allowed"])
+        self.assertTrue(mod.assess(s)["requires_implementation"])
         for key, value in [("parser_version", "v1"), ("filter_digest", "0" * 64),
                            ("cursor", ""), ("run_sha", "b" * 40)]:
             with self.subTest(key=key):
