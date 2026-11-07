@@ -7,7 +7,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from bankrotai.connectors.registry.detail_transport import DetailWorkers
+from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from decimal import Decimal
 
 import requests
@@ -58,6 +58,9 @@ class MetsSourceCrawler:
         self._overlap_count = 0
         self._expected_page = 1
         self._prior_digest: str | None = None
+        self._detail_limiter: HostRateLimiter | None = None
+        self._detail_rate: float | None = None
+        self._custom_detail_lock = __import__("threading").Lock()
 
     def _search(self, filters: MetsSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -125,7 +128,15 @@ class MetsSourceCrawler:
         accepted = []
         rejected: dict[str, int] = {}
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
-        workers = DetailWorkers(self.pilot.session, filters.detail_concurrency, rate)
+        if self._detail_limiter is None:
+            self._detail_limiter = HostRateLimiter(rate)
+            self._detail_rate = rate
+        elif self._detail_rate != rate:
+            raise MetsCatalogueScanError("M-ETS detail rate changed within one crawl")
+        workers = DetailWorkers(
+            self.pilot.session, filters.detail_concurrency, rate,
+            limiter=self._detail_limiter,
+        )
 
         def verify(item):
             external_id, catalogue_price, catalogue_status, _title = item
@@ -144,8 +155,10 @@ class MetsSourceCrawler:
                         workers._local.pilot = pilot
                     html = pilot._get(url, before_request=workers.limiter.acquire)
                 else:
-                    workers.limiter.acquire(url)
-                    html = self.pilot._get(url)
+                    # Unknown/custom transports are not assumed thread-safe.
+                    with self._custom_detail_lock:
+                        workers.limiter.acquire(url)
+                        html = self.pilot._get(url)
                 lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
@@ -195,7 +208,7 @@ class MetsSourceCrawler:
         # map preserves catalogue ordering and propagates any fatal failure.
         # Only details overlap; the next catalogue page is never fetched early.
         with workers.pool() as executor:
-            for lot, code in executor.map(verify, novel_observations):
+            for lot, code in workers.map_ordered(executor, verify, novel_observations):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
