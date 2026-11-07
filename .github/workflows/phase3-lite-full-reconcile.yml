@@ -191,6 +191,22 @@ jobs:
             )
           }
 
+          function Test-QuarantineOnlyPartial($Row) {
+            if ($null -eq $Row -or $null -eq $Row.checkpoint) { return $false }
+            $quarantined = [int]($Row.checkpoint.quarantined_records)
+            $phase = [string]($Row.checkpoint.phase)
+            $errorText = [string]($Row.error)
+            return (
+              [string]$Row.status -eq 'partial' -and
+              -not [bool]$Row.complete -and
+              $quarantined -gt 0 -and
+              [int]$Row.items_archived -eq 0 -and
+              [int]$Row.items_failed -eq 0 -and
+              $phase -eq 'complete_with_quarantine' -and
+              $errorText -match '^source completed with \d+ quarantined malformed record\(s\);'
+            )
+          }
+
           $deadline = $null
           do {
             $json = docker exec --env "PHASE3_RUN_ID=$env:RUN_ID" bankrotai-home-ingestion-worker python -c "import json, os; from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun; s=SessionLocal(); run=s.get(LotSyncRun, os.environ['PHASE3_RUN_ID']); rows=s.query(LotSyncSourceRun).filter_by(sync_run_id=os.environ['PHASE3_RUN_ID']).all(); configured=['torgi.gov.ru','lot-online.ru','torgi-russia.ru','bidexpert.ru','m-ets.ru','cdtrf.ru','nistp.ru']; print(json.dumps({'status':None if run is None else run.status,'error':None if run is None else run.error_message,'heartbeat_at':None if run is None else run.heartbeat_at,'lease_expires_at':None if run is None else run.lease_expires_at,'configured_source_count':len(configured),'configured_sources':configured,'sources':[{'source':x.source_system,'status':x.status,'complete':x.complete_source_run,'pages_scanned':x.pages_scanned,'items_seen':x.items_seen,'items_inserted':x.items_inserted,'items_updated':x.items_updated,'items_unchanged':x.items_unchanged,'items_archived':x.items_archived,'items_failed':x.items_failed,'duplicates_merged':x.duplicates_merged,'progress_at':x.progress_at,'checkpoint':x.checkpoint_json,'error':x.error_message} for x in rows]}, default=str)); s.close()"
@@ -243,10 +259,12 @@ jobs:
               # persisted complete_source_run flag therefore remains false by
               # design; a successful source row is the source-end proof because
               # require_source_end=True rejects page-budget exhaustion.
-              $nonReconcilingFullSources = @('m-ets.ru','cdtrf.ru','nistp.ru')
+              $nonReconcilingFullSources = @('torgi-russia.ru','m-ets.ru','cdtrf.ru','nistp.ru')
               $incompleteRows = @($rows | Where-Object {
-                $_.status -ne 'success' -or
-                (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+                -not (Test-QuarantineOnlyPartial $_) -and (
+                  $_.status -ne 'success' -or
+                  (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+                )
               })
               if ($incompleteRows.Count -gt 0) {
                 $retryDeadline = (Get-Date).ToUniversalTime().AddMinutes(85)
@@ -328,15 +346,20 @@ jobs:
                         throw "Targeted retry for $source stalled: no durable progress since $retryLatestProgress"
                       }
                     }
-                    if ($retryState.status -eq 'success') {
+                    if ($retryState.status -in @('success','partial')) {
                       $retryRows = @($retryState.sources)
-                      if (
-                        $retryRows.Count -ne 1 -or
-                        [string]$retryRows[0].source -ne $source -or
-                        $retryRows[0].status -ne 'success' -or
-                        (-not [bool]$retryRows[0].complete -and $source -notin $nonReconcilingFullSources)
-                      ) {
-                        throw "Targeted retry for $source did not finish as one complete successful source"
+                      $retryQuarantineOnly = (
+                        $retryRows.Count -eq 1 -and
+                        (Test-QuarantineOnlyPartial $retryRows[0])
+                      )
+                      $retrySuccess = (
+                        $retryRows.Count -eq 1 -and
+                        [string]$retryRows[0].source -eq $source -and
+                        $retryRows[0].status -eq 'success' -and
+                        ([bool]$retryRows[0].complete -or $source -in $nonReconcilingFullSources)
+                      )
+                      if (-not $retrySuccess -and -not $retryQuarantineOnly) {
+                        throw "Targeted retry for $source did not finish as success or quarantine-only partial"
                       }
                       $rows = @($rows | Where-Object { [string]$_.source -ne $source }) + @($retryRows)
                       if ($retryState.finished_at) {
@@ -345,7 +368,11 @@ jobs:
                           $latestRetryFinishedAt = $finished
                         }
                       }
-                      Write-Output "Targeted retry for $source completed successfully"
+                      if ($retryQuarantineOnly) {
+                        Write-Warning "Targeted retry for $source completed with quarantine-only partial; archival remains forbidden"
+                      } else {
+                        Write-Output "Targeted retry for $source completed successfully"
+                      }
                       break
                     }
                     if ($retryState.status -eq 'failed') {
@@ -355,14 +382,28 @@ jobs:
                     Start-Sleep -Seconds 20
                   } while ($null -eq $retryProgressDeadline -or (Get-Date).ToUniversalTime() -lt $retryProgressDeadline)
 
-                  if ($null -eq $retryState -or $retryState.status -ne 'success') {
-                    throw "Targeted retry for $source stalled before reaching success"
+                  $retryTerminalAccepted = $false
+                  if ($null -ne $retryState) {
+                    if ($retryState.status -eq 'success') {
+                      $retryTerminalAccepted = $true
+                    } elseif ($retryState.status -eq 'partial') {
+                      $retryRows = @($retryState.sources)
+                      $retryTerminalAccepted = (
+                        $retryRows.Count -eq 1 -and
+                        (Test-QuarantineOnlyPartial $retryRows[0])
+                      )
+                    }
+                  }
+                  if (-not $retryTerminalAccepted) {
+                    throw "Targeted retry for $source stalled before reaching an accepted terminal state"
                   }
                 }
 
                 $incompleteRows = @($rows | Where-Object {
-                  $_.status -ne 'success' -or
-                  (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+                  -not (Test-QuarantineOnlyPartial $_) -and (
+                    $_.status -ne 'success' -or
+                    (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+                  )
                 })
                 if ($incompleteRows.Count -gt 0) {
                   $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
@@ -414,11 +455,11 @@ jobs:
               @(
                 "## Final source reconciliation",
                 "",
-                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Rejected | Failed |",
-                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Quarantined | Rejected | Failed |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
               ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               foreach ($row in ($rows | Sort-Object source)) {
-                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $([int]$row.checkpoint.items_rejected) | $($row.items_failed) |" |
+                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $([int]$row.checkpoint.quarantined_records) | $([int]$row.checkpoint.items_rejected) | $($row.items_failed) |" |
                   Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               }
               exit 0
