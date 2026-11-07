@@ -19,6 +19,9 @@ VOLATILE_RAW_FIELDS = frozenset({
     "request_id", "response_time_ms", "catalogue_page",
     "detail_enrichment_status", "detail_enrichment_version",
     "source_scope", "complete_source_inventory",
+    # These raw aliases are already normalized into SourceLot.source_updated_at.
+    # Treating them as an independent business field would defeat semantic skip.
+    "updated_at", "source_updated_at", "last_update",
 })
 # All SourceLot business fields, including procedure deadlines, status, prices,
 # and legal/operational attributes, are compared via their persisted columns.
