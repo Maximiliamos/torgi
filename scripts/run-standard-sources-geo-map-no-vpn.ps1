@@ -103,12 +103,6 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
     if ($sourceGate.pass -ne $true) {
         throw "Read-only source gate blocked: $($sourceGate.errors -join '; ')"
     }
-    if ($DryRun) {
-        Write-Host 'DRY_RUN_PASS: live source, database, pause/circuit, lease and SHA gates passed.'
-        Write-Warning 'Backup freshness and disk/S3 capacity have NOT been proved; no production operation authorized.'
-        return
-    }
-
     # A last-known good restore and fresh independently signed provider quota
     # are mandatory even when the operator has explicitly confirmed writes.
     # Unknown quota is a hard block, not a warning.
@@ -131,6 +125,11 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
     $capacityState = ($capacityRows[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
     if ($capacityState.allowed -ne $true) {
         throw "Backup/disk/S3 capacity gate blocked: $($capacityState.errors -join '; ')"
+    }
+
+    if ($DryRun) {
+        Write-Host 'DRY_RUN_PASS: SHA, seven-source state, lease, verified backup, disk and signed S3 capacity evidence passed; no ingestion/GEO/map writes.'
+        return
     }
 
     if (-not (Test-Path -LiteralPath $BackupScript -PathType Leaf)) {
