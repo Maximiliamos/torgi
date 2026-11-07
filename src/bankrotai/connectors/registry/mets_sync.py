@@ -154,11 +154,11 @@ class MetsSourceCrawler:
                     if pilot is None:
                         pilot = MetsPublicPilot(session=workers.session())
                         workers._local.pilot = pilot
-                    html = pilot._get(url, before_request=workers.limiter.acquire)
+                    html = pilot._get(url, before_request=workers.acquire)
                 else:
                     # Unknown/custom transports are not assumed thread-safe.
                     with self._custom_detail_lock:
-                        workers.limiter.acquire(url)
+                        workers.acquire(url)
                         html = self.pilot._get(url)
                 lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
