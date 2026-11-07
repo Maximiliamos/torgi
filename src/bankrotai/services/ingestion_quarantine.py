@@ -45,6 +45,21 @@ def quarantine_sample(lot: Any, *, reason: str) -> dict[str, str | None]:
     }
 
 
+def merge_page_quarantine(result: SourceSyncResult, metadata: dict[str, Any]) -> None:
+    """Merge connector-level raw-record quarantine evidence into one source result."""
+    quarantined = int(metadata.get("quarantined_records") or 0)
+    if not quarantined:
+        return
+    result.quarantined_records += quarantined
+    result.items_rejected += quarantined
+    for reason, count in metadata.get("quarantine_reasons", {}).items():
+        key = str(reason)
+        result.quarantine_reasons[key] = result.quarantine_reasons.get(key, 0) + int(count)
+    for sample in metadata.get("quarantine_samples", []):
+        if isinstance(sample, dict) and len(result.quarantine_samples) < 20:
+            result.quarantine_samples.append(sample)
+
+
 def partition_normalized_lots(
     result: SourceSyncResult,
     lots: list[Any],
