@@ -568,6 +568,9 @@ class NationwideIngestionService:
             result.phase = "complete"
             result.progress_current = result.progress_total
         except Exception as exc:
+            # A failed reconciliation must never be presented as complete
+            # coverage, even if pagination reached the final source page.
+            result.complete_source_run = False
             result.status = "failed"
             result.phase = "failed"
             result.error = str(exc)
