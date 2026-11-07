@@ -45,6 +45,7 @@ def _sessions():
         ("access_limited by upstream", "access_limited", False, False),
         ("source coverage guard rejected reconciliation", "coverage_guard", False, True),
         ("JSONDecodeError: unexpected payload", "parser_contract", False, True),
+        ("source completed with 1 quarantined malformed record(s)", "parser_contract", False, True),
         ("validation failed for payload", "validation", False, True),
         ("TypeError: connector contract bug", "internal_error", False, False),
     ],
