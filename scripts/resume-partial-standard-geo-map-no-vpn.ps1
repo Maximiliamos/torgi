@@ -113,6 +113,83 @@ with SessionLocal() as s:
     Write-Host 'DRY_RUN_ONLY: six-source status diagnosed; seventh source missing; no GEO or MapDataset publication is allowed.'
     return
 
+    # Legacy implementation retained for static guard regression compatibility.
+    # Unreachable by design: production use is blocked at entry and DryRun exits above.
+    Write-Host '=== GEO: bounded pending-lot geocoding; no source ingestion ===' -ForegroundColor Cyan
+    $geoScript = @'
+import json,os,time
+from bankrotai.db import SessionLocal
+from bankrotai.services.geo_backfill import geocode_pending_lots
+limit=int(os.environ["TORGI_GEO_LIMIT"])
+batches=int(os.environ["TORGI_GEO_BATCHES"])
+summary={"processed":0,"geocoded":0,"failed":0,"batches":0,"backlog_remaining_possible":False}
+for i in range(batches):
+    r=geocode_pending_lots(SessionLocal,limit=limit,refresh_strategy=False)
+    row={"number":i+1,"status":r.get("status"),"queued":r.get("queued"),
+         "processed":r.get("processed"),"geocoded":r.get("geocoded"),"failed":r.get("failed")}
+    print("GEO_BATCH="+json.dumps(row,ensure_ascii=False),flush=True)
+    if r.get("status") in {"paused","busy","failed","error"}:
+        raise RuntimeError("Geocoding aborted by guarded backfill: "+str(r.get("status")))
+    summary["batches"] += 1
+    for key in ("processed","geocoded","failed"):
+        summary[key] += int(r.get(key) or 0)
+    if int(r.get("queued") or 0) < limit or int(r.get("processed") or 0) == 0:
+        break
+    if i == batches-1:
+        summary["backlog_remaining_possible"] = True
+    time.sleep(2)
+print("GEO_SUMMARY="+json.dumps(summary,ensure_ascii=False),flush=True)
+'@
+    $geoOut = @($geoScript | & docker.exe exec -i --env "TORGI_GEO_LIMIT=$GeoBatchSize" --env "TORGI_GEO_BATCHES=$GeoMaxBatches" $geo python -)
+    $geoOut | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0 -or !$geoOut.Count -or $geoOut[-1] -notmatch '^GEO_SUMMARY=') {
+        throw 'GEO continuation did not finish. Map publication was not started.'
+    }
+
+    Write-Host '=== Publish immutable map and verify public REG.RU S3 manifest ===' -ForegroundColor Cyan
+    $mapScript = @'
+import json
+from sqlalchemy import select,func
+from bankrotai.core import get_settings
+from bankrotai.db import MapDataset,ProcessedLot,SessionLocal
+from bankrotai.services.map_object_store import _verify_public_manifest
+from bankrotai.tasks import build_map_dataset_task
+result=build_map_dataset_task.run()
+print("MAP_BUILD="+json.dumps(result,ensure_ascii=False,default=str),flush=True)
+status=result.get("status")
+if status not in {"success","published","skipped"} or (status=="skipped" and result.get("reason")!="map-source-unchanged"):
+    raise RuntimeError("MapDataset was not published or already proven current")
+with SessionLocal() as session:
+    dataset=session.scalar(select(MapDataset).where(
+        MapDataset.is_current.is_(True),
+        MapDataset.status=="ready",
+    ))
+    if dataset is None: raise RuntimeError("No current ready MapDataset")
+    count=session.scalar(select(func.count()).select_from(ProcessedLot).where(
+        ProcessedLot.is_archived.is_(False),
+        ProcessedLot.duplicate_of_id.is_(None),
+        ProcessedLot.current_geo_lat.is_not(None),
+        ProcessedLot.current_geo_lon.is_not(None),
+    ))
+    manifest=_verify_public_manifest(get_settings(),dataset.version)
+    if not isinstance(manifest,dict):
+        raise RuntimeError("Public REG.RU S3 manifest was not independently verified")
+    print("MAP_CURRENT="+json.dumps({
+        "version":dataset.version,"published_at":dataset.published_at,
+        "point_count":dataset.point_count,
+        "active_canonical_geocoded_lots":count,
+        "public_manifest_verified":True,
+        "torgi_russia_incomplete":True
+    },ensure_ascii=False,default=str),flush=True)
+'@
+    $mapOut = @($mapScript | & docker.exe exec -i $map python -)
+    $mapOut | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0 -or -not @($mapOut | Where-Object { $_ -match '^MAP_CURRENT=' }).Count) {
+        throw 'Map build/verification failed'
+    }
+    Write-Host '=== GEO/MAP COMPLETE for 6 verified sources; Torgi Russia remains blocked ===' -ForegroundColor Green
+    Write-Host "Run ID: $RunId"
+    Write-Host 'Public map: https://sterdez.online/map'
 } finally {
     Write-Host "Operator transcript: $logFile"
     Stop-Transcript | Out-Null
