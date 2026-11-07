@@ -124,7 +124,7 @@ def cleanup_map_datasets(
     building_min_age_hours: int = 6,
     apply: bool = False,
     now: datetime | None = None,
-    tile_batch_size: int = 1000,
+    tile_batch_size: int = 250,
     max_tiles_per_run: int = 100_000,
 ) -> dict:
     """Find or remove obsolete non-current map versions under the publisher lock.
@@ -270,18 +270,21 @@ def cleanup_map_datasets(
                         session.rollback()
                         break
 
-                    tile_ids = (
+                    # Materialize a small PK batch before DELETE. PostgreSQL
+                    # otherwise plans DELETE ... WHERE id IN (SELECT ... LIMIT),
+                    # which timed out on large historical datasets.
+                    tile_ids = list(session.scalars(
                         select(MapTile.id)
                         .where(MapTile.dataset_id == dataset_id)
                         .order_by(MapTile.id)
                         .limit(min(tile_batch_size, remaining_budget))
-                    )
+                    ))
                     removed = int(
                         session.execute(
                             delete(MapTile).where(MapTile.id.in_(tile_ids)),
                             execution_options={"synchronize_session": False},
                         ).rowcount or 0
-                    )
+                    ) if tile_ids else 0
                     if removed:
                         session.commit()
                         deleted_tile_count += removed
