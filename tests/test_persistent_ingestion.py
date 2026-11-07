@@ -1535,6 +1535,40 @@ def test_normalized_quarantine_rejects_identity_contract_errors(
         assert session.scalars(select(SourceLot)).all() == []
 
 
+def test_generic_quarantine_keeps_valid_peer_and_blocks_reconciliation(sessions) -> None:
+    with sessions() as session:
+        persist_lot(session, lot("existing-not-seen"), isolate_source=True)
+        session.commit()
+
+    valid = lot("valid-new")
+    malformed = lot("broken")
+    malformed.title = ""
+
+    connector = FakeConnector([[valid, malformed]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(
+        run_id,
+        (SourceSyncSpec(
+            "test-source", {}, reconcile_missing=True, require_source_end=True,
+        ),),
+    ))
+
+    source = output["sources"][0]
+    assert output["status"] == "partial"
+    assert source["status"] == "partial"
+    assert source["complete_source_run"] is False
+    assert source["quarantined_records"] == 1
+    assert source["quarantine_reasons"] == {"empty_title": 1}
+    assert source["items_inserted"] == 1
+    assert source["items_archived"] == 0
+    with sessions() as session:
+        rows = session.scalars(select(SourceLot)).all()
+        assert {row.external_id for row in rows} == {"existing-not-seen", "valid-new"}
+
+
 def test_four_malformed_normalized_records_fail_source_without_writes(sessions) -> None:
     broken = []
     for index in range(4):
