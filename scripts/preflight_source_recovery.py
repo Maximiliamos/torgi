@@ -109,7 +109,9 @@ def assess(snapshot):
     _require(len(decisions) == 7, "missing source decision", errors)
     if any(x["action"] == "block" for x in decisions.values()):
         errors.append("source gate blocked")
-    return {"allowed": not errors and all(x["action"] == "reuse_success" for x in decisions.values()),\n            "requires_implementation": any(x["action"] == "candidate_only_no_writes" for x in decisions.values()),\n            "dry_run": True, "errors": errors,
+    return {"allowed": not errors and all(x["action"] == "reuse_success" for x in decisions.values()),
+            "requires_implementation": any(x["action"] == "candidate_only_no_writes" for x in decisions.values()),
+            "dry_run": True, "errors": errors,
             "sources": dict(sorted(decisions.items()))}
 
 
