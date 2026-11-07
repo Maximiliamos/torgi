@@ -62,6 +62,14 @@ def test_bad_lot_records_fail_closed_not_partial_reconciliation():
         client.search_lots(TorgiRussiaSearchFilters(region_id=1))
 
 
+def test_bad_lot_record_reports_safe_rejection_reason():
+    records = [{"id": 42, "title": "", "region_title": "Республика Адыгея"}]
+    client = TorgiRussiaClient(session=FakeSession(html_with_meta(records, total=1)))
+
+    with pytest.raises(RuntimeError, match="empty_title"):
+        client.search_lots(TorgiRussiaSearchFilters(region_id=1))
+
+
 def test_legitimate_zero_region_stays_zero_with_proven_ssr_meta():
     client = TorgiRussiaClient(session=FakeSession(html_with_meta([], total=0)))
     lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=1))

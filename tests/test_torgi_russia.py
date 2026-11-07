@@ -180,6 +180,23 @@ def test_torgi_russia_parse_new_search_payload() -> None:
     assert lots[0].raw_data["source_status"] == "Идёт приём заявок"
 
 
+def test_torgi_russia_accepts_canonical_decimal_string_identifier() -> None:
+    item = _new_site_lot()
+    item["id"] = str(item["id"])
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.external_id == "torgi-russia:7180653"
+
+
+@pytest.mark.parametrize("bad_id", [True, "-1", "7.5", " 42 ", "лот-42"])
+def test_torgi_russia_rejects_noncanonical_identifier(bad_id) -> None:
+    item = _new_site_lot()
+    item["id"] = bad_id
+
+    assert TorgiRussiaClient.parse_search_payload({"data": [item]}) == []
+
+
 def test_torgi_russia_normalizes_structured_trade_type_for_postgres() -> None:
     item = _new_site_lot()
     item["trade_type"] = {"id": 1, "title": "Банкротство"}

@@ -91,7 +91,7 @@ def test_full_mets_crawler_reaches_reported_terminal_without_archival(monkeypatc
     )
 
 
-def test_full_mets_crawler_rejects_changed_total(monkeypatch) -> None:
+def test_full_mets_crawler_allows_bounded_live_total_change(monkeypatch) -> None:
     import bankrotai.connectors.registry.mets_sync as mod
 
     monkeypatch.setattr(
@@ -100,11 +100,57 @@ def test_full_mets_crawler_rejects_changed_total(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         mod, "_parse_page",
+        lambda text, page: (
+            {
+                "total": 3,
+                "observations": [
+                    ("244381-1", "100", "Объявленные торги", "Участок"),
+                    ("244382-1", "100", "Объявленные торги", "Участок"),
+                ],
+                "next_page": 2,
+            }
+            if page == 1 else
+            {
+                "total": 4,
+                "observations": [
+                    ("244382-1", "100", "Объявленные торги", "Участок"),
+                    ("244383-1", "100", "Объявленные торги", "Участок"),
+                ],
+                "next_page": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(mod, "parse_mets_lot", lambda html, url: _lot(url.rsplit("/", 1)[-1], 100, "scheduled"))
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url: url)
+    crawler = MetsSourceCrawler(pilot)
+    first = asyncio.run(crawler.search(MetsSyncFilters()))
+
+    second = asyncio.run(crawler.search(MetsSyncFilters(), first.next_cursor))
+
+    assert [lot.external_id for lot in second.items] == ["244383-1"]
+    assert second.next_cursor is None
+    assert second.metadata["cross_page_overlap"] == 1
+    assert second.metadata["live_total_minimum"] == 3
+    assert second.metadata["live_total_maximum"] == 4
+
+
+def test_full_mets_crawler_rejects_repeated_complete_page(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    observations = [
+        ("244381-1", "100", "Объявленные торги", "Участок 1"),
+        ("244382-1", "100", "Объявленные торги", "Участок 2"),
+    ]
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text=str(page)),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
         lambda text, page: {
-            "total": 3 if page == 1 else 4,
-            "observations": [
-                (f"24438{page}-1", "100", "Объявленные торги", "Участок"),
-            ],
+            "total": 4,
+            "observations": observations,
             "next_page": page + 1,
         },
     )
@@ -114,5 +160,5 @@ def test_full_mets_crawler_rejects_changed_total(monkeypatch) -> None:
     crawler = MetsSourceCrawler(pilot)
     first = asyncio.run(crawler.search(MetsSyncFilters()))
 
-    with pytest.raises(MetsCatalogueScanError, match="total changed"):
+    with pytest.raises(MetsCatalogueScanError, match="repeated a complete page"):
         asyncio.run(crawler.search(MetsSyncFilters(), first.next_cursor))

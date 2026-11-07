@@ -333,6 +333,92 @@ jobs:
           print(json.dumps({"bundle_estimates": output[:10]}, ensure_ascii=False, indent=2))
           PY
 
+      - name: Build complete read-only immutable-object GC plan
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/s3-gc/manifests"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import botocore.session
+          from botocore.config import Config
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "s3-gc"
+          client = botocore.session.get_session().create_client(
+              "s3",
+              endpoint_url=os.environ["MAP_OBJECT_STORE_ENDPOINT"],
+              region_name=os.environ["MAP_OBJECT_STORE_REGION"],
+              aws_access_key_id=os.environ["MAP_OBJECT_STORE_ACCESS_KEY"],
+              aws_secret_access_key=os.environ["MAP_OBJECT_STORE_SECRET_KEY"],
+              config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+          )
+          bucket = os.environ["MAP_OBJECT_STORE_BUCKET"]
+          contents = []
+          token = None
+          while True:
+              request = {"Bucket": bucket, "MaxKeys": 1000}
+              if token:
+                  request["ContinuationToken"] = token
+              page = client.list_objects_v2(**request)
+              contents.extend({
+                  "Key": row["Key"],
+                  "Size": int(row["Size"]),
+                  "LastModified": row["LastModified"].isoformat(),
+              } for row in page.get("Contents", []))
+              if not page.get("IsTruncated"):
+                  break
+              token = page.get("NextContinuationToken")
+              if not token:
+                  raise RuntimeError("Truncated S3 inventory omitted continuation token")
+          inventory = {"Contents": contents, "IsTruncated": False}
+          (root / "inventory.json").write_text(
+              json.dumps(inventory, ensure_ascii=False), encoding="utf-8",
+          )
+          prefix, suffix = "datasets/", "/manifest.json"
+          manifest_count = 0
+          for row in contents:
+              key = row["Key"]
+              if not key.startswith(prefix) or not key.endswith(suffix):
+                  continue
+              version = key[len(prefix):-len(suffix)]
+              if not version or "/" in version:
+                  continue
+              body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+              (root / "manifests" / f"{version}.json").write_bytes(body)
+              manifest_count += 1
+          print(json.dumps({"objects": len(contents), "manifests": manifest_count}))
+          PY
+          python scripts/plan_reg_s3_orphans.py \
+            --inventory "$RUNNER_TEMP/s3-gc/inventory.json" \
+            --manifests "$RUNNER_TEMP/s3-gc/manifests" \
+            --output "$RUNNER_TEMP/s3-gc/plan.json" \
+            --min-age-hours 1
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads((Path(os.environ["RUNNER_TEMP"]) / "s3-gc/plan.json").read_text())
+          print(json.dumps({key: plan[key] for key in (
+              "manifest_count", "s3_object_count", "referenced_immutable_count",
+              "recent_unreferenced_preserved", "candidate_count", "candidate_bytes",
+          )}))
+          PY
+
+      - name: Upload immutable-object GC evidence
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: regru-s3-gc-readonly-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/s3-gc/inventory.json
+            ${{ runner.temp }}/s3-gc/manifests/*.json
+            ${{ runner.temp }}/s3-gc/plan.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Record credentialless PR diagnostic
         if: env.HAS_S3_CREDENTIALS != 'true'
         shell: bash

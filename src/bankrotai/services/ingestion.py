@@ -48,7 +48,7 @@ MIN_COMPLETE_RUN_COVERAGE_RATIO = 0.5
 REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
 COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 1
 COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
-
+EXPIRY_SCAN_BATCH_SIZE = 500
 
 @dataclass(frozen=True, slots=True)
 class SourceSyncSpec:
@@ -363,45 +363,56 @@ class NationwideIngestionService:
         an expiry used to archive live auctions shortly after they began.
         """
         observed_at = now or trusted_utc_now().replace(tzinfo=None)
-        with self.session_factory() as session:
-            candidates = session.scalars(
-                select(SourceLot).where(
-                    SourceLot.is_active.is_(True),
-                    SourceLot.is_archived.is_(False),
-                    or_(
-                        SourceLot.source_status.in_(
-                            ("closed", "completed", "finished", "cancelled", "failed", "expired")
+        archived = 0
+        last_id = 0
+        while True:
+            # Bounded PK windows avoid a production statement_timeout on large JSON rows.
+            with self.session_factory() as session:
+                candidates = session.scalars(
+                    select(SourceLot)
+                    .where(
+                        SourceLot.id > last_id,
+                        SourceLot.is_active.is_(True),
+                        SourceLot.is_archived.is_(False),
+                        or_(
+                            SourceLot.source_status.in_(
+                                ("closed", "completed", "finished", "cancelled", "failed", "expired")
+                            ),
+                            SourceLot.public_offer_schedule.isnot(None),
                         ),
-                        SourceLot.public_offer_schedule.isnot(None),
-                    ),
-                )
-            ).all()
-            rows: list[tuple[SourceLot, str]] = []
-            for row in candidates:
-                if normalize_status(row.source_status or "") == "closed":
-                    rows.append((row, "explicit_source_status_closed"))
-                    continue
-                schedule = row.public_offer_schedule if isinstance(row.public_offer_schedule, list) else []
-                ends = [
-                    parsed
-                    for period in schedule
-                    if isinstance(period, dict)
-                    for parsed in [_to_datetime(period.get("ends_at") or period.get("end_at") or period.get("end"))]
-                    if parsed is not None
-                ]
-                if ends and max(ends) < observed_at:
-                    rows.append((row, "public_offer_schedule_ended"))
-            for row, reason in rows:
-                row.is_active = False
-                row.is_archived = True
-                row.archived_at = observed_at
-                row.archive_reason = reason
-                row.source_status = "expired"
-            session.flush()
-            for row, _reason in rows:
-                self._reconcile_processed_after_source_archive(session, row, observed_at)
-            session.commit()
-            return len(rows)
+                    )
+                    .order_by(SourceLot.id)
+                    .limit(EXPIRY_SCAN_BATCH_SIZE)
+                ).all()
+                if not candidates: break
+                last_id = candidates[-1].id
+                rows: list[tuple[SourceLot, str]] = []
+                for row in candidates:
+                    if normalize_status(row.source_status or "") == "closed":
+                        rows.append((row, "explicit_source_status_closed"))
+                        continue
+                    schedule = row.public_offer_schedule if isinstance(row.public_offer_schedule, list) else []
+                    ends = [
+                        parsed
+                        for period in schedule
+                        if isinstance(period, dict)
+                        for parsed in [_to_datetime(period.get("ends_at") or period.get("end_at") or period.get("end"))]
+                        if parsed is not None
+                    ]
+                    if ends and max(ends) < observed_at:
+                        rows.append((row, "public_offer_schedule_ended"))
+                for row, reason in rows:
+                    row.is_active = False
+                    row.is_archived = True
+                    row.archived_at = observed_at
+                    row.archive_reason = reason
+                    row.source_status = "expired"
+                session.flush()
+                for row, _reason in rows:
+                    self._reconcile_processed_after_source_archive(session, row, observed_at)
+                session.commit()
+                archived += len(rows)
+        return archived
 
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)

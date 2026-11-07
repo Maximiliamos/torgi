@@ -110,3 +110,22 @@ def test_planner_requires_aware_now_and_integer_age():
         P.plan_orphans(inventory, manifests, now=datetime(2026, 10, 30))
     with pytest.raises(ValueError, match="integer"):
         P.plan_orphans(inventory, manifests, now=NOW, minimum_age_days=True)
+
+
+def test_hour_age_override_preserves_only_fresh_unreferenced_objects():
+    inventory, manifests = _fixture()
+    inventory["Contents"].append({
+        "Key": "bundles/v1/dd/fresh.json",
+        "Size": 80,
+        "LastModified": "2026-10-27T23:30:00+00:00",
+    })
+
+    report = P.plan_orphans(
+        inventory, manifests, now=NOW, minimum_age_hours=1,
+    )
+
+    assert report["minimum_age_hours"] == 1
+    assert report["recent_unreferenced_preserved"] == 1
+    assert "bundles/v1/dd/fresh.json" not in {
+        row["key"] for row in report["candidates"]
+    }

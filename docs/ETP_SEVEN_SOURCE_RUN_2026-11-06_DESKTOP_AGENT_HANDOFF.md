@@ -187,3 +187,22 @@ Ask them to fetch it from Home or explicitly share it.
 > Preserve source-wide acceptance blockers and update ROADMAP,
 > stage checklist and this handoff. No invented successes or
 > bypassing integrity guards.
+
+## 2026-11-07 superseding evidence
+
+The earlier six-success/one-failure handoff is historical. A later full
+production attempt is GitHub run `42336240166` / DB run
+`3fd5f3bf-fbf5-4463-b402-86c8a40d5243`. It failed after Torgi Russia region
+36/page 2 dropped one malformed record, M-ETS rejected a changing live total,
+and the final wide SourceLot expiry query exceeded `statement_timeout`. The
+scheduled 09:00 run was delayed to 09:54 MSK by the active lease, excluded
+Torgi Russia because its circuit was open, and remained partial because M-ETS
+and its retry hit the same total-change guard. CDTRF and NISTP did traverse
+their full selected scopes but stayed intentionally non-reconciling.
+
+Recovery implementation is on `codex/etp-seven-run-recovery-20261107`; see the
+dated sections in ROADMAP and the parser checklist. Do not run the old partial
+GEO continuation as proof of this newer run. A new full backup-gated execution
+is required after merge/deploy, and map completion additionally requires safe
+reference-aware REG.RU S3 orphan cleanup because current uploads return
+`403 QuotaExceeded`.
