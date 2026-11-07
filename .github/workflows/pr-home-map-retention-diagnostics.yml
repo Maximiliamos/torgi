@@ -1,0 +1,58 @@
+name: PR home map retention diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/pr-home-map-retention-diagnostics.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-home-map-retention-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Inspect retained map datasets without writes
+        shell: powershell
+        run: |
+          $script = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.db import MapDataset, SessionLocal
+
+          with SessionLocal() as session:
+              rows = list(session.scalars(
+                  select(MapDataset).order_by(MapDataset.id.desc()).limit(20)
+              ))
+              current = next(
+                  (row for row in rows if bool(row.is_current) and row.status == "ready"),
+                  None,
+              )
+              print(json.dumps({
+                  "current": None if current is None else {
+                      "id": current.id,
+                      "version": current.version,
+                      "published_at": current.published_at,
+                      "point_count": current.point_count,
+                      "tile_count": current.tile_count,
+                      "status": current.status,
+                  },
+                  "recent": [{
+                      "id": row.id,
+                      "version": row.version,
+                      "status": row.status,
+                      "is_current": bool(row.is_current),
+                      "published_at": row.published_at,
+                      "point_count": row.point_count,
+                      "tile_count": row.tile_count,
+                  } for row in rows],
+              }, default=str, ensure_ascii=False))
+          '@
+          $script | docker exec -i bankrotai-home-map-worker python -
