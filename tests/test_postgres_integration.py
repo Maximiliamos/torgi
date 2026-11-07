@@ -20,13 +20,17 @@ from bankrotai.db import (
     SCHEMA_REVISION,
     CanonicalLot,
     LotGeoSnapshot,
+    LotPriceEvent,
     LotStatusHistory,
+    LotSyncRun,
     MapDataset,
     MapTile,
     ProcessedLot,
     SourceLot,
 )
+from bankrotai.domain import NormalizedLot
 from bankrotai.logic import apply_lot_status, build_lots_response, cleanup_closed_lots
+from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.map_view import build_map_lots_response
 from bankrotai.services.map_builder import _promote_map_dataset
 
@@ -305,6 +309,96 @@ def test_postgres_pool_reconnect_and_exhaustion_are_bounded(engine) -> None:
                 exhausted_engine.connect()
     finally:
         exhausted_engine.dispose()
+
+
+def test_postgres_batch_semantic_skip_preserves_audit_and_business_history(engine) -> None:
+    def source_lot(current_price: float = 500_000, fingerprint: str = "transport-1") -> NormalizedLot:
+        return NormalizedLot(
+            external_id="pg-semantic-skip",
+            source="postgres-test",
+            source_system="pg-batch",
+            title="Тестовый объект",
+            description="Стабильное описание",
+            category="land",
+            region_slug="76",
+            region_name="Ярославская область",
+            address="Ярославль",
+            cadastral_number="76:23:010101:98765",
+            vin=None,
+            area=100.0,
+            start_price=500_000,
+            current_price=current_price,
+            auction_status="active",
+            lot_url="https://example.test/pg-semantic-skip",
+            source_url="https://example.test/pg-semantic-skip",
+            detail_level="detail",
+            raw_data={
+                "region_code": "76",
+                "listing_fingerprint": fingerprint,
+                "detail_enrichment_status": "success",
+                "detail_enrichment_version": 4,
+            },
+        )
+
+    with Session(engine) as session:
+        session.add(LotSyncRun(id="pg-batch-run-1", status="running", trigger_type="test", total_sources=1))
+        session.flush()
+        first_stats = persist_changed_lots_batch(session, [source_lot()], "pg-batch-run-1")
+        session.commit()
+        assert first_stats.persisted == 1
+
+        first_run = session.get(LotSyncRun, "pg-batch-run-1")
+        assert first_run is not None
+        first_run.status = "success"
+        session.add(LotSyncRun(id="pg-batch-run-2", status="running", trigger_type="test", total_sources=1))
+        session.flush()
+        second = source_lot(fingerprint="transport-2")
+        second.raw_data.pop("detail_enrichment_status")
+        second.raw_data.pop("detail_enrichment_version")
+        second_stats = persist_changed_lots_batch(session, [second], "pg-batch-run-2")
+        session.commit()
+        session.expire_all()
+
+        source = session.scalar(
+            select(SourceLot).where(
+                SourceLot.source_system == "pg-batch",
+                SourceLot.external_id == "pg-semantic-skip",
+            )
+        )
+        assert source is not None
+        assert second_stats.semantic_skipped == 1
+        assert second_stats.persisted == 0
+        assert source.last_sync_run_id == "pg-batch-run-2"
+        assert source.raw_data["listing_fingerprint"] == "transport-2"
+        assert source.raw_data["detail_enrichment_status"] == "success"
+        assert source.raw_data["detail_enrichment_version"] == 4
+
+        second_run = session.get(LotSyncRun, "pg-batch-run-2")
+        assert second_run is not None
+        second_run.status = "success"
+        session.add(LotSyncRun(id="pg-batch-run-3", status="running", trigger_type="test", total_sources=1))
+        session.flush()
+        third_stats = persist_changed_lots_batch(
+            session, [source_lot(current_price=450_000, fingerprint="transport-3")], "pg-batch-run-3"
+        )
+        session.commit()
+        session.expire_all()
+
+        source = session.scalar(
+            select(SourceLot).where(
+                SourceLot.source_system == "pg-batch",
+                SourceLot.external_id == "pg-semantic-skip",
+            )
+        )
+        assert source is not None and float(source.current_price or 0) == 450_000
+        assert third_stats.semantic_skipped == 0
+        assert third_stats.persisted == 1
+        processed_id = source.processed_lot_id
+        assert processed_id is not None
+        price_events = session.scalars(
+            select(LotPriceEvent).where(LotPriceEvent.lot_id == processed_id).order_by(LotPriceEvent.id)
+        ).all()
+        assert [float(row.amount) for row in price_events] == [500_000, 450_000]
 
 
 def test_postgres_canonical_source_consistency_duplicates_and_orphans(engine) -> None:
