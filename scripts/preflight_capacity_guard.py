@@ -35,7 +35,7 @@ def canonical_attestation(data):
 
 def assess(backup_dir, evidence_path, hmac_key, *,
            now=None, free_disk_bytes=None, min_disk_bytes=MIN_DISK_BYTES,
-           min_s3_bytes=MIN_S3_BYTES):
+           min_s3_bytes=MIN_S3_BYTES, expected_bucket=None):
     errors = []
     now = now or datetime.now(timezone.utc)
     backup_dir = Path(backup_dir)
@@ -93,8 +93,8 @@ def assess(backup_dir, evidence_path, hmac_key, *,
             raise ValueError("S3 evidence signature mismatch")
         if evidence["source"] != "provider_quota_api":
             raise ValueError("S3 evidence is not provider quota evidence")
-        if not isinstance(evidence["bucket"], str) or not evidence["bucket"]:
-            raise ValueError("S3 bucket missing")
+        if not isinstance(expected_bucket, str) or not expected_bucket or evidence["bucket"] != expected_bucket:
+            raise ValueError("S3 evidence bucket differs from configured map bucket")
         age = (now - utc_time(evidence["checked_at"])).total_seconds()
         if not 0 <= age <= 3600:
             raise ValueError("S3 evidence stale or from the future")
@@ -111,10 +111,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup-dir", type=Path, required=True)
     parser.add_argument("--s3-evidence", type=Path, required=True)
+    parser.add_argument("--expected-bucket", required=True)
     args = parser.parse_args()
     import os
     result = assess(args.backup_dir, args.s3_evidence,
-                    os.environ.get("TORGI_CAPACITY_EVIDENCE_HMAC_KEY", ""))
+                    os.environ.get("TORGI_CAPACITY_EVIDENCE_HMAC_KEY", ""),
+                    expected_bucket=args.expected_bucket)
     print("CAPACITY_PREFLIGHT=" + json.dumps(result, sort_keys=True))
     return 0 if result["allowed"] else 2
 
