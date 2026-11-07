@@ -34,6 +34,43 @@ def test_rate_limit_invalid(bad):
         HostRateLimiter(bad)
 
 
+
+@pytest.mark.parametrize("filters_cls", [cdtrf_sync.CdtrfSyncFilters, mets_sync.MetsSyncFilters])
+def test_source_detail_rate_cap_is_conservative(filters_cls):
+    with pytest.raises(ValueError, match="detail_requests_per_second"):
+        filters_cls(detail_requests_per_second=2.01)
+
+
+def test_mets_retry_attempts_are_all_rate_limited(monkeypatch):
+    class Response:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.content = b"detail"
+            self.text = "detail"
+            self.headers = {"Content-Type": "text/html"}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+    class Session:
+        def __init__(self):
+            self.responses = [Response(503), Response(200)]
+
+        def get(self, *args, **kwargs):
+            return self.responses.pop(0)
+
+    starts = []
+    pilot = mets_sync.MetsPublicPilot(session=Session())
+    monkeypatch.setattr("bankrotai.connectors.registry.mets_public.time.sleep", lambda _: None)
+    result = pilot._get(
+        "https://m-ets.ru/1234-1",
+        before_request=lambda url: starts.append(url),
+    )
+    assert result == "detail"
+    assert starts == ["https://m-ets.ru/1234-1", "https://m-ets.ru/1234-1"]
+
+
 def test_worker_pool_concurrency_cap():
     workers = DetailWorkers(requests.Session(), 2, 10)
     active = peak = 0
@@ -119,7 +156,7 @@ def test_cdtrf_multi_lot_page_parallel_preserves_order(monkeypatch):
     monkeypatch.setattr(cdtrf_sync, "_property_ready", lambda lot: True)
     result = asyncio.run(cdtrf_sync.CdtrfSourceCrawler(OfflineSession()).search(
         cdtrf_sync.CdtrfSyncFilters(max_pages=1, detail_concurrency=2,
-                                    detail_requests_per_second=10)))
+                                    detail_requests_per_second=2)))
     assert [lot.external_id for lot in result.items] == [f"cdtrf:{i}" for i in range(1, 5)]
     assert peak == 2
     assert result.next_cursor is None
@@ -150,7 +187,7 @@ def test_mets_multi_lot_page_and_price_guard(monkeypatch):
     monkeypatch.setattr(mets_sync, "parse_mets_lot", parse)
     result = asyncio.run(mets_sync.MetsSourceCrawler(pilot).search(
         mets_sync.MetsSyncFilters(max_pages=1, detail_concurrency=2,
-                                  detail_requests_per_second=10)))
+                                  detail_requests_per_second=2)))
     assert [lot.external_id for lot in result.items] == ids
     assert result.metadata["detail_attempts"] == 2
     assert result.metadata["reconcile_missing"] is False
