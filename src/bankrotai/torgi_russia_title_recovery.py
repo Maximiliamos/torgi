@@ -2,18 +2,25 @@
 from __future__ import annotations
 
 import math
+import json
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any
 from urllib.parse import urljoin
 
 
-def classify_rejections(records: list, normalized_lots: list) -> dict[str, int]:
-    """Describe only records the parser actually rejected."""
+def classify_rejections(
+    records: list,
+    normalized_lots: list,
+    recovery_failures: dict[str, str],
+) -> tuple[dict[str, int], list[dict[str, str | None]]]:
+    """Describe only rejected records without persisting their raw contents."""
     accepted_ids = {
         lot.external_id.rsplit(":", 1)[-1]
         for lot in normalized_lots
     }
     counts: dict[str, int] = {}
+    samples: list[dict[str, str | None]] = []
     for item in records:
         if not isinstance(item, dict):
             reason = "record_not_object"
@@ -31,7 +38,16 @@ def classify_rejections(records: list, normalized_lots: list) -> dict[str, int]:
             else:
                 reason = "unknown_parser_drop"
         counts[reason] = counts.get(reason, 0) + 1
-    return counts
+        if len(samples) < 10:
+            raw_id = item.get("id") if isinstance(item, dict) else None
+            serialized = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            samples.append({
+                "external_id": str(raw_id) if raw_id is not None else None,
+                "reason": reason,
+                "record_sha256": sha256(serialized.encode()).hexdigest(),
+                "recovery_failure": recovery_failures.get(str(raw_id)),
+            })
+    return counts, samples
 
 
 def _canonical_mets_lot_url(detail_record: dict) -> str:

@@ -1407,3 +1407,52 @@ def test_scheduled_nistp_detail_cap_fails_closed_on_bad_configuration(sessions) 
     assert output["sources"][0]["status"] == "failed"
     with sessions() as session:
         assert session.scalars(select(SourceLot)).all() == []
+
+
+def test_quarantined_source_record_finishes_partial_and_skips_archival(sessions) -> None:
+    with sessions() as session:
+        persist_lot(session, lot("existing-not-seen"), isolate_source=True)
+        session.commit()
+
+    class ConnectorWithQuarantine(FakeConnector):
+        source_id = "test-source"
+
+        async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
+            return ConnectorPage(
+                items=[lot("valid-new")],
+                next_cursor=None,
+                metadata={
+                    "quarantined_records": 1,
+                    "quarantine_reasons": {"empty_title": 1},
+                    "quarantine_samples": [{
+                        "external_id": "broken-1",
+                        "reason": "empty_title",
+                        "record_sha256": "a" * 64,
+                        "recovery_failure": "RuntimeError",
+                    }],
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                },
+            )
+
+    service = NationwideIngestionService(
+        sessions, connector_factory=lambda _source: ConnectorWithQuarantine(),
+    )
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=1,
+    )
+    output = asyncio.run(service.run(run_id, (
+        SourceSyncSpec("test-source", {}, reconcile_missing=True, require_source_end=True),
+    )))
+
+    source = output["sources"][0]
+    assert output["status"] == "partial"
+    assert source["status"] == "partial"
+    assert source["complete_source_run"] is False
+    assert source["quarantined_records"] == 1
+    assert source["items_rejected"] == 1
+    assert source["items_archived"] == 0
+    assert source["quarantine_reasons"] == {"empty_title": 1}
+    with sessions() as session:
+        rows = session.scalars(select(SourceLot)).all()
+        assert {row.external_id for row in rows} == {"existing-not-seen", "valid-new"}

@@ -72,20 +72,23 @@ def test_reported_lots_must_not_be_silently_lost():
         client.search_lots(TorgiRussiaSearchFilters(region_id=1))
 
 
-def test_bad_lot_records_fail_closed_not_partial_reconciliation():
+def test_isolated_bad_lot_is_quarantined_without_stopping_page_walk():
     records = [{"id": 42, "title": "", "region_title": "Республика Адыгея", "start_price": 12}]
     client = TorgiRussiaClient(session=FakeSession(html_with_meta(records, total=1)))
-    with pytest.raises(RuntimeError, match="dropped malformed lot records"):
-        client.search_lots(TorgiRussiaSearchFilters(region_id=1))
+    lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=1))
+    assert lots == []
+    assert metadata["quarantined_records"] == 1
+    assert metadata["complete_source_inventory"] is False
+    assert metadata["safe_for_archival"] is False
 
 
 def test_bad_lot_record_reports_safe_rejection_reason():
     records = [{"id": 42, "title": "", "region_title": "Республика Адыгея"}]
     client = TorgiRussiaClient(session=FakeSession(html_with_meta(records, total=1)))
 
-    with pytest.raises(RuntimeError, match="empty_title") as error:
-        client.search_lots(TorgiRussiaSearchFilters(region_id=1))
-    assert "unknown_parser_drop" not in str(error.value)
+    _lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=1))
+    assert metadata["quarantine_reasons"] == {"empty_title": 1}
+    assert "unknown_parser_drop" not in metadata["quarantine_reasons"]
 
 
 def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
@@ -165,10 +168,23 @@ def test_empty_title_fallback_rejects_mets_price_mismatch():
         mets_url: mets_html,
     }))
 
-    with pytest.raises(RuntimeError, match='rejections={"empty_title": 1}') as error:
-        client.search_lots(TorgiRussiaSearchFilters(region_id=36))
-    assert 'recovery_failures={"7266197": "RuntimeError"}' in str(error.value)
-    assert "unknown_parser_drop" not in str(error.value)
+    lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=36))
+    assert lots == []
+    assert metadata["quarantine_reasons"] == {"empty_title": 1}
+    assert metadata["quarantine_samples"][0]["external_id"] == "7266197"
+    assert metadata["quarantine_samples"][0]["recovery_failure"] == "RuntimeError"
+    assert "unknown_parser_drop" not in metadata["quarantine_reasons"]
+
+
+def test_systemic_malformed_page_still_fails_closed():
+    records = [
+        {"id": item_id, "title": "", "region_title": "Республика Адыгея"}
+        for item_id in range(1, 5)
+    ]
+    client = TorgiRussiaClient(session=FakeSession(html_with_meta(records, total=4)))
+
+    with pytest.raises(RuntimeError, match="systemic malformed records"):
+        client.search_lots(TorgiRussiaSearchFilters(region_id=1))
 
 
 def test_legitimate_zero_region_stays_zero_with_proven_ssr_meta():

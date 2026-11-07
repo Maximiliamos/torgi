@@ -15,8 +15,6 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
-
-
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
 PUBLIC_API_SEARCH_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search"
@@ -42,8 +40,6 @@ CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
-
-
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
@@ -114,7 +110,6 @@ class TorgiRussiaDetails:
 
 class TorgiRussiaClient:
     """Read the public Next.js site without depending on the retired API host."""
-
     def __init__(self, *, timeout: float = 30, session: requests.Session | None = None):
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -393,15 +388,20 @@ class TorgiRussiaClient:
 
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
+        rejection_counts: dict[str, int] = {}
+        quarantine_samples: list[dict[str, str | None]] = []
         if len(lots) != len(records):
-            rejection_counts = classify_rejections(records, lots)
-            raise RuntimeError(
-                "Torgi Russia public search dropped malformed lot records; "
-                f"page={page} region_id={filters.region_id} "
-                f"records={len(records)} normalized={len(lots)} "
-                f"rejections={json.dumps(rejection_counts, sort_keys=True)} "
-                f"recovery_failures={json.dumps(recovery_failures, sort_keys=True)}"
+            rejection_counts, quarantine_samples = classify_rejections(
+                records, lots, recovery_failures,
             )
+            rejected = sum(rejection_counts.values())
+            if rejected > 3:
+                raise RuntimeError(
+                    "Torgi Russia page has systemic malformed records; "
+                    f"page={page} region_id={filters.region_id} "
+                    f"records={len(records)} normalized={len(lots)} "
+                    f"rejections={json.dumps(rejection_counts, sort_keys=True)}"
+                )
         for lot in lots:
             raw = dict(lot.raw_data or {})
             raw["raw_endpoint"] = response.url
@@ -419,6 +419,11 @@ class TorgiRussiaClient:
             "raw_endpoint": response.url,
             "region_id": filters.region_id,
             "transport": transport,
+            "quarantined_records": sum(rejection_counts.values()),
+            "quarantine_reasons": rejection_counts,
+            "quarantine_samples": quarantine_samples,
+            "complete_source_inventory": not rejection_counts,
+            "safe_for_archival": False,
         }
 
     def fetch_lot_page(self, external_id: str) -> tuple[str, str]:
