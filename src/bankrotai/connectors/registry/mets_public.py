@@ -243,7 +243,7 @@ class MetsPublicPilot:
                 time.sleep(remaining)
         self._last_request_at = time.monotonic()
         response = None
-        for attempt, delay in enumerate((1.0, 2.0, 4.0, 8.0, None)):
+        for delay in (1.0, 2.0, 4.0, 8.0, None):
             try:
                 response = self.session.get(
                     url,
@@ -263,6 +263,7 @@ class MetsPublicPilot:
             if response.status_code == 429 or 500 <= response.status_code <= 504:
                 if delay is None:
                     response.raise_for_status()
+                    raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
                 time.sleep(delay)
                 continue
             break
