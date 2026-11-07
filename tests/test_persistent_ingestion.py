@@ -211,6 +211,34 @@ def test_stall_detection_uses_progress_age_relative_to_lease_window(sessions) ->
     assert service._source_progress_stalled(run_id) is True
 
 
+def test_stall_detection_is_not_masked_by_fresh_concurrent_source(sessions) -> None:
+    service = NationwideIngestionService(sessions, lease_minutes=1)
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=2)
+    old = datetime.utcnow() - timedelta(minutes=3)
+    fresh = datetime.utcnow()
+    with sessions.begin() as session:
+        session.add_all(
+            [
+                LotSyncSourceRun(
+                    sync_run_id=run_id,
+                    source_system="stalled-source",
+                    status="running",
+                    started_at=old,
+                    progress_at=old,
+                ),
+                LotSyncSourceRun(
+                    sync_run_id=run_id,
+                    source_system="healthy-source",
+                    status="running",
+                    started_at=fresh,
+                    progress_at=fresh,
+                ),
+            ]
+        )
+
+    assert service._source_progress_stalled(run_id) is True
+
+
 def test_non_gis_source_uses_bounded_set_based_persistence(sessions) -> None:
     service = NationwideIngestionService(sessions, profile_timings=True)
     items = [lot(f"lot-{index}") for index in range(25)]
