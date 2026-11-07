@@ -248,8 +248,9 @@ def test_transient_etp_timeout_is_retried_without_skipping_page(
     assert len(session.requested_urls) == 2
 
 
-def test_timeout_marks_health_as_degraded() -> None:
+def test_timeout_marks_health_as_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
     connector = SOURCE_CONNECTOR_TYPES["m-ets.ru"](session=FakeSession(requests.Timeout("slow provider")))
+    monkeypatch.setattr(connector, "RETRY_DELAYS_SECONDS", (0.0, 0.0, 0.0))
     health = asyncio.run(connector.healthcheck())
     assert health.status == "degraded"
     assert "slow provider" in health.message
