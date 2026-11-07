@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from bankrotai.services import ingestion
+from bankrotai.services import ingestion, ingestion_concurrency
 from bankrotai.services.ingestion import NationwideIngestionService
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 
@@ -110,7 +109,7 @@ def test_reconciliation_critical_section_is_serial():
     async def sync(_run_id, spec):
         nonlocal in_reconciliation, maximum
         await asyncio.sleep(0)
-        lock = ingestion._RECONCILIATION_LOCK.get()
+        lock = ingestion_concurrency.current_reconciliation_lock()
         assert lock is not None
         if spec.reconcile_missing:
             async with lock:
@@ -129,12 +128,12 @@ def test_reconciliation_critical_section_is_serial():
 def test_repeated_offline_runs_do_not_leak_reconciliation_context():
     service = _service(parallelism=2)
     async def sync(_run_id, spec):
-        assert ingestion._RECONCILIATION_LOCK.get() is not None
+        assert ingestion_concurrency.current_reconciliation_lock() is not None
         return SourceSyncResult(source_system=spec.source_id, status="success")
     service._sync_source = sync
     for _ in range(2):
         assert _run(service, [_spec("source", True)])["status"] == "success"
-    assert ingestion._RECONCILIATION_LOCK.get() is None
+    assert ingestion_concurrency.current_reconciliation_lock() is None
 
 
 @pytest.mark.parametrize("parallelism", [0, -1, 8])
