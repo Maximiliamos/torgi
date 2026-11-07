@@ -106,7 +106,6 @@ def _money(value: str) -> float | None:
         return None
 
 
-
 def _current_money(value: str) -> float | None:
     """A current price requires its own explicit label."""
     match = re.search(
@@ -166,7 +165,6 @@ def _sistematorg_lot_count(value: str) -> int | None:
     count = int(match.group(1))
     return count if 1 <= count <= 100_000 else None
 
-
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -178,7 +176,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
 
 def _datetime_after(value: str, label: str) -> datetime | None:
     match = re.search(label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", value, re.I)
