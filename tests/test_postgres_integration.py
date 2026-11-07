@@ -399,6 +399,10 @@ def test_postgres_batch_semantic_skip_preserves_audit_and_business_history(engin
             select(LotPriceEvent).where(LotPriceEvent.lot_id == processed_id).order_by(LotPriceEvent.id)
         ).all()
         assert [float(row.amount) for row in price_events] == [500_000, 450_000]
+        third_run = session.get(LotSyncRun, "pg-batch-run-3")
+        assert third_run is not None
+        third_run.status = "success"
+        session.commit()
 
 
 def test_postgres_canonical_source_consistency_duplicates_and_orphans(engine) -> None:
