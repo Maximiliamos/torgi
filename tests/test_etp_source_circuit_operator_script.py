@@ -75,3 +75,7 @@ def test_full_source_geo_map_operator_uses_full_non_archival_etp_contracts() -> 
     assert "'CdtrfSyncFilters'" in script
     assert "$row.pages -le 5" in script
     assert "reconcile_missing is not False" in script
+    assert "$quarantineOnlyPartial" in script
+    assert "quarantined malformed record" in script
+    assert "$row.archived -ne 0" in script
+    assert "GEO/map continues for verified rows only" in script

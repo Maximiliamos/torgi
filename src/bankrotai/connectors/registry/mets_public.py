@@ -103,20 +103,29 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     soup = BeautifulSoup(html, "html.parser")
     for element in soup(["script", "style", "noscript"]):
         element.decompose()
-    text = soup.get_text(" ", strip=True)
+    expected_sku = f"{trade}-МЭТС-{lot_number}"
+    sku_nodes = soup.select('[itemprop="sku"][content]')
+    matching_skus = [node for node in sku_nodes if node.get("content") == expected_sku]
+    if sku_nodes and len(matching_skus) != 1:
+        raise MetsEvidenceError("Page SKU contradicts URL or is ambiguous")
+    scope = (
+        matching_skus[0].find_parent(class_="lot-container")
+        if matching_skus else None
+    ) or soup
+    text = scope.get_text(" ", strip=True)
     if len(text) < 80:
         raise MetsEvidenceError("M-ETS lot page is empty or script-only")
-    if f"{trade}-МЭТС-{lot_number}" not in text and (
-        f"Идентификационный номер: {trade}-МЭТС-{lot_number}" not in text
+    if expected_sku not in text and (
+        f"Идентификационный номер: {expected_sku}" not in text
     ):
         raise MetsEvidenceError("Page has no matching M-ETS trade/lot identifier")
 
     # Real M-ETS h2.lot-title includes collapsed UI text "еще".
-    for collapsed in soup.select("h2.lot-title [ellipse]"):
+    for collapsed in scope.select("h2.lot-title [ellipse]"):
         collapsed.decompose()
     headings = [
         heading.get_text(" ", strip=True)
-        for heading in soup.find_all(["h1", "h2"])
+        for heading in scope.find_all(["h1", "h2"])
     ]
     title = next(
         (heading for heading in headings if heading and "МЭТС" not in heading
@@ -127,19 +136,16 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
 
     # The first 4k characters of saved HTML are login/crypto dialogs.
     # Read only the primary lot panel so recommended cards cannot overwrite it.
-    primary_description = soup.select_one('[itemprop="description"]')
+    primary_description = scope.select_one('[itemprop="description"]')
     description = primary_description.get_text(" ", strip=True) if primary_description else ""
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
     cadastral_scope = title + " " + description
-    if not primary_description and not soup.select("a.card-item"):
+    if not primary_description and not scope.select("a.card-item"):
         cadastral_scope = text[:4000]
     cadastral_match = CADASTRE.search(cadastral_scope)
     cadastral = cadastral_match.group(1) if cadastral_match else None
-    meta_sku = soup.select_one('[itemprop="sku"][content]')
-    if meta_sku is not None and meta_sku.get("content") != f"{trade}-МЭТС-{lot_number}":
-        raise MetsEvidenceError("M-ETS page SKU contradicts URL")
-    summary_nodes = soup.select(".lot-cost-item")
+    summary_nodes = scope.select(".lot-cost-item")
     initial = None
     current = None
     for item in summary_nodes:
@@ -156,7 +162,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             initial = parsed_price
         elif label_text == "Текущая цена":
             current = parsed_price
-    deposit_node = soup.select_one(".lot-cost-item.zadat")
+    deposit_node = scope.select_one(".lot-cost-item.zadat")
     deposit = None
     if deposit_node is not None:
         deposit_value = deposit_node.select_one(".value")
@@ -168,7 +174,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     if not summary_nodes:  # Compatibility with earlier minimal mocked HTML.
         initial = _price_before_label(text[:4000], "Начальная цена")
         current = _price_before_label(text[:4000], "Текущая цена")
-    status_node = soup.select_one(".lot-cost-item.status .lot-status-name")
+    status_node = scope.select_one(".lot-cost-item.status .lot-status-name")
     source_status = (
         status_node.get_text(" ", strip=True) if status_node
         else text[:4000]
@@ -180,7 +186,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     else:
         status = "unknown"
     dates = " ".join(x.get_text(" ", strip=True)
-                     for x in soup.select(".lot-cost-item.date"))
+                     for x in scope.select(".lot-cost-item.date"))
     date_source = dates or text[:5000]
     deadline = _date_after_label(date_source, "Окончание приема заявок")
     period_deadline = _date_after_label(

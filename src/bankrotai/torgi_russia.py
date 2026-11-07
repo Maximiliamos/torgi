@@ -14,8 +14,7 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
-
-
+from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
 PUBLIC_API_SEARCH_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search"
@@ -41,8 +40,6 @@ CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
-
-
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
@@ -113,7 +110,6 @@ class TorgiRussiaDetails:
 
 class TorgiRussiaClient:
     """Read the public Next.js site without depending on the retired API host."""
-
     def __init__(self, *, timeout: float = 30, session: requests.Session | None = None):
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -373,31 +369,39 @@ class TorgiRussiaClient:
                         f"observed={sorted(observed_codes)} titles={sorted(raw_titles)}"
                     )
 
+        recovered_records: list = []
+        recovery_failures: dict[str, str] = {}
+        for item in records:
+            if isinstance(item, dict) and not str(item.get("title") or "").strip():
+                try:
+                    item = recover_empty_title(
+                        item,
+                        base_url=BASE_URL,
+                        get_with_retry=self._get_with_retry,
+                        extract_records=self._extract_public_lot_records,
+                        parse_price=parse_money,
+                    )
+                except (RuntimeError, ValueError, requests.RequestException) as exc:
+                    recovery_failures[str(item.get("id"))] = type(exc).__name__
+            recovered_records.append(item)
+        records = recovered_records
+
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
+        rejection_counts: dict[str, int] = {}
+        quarantine_samples: list[dict[str, str | None]] = []
         if len(lots) != len(records):
-            rejection_counts: dict[str, int] = {}
-            for item in records:
-                if not isinstance(item, dict):
-                    reason = "record_not_object"
-                else:
-                    raw_id = item.get("id")
-                    if isinstance(raw_id, bool) or not (
-                        isinstance(raw_id, int)
-                        or (isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit())
-                    ):
-                        reason = f"invalid_id_type:{type(raw_id).__name__}"
-                    elif not str(item.get("title") or "").strip():
-                        reason = "empty_title"
-                    else:
-                        reason = "unknown_parser_drop"
-                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
-            raise RuntimeError(
-                "Torgi Russia public search dropped malformed lot records; "
-                f"page={page} region_id={filters.region_id} "
-                f"records={len(records)} normalized={len(lots)} "
-                f"rejections={json.dumps(rejection_counts, sort_keys=True)}"
+            rejection_counts, quarantine_samples = classify_rejections(
+                records, lots, recovery_failures,
             )
+            rejected = sum(rejection_counts.values())
+            if rejected > 3:
+                raise RuntimeError(
+                    "Torgi Russia page has systemic malformed records; "
+                    f"page={page} region_id={filters.region_id} "
+                    f"records={len(records)} normalized={len(lots)} "
+                    f"rejections={json.dumps(rejection_counts, sort_keys=True)}"
+                )
         for lot in lots:
             raw = dict(lot.raw_data or {})
             raw["raw_endpoint"] = response.url
@@ -415,6 +419,11 @@ class TorgiRussiaClient:
             "raw_endpoint": response.url,
             "region_id": filters.region_id,
             "transport": transport,
+            "quarantined_records": sum(rejection_counts.values()),
+            "quarantine_reasons": rejection_counts,
+            "quarantine_samples": quarantine_samples,
+            "complete_source_inventory": not rejection_counts,
+            "safe_for_archival": False,
         }
 
     def fetch_lot_page(self, external_id: str) -> tuple[str, str]:
@@ -716,6 +725,9 @@ class TorgiRussiaClient:
                         "marketplace": item.get("marketplace") or item.get("marketplace_title"),
                         "trade_type": trade_type_value,
                         "trade_form": item.get("trade_form"),
+                        "title_evidence": item.get("title_evidence") or "catalogue",
+                        "title_evidence_url": item.get("title_evidence_url"),
+                        "title_evidence_external_id": item.get("title_evidence_external_id"),
                         "begin_offer_time": item.get("begin_offer_time"),
                         "status_id": item.get("status_id"),
                         "days_remaining": item.get("days_remaining"),

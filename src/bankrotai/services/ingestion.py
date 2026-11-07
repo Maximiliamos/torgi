@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -36,6 +36,8 @@ from bankrotai.scrapers import (
 )
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
+from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -49,47 +51,6 @@ REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
 COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 1
 COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
 EXPIRY_SCAN_BATCH_SIZE = 500
-
-@dataclass(frozen=True, slots=True)
-class SourceSyncSpec:
-    source_id: str
-    filters: Any
-    archive_region_code: str | None = None
-    reconcile_missing: bool = True
-    max_batches: int | None = None
-    require_source_end: bool = False
-    max_detail_attempts_per_page: int | None = None
-
-
-@dataclass(slots=True)
-class SourceSyncResult:
-    source_system: str
-    status: str = "running"
-    complete_source_run: bool = False
-    pages_scanned: int = 0
-    items_seen: int = 0
-    items_inserted: int = 0
-    items_updated: int = 0
-    items_unchanged: int = 0
-    items_archived: int = 0
-    items_failed: int = 0
-    items_rejected: int = 0
-    items_duplicates: int = 0
-    duplicates_merged: int = 0
-    category_pages: dict[str, int] = field(default_factory=dict)
-    timing_ms: dict[str, float] = field(default_factory=dict)
-    sql_statements: int = 0
-    http_requests: int = 0
-    response_bytes: int = 0
-    elapsed_seconds: float = 0.0
-    current_category: str | None = None
-    total_pages: int | None = None
-    progress_current: int | None = None
-    progress_total: int | None = None
-    phase: str = "scanning"
-    error: str | None = None
-    seen_external_ids: set[str] = field(default_factory=set, repr=False)
-
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.ingestion_spec_builders import core_source_specs
@@ -460,10 +421,12 @@ class NationwideIngestionService:
                 if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
+                merge_page_quarantine(result, page.metadata)
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
+                enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
@@ -475,8 +438,16 @@ class NationwideIngestionService:
                 result.complete_source_run = False
                 if spec.require_source_end and not reached_source_end:
                     raise RuntimeError("operator source page limit exhausted before last page")
-                result.status = "success"
-                result.phase = "complete"
+                if result.quarantined_records:
+                    result.status = "partial"
+                    result.phase = "complete_with_quarantine"
+                    result.error = (
+                        f"source completed with {result.quarantined_records} "
+                        "quarantined malformed record(s); archival forbidden"
+                    )
+                else:
+                    result.status = "success"
+                    result.phase = "complete"
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
                 self._record_source_resilience_outcome(result)
@@ -484,6 +455,20 @@ class NationwideIngestionService:
             result.complete_source_run = reached_source_end
             if not reached_source_end:
                 raise RuntimeError("source pagination exceeded the safety page limit")
+            if result.quarantined_records:
+                result.complete_source_run = False
+                result.status = "partial"
+                result.phase = "complete_with_quarantine"
+                result.error = (
+                    f"source completed with {result.quarantined_records} "
+                    "quarantined malformed record(s); reconciliation skipped"
+                )
+                result.elapsed_seconds = time.perf_counter() - wall_started
+                self._upsert_source_run(
+                    run_id, result, started_at=started, finished_at=utc_now(),
+                )
+                self._record_source_resilience_outcome(result)
+                return result
             if (
                 active_baseline >= MIN_COVERAGE_GUARD_BASELINE
                 and result.items_seen < active_baseline * MIN_COMPLETE_RUN_COVERAGE_RATIO
@@ -648,7 +633,7 @@ class NationwideIngestionService:
             raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
-        for lot in lots:
+        for lot in partition_normalized_lots(result, lots):
             if not is_sale_real_estate_lot(lot):
                 continue
             if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
@@ -1010,6 +995,9 @@ class NationwideIngestionService:
                 "progress_total": result.progress_total,
                 "phase": result.phase,
                 "items_rejected": result.items_rejected,
+                "quarantined_records": result.quarantined_records,
+                "quarantine_reasons": result.quarantine_reasons,
+                "quarantine_samples": result.quarantine_samples,
                 "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
                 if result.elapsed_seconds
                 else 0,
@@ -1151,6 +1139,9 @@ class NationwideIngestionService:
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
             "items_rejected": result.items_rejected,
+            "quarantined_records": result.quarantined_records,
+            "quarantine_reasons": result.quarantine_reasons,
+            "quarantine_samples": result.quarantine_samples,
             "items_duplicates": result.items_duplicates,
             "duplicates_merged": result.duplicates_merged,
             "category_pages": result.category_pages,

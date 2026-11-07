@@ -196,6 +196,35 @@ def test_saved_browser_snapshot_summary_is_parsed_even_after_large_header():
     assert "Рекламный лот" not in lot.description
 
 
+def test_multi_lot_procedure_scopes_fields_to_url_sku():
+    def block(number: int, title: str, price: str, cadastral: str) -> str:
+        return (
+            '<div class="lot-container">'
+            f'<h2 class="lot-title">{title}<span ellipse="" class="hidden">еще</span></h2>'
+            f'<meta itemprop="sku" content="242937-МЭТС-{number}">'
+            f'<div>Идентификационный номер: 242937-МЭТС-{number}</div>'
+            f'<span itemprop="description">Кадастровый номер: {cadastral}</span>'
+            '<div class="lot-cost-item price">'
+            f'<div class="value">{price} ₽</div><div class="title">Начальная цена</div></div>'
+            '<div class="lot-cost-item status"><div class="lot-status-name">'
+            'Торги в стадии приема заявок</div></div></div>'
+        )
+
+    html = "<html><body>" + "".join((
+        block(1, "Земельный участок 6138 кв.м.", "1 278 299,88", "36:25:6945016:1967"),
+        block(2, "Земельный участок 171 кв.м.", "35 612,46", "36:25:6945016:1968"),
+        block(3, "Земельный участок 159 кв.м.", "33 113,34", "36:25:6945016:1969"),
+    )) + "</body></html>"
+
+    lot = parse_mets_lot(html, "https://m-ets.ru/242937-2")
+
+    assert lot.external_id == "242937-2"
+    assert lot.title == "Земельный участок 171 кв.м."
+    assert lot.start_price == 35612.46
+    assert lot.cadastral_number == "36:25:6945016:1968"
+    assert "6138" not in lot.description
+
+
 def test_homepage_event_feed_never_counts_as_full_search_result():
     html = (
         '<html><head><meta property="og:url" content="https://m-ets.ru/">'

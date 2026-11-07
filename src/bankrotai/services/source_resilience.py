@@ -173,6 +173,8 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
         for marker in (
             "reported total changed during ingestion",
             "dropped malformed lot records",
+            "quarantined malformed record",
+            "systemic malformed",
             "page proof mismatch",
             "terminal identity count differs from total",
             "page size contradicts reported total",

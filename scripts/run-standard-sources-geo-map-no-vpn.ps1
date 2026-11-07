@@ -113,7 +113,8 @@ with SessionLocal() as s:
        "error":None if run is None else run.error_message,
        "sources":[{"id":r.source_system,"status":r.status,"pages":r.pages_scanned,
           "seen":r.items_seen,"inserted":r.items_inserted,"updated":r.items_updated,
-          "archived":r.items_archived,"failed":r.items_failed,"error":r.error_message}
+          "archived":r.items_archived,"failed":r.items_failed,"error":r.error_message,
+          "complete":r.complete_source_run,"checkpoint":r.checkpoint_json}
           for r in rows]},ensure_ascii=False,default=str))
 '@
     $deadline = (Get-Date).AddHours(6)
@@ -125,19 +126,39 @@ with SessionLocal() as s:
         Write-Host ("Nationwide: {0}; source runs={1}/{2}" -f $status.status, @($status.sources).Count, $expectedSources.Count)
         if ($status.status -in @('success','failed','partial')) { break }
     } while ((Get-Date) -lt $deadline)
-    if ($status.status -ne 'success') {
+    $quarantineOnlyPartial = $status.status -eq 'partial'
+    foreach ($row in @($status.sources)) {
+        if ($row.status -eq 'success') { continue }
+        $quarantined = [int]($row.checkpoint.quarantined_records)
+        if ($row.status -ne 'partial' -or $quarantined -le 0 -or $row.archived -ne 0 `
+            -or $row.complete -ne $false `
+            -or $row.error -notmatch '^source completed with \d+ quarantined malformed record\(s\);') {
+            $quarantineOnlyPartial = $false
+            break
+        }
+    }
+    if ($status.status -ne 'success' -and -not $quarantineOnlyPartial) {
         $status | ConvertTo-Json -Depth 7
         throw "Nationwide run not fully successful: $($status.status); no GEO or map rebuild started. RUN_ID=$runId"
     }
     $observed = @($status.sources | ForEach-Object id)
     $missingRuns = @($expectedSources | Where-Object { $_ -notin $observed })
-    $failedRuns = @($status.sources | Where-Object { $_.status -ne 'success' })
+    $failedRuns = @()
+    foreach ($row in @($status.sources)) {
+        $allowedQuarantine = $quarantineOnlyPartial -and $row.status -eq 'partial' -and [int]$row.checkpoint.quarantined_records -gt 0
+        if ($row.status -ne 'success' -and -not $allowedQuarantine) {
+            $failedRuns += $row
+        }
+    }
     if ($missingRuns.Count -or $failedRuns.Count -or $observed.Count -ne $expectedSources.Count) {
         $status | ConvertTo-Json -Depth 7
         throw "Incomplete source coverage; missing=$($missingRuns -join ','); stop before GEO/map"
     }
     foreach ($row in $status.sources) {
         Write-Host ("{0}: pages={1}, seen={2}, inserted={3}, updated={4}, archived={5}, failed={6}" -f $row.id,$row.pages,$row.seen,$row.inserted,$row.updated,$row.archived,$row.failed)
+        if ($row.status -eq 'partial') {
+            Write-Warning ("{0}: completed with {1} quarantined malformed record(s); GEO/map continues for verified rows only" -f $row.id,$row.checkpoint.quarantined_records)
+        }
         if ($row.id -in @('nistp.ru','cdtrf.ru','m-ets.ru') -and $row.archived -ne 0) {
             throw "New-source archival unexpectedly nonzero for $($row.id). Stop before GEO/map."
         }
