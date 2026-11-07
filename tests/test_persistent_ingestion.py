@@ -211,6 +211,34 @@ def test_stall_detection_uses_progress_age_relative_to_lease_window(sessions) ->
     assert service._source_progress_stalled(run_id) is True
 
 
+def test_stall_detection_is_not_masked_by_fresh_concurrent_source(sessions) -> None:
+    service = NationwideIngestionService(sessions, lease_minutes=1)
+    run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=2)
+    old = datetime.utcnow() - timedelta(minutes=3)
+    fresh = datetime.utcnow()
+    with sessions.begin() as session:
+        session.add_all(
+            [
+                LotSyncSourceRun(
+                    sync_run_id=run_id,
+                    source_system="stalled-source",
+                    status="running",
+                    started_at=old,
+                    progress_at=old,
+                ),
+                LotSyncSourceRun(
+                    sync_run_id=run_id,
+                    source_system="healthy-source",
+                    status="running",
+                    started_at=fresh,
+                    progress_at=fresh,
+                ),
+            ]
+        )
+
+    assert service._source_progress_stalled(run_id) is True
+
+
 def test_non_gis_source_uses_bounded_set_based_persistence(sessions) -> None:
     service = NationwideIngestionService(sessions, profile_timings=True)
     items = [lot(f"lot-{index}") for index in range(25)]
@@ -1117,6 +1145,32 @@ def test_active_database_lease_prevents_duplicate_full_sync(sessions) -> None:
         assert session.get(LotSyncRun, first).status == "queued"
 
 
+def test_orchestration_failure_finalizes_run_and_releases_lease(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=2
+    )
+
+    result = asyncio.run(
+        service.run(
+            run_id,
+            (
+                SourceSyncSpec("duplicate-source", {}),
+                SourceSyncSpec("duplicate-source", {}),
+            ),
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert "duplicate source_id" in result["error"]
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.finished_at is not None
+        assert run.lease_expires_at is None
+
+
 def test_database_constraint_prevents_two_active_sync_runs(sessions) -> None:
     now = datetime.now()
     with sessions() as session:
@@ -1595,3 +1649,101 @@ def test_four_malformed_normalized_records_fail_source_without_writes(sessions) 
     assert source["items_archived"] == 0
     with sessions() as session:
         assert session.scalars(select(SourceLot)).all() == []
+
+
+def test_mixed_source_coverage_failure_is_isolated_and_never_archives(sessions) -> None:
+    service = NationwideIngestionService(sessions, max_concurrent_sources=2)
+
+    def source_lot(source_id: str, external_id: str) -> NormalizedLot:
+        item = lot(external_id)
+        item.source = source_id
+        item.source_system = source_id
+        return item
+
+    def run_sources(specs, pages_by_source):
+        service.connector_factory = lambda source_id: FakeConnector([pages_by_source[source_id]])
+        run_id = service.create_run(
+            triggered_by="test", trigger_type="manual", total_sources=len(specs)
+        )
+        return asyncio.run(service.run(run_id, tuple(specs)))
+
+    baseline_a = [source_lot("source-a", f"a-{index}") for index in range(20)]
+    baseline_b = [source_lot("source-b", "b-existing")]
+    assert run_sources(
+        [SourceSyncSpec("source-a", {})], {"source-a": baseline_a}
+    )["status"] == "success"
+    assert run_sources(
+        [SourceSyncSpec("source-b", {})], {"source-b": baseline_b}
+    )["status"] == "success"
+
+    mixed = run_sources(
+        (
+            SourceSyncSpec("source-a", {}, reconcile_missing=True),
+            SourceSyncSpec("source-b", {}, reconcile_missing=False, max_batches=1),
+        ),
+        {"source-a": baseline_a[:1], "source-b": []},
+    )
+
+    by_source = {row["source_system"]: row for row in mixed["sources"]}
+    assert mixed["status"] == "partial"
+    assert by_source["source-a"]["status"] == "failed"
+    assert by_source["source-a"]["complete_source_run"] is False
+    assert "coverage guard" in by_source["source-a"]["error"]
+    assert by_source["source-b"]["status"] == "success"
+    assert by_source["source-b"]["complete_source_run"] is False
+
+    with sessions() as session:
+        rows_a = session.scalars(
+            select(SourceLot).where(SourceLot.source_system == "source-a")
+        ).all()
+        row_b = session.scalar(
+            select(SourceLot).where(SourceLot.source_system == "source-b")
+        )
+        assert rows_a and all(
+            row.missing_successful_runs == 0 and row.is_archived is False
+            for row in rows_a
+        )
+        assert row_b is not None
+        assert row_b.missing_successful_runs == 0
+        assert row_b.is_archived is False
+
+
+def test_reconciliation_failure_rolls_back_all_missing_archive_changes(
+    sessions, monkeypatch
+) -> None:
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[lot("first"), lot("second")]]))
+
+    # First complete missing run only increments the two-run archival counter.
+    _, first_missing = run_with(service, FakeConnector([[]]))
+    assert first_missing["status"] == "success"
+    with sessions() as session:
+        before = session.scalars(select(SourceLot).order_by(SourceLot.external_id)).all()
+        assert [row.missing_successful_runs for row in before] == [1, 1]
+        assert all(row.is_archived is False for row in before)
+
+    original = service._reconcile_processed_after_source_archive
+    calls = 0
+
+    def fail_during_archive(session, archived_source, observed_at):
+        nonlocal calls
+        calls += 1
+        original(session, archived_source, observed_at)
+        if calls == 1:
+            raise RuntimeError("simulated reconciliation failure")
+
+    monkeypatch.setattr(
+        service, "_reconcile_processed_after_source_archive", fail_during_archive
+    )
+    _, failed = run_with(service, FakeConnector([[]]))
+
+    source = failed["sources"][0]
+    assert failed["status"] == "failed"
+    assert source["status"] == "failed"
+    assert source["complete_source_run"] is False
+    assert "simulated reconciliation failure" in source["error"]
+
+    with sessions() as session:
+        after = session.scalars(select(SourceLot).order_by(SourceLot.external_id)).all()
+        assert [row.missing_successful_runs for row in after] == [1, 1]
+        assert all(row.is_active is True and row.is_archived is False for row in after)

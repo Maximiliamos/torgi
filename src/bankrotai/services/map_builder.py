@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from bankrotai.core import get_settings
 from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
-from bankrotai.db import MapDataset, MapTile, ProcessedLot
+from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
     yandex_cluster_feature,
     yandex_feature_collection,
@@ -28,6 +28,7 @@ from bankrotai.services.map_bundle_store import (
     publish_dataset_to_regional_bundles,
 )
 from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
+from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -66,39 +67,54 @@ def map_dataset_storage_statistics(session: Session) -> dict[str, int]:
 
 
 def map_source_fingerprint(session: Session) -> str:
-    """Return a cheap durable signature for map-affecting source state.
-
-    The signature intentionally avoids scanning map_tiles. ProcessedLot.last_update
-    changes on ordinary ORM updates, while row count/id sum cover membership
-    changes. Geo observation time gives an additional guard for coordinate writes.
-    """
-    row = session.execute(
-        select(
-            func.count(ProcessedLot.id),
-            func.coalesce(func.sum(ProcessedLot.id), 0),
-            func.max(ProcessedLot.last_update),
-            func.max(ProcessedLot.current_geo_observed_at),
-        ).where(
-            ProcessedLot.duplicate_of_id.is_(None),
-            ProcessedLot.is_archived.is_(False),
-            ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
-            ProcessedLot.current_geo_lon.between(-180.0, 180.0),
-        )
-    ).one()
-    count, id_sum, last_update, last_geo = row
+    """Hash actual public map inputs, not timestamp approximations."""
     settings = get_settings()
-    payload = "|".join(
-        (
-            MAP_DATASET_REVISION,
-            "1" if settings.map_object_store_enabled else "0",
-            settings.map_object_store_layout,
-            str(int(count or 0)),
-            str(int(id_sum or 0)),
-            last_update.isoformat() if last_update is not None else "",
-            last_geo.isoformat() if last_geo is not None else "",
-        )
+    return exact_map_input_fingerprint(
+        session, revision=MAP_DATASET_REVISION,
+        layout=settings.map_object_store_layout,
+        object_store_enabled=settings.map_object_store_enabled,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def map_publication_blockers(session: Session, *, since: datetime | None = None) -> list[str]:
+    """Reject publication while upstream ingestion/GEO writes are in flight.
+
+    A running source run or GEO task can change source membership or
+    coordinates after tiles are generated. Stale historical failures are not
+    treated as running work; callers must separately enforce run success.
+    """
+    blockers: list[str] = []
+    active_runs = int(session.scalar(
+        select(func.count(LotSyncRun.id)).where(
+            LotSyncRun.status.in_(("queued", "running"))
+        )
+    ) or 0)
+    if active_runs:
+        blockers.append("ingestion_in_progress")
+    active_geo = int(session.scalar(
+        select(func.count(BackgroundTaskState.id)).where(
+            BackgroundTaskState.task_type.in_(("geocoding", "geo_backfill")),
+            BackgroundTaskState.status.in_(("queued", "running")),
+        )
+    ) or 0)
+    if active_geo:
+        blockers.append("geo_in_progress")
+    if since is not None:
+        failed_geo = session.scalar(select(func.count(BackgroundTaskState.id)).where(
+            BackgroundTaskState.task_type.in_(("geocoding", "geo_backfill")),
+            BackgroundTaskState.status == "failed",
+            BackgroundTaskState.finished_at >= since,
+        )) or 0
+        if failed_geo:
+            blockers.append("geo_failed_during_build")
+        failed_ingestion = session.scalar(select(func.count(LotSyncRun.id)).where(
+            LotSyncRun.status.in_(("failed", "partial")),
+            LotSyncRun.finished_at >= since,
+        )) or 0
+        if failed_ingestion:
+            blockers.append("ingestion_failed_during_build")
+    return blockers
+
 
 def cleanup_map_datasets(
     session_factory: Callable[[], Session],
@@ -398,6 +414,7 @@ def _promote_map_dataset(
     dataset_id: int,
     expected_current_id: int | None,
     dimension_failures: list[dict[str, object]] | None = None,
+    expected_source_fingerprint: str | None = None,
 ) -> dict:
     """Serialize and atomically promote one completely built dataset."""
     with session_factory() as session:
@@ -411,6 +428,12 @@ def _promote_map_dataset(
             # the new row current. This transaction-level table lock conflicts
             # with another publisher while continuing to allow ordinary SELECTs.
             session.execute(text("LOCK TABLE map_datasets IN SHARE ROW EXCLUSIVE MODE"))
+            # Serialize publication with active writes to canonical/geo columns.
+            # Source rows can change after building but not between this
+            # validation and the atomic current-dataset switch.
+            session.execute(text("LOCK TABLE processed_lots IN SHARE MODE"))
+            session.execute(text("LOCK TABLE lot_sync_runs IN SHARE MODE"))
+            session.execute(text("LOCK TABLE background_task_states IN SHARE MODE"))
         current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update())
         dataset = session.scalar(select(MapDataset).where(MapDataset.id == dataset_id).with_for_update())
         if dataset is None:
@@ -428,6 +451,31 @@ def _promote_map_dataset(
             return {
                 "status": "rejected",
                 "reason": "current_dataset_changed",
+                "current_dataset_id": current_id,
+            }
+
+        blockers = map_publication_blockers(session, since=dataset.created_at)
+        if blockers:
+            dataset.status = "rejected"
+            session.commit()
+            return {
+                "status": "rejected",
+                "reason": "upstream_work_in_progress",
+                "blockers": blockers,
+                "current_dataset_id": current_id,
+            }
+
+        # Fail closed when ingestion/GEO changed eligible map input.
+        # The final check runs under the existing promotion transaction.
+        if expected_source_fingerprint is not None and (
+            map_source_fingerprint(session) != expected_source_fingerprint
+        ):
+            dataset.status = "rejected"
+            session.commit()
+            logger.warning("Map dataset %s rejected: source changed during build", dataset.version)
+            return {
+                "status": "rejected",
+                "reason": "source_changed_during_build",
                 "current_dataset_id": current_id,
             }
 
@@ -536,6 +584,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
 
     try:
         with session_factory() as session:
+            expected_source_fingerprint = map_source_fingerprint(session)
             source_lot_count = int(session.scalar(select(func.count(ProcessedLot.id))) or 0)
             rows = session.execute(
                 select(
@@ -627,6 +676,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "Map dataset excluded spatially invalid coordinates: counts=%s",
                 spatial_rejection_counts,
             )
+        selection_duration_ms = round((time.monotonic() - started) * 1000)
+        tile_started_at = time.monotonic()
         with session_factory() as session:
             for zoom in range(MAX_DATASET_ZOOM + 1):
                 buckets: dict[tuple[int, int], list[dict]] = defaultdict(list)
@@ -694,6 +745,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             dataset.point_count = len(points)
             dataset.tile_count = tile_count
             session.commit()
+        tile_duration_ms = round((time.monotonic() - tile_started_at) * 1000)
         build_duration_ms = round((time.monotonic() - started) * 1000)
         logger.info(
             "Map dataset build succeeded: version=%s source_lot_count=%s included_point_count=%s "
@@ -714,6 +766,18 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     new_dataset_id=dataset_id,
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
+        with session_factory() as session:
+            dataset_snapshot = session.get(MapDataset, dataset_id)
+            if dataset_snapshot is None:
+                raise RuntimeError("Map candidate disappeared before publication")
+            blockers = map_publication_blockers(session, since=dataset_snapshot.created_at)
+            if blockers:
+                raise RuntimeError(f"Map publication blocked by upstream work: {blockers}")
+        # Avoid uploading a candidate already made stale by a GEO/source write.
+        with session_factory() as session:
+            if map_source_fingerprint(session) != expected_source_fingerprint:
+                raise RuntimeError("Map source changed during tile build; candidate not publishable")
+        upload_started_at = time.monotonic()
         if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT:
             object_store = publish_dataset_to_regional_bundles(
                 session_factory,
@@ -726,12 +790,16 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 dataset_id=dataset_id,
                 version=version,
             )
+        object_store_duration_ms = round((time.monotonic() - upload_started_at) * 1000)
+        promotion_started_at = time.monotonic()
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
             expected_current_id=expected_current_id,
             dimension_failures=dimension_failures,
+            expected_source_fingerprint=expected_source_fingerprint,
         )
+        promotion_duration_ms = round((time.monotonic() - promotion_started_at) * 1000)
         promotion_completed = True
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])
@@ -761,6 +829,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             "point_count": len(points),
             "tile_count": tile_count,
             "build_duration_ms": build_duration_ms,
+            "selection_duration_ms": selection_duration_ms,
+            "tile_duration_ms": tile_duration_ms,
+            "object_store_duration_ms": object_store_duration_ms,
+            "promotion_duration_ms": promotion_duration_ms,
             "duration_ms": total_duration_ms,
             "storage": storage,
             "object_store": object_store,

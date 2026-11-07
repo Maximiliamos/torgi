@@ -8,13 +8,16 @@ param(
     [string]$BackupScript = '',
     [ValidateRange(1, 500)][int]$GeoBatchSize = 500,
     [ValidateRange(1, 64)][int]$GeoMaxBatches = 64,
-    [switch]$ConfirmProductionWrites
+    [switch]$ConfirmProductionWrites,
+    [switch]$DryRun,
+    [string]$S3CapacityEvidencePath = '',
+    [string]$BackupDirectory = 'D:\\BankrotAI\\dr-backups'
 )
 $ErrorActionPreference = 'Stop'
 if (-not $BackupScript) {
     $BackupScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'backup-home-postgres.ps1'
 }
-if (-not $ConfirmProductionWrites) { throw 'Specify -ConfirmProductionWrites to authorize the full PostgreSQL/GEO/map campaign.' }
+if (-not $ConfirmProductionWrites -and -not $DryRun) { throw 'Specify -ConfirmProductionWrites to authorize the full PostgreSQL/GEO/map campaign.' }
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $ingest = 'bankrotai-home-ingestion-worker'
 $geo = 'bankrotai-home-geocoding-worker'
@@ -81,6 +84,57 @@ print(json.dumps({"all_configured": sorted(specs), "required": sorted(want), "mi
         $state.new_source_filter_types.'cdtrf.ru' -ne 'CdtrfSyncFilters' -or
         $state.new_source_filter_types.'nistp.ru' -ne 'EtpSearchFilters') {
         throw 'Preflight BLOCKED: not all seven expected operational sources are eligible. No import has started.'
+    }
+
+    # Run independent DB/lease/contract validation before expensive restore or sync.
+    # The probe explicitly starts a read-only transaction; even stale leases block.
+    $sourceGatePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'preflight_live_source_gate.py'
+    if (-not (Test-Path -LiteralPath $sourceGatePath -PathType Leaf)) {
+        throw "Read-only source gate missing: $sourceGatePath"
+    }
+    $sourceGateOutput = @(Get-Content -LiteralPath $sourceGatePath -Raw |
+        & docker.exe exec -i $ingest python -)
+    $sourceGateExitCode = $LASTEXITCODE
+    if ($sourceGateExitCode -ne 0 -or -not $sourceGateOutput.Count -or
+        $sourceGateOutput[-1] -notmatch '^SOURCE_PREFLIGHT=') {
+        throw "Read-only source gate failed: $($sourceGateOutput -join '; ')"
+    }
+    $sourceGate = ($sourceGateOutput[-1] -replace '^SOURCE_PREFLIGHT=', '') | ConvertFrom-Json
+    if ($sourceGate.pass -ne $true) {
+        throw "Read-only source gate blocked: $($sourceGate.errors -join '; ')"
+    }
+    # A last-known good restore and fresh independently signed provider quota
+    # are mandatory even when the operator has explicitly confirmed writes.
+    # Unknown quota is a hard block, not a warning.
+    if (-not $S3CapacityEvidencePath) {
+        throw 'S3 capacity evidence is required; no full ingestion started.'
+    }
+    $capacityGatePath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'preflight_capacity_guard.py'
+    if (-not (Test-Path -LiteralPath $capacityGatePath -PathType Leaf)) {
+        throw "Capacity gate missing: $capacityGatePath"
+    }
+    if (-not (Get-Command python.exe -ErrorAction SilentlyContinue)) {
+        throw 'python.exe required for read-only capacity evidence verification'
+    }
+    $bucketLines = @(& docker.exe exec $ingest python -c 'from bankrotai.core import get_settings; print(get_settings().map_object_store_bucket or "")')
+    if ($LASTEXITCODE -ne 0 -or -not $bucketLines.Count -or -not $bucketLines[-1].Trim()) {
+        throw 'Cannot independently verify configured MapDataset S3 bucket'
+    }
+    $expectedBucket = $bucketLines[-1].Trim()
+    $capacityRows = @(& python.exe $capacityGatePath --backup-dir $BackupDirectory --s3-evidence $S3CapacityEvidencePath --expected-bucket $expectedBucket)
+    $capacityExitCode = $LASTEXITCODE
+    if ($capacityExitCode -ne 0 -or -not $capacityRows.Count -or
+        $capacityRows[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
+        throw "Backup/disk/S3 capacity gate failed: $($capacityRows -join '; ')"
+    }
+    $capacityState = ($capacityRows[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
+    if ($capacityState.allowed -ne $true) {
+        throw "Backup/disk/S3 capacity gate blocked: $($capacityState.errors -join '; ')"
+    }
+
+    if ($DryRun) {
+        Write-Host 'DRY_RUN_PASS: SHA, seven-source state, lease, verified backup, disk and signed S3 capacity evidence passed; no ingestion/GEO/map writes.'
+        return
     }
 
     if (-not (Test-Path -LiteralPath $BackupScript -PathType Leaf)) {

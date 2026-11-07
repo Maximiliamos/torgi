@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -240,7 +240,9 @@ class MetsPublicPilot:
         self.session = session or requests.Session()
         self._last_request_at: float | None = None
 
-    def _get(self, url: str) -> str:
+    def _get(
+        self, url: str, *, before_request: Callable[[str], None] | None = None,
+    ) -> str:
         if url != APARTMENTS_URL:
             _host_lot_url(url)
         if self._last_request_at is not None:
@@ -251,6 +253,8 @@ class MetsPublicPilot:
         response = None
         for delay in (1.0, 2.0, 4.0, 8.0, None):
             try:
+                if before_request is not None:
+                    before_request(url)
                 response = self.session.get(
                     url,
                     timeout=(10, 60),

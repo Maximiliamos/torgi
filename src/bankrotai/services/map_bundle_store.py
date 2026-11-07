@@ -167,6 +167,7 @@ def _write_json_object(
     value: dict[str, Any],
     *,
     cache_control: str,
+    create_only: bool = False,
 ) -> int:
     body = json.dumps(
         value,
@@ -174,7 +175,7 @@ def _write_json_object(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    _put_object(settings, key, body, cache_control=cache_control)
+    _put_object(settings, key, body, cache_control=cache_control, create_only=create_only)
     return len(body)
 
 
@@ -498,6 +499,7 @@ def publish_dataset_to_regional_bundles(
         f"{dataset_root}/manifest.json",
         manifest,
         cache_control=immutable_cache,
+        create_only=True,
     )
 
     verified = _verify_public_manifest(settings, version)
