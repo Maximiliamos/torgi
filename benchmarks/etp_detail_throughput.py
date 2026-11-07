@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from bankrotai.connectors.registry.detail_transport import HostRateLimiter
 
 
-def measure(*, requests_count: int = 12, concurrency: int = 2,
+def measure(*, requests_count: int = 13, concurrency: int = 2,
             rate: float = 2.0, latency: float = 0.65) -> dict:
     limiter = HostRateLimiter(rate)
     lock = threading.Lock()
