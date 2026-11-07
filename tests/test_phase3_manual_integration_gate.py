@@ -19,7 +19,7 @@ def test_phase3_ingestion_jobs_require_explicit_manual_dispatch() -> None:
     assert "    branches: [main]" in events
 
     job_section = workflow.split("\njobs:\n", 1)[1]
-    deploy_job = job_section.split("\n  wait-home-deploy:\n", 1)[1].split(
+    deploy_job = job_section.split("  wait-home-deploy:\n", 1)[1].split(
         "\n  reconcile:\n", 1
     )[0]
     reconcile_job = job_section.split("\n  reconcile:\n", 1)[1]
