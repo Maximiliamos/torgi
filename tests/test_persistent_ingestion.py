@@ -1332,7 +1332,8 @@ def test_scheduled_nistp_persists_only_independently_verified_active_lots(sessio
         "nistp.ru:502957:4", "nistp.ru:502379:259",
     ]
     assert source["items_inserted"] == 1
-    assert source["items_failed"] == 1
+    assert source["items_failed"] == 0
+    assert source["items_rejected"] == 1
     assert source["items_archived"] == 0
     assert source["complete_source_run"] is False
     with sessions() as session:
@@ -1375,7 +1376,8 @@ def test_scheduled_nistp_rejects_unknown_detail_status_even_if_listing_active(se
         SourceSyncSpec("nistp.ru", {}, reconcile_missing=False, max_batches=5),
     )))
     assert output["sources"][0]["items_seen"] == 0
-    assert output["sources"][0]["items_failed"] == 1
+    assert output["sources"][0]["items_failed"] == 0
+    assert output["sources"][0]["items_rejected"] == 1
     with sessions() as session:
         assert session.scalars(select(SourceLot)).all() == []
 
