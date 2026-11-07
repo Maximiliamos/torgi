@@ -29,6 +29,8 @@ def _status(value: str) -> str:
         "статус торгов по лоту объявлен",
         "извещени",
         "торги назначен",
+        "ожидается начало приема заявок",
+        "ожидается начало приёма заявок",
     )
     if any(marker in lowered for marker in scheduled_markers):
         return "scheduled"
