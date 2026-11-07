@@ -65,6 +65,7 @@ class BidExpertClient:
             if response.status_code in self.RETRY_STATUS_CODES:
                 if attempt == attempts - 1:
                     response.raise_for_status()
+                    return response
                 time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
                 continue
             response.raise_for_status()
