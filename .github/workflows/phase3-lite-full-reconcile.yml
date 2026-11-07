@@ -399,11 +399,11 @@ jobs:
               @(
                 "## Final source reconciliation",
                 "",
-                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Failed |",
-                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+                "| Source | Status | Complete | Pages | Seen | Inserted | Updated | Unchanged | Archived | Rejected | Failed |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
               ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               foreach ($row in ($rows | Sort-Object source)) {
-                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $($row.items_failed) |" |
+                "| $($row.source) | $($row.status) | $($row.complete) | $($row.pages_scanned) | $($row.items_seen) | $($row.items_inserted) | $($row.items_updated) | $($row.items_unchanged) | $($row.items_archived) | $([int]$row.checkpoint.items_rejected) | $($row.items_failed) |" |
                   Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               }
               exit 0
