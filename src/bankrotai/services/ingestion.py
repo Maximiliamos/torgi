@@ -37,9 +37,7 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
-from bankrotai.services.ingestion_concurrency import (
-    current_reconciliation_lock, run_bounded_sources,
-)
+from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
@@ -511,20 +509,13 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
 
-            reconciliation_lock = current_reconciliation_lock()
-            if reconciliation_lock is None:
-                result.items_archived = self._archive_missing_after_complete_run(
+            result.items_archived = await run_serialized_reconciliation(
+                lambda: self._archive_missing_after_complete_run(
                     run_id, spec.source_id,
                     region_code=spec.archive_region_code,
                     progress_callback=reconciliation_progress,
                 )
-            else:
-                async with reconciliation_lock:
-                    result.items_archived = self._archive_missing_after_complete_run(
-                        run_id, spec.source_id,
-                        region_code=spec.archive_region_code,
-                        progress_callback=reconciliation_progress,
-                    )
+            )
             result.status = "success"
             result.phase = "complete"
             result.progress_current = result.progress_total
