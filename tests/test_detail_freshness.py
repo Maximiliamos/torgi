@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -58,6 +59,16 @@ def test_business_change_is_never_skipped(cdtrf_projection, field, new_value):
     assert result.changed and field in result.changed_fields
 
 
+def test_cdtrf_timezone_equivalent_deadline_is_not_a_business_change(cdtrf_projection):
+    existing = dict(cdtrf_projection)
+    existing["application_deadline"] = datetime(2026, 12, 1, 6, 0)
+    incoming = dict(cdtrf_projection)
+    incoming["application_deadline"] = datetime(
+        2026, 12, 1, 9, 0, tzinfo=ZoneInfo("Europe/Moscow")
+    )
+    assert not compare_source_values(SimpleNamespace(**existing), incoming).changed
+
+
 def test_missing_projection_fails_closed(cdtrf_projection):
     incoming = dict(cdtrf_projection)
     del incoming["application_deadline"]
@@ -76,13 +87,13 @@ def test_detail_freshness_requires_compatible_version_and_unchanged_listing():
     now = datetime(2026, 11, 8, tzinfo=timezone.utc)
     base = dict(
         fetched_at=now - timedelta(hours=1), now=now,
-        max_age=timedelta(hours=3), detail_version="2",
-        accepted_versions=frozenset({"2"}),
+        max_age=timedelta(hours=3), detail_version=2,
+        accepted_versions=frozenset({2}),
         previous_listing_fingerprint="same", listing_fingerprint="same",
     )
     assert detail_is_fresh(**base)
     assert not detail_is_fresh(**{**base, "listing_fingerprint": "new"})
-    assert not detail_is_fresh(**{**base, "detail_version": "3"})
+    assert not detail_is_fresh(**{**base, "detail_version": 3})
     assert not detail_is_fresh(**{**base, "fetched_at": None})
     assert not detail_is_fresh(**{**base, "fetched_at": now - timedelta(hours=4)})
     assert not detail_is_fresh(**{**base, "source_updated_at": now})
