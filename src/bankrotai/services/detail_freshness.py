@@ -107,7 +107,10 @@ def compare_source_values(existing: Any, projected: Mapping[str, Any]) -> Change
     if not isinstance(old_raw, dict) or not isinstance(new_raw, dict):
         differences.append("raw_data:unverified")
     else:
-        for key in RAW_BUSINESS_FIELDS:
+        # Unknown fields fail closed: they may carry business evidence not yet
+        # projected into SourceLot. Only explicitly classified transport fields
+        # may vary without creating a business update.
+        for key in sorted((set(old_raw) | set(new_raw)) - VOLATILE_RAW_FIELDS):
             if _stable(old_raw.get(key)) != _stable(new_raw.get(key)):
                 differences.append("raw_data." + key)
     return ChangeDecision(bool(differences), tuple(differences))
