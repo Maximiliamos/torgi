@@ -309,11 +309,11 @@ class NationwideIngestionService:
             ).all()
             if not running:
                 return False
-            latest_progress = max(
+            oldest_progress = min(
                 (row.progress_at or row.started_at or now for row in running),
                 default=now,
             )
-        return (now - latest_progress).total_seconds() > self._progress_stall_seconds
+        return (now - oldest_progress).total_seconds() > self._progress_stall_seconds
 
     def _raise_if_stalled(self, run_id: str) -> None:
         event = self._stall_events.get(run_id)
