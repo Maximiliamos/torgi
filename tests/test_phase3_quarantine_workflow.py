@@ -9,6 +9,8 @@ def test_phase3_accepts_only_evidenced_quarantine_partial() -> None:
 
     assert "function Test-QuarantineOnlyPartial" in text
     assert "$quarantined -gt 0" in text
+    assert "$reasonTotal -eq $quarantined" in text
+    assert "$samples.Count -gt 0" in text
     assert "[int]$Row.items_archived -eq 0" in text
     assert "[int]$Row.items_failed -eq 0" in text
     assert "$phase -eq 'complete_with_quarantine'" in text
