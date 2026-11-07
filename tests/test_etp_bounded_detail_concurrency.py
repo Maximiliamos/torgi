@@ -90,6 +90,49 @@ def test_worker_pool_concurrency_cap():
     assert peak == 2
 
 
+
+def test_fail_fast_map_never_queues_beyond_in_flight_limit():
+    workers = DetailWorkers(requests.Session(), 2, 10)
+    started = []
+    lock = threading.Lock()
+
+    def detail(index):
+        with lock:
+            started.append(index)
+        if index == 0:
+            raise RuntimeError("fatal detail")
+        time.sleep(0.1)
+        return index
+
+    with workers.pool() as pool:
+        with pytest.raises(RuntimeError, match="fatal detail"):
+            list(workers.map_ordered(pool, detail, range(20)))
+    assert set(started).issubset({0, 1})
+
+
+def test_shared_limiter_can_span_worker_batches(monkeypatch):
+    from bankrotai.connectors.registry import detail_transport
+
+    now = [100.0]
+    sleeps = []
+
+    monkeypatch.setattr(detail_transport.time, "monotonic", lambda: now[0])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(detail_transport.time, "sleep", sleep)
+    limiter = HostRateLimiter(2)
+    first = DetailWorkers(requests.Session(), 2, 2, limiter=limiter)
+    second = DetailWorkers(requests.Session(), 2, 2, limiter=limiter)
+
+    first.limiter.acquire("https://m-ets.ru/1234-1")
+    second.limiter.acquire("https://m-ets.ru/1234-2")
+
+    assert sleeps == [pytest.approx(0.5)]
+
+
 @pytest.mark.parametrize("error", [503, 429])
 def test_cdtrf_http_retry_policy(monkeypatch, error):
     calls = []
@@ -124,12 +167,11 @@ def test_cdtrf_timeout_fails_after_bounded_retries(monkeypatch):
 
 
 def test_cdtrf_multi_lot_page_parallel_preserves_order(monkeypatch):
-    class OfflineSession:
-        def get(self, *args, **kwargs):
-            return SimpleNamespace(
-                status_code=200, content=b"{}", headers={"Content-Type": "application/json"},
-                json=lambda: {},
-            )
+    session = requests.Session()
+    session.get = lambda *args, **kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        status_code=200, content=b"{}", headers={"Content-Type": "application/json"},
+        json=lambda: {},
+    )
     hits = [{"trade_id": str(i), "trade_lot_id": str(i),
              "external_id": f"cdtrf:{i}"} for i in range(1, 5)]
     monkeypatch.setattr(cdtrf_sync, "parse_cdtrf_api_page", lambda *a, **kw: {
@@ -154,7 +196,7 @@ def test_cdtrf_multi_lot_page_parallel_preserves_order(monkeypatch):
         )
     monkeypatch.setattr(cdtrf_sync, "_verified_detail_with_retry", fetch)
     monkeypatch.setattr(cdtrf_sync, "_property_ready", lambda lot: True)
-    result = asyncio.run(cdtrf_sync.CdtrfSourceCrawler(OfflineSession()).search(
+    result = asyncio.run(cdtrf_sync.CdtrfSourceCrawler(session).search(
         cdtrf_sync.CdtrfSyncFilters(max_pages=1, detail_concurrency=2,
                                     detail_requests_per_second=2)))
     assert [lot.external_id for lot in result.items] == [f"cdtrf:{i}" for i in range(1, 5)]
