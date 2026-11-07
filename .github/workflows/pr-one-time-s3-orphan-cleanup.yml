@@ -140,11 +140,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for version in             20260924T225230284059Z-s3             20260924T222246446795Z-s3             20260924T214633134097Z-s3             20260924T205816771500Z-s3             20260924T205000633559Z-s3             20260924T204308197270Z-s3
-          do
-            count="$(aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api list-objects-v2               --bucket "$BUCKET" --prefix "datasets/$version/" --query 'KeyCount' --output text)"
-            test "$count" = "0"
-          done
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          endpoint = os.environ["ENDPOINT"]
+          bucket = os.environ["BUCKET"]
+          region = os.environ["REGION"]
+          versions = (
+              "20260924T225230284059Z-s3",
+              "20260924T222246446795Z-s3",
+              "20260924T214633134097Z-s3",
+              "20260924T205816771500Z-s3",
+              "20260924T205000633559Z-s3",
+              "20260924T204308197270Z-s3",
+          )
+          base = ["aws", "--endpoint-url", endpoint, "--region", region, "s3api"]
+          for version in versions:
+              prefix = f"datasets/{version}/"
+              raw = subprocess.check_output(
+                  base + [
+                      "list-objects-v2",
+                      "--bucket", bucket,
+                      "--prefix", prefix,
+                      "--max-keys", "1",
+                      "--output", "json",
+                  ],
+                  text=True,
+              )
+              payload = json.loads(raw)
+              contents = payload.get("Contents") or []
+              if contents:
+                  raise SystemExit(
+                      f"orphan prefix still contains objects: {prefix}{contents[0].get('Key', '')}"
+                  )
+              print(json.dumps({"version": version, "verified_empty": True}))
+          PY
 
       - name: Prove quota accepts a new tiny object
         shell: bash
