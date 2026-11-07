@@ -1,5 +1,26 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+## 07.11.2026 — итог первого full-selected production run после PR #1130
+
+- [x] Run `7810df7b-fb90-4c9f-9039-546ed151172b` дошёл до всех семи
+  источников: МЭТС 155 страниц/1,191 seen/1,187 inserts; ЦДТ 32/1,588/
+  309 inserts/1,279 updates; НИСТП 144/815/798 inserts/17 updates. Для
+  этих трёх источников archival=0.
+- [x] BidExpert завершил 1,450 страниц и 6,353 seen. ГИС Торги и Lot-online
+  получили сетевые timeout после возврата VPN; «Торги России» подтвердили
+  исправленную пагинацию/регион, но PostgreSQL отклонил structured
+  `auction_type` при batch upsert.
+- [x] Общий run завершился `failed` уже после source walks: монолитный SELECT
+  всех 200k+ широких `processed_lots` в cross-source dedupe превысил
+  `statement_timeout`. MapDataset `20261106T224400098846Z-r6-bundle-s3`
+  опубликован раньше окончания run и не является финальным доказательством.
+- [x] Follow-up исправляет три выявленных production-дефекта: PK-window
+  дедупликацию по 1,000 строк, строковую нормализацию structured trade type и
+  acceptance неархивирующих full-selected sources по successful source-end.
+- [ ] После merge/deploy выполнить только необходимые повторные доказательства,
+  затем GEO drain и свежий MapDataset/S3 verification. Не объявлять текущий
+  failed run полной production-приёмкой.
+
 ## 07.11.2026 — разбор production run и переход от 5-page к full selected catalogue
 
 - [x] PostgreSQL независимо подтвердил run

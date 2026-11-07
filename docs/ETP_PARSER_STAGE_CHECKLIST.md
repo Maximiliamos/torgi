@@ -1,5 +1,24 @@
 # ETP stage checklist — operator contract
 
+## 2026-11-07 — первый full-selected Home run после PR #1130
+
+Run `7810df7b-fb90-4c9f-9039-546ed151172b` завершил source walks, но общий
+статус `failed`, поэтому этапы GEO/Map/повторное расписание не приняты.
+
+| Источник | Фактический результат | Статус |
+| --- | --- | --- |
+| ГИС Торги | timeout после 479 страниц/3,715 seen | FAIL; нужен no-VPN retry |
+| Lot-online | timeout до первой страницы | FAIL; нужен no-VPN retry |
+| Торги России | 2 страницы/44 seen; nested-region PASS; structured trade type сломал PostgreSQL upsert | FAIL; исправление + retry |
+| BidExpert | 1,450 страниц/6,353 seen | PASS source walk; 1,634 архивов требуют отдельной проверки |
+| МЭТС | 155 страниц/1,191 persisted eligible, 1,187 inserts, archive 0 | PASS selected paginator; acceptance flag fix pending |
+| ЦДТ | 32 страницы/1,588 seen, 309 inserts, 1,279 updates, archive 0 | PASS выбранного каталога |
+| НИСТП | 144 страницы/815 eligible details, 798 inserts, 17 updates, archive 0 | PASS выбранного каталога; #1115/#1116 остаются |
+
+Финальная cross-source dedupe превысила PostgreSQL `statement_timeout`; свежая
+после-run карта отсутствует. Этапы 10–12 остаются `FAIL/NOT_TESTED` до
+пакетной дедупликации, точечных повторов, GEO и публичной S3-проверки.
+
 ## 2026-11-07 — фактический run и full selected-catalogue scheduling
 
 Production DB run `26ca1925-068f-4d86-ad7b-53d6482f5c21` независимо

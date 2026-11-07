@@ -29,6 +29,7 @@ from bankrotai.db import (
 )
 from bankrotai.geo import enrich_lot_geo
 from bankrotai.core import get_region_query_values, utc_now # Assuming utc_now exists or I should use datetime.now(timezone.utc)
+from bankrotai.services.dedupe_scan import iter_primary_processed_lots
 
 logger = logging.getLogger(__name__)
 
@@ -892,16 +893,13 @@ def _same_processed_cross_source_lot(left: ProcessedLot, right: ProcessedLot) ->
 
 def reconcile_cross_source_duplicates(session: Session) -> int:
     """Mark existing cross-source copies and link them to one canonical card."""
-    lots = session.scalars(
-        select(ProcessedLot)
-        .where(ProcessedLot.duplicate_of_id.is_(None))
-        .order_by(ProcessedLot.id)
-    ).all()
     by_cadastral: dict[str, list[ProcessedLot]] = {}
     by_price: dict[int, list[ProcessedLot]] = {}
     reconciled = 0
 
-    for lot in lots:
+    # Retain global candidate indexes, but page the wide 200k+ row table so a
+    # single ordered SELECT cannot exceed PostgreSQL statement_timeout.
+    for lot in iter_primary_processed_lots(session):
         candidates: list[ProcessedLot] = []
         for cadastral in _processed_lot_cadastral_numbers(lot):
             candidates.extend(by_cadastral.get(cadastral, []))
@@ -909,14 +907,8 @@ def reconcile_cross_source_duplicates(session: Session) -> int:
         if price is not None:
             candidates.extend(by_price.get(int(round(float(price))), []))
 
-        primary = next(
-            (
-                candidate
-                for candidate in dict.fromkeys(candidates)
-                if _same_processed_cross_source_lot(candidate, lot)
-            ),
-            None,
-        )
+        primary = next((candidate for candidate in dict.fromkeys(candidates)
+                        if _same_processed_cross_source_lot(candidate, lot)), None)
         if primary is not None:
             lot.duplicate_of_id = primary.id
             primary.address = primary.address or lot.address

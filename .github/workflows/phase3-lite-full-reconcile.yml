@@ -223,7 +223,16 @@ jobs:
               if ('tbankrot.ru' -in $expectedSources -or @($observedSources | Where-Object { $_ -eq 'tbankrot.ru' }).Count -gt 0) {
                 throw 'TBankrot must remain paused and absent from automatic full reconciliation'
               }
-              $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
+              # These selected-catalogue crawlers must prove source-end but
+              # deliberately keep reconciliation/archival disabled. Their
+              # persisted complete_source_run flag therefore remains false by
+              # design; a successful source row is the source-end proof because
+              # require_source_end=True rejects page-budget exhaustion.
+              $nonReconcilingFullSources = @('m-ets.ru','cdtrf.ru','nistp.ru')
+              $incompleteRows = @($rows | Where-Object {
+                $_.status -ne 'success' -or
+                (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+              })
               if ($incompleteRows.Count -gt 0) {
                 $retryDeadline = (Get-Date).ToUniversalTime().AddMinutes(85)
                 $latestRetryFinishedAt = $null
@@ -306,7 +315,12 @@ jobs:
                     }
                     if ($retryState.status -eq 'success') {
                       $retryRows = @($retryState.sources)
-                      if ($retryRows.Count -ne 1 -or [string]$retryRows[0].source -ne $source -or $retryRows[0].status -ne 'success' -or -not [bool]$retryRows[0].complete) {
+                      if (
+                        $retryRows.Count -ne 1 -or
+                        [string]$retryRows[0].source -ne $source -or
+                        $retryRows[0].status -ne 'success' -or
+                        (-not [bool]$retryRows[0].complete -and $source -notin $nonReconcilingFullSources)
+                      ) {
                         throw "Targeted retry for $source did not finish as one complete successful source"
                       }
                       $rows = @($rows | Where-Object { [string]$_.source -ne $source }) + @($retryRows)
@@ -331,15 +345,19 @@ jobs:
                   }
                 }
 
-                $incompleteRows = @($rows | Where-Object { $_.status -ne 'success' -or -not [bool]$_.complete })
+                $incompleteRows = @($rows | Where-Object {
+                  $_.status -ne 'success' -or
+                  (-not [bool]$_.complete -and [string]$_.source -notin $nonReconcilingFullSources)
+                })
                 if ($incompleteRows.Count -gt 0) {
                   $failedSummary = @($incompleteRows | ForEach-Object { "$($_.source):status=$($_.status),complete=$($_.complete),error=$($_.error)" })
-                  throw "Final 4/4 gate failed after targeted retries: $($failedSummary -join '; ')"
+                  throw "Final source gate failed after targeted retries: $($failedSummary -join '; ')"
                 }
 
                 # A retry is a separate durable run. Force one immutable map
                 # publication after the final accepted source state so the
-                # acceptance chain is explicitly 4/4 -> MapDataset -> S3.
+                # acceptance chain is explicitly all configured sources ->
+                # MapDataset -> S3.
                 if ($null -ne $latestRetryFinishedAt) {
                   $mapTaskId = docker exec bankrotai-home-map-worker python -c "from bankrotai.tasks import build_map_dataset_task; r=build_map_dataset_task.delay(); print(r.id)"
                   if ($LASTEXITCODE -ne 0 -or -not $mapTaskId) {
