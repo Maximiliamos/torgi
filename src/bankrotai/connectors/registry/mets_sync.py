@@ -7,6 +7,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from bankrotai.connectors.registry.detail_transport import DetailWorkers
 from decimal import Decimal
 
 import requests
@@ -30,12 +31,18 @@ class MetsSyncFilters:
 
     max_pages: int = MAX_SCAN_PAGES
     detail_delay_seconds: float = 0.5
+    detail_concurrency: int = 2
+    detail_requests_per_second: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.max_pages) is not int or not 1 <= self.max_pages <= MAX_SCAN_PAGES:
             raise ValueError("Unsafe M-ETS max_pages")
         if not 0.5 <= self.detail_delay_seconds <= 10:
             raise ValueError("M-ETS detail_delay_seconds must be 0.5..10")
+        if type(self.detail_concurrency) is not int or not 1 <= self.detail_concurrency <= 4:
+            raise ValueError("Unsafe M-ETS detail_concurrency")
+        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 10:
+            raise ValueError("Unsafe M-ETS detail_requests_per_second")
 
 
 class MetsSourceCrawler:
@@ -117,11 +124,20 @@ class MetsSourceCrawler:
 
         accepted = []
         rejected: dict[str, int] = {}
-        for external_id, catalogue_price, catalogue_status, _title in novel_observations:
-            time.sleep(filters.detail_delay_seconds)
+        rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
+        workers = DetailWorkers(self.pilot.session, filters.detail_concurrency, rate)
+
+        def verify(item):
+            external_id, catalogue_price, catalogue_status, _title = item
             url = f"{BASE}/{external_id}"
+            workers.limiter.acquire(url)
             try:
-                lot = parse_mets_lot(self.pilot._get(url), url)
+                # Pilot keeps request timing state; each worker gets its own pilot.
+                pilot = getattr(workers._local, "pilot", None)
+                if pilot is None:
+                    pilot = MetsPublicPilot(session=workers.session())
+                    workers._local.pilot = pilot
+                lot = parse_mets_lot(pilot._get(url), url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
                 expected_status = (
@@ -138,24 +154,25 @@ class MetsSourceCrawler:
                 if Decimal(catalogue_price) not in detail_prices:
                     raise MetsEvidenceError("M-ETS detail price differs from catalogue")
                 if not _property_ready(lot):
-                    rejected["property_evidence_missing"] = (
-                        rejected.get("property_evidence_missing", 0) + 1
-                    )
-                    continue
+                    return None, "property_evidence_missing"
             except requests.RequestException as exc:
                 raise MetsCatalogueScanError(
                     "M-ETS detail network failure; no source reconciliation"
                 ) from exc
             except MetsEvidenceError as exc:
                 message = str(exc).casefold()
+                # HTTP refusal or provider errors are systemic, not a bad lot.
+                if "http " in message or "transient http" in message:
+                    raise MetsCatalogueScanError(
+                        "M-ETS detail HTTP failure; no source reconciliation"
+                    ) from exc
                 code = (
                     "identity_mismatch" if "identity" in message
                     else "status_mismatch" if "status" in message
                     else "price_mismatch" if "price" in message
                     else "detail_schema_invalid"
                 )
-                rejected[code] = rejected.get(code, 0) + 1
-                continue
+                return None, code
             lot.raw_data = {
                 **lot.raw_data,
                 "source_scope": "full_selected_catalogue_nonreconciling",
@@ -164,7 +181,16 @@ class MetsSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
             }
-            accepted.append(lot)
+            return lot, None
+
+        # map preserves catalogue ordering and propagates any fatal failure.
+        # Only details overlap; the next catalogue page is never fetched early.
+        with workers.pool() as executor:
+            for lot, code in executor.map(verify, novel_observations):
+                if code:
+                    rejected[code] = rejected.get(code, 0) + 1
+                elif lot is not None:
+                    accepted.append(lot)
 
         digest = hashlib.sha256("\n".join(sorted(identities)).encode("ascii")).hexdigest()
         next_page = page_number + 1
@@ -187,6 +213,8 @@ class MetsSourceCrawler:
                 "cross_page_overlap": self._overlap_count,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
+                "detail_attempts": len(novel_observations),
+                "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
                 "requested_category_group": "mets_property_nonreconciling",
                 "complete_selected_filter_inventory": next_cursor is None,
