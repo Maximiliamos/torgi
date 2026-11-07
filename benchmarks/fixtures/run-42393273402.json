@@ -1,0 +1,78 @@
+{
+  "run_id": "ba82db42-f93f-42ea-99bf-3374fb4e1d3e",
+  "github_run_id": 42393273402,
+  "sha": "e434b630c06b1ed3675f7dec571f44a4be9db67c",
+  "status": "partial",
+  "sources": [
+    {
+      "source": "torgi.gov.ru",
+      "status": "success",
+      "pages_scanned": 1892,
+      "items_seen": 17158,
+      "items_inserted": 25,
+      "items_updated": 175,
+      "items_unchanged": 16958,
+      "items_archived": 27
+    },
+    {
+      "source": "lot-online.ru",
+      "status": "success",
+      "pages_scanned": 45,
+      "items_seen": 3036,
+      "items_inserted": 12,
+      "items_updated": 3,
+      "items_unchanged": 3021,
+      "items_archived": 0
+    },
+    {
+      "source": "torgi-russia.ru",
+      "status": "failed",
+      "pages_scanned": 455,
+      "items_seen": 6780,
+      "items_inserted": 84,
+      "items_updated": 149,
+      "items_unchanged": 6547,
+      "items_archived": 0
+    },
+    {
+      "source": "bidexpert.ru",
+      "status": "success",
+      "pages_scanned": 1627,
+      "items_seen": 7054,
+      "items_inserted": 0,
+      "items_updated": 3634,
+      "items_unchanged": 3420,
+      "items_archived": 0
+    },
+    {
+      "source": "m-ets.ru",
+      "status": "success",
+      "pages_scanned": 153,
+      "items_seen": 1190,
+      "items_inserted": 7,
+      "items_updated": 15,
+      "items_unchanged": 1168,
+      "items_archived": 0
+    },
+    {
+      "source": "cdtrf.ru",
+      "status": "success",
+      "pages_scanned": 32,
+      "items_seen": 1585,
+      "items_inserted": 1,
+      "items_updated": 1584,
+      "items_unchanged": 0,
+      "items_archived": 0
+    },
+    {
+      "source": "nistp.ru",
+      "status": "success",
+      "pages_scanned": 142,
+      "items_seen": 794,
+      "items_inserted": 0,
+      "items_updated": 0,
+      "items_unchanged": 794,
+      "items_archived": 0
+    }
+  ]
+}

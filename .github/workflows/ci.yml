@@ -29,8 +29,31 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check pip-audit==2.10.1
           pip-audit -r requirements.lock
-      - run: ruff check src tests
-      - run: mypy src/bankrotai
+      - name: Verify offline performance benchmark audit
+        run: |
+          python benchmarks/read_only_pipeline.py --snapshot benchmarks/fixtures/run-42393273402.json --repo . --out /tmp/performance-baseline.json
+          python - <<'PY'
+          import json
+          report = json.load(open("/tmp/performance-baseline.json", encoding="utf-8"))
+          benchmark = report["benchmark"]
+          audit = report["repository_audit"]
+          print(json.dumps({
+              "complete": benchmark["complete"],
+              "seen": sum(row["seen"] for row in benchmark["sources"]),
+              "changed": sum(row["changed"] for row in benchmark["sources"]),
+              "critical_path_ms": benchmark["critical_path_ms"],
+              "file_count": audit["file_count"],
+              "tracked_bytes": audit["tracked_bytes"],
+              "workflow_count": audit["workflow_count"],
+              "home_runner_workflow_count": len(audit["home_runner_workflows"]),
+              "home_runner_without_concurrency_group": audit["home_runner_without_concurrency_group"],
+              "cross_group_contention_candidate_pairs": audit["cross_group_contention_candidate_pairs"],
+              "import_cycle_candidates": audit["internal_import_cycles_possible"],
+              "git_status_unchanged": audit["git_status_unchanged"],
+          }, indent=2))
+          PY
+      - run: ruff check src tests benchmarks
+      - run: mypy src/bankrotai benchmarks/read_only_pipeline.py
       - run: bash -n scripts/*.sh
 
 
@@ -71,7 +94,10 @@ jobs:
           apt_retry update
           apt_retry install -y libegl1
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
-      - run: pytest -m "not postgres"
+      - name: Targeted offline performance benchmark tests
+        run: pytest tests/test_performance_baseline_benchmark.py
+      - name: Full offline SQLite pytest
+        run: pytest -m "not postgres"
 
   migration-tests:
     name: Database migration tests
