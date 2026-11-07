@@ -196,10 +196,19 @@ jobs:
             $quarantined = [int]($Row.checkpoint.quarantined_records)
             $phase = [string]($Row.checkpoint.phase)
             $errorText = [string]($Row.error)
+            $reasonTotal = 0
+            if ($null -ne $Row.checkpoint.quarantine_reasons) {
+              foreach ($property in @($Row.checkpoint.quarantine_reasons.PSObject.Properties)) {
+                $reasonTotal += [int]$property.Value
+              }
+            }
+            $samples = @($Row.checkpoint.quarantine_samples)
             return (
               [string]$Row.status -eq 'partial' -and
               -not [bool]$Row.complete -and
               $quarantined -gt 0 -and
+              $reasonTotal -eq $quarantined -and
+              $samples.Count -gt 0 -and
               [int]$Row.items_archived -eq 0 -and
               [int]$Row.items_failed -eq 0 -and
               $phase -eq 'complete_with_quarantine' -and
@@ -350,6 +359,7 @@ jobs:
                       $retryRows = @($retryState.sources)
                       $retryQuarantineOnly = (
                         $retryRows.Count -eq 1 -and
+                        [string]$retryRows[0].source -eq $source -and
                         (Test-QuarantineOnlyPartial $retryRows[0])
                       )
                       $retrySuccess = (
