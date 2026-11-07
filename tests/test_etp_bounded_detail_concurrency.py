@@ -41,7 +41,8 @@ def test_source_detail_rate_cap_is_conservative(filters_cls):
         filters_cls(detail_requests_per_second=2.01)
 
 
-def test_mets_retry_attempts_are_all_rate_limited(monkeypatch):
+@pytest.mark.parametrize("transient_status", [429, 503])
+def test_mets_retry_attempts_are_all_rate_limited(monkeypatch, transient_status):
     class Response:
         def __init__(self, status_code):
             self.status_code = status_code
@@ -55,7 +56,7 @@ def test_mets_retry_attempts_are_all_rate_limited(monkeypatch):
 
     class Session:
         def __init__(self):
-            self.responses = [Response(503), Response(200)]
+            self.responses = [Response(transient_status), Response(200)]
 
         def get(self, *args, **kwargs):
             return self.responses.pop(0)
@@ -69,6 +70,74 @@ def test_mets_retry_attempts_are_all_rate_limited(monkeypatch):
     )
     assert result == "detail"
     assert starts == ["https://m-ets.ru/1234-1", "https://m-ets.ru/1234-1"]
+
+
+
+def test_mets_timeout_retries_are_bounded_and_rate_gated(monkeypatch):
+    class Session:
+        def get(self, *args, **kwargs):
+            raise requests.Timeout("offline fixture timeout")
+
+    starts = []
+    pilot = mets_sync.MetsPublicPilot(session=Session())
+    monkeypatch.setattr("bankrotai.connectors.registry.mets_public.time.sleep", lambda _: None)
+
+    with pytest.raises(requests.Timeout):
+        pilot._get(
+            "https://m-ets.ru/1234-1",
+            before_request=lambda url: starts.append(url),
+        )
+
+    assert len(starts) == 5
+
+
+def test_async_search_keeps_event_loop_responsive(monkeypatch):
+    monkeypatch.setattr(
+        mets_sync, "_request_page",
+        lambda *args, **kwargs: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(mets_sync, "_parse_page", lambda *args, **kwargs: {
+        "total": 1,
+        "next_page": None,
+        "observations": [
+            ("1234-1", "100", "Торги в стадии приема заявок", "flat"),
+        ],
+    })
+    monkeypatch.setattr(mets_sync, "_property_ready", lambda lot: True)
+    monkeypatch.setattr(
+        mets_sync,
+        "parse_mets_lot",
+        lambda html, url: SimpleNamespace(
+            external_id="1234-1",
+            auction_status="active",
+            start_price=100,
+            current_price=None,
+            raw_data={},
+        ),
+    )
+
+    pilot = mets_sync.MetsPublicPilot(session=object())
+    monkeypatch.setattr(
+        pilot, "_get",
+        lambda url: (time.sleep(0.15), url)[1],
+    )
+    crawler = mets_sync.MetsSourceCrawler(pilot)
+
+    async def scenario():
+        task = asyncio.create_task(crawler.search(
+            mets_sync.MetsSyncFilters(
+                max_pages=1,
+                detail_concurrency=2,
+                detail_requests_per_second=2,
+            )
+        ))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+        result = await task
+        assert len(result.items) == 1
+
+    asyncio.run(scenario())
 
 
 def test_worker_pool_concurrency_cap():
@@ -136,6 +205,7 @@ def test_shared_limiter_can_span_worker_batches(monkeypatch):
 @pytest.mark.parametrize("error", [503, 429])
 def test_cdtrf_http_retry_policy(monkeypatch, error):
     calls = []
+    rate_starts = []
     def fetch(*args, **kwargs):
         calls.append(1)
         if error == 503 and len(calls) == 1:
@@ -145,13 +215,22 @@ def test_cdtrf_http_retry_policy(monkeypatch, error):
         return SimpleNamespace(external_id="cdtrf:1")
     monkeypatch.setattr(cdtrf_sync, "fetch_verified_cdtrf_lot", fetch)
     monkeypatch.setattr(cdtrf_sync.time, "sleep", lambda _: None)
+    limiter = SimpleNamespace(
+        acquire=lambda url: rate_starts.append(url),
+    )
     if error == 429:
         with pytest.raises(cdtrf_sync.CdtrfCanaryError, match="429"):
-            cdtrf_sync._verified_detail_with_retry("1", "1", requests.Session())
+            cdtrf_sync._verified_detail_with_retry(
+                "1", "1", requests.Session(), limiter,
+            )
         assert len(calls) == 1
+        assert len(rate_starts) == 1
     else:
-        cdtrf_sync._verified_detail_with_retry("1", "1", requests.Session())
+        cdtrf_sync._verified_detail_with_retry(
+            "1", "1", requests.Session(), limiter,
+        )
         assert len(calls) == 2
+        assert len(rate_starts) == 2
 
 
 def test_cdtrf_timeout_fails_after_bounded_retries(monkeypatch):
