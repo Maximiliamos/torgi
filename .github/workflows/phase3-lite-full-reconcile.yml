@@ -85,6 +85,62 @@ jobs:
           if ($container -ne 'bankrotai-home-ingestion-worker') {
             throw 'Canonical home ingestion worker is not running'
           }
+      - name: Checkout exact workflow SHA for read-only preflight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Configure Python for local checksum and capacity verification
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Read-only exact-SHA, seven-source, pause, circuit, DB and lease preflight
+        shell: powershell
+        run: |
+          $checkoutSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $checkoutSha -ne $env:GITHUB_SHA) {
+            throw "Checkout is not exact workflow SHA; checkout=$checkoutSha expected=$env:GITHUB_SHA"
+          }
+          $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$env:GITHUB_SHA") {
+            throw "Worker image does not match exact SHA: $image"
+          }
+          $sourceGate = Join-Path $env:GITHUB_WORKSPACE 'scripts/preflight_live_source_gate.py'
+          if (-not (Test-Path -LiteralPath $sourceGate -PathType Leaf)) {
+            throw 'Read-only live source gate file is missing'
+          }
+          $raw = @(Get-Content -LiteralPath $sourceGate -Raw |
+            docker exec -i bankrotai-home-ingestion-worker python -)
+          if ($LASTEXITCODE -ne 0 -or -not $raw.Count -or
+              $raw[-1] -notmatch '^SOURCE_PREFLIGHT=') {
+            throw "Read-only source preflight unavailable: $($raw -join '; ')"
+          }
+          $state = ($raw[-1] -replace '^SOURCE_PREFLIGHT=', '') | ConvertFrom-Json
+          if ($state.pass -ne $true) {
+            throw "Read-only source preflight blocked: $($state.errors -join '; ')"
+          }
+      - name: Verify last restore, local disk and signed S3 quota before heavy source run
+        shell: powershell
+        env:
+          TORGI_CAPACITY_EVIDENCE_HMAC_KEY: ${{ secrets.TORGI_CAPACITY_EVIDENCE_HMAC_KEY }}
+          TORGI_S3_CAPACITY_EVIDENCE_PATH: ${{ vars.TORGI_S3_CAPACITY_EVIDENCE_PATH }}
+        run: |
+          if (-not $env:TORGI_S3_CAPACITY_EVIDENCE_PATH) {
+            throw 'No S3 provider quota evidence path configured: fail closed before ingestion'
+          }
+          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH)
+          if ($LASTEXITCODE -ne 0 -or -not $result.Count -or
+              $result[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
+            throw "Backup/disk/S3 capacity gate failed: $($result -join '; ')"
+          }
+          $state = ($result[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
+          if ($state.allowed -ne $true) {
+            throw "Backup/disk/S3 capacity blocked: $($state.errors -join '; ')"
+          }
+      - name: Verify fresh isolated PostgreSQL restore before scheduling
+        shell: powershell
+        run: |
+          & .\scripts\backup-home-postgres.ps1 -VerifyRestore -RetainCount 0
+          if (-not $?) {
+            throw 'Fresh isolated backup restore did not finish successfully'
+          }
       - name: Request or adopt one durable full reconciliation and reclaim expired lease
         id: start
         shell: powershell
