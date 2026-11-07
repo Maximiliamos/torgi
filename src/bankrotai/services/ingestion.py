@@ -37,10 +37,7 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
-from bankrotai.services.ingestion_quarantine import (
-    enforce_source_quarantine_limit,
-    partition_normalized_lots,
-)
+from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -424,18 +421,7 @@ class NationwideIngestionService:
                 if category_group and not isinstance(category_page_counts, dict):
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
-                quarantined = int(page.metadata.get("quarantined_records") or 0)
-                if quarantined:
-                    result.quarantined_records += quarantined
-                    result.items_rejected += quarantined
-                    for reason, count in page.metadata.get("quarantine_reasons", {}).items():
-                        key = str(reason)
-                        result.quarantine_reasons[key] = (
-                            result.quarantine_reasons.get(key, 0) + int(count)
-                        )
-                    for sample in page.metadata.get("quarantine_samples", []):
-                        if isinstance(sample, dict) and len(result.quarantine_samples) < 20:
-                            result.quarantine_samples.append(sample)
+                merge_page_quarantine(result, page.metadata)
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
