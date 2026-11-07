@@ -1,46 +1,83 @@
-# Bounded mixed-source ingestion: offline audit
+# Bounded mixed-source ingestion audit
 
-## Scope
-- `src/bankrotai/services/ingestion.py` only; no connectors, database schema or production workflow edits.
-- Default concurrency: 3, configurable as `max_concurrent_sources` (1–7).
-- Mixed reconcile/non-reconcile source runs now share a bounded scheduler.
-- Source order is preserved in payloads; duplicate `source_id` specifications are rejected.
-- Reconciliation archive critical sections are serialized per nationwide run.
-- Unexpected source setup errors produce a failed source result rather than cancel sibling tasks.
-- Errors in source sync or archival clear `complete_source_run`, preventing false coverage reports.
-- Existing per-source checkpoint writes, source-level guard checks, and durable watchdog continue to be used.
+## Implemented scope
+- `src/bankrotai/services/ingestion.py`: mixed reconcile/non-reconcile source runs use bounded concurrency (default 3, constructor range 1–7).
+- `src/bankrotai/services/ingestion_concurrency.py`: scheduling, unexpected-error isolation, and the per-run reconciliation lock are extracted from the already-grandfathered ingestion module.
+- Missing-lot reconciliation remains fail-closed and is now atomic per source: no intermediate archival commits are made.
+- Per-source checkpoints, heartbeat/lease renewal, coverage guards, quarantine gates, and the two-complete-runs archival threshold remain in force.
+- Concurrent stall detection uses the oldest running-source progress timestamp, so a healthy peer cannot mask a stalled source.
+- Duplicate source IDs in one run are rejected because the durable checkpoint key is `(sync_run_id, source_system)`.
+- No connectors, database schema, GEO/Map code, S3 mutation path, or production workflow is changed.
 
-## Risk notes / follow-up review
-- Synchronous SQL commits and archive scans still block the event loop; this is NOT seven simultaneous DB writer threads. No change to transaction isolation is proposed.
-- Existing lease ownership checks and watchdog are inherited, not rewritten; dedicated DB-backed integration tests of lease loss, runner restart and checkpoint recovery are still required.
-- If persisting a failure checkpoint itself fails, its exception is logged but the source is represented as failed in the run result; durability under DB outages needs integration coverage.
-- Neither the existing source-coverage guard nor the two-complete-runs missing-lot archival threshold is weakened.
-- Do not merge until tests on PostgreSQL with all configured seven source contracts pass, including partial archival failure and repeated runs.
+## Concurrency safety
+Source scans may overlap, but synchronous persistence still runs on the event-loop thread and therefore does not create seven simultaneous SQL writer threads. Reconciliation critical sections are serialized within the nationwide run. Result ordering follows the input specs.
 
-## Tests added
-`tests/test_ingestion_mixed_concurrency.py` checks bounded mixed-source scheduling, deterministic result order, error isolation, duplicate IDs, serialized reconciliation critical section, context reset on rerun, and invalid limit values.
+Unexpected exceptions that escape source setup/checkpoint code are converted to a failed `SourceSyncResult` so sibling source tasks continue. Normal source/coverage/quarantine failures still use the existing fail-closed path inside `_sync_source`.
 
-**Execution status:** integration/pytest suite not executed in this environment; repository cannot be cloned into the local runtime and dependency-complete test environment is unavailable. No production action was run.
+Missing-lot archival previously committed every 250 rows. That allowed a mid-reconciliation exception to leave a failed source with partially durable archival. The PR removes those intermediate commits; the source reconciliation transaction commits only after every missing row and canonical promotion succeeds. Progress callbacks still renew the durable run/checkpoint state.
 
-## Synthetic benchmark (not actual source-run timings)
-Method: seven simulated independent async waits with delays [0.12, 0.09, 0.11, 0.08, 0.13, 0.10, 0.07] seconds, five samples, serial orchestration vs three concurrent tasks. A local scheduler-only reproduction yielded:
-- Serial: 0.7026, 0.7022, 0.7021, 0.7022, 0.7021 seconds; median **0.7022 s**.
-- Bounded(3): 0.2418, 0.2414, 0.2415, 0.2414, 0.2414 seconds; median **0.2414 s**.
-- Ratio of medians: **2.91×**.
-- The committed `benchmarks/ingestion_source_scheduler.py` independently reproduces the simulation; values will vary by host.
+## Added regression coverage
+`tests/test_ingestion_mixed_concurrency.py` covers:
+- mixed reconcile/non-reconcile scheduling with a bounded peak;
+- deterministic seven-source result coverage/order;
+- unexpected source failure isolation;
+- duplicate source rejection before work starts;
+- serialized reconciliation critical sections;
+- repeated runs without ContextVar leakage;
+- invalid concurrency limits.
 
-No production source timing, network latency, DB contention, GEO or map wall time is inferred from this synthetic run.
+`tests/test_persistent_ingestion.py` adds DB-backed cases for:
+- one stale source not being hidden by a fresh concurrent peer;
+- mixed source coverage collapse remaining fail-closed while a non-reconciling sibling succeeds;
+- rollback of every missing/archive change when reconciliation fails after archival has started.
 
-## Validation gate before merge
+The pre-existing ingestion suite continues to cover durable leases, heartbeat renewal, source-run checkpoints, two-run archival, failed-source non-archival, regional scope, cardinality collapse, quarantine and source-end proof.
+
+## Reproducible validation
+Targeted offline:
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_ingestion_mixed_concurrency.py
+pytest -q tests/test_ingestion_mixed_concurrency.py
+pytest -q tests/test_persistent_ingestion.py -k \
+  "stall_detection_is_not_masked_by_fresh_concurrent_source or \
+   mixed_source_coverage_failure_is_isolated_and_never_archives or \
+   reconciliation_failure_rolls_back_all_missing_archive_changes"
+```
+
+Full offline and static gates:
+```bash
+pytest -m "not postgres"
+python scripts/check_module_sizes.py
+ruff check src tests
+mypy src/bankrotai
+```
+
+Disposable PostgreSQL integration:
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/bankrotai_test \
+  pytest -m postgres
+```
+
+Synthetic scheduler benchmark:
+```bash
 PYTHONPATH=src python benchmarks/ingestion_source_scheduler.py
 ```
 
-Additional required pre-production tests in an isolated PostgreSQL fixture:
-1. Seven real source specs: mixed reconciliation flags and source-end proofs.
-2. Two complete successful runs archive only eligible missing source lots.
-3. Timeout/failed page/coverage collapse/quarantined detail: no missing-lot archival.
-4. Lease lost, heartbeat stalls, interrupted checkpoint, and repeat run.
-5. Duplicate/canonical promotion correctness with concurrent source persistence.
-6. Measured DB transaction conflicts and wall-clock baseline before/after at fixed source fixture snapshots.
+The scheduler benchmark contains no DB, network, GEO, S3 or MapDataset work. A local five-sample reproduction measured serial median about 0.7022 s and bounded(3) median about 0.2415 s, approximately 2.91x for the synthetic delays. It is not a production speed claim.
+
+## Coordination with adjacent work
+At review time the adjacent PRs do not overlap this PR's runtime files:
+- #1139 preflight/checkpoint recovery: scripts/tests/docs only.
+- #1140 GEO/Map publication fence: `geo_backfill.py`, `map_builder.py`.
+- #1142 M-ETS/CDTRF detail concurrency: connector/detail transport files.
+- #1143 detail freshness: `batch_persistence.py` and a new freshness helper.
+- #1144 seven-source performance baseline: benchmark/docs (and its own CI edits).
+
+PR #1142 can add up to two detail workers inside M-ETS/CDTRF. Source-level concurrency does not duplicate a source ID, and those two sources use distinct provider hosts, but a future global per-host limiter would require a shared transport-level interface rather than another ingestion lock.
+
+## Remaining risks
+1. Atomic missing-lot reconciliation trades partial-commit risk for a longer per-source transaction. On large missing sets, PostgreSQL lock/transaction duration must be observed in a staging or disposable DB benchmark before production rollout.
+2. The source scheduler intentionally does not make synchronous persistence multi-threaded; measured end-to-end speedup will therefore be lower than the scheduler-only 2.91x when DB work dominates.
+3. Provider-side concurrency in adjacent connector work is independently bounded. If a provider later shares hosts across logical source IDs, rate limiting must move to a shared host-level transport service.
+4. Independent human/agent review is still required before marking the draft ready; this PR must not be merged solely on author verification.
+
+No production ingestion, GEO drain, S3 mutation or MapDataset promotion is part of this validation.
