@@ -1145,6 +1145,32 @@ def test_active_database_lease_prevents_duplicate_full_sync(sessions) -> None:
         assert session.get(LotSyncRun, first).status == "queued"
 
 
+def test_orchestration_failure_finalizes_run_and_releases_lease(sessions) -> None:
+    service = NationwideIngestionService(sessions)
+    run_id = service.create_run(
+        triggered_by="test", trigger_type="manual", total_sources=2
+    )
+
+    result = asyncio.run(
+        service.run(
+            run_id,
+            (
+                SourceSyncSpec("duplicate-source", {}),
+                SourceSyncSpec("duplicate-source", {}),
+            ),
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert "duplicate source_id" in result["error"]
+    with sessions() as session:
+        run = session.get(LotSyncRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.finished_at is not None
+        assert run.lease_expires_at is None
+
+
 def test_database_constraint_prevents_two_active_sync_runs(sessions) -> None:
     now = datetime.now()
     with sessions() as session:
