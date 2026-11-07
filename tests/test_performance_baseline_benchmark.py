@@ -166,4 +166,19 @@ def test_regru_s3_pull_request_diagnostics_are_credentialless() -> None:
     assert pull_request_guard in workflow
     assert credential_check in workflow
     assert workflow.index(pull_request_guard) < workflow.index(credential_check)
-    assert "Authenticated REG.RU S3 checks are disabled for pull_request" in workflow
+    assert 'echo "HAS_S3_CREDENTIALS=false" >> "$GITHUB_ENV"' in workflow
+    # Security #1150 withholds secrets from every PR job environment, not
+    # merely skipping the authenticated steps after secrets were loaded.
+    for name in (
+        "MAP_OBJECT_STORE_ACCESS_KEY",
+        "MAP_OBJECT_STORE_SECRET_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    ):
+        env_line = next(
+            line for line in workflow.splitlines()
+            if line.strip().startswith(name + ":")
+        )
+        assert "github.event_name == 'workflow_dispatch'" in env_line
+        assert "github.ref == 'refs/heads/main'" in env_line
+        assert "|| ''" in env_line
