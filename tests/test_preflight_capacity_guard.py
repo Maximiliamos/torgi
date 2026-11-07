@@ -54,7 +54,7 @@ class CapacityTests(unittest.TestCase):
         return module.assess(
             self.backups, self.evidence_file, self.key if key is None else key,
             now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
-            min_s3_bytes=1000,
+            min_s3_bytes=1000, expected_bucket="test-bucket",
         )
 
     def test_complete_signed_evidence(self):
@@ -77,6 +77,11 @@ class CapacityTests(unittest.TestCase):
         self.evidence_file.unlink()
         self.assertFalse(self.assess()["allowed"])
         self.evidence["checked_at"] = "2026-11-07T00:00:00+00:00"
+        self.save_evidence()
+        self.assertFalse(self.assess()["allowed"])
+
+    def test_quota_for_wrong_bucket_is_rejected(self):
+        self.evidence["bucket"] = "different-bucket"
         self.save_evidence()
         self.assertFalse(self.assess()["allowed"])
 
