@@ -677,6 +677,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 "Map dataset excluded spatially invalid coordinates: counts=%s",
                 spatial_rejection_counts,
             )
+        selection_duration_ms = round((time.monotonic() - started) * 1000)
+        tile_started_at = time.monotonic()
         with session_factory() as session:
             for zoom in range(MAX_DATASET_ZOOM + 1):
                 buckets: dict[tuple[int, int], list[dict]] = defaultdict(list)
@@ -744,6 +746,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             dataset.point_count = len(points)
             dataset.tile_count = tile_count
             session.commit()
+        tile_duration_ms = round((time.monotonic() - tile_started_at) * 1000)
         build_duration_ms = round((time.monotonic() - started) * 1000)
         logger.info(
             "Map dataset build succeeded: version=%s source_lot_count=%s included_point_count=%s "
@@ -772,6 +775,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         with session_factory() as session:
             if map_source_fingerprint(session) != expected_source_fingerprint:
                 raise RuntimeError("Map source changed during tile build; candidate not publishable")
+        upload_started_at = time.monotonic()
         if settings.map_object_store_layout == REGIONAL_BUNDLE_LAYOUT:
             object_store = publish_dataset_to_regional_bundles(
                 session_factory,
@@ -784,6 +788,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 dataset_id=dataset_id,
                 version=version,
             )
+        object_store_duration_ms = round((time.monotonic() - upload_started_at) * 1000)
+        promotion_started_at = time.monotonic()
         promotion = _promote_map_dataset(
             session_factory,
             dataset_id=dataset_id,
@@ -791,6 +797,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             dimension_failures=dimension_failures,
             expected_source_fingerprint=expected_source_fingerprint,
         )
+        promotion_duration_ms = round((time.monotonic() - promotion_started_at) * 1000)
         promotion_completed = True
         total_duration_ms = round((time.monotonic() - started) * 1000)
         promotion_status = str(promotion["status"])
@@ -820,6 +827,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             "point_count": len(points),
             "tile_count": tile_count,
             "build_duration_ms": build_duration_ms,
+            "selection_duration_ms": selection_duration_ms,
+            "tile_duration_ms": tile_duration_ms,
+            "object_store_duration_ms": object_store_duration_ms,
+            "promotion_duration_ms": promotion_duration_ms,
             "duration_ms": total_duration_ms,
             "storage": storage,
             "object_store": object_store,
