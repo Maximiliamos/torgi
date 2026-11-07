@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextvars import ContextVar
 import socket
 import threading
 import time
@@ -38,6 +37,9 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
+from bankrotai.services.ingestion_concurrency import (
+    current_reconciliation_lock, run_bounded_sources,
+)
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
@@ -52,10 +54,6 @@ REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
 COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 1
 COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
 EXPIRY_SCAN_BATCH_SIZE = 500
-# Scoped to the orchestration task: direct single-source calls remain unchanged.
-_RECONCILIATION_LOCK: ContextVar[asyncio.Lock | None] = ContextVar(
-    "ingestion_reconciliation_lock", default=None,
-)
 
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.ingestion_spec_builders import core_source_specs
@@ -241,50 +239,13 @@ class NationwideIngestionService:
         return payload
 
     async def _run_active(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
-        # Source checkpoints are keyed by (run_id, source_id). Running a source
-        # twice in one run would overwrite its checkpoint and corrupt coverage.
-        source_ids = [spec.source_id for spec in specs]
-        if len(source_ids) != len(set(source_ids)):
-            raise ValueError("duplicate source_id in nationwide ingestion specs")
-
-        semaphore = asyncio.Semaphore(self.max_concurrent_sources)
-        reconciliation_lock = asyncio.Lock()
-
-        async def execute(spec: SourceSyncSpec) -> SourceSyncResult:
-            async with semaphore:
-                try:
-                    return await self._sync_source(run_id, spec)
-                except Exception as exc:
-                    # _sync_source normally captures connector errors itself,
-                    # but failures during setup/checkpointing must not cancel
-                    # the other six source tasks.
-                    logger.exception("Uncaught ingestion failure for %s", spec.source_id)
-                    failed = SourceSyncResult(
-                        source_system=spec.source_id,
-                        status="failed",
-                        complete_source_run=False,
-                        phase="failed",
-                        error=str(exc),
-                    )
-                    try:
-                        self._upsert_source_run(
-                            run_id, failed, finished_at=utc_now(),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Could not persist failed source checkpoint for %s",
-                            spec.source_id,
-                        )
-                    return failed
-
-        # ContextVar copies into child tasks; it does not leak to other runs or
-        # force serialization of connector searches. Archive/reconciliation
-        # writes are still serialized within this nationwide run.
-        token = _RECONCILIATION_LOCK.set(reconciliation_lock)
-        try:
-            results = list(await asyncio.gather(*(execute(spec) for spec in specs)))
-        finally:
-            _RECONCILIATION_LOCK.reset(token)
+        results = await run_bounded_sources(
+            run_id,
+            specs,
+            max_concurrent_sources=self.max_concurrent_sources,
+            sync_source=self._sync_source,
+            checkpoint_writer=self._upsert_source_run,
+        )
         dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
@@ -550,7 +511,7 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
 
-            reconciliation_lock = _RECONCILIATION_LOCK.get()
+            reconciliation_lock = current_reconciliation_lock()
             if reconciliation_lock is None:
                 result.items_archived = self._archive_missing_after_complete_run(
                     run_id, spec.source_id,
