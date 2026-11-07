@@ -41,8 +41,8 @@ class MetsSyncFilters:
             raise ValueError("M-ETS detail_delay_seconds must be 0.5..10")
         if type(self.detail_concurrency) is not int or not 1 <= self.detail_concurrency <= 4:
             raise ValueError("Unsafe M-ETS detail_concurrency")
-        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 10:
-            raise ValueError("Unsafe M-ETS detail_requests_per_second")
+        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 2:
+            raise ValueError("M-ETS detail_requests_per_second must be 0..2")
 
 
 class MetsSourceCrawler:
@@ -130,14 +130,23 @@ class MetsSourceCrawler:
         def verify(item):
             external_id, catalogue_price, catalogue_status, _title = item
             url = f"{BASE}/{external_id}"
-            workers.limiter.acquire(url)
             try:
-                # Pilot keeps request timing state; each worker gets its own pilot.
-                pilot = getattr(workers._local, "pilot", None)
-                if pilot is None:
-                    pilot = MetsPublicPilot(session=workers.session())
-                    workers._local.pilot = pilot
-                lot = parse_mets_lot(pilot._get(url), url)
+                # Real requests.Session transports are isolated per worker. Custom
+                # or injected pilots retain their explicit _get seam for offline tests.
+                if (
+                    type(self.pilot) is MetsPublicPilot
+                    and "_get" not in vars(self.pilot)
+                    and isinstance(self.pilot.session, requests.Session)
+                ):
+                    pilot = getattr(workers._local, "pilot", None)
+                    if pilot is None:
+                        pilot = MetsPublicPilot(session=workers.session())
+                        workers._local.pilot = pilot
+                    html = pilot._get(url, before_request=workers.limiter.acquire)
+                else:
+                    workers.limiter.acquire(url)
+                    html = self.pilot._get(url)
+                lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
                 expected_status = (
