@@ -109,6 +109,8 @@ jobs:
           python -m pip install --disable-pip-version-check -e .
 
       - name: Upload probe with production signer
+        id: upload-probe
+        continue-on-error: true
         if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
@@ -140,7 +142,7 @@ jobs:
           PY
 
       - name: Verify authenticated object exists
-        if: env.HAS_S3_CREDENTIALS == 'true'
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'success'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -153,7 +155,7 @@ jobs:
             --key "$PROBE_KEY"
 
       - name: Verify public read and CORS
-        if: env.HAS_S3_CREDENTIALS == 'true'
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'success'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -231,6 +233,12 @@ jobs:
           print(json.dumps({"diagnostics": diagnostics}, ensure_ascii=False, indent=2))
           raise SystemExit("REG.RU S3 public probe failed for all documented URL styles")
           PY
+
+      - name: Record quota-blocked probe without hiding the GC evidence
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'REG.RU S3 write probe is blocked; read-only inventory and the hash-locked cleanup plan remain authoritative.\n'
 
       - name: Estimate regional bundle reduction from existing S3 tiles
         if: always() && env.HAS_S3_CREDENTIALS == 'true'
