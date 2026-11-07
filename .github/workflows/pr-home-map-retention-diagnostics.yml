@@ -101,3 +101,115 @@ jobs:
               }, default=str, ensure_ascii=False))
           '@
           $script | docker exec -i bankrotai-home-map-worker python -
+
+      - name: Inspect seven-source run and archival aggregates without writes
+        shell: powershell
+        run: |
+          $script = @'
+          import json
+          from datetime import datetime
+          from sqlalchemy import func, select
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal, SourceLot
+
+          target_runs = (
+              "3fd5f3bf-fbf5-4463-b402-86c8a40d5243",
+              "79b84f12-b68b-49fb-a600-79de6438e027",
+              "097bf5f9-9838-4bc6-a38b-5c660fdbde29",
+          )
+          cutoff = datetime(2026, 11, 7, 4, 0)
+          with SessionLocal() as session:
+              runs = list(session.scalars(
+                  select(LotSyncRun).where(LotSyncRun.id.in_(target_runs))
+              ))
+              source_runs = list(session.scalars(
+                  select(LotSyncSourceRun)
+                  .where(LotSyncSourceRun.sync_run_id.in_(target_runs))
+                  .order_by(LotSyncSourceRun.sync_run_id, LotSyncSourceRun.source_system)
+              ))
+              archives = list(session.execute(
+                  select(
+                      SourceLot.source_system,
+                      SourceLot.archive_reason,
+                      func.count(SourceLot.id),
+                  )
+                  .where(SourceLot.archived_at >= cutoff)
+                  .group_by(SourceLot.source_system, SourceLot.archive_reason)
+                  .order_by(SourceLot.source_system, SourceLot.archive_reason)
+              ))
+              active = list(session.execute(
+                  select(SourceLot.source_system, func.count(SourceLot.id))
+                  .where(SourceLot.is_active.is_(True), SourceLot.is_archived.is_(False))
+                  .group_by(SourceLot.source_system)
+                  .order_by(SourceLot.source_system)
+              ))
+              print(json.dumps({
+                  "runs": [{
+                      "id": row.id, "status": row.status,
+                      "started_at": row.started_at, "finished_at": row.finished_at,
+                      "error": row.error_message,
+                  } for row in runs],
+                  "source_runs": [{
+                      "run_id": row.sync_run_id, "source": row.source_system,
+                      "status": row.status, "complete": row.complete_source_run,
+                      "pages": row.pages_scanned, "seen": row.items_seen,
+                      "inserted": row.items_inserted, "updated": row.items_updated,
+                      "unchanged": row.items_unchanged, "archived": row.items_archived,
+                      "failed": row.items_failed,
+                      "error": row.error_message,
+                  } for row in source_runs],
+                  "archives_since_2026_11_07_04_utc": [{
+                      "source": source, "reason": reason, "count": count,
+                  } for source, reason, count in archives],
+                  "active_nonarchived_by_source": [
+                      {"source": source, "count": count} for source, count in active
+                  ],
+              }, default=str, ensure_ascii=False))
+          '@
+          $script | docker exec -i bankrotai-home-ingestion-worker python -
+
+      - name: Inspect Torgi Russia region 36 page 2 contract without writes
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $uri = 'https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search'
+          $payload = @{
+            search = ''
+            history_only = 0
+            categorie_childs = @(7, 33, 343, 9, 18, 17, 16)
+            regions = @(36)
+            page = 2
+          } | ConvertTo-Json -Compress
+          $response = Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -ContentType 'application/json' `
+            -Headers @{ Accept = 'application/json'; Origin = 'https://xn----etbpba5admdlad.xn--p1ai'; Referer = 'https://xn----etbpba5admdlad.xn--p1ai/' } `
+            -Body $payload `
+            -TimeoutSec 60
+          $records = @($response.data)
+          if ($records.Count -ne 24) {
+            throw "Unexpected Torgi Russia region=36 page=2 cardinality: $($records.Count)"
+          }
+          $summary = @($records | ForEach-Object {
+            $id = $_.id
+            $idType = if ($null -eq $id) { 'null' } else { $id.GetType().Name }
+            $idText = if ($null -eq $id) { '' } else { [string]$id }
+            [ordered]@{
+              id = $idText
+              id_type = $idType
+              canonical_decimal_id = ($id -is [int] -or $id -is [long] -or $idText -cmatch '^[0-9]+$')
+              title_present = -not [string]::IsNullOrWhiteSpace([string]$_.title)
+            }
+          })
+          $invalid = @($summary | Where-Object { -not $_.canonical_decimal_id -or -not $_.title_present })
+          [ordered]@{
+            source = 'torgi-russia.ru'
+            region_id = 36
+            page = 2
+            record_count = $records.Count
+            id_types = @($summary.id_type | Group-Object | ForEach-Object { @{ type = $_.Name; count = $_.Count } })
+            string_decimal_ids = @($summary | Where-Object { $_.id_type -eq 'String' -and $_.canonical_decimal_id } | ForEach-Object { $_.id })
+            invalid = $invalid
+            database_writes = 0
+          } | ConvertTo-Json -Depth 6

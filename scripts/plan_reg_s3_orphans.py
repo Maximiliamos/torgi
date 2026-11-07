@@ -30,10 +30,15 @@ def plan_orphans(
     *,
     now: datetime,
     minimum_age_days: int = 30,
+    minimum_age_hours: int | None = None,
 ) -> dict:
     """Returns a read-only candidate report; no deletions or API calls."""
     if type(minimum_age_days) is not int or minimum_age_days < 7:
         raise ValueError("minimum_age_days must be an integer >= 7")
+    if minimum_age_hours is not None and (
+        type(minimum_age_hours) is not int or minimum_age_hours < 1
+    ):
+        raise ValueError("minimum_age_hours must be an integer >= 1")
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("Inventory evaluation time must be timezone-aware")
     if not isinstance(inventory.get("Contents"), list):
@@ -89,7 +94,11 @@ def plan_orphans(
                 raise ValueError(f"Referenced object absent from inventory: {key}")
             referenced.add(key)
 
-    cutoff = now.astimezone(timezone.utc) - timedelta(days=minimum_age_days)
+    age = (
+        timedelta(hours=minimum_age_hours)
+        if minimum_age_hours is not None else timedelta(days=minimum_age_days)
+    )
+    cutoff = now.astimezone(timezone.utc) - age
     candidates = []
     kept_recent = 0
     kept_referenced = 0
@@ -117,6 +126,7 @@ def plan_orphans(
         "recent_unreferenced_preserved": kept_recent,
         "referenced_preserved": kept_referenced,
         "minimum_age_days": minimum_age_days,
+        "minimum_age_hours": minimum_age_hours,
         "candidate_count": len(candidates),
         "candidate_bytes": sum(x["size_bytes"] for x in candidates),
         "candidates": candidates,
@@ -130,6 +140,7 @@ def main() -> int:
     parser.add_argument("--manifests", type=Path, required=True, help="Directory containing <version>.json")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--min-age-days", type=int, default=30)
+    parser.add_argument("--min-age-hours", type=int)
     args = parser.parse_args()
     inventory = json.loads(args.inventory.read_text(encoding="utf-8-sig"))
     manifests = {}
@@ -145,6 +156,7 @@ def main() -> int:
         inventory, manifests,
         now=datetime.now(timezone.utc),
         minimum_age_days=args.min_age_days,
+        minimum_age_hours=args.min_age_hours,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

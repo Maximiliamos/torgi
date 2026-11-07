@@ -23,6 +23,7 @@ from bankrotai.db import (
     ProcessedLot,
     SourceLot,
     Watchlist,
+    utc_now,
 )
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import _promote_active_projection, persist_lot, normalize_status
@@ -974,7 +975,7 @@ def test_mark_running_refreshes_lease_and_finished_run_cannot_be_resurrected(ses
         assert run is not None
         assert run.status == "running"
         assert run.lease_expires_at is not None
-        assert run.lease_expires_at > datetime.now()
+        assert run.lease_expires_at > utc_now()
         run.status = "success"
         run.lease_expires_at = None
         session.commit()

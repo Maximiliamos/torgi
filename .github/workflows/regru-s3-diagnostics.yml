@@ -109,6 +109,8 @@ jobs:
           python -m pip install --disable-pip-version-check -e .
 
       - name: Upload probe with production signer
+        id: upload-probe
+        continue-on-error: true
         if: env.HAS_S3_CREDENTIALS == 'true'
         shell: bash
         env:
@@ -140,7 +142,7 @@ jobs:
           PY
 
       - name: Verify authenticated object exists
-        if: env.HAS_S3_CREDENTIALS == 'true'
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'success'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -153,7 +155,7 @@ jobs:
             --key "$PROBE_KEY"
 
       - name: Verify public read and CORS
-        if: env.HAS_S3_CREDENTIALS == 'true'
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'success'
         shell: bash
         env:
           PROBE_KEY: diagnostics/${{ github.sha }}.json
@@ -231,6 +233,12 @@ jobs:
           print(json.dumps({"diagnostics": diagnostics}, ensure_ascii=False, indent=2))
           raise SystemExit("REG.RU S3 public probe failed for all documented URL styles")
           PY
+
+      - name: Record quota-blocked probe without hiding the GC evidence
+        if: env.HAS_S3_CREDENTIALS == 'true' && steps.upload-probe.outcome == 'failure'
+        shell: bash
+        run: |
+          printf 'REG.RU S3 write probe is blocked; read-only inventory and the hash-locked cleanup plan remain authoritative.\n'
 
       - name: Estimate regional bundle reduction from existing S3 tiles
         if: always() && env.HAS_S3_CREDENTIALS == 'true'
@@ -332,6 +340,81 @@ jobs:
           output.sort(key=lambda item: item["last_modified"], reverse=True)
           print(json.dumps({"bundle_estimates": output[:10]}, ensure_ascii=False, indent=2))
           PY
+
+      - name: Build complete read-only immutable-object GC plan
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/s3-gc/manifests"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import subprocess
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "s3-gc"
+          bucket = os.environ["MAP_OBJECT_STORE_BUCKET"]
+          base = [
+              "aws", "--endpoint-url", os.environ["MAP_OBJECT_STORE_ENDPOINT"],
+              "--region", os.environ["MAP_OBJECT_STORE_REGION"], "s3api",
+          ]
+          # AWS CLI paginates ListObjectsV2 to completion in one process.
+          listing = json.loads(subprocess.check_output(base + [
+              "list-objects-v2", "--bucket", bucket, "--output", "json",
+          ], text=True))
+          contents = [{
+                  "Key": row["Key"],
+                  "Size": int(row["Size"]),
+                  "LastModified": row["LastModified"],
+              } for row in listing.get("Contents", [])]
+          inventory = {"Contents": contents, "IsTruncated": False}
+          (root / "inventory.json").write_text(
+              json.dumps(inventory, ensure_ascii=False), encoding="utf-8",
+          )
+          prefix, suffix = "datasets/", "/manifest.json"
+          manifest_count = 0
+          for row in contents:
+              key = row["Key"]
+              if not key.startswith(prefix) or not key.endswith(suffix):
+                  continue
+              version = key[len(prefix):-len(suffix)]
+              if not version or "/" in version:
+                  continue
+              output = root / "manifests" / f"{version}.json"
+              subprocess.check_call(base + [
+                  "get-object", "--bucket", bucket, "--key", key, str(output),
+              ], stdout=subprocess.DEVNULL)
+              manifest_count += 1
+          print(json.dumps({"objects": len(contents), "manifests": manifest_count}))
+          PY
+          python scripts/plan_reg_s3_orphans.py \
+            --inventory "$RUNNER_TEMP/s3-gc/inventory.json" \
+            --manifests "$RUNNER_TEMP/s3-gc/manifests" \
+            --output "$RUNNER_TEMP/s3-gc/plan.json" \
+            --min-age-hours 1
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads((Path(os.environ["RUNNER_TEMP"]) / "s3-gc/plan.json").read_text())
+          print(json.dumps({key: plan[key] for key in (
+              "manifest_count", "s3_object_count", "referenced_immutable_count",
+              "recent_unreferenced_preserved", "candidate_count", "candidate_bytes",
+          )}))
+          PY
+
+      - name: Upload immutable-object GC evidence
+        if: always() && env.HAS_S3_CREDENTIALS == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: regru-s3-gc-readonly-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/s3-gc/inventory.json
+            ${{ runner.temp }}/s3-gc/manifests/*.json
+            ${{ runner.temp }}/s3-gc/plan.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Record credentialless PR diagnostic
         if: env.HAS_S3_CREDENTIALS != 'true'

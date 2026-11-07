@@ -356,6 +356,38 @@ A passing read-only source probe plus queued FAST task is not evidence
 that the follow-on Celery sync completed. Inspect its durable source-run
 result before declaring recovery.
 
+## 2026-11-07 production run evidence (recovery in progress)
+
+GitHub run `42336240166` / DB run `3fd5f3bf-fbf5-4463-b402-86c8a40d5243`
+completed `failed`, not accepted. Torgi Russia traversed 452 pages and
+persisted 6,780 normalized rows, then stopped fail-closed at region filter ID
+36 page 2 because one of 24 upstream records did not satisfy the strict
+catalogue identity/title contract. M-ETS stopped after 134 pages because the
+reported total changed while the live catalogue was being traversed. CDTRF
+reached its selected-scope terminal page (32 pages, 1,589 persisted) and NISTP
+reached its selected-scope terminal page (144 pages, 815 persisted); both
+remain deliberately non-reconciling, hence `complete_source_run=false` does
+not authorize archival. Final post-processing failed on a single unbounded
+wide `source_lots` expiry query, so GEO and new MapDataset publication were
+not proved.
+
+The delayed scheduled run `79b84f12-b68b-49fb-a600-79de6438e027` started at
+09:54 MSK after the earlier lease released. It ran six sources because the
+Torgi Russia circuit was open. M-ETS failed again after 60 pages; its bounded
+retry `097bf5f9-9838-4bc6-a38b-5c660fdbde29` failed after 66 pages for the same
+live-total drift. CDTRF (32 pages, 1,587 persisted) and NISTP (143 pages, 815
+persisted) again reached their selected-scope paginator ends without missing-
+lot reconciliation. The cycle is `PARTIAL`, not a successful 09:00 proof.
+
+Recovery branch `codex/etp-seven-run-recovery-20261107` adds bounded PK-window
+expiry post-processing, bounded live-catalogue drift handling for M-ETS while
+retaining sequential/terminal/duplicate guards and no archival, canonical
+decimal-string ID support plus safe rejection diagnostics for Torgi Russia,
+and read-only reference-aware REG.RU immutable-object GC planning. These are
+`IMPLEMENTED/LOCAL_TESTED`, not yet merged, deployed or production-accepted.
+The current public map remains the last ready rollback-safe version; later
+local MapDataset builds failed S3 promotion with `403 QuotaExceeded`.
+
 ## Safeguards
 
 - Capture unique lot IDs and count in aggregates only.

@@ -21,6 +21,7 @@ from bankrotai.services.etp_mets_full_catalogue import (
 )
 
 CURSOR = re.compile(r"^([1-9]\d{0,3}):([0-9a-f]{64})$")
+MAX_LIVE_TOTAL_DRIFT_RATIO = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +45,10 @@ class MetsSourceCrawler:
         self.pilot = pilot
         self._seen: set[str] = set()
         self._total: int | None = None
+        self._minimum_total: int | None = None
+        self._maximum_total: int | None = None
         self._page_size: int | None = None
+        self._overlap_count = 0
         self._expected_page = 1
         self._prior_digest: str | None = None
 
@@ -72,28 +76,48 @@ class MetsSourceCrawler:
         total = int(parsed["total"])
         if self._total is None:
             self._total = total
+            self._minimum_total = total
+            self._maximum_total = total
             self._page_size = len(identities)
             if not self._page_size:
                 raise MetsCatalogueScanError("M-ETS first page is empty")
             if math.ceil(total / self._page_size) > filters.max_pages:
                 raise MetsCatalogueScanError("M-ETS catalogue exceeds page budget")
-        elif total != self._total:
-            raise MetsCatalogueScanError("M-ETS reported total changed during ingestion")
+        else:
+            assert self._minimum_total is not None
+            assert self._maximum_total is not None
+            self._minimum_total = min(self._minimum_total, total)
+            self._maximum_total = max(self._maximum_total, total)
         assert self._page_size is not None
-        pages_total = math.ceil(total / self._page_size)
-        expected_items = min(
-            self._page_size, total - (page_number - 1) * self._page_size,
+        assert self._total is not None
+        assert self._minimum_total is not None
+        assert self._maximum_total is not None
+        maximum_drift = max(
+            self._page_size * 2,
+            math.ceil(self._total * MAX_LIVE_TOTAL_DRIFT_RATIO),
         )
-        if len(identities) != expected_items:
+        if self._maximum_total - self._minimum_total > maximum_drift:
+            raise MetsCatalogueScanError("M-ETS reported total drift exceeds safe live-catalogue bound")
+        pages_total = math.ceil(total / self._page_size)
+        source_next_page = parsed.get("next_page")
+        if source_next_page is not None and source_next_page != page_number + 1:
+            raise MetsCatalogueScanError("M-ETS paginator is not sequential")
+        if source_next_page is not None and len(identities) != self._page_size:
             raise MetsCatalogueScanError("M-ETS page size contradicts reported total")
+        if source_next_page is None and not 1 <= len(identities) <= self._page_size:
+            raise MetsCatalogueScanError("M-ETS terminal page size is invalid")
         overlap = self._seen.intersection(identities)
-        if overlap:
-            raise MetsCatalogueScanError("M-ETS cross-page duplicate lot identity")
-        self._seen.update(identities)
+        if len(overlap) == len(identities):
+            raise MetsCatalogueScanError("M-ETS paginator repeated a complete page")
+        self._overlap_count += len(overlap)
+        if self._overlap_count > maximum_drift:
+            raise MetsCatalogueScanError("M-ETS live-catalogue overlap exceeds safe bound")
+        novel_observations = [item for item in observations if item[0] not in self._seen]
+        self._seen.update(item[0] for item in novel_observations)
 
         accepted = []
         rejected: dict[str, int] = {}
-        for external_id, catalogue_price, catalogue_status, _title in observations:
+        for external_id, catalogue_price, catalogue_status, _title in novel_observations:
             time.sleep(filters.detail_delay_seconds)
             url = f"{BASE}/{external_id}"
             try:
@@ -146,9 +170,7 @@ class MetsSourceCrawler:
         next_page = page_number + 1
         self._prior_digest = digest
         self._expected_page = next_page
-        next_cursor = f"{next_page}:{digest}" if next_page <= pages_total else None
-        if next_cursor is None and len(self._seen) != total:
-            raise MetsCatalogueScanError("M-ETS terminal identity count differs from total")
+        next_cursor = f"{next_page}:{digest}" if source_next_page is not None else None
         return ConnectorPage(
             items=accepted,
             next_cursor=next_cursor,
@@ -157,7 +179,12 @@ class MetsSourceCrawler:
                 "total_pages": pages_total,
                 "progress_current": page_number,
                 "progress_total": pages_total,
-                "catalogue_lots": len(identities),
+                "catalogue_lots": len(novel_observations),
+                "catalogue_page_lots": len(identities),
+                "live_total_initial": self._total,
+                "live_total_minimum": self._minimum_total,
+                "live_total_maximum": self._maximum_total,
+                "cross_page_overlap": self._overlap_count,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
                 "rejection_codes": rejected,

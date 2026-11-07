@@ -1006,3 +1006,29 @@ Remaining: сценарии импорта и изменения данных д
 
 - comparable evidence policy и отказ от оценки при недостаточных данных;
 - полный outcome dataset, backtesting, calibration и drift monitoring.
+
+### 2026-11-07 — seven-source production recovery (P0 active)
+
+- Analyzed GitHub run `42336240166`, DB run
+  `3fd5f3bf-fbf5-4463-b402-86c8a40d5243`, delayed 09:54 MSK scheduled run
+  `79b84f12-b68b-49fb-a600-79de6438e027`, and M-ETS retry
+  `097bf5f9-9838-4bc6-a38b-5c660fdbde29`.
+- Confirmed three independent blockers: unbounded wide `source_lots` expiry
+  SELECT, fail-closed Torgi Russia record cardinality at region 36/page 2, and
+  strict equality of a live M-ETS reported total during a multi-hour walk.
+- Implemented locally: bounded PK expiry scan; bounded M-ETS churn tolerance
+  with paginator terminal proof, overlap/large-drift refusal and no missing-lot
+  reconciliation; canonical numeric-string Torgi Russia IDs and safe rejection
+  reason evidence.
+- Full local suite: 1,259 passed, 12 skipped; the sole Windows failure was a
+  pre-existing test comparing UTC lease timestamps to local Moscow wall time
+  and is corrected to use `utc_now()` on this recovery branch.
+- Map publication remains blocked: repeated complete local builds are rejected
+  by REG.RU S3 with `403 QuotaExceeded`. A fail-closed read-only planner now
+  inventories every object and every retained manifest, preserves all
+  referenced/recent objects, and proposes only unreferenced immutable objects.
+- Remaining order: obtain the sanitized no-VPN shape of the one Torgi Russia
+  record; run CI and read-only S3 plan; independently review and apply an exact
+  orphan set; merge/deploy exact SHA; backup/restore preflight; rerun full seven
+  sources; finish GEO; publish and verify S3 manifest + sterdez.online map;
+  then observe two independent 09:00/21:00 scheduled cycles.

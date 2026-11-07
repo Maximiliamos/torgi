@@ -376,10 +376,27 @@ class TorgiRussiaClient:
         payload = {"data": records}
         lots = self.parse_search_payload(payload, history_only=filters.history_only)
         if len(lots) != len(records):
+            rejection_counts: dict[str, int] = {}
+            for item in records:
+                if not isinstance(item, dict):
+                    reason = "record_not_object"
+                else:
+                    raw_id = item.get("id")
+                    if isinstance(raw_id, bool) or not (
+                        isinstance(raw_id, int)
+                        or (isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit())
+                    ):
+                        reason = f"invalid_id_type:{type(raw_id).__name__}"
+                    elif not str(item.get("title") or "").strip():
+                        reason = "empty_title"
+                    else:
+                        reason = "unknown_parser_drop"
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
             raise RuntimeError(
                 "Torgi Russia public search dropped malformed lot records; "
                 f"page={page} region_id={filters.region_id} "
-                f"records={len(records)} normalized={len(lots)}"
+                f"records={len(records)} normalized={len(lots)} "
+                f"rejections={json.dumps(rejection_counts, sort_keys=True)}"
             )
         for lot in lots:
             raw = dict(lot.raw_data or {})
@@ -618,9 +635,19 @@ class TorgiRussiaClient:
             raise RuntimeError("Torgi Russia search returned an invalid payload")
         lots: list[NormalizedLot] = []
         for item in payload["data"]:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+            if not isinstance(item, dict):
                 continue
-            external_id = str(item["id"])
+            raw_id = item.get("id")
+            # Laravel may serialize an otherwise valid bigint identifier as a
+            # JSON string for individual rows. Accept only its canonical
+            # unsigned decimal representation; booleans, signs and arbitrary
+            # strings remain malformed and fail the page cardinality gate.
+            if isinstance(raw_id, bool) or not (
+                isinstance(raw_id, int)
+                or (isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit())
+            ):
+                continue
+            external_id = str(raw_id)
             title = str(item.get("title") or "").strip()
             if not title:
                 continue
