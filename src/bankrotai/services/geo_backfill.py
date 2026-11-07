@@ -1524,6 +1524,8 @@ def _geocode_pending_lots_unlocked(
         ).all()
         items = [GeoWorkItem(*row) for row in rows]
 
+    selection_duration_ms = round((time.monotonic() - started_at) * 1000)
+    resolve_started_at = time.monotonic()
     groups: dict[str, list[GeoWorkItem]] = {}
     for item in items:
         groups.setdefault(_work_key(item), []).append(item)
@@ -1611,6 +1613,8 @@ def _geocode_pending_lots_unlocked(
             cached.expires_at = utc_now() + timedelta(days=_SUCCESS_CACHE_DAYS)
         session.commit()
 
+    resolve_duration_ms = round((time.monotonic() - resolve_started_at) * 1000)
+    save_started_at = time.monotonic()
     result["phase"] = "saving"
     save_items = [(key, item) for key, group in groups.items() for item in group]
     for chunk_start in range(0, len(save_items), _SAVE_CHUNK_SIZE):
@@ -1648,7 +1652,12 @@ def _geocode_pending_lots_unlocked(
             status="running",
             progress={**result, "percent": percent},
         )
-    result.update({"percent": 100.0, "phase": "completed", "status": "completed"})
+    result.update({
+        "percent": 100.0, "phase": "completed", "status": "completed",
+        "selection_duration_ms": selection_duration_ms,
+        "resolve_duration_ms": resolve_duration_ms,
+        "save_duration_ms": round((time.monotonic() - save_started_at) * 1000),
+    })
     result["duration_seconds"] = round(time.monotonic() - started_at, 1)
     result["lots_per_second"] = round(result["processed"] / max(result["duration_seconds"], 0.001), 3)
     _set_progress_state(
