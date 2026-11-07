@@ -37,6 +37,12 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
+from bankrotai.services.ingestion_quarantine import (
+    MAX_QUARANTINED_RECORDS_PER_PAGE,
+    MAX_QUARANTINED_RECORDS_PER_SOURCE,
+    normalized_lot_rejection_reason,
+    quarantine_sample,
+)
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -436,6 +442,11 @@ class NationwideIngestionService:
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
+                if result.quarantined_records > MAX_QUARANTINED_RECORDS_PER_SOURCE:
+                    raise RuntimeError(
+                        f"{spec.source_id} has systemic malformed normalized records; "
+                        f"quarantined={result.quarantined_records}"
+                    )
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
@@ -642,7 +653,28 @@ class NationwideIngestionService:
             raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
+        page_quarantined = 0
         for lot in lots:
+            rejection_reason = normalized_lot_rejection_reason(
+                lot, expected_source=result.source_system,
+            )
+            if rejection_reason is not None:
+                page_quarantined += 1
+                result.quarantined_records += 1
+                result.items_rejected += 1
+                result.quarantine_reasons[rejection_reason] = (
+                    result.quarantine_reasons.get(rejection_reason, 0) + 1
+                )
+                if len(result.quarantine_samples) < 20:
+                    result.quarantine_samples.append(
+                        quarantine_sample(lot, reason=rejection_reason)
+                    )
+                if page_quarantined > MAX_QUARANTINED_RECORDS_PER_PAGE:
+                    raise RuntimeError(
+                        f"{result.source_system} page has systemic malformed normalized records; "
+                        f"quarantined={page_quarantined}"
+                    )
+                continue
             if not is_sale_real_estate_lot(lot):
                 continue
             if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
