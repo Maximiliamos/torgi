@@ -76,7 +76,7 @@ def map_source_fingerprint(session: Session) -> str:
     )
 
 
-def map_publication_blockers(session: Session) -> list[str]:
+def map_publication_blockers(session: Session, *, since: datetime | None = None) -> list[str]:
     """Reject publication while upstream ingestion/GEO writes are in flight.
 
     A running source run or GEO task can change source membership or
@@ -99,6 +99,20 @@ def map_publication_blockers(session: Session) -> list[str]:
     ) or 0)
     if active_geo:
         blockers.append("geo_in_progress")
+    if since is not None:
+        failed_geo = session.scalar(select(func.count(BackgroundTaskState.id)).where(
+            BackgroundTaskState.task_type.in_(("geocoding", "geo_backfill")),
+            BackgroundTaskState.status == "failed",
+            BackgroundTaskState.finished_at >= since,
+        )) or 0
+        if failed_geo:
+            blockers.append("geo_failed_during_build")
+        failed_ingestion = session.scalar(select(func.count(LotSyncRun.id)).where(
+            LotSyncRun.status.in_(("failed", "partial")),
+            LotSyncRun.finished_at >= since,
+        )) or 0
+        if failed_ingestion:
+            blockers.append("ingestion_failed_during_build")
     return blockers
 
 
@@ -437,7 +451,7 @@ def _promote_map_dataset(
                 "current_dataset_id": current_id,
             }
 
-        blockers = map_publication_blockers(session)
+        blockers = map_publication_blockers(session, since=dataset.created_at)
         if blockers:
             dataset.status = "rejected"
             session.commit()
@@ -750,7 +764,10 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     minimum_ratio=get_settings().min_map_coverage_ratio,
                 )
         with session_factory() as session:
-            blockers = map_publication_blockers(session)
+            dataset_snapshot = session.get(MapDataset, dataset_id)
+            if dataset_snapshot is None:
+                raise RuntimeError("Map candidate disappeared before publication")
+            blockers = map_publication_blockers(session, since=dataset_snapshot.created_at)
             if blockers:
                 raise RuntimeError(f"Map publication blocked by upstream work: {blockers}")
         # Avoid uploading a candidate already made stale by a GEO/source write.
