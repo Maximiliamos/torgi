@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import and_, case, insert, or_, select, update
@@ -19,6 +20,16 @@ from bankrotai.logic import (
     normalize_region_code,
     normalize_status,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class BatchPersistenceStats:
+    """Observable batch outcome; callers may use it to correct coarse counters."""
+
+    received: int = 0
+    semantic_skipped: int = 0
+    persisted: int = 0
+    chunks: int = 0
 
 
 def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) -> dict[str, Any]:
@@ -184,17 +195,27 @@ def persist_changed_lots_batch(
     *,
     batch_size: int = 500,
     existing_sources: dict[str, SourceLot] | None = None,
-) -> None:
+) -> BatchPersistenceStats:
     """Set-based exact-identity persistence; fuzzy reconciliation remains a later phase."""
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    skipped = persisted = chunks = 0
     for offset in range(0, len(lots), batch_size):
-        _persist_changed_lots_chunk(
+        chunk_skipped, chunk_persisted = _persist_changed_lots_chunk(
             session,
             lots[offset : offset + batch_size],
             run_id,
             existing_sources=existing_sources or {},
         )
+        skipped += chunk_skipped
+        persisted += chunk_persisted
+        chunks += 1
+    return BatchPersistenceStats(
+        received=len(lots),
+        semantic_skipped=skipped,
+        persisted=persisted,
+        chunks=chunks,
+    )
 
 
 def _persist_changed_lots_chunk(
@@ -203,9 +224,9 @@ def _persist_changed_lots_chunk(
     run_id: str,
     *,
     existing_sources: dict[str, SourceLot],
-) -> None:
+) -> tuple[int, int]:
     if not lots:
-        return
+        return 0, 0
     dialect = session.get_bind().dialect.name
     insert_factory = postgres_insert if dialect == "postgresql" else sqlite_insert if dialect == "sqlite" else None
     if insert_factory is None:
@@ -330,9 +351,10 @@ def _persist_changed_lots_chunk(
                 missing_successful_runs=0,
             )
         )
+    semantic_skipped = len(unchanged_ids)
     lots = remaining
     if not lots:
-        return
+        return semantic_skipped, 0
 
     old_status_by_id = {external_id: row.auction_status for external_id, row in existing_processed.items()}
     old_price_by_id = {external_id: row.current_price for external_id, row in existing_processed.items()}
@@ -469,3 +491,4 @@ def _persist_changed_lots_chunk(
             set_=update_values,
         )
     )
+    return semantic_skipped, len(lots)
