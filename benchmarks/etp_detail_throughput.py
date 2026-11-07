@@ -6,7 +6,6 @@ Per-host rate limiting applies to request starts (not successful completions).
 from __future__ import annotations
 
 import json
-import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
