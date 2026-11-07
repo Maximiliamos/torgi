@@ -18,14 +18,24 @@ class TorgiGovConnector(AuctionConnector):
     source_id = "torgi.gov.ru"
     capabilities = frozenset({"search"})
 
-    def __init__(self, *, concurrency: int = 4, requests_per_second: float = 3.0) -> None:
+    RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
+
+    def __init__(self, *, concurrency: int = 3, requests_per_second: float = 2.0) -> None:
         from bankrotai.scrapers import TorgiGovClient
 
-        self.client = TorgiGovClient()
+        # Nationwide scans are long-lived and should not turn one slow upstream
+        # response into a failed source run.  The public API supports 100 rows
+        # per page, so use the caller's requested page size and leave enough
+        # read headroom for the larger payload.
+        self.client = TorgiGovClient(timeout=(10, 60))
         self.concurrency = max(1, min(concurrency, 4))
         self._limiter = _DeterministicRateLimiter(requests_per_second)
         self._batch_clients = [
-            TorgiGovClient(rate_limit=(0, 0), allow_html_fallback=False)
+            TorgiGovClient(
+                timeout=(10, 60),
+                rate_limit=(0, 0),
+                allow_html_fallback=False,
+            )
             for _ in range(self.concurrency)
         ]
         for client in self._batch_clients:
@@ -126,9 +136,16 @@ class TorgiGovConnector(AuctionConnector):
         def run(job: tuple[str, str, int]) -> tuple[list[Any], dict[str, Any]]:
             _group, category, page = job
             client = self._client_pool.get()
-            page_filters = replace(normalized, category_code=category, page=page, page_size=10)
+            page_size = max(1, min(int(normalized.page_size or 100), 100))
+            page_filters = replace(
+                normalized,
+                category_code=category,
+                page=page,
+                page_size=page_size,
+            )
             try:
-                for attempt in range(3):
+                attempts = len(self.RETRY_DELAYS_SECONDS) + 1
+                for attempt in range(attempts):
                     try:
                         return client.search_lots(page_filters)
                     except Exception as exc:
@@ -153,9 +170,9 @@ class TorgiGovConnector(AuctionConnector):
                                 )
                             )
                         )
-                        if not transient or attempt == 2:
+                        if not transient or attempt == attempts - 1:
                             raise
-                        time.sleep(0.5 * (2 ** attempt))
+                        time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
                 raise RuntimeError("unreachable GIS retry state")
             finally:
                 self._client_pool.put(client)
