@@ -83,6 +83,7 @@ def test_retention_is_bounded_restartable_and_preserves_live_map():
     assert second["tile_budget_exhausted"] is False
     assert deleted_per_statement and max(deleted_per_statement) <= 2
 
+    # Capture the actual DELETE shape used by the retention worker.
     delete_sql = []
 
     def capture_delete_sql(_conn, _cursor, statement, _params, _context, _executemany):
