@@ -291,7 +291,7 @@ def test_mets_multi_lot_page_and_price_guard(monkeypatch):
             return SimpleNamespace(status_code=200, content=b"detail",
                                    text="detail", headers={"Content-Type": "text/html"})
     session = Session()
-    pilot = SimpleNamespace(session=session)
+    pilot = mets_sync.MetsPublicPilot(session=session)
     ids = ["1234-1", "1234-2"]
     monkeypatch.setattr(mets_sync, "_request_page", lambda *a, **kw: SimpleNamespace(text="catalogue"))
     monkeypatch.setattr(mets_sync, "_parse_page", lambda *a, **kw: {
