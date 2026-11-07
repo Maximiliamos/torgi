@@ -192,7 +192,7 @@ class CdtrfSourceCrawler:
             try:
                 lot = _verified_detail_with_retry(
                     str(hit["trade_id"]), str(hit["trade_lot_id"]),
-                    workers.session(), workers.limiter,
+                    workers.session(), workers,
                 )
             except (CdtrfCanaryError, CdtrfEvidenceError) as exc:
                 code = _cdtrf_rejection_code(exc)
