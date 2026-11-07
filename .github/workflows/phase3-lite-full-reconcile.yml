@@ -125,7 +125,12 @@ jobs:
           if (-not $env:TORGI_S3_CAPACITY_EVIDENCE_PATH) {
             throw 'No S3 provider quota evidence path configured: fail closed before ingestion'
           }
-          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH)
+          $buckets = @(docker exec bankrotai-home-ingestion-worker python -c 'from bankrotai.core import get_settings; print(get_settings().map_object_store_bucket or "")')
+          if ($LASTEXITCODE -ne 0 -or -not $buckets.Count -or -not $buckets[-1].Trim()) {
+            throw 'Cannot read independently configured MapDataset S3 bucket'
+          }
+          $expectedBucket = $buckets[-1].Trim()
+          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH --expected-bucket $expectedBucket)
           if ($LASTEXITCODE -ne 0 -or -not $result.Count -or
               $result[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
             throw "Backup/disk/S3 capacity gate failed: $($result -join '; ')"
