@@ -95,6 +95,22 @@ def test_phase3_workflows_schedule_health_and_restore_drills_with_deduplicated_a
     assert "stalled: no durable source progress" in full_reconcile
     assert "did not reach a terminal state within 85 minutes" not in full_reconcile
     assert "did not reach success within retry deadline" not in full_reconcile
+    assert "approved_sources" in full_reconcile
+    assert "Refusing partial full reconciliation" in full_reconcile
+    for source in (
+        "torgi.gov.ru",
+        "lot-online.ru",
+        "torgi-russia.ru",
+        "bidexpert.ru",
+        "m-ets.ru",
+        "cdtrf.ru",
+        "nistp.ru",
+    ):
+        assert source in full_reconcile
+
+    s3_gc = (ROOT / ".github" / "workflows" / "regru-s3-reference-gc.yml").read_text(encoding="utf-8")
+    assert "Invalid S3 object count for" in s3_gc
+    assert "python -c 'import json,sys; print(len(json.load(sys.stdin).get(\"Contents\", [])))'" in s3_gc
 
 
 def test_backup_policy_uses_d_drive_three_verified_generations_and_safe_migration() -> None:
