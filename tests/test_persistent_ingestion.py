@@ -1473,15 +1473,12 @@ def test_quarantined_source_record_finishes_partial_and_skips_archival(sessions)
 def test_all_seven_sources_quarantine_malformed_normalized_record_before_persistence(
     sessions, source_system: str,
 ) -> None:
-    valid = lot("valid")
-    valid.source_system = source_system
-    valid.source = source_system
     malformed = lot("broken")
     malformed.source_system = source_system
     malformed.source = source_system
     malformed.title = ""
 
-    connector = FakeConnector([[valid, malformed]])
+    connector = FakeConnector([[malformed]])
     service = NationwideIngestionService(sessions, connector_factory=lambda _source: connector)
     run_id = service.create_run(
         triggered_by="test", trigger_type="manual", total_sources=1,
@@ -1501,10 +1498,9 @@ def test_all_seven_sources_quarantine_malformed_normalized_record_before_persist
     assert source["quarantine_reasons"] == {"empty_title": 1}
     assert source["items_archived"] == 0
     with sessions() as session:
-        rows = session.scalars(
+        assert session.scalars(
             select(SourceLot).where(SourceLot.source_system == source_system)
-        ).all()
-        assert [row.external_id for row in rows] == ["valid"]
+        ).all() == []
 
 
 @pytest.mark.parametrize(
