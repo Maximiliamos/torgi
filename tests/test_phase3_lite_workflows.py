@@ -145,3 +145,24 @@ def test_backup_retention_counts_only_restore_verified_pairs() -> None:
     assert "Remove-Item -LiteralPath $old.Metadata -Force" in retention
     assert "Unverified/incomplete backup preserved for operator review" in retention
     assert "Get-ChildItem -LiteralPath $resolvedDestination -File -Filter 'bankrotai-*.dump'" not in retention
+
+
+def test_postdeploy_source_circuit_recovery_is_all_seven_and_fail_closed() -> None:
+    workflow = (
+        ROOT / ".github" / "workflows" / "source-circuit-postdeploy-recovery.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Deploy home secondary origin" in workflow
+    assert "sources_due_for_probe" in workflow
+    assert "record_source_probe" in workflow
+    assert "Source circuit recovery did not reach all-seven-ready state" in workflow
+    for source in (
+        "torgi.gov.ru",
+        "lot-online.ru",
+        "torgi-russia.ru",
+        "bidexpert.ru",
+        "m-ets.ru",
+        "cdtrf.ru",
+        "nistp.ru",
+    ):
+        assert source in workflow
