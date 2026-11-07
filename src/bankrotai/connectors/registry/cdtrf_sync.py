@@ -96,12 +96,35 @@ class CdtrfSourceCrawler:
             page_no = int(match.group(1))
         if page_no > filters.max_pages:
             raise CdtrfCatalogueScanError("CDTRF page budget exceeded")
-        response = self.session.get(
-            _url(page_no, filters.page_size),
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=False,
-            headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-operator-sync/1"},
-        )
+        response = None
+        retry_delays = (1.0, 2.0, 4.0, 8.0)
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                response = self.session.get(
+                    _url(page_no, filters.page_size),
+                    timeout=(10, 60),
+                    allow_redirects=False,
+                    headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-operator-sync/1"},
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt == len(retry_delays):
+                    raise
+                time.sleep(retry_delays[attempt])
+                continue
+            if response.status_code == 429 or 500 <= response.status_code <= 504:
+                if attempt == len(retry_delays):
+                    raise CdtrfCatalogueScanError(
+                        f"CDTRF catalogue HTTP {response.status_code}"
+                    )
+                time.sleep(retry_delays[attempt])
+                continue
+            break
+        if response is None:
+            raise CdtrfCatalogueScanError("CDTRF catalogue retry loop exhausted")
         if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
             raise CdtrfCatalogueScanError(f"CDTRF catalogue HTTP {response.status_code} or oversized")
         if "json" not in response.headers.get("Content-Type", "").lower():
