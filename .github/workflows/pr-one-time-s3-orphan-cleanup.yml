@@ -68,11 +68,73 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for version in             20260924T225230284059Z-s3             20260924T222246446795Z-s3             20260924T214633134097Z-s3             20260924T205816771500Z-s3             20260924T205000633559Z-s3             20260924T204308197270Z-s3
-          do
-            echo "Deleting datasets/$version/"
-            aws --endpoint-url "$ENDPOINT" --region "$REGION" s3 rm               "s3://$BUCKET/datasets/$version/" --recursive --only-show-errors
-          done
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import tempfile
+
+          endpoint = os.environ["ENDPOINT"]
+          bucket = os.environ["BUCKET"]
+          region = os.environ["REGION"]
+          versions = (
+              "20260924T225230284059Z-s3",
+              "20260924T222246446795Z-s3",
+              "20260924T214633134097Z-s3",
+              "20260924T205816771500Z-s3",
+              "20260924T205000633559Z-s3",
+              "20260924T204308197270Z-s3",
+          )
+
+          base = ["aws", "--endpoint-url", endpoint, "--region", region, "s3api"]
+          total = 0
+          for version in versions:
+              prefix = f"datasets/{version}/"
+              deleted = 0
+              while True:
+                  raw = subprocess.check_output(
+                      base + [
+                          "list-objects-v2",
+                          "--bucket", bucket,
+                          "--prefix", prefix,
+                          "--max-keys", "1000",
+                          "--output", "json",
+                      ],
+                      text=True,
+                  )
+                  payload = json.loads(raw)
+                  keys = [row["Key"] for row in payload.get("Contents", [])]
+                  if not keys:
+                      break
+                  delete_payload = {
+                      "Objects": [{"Key": key} for key in keys],
+                      "Quiet": True,
+                  }
+                  with tempfile.NamedTemporaryFile(
+                      mode="w", encoding="utf-8", suffix=".json", delete=False
+                  ) as handle:
+                      json.dump(delete_payload, handle, ensure_ascii=False)
+                      delete_file = handle.name
+                  try:
+                      subprocess.check_call(
+                          base + [
+                              "delete-objects",
+                              "--bucket", bucket,
+                              "--delete", f"file://{delete_file}",
+                          ]
+                      )
+                  finally:
+                      os.unlink(delete_file)
+                  deleted += len(keys)
+                  total += len(keys)
+                  print(json.dumps({
+                      "version": version,
+                      "deleted": deleted,
+                      "total_deleted": total,
+                  }))
+              print(json.dumps({"version": version, "prefix_empty": True, "deleted": deleted}))
+          print(json.dumps({"total_deleted": total, "status": "complete"}))
+          PY
 
       - name: Prove orphan prefixes are empty
         shell: bash
