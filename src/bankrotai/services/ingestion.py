@@ -561,7 +561,6 @@ class NationwideIngestionService:
                 query = query.where(SourceLot.region_code == region_code)
             return len(session.scalars(query).all())
 
-
     def _repeatable_coverage_collapse_confirmed(
         self,
         run_id: str,
