@@ -75,8 +75,8 @@ class CdtrfSyncFilters:
             raise ValueError("CDTRF detail_delay_seconds must be 0.5..10")
         if type(self.detail_concurrency) is not int or not 1 <= self.detail_concurrency <= 4:
             raise ValueError("Unsafe CDTRF detail_concurrency")
-        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 10:
-            raise ValueError("Unsafe CDTRF detail_requests_per_second")
+        if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 2:
+            raise ValueError("CDTRF detail_requests_per_second must be 0..2")
 
 
 class CdtrfSourceCrawler:
