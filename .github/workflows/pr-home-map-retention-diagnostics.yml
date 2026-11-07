@@ -166,3 +166,49 @@ jobs:
               }, default=str, ensure_ascii=False))
           '@
           $script | docker exec -i bankrotai-home-ingestion-worker python -
+
+      - name: Inspect Torgi Russia region 36 page 2 contract without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $uri = 'https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search'
+          $payload = @{
+            search = ''
+            history_only = 0
+            categorie_childs = @(7, 33, 343, 9, 18, 17, 16)
+            regions = @(36)
+            page = 2
+          } | ConvertTo-Json -Compress
+          $response = Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -ContentType 'application/json' `
+            -Headers @{ Accept = 'application/json'; Origin = 'https://xn----etbpba5admdlad.xn--p1ai'; Referer = 'https://xn----etbpba5admdlad.xn--p1ai/' } `
+            -Body $payload `
+            -TimeoutSec 60
+          $records = @($response.data)
+          if ($records.Count -ne 24) {
+            throw "Unexpected Torgi Russia region=36 page=2 cardinality: $($records.Count)"
+          }
+          $summary = @($records | ForEach-Object {
+            $id = $_.id
+            $idType = if ($null -eq $id) { 'null' } else { $id.GetType().Name }
+            $idText = if ($null -eq $id) { '' } else { [string]$id }
+            [ordered]@{
+              id = $idText
+              id_type = $idType
+              canonical_decimal_id = ($id -is [int] -or $id -is [long] -or $idText -cmatch '^[0-9]+$')
+              title_present = -not [string]::IsNullOrWhiteSpace([string]$_.title)
+            }
+          })
+          $invalid = @($summary | Where-Object { -not $_.canonical_decimal_id -or -not $_.title_present })
+          [ordered]@{
+            source = 'torgi-russia.ru'
+            region_id = 36
+            page = 2
+            record_count = $records.Count
+            id_types = @($summary.id_type | Group-Object | ForEach-Object { @{ type = $_.Name; count = $_.Count } })
+            string_decimal_ids = @($summary | Where-Object { $_.id_type -eq 'String' -and $_.canonical_decimal_id } | ForEach-Object { $_.id })
+            invalid = $invalid
+            database_writes = 0
+          } | ConvertTo-Json -Depth 6
