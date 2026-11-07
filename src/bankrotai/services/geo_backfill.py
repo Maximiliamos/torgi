@@ -1523,8 +1523,7 @@ def _geocode_pending_lots_unlocked(
             .limit(batch_limit)
         ).all()
         items = [GeoWorkItem(*row) for row in rows]
-    selection_duration_ms = round((time.monotonic() - started_at) * 1000)
-    resolve_started_at = time.monotonic()
+    selection_duration_ms, resolve_started_at = round((time.monotonic() - started_at) * 1000), time.monotonic()
     groups: dict[str, list[GeoWorkItem]] = {}
     for item in items:
         groups.setdefault(_work_key(item), []).append(item)
@@ -1544,7 +1543,6 @@ def _geocode_pending_lots_unlocked(
         "phase": "resolving",
     }
     _set_progress_state(session_factory, progress_task_id, status="running", progress={**result, "percent": 0.0})
-
     resolved: dict[str, Any] = {}
     if groups:
         with session_factory() as session:
@@ -1597,7 +1595,6 @@ def _geocode_pending_lots_unlocked(
                         else 80.0,
                     },
                 )
-
     with session_factory() as session:
         for key in missing_groups:
             value = resolved.get(key)
@@ -1611,7 +1608,6 @@ def _geocode_pending_lots_unlocked(
             cached.result_json = _cache_payload(value)
             cached.expires_at = utc_now() + timedelta(days=_SUCCESS_CACHE_DAYS)
         session.commit()
-
     resolve_duration_ms = round((time.monotonic() - resolve_started_at) * 1000)
     save_started_at = time.monotonic()
     result["phase"] = "saving"
@@ -1626,7 +1622,6 @@ def _geocode_pending_lots_unlocked(
                 for key, item in chunk
                 if (outcome := _save_geo_item_isolated(session_factory, key, item, resolved)) is not None
             ]
-
         geocoded = 0
         provider_counts: dict[str, int] = {}
         failure_reasons: dict[str, int] = {}
@@ -1652,9 +1647,8 @@ def _geocode_pending_lots_unlocked(
             progress={**result, "percent": percent},
         )
     result.update({"percent": 100.0, "phase": "completed", "status": "completed"})
-    result["selection_duration_ms"] = selection_duration_ms
-    result["resolve_duration_ms"] = resolve_duration_ms
-    result["save_duration_ms"] = round((time.monotonic() - save_started_at) * 1000)
+    result.update(selection_duration_ms=selection_duration_ms, resolve_duration_ms=resolve_duration_ms,
+                  save_duration_ms=round((time.monotonic() - save_started_at) * 1000))
     result["duration_seconds"] = round(time.monotonic() - started_at, 1)
     result["lots_per_second"] = round(result["processed"] / max(result["duration_seconds"], 0.001), 3)
     _set_progress_state(
