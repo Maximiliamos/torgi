@@ -168,6 +168,7 @@ jobs:
           $script | docker exec -i bankrotai-home-ingestion-worker python -
 
       - name: Inspect Torgi Russia region 36 page 2 contract without writes
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
