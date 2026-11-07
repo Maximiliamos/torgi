@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -17,6 +18,8 @@ from bankrotai.scraper_contracts import BidExpertSearchFilters, parse_money
 class BidExpertClient:
     BASE_URL = "https://bidexpert.ru"
     SEARCH_ENDPOINT = f"{BASE_URL}/bids/"
+    RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
+    RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
     LEASE_LISTING_PATTERNS = (
         re.compile(r"\bобъект\s+аренды\b", re.I),
         re.compile(r"\bк\s+аренде\s+предлага", re.I),
@@ -43,9 +46,34 @@ class BidExpertClient:
             params["maxprice"] = str(int(filters.price_max))
         return params
 
+    def _get_with_retry(self, *, params: dict[str, str]):
+        attempts = len(self.RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(attempts):
+            try:
+                response = self.session.get(
+                    self.SEARCH_ENDPOINT, params=params, timeout=self.timeout
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+                continue
+            if response.status_code in self.RETRY_STATUS_CODES:
+                if attempt == attempts - 1:
+                    response.raise_for_status()
+                    return response
+                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+                continue
+            response.raise_for_status()
+            return response
+        raise RuntimeError("BidExpert request retry loop exhausted")
+
     def search_lots(self, filters: BidExpertSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
-        response = self.session.get(self.SEARCH_ENDPOINT, params=self._params(filters), timeout=self.timeout)
-        response.raise_for_status()
+        response = self._get_with_retry(params=self._params(filters))
         lots = self.parse_listing_html(response.text, filters=filters, endpoint=response.url)
         return lots, {"source": "bidexpert.ru", "page": filters.page, "total_pages": self._total_pages(response.text), "has_more": filters.page < self._total_pages(response.text), "raw_endpoint": response.url}
 

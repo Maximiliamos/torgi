@@ -5,7 +5,8 @@
 # all four provider parser probes succeed and all cooldowns have elapsed.
 [CmdletBinding()]
 param(
-    [string]$ExpectedSha = 'ce362342c8bb954cd2e55bb1efcbe8efe49c738a',
+    [Parameter(Mandatory=$true)]
+    [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [switch]$ApplyVerifiedRecovery
 )
 $ErrorActionPreference = 'Stop'

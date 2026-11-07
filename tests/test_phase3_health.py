@@ -294,8 +294,9 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
     assert "timeout-minutes: 240" in workflow
     assert 'mode=f"source:{source}"' in workflow
     assert "phase3-lite-targeted-retry" in workflow
-    assert "Final 4/4 gate failed after targeted retries" in workflow
-    assert "acceptance chain is explicitly 4/4 -> MapDataset -> S3" in workflow
+    assert "Final source gate failed after targeted retries" in workflow
+    assert "$nonReconcilingFullSources = @('m-ets.ru','cdtrf.ru','nistp.ru')" in workflow
+    assert "all configured sources ->" in workflow
     assert "Post-retry MapDataset was not promoted within 20 minutes" in workflow
     assert "$source:" not in workflow
     assert "${source}:" in workflow

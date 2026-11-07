@@ -15,6 +15,7 @@ from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
+from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
@@ -722,6 +723,8 @@ class HtmlEtpConnector(AuctionConnector):
             "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
         )
 
+    RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+
     def _check_response(self, response: requests.Response) -> requests.Response:
         if 300 <= response.status_code < 400:
             raise SourceAccessError(f"{self.source_id}: provider redirect was refused")
@@ -729,6 +732,12 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceAccessError(f"{self.source_id}: provider returned HTTP {response.status_code}")
         response.raise_for_status()
         return response
+
+    def _read_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        response = request_with_retries(
+            self.session, method, url, delays=self.RETRY_DELAYS_SECONDS, **kwargs
+        )
+        return self._check_response(response)
 
     def _request(self, page: int) -> requests.Response:
         if self.profile.blocked_reason:
@@ -745,7 +754,7 @@ class HtmlEtpConnector(AuctionConnector):
             api_url = _safe_provider_url(
                 self.profile, "https://www.sberbank-ast.ru/api/Processing/main"
             )
-            response = self._check_response(self.session.post(
+            response = self._read_request("post",
                 api_url,
                 json={
                     "windowCode": "/ESGoodsList",
@@ -758,7 +767,7 @@ class HtmlEtpConnector(AuctionConnector):
                 },
                 timeout=self.timeout,
                 allow_redirects=False,
-            ))
+            )
             self._last_response, self._last_page = response, page
             return response
         supports_form = bool(self.profile.form_page_field or self.profile.postback_pagination)
@@ -766,18 +775,19 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceAccessError(f"{self.source_id}: pagination requires a provider-specific browser/form contract")
         if page <= 1 or self.profile.supports_get_pagination:
             page_url = _safe_provider_url(self.profile, _page_url(self.profile, page))
-            response = self._check_response(self.session.get(
-                page_url, timeout=self.timeout, allow_redirects=False
-            ))
+            response = self._read_request(
+                "get", page_url, timeout=self.timeout, allow_redirects=False
+            )
             self._last_response, self._last_page = response, page
             return response
 
         previous = self._last_response if self._last_page == page - 1 else None
-        previous = previous or self._check_response(self.session.get(
+        previous = previous or self._read_request(
+            "get",
             _safe_provider_url(self.profile, self.profile.listing_url),
             timeout=self.timeout,
             allow_redirects=False,
-        ))
+        )
         soup = _parse_soup(previous.content)
         if self.profile.form_page_field:
             form = soup.find("form", id=self.profile.form_id) if self.profile.form_id else soup.find("form")
@@ -804,9 +814,9 @@ class HtmlEtpConnector(AuctionConnector):
                 # duplicate pagenum/view_type and silently reuse wrong filters.
                 parsed_action = urlparse(action)
                 get_action = parsed_action._replace(query="", fragment="").geturl()
-                response = self._check_response(self.session.get(
-                    get_action, params=params, timeout=self.timeout, allow_redirects=False,
-                ))
+                response = self._read_request(
+                    "get", get_action, params=params, timeout=self.timeout, allow_redirects=False,
+                )
                 self._last_response, self._last_page = response, page
                 return response
             if method != "post":
@@ -831,9 +841,9 @@ class HtmlEtpConnector(AuctionConnector):
             action = _safe_provider_url(
                 self.profile, previous.url or self.profile.listing_url
             )
-        response = self._check_response(self.session.post(
-            action, data=data, timeout=self.timeout, allow_redirects=False
-        ))
+        response = self._read_request(
+            "post", action, data=data, timeout=self.timeout, allow_redirects=False
+        )
         self._last_response, self._last_page = response, page
         return response
 
@@ -931,11 +941,9 @@ class HtmlEtpConnector(AuctionConnector):
         )
         detail_url = _safe_provider_url(self.profile, detail_url)
         response = await asyncio.to_thread(
-            self.session.get, detail_url, timeout=self.timeout, allow_redirects=False
+            self._read_request, "get", detail_url,
+            timeout=self.timeout, allow_redirects=False,
         )
-        if response.status_code in {401, 403, 429}:
-            raise SourceAccessError(f"{self.source_id}: provider returned HTTP {response.status_code}")
-        response.raise_for_status()
         return parse_detail_html(
             self.profile,
             response.content,

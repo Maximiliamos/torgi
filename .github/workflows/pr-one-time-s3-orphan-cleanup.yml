@@ -1,0 +1,189 @@
+name: One-time REG.RU S3 orphan cleanup
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/pr-one-time-s3-orphan-cleanup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-time-regru-s3-orphan-cleanup
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ENDPOINT: ${{ vars.REGRU_S3_ENDPOINT }}
+      BUCKET: ${{ vars.REGRU_S3_BUCKET }}
+      REGION: ${{ vars.REGRU_S3_REGION || 'ru-1' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.REGRU_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.REGRU_S3_SECRET_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.REGRU_S3_REGION || 'ru-1' }}
+      AWS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - name: Validate exact protected and orphan sets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$ENDPOINT" = "https://s3.regru.cloud"
+          test "$BUCKET" = "sterdez-map"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+
+          protected=(
+            "20261106T224400098846Z-r6-bundle-s3"
+            "20261106T222900119643Z-r6-bundle-s3"
+            "20261106T221500251134Z-r6-bundle-s3"
+          )
+          orphans=(
+            "20260924T225230284059Z-s3"
+            "20260924T222246446795Z-s3"
+            "20260924T214633134097Z-s3"
+            "20260924T205816771500Z-s3"
+            "20260924T205000633559Z-s3"
+            "20260924T204308197270Z-s3"
+          )
+          for orphan in "${orphans[@]}"; do
+            for keep in "${protected[@]}"; do
+              test "$orphan" != "$keep"
+            done
+          done
+
+      - name: Inventory exact orphan prefixes before deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          for version in             20260924T225230284059Z-s3             20260924T222246446795Z-s3             20260924T214633134097Z-s3             20260924T205816771500Z-s3             20260924T205000633559Z-s3             20260924T204308197270Z-s3
+          do
+            aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api list-objects-v2               --bucket "$BUCKET" --prefix "datasets/$version/" --max-items 1               --query '{Count:KeyCount,Sample:Contents[0].Key}' --output json
+          done
+
+      - name: Delete only DB-orphaned legacy dataset prefixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import tempfile
+
+          endpoint = os.environ["ENDPOINT"]
+          bucket = os.environ["BUCKET"]
+          region = os.environ["REGION"]
+          versions = (
+              "20260924T225230284059Z-s3",
+              "20260924T222246446795Z-s3",
+              "20260924T214633134097Z-s3",
+              "20260924T205816771500Z-s3",
+              "20260924T205000633559Z-s3",
+              "20260924T204308197270Z-s3",
+          )
+
+          base = ["aws", "--endpoint-url", endpoint, "--region", region, "s3api"]
+          total = 0
+          for version in versions:
+              prefix = f"datasets/{version}/"
+              deleted = 0
+              while True:
+                  raw = subprocess.check_output(
+                      base + [
+                          "list-objects-v2",
+                          "--bucket", bucket,
+                          "--prefix", prefix,
+                          "--max-keys", "1000",
+                          "--output", "json",
+                      ],
+                      text=True,
+                  )
+                  payload = json.loads(raw)
+                  keys = [row["Key"] for row in payload.get("Contents", [])]
+                  if not keys:
+                      break
+                  delete_payload = {
+                      "Objects": [{"Key": key} for key in keys],
+                      "Quiet": True,
+                  }
+                  with tempfile.NamedTemporaryFile(
+                      mode="w", encoding="utf-8", suffix=".json", delete=False
+                  ) as handle:
+                      json.dump(delete_payload, handle, ensure_ascii=False)
+                      delete_file = handle.name
+                  try:
+                      subprocess.check_call(
+                          base + [
+                              "delete-objects",
+                              "--bucket", bucket,
+                              "--delete", f"file://{delete_file}",
+                          ]
+                      )
+                  finally:
+                      os.unlink(delete_file)
+                  deleted += len(keys)
+                  total += len(keys)
+                  print(json.dumps({
+                      "version": version,
+                      "deleted": deleted,
+                      "total_deleted": total,
+                  }))
+              print(json.dumps({"version": version, "prefix_empty": True, "deleted": deleted}))
+          print(json.dumps({"total_deleted": total, "status": "complete"}))
+          PY
+
+      - name: Prove orphan prefixes are empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          endpoint = os.environ["ENDPOINT"]
+          bucket = os.environ["BUCKET"]
+          region = os.environ["REGION"]
+          versions = (
+              "20260924T225230284059Z-s3",
+              "20260924T222246446795Z-s3",
+              "20260924T214633134097Z-s3",
+              "20260924T205816771500Z-s3",
+              "20260924T205000633559Z-s3",
+              "20260924T204308197270Z-s3",
+          )
+          base = ["aws", "--endpoint-url", endpoint, "--region", region, "s3api"]
+          for version in versions:
+              prefix = f"datasets/{version}/"
+              raw = subprocess.check_output(
+                  base + [
+                      "list-objects-v2",
+                      "--bucket", bucket,
+                      "--prefix", prefix,
+                      "--max-keys", "1",
+                      "--output", "json",
+                  ],
+                  text=True,
+              )
+              payload = json.loads(raw)
+              contents = payload.get("Contents") or []
+              if contents:
+                  raise SystemExit(
+                      f"orphan prefix still contains objects: {prefix}{contents[0].get('Key', '')}"
+                  )
+              print(json.dumps({"version": version, "verified_empty": True}))
+          PY
+
+      - name: Prove quota accepts a new tiny object
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="diagnostics/orphan-cleanup-${GITHUB_SHA}.txt"
+          printf 'quota-ok\n' > "$RUNNER_TEMP/quota-probe.txt"
+          aws --endpoint-url "$ENDPOINT" --region "$REGION" s3 cp             "$RUNNER_TEMP/quota-probe.txt" "s3://$BUCKET/$probe" --only-show-errors
+          aws --endpoint-url "$ENDPOINT" --region "$REGION" s3api head-object             --bucket "$BUCKET" --key "$probe" >/dev/null
+          aws --endpoint-url "$ENDPOINT" --region "$REGION" s3 rm             "s3://$BUCKET/$probe" --only-show-errors

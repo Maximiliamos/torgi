@@ -73,6 +73,7 @@ class SourceSyncResult:
     items_unchanged: int = 0
     items_archived: int = 0
     items_failed: int = 0
+    items_rejected: int = 0
     items_duplicates: int = 0
     duplicates_merged: int = 0
     category_pages: dict[str, int] = field(default_factory=dict)
@@ -714,7 +715,10 @@ class NationwideIngestionService:
             )
         if result.source_system == "nistp.ru":
             proven = [lot for lot in accepted if independent_detail_proven(lot)]
-            result.items_failed += len(accepted) - len(proven)
+            # A catalogue row that cannot be independently proven by its
+            # per-lot detail section is a conservative rejection, not an
+            # ingestion/transport failure. Keep the two signals separate.
+            result.items_rejected += len(accepted) - len(proven)
             accepted = proven
         with self.session_factory() as session:
             bind = session.get_bind()
@@ -994,6 +998,7 @@ class NationwideIngestionService:
                 "progress_current": result.progress_current,
                 "progress_total": result.progress_total,
                 "phase": result.phase,
+                "items_rejected": result.items_rejected,
                 "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
                 if result.elapsed_seconds
                 else 0,
@@ -1134,6 +1139,7 @@ class NationwideIngestionService:
             "items_unchanged": result.items_unchanged,
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
+            "items_rejected": result.items_rejected,
             "items_duplicates": result.items_duplicates,
             "duplicates_merged": result.duplicates_merged,
             "category_pages": result.category_pages,

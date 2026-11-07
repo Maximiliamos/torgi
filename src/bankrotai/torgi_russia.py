@@ -648,6 +648,16 @@ class TorgiRussiaClient:
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
             start_price = parse_money(str(item.get("start_price") or ""))
             current_price = parse_money(str(item.get("current_price") or ""))
+            trade_type_value = item.get("trade_type") or item.get("trade_type_title")
+            if isinstance(trade_type_value, dict):
+                auction_type = str(
+                    trade_type_value.get("title")
+                    or trade_type_value.get("name")
+                    or trade_type_value.get("id")
+                    or ""
+                ).strip() or None
+            else:
+                auction_type = str(trade_type_value or "").strip() or None
             lots.append(
                 NormalizedLot(
                     external_id=f"torgi-russia:{external_id}",
@@ -665,6 +675,7 @@ class TorgiRussiaClient:
                     start_price=start_price,
                     current_price=current_price,
                     auction_status=public_auction_status(status, history_only=history_only),
+                    auction_type=auction_type,
                     lot_url=lot_url,
                     source_url=lot_url,
                     detail_level="search",
@@ -676,7 +687,7 @@ class TorgiRussiaClient:
                         "trade_link": item.get("trade_link"),
                         "category_ids": item.get("category_ids"),
                         "marketplace": item.get("marketplace") or item.get("marketplace_title"),
-                        "trade_type": item.get("trade_type") or item.get("trade_type_title"),
+                        "trade_type": trade_type_value,
                         "trade_form": item.get("trade_form"),
                         "begin_offer_time": item.get("begin_offer_time"),
                         "status_id": item.get("status_id"),

@@ -176,7 +176,19 @@ def test_torgi_russia_parse_new_search_payload() -> None:
     assert lots[0].raw_data["image_urls"] == ["https://example.test/full.jpg"]
     assert lots[0].raw_data["marketplace"] == "ЭТП.ТР"
     assert lots[0].raw_data["trade_type"] == "Коммерческие торги"
+    assert lots[0].auction_type == "Коммерческие торги"
     assert lots[0].raw_data["source_status"] == "Идёт приём заявок"
+
+
+def test_torgi_russia_normalizes_structured_trade_type_for_postgres() -> None:
+    item = _new_site_lot()
+    item["trade_type"] = {"id": 1, "title": "Банкротство"}
+    item.pop("trade_type_title", None)
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.auction_type == "Банкротство"
+    assert lot.raw_data["trade_type"] == {"id": 1, "title": "Банкротство"}
 
 
 def test_torgi_russia_extracts_lots_from_nextjs_flight_payload() -> None:

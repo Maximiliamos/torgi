@@ -242,12 +242,33 @@ class MetsPublicPilot:
             if remaining > 0:
                 time.sleep(remaining)
         self._last_request_at = time.monotonic()
-        response = self.session.get(
-            url,
-            timeout=(5, 25),
-            allow_redirects=False,
-            headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
-        )
+        response = None
+        for delay in (1.0, 2.0, 4.0, 8.0, None):
+            try:
+                response = self.session.get(
+                    url,
+                    timeout=(10, 60),
+                    allow_redirects=False,
+                    headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if delay is None:
+                    raise
+                time.sleep(delay)
+                continue
+            if response.status_code == 429 or 500 <= response.status_code <= 504:
+                if delay is None:
+                    response.raise_for_status()
+                    raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
+                time.sleep(delay)
+                continue
+            break
+        if response is None:
+            raise RuntimeError("M-ETS request retry loop exhausted")
         response.raise_for_status()
         if 300 <= response.status_code < 400:
             raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")

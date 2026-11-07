@@ -5,12 +5,15 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
-    [string]$BackupScript = (Join-Path $PSScriptRoot 'backup-home-postgres.ps1'),
+    [string]$BackupScript = '',
     [ValidateRange(1, 500)][int]$GeoBatchSize = 500,
     [ValidateRange(1, 64)][int]$GeoMaxBatches = 64,
     [switch]$ConfirmProductionWrites
 )
 $ErrorActionPreference = 'Stop'
+if (-not $BackupScript) {
+    $BackupScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'backup-home-postgres.ps1'
+}
 if (-not $ConfirmProductionWrites) { throw 'Specify -ConfirmProductionWrites to authorize the full PostgreSQL/GEO/map campaign.' }
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $ingest = 'bankrotai-home-ingestion-worker'

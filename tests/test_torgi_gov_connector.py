@@ -10,16 +10,16 @@ from bankrotai.scraper_contracts import TorgiGovSearchFilters
 
 def test_gis_connector_paginates_root_categories_independently() -> None:
     connector = TorgiGovConnector()
-    calls: list[tuple[str | None, int]] = []
+    calls: list[tuple[str | None, int, int]] = []
 
     def fake_search(filters):
-        calls.append((filters.category_code, filters.page))
+        calls.append((filters.category_code, filters.page, filters.page_size))
         total_pages = 2 if filters.category_code == "903" else 1
         return [], {"has_more": filters.page < total_pages, "total_pages": total_pages}
 
     for client in connector._batch_clients:
         client.search_lots = fake_search
-    filters = TorgiGovSearchFilters(category_code="903,7,2", page=1)
+    filters = TorgiGovSearchFilters(category_code="903,7,2", page=1, page_size=100)
 
     async def exercise() -> list[dict]:
         metadata = []
@@ -35,14 +35,14 @@ def test_gis_connector_paginates_root_categories_independently() -> None:
     metadata = asyncio.run(exercise())
 
     assert sorted(calls) == sorted([
-        ("903", 1),
-        ("903", 2),
-        ("8", 1),
-        ("9", 1),
-        ("10", 1),
-        ("11", 1),
-        ("12", 1),
-        ("2", 1),
+        ("903", 1, 100),
+        ("903", 2, 100),
+        ("8", 1, 100),
+        ("9", 1, 100),
+        ("10", 1, 100),
+        ("11", 1, 100),
+        ("12", 1, 100),
+        ("2", 1, 100),
     ])
     assert sum(item["pages_fetched"] for item in metadata) == 8
     assert {
@@ -76,7 +76,7 @@ def test_gis_connector_retries_transient_connection_abort() -> None:
     def flaky_search(filters):
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
+        if attempts < 5:
             raise requests.ConnectionError(
                 "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
             )
@@ -88,7 +88,7 @@ def test_gis_connector_retries_transient_connection_abort() -> None:
     results = connector._run_jobs(filters, [("2", "2", 1)])
 
     assert results == [([], {"has_more": False, "total_pages": 1})]
-    assert attempts == 3
+    assert attempts == 5
 
 
 def test_gis_connector_does_not_retry_non_transient_error() -> None:
