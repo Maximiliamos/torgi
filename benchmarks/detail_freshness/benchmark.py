@@ -1,75 +1,154 @@
 #!/usr/bin/env python3
-"""Read-only microbenchmark of source comparison (synthetic, no production DB).
+"""Synthetic, read-only benchmark for semantic batch persistence.
 
-Usage: PYTHONPATH=src python benchmarks/detail_freshness/benchmark.py
-This intentionally reports only CPU comparison performance. SQL transaction
-and query counts must be obtained via SQLAlchemy event profiling on a
-disposable database and are NOT inferred from this microbenchmark.
+Usage:
+    PYTHONPATH=src python benchmarks/detail_freshness/benchmark.py
+
+No network or production database is accessed. The benchmark creates an
+in-memory SQLite database, seeds 1,585 synthetic rows, and measures the
+actual batch_persistence SQL path for a metadata-only refresh versus a real
+price change.
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from decimal import Decimal
-from statistics import median
 from time import perf_counter
-from types import SimpleNamespace
 
-from bankrotai.services.detail_freshness import (
-    SOURCE_BUSINESS_FIELDS, compare_source_values,
-)
+from sqlalchemy import create_engine, event, update
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-
-def make_record(index: int) -> dict:
-    record = {key: None for key in SOURCE_BUSINESS_FIELDS}
-    record.update({
-        "canonical_lot_id": index + 1,
-        "processed_lot_id": index + 1,
-        "source_system": "cdtrf.ru",
-        "external_id": f"synthetic-{index}",
-        "title": f"Объект {index}",
-        "current_price": Decimal("1000000.00"),
-        "start_price": Decimal("1200000.00"),
-        "source_status": "active",
-        "is_active": True,
-        "is_archived": False,
-        "application_deadline": datetime(2026, 12, 15),
-        "raw_data": {"listing_fingerprint": "transport-a"},
-    })
-    return record
+from bankrotai.db import Base, LotSyncRun
+from bankrotai.domain import NormalizedLot
+from bankrotai.services.batch_persistence import persist_changed_lots_batch
 
 
-def run(n=1585, repetitions=7):
-    records = [make_record(i) for i in range(n)]
-    changed = [dict(row) for row in records]
-    changed[0]["current_price"] = Decimal("999999.00")
-    changed[1]["application_deadline"] = datetime(2026, 12, 16)
-    changed[2]["source_status"] = "closed"
-    timings = []
-    counts = []
-    for _ in range(repetitions):
-        started = perf_counter()
-        count = sum(
-            compare_source_values(SimpleNamespace(**original), candidate).changed
-            for original, candidate in zip(records, changed)
+ROWS = 1585
+BATCH_SIZE = 500
+
+
+def make_lot(index: int, *, price: float = 500_000, fingerprint: str | None = None) -> NormalizedLot:
+    raw = {"region_code": "76", "category_code": "903"}
+    if fingerprint is not None:
+        raw["listing_fingerprint"] = fingerprint
+    return NormalizedLot(
+        external_id=f"benchmark-{index}",
+        source="benchmark",
+        source_system="benchmark.test",
+        title=f"Объект {index}",
+        description="Стабильное описание",
+        category="land",
+        region_slug="76",
+        region_name="Ярославская область",
+        address=f"Ярославль, участок {index}",
+        cadastral_number=None,
+        vin=None,
+        area=100.0,
+        start_price=500_000,
+        current_price=price,
+        auction_status="active",
+        lot_url=f"https://example.test/{index}",
+        source_url=f"https://example.test/{index}",
+        detail_level="detail",
+        raw_data=raw,
+    )
+
+
+def add_run(session, run_id: str) -> None:
+    session.execute(
+        update(LotSyncRun)
+        .where(LotSyncRun.status.in_(("queued", "running")))
+        .values(status="success")
+    )
+    session.add(LotSyncRun(id=run_id, status="running", trigger_type="benchmark", total_sources=1))
+    session.flush()
+
+
+def measured_call(engine, session, lots, run_id: str) -> dict:
+    statements = 0
+
+    def count_statement(*_args, **_kwargs) -> None:
+        nonlocal statements
+        statements += 1
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+    started = perf_counter()
+    try:
+        stats = persist_changed_lots_batch(
+            session,
+            lots,
+            run_id,
+            batch_size=BATCH_SIZE,
         )
-        timings.append((perf_counter() - started) * 1000)
-        counts.append(count)
+        session.commit()
+    finally:
+        event.remove(engine, "before_cursor_execute", count_statement)
     return {
-        "kind": "synthetic_cpu_only",
-        "records": n,
-        "repetitions": repetitions,
-        "expected_changed": 3,
-        "observed_changed": counts,
-        "median_ms": round(median(timings), 3),
-        "all_ms": [round(x, 3) for x in timings],
-        "sql_statements": "not_measured",
-        "transactions": "not_measured",
-        "production_access": False,
+        "rows": len(lots),
+        "chunks": stats.chunks,
+        "semantic_skipped": stats.semantic_skipped,
+        "persisted": stats.persisted,
+        "sql_statements": statements,
+        "commits": 1,
+        "elapsed_ms": round((perf_counter() - started) * 1000, 3),
     }
 
 
+def run() -> dict:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with factory() as session:
+        add_run(session, "benchmark-seed")
+        persist_changed_lots_batch(
+            session,
+            [make_lot(i, fingerprint="transport-1") for i in range(ROWS)],
+            "benchmark-seed",
+            batch_size=BATCH_SIZE,
+        )
+        session.commit()
+
+        add_run(session, "benchmark-skip")
+        metadata_only = measured_call(
+            engine,
+            session,
+            [make_lot(i, fingerprint="transport-2") for i in range(ROWS)],
+            "benchmark-skip",
+        )
+
+        add_run(session, "benchmark-price")
+        price_change = measured_call(
+            engine,
+            session,
+            [
+                make_lot(i, price=499_999, fingerprint="transport-3")
+                for i in range(ROWS)
+            ],
+            "benchmark-price",
+        )
+
+    engine.dispose()
+    result = {
+        "kind": "synthetic_sqlite_batch_persistence",
+        "production_access": False,
+        "rows": ROWS,
+        "batch_size": BATCH_SIZE,
+        "metadata_only_refresh": metadata_only,
+        "real_price_change": price_change,
+    }
+    assert metadata_only["semantic_skipped"] == ROWS
+    assert metadata_only["persisted"] == 0
+    assert metadata_only["sql_statements"] == 12
+    assert price_change["semantic_skipped"] == 0
+    assert price_change["persisted"] == ROWS
+    assert price_change["sql_statements"] == 24
+    return result
+
+
 if __name__ == "__main__":
-    result = run()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    assert all(count == 3 for count in result["observed_changed"])
+    print(json.dumps(run(), ensure_ascii=False, indent=2))
