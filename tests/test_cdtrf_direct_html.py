@@ -60,7 +60,11 @@ def build_detail(*, tamper_price=False, tamper_id=False):
         "regionID": 32,
         "latitude": "0.0000000",
         "longitude": "0.0000000",
-        "lotInfo": "<p>Нежилое помещение, кадастр 32:10:0010101:42</p>",
+        "location": "Брянская обл, г Брянск, ул Лесная, д 1",
+        "lotInfo": (
+            "<p>Нежилое помещение площадью 239.1 кв.м., "
+            "кадастр 32:10:0010101:42</p>"
+        ),
     }
     lot_node = ref_mapping(lot_fields)
     nodes[lot_node]["lotScheduleItems"] = periods
@@ -125,6 +129,8 @@ def test_detail_uses_stable_trade_lot_identity_and_price_schedule_not_fake_curre
     assert item["efrsb_message_id"] == "25293724"
     assert item["region_label"] == "Брянская область"
     assert item["region_id"] == 32
+    assert item["property_address"] == "Брянская обл, г Брянск, ул Лесная, д 1"
+    assert item["area_sqm"] == 239.1
     assert item["cadastral_number"] == "32:10:0010101:42"
     assert item["coordinates"] is None
     assert item["price_periods"] == [{
@@ -164,6 +170,14 @@ def test_money_is_decimal_and_does_not_steal_lot_id():
     assert money("675000,00") == "675000.00"
     assert money("Код торгов: 390364") is None
     assert money("0 ₽") is None
+
+
+def test_detail_does_not_guess_area_when_building_and_land_differ():
+    html = build_detail().replace(
+        "площадью 239.1 кв.м.",
+        "площадью 239.1 кв.м. с земельным участком 900 кв.м.",
+    )
+    assert parse_detail(html, URL)["area_sqm"] is None
 
 
 class Response:

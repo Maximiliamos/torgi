@@ -2,7 +2,8 @@ name: CDTRF complete catalogue read-only acceptance
 
 on:
   push:
-    branches: [feat/cdtrf-catalog-timeline-20261030]
+    branches:
+      - feat/cdtrf-catalog-timeline-20261030
     paths:
       - '.github/workflows/etp-cdtrf-full-catalogue-readonly.yml'
       - 'src/bankrotai/services/etp_cdtrf_full_catalogue.py'
@@ -19,60 +20,90 @@ jobs:
   full-catalogue:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 120
-    if: github.ref == 'refs/heads/feat/cdtrf-catalog-timeline-20261030'
+    if: >-
+      github.ref == 'refs/heads/feat/cdtrf-catalog-timeline-20261030' ||
+      github.ref == 'refs/heads/feat/etp-checklist-v2-quality-20261105'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Verify canonical Home worker
+      - name: Verify exact-SHA Home Python runtime
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path 'src/bankrotai/services/etp_cdtrf_full_catalogue.py')) {
             throw 'Exact checked out CDTRF scanner missing'
           }
-          $worker = @(docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}')
-          if ($LASTEXITCODE -ne 0 -or $worker -ne 'bankrotai-home-ingestion-worker') {
-            throw 'Canonical Home ingestion worker is unavailable'
-          }
+          $python = Get-Command python.exe -ErrorAction Stop
+          & $python.Source -c "import requests; print('Home Python dependencies available')"
+          if ($LASTEXITCODE -ne 0) { throw 'Home Python requests dependency unavailable' }
 
-      - name: Run full CDTRF catalogue without DB writes (100 then 50 then 20)
+      - name: Run two full CDTRF catalogue passes without DB writes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $src = (Resolve-Path 'src/bankrotai/services/etp_cdtrf_full_catalogue.py').Path
-          $resultPath = Join-Path $env:GITHUB_WORKSPACE 'cdtrf-complete-readonly.json'
-          $ok = $false
-          foreach ($pageSize in @(100,50,20)) {
-            Write-Output ("CDTRF full read-only attempt; page_size={0}" -f $pageSize)
-            $ErrorActionPreference = 'Continue'
-            $output = @(Get-Content -LiteralPath $src -Raw | docker exec -i bankrotai-home-ingestion-worker python -c "import sys; code=sys.stdin.read().lstrip(chr(65279)); exec(compile(code,'cdtrf_full_readonly','exec'), {'__name__':'__main__'})" --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
-            $exitCode = $LASTEXITCODE
-            $ErrorActionPreference = 'Stop'
-            if ($exitCode -ne 0) {
-              Write-Output ("CDTRF full scan failed with code {0}; log tail: {1}" -f $exitCode, ((@($output) | Select-Object -Last 5) -join ' '))
-              Write-Warning ("CDTRF PageSize={0} failed; fall back to next official size" -f $pageSize)
-              continue
+          $env:PYTHONPATH = (Resolve-Path 'src').Path
+          $revision = (git rev-parse HEAD).Trim()
+          $passReports = @()
+          foreach ($pass in @(1,2)) {
+            $resultPath = Join-Path $env:GITHUB_WORKSPACE ("cdtrf-complete-readonly-pass-{0}.json" -f $pass)
+            $ok = $false
+            foreach ($pageSize in @(100,50,20)) {
+              Write-Output ("CDTRF independent pass {0}/2; page_size={1}; revision={2}" -f $pass,$pageSize,$revision)
+              $ErrorActionPreference = 'Continue'
+              $output = @(& python.exe -m bankrotai.services.etp_cdtrf_full_catalogue --page-size $pageSize --max-pages 10000 --delay-seconds 1 2>&1)
+              $exitCode = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              if ($exitCode -ne 0) {
+                Write-Output ("CDTRF pass {0} failed with code {1}; log tail: {2}" -f $pass,$exitCode,((@($output) | Select-Object -Last 5) -join ' '))
+                Write-Warning ("CDTRF PageSize={0} failed; fall back to next official size" -f $pageSize)
+                continue
+              }
+              $jsonLine = @($output | Where-Object { $_ -is [string] -and $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+              if ($jsonLine.Count -ne 1) { throw 'Read-only scan returned no machine-readable evidence' }
+              $report = $jsonLine[0] | ConvertFrom-Json
+              if ($report.selected_catalogue_pages_observed -ne $true -or
+                  $report.pages_scanned -ne $report.pages_expected -or
+                  $report.unverified_coverage_gap -ne 0 -or
+                  $report.cross_page_overlap_count -ne 0 -or
+                  $report.production_database_writes -ne 0 -or
+                  $report.complete_source_inventory -ne $false -or
+                  $report.archival_allowed -ne $false -or
+                  $report.reconcile_missing -ne $false -or
+                  $report.map_publication -ne $false) {
+                throw 'CDTRF evidence inconsistent, incomplete or overstates completeness'
+              }
+              if ($report.live_catalogue_drift -ne $true -and
+                  $report.unique_catalogue_lot_ids -ne $report.reported_total) {
+                throw 'Stable CDTRF pass does not match the declared row count'
+              }
+              $report | Add-Member -NotePropertyName source_revision -NotePropertyValue $revision
+              $report | Add-Member -NotePropertyName independent_pass -NotePropertyValue $pass
+              $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+              $passReports += $report
+              Write-Output ("CDTRF pass {0} verified: pages={1}, IDs={2}, hints={3}, page_size={4}, drift={5}" -f $pass,$report.pages_scanned,$report.unique_catalogue_lot_ids,$report.property_hint_candidates,$pageSize,$report.live_catalogue_drift)
+              $ok = $true
+              break
             }
-            $jsonLine = @($output | Where-Object { $_ -is [string] -and $_.Trim().StartsWith('{') } | Select-Object -Last 1)
-            if ($jsonLine.Count -ne 1) { throw 'Read-only scan returned no machine-readable evidence' }
-            $report = $jsonLine[0] | ConvertFrom-Json
-            if ($report.selected_catalogue_pages_observed -ne $true -or
-                $report.pages_scanned -ne $report.pages_expected -or
-                $report.unique_catalogue_lot_ids -ne $report.reported_total -or
-                $report.production_database_writes -ne 0 -or
-                $report.complete_source_inventory -ne $false -or
-                $report.archival_allowed -ne $false -or
-                $report.map_publication -ne $false) {
-              throw 'CDTRF evidence inconsistent or overstates completeness'
-            }
-            $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding UTF8
-            Write-Output ("CDTRF verified read-only: pages={0}, IDs={1}, hints={2}, page_size={3}" -f $report.pages_scanned, $report.unique_catalogue_lot_ids, $report.property_hint_candidates, $pageSize)
-            $ok = $true
-            break
+            if (-not $ok) { throw ("Full read-only CDTRF pass {0} failed at 100, 50 and 20" -f $pass) }
           }
-          if (-not $ok) { throw 'Full read-only CDTRF scan failed at 100, 50 and 20' }
+          $passesMatch = (
+            $passReports.Count -eq 2 -and
+            $passReports[0].lot_ids_sha256 -eq $passReports[1].lot_ids_sha256 -and
+            $passReports[0].unique_catalogue_lot_ids -eq $passReports[1].unique_catalogue_lot_ids
+          )
+          [ordered]@{
+            source_revision = $revision
+            pass_1_ids = $passReports[0].unique_catalogue_lot_ids
+            pass_2_ids = $passReports[1].unique_catalogue_lot_ids
+            pass_1_sha256 = $passReports[0].lot_ids_sha256
+            pass_2_sha256 = $passReports[1].lot_ids_sha256
+            two_pass_catalogue_match = $passesMatch
+          } | ConvertTo-Json | Set-Content -LiteralPath 'cdtrf-two-pass-comparison.json' -Encoding UTF8
+          if (-not $passesMatch) {
+            throw 'CDTRF independent passes differ; retain evidence but do not mark two-pass acceptance'
+          }
 
       - name: Verify sample CDTRF details, without database writes
         shell: powershell
@@ -96,7 +127,8 @@ jobs:
         with:
           name: cdtrf-full-readonly
           path: |
-            cdtrf-complete-readonly.json
+            cdtrf-complete-readonly-pass-*.json
+            cdtrf-two-pass-comparison.json
             cdtrf-detail-readonly.json
           if-no-files-found: warn
           retention-days: 30

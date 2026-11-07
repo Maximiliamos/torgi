@@ -10,20 +10,38 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from bankrotai.connectors.etp_sources import (
     EtpSearchFilters, EtpSourceProfile, PROFILES as DIRECT_PROFILES, SOURCE_CONNECTOR_TYPES,
 )
+from bankrotai.services.etp_quality_checks import audit_catalogue_lots, audit_detail_pair
 
 CHECKS = (
-    "catalogue_url", "transport", "catalogue_markup", "lot_discovery",
+    "catalogue_url", "dns_resolution", "tls_certificate", "http_response",
+    "redirect_chain", "transport", "catalogue_markup", "browser_javascript",
+    "catalogue_filter_state", "lot_discovery", "procedure_lot_separation",
     "stable_lot_ids", "pagination_next", "last_page_proven",
-    "individual_detail", "detail_identity", "initial_or_current_price",
+    "two_pass_catalogue_match",
+    "individual_detail", "detail_identity", "individual_detail_price",
+    "individual_detail_status", "detail_price_consistency",
+    "detail_status_consistency", "detail_cadastral_consistency",
+    "detail_address", "detail_cadastral", "detail_area", "detail_dates",
+    "detail_address_consistency", "detail_area_consistency",
+    "detail_dates_consistency",
+    "lot_id_provenance", "money_integrity",
+    "catalogue_price_coverage", "catalogue_status_coverage",
+    "pagination_page_contract", "initial_or_current_price",
     "auction_status", "property_classification", "cookie_or_tutorial_modal",
-    "production_import", "geocoding", "map_publication", "scheduler",
+    "postgres_backup_restore", "production_import", "postgres_insert",
+    "postgres_update", "postgres_deduplication", "mass_archival_guard",
+    "geocoding", "map_dataset_build", "map_publication", "s3_publication",
+    "website_visibility", "website_lot_links", "website_source_filter",
+    "scheduler", "scheduler_09_msk", "scheduler_21_msk",
+    "scheduler_two_consecutive_cycles",
 )
 NOT_TESTED = "NOT_TESTED"
 PASS = "PASS"
@@ -44,15 +62,30 @@ def _entry(state: str = NOT_TESTED, *, reason: str | None = None,
     return result
 
 
+def _http_status(exc: Exception) -> int | None:
+    """Extract only a safe HTTP code, never a URL, header or response body."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        return status
+    if type(exc).__name__ not in {"SourceAccessError", "HTTPError"}:
+        return None
+    match = re.search(r"\bHTTP\s+([1-5]\d{2})\b", str(exc))
+    return int(match.group(1)) if match else None
+
+
 def _error_kind(exc: Exception) -> tuple[str, str]:
-    """Allowlisted exception class only; raw provider text may contain secrets."""
+    """Diagnostic categories are allowlisted; never expose provider text."""
     name = type(exc).__name__
+    if name == "ConnectorCapabilityError":
+        return NOT_APPLICABLE, "unsupported_connector_capability"
     if name in {"SSLError", "SSLCertVerificationError"}:
         return BLOCKED, "tls_certificate_validation"
     if name in {"ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout"}:
         return BLOCKED, "transport_" + name
     if name in {"SourceAccessError", "HTTPError", "TooManyRedirects"}:
-        return BLOCKED, "provider_access_or_http"
+        status = _http_status(exc)
+        return BLOCKED, f"provider_http_{status}" if status is not None else "provider_access_or_http"
     if name in {"SourceSchemaError", "ValueError", "KeyError", "JSONDecodeError"}:
         return FAIL, "source_schema_or_page_contract"
     return FAIL, "unexpected_" + name[:60]
@@ -66,6 +99,22 @@ def _safe_catalogue_host(url: str) -> str | None:
         return p.hostname
     except ValueError:
         return None
+
+
+def _safe_endpoint_evidence(url: str) -> tuple[str | None, list[str]]:
+    """Return a reproducible first-party path and query names, never query values."""
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.port):
+            return None, []
+        endpoint = f"https://{parsed.hostname}{parsed.path or '/'}"
+        query_keys = sorted({name for name, _ in parse_qsl(
+            parsed.query, keep_blank_values=True,
+        )})
+        return endpoint, query_keys
+    except ValueError:
+        return None, []
 
 
 def _definitions() -> list[tuple[str, str, Any]]:
@@ -109,6 +158,7 @@ async def diagnose_source(
     if source not in registry:
         raise ValueError("unknown_etp_source")
     url, profile = registry[source]
+    catalogue_endpoint, catalogue_query_keys = _safe_endpoint_evidence(url)
     stages = {key: _entry() for key in CHECKS}
     stages["catalogue_url"] = _entry(
         PASS if _safe_catalogue_host(url) else FAIL,
@@ -119,22 +169,45 @@ async def diagnose_source(
     stages["cookie_or_tutorial_modal"] = _entry(
         NOT_APPLICABLE, reason="http_or_api_connector_no_browser_ui"
     )
+    stages["browser_javascript"] = _entry(
+        NOT_APPLICABLE, reason="http_or_api_connector_no_browser_ui"
+    )
     report: dict[str, Any] = {
         "source": source, "checked_at_utc": datetime.now(timezone.utc).isoformat(),
         "catalogue_host": _safe_catalogue_host(url),
+        "catalogue_endpoint": catalogue_endpoint,
+        "catalogue_query_keys": catalogue_query_keys,
         "stages": stages, "pages_checked": 0, "sample_lots": 0,
         "sample_only": True, "complete_source_inventory": False,
         "production_approved": False, "database_writes": 0,
         "map_writes": 0, "archival_enabled": False,
         "first_failure": None,
     }
+    connector = None
 
     def fail(stage: str, exc: Exception, page: int) -> None:
         state, reason = _error_kind(exc)
         stages[stage] = _entry(state, reason=reason, page=page)
-        if report["first_failure"] is None:
+        status = _http_status(exc)
+        if status is not None:
+            stages[stage]["http_status"] = status
+        stages[stage]["exception_class"] = type(exc).__name__[:60]
+        response = getattr(exc, "response", None)
+        response_url = str(getattr(response, "url", "") or "")
+        if not response_url:
+            last_response = getattr(connector, "_last_response", None)
+            response_url = str(getattr(last_response, "url", "") or url)
+        endpoint, query_keys = _safe_endpoint_evidence(response_url)
+        if endpoint:
+            stages[stage]["endpoint"] = endpoint
+        if query_keys:
+            stages[stage]["query_keys"] = query_keys
+        if state != NOT_APPLICABLE and report["first_failure"] is None:
             report["first_failure"] = {
                 "stage": stage, "page": page, "category": reason,
+                **({"http_status": status} if status is not None else {}),
+                **({"endpoint": endpoint} if endpoint else {}),
+                **({"query_keys": query_keys} if query_keys else {}),
             }
 
     if stages["catalogue_url"]["state"] != PASS:
@@ -147,7 +220,56 @@ async def diagnose_source(
         }
         return report
 
-    connector = None
+    if source == "cdtrf.ru":
+        # The catalogue shown in the browser is a hydrated shell. Inspect
+        # the independently verified official /api/Trade/trades JSON endpoint,
+        # not a generic HTML link parser that falsely reports a schema drift.
+        from bankrotai.services.etp_cdtrf_pagination_probe import scan_cdtrf_pages
+        import requests
+        report["catalogue_contract"] = "cdtrf_official_public_json"
+        try:
+            with requests.Session() as cdtrf_session:
+                evidence = await asyncio.to_thread(
+                    scan_cdtrf_pages, cdtrf_session, max_pages=max_pages,
+                    delay_seconds=pause_seconds,
+                )
+        except Exception as exc:
+            fail("transport" if type(exc).__name__ in {
+                "ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout",
+                "SSLError", "HTTPError", "TooManyRedirects",
+            } else "catalogue_markup", exc, 1)
+            return report
+        if evidence.get("production_database_writes") != 0 or evidence.get("archival_allowed") is not False:
+            stages["catalogue_markup"] = _entry(FAIL, reason="read_only_contract_broken")
+            report["first_failure"] = {
+                "stage": "catalogue_markup", "category": "read_only_contract_broken",
+            }
+            return report
+        report["pages_checked"] = int(evidence["pages_scanned"])
+        report["sample_lots"] = int(evidence["property_hint_candidates"])
+        report["catalogue_rows_observed"] = int(evidence["unique_catalogue_lot_ids"])
+        stages["transport"] = _entry(PASS, reason="official_json_api_response")
+        stages["catalogue_markup"] = _entry(PASS, reason="official_json_catalogue_validated")
+        stages["stable_lot_ids"] = _entry(
+            PASS, reason="unique_catalogue_ids_across_sample",
+            count=report["catalogue_rows_observed"],
+        )
+        stages["lot_discovery"] = _entry(
+            PASS if report["sample_lots"] else NOT_TESTED,
+            reason=("property_candidates_observed" if report["sample_lots"]
+                    else "no_property_hints_in_bounded_sample"),
+            count=report["sample_lots"],
+        )
+        stages["pagination_next"] = _entry(
+            PASS if report["pages_checked"] > 1 else NOT_TESTED,
+            reason=("independent_second_json_page" if report["pages_checked"] > 1
+                    else "second_page_not_observed"),
+        )
+        # The official API is evidence for identities and page progression,
+        # NOT verification of property details, status, individual price or
+        # true last page. Those checks intentionally remain NOT_TESTED.
+        return report
+
     try:
         try:
             connector, filters = _connector(source)
@@ -158,6 +280,8 @@ async def diagnose_source(
         cursor: str | None = None
         seen: set[str] = set()
         sample: list[Any] = []
+        observed_lots: list[Any] = []
+        report["page_observations"] = []
         next_observed = False
         for page_number in range(1, max_pages + 1):
             try:
@@ -203,8 +327,62 @@ async def diagnose_source(
                 PASS, reason="syntactically_unique_sample_ids", count=len(seen)
             )
             sample.extend(items[:detail_probes])
+            observed_lots.extend(items)
             report["sample_lots"] += len(items)
             metadata = page.metadata if isinstance(page.metadata, dict) else {}
+            report["page_observations"].append({
+                "page": page_number, "candidate_count": len(items),
+                "has_next_cursor": bool(page.next_cursor),
+                "endpoint": _safe_endpoint_evidence(
+                    str(metadata.get("response_url") or url)
+                )[0],
+                "query_keys": _safe_endpoint_evidence(
+                    str(metadata.get("response_url") or url)
+                )[1],
+                "reported_total": metadata.get("total_items")
+                if type(metadata.get("total_items")) is int else None,
+            })
+            # Source metadata must describe the page that was really read.
+            # A connector returning page 1 for a requested page 2 cannot pass.
+            response_page = metadata.get("page")
+            returned_count = metadata.get("items_on_page")
+            page_mismatch = (
+                (type(response_page) is int and response_page != page_number)
+                or (type(returned_count) is int and returned_count != len(items))
+            )
+            reported_total = metadata.get("total_items")
+            if (source == "sberbank-ast.ru" and type(reported_total) is int
+                    and reported_total >= 0):
+                # Sberbank's verified public request has pagesize=21.
+                has_more_by_total = reported_total > 21 * page_number
+                minimum_rows_seen = (page_number - 1) * 21 + len(items)
+                if (bool(page.next_cursor) != has_more_by_total
+                        or minimum_rows_seen > reported_total):
+                    page_mismatch = True
+            if page_mismatch:
+                stages["pagination_page_contract"] = _entry(
+                    FAIL, reason="returned_page_or_total_disagrees_with_request",
+                    page=page_number,
+                )
+                report["first_failure"] = report["first_failure"] or {
+                    "stage": "pagination_page_contract", "page": page_number,
+                    "category": "returned_page_or_total_disagrees_with_request",
+                }
+                return report
+            # Most generic connectors merely echo the requested page number
+            # and their own parsed row count. Neither proves the provider
+            # actually returned the requested page, so do NOT paint green.
+            independent_page_proof = (
+                (metadata.get("response_page_verified") is True
+                 and type(response_page) is int)
+                or (source == "sberbank-ast.ru" and type(reported_total) is int)
+            )
+            stages["pagination_page_contract"] = _entry(
+                PASS if independent_page_proof else NOT_TESTED,
+                reason=("independent_page_total_consistent" if independent_page_proof
+                        else "requested_page_echo_not_independent_proof"),
+                page=page_number,
+            )
             if metadata.get("source_end_verified") is True:
                 stages["last_page_proven"] = _entry(
                     PASS, reason="connector_source_end_verified", page=page_number
@@ -215,6 +393,18 @@ async def diagnose_source(
                 stages["last_page_proven"] = _entry(
                     PASS, reason="declared_total_pages", page=page_number
                 )
+            if (page.next_cursor and
+                    stages["last_page_proven"]["state"] == PASS):
+                # Terminal evidence and a next-page cursor are contradictory.
+                # Never mark this source as having a proven final page.
+                stages["last_page_proven"] = _entry(
+                    FAIL, reason="terminal_page_has_next_cursor", page=page_number
+                )
+                report["first_failure"] = report["first_failure"] or {
+                    "stage": "last_page_proven", "page": page_number,
+                    "category": "terminal_page_has_next_cursor",
+                }
+                return report
             if not page.next_cursor:
                 # A missing next cursor alone must NEVER prove the last page.
                 break
@@ -245,6 +435,14 @@ async def diagnose_source(
             stages["pagination_next"] = _entry(
                 NOT_TESTED, reason="no_next_page_observed_no_terminal_proof"
             )
+        # These checks use EVERY observed listing lot, not just the small
+        # individual-detail probe subset. No URL, title or private ID logged.
+        for stage, entry in audit_catalogue_lots(source, observed_lots).items():
+            stages[stage] = entry
+            if entry["state"] == FAIL and report["first_failure"] is None:
+                report["first_failure"] = {
+                    "stage": stage, "category": entry["reason"],
+                }
         if sample:
             price_count = sum(
                 getattr(lot, "start_price", None) is not None or
@@ -282,28 +480,108 @@ async def diagnose_source(
         if sample and detail_probes:
             # A listing URL is not proof of a fetched and isolated lot detail.
             details_ok = 0
-            for lot in sample[:detail_probes]:
-                try:
-                    detail = await connector.fetch_lot(lot.external_id)
-                    details_ok += 1
-                    if (detail.external_id != lot.external_id or
-                            detail.source_system != source or
-                            getattr(detail, "detail_level", None) != "detail"):
-                        stages["detail_identity"] = _entry(
-                            FAIL, reason="detail_lot_identity_mismatch"
-                        )
-                        report["first_failure"] = report["first_failure"] or {
-                            "stage": "detail_identity",
-                            "category": "detail_lot_identity_mismatch",
-                        }
+            capabilities: frozenset[str] = frozenset(
+                getattr(connector, "capabilities", ())
+            )
+            can_fetch = "fetch_lot" in capabilities
+            can_enrich = "detail_enrichment" in capabilities
+            # Mature Lot-online exposes enrich_lot, not fetch_lot. This is a
+            # read-only probe: it modifies the in-memory candidate only.
+            if not (can_fetch or can_enrich):
+                stages["individual_detail"] = _entry(
+                    NOT_APPLICABLE, reason="connector_has_no_individual_detail_capability"
+                )
+                stages["detail_identity"] = _entry(
+                    NOT_APPLICABLE, reason="no_individual_detail_capability"
+                )
+                for field in ("individual_detail_price", "individual_detail_status"):
+                    stages[field] = _entry(
+                        NOT_APPLICABLE, reason="no_individual_detail_capability"
+                    )
+            else:
+                price_proven = 0
+                status_proven = 0
+                requested_details = sample[:detail_probes]
+                pair_quality: list[dict[str, dict[str, Any]]] = []
+                for lot in requested_details:
+                    try:
+                        if can_fetch:
+                            detail = await connector.fetch_lot(lot.external_id)
+                        else:
+                            detail = await connector.enrich_lot(lot)
+                        if (detail.external_id != lot.external_id or
+                                detail.source_system != source or
+                                getattr(detail, "detail_level", None) != "detail"):
+                            stages["detail_identity"] = _entry(
+                                FAIL, reason="detail_lot_identity_mismatch"
+                            )
+                            report["first_failure"] = report["first_failure"] or {
+                                "stage": "detail_identity",
+                                "category": "detail_lot_identity_mismatch",
+                            }
+                            break
+                        details_ok += 1
+                        if can_fetch:
+                            pair_quality.append(audit_detail_pair(source, lot, detail))
+                            if (getattr(detail, "start_price", None) is not None or
+                                    getattr(detail, "current_price", None) is not None):
+                                price_proven += 1
+                            if str(getattr(detail, "auction_status", "") or "").lower() not in {"", "unknown"}:
+                                status_proven += 1
+                    except Exception as exc:
+                        fail("individual_detail", exc, 1)
                         break
-                except Exception as exc:
-                    fail("individual_detail", exc, 1)
-                    break
-            if details_ok:
-                stages["individual_detail"] = _entry(PASS, count=details_ok)
-                if stages["detail_identity"]["state"] == NOT_TESTED:
+                all_details_verified = (
+                    details_ok == len(requested_details)
+                    and stages["detail_identity"]["state"] != FAIL
+                    and stages["individual_detail"]["state"] != FAIL
+                )
+                if not all_details_verified:
+                    if stages["individual_detail"]["state"] == NOT_TESTED:
+                        stages["individual_detail"] = _entry(
+                            FAIL, reason="not_all_requested_details_verified",
+                            count=details_ok,
+                        )
+                    # Independent price/status cannot be proven after any
+                    # partial detail failure or identity mismatch.
+                else:
+                    stages["individual_detail"] = _entry(PASS, count=details_ok)
                     stages["detail_identity"] = _entry(PASS, count=details_ok)
+                    if can_enrich and not can_fetch:
+                        # Enrichment retains the listing price/status; it is
+                        # not independent evidence of the detail's money fields.
+                        for field in ("individual_detail_price", "individual_detail_status"):
+                            stages[field] = _entry(
+                                NOT_APPLICABLE, reason="enrichment_does_not_independently_verify_money_or_status"
+                            )
+                    else:
+                        for field in (
+                            "detail_price_consistency", "detail_status_consistency",
+                            "detail_cadastral_consistency",
+                        ):
+                            observations = [pair[field] for pair in pair_quality]
+                            if any(item["state"] == FAIL for item in observations):
+                                state = FAIL
+                                reason = next(item["reason"] for item in observations if item["state"] == FAIL)
+                            elif any(item["state"] != PASS for item in observations):
+                                state, reason = NOT_TESTED, "individual_lot_proof_incomplete"
+                            else:
+                                state, reason = PASS, "all_probed_detail_pairs_consistent"
+                            stages[field] = _entry(state, reason=reason, count=len(observations))
+                            if state == FAIL and report["first_failure"] is None:
+                                report["first_failure"] = {"stage": field, "category": reason}
+                        for field, verified, reason in (
+                            ("individual_detail_price", price_proven, "missing_price_in_fetched_detail"),
+                            ("individual_detail_status", status_proven, "unknown_status_in_fetched_detail"),
+                        ):
+                            state = PASS if verified == details_ok else FAIL
+                            stages[field] = _entry(state, reason=(
+                                "verified_in_individual_detail" if state == PASS else reason
+                            ), count=verified)
+                            if state == FAIL and report["first_failure"] is None:
+                                report["first_failure"] = {
+                                    "stage": field, "category": reason,
+                                }
     finally:
         session = getattr(connector, "session", None)
         close = getattr(session, "close", None)

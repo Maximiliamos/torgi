@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from math import ceil
@@ -26,7 +27,10 @@ CDTRF_PAGE_SIZES = frozenset({20, 50, 100})
 CDTRF_STATUS_PARAMS = (
     "Declare", "RecieveReq", "DefinePart", "TradeGo"
 )
-CDTRF_PROPERTY_CATEGORIES = "21,22,23,31,32,33,34"
+# Category 41 is the provider's land category. It is independently present on
+# verified land-only lots and must not be omitted merely because some mixed
+# real-estate cards also carry one of the building categories below.
+CDTRF_PROPERTY_CATEGORIES = "21,22,23,31,32,33,34,41"
 MAX_SCAN_PAGES = 10_000
 
 
@@ -44,6 +48,37 @@ def _url(page: int, page_size: int) -> str:
     return f"{API}?{urlencode(params)}"
 
 
+def _request_page(
+    session: requests.Session, url: str, *,
+    delay_seconds: float, sleep: Callable[[float], None],
+) -> requests.Response:
+    """Retry only transient transport/5xx failures with a bounded backoff."""
+    last_error: requests.RequestException | None = None
+    for attempt in range(3):
+        try:
+            response = session.get(
+                url,
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "TORGI-CDTRF-full-readonly-audit/1",
+                },
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+            sleep(delay_seconds * (attempt + 1))
+            continue
+        if response.status_code not in {502, 503, 504} or attempt == 2:
+            return response
+        sleep(delay_seconds * (attempt + 1))
+    raise CdtrfCatalogueScanError(
+        "CDTRF API transient transport failure after bounded retries"
+    ) from last_error
+
+
 def scan_complete_cdtrf_catalogue(
     session: requests.Session,
     *,
@@ -51,6 +86,7 @@ def scan_complete_cdtrf_catalogue(
     max_pages: int = MAX_SCAN_PAGES,
     delay_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[dict[str, int]], None] | None = None,
 ) -> dict:
     """Read every page declared by CDTRF or fail without marking completion.
 
@@ -84,14 +120,9 @@ def scan_complete_cdtrf_catalogue(
     for page in range(1, max_pages + 1):
         if page > 1:
             sleep(delay_seconds)
-        response = session.get(
-            _url(page, page_size),
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "TORGI-CDTRF-full-readonly-audit/1",
-            },
+        response = _request_page(
+            session, _url(page, page_size),
+            delay_seconds=delay_seconds, sleep=sleep,
         )
         if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
             raise CdtrfCatalogueScanError("CDTRF API status/size failed")
@@ -133,6 +164,13 @@ def scan_complete_cdtrf_catalogue(
             "observed_rows": data["observed_rows"],
             "property_hint_candidates": len(data["property_candidates"]),
         })
+        if progress is not None:
+            progress({
+                "page": page,
+                "pages_expected": pages_expected,
+                "observed_rows_total": observed_rows_total,
+                "unique_catalogue_lot_ids": len(seen_ids),
+            })
         if page == pages_expected:
             break
     else:
@@ -182,11 +220,25 @@ def main() -> None:
                         default=100)
     parser.add_argument("--max-pages", type=int, default=MAX_SCAN_PAGES)
     parser.add_argument("--delay-seconds", type=float, default=1.0)
+    parser.add_argument("--progress", action="store_true")
     args = parser.parse_args()
+    progress = None
+    if args.progress:
+        def print_progress(event: dict[str, int]) -> None:
+            print(
+                "CDTRF progress: "
+                f"page={event['page']}/{event['pages_expected']} "
+                f"rows={event['observed_rows_total']} "
+                f"unique_ids={event['unique_catalogue_lot_ids']}",
+                file=sys.stderr, flush=True,
+            )
+
+        progress = print_progress
     with requests.Session() as session:
         report = scan_complete_cdtrf_catalogue(
             session, page_size=args.page_size,
             max_pages=args.max_pages, delay_seconds=args.delay_seconds,
+            progress=progress,
         )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
 

@@ -31,7 +31,13 @@ class Session:
 
     def get(self, url, *, allow_redirects, timeout, headers):
         assert url.startswith("https://torgi.cdtrf.ru/api/Trade/trades?")
-        assert "PageSize=20" in url
+        params = parse_qs(urlsplit(url).query)
+        assert params == {
+            "Declare": ["true"],
+            "RecieveReq": ["true"],
+            "PageSize": ["20"],
+            "PageNum": [str(len(self.calls) + 1)],
+        }
         assert allow_redirects is False
         assert timeout == (10, 30)
         assert "json" in headers["Accept"]
@@ -93,7 +99,7 @@ class FullScanSession:
 
     def get(self, url, *, allow_redirects, timeout, headers):
         params = parse_qs(urlsplit(url).query)
-        assert params["Categories"] == ["21,22,23,31,32,33,34"]
+        assert params["Categories"] == ["21,22,23,31,32,33,34,41"]
         assert all(params[x] == ["true"] for x in (
             "Declare", "RecieveReq", "DefinePart", "TradeGo"
         ))
@@ -173,3 +179,30 @@ def test_full_catalogue_still_rejects_missing_pages():
         scan_complete_cdtrf_catalogue(
             FullScanSession(205), page_size=100, max_pages=2,
         )
+
+
+def test_full_catalogue_retries_transient_timeout_without_skipping_page():
+    import requests
+
+    class Flaky(FullScanSession):
+        def __init__(self):
+            super().__init__(20)
+            self.attempts = 0
+
+        def get(self, url, *, allow_redirects, timeout, headers):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise requests.exceptions.ReadTimeout("temporary")
+            return super().get(
+                url, allow_redirects=allow_redirects,
+                timeout=timeout, headers=headers,
+            )
+
+    delays = []
+    session = Flaky()
+    report = scan_complete_cdtrf_catalogue(
+        session, page_size=20, delay_seconds=1, sleep=delays.append,
+    )
+    assert session.attempts == 2
+    assert delays == [1]
+    assert report["pages_scanned"] == 1
