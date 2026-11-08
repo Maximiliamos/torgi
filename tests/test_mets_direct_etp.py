@@ -240,3 +240,22 @@ def test_lot_meta_sku_disagreement_fails_closed():
     )
     with pytest.raises(MetsEvidenceError, match="SKU"):
         parse_mets_lot(html, URL)
+
+
+def test_mets_provider_throttling_is_not_retried(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class ThrottledSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            assert kwargs["allow_redirects"] is False
+            return Response("", status_code=429)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = ThrottledSession()
+    with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1

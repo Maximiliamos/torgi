@@ -185,9 +185,12 @@ class MetsSourceCrawler:
             except MetsEvidenceError as exc:
                 message = str(exc).casefold()
                 # HTTP refusal or provider errors are systemic, not a bad lot.
-                if "http " in message or "transient http" in message:
+                if any(marker in message for marker in (
+                    "http ", "transient http", "provider access explicitly refused",
+                    "redirect from public",
+                )):
                     raise MetsCatalogueScanError(
-                        "M-ETS detail HTTP failure; no source reconciliation"
+                        "M-ETS detail access/refusal failure; no source reconciliation"
                     ) from exc
                 code = (
                     "identity_mismatch" if "identity" in message
@@ -214,6 +217,14 @@ class MetsSourceCrawler:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
                     accepted.append(lot)
+
+        # Do not certify an apparently empty property catalogue when every
+        # independent detail failed its evidence checks.
+        if len(novel_observations) >= 5 and not accepted:
+            raise MetsCatalogueScanError(
+                "M-ETS systemic detail verification failure: zero verified "
+                "property lots in a selected catalogue page"
+            )
 
         digest = hashlib.sha256("\n".join(sorted(identities)).encode("ascii")).hexdigest()
         next_page = page_number + 1

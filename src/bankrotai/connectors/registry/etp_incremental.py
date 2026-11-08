@@ -102,6 +102,48 @@ def _property_ready(lot) -> bool:
     )
 
 
+def _mets_detail_rejection_code(exc: Exception) -> str:
+    """PII-free, bounded diagnostics for real-world M-ETS detail failures."""
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "tls_validation_failure"
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return "detail_transport_error"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {401, 403, 429}:
+            return "provider_access_refused"
+        if status in {404, 410}:
+            return "detail_not_found"
+        return "detail_http_error"
+    message = str(exc).casefold()
+    if "provider access explicitly refused" in message:
+        return "provider_access_refused"
+    if "redirect" in message:
+        return "untrusted_detail_redirect"
+    if "sku" in message or "identifier" in message or "identity" in message:
+        return "detail_identity_mismatch"
+    if "title" in message:
+        return "detail_title_missing"
+    if "script-only" in message or "empty" in message:
+        return "empty_detail_html"
+    return "detail_schema_invalid"
+
+
+def _mets_property_rejection_code(lot) -> str:
+    """Explain strict rejection; never relax a property/identity check."""
+    if lot.category not in PROPERTY_CATEGORIES:
+        return "non_property_category"
+    if not lot.cadastral_number:
+        return "cadastral_evidence_missing"
+    if lot.start_price is None and lot.current_price is None:
+        return "price_evidence_missing"
+    if lot.auction_status not in {"scheduled", "active"}:
+        return "active_status_unverified"
+    if not lot.lot_url:
+        return "lot_url_missing"
+    return "property_evidence_unverified"
+
+
 def _get_mets_catalogue(pilot: MetsPublicPilot, page: int) -> str:
     if page == 1:
         return pilot._get(APARTMENTS_URL)
@@ -144,18 +186,34 @@ def incremental_mets_search(
         raise MetsEvidenceError("M-ETS catalogue repeats the immediately preceding page")
     accepted = []
     rejected = 0
-    for url in urls[:filters.max_detail_requests]:
+    rejected_codes: dict[str, int] = {}
+    attempts = min(len(urls), filters.max_detail_requests)
+    for url in urls[:attempts]:
         try:
             lot = parse_mets_lot(pilot._get(url), url)
             if not _property_ready(lot):
                 rejected += 1
+                code = _mets_property_rejection_code(lot)
+                rejected_codes[code] = rejected_codes.get(code, 0) + 1
                 continue
             lot.raw_data = {**lot.raw_data,
                             "source_scope": _bounded_scope(filters.max_pages),
                             "complete_source_inventory": False}
             accepted.append(lot)
-        except (requests.RequestException, MetsEvidenceError, ValueError):
+        except (requests.RequestException, MetsEvidenceError, ValueError) as exc:
+            code = _mets_detail_rejection_code(exc)
             rejected += 1
+            rejected_codes[code] = rejected_codes.get(code, 0) + 1
+            if code in {
+                "tls_validation_failure", "detail_transport_error",
+                "provider_access_refused", "detail_http_error",
+                "untrusted_detail_redirect",
+            }:
+                # Access refusal, provider redirects and broken transport must
+                # not masquerade as five normal ineligible property cards.
+                raise MetsEvidenceError(
+                    "M-ETS provider detail access unavailable; no page verification"
+                ) from exc
     return ConnectorPage(
         items=accepted,
         next_cursor=_cursor_for(ids, page + 1) if page < filters.max_pages else None,
@@ -163,6 +221,7 @@ def incremental_mets_search(
             "pages_fetched": 1, "progress_current": page,
             "progress_total": filters.max_pages,
             "catalogue_lots": len(ids), "details_rejected": rejected,
+            "detail_attempts": attempts, "rejection_codes": rejected_codes,
             "catalogue_identity_fingerprints": _fingerprints(ids),
             "complete_source_inventory": False, "safe_for_archival": False,
             "requested_category_group": "property_pilot",

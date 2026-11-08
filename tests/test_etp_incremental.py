@@ -5,6 +5,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -304,7 +305,7 @@ def test_full_selected_catalogues_are_scheduled_without_enabling_archival():
         and scheduled[source].require_source_end is True
         for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru")
     )
-    assert scheduled["nistp.ru"].max_detail_attempts_per_page is None
+    assert scheduled["nistp.ru"].max_detail_attempts_per_page == 2
     assert scheduled["m-ets.ru"].filters.max_pages == 500
     assert scheduled["cdtrf.ru"].filters.page_size == 100
     assert scheduled["m-ets.ru"].max_detail_attempts_per_page is None
@@ -313,3 +314,74 @@ def test_full_selected_catalogues_are_scheduled_without_enabling_archival():
     for pages in (0, 6):
         with pytest.raises(ValueError, match="bounded"):
             EtpIncrementalFilters("m-ets.ru", max_pages=pages)
+
+
+def test_mets_rejection_reasons_are_bounded_without_lot_content(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    def parse_detail(_html, url):
+        lot = fake_lot("m-ets.ru", url.rsplit("/", 1)[-1])
+        lot.cadastral_number = None
+        lot.description = "PRIVATE PERSONAL TEXT SHOULD NOT APPEAR"
+        return lot
+
+    monkeypatch.setattr(mod, "parse_mets_lot", parse_detail)
+    result = incremental_mets_search(
+        FakePilot(), EtpIncrementalFilters("m-ets.ru", max_detail_requests=2), None,
+    )
+    assert result.items == []
+    assert result.metadata["catalogue_lots"] == 2
+    assert result.metadata["details_rejected"] == 2
+    assert result.metadata["detail_attempts"] == 2
+    assert result.metadata["rejection_codes"] == {"cadastral_evidence_missing": 2}
+    assert "PRIVATE" not in str(result.metadata)
+    assert result.metadata["safe_for_archival"] is False
+    assert result.metadata["complete_source_inventory"] is False
+
+
+def test_mets_parser_errors_are_categorized_without_leaking_source_text(monkeypatch):
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    def failing_parser(_html, _url):
+        raise mod.MetsEvidenceError("Page SKU contradicts personal client identity")
+
+    monkeypatch.setattr(mod, "parse_mets_lot", failing_parser)
+    result = incremental_mets_search(
+        FakePilot(), EtpIncrementalFilters("m-ets.ru", max_detail_requests=2), None,
+    )
+    assert result.metadata["detail_attempts"] == 2
+    assert result.metadata["details_rejected"] == 2
+    assert result.metadata["rejection_codes"] == {"detail_identity_mismatch": 2}
+    assert "personal" not in str(result.metadata)
+
+
+def test_mets_429_hard_refusal_does_not_become_normal_rejected_card():
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    class ThrottledPilot(FakePilot):
+        def _get(self, url):
+            if url.endswith("243003-1"):
+                response = requests.Response()
+                response.status_code = 429
+                raise requests.HTTPError("provider rejected", response=response)
+            return super()._get(url)
+
+    with pytest.raises(mod.MetsEvidenceError, match="provider detail access unavailable"):
+        incremental_mets_search(
+            ThrottledPilot(),
+            EtpIncrementalFilters("m-ets.ru", max_detail_requests=2), None,
+        )
+
+
+def test_mets_reason_classifier_is_closed_and_never_leaks_error_message():
+    import bankrotai.connectors.registry.etp_incremental as mod
+
+    assert mod._mets_detail_rejection_code(
+        mod.MetsEvidenceError("Citizen phone 79990000000")
+    ) == "detail_schema_invalid"
+    assert mod._mets_detail_rejection_code(
+        mod.MetsEvidenceError("Redirect to unapproved host")
+    ) == "untrusted_detail_redirect"
+    assert mod._mets_detail_rejection_code(
+        requests.exceptions.SSLError("sensitive hostname")
+    ) == "tls_validation_failure"

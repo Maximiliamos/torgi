@@ -44,8 +44,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $python = 'from bankrotai.services.ingestion import default_source_specs; from bankrotai.tasks import celery_app; specs = {x.source_id: x for x in default_source_specs()}; wanted = {"m-ets.ru", "cdtrf.ru", "nistp.ru"}; assert wanted <= set(specs); assert "alfalot.ru" not in specs; assert all(specs[x].reconcile_missing is False and specs[x].max_batches == 500 and specs[x].require_source_end is True for x in wanted); assert specs["nistp.ru"].max_detail_attempts_per_page == 2; beat = celery_app.conf.beat_schedule["refresh-nationwide-sources-full"]; assert beat["args"] == ("full",); assert set(beat["schedule"].hour) == {6, 18} and set(beat["schedule"].minute) == {0}; print("SCHEDULED_ETP_09_21_PASS")'
-          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -c $python 2>&1)
-          if ($LASTEXITCODE -ne 0 -or -not ($output -contains 'SCHEDULED_ETP_09_21_PASS')) {
+          # PowerShell 5.1 converts native stderr into a terminating
+          # NativeCommandError under Stop, hiding the actual Python assertion.
+          # Capture the complete sanitized traceback and still fail closed.
+          $previousPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -c $python 2>&1)
+            $status = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousPreference
+          }
+          if ($status -ne 0 -or -not ($output -contains 'SCHEDULED_ETP_09_21_PASS')) {
             $output | ForEach-Object { Write-Output $_ }
             throw 'Home worker has no verified bounded 09:00/21:00 M-ETS/CDTRF/NISTP configuration'
           }
