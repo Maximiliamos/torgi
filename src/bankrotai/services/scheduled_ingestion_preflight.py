@@ -23,6 +23,15 @@ from bankrotai.services.source_resilience import probe_source_endpoint
 
 
 HEAVY_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru", "nistp.ru"})
+SCHEDULED_SOURCE_IDS = (
+    "torgi.gov.ru",
+    "lot-online.ru",
+    "torgi-russia.ru",
+    "bidexpert.ru",
+    "m-ets.ru",
+    "cdtrf.ru",
+    "nistp.ru",
+)
 
 
 def _probe_mets() -> dict[str, Any]:
@@ -157,9 +166,24 @@ def run_scheduled_source_preflight(specs: tuple[Any, ...]) -> dict[str, Any]:
     return asyncio.run(_run(specs))
 
 
+def select_seven_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
+    by_id = {str(spec.source_id): spec for spec in specs}
+    return tuple(by_id[source] for source in SCHEDULED_SOURCE_IDS if source in by_id)
+
+
 def scheduled_preflight_skip(mode: str, specs: tuple[Any, ...]) -> dict[str, Any] | None:
     if mode not in {"full", "incremental"}:
         return None
+    present = {str(spec.source_id) for spec in specs}
+    missing = [source for source in SCHEDULED_SOURCE_IDS if source not in present]
+    if missing:
+        return {
+            "status": "skipped",
+            "reason": "scheduled_source_set_incomplete",
+            "mode": mode,
+            "missing_sources": missing,
+            "database_writes": 0,
+        }
     preflight = run_scheduled_source_preflight(specs)
     if preflight.get("passed"):
         return None
