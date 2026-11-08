@@ -49,7 +49,6 @@ from bankrotai.db import (
     MapTile,
     AppSetting,
     LotNote,
-    LotIssueReport,
     SavedMaxBidScenario,
     SavedSearch,
     SourceHealthState,
@@ -118,6 +117,7 @@ from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalog
 from bankrotai.services.etp_incremental_preview_api import create_etp_incremental_preview_router
 from bankrotai.services.etp_qa_map_api import create_etp_qa_map_router
 from bankrotai.services.etp_parser_checklist_api import create_etp_parser_checklist_router
+from bankrotai.services.lot_issue_report_api import create_lot_issue_report_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -213,7 +213,6 @@ from bankrotai.api_models import (
     ParticipationChecklistRequest as ParticipationChecklistRequest,
     LoginRequest as LoginRequest,
     NoteRequest as NoteRequest,
-    LotIssueReportRequest as LotIssueReportRequest,
     SavedSearchRequest as SavedSearchRequest,
     DuplicateMergeRequest as DuplicateMergeRequest,
     DuplicateSplitRequest as DuplicateSplitRequest,
@@ -475,11 +474,10 @@ app.include_router(create_etp_pilot_catalogue_router(require_admin))
 app.include_router(create_etp_incremental_preview_router(require_admin))
 app.include_router(create_etp_qa_map_router(require_admin))
 app.include_router(create_etp_parser_checklist_router(require_admin))
-
+app.include_router(create_lot_issue_report_router(require_user))
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
-
 @app.get("/api/time")
 def current_time(_: AuthenticatedUser = Depends(require_user)):
     return trusted_time_status()
@@ -1608,41 +1606,6 @@ def create_lot_note(lot_id: int, request: NoteRequest, actor: AuthenticatedUser 
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         log_action(session, str(actor.id), "add_note", "lot", str(lot_id), {"note_id": note.id})
         return {"id": note.id, "lot_id": lot_id, "content": note.content, "created_at": note.created_at}
-
-
-@app.post("/api/lots/{lot_id}/report-error", status_code=201)
-def report_lot_error(
-    lot_id: int,
-    request: LotIssueReportRequest,
-    actor: AuthenticatedUser = Depends(require_user),
-):
-    content = request.content.strip()
-    if not content:
-        raise HTTPException(status_code=422, detail="Описание ошибки не может быть пустым")
-    with session_scope() as session:
-        if session.get(ProcessedLot, lot_id) is None:
-            raise HTTPException(status_code=404, detail="Lot not found")
-        report = LotIssueReport(
-            lot_id=lot_id,
-            user_id=str(actor.id),
-            content=content,
-        )
-        session.add(report)
-        session.flush()
-        log_action(
-            session,
-            str(actor.id),
-            "report_lot_error",
-            "lot",
-            str(lot_id),
-            {"report_id": report.id},
-        )
-        return {
-            "id": report.id,
-            "lot_id": lot_id,
-            "content": report.content,
-            "created_at": report.created_at,
-        }
 
 
 @app.put("/api/lots/{lot_id}/review-status")
