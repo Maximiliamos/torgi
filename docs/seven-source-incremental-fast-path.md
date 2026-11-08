@@ -75,6 +75,6 @@ This release preserves bounded source concurrency, two-worker M-ETS/CDTRF detail
 
 ## M-ETS scope
 
-Scheduled M-ETS remains exactly seven business categories: `36,34,39,37,38,28,41`, statuses `0/1`.
+Scheduled M-ETS preserves the previously verified eight-category property scope: `36,34,39,37,38,28,41,11`, statuses `0/1`. Standalone land category `11` remains eligible where independently verified as real estate; transport and other unrelated categories remain excluded. Category `40` remains unaccepted.
 
-Standalone land category `11` is excluded. A mixed lot containing a target building/premise and associated land is not rejected merely for mentioning land.
+**Release safety:** PR #1161 initially narrowed M-ETS to seven categories and CDTRF to exclude land. This consolidation restores the existing production scope to avoid silently dropping existing property records or changing archive semantics. Any future scope narrowing requires a source-ID baseline and explicit archive impact review.
