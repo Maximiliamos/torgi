@@ -119,7 +119,8 @@ def test_mets_timeout_retries_are_bounded_and_rate_gated(monkeypatch):
             before_request=lambda url: starts.append(url),
         )
 
-    assert len(starts) == 5
+    # Four provider attempts: initial request and three bounded retries.
+    assert len(starts) == 4
 
 
 def test_async_search_keeps_event_loop_responsive(monkeypatch):
