@@ -59,3 +59,19 @@ def test_readonly_archive_samples_are_bounded_and_geo_absence_is_explicit() -> N
     assert '"new_source_rows_without_coordinates_now"' in source
     assert '"new_source_rows_with_coordinates_but_not_map_eligible"' in source
     ast.parse(source)
+
+
+def test_readonly_home_operator_runner_only_executes_forensic_script() -> None:
+    runner = (ROOT / "scripts" / "run-readonly-postrun-audit-home.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "audit_20261108_nationwide_readonly.py" in runner
+    assert "python', '-', '--run-id'" in runner
+    assert "ConvertFrom-Json" in runner
+    assert "D:\\BankrotAI\\etp-operator-logs" in runner
+    assert "-not $SkipPublicS3" in runner
+    for prohibited in (
+        "schedule_nationwide_lot_sync", "geocode_pending_lots",
+        "build_map_dataset_task", "record_source_probe", "docker.exe restart",
+    ):
+        assert prohibited not in runner
