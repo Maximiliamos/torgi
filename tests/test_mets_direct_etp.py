@@ -268,7 +268,7 @@ def test_official_meetings_detail_domain_keeps_exact_trade_lot_identity():
     mirror_url = "https://meetings.m-ets.ru/240512-1"
     lot = parse_mets_lot(DETAIL, mirror_url)
     assert lot.external_id == "240512-1"
-    assert lot.lot_url == URL
+    assert lot.lot_url == MIRROR_URL
     assert lot.source_system == "m-ets.ru"
     assert discover_lot_urls(
         '<a href="https://meetings.m-ets.ru/240512-1">official mirror</a>'
@@ -388,7 +388,7 @@ def test_live_meetings_dom_description_outside_single_verified_lot_container():
     )
     lot = parse_mets_lot(html, "https://meetings.m-ets.ru/244602-1")
     assert lot.external_id == "244602-1"
-    assert lot.lot_url == "https://m-ets.ru/244602-1"
+    assert lot.lot_url == "https://meetings.m-ets.ru/244602-1"
     assert lot.cadastral_number == "68:29:0212001:4089"
     assert lot.start_price == 7_500_000
     assert lot.auction_status == "scheduled"
