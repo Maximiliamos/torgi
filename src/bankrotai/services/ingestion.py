@@ -517,9 +517,33 @@ class NationwideIngestionService:
         started = utc_now()
         wall_started = time.perf_counter()
         active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
-        self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
         cursor: str | None = None
+        if spec.reuse_unchanged_details:
+            connector.configure_incremental_detail_cache(
+                self._detail_cache_snapshots(spec.source_id)
+            )
+        if spec.resume_from_checkpoint:
+            resume = self._resume_checkpoint_for_source(run_id, spec.source_id)
+            if resume is not None:
+                restored = connector.restore_resume_checkpoint(
+                    resume["connector_checkpoint"]
+                )
+                if restored == resume["resume_cursor"]:
+                    cursor = restored
+                    result.resume_cursor = restored
+                    result.connector_checkpoint = resume["connector_checkpoint"]
+                    result.pages_scanned = resume["pages_scanned"]
+                    result.items_seen = resume["items_seen"]
+                    result.items_inserted = resume["items_inserted"]
+                    result.items_updated = resume["items_updated"]
+                    result.items_unchanged = resume["items_unchanged"]
+                    result.items_failed = resume["items_failed"]
+                    result.detail_attempts = resume["detail_attempts"]
+                    result.detail_skipped_unchanged = resume["detail_skipped_unchanged"]
+                    result.retry_count = resume["retry_count"]
+                    result.phase = "resumed"
+        self._upsert_source_run(run_id, result, started_at=started)
         try:
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
                 raise ConnectorCapabilityError(f"{spec.source_id}: missing-lot reconciliation is forbidden")
@@ -541,6 +565,16 @@ class NationwideIngestionService:
                     result.progress_current = int(page.metadata["progress_current"])
                 if page.metadata.get("progress_total") is not None:
                     result.progress_total = int(page.metadata["progress_total"])
+                result.detail_attempts += int(page.metadata.get("detail_attempts") or 0)
+                result.detail_skipped_unchanged += int(
+                    page.metadata.get("detail_skipped_unchanged") or 0
+                )
+                result.retry_count += int(page.metadata.get("retry_count") or 0)
+                result.resume_cursor = page.next_cursor
+                connector_checkpoint = page.metadata.get("resume_checkpoint")
+                result.connector_checkpoint = (
+                    connector_checkpoint if isinstance(connector_checkpoint, dict) else None
+                )
                 if self.profile_timings:
                     for key, value in page.metadata.get("timings", {}).items():
                         if isinstance(value, (int, float)):
@@ -559,16 +593,20 @@ class NationwideIngestionService:
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 merge_page_quarantine(result, page.metadata)
+                self._mark_reused_catalogue_rows(run_id, result, page.metadata)
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
+                self._update_eta(result)
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
                     reached_source_end = True
+                    result.resume_cursor = None
+                    result.connector_checkpoint = None
                     break
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
