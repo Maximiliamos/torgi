@@ -73,8 +73,15 @@ class MetsSourceCrawler:
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
         self._custom_detail_lock = threading.Lock()
+        self._retry_lock = threading.Lock()
+        self._retry_count = 0
+
+    def _record_retry(self) -> None:
+        with self._retry_lock:
+            self._retry_count += 1
 
     def _search(self, filters: MetsSyncFilters, cursor: str | None) -> ConnectorPage:
+        retry_start = self._retry_count
         if cursor is None:
             if self._expected_page != 1:
                 raise MetsCatalogueScanError("M-ETS restart requires a fresh connector")
@@ -90,7 +97,10 @@ class MetsSourceCrawler:
             raise MetsCatalogueScanError("M-ETS page budget exceeded")
 
         response = _request_page(
-            self.pilot.session, page_number, sleep=time.sleep,
+            self.pilot.session,
+            page_number,
+            sleep=time.sleep,
+            on_retry=self._record_retry,
         )
         parsed = _parse_page(response.text, page_number)
         observations = parsed["observations"]
@@ -195,12 +205,16 @@ class MetsSourceCrawler:
                     if pilot is None:
                         pilot = MetsPublicPilot(session=workers.session())
                         workers._local.pilot = pilot
-                    html = pilot._get(url, before_request=workers.acquire)
+                    html = pilot._get(
+                        url,
+                        before_request=workers.acquire,
+                        on_retry=self._record_retry,
+                    )
                 else:
                     # Unknown/custom transports are not assumed thread-safe.
                     with self._custom_detail_lock:
                         workers.acquire(url)
-                        html = self.pilot._get(url)
+                        html = self.pilot._get(url, on_retry=self._record_retry)
                 lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
@@ -295,6 +309,7 @@ class MetsSourceCrawler:
                 "catalogue_candidates": len(novel_observations),
                 "detail_attempts": len(verify_observations),
                 "detail_requests_saved": len(skipped_catalogue),
+                "retry_count": self._retry_count - retry_start,
                 "catalogue_unchanged": skipped_catalogue,
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
@@ -318,6 +333,7 @@ class MetsSourceCrawler:
             "maximum_total": self._maximum_total,
             "page_size": self._page_size,
             "overlap_count": self._overlap_count,
+            "retry_count": self._retry_count,
         }
 
     def _restore_checkpoint(self, filters: MetsSyncFilters, state: dict[str, Any]) -> bool:
@@ -353,6 +369,7 @@ class MetsSourceCrawler:
         self._maximum_total = state.get("maximum_total")
         self._page_size = state.get("page_size")
         self._overlap_count = int(state.get("overlap_count") or 0)
+        self._retry_count = int(state.get("retry_count") or 0)
         return True
 
     async def restore_checkpoint(
