@@ -47,3 +47,15 @@ def test_all_seven_sources_and_archive_categories_are_preserved() -> None:
         "m-ets.ru", "cdtrf.ru", "nistp.ru",
     }
     assert module["DEFAULT_RUN_ID"] == "f572bdff-3db1-41bf-94a4-1f75ab690232"
+
+
+def test_readonly_archive_samples_are_bounded_and_geo_absence_is_explicit() -> None:
+    source = AUDIT.read_text(encoding="utf-8")
+    assert ".limit(20)" in source
+    assert '"sample_recent_archives"' in source
+    assert '"missing_successful_runs"' in source
+    assert '"last_sync_run_id"' in source
+    assert '"new_source_rows_with_coordinates_now"' in source
+    assert '"new_source_rows_without_coordinates_now"' in source
+    assert '"new_source_rows_with_coordinates_but_not_map_eligible"' in source
+    ast.parse(source)
