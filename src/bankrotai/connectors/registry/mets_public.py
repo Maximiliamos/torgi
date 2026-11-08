@@ -266,7 +266,12 @@ class MetsPublicPilot:
                     raise
                 time.sleep(delay)
                 continue
-            if response.status_code == 429 or 500 <= response.status_code <= 504:
+            # Authentication refusals and provider throttling are hard stops:
+            # never retry 401/403/429 or turn them into missing-lot evidence.
+            if response.status_code in {401, 403, 429}:
+                response.raise_for_status()
+                raise MetsEvidenceError("M-ETS provider access explicitly refused")
+            if 500 <= response.status_code <= 504:
                 if delay is None:
                     response.raise_for_status()
                     raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
