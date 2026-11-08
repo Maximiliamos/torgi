@@ -1,5 +1,10 @@
 # ETP stage checklist — operator contract
 
+**ТЕСТЫ обновлённой интеграции:** [Production reliability run 42532420382](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) на кодовом SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3` завершился успешно: **9/9 проверок, SQLite 1 472 passed / 11 deselected**, PostgreSQL, WEB, lint/types, миграции, Windows и оба Docker smoke. REG.RU S3 diagnostics 42532420330 тоже success, но это проверка CI, не proof публичного manifest 8 ноября. Последний документационный commit проверяется отдельно.
+
+**Фоновый GEO-статус Home:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) от 8 Nov показал `geo_percent=61.3`, `geo_actionable_remaining=9`, `geo_deferred_no_match=45408`, `geo_deferred_validation=1836`, `geo_network_wait=3`, `geo_external_network_degraded=false` и одну текущую MapDataset; статистика по всей системе, **не доказательство GEO 87 новых лотов**.
+
+
 ## 2026-11-09 — source-end, SQL archive evidence and map verification gates
 
 Run `f572bdff-3db1-41bf-94a4-1f75ab690232` (8 Nov 21:00 MSK):

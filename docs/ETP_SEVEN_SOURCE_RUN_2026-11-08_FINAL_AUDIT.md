@@ -1,5 +1,10 @@
 # Post-run forensic audit — nationwide 8 Nov 2026, 21:00 MSK
 
+**Offline integrated CI:** [9/9 jobs SUCCESS](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) on code SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3`, 1,472 SQLite passed, PostgreSQL/WEB/Windows/Docker green; code tests don't equal live source/data acceptance. [REG.RU S3 CI diagnostics](https://github.com/Maximiliamos/torgi/actions/runs/42532420330) also passed.
+
+**Additional Home GEO health:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) was successful on 8 Nov; system GEO classified 100%, geocoded 61.3%, actionable 9, deferred_no_match 45,408, deferred_validation 1,836, network_wait 3, external network healthy. These are aggregate platform measures, NOT specific attribution for this run's 87 inserts.
+
+
 **Status: PARTIALLY VERIFIED. Not a 7/7 acceptance or a deployed incremental release.**
 
 ## Durable evidence available in the conversation
