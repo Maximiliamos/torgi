@@ -195,3 +195,32 @@ def test_full_mets_rejects_systemic_unverified_selected_catalogue(monkeypatch) -
     monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
     with pytest.raises(MetsCatalogueScanError, match="systemic detail verification"):
         asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+
+def test_full_mets_provider_refusal_is_fatal_even_for_one_card(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+    from bankrotai.connectors.registry.mets_public import MetsEvidenceError
+
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 1,
+            "observations": [
+                ("244381-1", "100", "Объявленные торги", "Земельный участок")
+            ],
+            "next_page": None,
+        },
+    )
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
+    pilot = MetsPublicPilot(session=object())
+
+    def blocked(_url):
+        raise MetsEvidenceError("M-ETS provider access explicitly refused")
+
+    monkeypatch.setattr(pilot, "_get", blocked)
+    with pytest.raises(MetsCatalogueScanError, match="detail access/refusal failure"):
+        asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
