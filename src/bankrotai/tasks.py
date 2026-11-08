@@ -29,11 +29,11 @@ from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SyncAlreadyRunningError,
     default_source_specs,
-    fast_source_specs,
     run_nationwide_sync,
-    source_full_specs,
 )
-from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.scheduled_ingestion_modes import (
+    resolve_nationwide_specs, retry_spec_count, scheduled_specs,
+)
 from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
 from bankrotai.scrapers import (
     TorgiGovClient,
@@ -955,23 +955,7 @@ def schedule_bulk_torgi_sync(filters_data: dict, max_items: int) -> str:
 )
 def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
-        if mode == "fast":
-            specs = _fast_nationwide_source_specs()
-        elif mode == "full":
-            specs = _unpaused_source_specs(default_source_specs())
-        elif mode == "incremental":
-            specs = _unpaused_source_specs(incremental_specs(default_source_specs()))
-        elif mode.startswith("source-fast:"):
-            source_system = mode.removeprefix("source-fast:")
-            specs = tuple(spec for spec in _fast_nationwide_source_specs() if spec.source_id == source_system)
-            if not specs:
-                raise ValueError(f"Unsupported source-only fast sync: {source_system}")
-        elif mode.startswith("source-incremental:"):
-            specs = retry_specs(default_source_specs(), mode.removeprefix("source-incremental:"))
-        elif mode.startswith("source:"):
-            specs = source_full_specs(mode.removeprefix("source:"))
-        else:
-            raise ValueError(f"Unsupported nationwide sync mode: {mode}")
+        specs = resolve_nationwide_specs(mode, _unpaused_source_specs)
         result = run_nationwide_sync(SessionLocal, run_id, specs)
         if result.get("status") in {"success", "partial"}:
             if _sync_changed_map_membership(result):
@@ -1099,9 +1083,7 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
     if _global_source_network_blocked():
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
-    specs = _unpaused_source_specs(
-        incremental_specs(default_source_specs()) if mode == "incremental" else default_source_specs()
-    )
+    specs = scheduled_specs(mode, _unpaused_source_specs)
     if mode in {"full", "incremental"}:
         preflight = run_scheduled_source_preflight(specs)
         if not preflight["success"]:
@@ -1138,19 +1120,7 @@ def automatic_nationwide_source_retry_task(self, source_system: str, source_mode
         }
     if _source_is_circuit_blocked(source_system):
         return {"status": "skipped", "reason": "source_circuit_open", "source_system": source_system}
-    if source_mode == "fast":
-        mode = f"source-fast:{source_system}"
-        # Validation occurs in nationwide_lot_sync_task, after it computes the
-        # same fast GIS overlap window as the originating run.
-        total_sources = 1
-    elif source_mode == "incremental":
-        mode = f"source-incremental:{source_system}"
-        total_sources = len(retry_specs(default_source_specs(), source_system))
-    elif source_mode == "full":
-        mode = f"source:{source_system}"
-        total_sources = len(source_full_specs(source_system))
-    else:
-        raise ValueError(f"Unsupported source retry mode: {source_mode}")
+    mode, total_sources = retry_spec_count(source_system, source_mode)
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
@@ -1226,25 +1196,6 @@ def _retry_automatic_refresh(
         raise exc
     countdown = min(900, base_delay_seconds * (2 ** task.request.retries))
     raise task.retry(exc=exc, countdown=countdown, max_retries=max_retries) from exc
-
-
-def _fast_nationwide_source_specs() -> tuple[Any, ...]:
-    """Build the bounded, non-reconciling source set used by fast retries too."""
-    with session_scope() as session:
-        latest_gis = (
-            session.query(LotSyncSourceRun)
-            .filter_by(
-                source_system="torgi.gov.ru",
-                status="success",
-                complete_source_run=True,
-            )
-            .order_by(LotSyncSourceRun.finished_at.desc())
-            .first()
-        )
-        overlap_start = (
-            latest_gis.finished_at if latest_gis and latest_gis.finished_at else datetime.now(timezone.utc)
-        ) - timedelta(days=1)
-    return _unpaused_source_specs(fast_source_specs(gis_publish_date_from=overlap_start.date().isoformat()))
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
