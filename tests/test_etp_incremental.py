@@ -304,7 +304,7 @@ def test_full_selected_catalogues_are_scheduled_without_enabling_archival():
         and scheduled[source].require_source_end is True
         for source in ("m-ets.ru", "cdtrf.ru", "nistp.ru")
     )
-    assert scheduled["nistp.ru"].max_detail_attempts_per_page is None
+    assert scheduled["nistp.ru"].max_detail_attempts_per_page == 2
     assert scheduled["m-ets.ru"].filters.max_pages == 500
     assert scheduled["cdtrf.ru"].filters.page_size == 100
     assert scheduled["m-ets.ru"].max_detail_attempts_per_page is None
