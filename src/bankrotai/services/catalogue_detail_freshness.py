@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -78,6 +79,8 @@ def _stable_payload(source_system: str, candidate: dict[str, Any]) -> dict[str, 
             "region_id": candidate.get("region_id"),
             "source_status_text": _clean(candidate.get("source_status_text")).casefold(),
             "listing_price_rub": str(_money(candidate.get("listing_price_rub"))),
+            "request_time_begin": _clean(candidate.get("request_time_begin")),
+            "request_time_end": _clean(candidate.get("request_time_end")),
         }
     raise ValueError(f"Unsupported catalogue fingerprint source: {source_system}")
 
@@ -122,6 +125,18 @@ def _verified_detail_timestamp(row: SourceLot) -> datetime | None:
     return _naive_utc(row.last_seen_at) if verified else None
 
 
+def _cdtrf_catalogue_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _candidate_matches_legacy_detail(
     source_system: str,
     candidate: dict[str, Any],
@@ -159,6 +174,8 @@ def _candidate_matches_legacy_detail(
             for value in (_money(row.start_price), _money(row.current_price))
             if value is not None
         }
+        begin = _cdtrf_catalogue_time(candidate.get("request_time_begin"))
+        end = _cdtrf_catalogue_time(candidate.get("request_time_end"))
         return bool(
             raw.get("evidence") == "url_html_nuxt_identity_match"
             and raw.get("category_evidence") == "lotInfo_and_official_badge"
@@ -168,6 +185,10 @@ def _candidate_matches_legacy_detail(
             == _clean(candidate.get("source_status_text")).casefold()
             and price is not None
             and price in stored_prices
+            and begin is not None
+            and end is not None
+            and _naive_utc(row.application_start_at) == begin
+            and _naive_utc(row.application_deadline) == end
             and row.cadastral_number
         )
     return False
