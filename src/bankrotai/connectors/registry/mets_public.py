@@ -141,6 +141,20 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # The first 4k characters of saved HTML are login/crypto dialogs.
     # Read only the primary lot panel so recommended cards cannot overwrite it.
     primary_description = scope.select_one('[itemprop="description"]')
+    if primary_description is None and scope is not soup and len(sku_nodes) == 1:
+        # Official November 2026 HTML puts the primary detail description
+        # OUTSIDE .lot-container, although the verified SKU/title/price/status
+        # remain inside. Never borrow a description from another lot or a
+        # recommended-card subtree; only one independently identified SKU
+        # and exactly one official unscoped description make this safe.
+        all_descriptions = soup.select('[itemprop="description"]')
+        if len(all_descriptions) == 1:
+            candidate = all_descriptions[0]
+            if (
+                candidate.find_parent(class_="lot-container") is None
+                and candidate.find_parent(class_="card-item") is None
+            ):
+                primary_description = candidate
     description = primary_description.get_text(" ", strip=True) if primary_description else ""
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
