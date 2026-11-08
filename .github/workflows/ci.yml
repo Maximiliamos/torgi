@@ -52,6 +52,11 @@ jobs:
               "git_status_unchanged": audit["git_status_unchanged"],
           }, indent=2))
           PY
+      - name: Compare M-ETS public detail hosts (diagnostic only, no credentials)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: python scripts/diagnose_mets_public_origins.py
       - run: ruff check src tests benchmarks
       - run: mypy src/bankrotai benchmarks/read_only_pipeline.py
       - run: bash -n scripts/*.sh
