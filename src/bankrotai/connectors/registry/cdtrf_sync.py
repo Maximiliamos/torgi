@@ -251,13 +251,16 @@ class CdtrfSourceCrawler:
         expected_page = int(next_cursor.split(":", 1)[0])
         prior_digest = next_cursor.split(":", 1)[1]
         if self._prepared_pages:
-            prefix_pages = [
+            raw_prefix_pages = [
                 self._prepared_pages.get(page, {}).get("data")
                 for page in range(1, expected_page)
             ]
-            if any(page is None for page in prefix_pages):
+            if any(not isinstance(page, dict) for page in raw_prefix_pages):
                 self._reset_catalogue_state()
                 return None
+            prefix_pages = [
+                page for page in raw_prefix_pages if isinstance(page, dict)
+            ]
             prefix_ids = {
                 str(value)
                 for page in prefix_pages
