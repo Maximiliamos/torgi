@@ -136,3 +136,34 @@ but the differences are meaningful diagnostic signals.
 Current status at handoff: branch changes and CI underway;
 **merged=NO, deployed=NO, Home post-run SQL audit=NOT EXECUTED,
 new S3 verification=NOT EXECUTED, complete seven-source acceptance=NO**.
+
+
+## 2026-11-09 — Home read-only audit executed
+
+Operator executed `scripts/run-readonly-postrun-audit-home.ps1` against the running Home worker image:
+
+- running image: `bankrotai-home-api:66a91d8ef2a73ec83b80c70363b8406d6b2e1d64`;
+- report: `D:\\BankrotAI\\etp-operator-logs\\audit-20261108-20261109-021857.json`;
+- run status: `partial`;
+- current map: `20261108T215500614188Z-r6-bundle-s3`;
+- public REG.RU S3 manifest: **verified**;
+- source-counter archive total: **1,383**;
+- run-window archive rows exactly matched the source counters:
+  - BidExpert: **1,332 / 1,332**;
+  - GIS: **49 / 49**;
+  - Lot-online: **2 / 2**;
+  - all other selected sources: **0 / 0**.
+
+This closes the previous uncertainty that the aggregate archive counters might not correspond to rows archived in the run time window. It does **not** by itself prove that every archive was semantically correct; reason-code/sample review remains the provenance gate before any source-scope narrowing, especially BidExpert `all -> realty`.
+
+The audit also independently confirms that the published public S3 manifest exists for the current MapDataset. Run-specific GEO attribution for all 87 inserted source rows still remains a separate evidence question unless the JSON report contains the per-row GEO counts/samples.
+
+Release gate update:
+- CODE: YES
+- TEST: re-run required on final integration head after importing remaining safe #1160 changes
+- HOME READ-ONLY AUDIT: YES
+- PUBLIC S3 MANIFEST: YES
+- ARCHIVE WINDOW COUNTERS: YES
+- ARCHIVE SEMANTIC CORRECTNESS: NOT FULLY PROVEN
+- MERGED: NO
+- DEPLOYED: NO
