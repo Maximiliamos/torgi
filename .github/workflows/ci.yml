@@ -236,6 +236,16 @@ jobs:
             $parseErrors | ForEach-Object { Write-Error $_.Message }
             throw 'Gated release PowerShell parser rejected the script'
           }
+      - name: Inspect checkout cleanliness before gated dry-run (read-only)
+        shell: pwsh
+        run: |
+          $tracked = @(git status --porcelain --untracked-files=no)
+          $untracked = @(git ls-files --others --exclude-standard)
+          Write-Output "tracked_change_count=$($tracked.Count);untracked_count=$($untracked.Count)"
+          # File paths only; never emit file content or environment secrets.
+          @($tracked + $untracked) | Select-Object -First 12 | ForEach-Object {
+            Write-Output "git_status_path=$_"
+          }
       - name: Smoke guarded launcher in dry-run with stubbed gh (no network, no writes)
         shell: pwsh
         run: |
