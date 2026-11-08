@@ -429,3 +429,44 @@ def test_recommended_card_description_cannot_be_main_property_evidence():
     )
     lot = parse_mets_lot(html, "https://m-ets.ru/244602-1")
     assert lot.cadastral_number is None
+
+
+
+def test_user_captured_8_nov_2026_land_lot_preserves_two_cadastral_numbers():
+    # Sanitized reproduction of uploaded HTML 4.txt (244758-METS-1).
+    html = DETAIL.replace(
+        "48:20:0021101:37",
+        "27:01:0000050:624, кадастровый номер 27:17:0302204:451",
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.cadastral_number == "27:01:0000050:624"
+    assert lot.raw_data["cadastral_numbers"] == [
+        "27:01:0000050:624", "27:17:0302204:451",
+    ]
+    assert lot.raw_data["cadastral_multi_object"] is True
+
+
+def test_user_captured_mixed_building_land_lot_preserves_five_cadastres():
+    # Sanitized reproduction of uploaded HTML 6.txt (244745-METS-1).
+    numbers = [
+        "50:20:0040710:160",
+        "50:20:0040710:1906",
+        "50:20:0040636:3254",
+        "50:20:0040710:1895",
+        "50:20:0040636:8073",
+    ]
+    html = DETAIL.replace(
+        "48:20:0021101:37",
+        "; ".join("Кадастровый номер " + number for number in numbers),
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.raw_data["cadastral_numbers"] == numbers
+    assert lot.raw_data["cadastral_multi_object"] is True
+    # Do not infer one of these numbers represents the entire complex.
+    assert len(lot.raw_data["cadastral_numbers"]) == 5
+
+
+def test_single_cadastre_lot_is_explicitly_not_composite():
+    lot = parse_mets_lot(DETAIL, URL)
+    assert lot.raw_data["cadastral_numbers"] == ["48:20:0021101:37"]
+    assert lot.raw_data["cadastral_multi_object"] is False
