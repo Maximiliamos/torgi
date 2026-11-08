@@ -32,7 +32,7 @@ from bankrotai.services.ingestion import (
     run_nationwide_sync,
 )
 from bankrotai.services.scheduled_ingestion_modes import (
-    resolve_nationwide_specs, retry_spec_count, scheduled_specs,
+    SEVEN_SOURCE_IDS, resolve_nationwide_specs, retry_spec_count, scheduled_specs,
 )
 from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
 from bankrotai.scrapers import (
@@ -1085,6 +1085,15 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
     specs = scheduled_specs(mode, _unpaused_source_specs)
     if mode in {"full", "incremental"}:
+        runnable = {str(spec.source_id) for spec in specs}
+        missing = sorted(SEVEN_SOURCE_IDS - runnable)
+        if missing:
+            return {
+                "status": "skipped",
+                "reason": "required_source_not_runnable",
+                "mode": mode,
+                "missing_sources": missing,
+            }
         preflight = run_scheduled_source_preflight(specs)
         if not preflight["success"]:
             return {
