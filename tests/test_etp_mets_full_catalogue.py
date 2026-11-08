@@ -378,3 +378,47 @@ def test_identity_registration_and_catalogue_status_are_fail_closed() -> None:
     )
     with pytest.raises(MetsCatalogueScanError, match="unexpected selected-scope status"):
         scan_complete_mets_catalogue(_Session([bad_status]), delay_seconds=0)
+
+
+
+def test_user_captured_eight_category_snapshot_5144_pages_one_and_ten() -> None:
+    """8-Nov-2026 browser HTML: 5,144 filtered, 20/page, two paginators.
+
+    Snapshot total is evidence for this dated fixture, not a hard-coded limit
+    on production: tomorrow's genuine catalogue may contain a different total.
+    The separate 11,503 count in the screenshot was without these filters.
+    """
+    from bankrotai.services.etp_mets_full_catalogue import _parse_page
+
+    identities = [f"244600-{lot}" for lot in range(1, 21)]
+    first = _parse_page(
+        _html(1, identities, total=5144, next_page=2, paginator_count=2), 1,
+    )
+    tenth = _parse_page(
+        _html(10, identities, total=5144, next_page=11, paginator_count=2), 10,
+    )
+    assert first["total"] == tenth["total"] == 5144
+    assert len(first["observations"]) == len(tenth["observations"]) == 20
+    assert first["next_page"] == 2
+    assert tenth["next_page"] == 11
+    assert (5144 + 19) // 20 == 258
+
+
+def test_user_eight_category_filter_includes_land_but_excludes_transport() -> None:
+    import base64
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    from bankrotai.services.etp_mets_full_catalogue import (
+        OMITTED_PROPERTY_CATEGORY_IDS,
+        SELECTED_CATEGORY_IDS,
+        SELECTED_STATUS_IDS,
+    )
+
+    q = parse_qs(urlsplit(APARTMENTS_URL).query)["q"][0]
+    selected = json.loads(base64.urlsafe_b64decode(q + "=" * (-len(q) % 4)))
+    assert selected == {"search_category": "36,34,39,37,38,28,41,11"}
+    assert SELECTED_CATEGORY_IDS == ("36", "34", "39", "37", "38", "28", "41", "11")
+    assert SELECTED_STATUS_IDS == ("0", "1")
+    assert "40" in OMITTED_PROPERTY_CATEGORY_IDS
+    assert not ({"1", "3", "4", "5", "6", "8", "15", "16", "17"} & set(SELECTED_CATEGORY_IDS))
