@@ -52,7 +52,7 @@ def _html(
     *,
     total: int,
     next_page: int | None,
-    categories: tuple[str, ...] = ("36", "34", "39", "37", "38", "28", "41"),
+    categories: tuple[str, ...] = ("36", "34", "39", "37", "38", "28", "41", "11"),
     statuses: tuple[str, ...] = ("0", "1"),
     prices: tuple[str, ...] | None = None,
     next_href: str | None = None,
@@ -69,7 +69,7 @@ def _html(
     next_link = ""
     if next_page is not None:
         next_href = next_href or (
-            f"/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
+            f"/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSwxMSJ9"
             f"&amp;page={next_page}"
         )
         next_link = (
@@ -167,7 +167,7 @@ def test_full_selected_catalogue_walk_proves_incomplete_terminal_page() -> None:
     assert report["catalogue_statuses_verified"] is True
     assert report["complete_source_inventory"] is False
     assert report["category_scope_complete"] is False
-    assert report["omitted_property_category_ids"] == ["11", "40"]
+    assert report["omitted_property_category_ids"] == ["40"]
     assert report["detail_validation_proven"] is False
     assert report["production_database_writes"] == 0
     assert report["archival_allowed"] is False
