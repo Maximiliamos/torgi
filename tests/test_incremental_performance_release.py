@@ -13,8 +13,10 @@ from bankrotai.services.incremental_detail_cache import (
     catalogue_fingerprint,
     snapshot_reusable,
 )
-from bankrotai.services.ingestion import incremental_source_specs, source_retry_specs
-from bankrotai.tasks import _scheduled_source_preflight, celery_app
+from bankrotai.services.ingestion import default_source_specs
+from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
+from bankrotai.tasks import celery_app
 
 
 def _snapshot(*, title: str = "Объект", status: str = "active", price: str = "100") -> dict:
@@ -123,15 +125,15 @@ def test_cdtrf_changed_detail_only_and_checkpoint_round_trip() -> None:
 def test_twice_daily_schedule_uses_incremental_detail_mode() -> None:
     beat = celery_app.conf.beat_schedule["refresh-nationwide-sources-full"]
     assert beat["args"] == ("incremental",)
-    specs = {spec.source_id: spec for spec in incremental_source_specs()}
+    specs = {spec.source_id: spec for spec in incremental_specs(default_source_specs())}
     assert specs["m-ets.ru"].reuse_unchanged_details is True
     assert specs["cdtrf.ru"].reuse_unchanged_details is True
     assert specs["nistp.ru"].reuse_unchanged_details is False
 
 
 def test_targeted_retry_requests_resume_for_production_spec() -> None:
-    mets = source_retry_specs("m-ets.ru")[0]
-    cdtrf = source_retry_specs("cdtrf.ru")[0]
+    mets = retry_specs(default_source_specs(), "m-ets.ru")[0]
+    cdtrf = retry_specs(default_source_specs(), "cdtrf.ru")[0]
     assert mets.resume_from_checkpoint and mets.reuse_unchanged_details
     assert cdtrf.resume_from_checkpoint and cdtrf.reuse_unchanged_details
 
@@ -143,7 +145,7 @@ def test_preflight_fails_before_heavy_run(monkeypatch) -> None:
         return {"success": source_id != "bad", "source_system": source_id}
 
     monkeypatch.setattr(source_resilience, "probe_source_endpoint", probe)
-    result = _scheduled_source_preflight((
+    result = run_scheduled_source_preflight((
         SimpleNamespace(source_id="good"),
         SimpleNamespace(source_id="bad"),
     ))
