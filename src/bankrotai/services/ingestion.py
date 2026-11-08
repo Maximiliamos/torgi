@@ -391,11 +391,8 @@ class NationwideIngestionService:
         active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
         self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
-        cursor: str | None = None
         try:
-            cursor = await ingestion_incremental.prepare_source(
-                self.session_factory, run_id, result, spec, connector,
-            )
+            cursor = await ingestion_incremental.prepare_source(self.session_factory, run_id, result, spec, connector)
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
                 raise ConnectorCapabilityError(f"{spec.source_id}: missing-lot reconciliation is forbidden")
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
@@ -440,10 +437,7 @@ class NationwideIngestionService:
                 )
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
-                ingestion_incremental.record_page(
-                    self.session_factory, run_id, result, connector,
-                    page.metadata, page.next_cursor,
-                )
+                ingestion_incremental.record_page(self.session_factory, run_id, result, connector, page.metadata, page.next_cursor)
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
@@ -540,7 +534,6 @@ class NationwideIngestionService:
         self._upsert_source_run(run_id, result, started_at=started, finished_at=utc_now())
         self._record_source_resilience_outcome(result)
         return result
-
     def _record_source_resilience_outcome(self, result: SourceSyncResult) -> None:
         """Persist operational resilience state without making ingestion depend on telemetry."""
         try:
