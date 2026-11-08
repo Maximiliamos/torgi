@@ -118,6 +118,20 @@ def prepare_source(
 def apply_page_metadata(result: Any, metadata: dict[str, Any], next_cursor: str | None) -> None:
     result.detail_attempts += int(metadata.get("detail_attempts") or 0)
     result.detail_skipped_unchanged += int(metadata.get("detail_skipped_unchanged") or 0)
+    result.catalogue_observations += max(0, int(metadata.get("catalogue_lots") or 0))
+    result.property_hint_candidates += max(0, int(
+        metadata.get("property_hint_candidates") or metadata.get("catalogue_lots") or 0
+    ))
+    result.verified_property_lots += max(0, int(metadata.get("verified_property_lots") or 0))
+    result.details_rejected += max(0, int(metadata.get("details_rejected") or 0))
+    # Persist only bounded machine-readable rejection categories, never raw
+    # provider HTML/text or private lot metadata into the health checkpoint.
+    for reason, count in (metadata.get("rejection_codes") or {}).items():
+        if isinstance(reason, str) and reason.isascii() and 1 <= len(reason) <= 64:
+            if all(c.isalnum() or c == "_" for c in reason):
+                result.detail_rejection_reasons[reason] = (
+                    result.detail_rejection_reasons.get(reason, 0) + max(0, int(count))
+                )
     result.retry_count += int(metadata.get("retry_count") or 0)
     result.resume_cursor = next_cursor
     checkpoint = metadata.get("resume_checkpoint")
@@ -209,6 +223,11 @@ def checkpoint_payload(result: Any) -> dict[str, Any]:
         "connector_checkpoint": result.connector_checkpoint,
         "detail_attempts": result.detail_attempts,
         "detail_skipped_unchanged": result.detail_skipped_unchanged,
+        "catalogue_observations": result.catalogue_observations,
+        "property_hint_candidates": result.property_hint_candidates,
+        "verified_property_lots": result.verified_property_lots,
+        "details_rejected": result.details_rejected,
+        "detail_rejection_reasons": result.detail_rejection_reasons,
         "detail_cache_hit_rate": round(
             result.detail_skipped_unchanged
             / max(1, result.detail_attempts + result.detail_skipped_unchanged),
@@ -242,6 +261,11 @@ def performance_profile(result: Any, profile_timings: bool) -> dict[str, Any]:
         if result.elapsed_seconds else 0,
         "detail_attempts": result.detail_attempts,
         "detail_skipped_unchanged": result.detail_skipped_unchanged,
+        "catalogue_observations": result.catalogue_observations,
+        "property_hint_candidates": result.property_hint_candidates,
+        "verified_property_lots": result.verified_property_lots,
+        "details_rejected": result.details_rejected,
+        "detail_rejection_reasons": result.detail_rejection_reasons,
         "detail_cache_hit_rate": round(
             result.detail_skipped_unchanged
             / max(1, result.detail_attempts + result.detail_skipped_unchanged),
