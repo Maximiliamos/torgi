@@ -288,13 +288,13 @@ class MetsPublicPilot:
                 time.sleep(remaining)
         self._last_request_at = time.monotonic()
         response = None
-        for delay in (1.0, 2.0, 4.0, 8.0, None):
+        for delay in (0.5, 1.0, 2.0, None):
             try:
                 if before_request is not None:
                     before_request(request_url)
                 response = self.session.get(
                     request_url,
-                    timeout=(10, 60),
+                    timeout=(5, 20),
                     allow_redirects=False,
                     headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
                 )
