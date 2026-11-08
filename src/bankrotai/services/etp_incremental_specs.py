@@ -60,10 +60,12 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
         SourceSyncSpec(
             "m-ets.ru", MetsSyncFilters(),
             reconcile_missing=False, max_batches=500, require_source_end=True,
+            allow_checkpoint_resume=True,
         ),
         SourceSyncSpec(
             "cdtrf.ru", CdtrfSyncFilters(page_size=100),
             reconcile_missing=False, max_batches=500, require_source_end=True,
+            allow_checkpoint_resume=True,
         ),
         SourceSyncSpec(
             "nistp.ru", EtpSearchFilters(page=1),
