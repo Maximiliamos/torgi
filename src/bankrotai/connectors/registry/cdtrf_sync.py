@@ -97,6 +97,7 @@ class CdtrfSourceCrawler:
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
         self._detail_cache: dict[str, dict] = {}
+        self._prepared_pages: dict[int, dict] = {}
 
     def set_detail_cache(self, snapshots: dict[str, dict]) -> None:
         self._detail_cache = dict(snapshots)
@@ -132,6 +133,112 @@ class CdtrfSourceCrawler:
             fingerprint=self._catalogue_fingerprint(hit),
         )
 
+    def _reset_catalogue_state(self) -> None:
+        self._seen = set()
+        self._total = None
+        self._pages_total = 0
+        self._total_changes = 0
+        self._expected_page = 1
+        self._prior_digest = None
+
+    def _fetch_catalogue_page(self, page_no: int, page_size: int) -> tuple[dict, int]:
+        response = None
+        retry_delays = (0.5, 1.0, 2.0)
+        retries = 0
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                response = self.session.get(
+                    _url(page_no, page_size),
+                    timeout=(5, 20),
+                    allow_redirects=False,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "TORGI-CDTRF-operator-sync/1",
+                    },
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt == len(retry_delays):
+                    raise
+                retries += 1
+                time.sleep(retry_delays[attempt])
+                continue
+            if response.status_code == 429 or 500 <= response.status_code <= 504:
+                if attempt == len(retry_delays):
+                    raise CdtrfCatalogueScanError(
+                        f"CDTRF catalogue HTTP {response.status_code}"
+                    )
+                retries += 1
+                time.sleep(retry_delays[attempt])
+                continue
+            break
+        if response is None:
+            raise CdtrfCatalogueScanError("CDTRF catalogue retry loop exhausted")
+        if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
+            raise CdtrfCatalogueScanError(
+                f"CDTRF catalogue HTTP {response.status_code} or oversized"
+            )
+        if "json" not in response.headers.get("Content-Type", "").lower():
+            raise CdtrfCatalogueScanError("CDTRF catalogue response is not JSON")
+        return (
+            parse_cdtrf_api_page(
+                response.json(), page_num=page_no, page_size=page_size,
+            ),
+            retries,
+        )
+
+    def prepare_catalogue(self, filters: CdtrfSyncFilters) -> dict:
+        """Materialize the live API catalogue before starting detail validation."""
+        if self._seen or self._expected_page != 1:
+            raise CdtrfCatalogueScanError("CDTRF catalogue preparation requires a fresh crawler")
+        prepared: dict[int, dict] = {}
+        page_no = 1
+        pages_total = 1
+        seen: set[str] = set()
+        total_changes = 0
+        previous_total: int | None = None
+        retries = 0
+        while page_no <= pages_total:
+            if page_no > filters.max_pages:
+                raise CdtrfCatalogueScanError("CDTRF catalogue exceeds page budget")
+            data, page_retries = self._fetch_catalogue_page(page_no, filters.page_size)
+            retries += page_retries
+            total = int(data["reported_total"])
+            if previous_total is not None and total != previous_total:
+                total_changes += 1
+            previous_total = total
+            pages_total = max(pages_total, ceil(total / filters.page_size) or 1)
+            expected = min(
+                filters.page_size,
+                max(0, total - (page_no - 1) * filters.page_size),
+            )
+            if data["observed_rows"] != expected:
+                raise CdtrfCatalogueScanError(
+                    "CDTRF incomplete page / unsupported server PageSize"
+                )
+            seen.update(str(value) for value in data["observed_lot_ids"])
+            prepared[page_no] = {"data": data, "retry_count": page_retries}
+            page_no += 1
+        self._prepared_pages = prepared
+        self._reset_catalogue_state()
+        return {
+            "pages": len(prepared),
+            "observed_unique_ids": len(seen),
+            "reported_total": previous_total,
+            "catalogue_total_changes": total_changes,
+            "retry_count": retries,
+            "phase": "catalogue_discovery_complete",
+        }
+
+    def _catalogue_page(self, page_no: int, page_size: int) -> tuple[dict, int]:
+        prepared = self._prepared_pages.get(page_no)
+        if prepared is not None:
+            return prepared["data"], int(prepared.get("retry_count") or 0)
+        return self._fetch_catalogue_page(page_no, page_size)
+
     def restore_checkpoint(self, checkpoint: dict) -> str | None:
         if checkpoint.get("version") != 1 or checkpoint.get("source") != "cdtrf.ru":
             return None
@@ -141,12 +248,45 @@ class CdtrfSourceCrawler:
         seen = checkpoint.get("seen_ids")
         if not isinstance(seen, list) or not all(isinstance(value, str) for value in seen):
             return None
+        expected_page = int(next_cursor.split(":", 1)[0])
+        prior_digest = next_cursor.split(":", 1)[1]
+        if self._prepared_pages:
+            prefix_pages = [
+                self._prepared_pages.get(page, {}).get("data")
+                for page in range(1, expected_page)
+            ]
+            if any(page is None for page in prefix_pages):
+                self._reset_catalogue_state()
+                return None
+            prefix_ids = {
+                str(value)
+                for page in prefix_pages
+                for value in page["observed_lot_ids"]
+            }
+            anchor = prefix_pages[-1] if prefix_pages else None
+            anchor_ids = set(anchor["observed_lot_ids"]) if anchor is not None else set()
+            anchor_digest = hashlib.sha256(
+                "\n".join(sorted(anchor_ids)).encode("ascii")
+            ).hexdigest() if anchor is not None else None
+            if prefix_ids != set(seen) or anchor_digest != prior_digest:
+                self._reset_catalogue_state()
+                return None
+            prepared_totals = [
+                int(page["reported_total"]) for page in self._prepared_pages.values()
+            ]
+            self._total = prepared_totals[min(expected_page - 2, len(prepared_totals) - 1)]
+            self._pages_total = len(self._prepared_pages)
+            self._total_changes = sum(
+                left != right
+                for left, right in zip(prepared_totals, prepared_totals[1:])
+            )
+        else:
+            self._total = int(checkpoint["total"])
+            self._pages_total = int(checkpoint["pages_total"])
+            self._total_changes = int(checkpoint.get("total_changes") or 0)
         self._seen = set(seen)
-        self._total = int(checkpoint["total"])
-        self._pages_total = int(checkpoint["pages_total"])
-        self._total_changes = int(checkpoint.get("total_changes") or 0)
-        self._expected_page = int(next_cursor.split(":", 1)[0])
-        self._prior_digest = next_cursor.split(":", 1)[1]
+        self._expected_page = expected_page
+        self._prior_digest = prior_digest
         return next_cursor
 
     def _resume_checkpoint(self, next_cursor: str | None) -> dict | None:
@@ -176,45 +316,7 @@ class CdtrfSourceCrawler:
             page_no = int(match.group(1))
         if page_no > filters.max_pages:
             raise CdtrfCatalogueScanError("CDTRF page budget exceeded")
-        response = None
-        retry_delays = (0.5, 1.0, 2.0)
-        catalogue_retries = 0
-        for attempt in range(len(retry_delays) + 1):
-            try:
-                response = self.session.get(
-                    _url(page_no, filters.page_size),
-                    timeout=(5, 20),
-                    allow_redirects=False,
-                    headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-operator-sync/1"},
-                )
-            except (
-                requests.Timeout,
-                requests.ConnectionError,
-                requests.exceptions.ChunkedEncodingError,
-            ):
-                if attempt == len(retry_delays):
-                    raise
-                catalogue_retries += 1
-                catalogue_retries += 1
-                time.sleep(retry_delays[attempt])
-                continue
-            if response.status_code == 429 or 500 <= response.status_code <= 504:
-                if attempt == len(retry_delays):
-                    raise CdtrfCatalogueScanError(
-                        f"CDTRF catalogue HTTP {response.status_code}"
-                    )
-                time.sleep(retry_delays[attempt])
-                continue
-            break
-        if response is None:
-            raise CdtrfCatalogueScanError("CDTRF catalogue retry loop exhausted")
-        if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
-            raise CdtrfCatalogueScanError(f"CDTRF catalogue HTTP {response.status_code} or oversized")
-        if "json" not in response.headers.get("Content-Type", "").lower():
-            raise CdtrfCatalogueScanError("CDTRF catalogue response is not JSON")
-        data = parse_cdtrf_api_page(
-            response.json(), page_num=page_no, page_size=filters.page_size,
-        )
+        data, catalogue_retries = self._catalogue_page(page_no, filters.page_size)
         total: int = int(data["reported_total"])
         if self._total is None:
             self._total = total
@@ -344,7 +446,7 @@ class CdtrfSourceCrawler:
                 "progress_current": page_no,
                 "progress_total": pages_total,
                 "catalogue_lots": data["observed_rows"],
-                "property_hint_candidates": inspected,
+                "property_hint_candidates": len(candidates),
                 "verified_property_lots": len(accepted) + len(reused_ids),
                 "details_rejected": sum(rejected.values()),
                 "detail_attempts": len(detail_candidates),
