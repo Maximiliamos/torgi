@@ -45,7 +45,13 @@ SYSTEMIC_DETAIL_REJECTION_CODES = frozenset({
 })
 
 
-def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Session, limiter=None):
+def _verified_detail_with_retry(
+    trade_id: str,
+    lot_id: str,
+    session: requests.Session,
+    limiter=None,
+    on_retry=None,
+):
     """Retry only transient transport/5xx errors, never identity or 403/429."""
     for attempt in range(3):
         try:
@@ -58,6 +64,8 @@ def _verified_detail_with_retry(trade_id: str, lot_id: str, session: requests.Se
         except CdtrfCanaryError as exc:
             if not re.fullmatch(r"CDTRF HTTP (?:502|503|504)", str(exc)) or attempt == 2:
                 raise
+        if on_retry is not None:
+            on_retry()
         time.sleep(attempt + 1)
     raise RuntimeError("Unreachable CDTRF detail retry state")
 
@@ -105,6 +113,10 @@ class CdtrfSourceCrawler:
         self._prior_digest: str | None = None
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
+        self._retry_count = 0
+
+    def _record_retry(self) -> None:
+        self._retry_count += 1
 
     def _fetch_catalogue_page(
         self,
@@ -130,6 +142,7 @@ class CdtrfSourceCrawler:
             ):
                 if attempt == len(CATALOGUE_RETRY_DELAYS):
                     raise
+                self._record_retry()
                 time.sleep(CATALOGUE_RETRY_DELAYS[attempt])
                 continue
             if response.status_code == 429:
@@ -147,6 +160,7 @@ class CdtrfSourceCrawler:
         return response
 
     def _search(self, filters: CdtrfSyncFilters, cursor: str | None) -> ConnectorPage:
+        retry_start = self._retry_count
         if cursor is None:
             if self._expected_page != 1:
                 raise CdtrfCatalogueScanError("CDTRF restart requires a fresh connector")
@@ -236,8 +250,11 @@ class CdtrfSourceCrawler:
             hit, fingerprint = entry
             try:
                 lot = _verified_detail_with_retry(
-                    str(hit["trade_id"]), str(hit["trade_lot_id"]),
-                    workers.session(), workers,
+                    str(hit["trade_id"]),
+                    str(hit["trade_lot_id"]),
+                    workers.session(),
+                    workers,
+                    self._record_retry,
                 )
             except (CdtrfCanaryError, CdtrfEvidenceError) as exc:
                 code = _cdtrf_rejection_code(exc)
@@ -320,6 +337,7 @@ class CdtrfSourceCrawler:
                 "catalogue_candidates": len(candidates),
                 "detail_attempts": len(detail_candidates),
                 "detail_requests_saved": len(skipped_catalogue),
+                "retry_count": self._retry_count - retry_start,
                 "catalogue_unchanged": skipped_catalogue,
                 "detail_concurrency": filters.detail_concurrency,
                 "systemic_detail_rejections": systemic_rejections,
@@ -343,6 +361,7 @@ class CdtrfSourceCrawler:
             "total": self._total,
             "pages_total": self._pages_total,
             "total_changes": self._total_changes,
+            "retry_count": self._retry_count,
         }
 
     def _restore_checkpoint(self, filters: CdtrfSyncFilters, state: dict[str, Any]) -> bool:
@@ -381,6 +400,7 @@ class CdtrfSourceCrawler:
         self._total = state.get("total")
         self._pages_total = int(state.get("pages_total") or 0)
         self._total_changes = int(state.get("total_changes") or 0)
+        self._retry_count = int(state.get("retry_count") or 0)
         return True
 
     async def restore_checkpoint(
