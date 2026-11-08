@@ -36,6 +36,8 @@ KNOWN_SOURCES = (
 CHECKPOINT_KEYS = (
     "catalogue_candidates", "catalogue_total", "catalogue_discovery_ms",
     "detail_attempts", "detail_skipped_unchanged", "detail_cache_hit_rate",
+    "catalogue_observations", "property_hint_candidates", "verified_property_lots",
+    "details_rejected", "detail_rejection_reasons",
     "items_rejected", "quarantined_records", "quarantine_reasons",
     "rejection_codes", "retry_count", "sql_statements_per_100_lots",
     "pages_per_second", "rows_per_second", "complete_source_inventory",
