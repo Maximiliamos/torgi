@@ -221,6 +221,19 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - name: Parse guarded full-cycle operator script without executing it
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $source = Join-Path $PWD 'scripts/launch-seven-source-gated.ps1'
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $source, [ref]$tokens, [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            throw 'Gated release PowerShell parser rejected the script'
+          }
       - name: Check source desktop through START_TORGI.bat
         shell: cmd
         run: START_TORGI.bat --check
