@@ -675,6 +675,13 @@ jobs:
                               "items_unchanged": row.items_unchanged,
                               "items_failed": row.items_failed,
                               "progress_at": str(row.progress_at) if row.progress_at else None,
+                              "rows_per_second": (row.checkpoint_json or {}).get("rows_per_second"),
+                              "eta_seconds": (row.checkpoint_json or {}).get("eta_seconds"),
+                              "catalogue_candidates": (row.checkpoint_json or {}).get("catalogue_candidates"),
+                              "detail_attempts": (row.checkpoint_json or {}).get("detail_attempts"),
+                              "detail_requests_saved": (row.checkpoint_json or {}).get("detail_requests_saved"),
+                              "retry_count": (row.checkpoint_json or {}).get("retry_count"),
+                              "resumed_from_run_id": (row.checkpoint_json or {}).get("resumed_from_run_id"),
                           } for row in sources],
                       })
                   print("ACTIVE_NATIONWIDE_INGESTION=" + json.dumps(payload, ensure_ascii=False))
