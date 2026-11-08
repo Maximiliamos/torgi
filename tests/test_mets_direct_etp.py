@@ -365,3 +365,67 @@ def test_mirror_http_429_is_not_retried(monkeypatch):
     with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
         MetsPublicPilot(session=session)._get(URL)
     assert session.calls == 1  # never re-request the 429 response
+
+
+
+def test_live_meetings_dom_description_outside_single_verified_lot_container():
+    # Observed on the official 2026 public detail mirror: SKU, price and
+    # status are inside .lot-container but itemprop=description is outside.
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове, 82,7 кв.м.</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div class="lot-cost-item price"><div class="value">7 500 000 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Объявленные торги</div></div></div>'
+        '<section><span itemprop="description">'
+        'Квартира, кадастровый номер: 68:29:0212001:4089, 82,7 кв.м.'
+        '</span></section>'
+        '<a class="card-item">Рекомендованный лот с данными третьего лица</a>'
+        '</html>'
+    )
+    lot = parse_mets_lot(html, "https://meetings.m-ets.ru/244602-1")
+    assert lot.external_id == "244602-1"
+    assert lot.lot_url == "https://m-ets.ru/244602-1"
+    assert lot.cadastral_number == "68:29:0212001:4089"
+    assert lot.start_price == 7_500_000
+    assert lot.auction_status == "scheduled"
+    assert "Рекомендованный" not in lot.description
+
+
+def test_unscoped_description_is_not_attributed_to_one_of_multiple_skus():
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div>Объявленные торги</div>'
+        '<div>7 500 000 ₽ Начальная цена</div></div>'
+        '<div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-2">'
+        '<h2>Чужой лот</h2></div>'
+        '<span itemprop="description">Кадастровый номер: 68:29:0212001:4089</span>'
+        '</html>'
+    )
+    lot = parse_mets_lot(html, "https://m-ets.ru/244602-1")
+    assert lot.external_id == "244602-1"
+    assert lot.cadastral_number is None
+    assert "Кадастровый номер" not in lot.description
+
+
+def test_recommended_card_description_cannot_be_main_property_evidence():
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div>Объявленные торги</div>'
+        '<div>7 500 000 ₽ Начальная цена</div></div>'
+        '<div class="card-item">'
+        '<span itemprop="description">Кадастровый номер: 68:29:0212001:4089</span>'
+        '</div></html>'
+    )
+    lot = parse_mets_lot(html, "https://m-ets.ru/244602-1")
+    assert lot.cadastral_number is None
