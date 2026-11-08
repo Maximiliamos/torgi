@@ -217,6 +217,8 @@ class MetsSourceCrawler:
                 }
                 if Decimal(catalogue_price) not in detail_prices:
                     raise MetsEvidenceError("M-ETS detail price differs from catalogue")
+                if lot.category == "land":
+                    return None, "standalone_land_out_of_scope"
                 if not _property_ready(lot):
                     return None, "property_evidence_missing"
             except requests.RequestException as exc:
