@@ -69,7 +69,7 @@ def test_mets_retry_attempts_are_all_rate_limited(monkeypatch, transient_status)
         before_request=lambda url: starts.append(url),
     )
     assert result == "detail"
-    assert starts == ["https://m-ets.ru/1234-1", "https://m-ets.ru/1234-1"]
+    assert starts == ["https://meetings.m-ets.ru/1234-1", "https://meetings.m-ets.ru/1234-1"]
 
 
 
@@ -101,7 +101,7 @@ def test_mets_429_is_not_retried_even_with_concurrent_rate_limiter(monkeypatch):
             before_request=lambda url: starts.append(url),
         )
     assert session.calls == 1
-    assert starts == ["https://m-ets.ru/1234-1"]
+    assert starts == ["https://meetings.m-ets.ru/1234-1"]
 
 
 def test_mets_timeout_retries_are_bounded_and_rate_gated(monkeypatch):
