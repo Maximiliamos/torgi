@@ -680,6 +680,7 @@ jobs:
                               "catalogue_candidates": (row.checkpoint_json or {}).get("catalogue_candidates"),
                               "detail_attempts": (row.checkpoint_json or {}).get("detail_attempts"),
                               "detail_requests_saved": (row.checkpoint_json or {}).get("detail_requests_saved"),
+                              "detail_cache_hit_rate": (row.checkpoint_json or {}).get("detail_cache_hit_rate"),
                               "retry_count": (row.checkpoint_json or {}).get("retry_count"),
                               "resumed_from_run_id": (row.checkpoint_json or {}).get("resumed_from_run_id"),
                           } for row in sources],
