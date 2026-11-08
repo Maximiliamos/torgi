@@ -59,10 +59,9 @@ def catalogue_fingerprint(payload: Mapping[str, Any]) -> str:
 def snapshot_from_source_row(row: Any) -> dict[str, Any]:
     raw = row.raw_data if isinstance(row.raw_data, dict) else {}
     verified = parse_timestamp(raw.get("detail_verified_at"))
-    # Legacy rows were persisted only after detail verification. Their previous
-    # last_seen_at is a conservative bootstrap age; once reused, ingestion writes
-    # it into detail_verified_at so future runs have a stable age boundary.
-    bootstrap = verified or parse_timestamp(row.last_seen_at)
+    # last_seen_at proves only catalogue observation, not independent detail
+    # verification. Legacy rows without explicit proof must be refetched.
+    bootstrap = verified
     return {
         "external_id": str(row.external_id),
         "title": row.title,
@@ -95,10 +94,8 @@ def snapshot_reusable(
         return False
     if not snapshot.get("cadastral_number") or not snapshot.get("lot_url"):
         return False
-    observed_at = (
-        parse_timestamp(snapshot.get("detail_verified_at"))
-        or parse_timestamp(snapshot.get("bootstrap_verified_at"))
-    )
+    # A legacy bootstrap timestamp cannot substitute for detail provenance.
+    observed_at = parse_timestamp(snapshot.get("detail_verified_at"))
     current = _aware(now or datetime.now(timezone.utc))
     if observed_at is None or observed_at > current or current - observed_at > max_age:
         return False
