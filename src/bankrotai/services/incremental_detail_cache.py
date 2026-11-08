@@ -69,6 +69,7 @@ def snapshot_from_source_row(row: Any) -> dict[str, Any]:
         "start_price": str(row.start_price) if row.start_price is not None else None,
         "current_price": str(row.current_price) if row.current_price is not None else None,
         "source_status": row.source_status,
+        "category": row.category,
         "cadastral_number": row.cadastral_number,
         "lot_url": row.lot_url or row.source_url,
         "is_archived": bool(row.is_archived),
@@ -89,6 +90,8 @@ def snapshot_reusable(
     max_age: timedelta = DEFAULT_DETAIL_MAX_AGE,
 ) -> bool:
     if not snapshot or snapshot.get("is_archived"):
+        return False
+    if stable_text(snapshot.get("category")) == "land":
         return False
     if not snapshot.get("cadastral_number") or not snapshot.get("lot_url"):
         return False
