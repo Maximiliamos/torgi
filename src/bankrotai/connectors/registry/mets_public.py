@@ -211,6 +211,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         date_source, "Окончание приема заявок на периоде"
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    # Keep the platform/external identifier stable while exposing the
+    # provider's actual working public link to end users (the old root
+    # detail path returns HTTP 403).
+    public_detail_url = DETAIL_MIRROR + urlsplit(canonical).path
     return NormalizedLot(
         external_id=f"{trade}-{lot_number}",
         source="m-ets.ru",
@@ -227,8 +231,8 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         start_price=initial,
         current_price=current,
         auction_status=status,
-        lot_url=canonical,
-        source_url=canonical,
+        lot_url=public_detail_url,
+        source_url=public_detail_url,
         detail_level="public_detail",
         raw_data={
             "source": "official_public_etp",
