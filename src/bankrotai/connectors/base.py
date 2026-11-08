@@ -66,6 +66,10 @@ class AuctionConnector(ABC):
         """Provide immutable persisted source evidence for changed-detail-only scans."""
         return None
 
+    async def prepare_catalogue(self, filters: Any) -> dict[str, Any] | None:
+        """Optionally materialize a complete catalogue before detail validation."""
+        return None
+
     def restore_resume_checkpoint(self, checkpoint: dict[str, Any]) -> str | None:
         """Restore connector-local cursor state for a targeted retry.
 
