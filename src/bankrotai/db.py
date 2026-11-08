@@ -693,9 +693,9 @@ class LotNote(Base):
 class LotIssueReport(Base):
     __tablename__ = "lot_issue_reports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    lot_id: Mapped[int] = mapped_column(
-        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    # Historical reports must survive physical removal/reconciliation of a lot.
+    # Validate the target ProcessedLot at POST time; retain its immutable ID here.
+    lot_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
