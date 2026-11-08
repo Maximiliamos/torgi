@@ -13,6 +13,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from math import ceil
 
@@ -27,6 +28,9 @@ from bankrotai.services.etp_cdtrf_canary import (
 )
 from bankrotai.services.etp_cdtrf_full_catalogue import (
     CDTRF_PAGE_SIZES, MAX_SCAN_PAGES, CdtrfCatalogueScanError, _url,
+)
+from bankrotai.services.incremental_detail_cache import (
+    catalogue_fingerprint, snapshot_reusable,
 )
 
 CURSOR = re.compile(r"^([1-9]\d{0,4}):([0-9a-f]{64})$")
@@ -92,6 +96,71 @@ class CdtrfSourceCrawler:
         self._prior_digest: str | None = None
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
+        self._detail_cache: dict[str, dict] = {}
+
+    def set_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._detail_cache = dict(snapshots)
+
+    @staticmethod
+    def _catalogue_status_hint(value: object) -> str | None:
+        text = " ".join(str(value or "").casefold().split())
+        if "прием заяв" in text or "приём заяв" in text:
+            return "active"
+        if "объяв" in text or "опублик" in text:
+            return "scheduled"
+        return None
+
+    @staticmethod
+    def _catalogue_fingerprint(hit: dict) -> str:
+        return catalogue_fingerprint({
+            "external_id": hit.get("external_id"),
+            "trade_id": hit.get("trade_id"),
+            "price": str(hit.get("listing_price_rub")),
+            "status": hit.get("source_status_text"),
+            "region_id": hit.get("region_id"),
+            "categories": hit.get("property_category_ids"),
+        })
+
+    def _can_reuse_detail(self, hit: dict) -> bool:
+        status = self._catalogue_status_hint(hit.get("source_status_text"))
+        if status is None:
+            return False
+        return snapshot_reusable(
+            self._detail_cache.get(str(hit["external_id"])),
+            expected_price=hit.get("listing_price_rub"),
+            expected_status=status,
+            fingerprint=self._catalogue_fingerprint(hit),
+        )
+
+    def restore_checkpoint(self, checkpoint: dict) -> str | None:
+        if checkpoint.get("version") != 1 or checkpoint.get("source") != "cdtrf.ru":
+            return None
+        next_cursor = checkpoint.get("next_cursor")
+        if not isinstance(next_cursor, str) or not CURSOR.fullmatch(next_cursor):
+            return None
+        seen = checkpoint.get("seen_ids")
+        if not isinstance(seen, list) or not all(isinstance(value, str) for value in seen):
+            return None
+        self._seen = set(seen)
+        self._total = int(checkpoint["total"])
+        self._pages_total = int(checkpoint["pages_total"])
+        self._total_changes = int(checkpoint.get("total_changes") or 0)
+        self._expected_page = int(next_cursor.split(":", 1)[0])
+        self._prior_digest = next_cursor.split(":", 1)[1]
+        return next_cursor
+
+    def _resume_checkpoint(self, next_cursor: str | None) -> dict | None:
+        if next_cursor is None:
+            return None
+        return {
+            "version": 1,
+            "source": "cdtrf.ru",
+            "next_cursor": next_cursor,
+            "seen_ids": sorted(self._seen),
+            "total": self._total,
+            "pages_total": self._pages_total,
+            "total_changes": self._total_changes,
+        }
 
     def _search(self, filters: CdtrfSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -108,12 +177,13 @@ class CdtrfSourceCrawler:
         if page_no > filters.max_pages:
             raise CdtrfCatalogueScanError("CDTRF page budget exceeded")
         response = None
-        retry_delays = (1.0, 2.0, 4.0, 8.0)
+        retry_delays = (0.5, 1.0, 2.0)
+        catalogue_retries = 0
         for attempt in range(len(retry_delays) + 1):
             try:
                 response = self.session.get(
                     _url(page_no, filters.page_size),
-                    timeout=(10, 60),
+                    timeout=(5, 20),
                     allow_redirects=False,
                     headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-operator-sync/1"},
                 )
@@ -124,6 +194,8 @@ class CdtrfSourceCrawler:
             ):
                 if attempt == len(retry_delays):
                     raise
+                catalogue_retries += 1
+                catalogue_retries += 1
                 time.sleep(retry_delays[attempt])
                 continue
             if response.status_code == 429 or 500 <= response.status_code <= 504:
@@ -177,6 +249,11 @@ class CdtrfSourceCrawler:
             hit for hit in data["property_candidates"]
             if str(hit["trade_lot_id"]) in new_ids
         ]
+        reused = [hit for hit in candidates if self._can_reuse_detail(hit)]
+        reused_ids = [str(hit["external_id"]) for hit in reused]
+        detail_candidates = [
+            hit for hit in candidates if str(hit["external_id"]) not in set(reused_ids)
+        ]
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
         if self._detail_limiter is None:
             self._detail_limiter = HostRateLimiter(rate)
@@ -223,17 +300,19 @@ class CdtrfSourceCrawler:
                 "source_scope": "full_selected_catalogue_nonreconciling",
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
+                "detail_verified_at": datetime.now(timezone.utc).isoformat(),
+                "catalogue_fingerprint": self._catalogue_fingerprint(hit),
             }
             return lot, None
 
         # Details only are concurrent; catalogue cursor/coverage remain serial.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, candidates):
+            for lot, code in workers.map_ordered(executor, verify, detail_candidates):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
                     accepted.append(lot)
-        inspected = len(data["property_candidates"])
+        inspected = len(detail_candidates)
         # Content-level exclusions are normal within CDTRF's broad real-estate
         # categories (for example a movable asset mixed into a trade, or a
         # card without enough property evidence).  Only structural detail
@@ -266,9 +345,12 @@ class CdtrfSourceCrawler:
                 "progress_total": pages_total,
                 "catalogue_lots": data["observed_rows"],
                 "property_hint_candidates": inspected,
-                "verified_property_lots": len(accepted),
+                "verified_property_lots": len(accepted) + len(reused_ids),
                 "details_rejected": sum(rejected.values()),
-                "detail_attempts": len(candidates),
+                "detail_attempts": len(detail_candidates),
+                "detail_skipped_unchanged": len(reused_ids),
+                "reused_existing_ids": reused_ids,
+                "retry_count": catalogue_retries,
                 "detail_concurrency": filters.detail_concurrency,
                 "systemic_detail_rejections": systemic_rejections,
                 "catalogue_total_changes": self._total_changes,
@@ -278,6 +360,7 @@ class CdtrfSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,
+                "resume_checkpoint": self._resume_checkpoint(next_cursor),
             },
         )
 
