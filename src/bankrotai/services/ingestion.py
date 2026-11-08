@@ -403,10 +403,9 @@ class NationwideIngestionService:
                 result.phase = "catalogue_discovery_complete"
                 result.total_pages = int(prepared.get("pages") or 0) or result.total_pages
                 result.retry_count += int(prepared.get("retry_count") or 0)
-                if self.profile_timings:
-                    result.timing_ms["catalogue_discovery_ms"] = (
-                        time.perf_counter() - discovery_started
-                    ) * 1000
+                result.timing_ms["catalogue_discovery_ms"] = (
+                    time.perf_counter() - discovery_started
+                ) * 1000
                 self._upsert_source_run(run_id, result, started_at=started)
             cursor = prepare_source(self.session_factory, connector, spec, run_id, result)
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
