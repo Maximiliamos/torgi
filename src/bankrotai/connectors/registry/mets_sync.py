@@ -185,25 +185,44 @@ class MetsSourceCrawler:
         expected_page = int(next_cursor.split(":", 1)[0])
         prior_digest = next_cursor.split(":", 1)[1]
         if self._prepared_pages:
-            prefix_ids = {
-                external_id
+            prefix_pages = [
+                self._prepared_pages.get(page)
                 for page in range(1, expected_page)
-                for external_id in self._ids(self._prepared_pages.get(page, {}))
-            } if all(page in self._prepared_pages for page in range(1, expected_page)) else set()
-            anchor = self._prepared_pages.get(expected_page - 1)
+            ]
+            if any(page is None for page in prefix_pages):
+                self._reset_catalogue_state()
+                return None
+            prefix_ids: set[str] = set()
+            overlap_count = 0
+            totals: list[int] = []
+            for page in prefix_pages:
+                assert page is not None
+                ids = set(self._ids(page))
+                overlap_count += len(prefix_ids.intersection(ids))
+                prefix_ids.update(ids)
+                totals.append(int(page["total"]))
+            anchor = prefix_pages[-1] if prefix_pages else None
             anchor_digest = (
                 hashlib.sha256("\n".join(sorted(self._ids(anchor))).encode("ascii")).hexdigest()
                 if anchor is not None else None
             )
-            if prefix_ids != set(seen) or anchor_digest != prior_digest:
+            if prefix_ids != set(seen) or anchor_digest != prior_digest or not totals:
                 self._reset_catalogue_state()
                 return None
+            self._total = totals[0]
+            self._minimum_total = min(totals)
+            self._maximum_total = max(totals)
+            first = prefix_pages[0]
+            assert first is not None
+            self._page_size = len(self._ids(first))
+            self._overlap_count = overlap_count
+        else:
+            self._total = int(checkpoint["total"])
+            self._minimum_total = int(checkpoint["minimum_total"])
+            self._maximum_total = int(checkpoint["maximum_total"])
+            self._page_size = int(checkpoint["page_size"])
+            self._overlap_count = int(checkpoint.get("overlap_count") or 0)
         self._seen = set(seen)
-        self._total = int(checkpoint["total"])
-        self._minimum_total = int(checkpoint["minimum_total"])
-        self._maximum_total = int(checkpoint["maximum_total"])
-        self._page_size = int(checkpoint["page_size"])
-        self._overlap_count = int(checkpoint.get("overlap_count") or 0)
         self._expected_page = expected_page
         self._prior_digest = prior_digest
         return next_cursor
