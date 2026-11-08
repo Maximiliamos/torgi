@@ -283,3 +283,63 @@ def test_cdtrf_checkpoint_requires_previous_page_digest(monkeypatch) -> None:
     assert asyncio.run(
         fresh.restore_checkpoint(cdtrf_sync.CdtrfSyncFilters(), bad)
     ) is False
+
+
+def test_worker_interruption_can_resume_stale_running_source_checkpoint() -> None:
+    sessions = _sessions()
+    spec = SourceSyncSpec(
+        "cdtrf.ru",
+        cdtrf_sync.CdtrfSyncFilters(page_size=100),
+        allow_checkpoint_resume=True,
+    )
+    now = utc_now()
+    checkpoint = {
+        "filter_signature": filter_signature(spec),
+        "resume_cursor": "8:" + "d" * 64,
+        "connector_checkpoint": {
+            "version": 1,
+            "source_system": "cdtrf.ru",
+            "expected_page": 8,
+            "prior_digest": "d" * 64,
+            "seen_ids": ["1", "2"],
+        },
+    }
+    with sessions.begin() as session:
+        session.add(
+            LotSyncRun(
+                id="interrupted-run",
+                trigger_type="scheduled_incremental",
+                status="failed",
+                total_sources=7,
+                started_at=now - timedelta(minutes=15),
+                finished_at=now - timedelta(minutes=1),
+                error_message="Synchronization lease expired before a new run was created",
+            )
+        )
+        session.add(
+            LotSyncSourceRun(
+                sync_run_id="interrupted-run",
+                source_system="cdtrf.ru",
+                status="running",
+                pages_scanned=7,
+                items_seen=500,
+                checkpoint_json=checkpoint,
+                started_at=now - timedelta(minutes=15),
+                progress_at=now - timedelta(minutes=2),
+            )
+        )
+
+    result = SourceSyncResult(source_system=spec.source_id)
+    result.filter_signature = filter_signature(spec)
+    connector = _Restorable()
+
+    cursor = asyncio.run(
+        restore_safe_checkpoint(
+            sessions, "new-run", result, spec, connector,
+        )
+    )
+
+    assert cursor == "8:" + "d" * 64
+    assert result.resumed_from_run_id == "interrupted-run"
+    assert result.pages_scanned == 7
+    assert result.items_seen == 500
