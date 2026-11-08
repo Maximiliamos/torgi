@@ -1,5 +1,45 @@
 # ETP stage checklist — operator contract
 
+## 2026-11-09 — source-end, SQL archive evidence and map verification gates
+
+Run `f572bdff-3db1-41bf-94a4-1f75ab690232` (8 Nov 21:00 MSK):
+operator SQL confirms `partial`, 87 inserted / 6 235 updated /
+1 383 archived, with **6 success and Torgi Russia partial**.
+Reason-code archival breakdown remains **UNVERIFIED**:
+
+| Source | Pages | Seen | Inserted | Updated | Archived | Source full acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| GIS | 1 873 | 16 945 | 12 | 6 | 49 | success / complete |
+| Lot-online | 45 | 3 042 | 4 | 34 | 2 | success / complete |
+| Torgi Russia | 1 366 | 20 427 | 50 | 234 | 0 | PARTIAL, 1 malformed quarantine |
+| BidExpert | 1 620 | 7 200 | 0 | 4 380 | 1 332 | success / complete; archive AUDIT BLOCKER |
+| M-ETS | 153 | 1 | 1 | 0 | 0 | success / NOT complete, collapsed funnel |
+| CDTRF | 32 | 1 595 | 17 | 1 578 | 0 | success / NOT complete, DB churn audit |
+| NISTP | 143 | 202 | 3 | 3 | 0 | success / NOT complete, statuses/detail evidence pending |
+
+Previous 7 Nov run `7810df7b-fb90-4c9f-9039-546ed151172b`
+showed M-ETS 155 pages/1 191 eligible, versus one in this run;
+neither successful page traversal nor `items_seen=1` is a full
+source acceptance. NISTP #1115/#1116 remain open.
+
+REG.RU/WEB: current DB MapDataset
+`20261108T215500614188Z-r6-bundle-s3`, 73 488 points. Public S3
+manifest and run-specific GEO/marker presence **NOT_TESTED** in this audit.
+
+| Stage | Code | Tests | Merged | Deployed | Home verified | Accepted |
+| --- | --- | --- | --- | --- | --- | --- |
+| PR #1157 parallel seven-source baseline | YES | CI success before merge | YES | Latest Home merge guard held while run active | 8 Nov source rows only | NO 7/7 |
+| PR #1162 incremental full-catalogue + detail reuse | IN PROGRESS | latest CI required | NO | NO | NO | NO |
+| BidExpert archive reason audit | read-only exporter prepared | offline AST contract | NO | NO | NO | NO |
+| M-ETS detail funnel and NISTP per-lot proof | checkpoint inspection prepared | selected regressions | NO | NO | NO | NO |
+| CDTRF semantic-write proof | metrics available | needs DB profiling | NO | NO | NO | NO |
+| 8 Nov public GEO/S3/map acceptance | current DB dataset known | public manifest outstanding | n/a | n/a | DB row only | NO |
+
+Do not disable source reconciliation/identity/price guards, bypass
+lease or auto-publish to turn status green. See
+`docs/ETP_SEVEN_SOURCE_RUN_2026-11-08_FINAL_AUDIT.md`.
+
+
 ## 2026-11-07 — первый full-selected Home run после PR #1130
 
 Run `7810df7b-fb90-4c9f-9039-546ed151172b` завершил source walks, но общий
