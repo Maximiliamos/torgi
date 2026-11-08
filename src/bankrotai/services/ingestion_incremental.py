@@ -182,3 +182,64 @@ def update_eta(result: Any) -> None:
         result.eta_seconds = 0.0 if current and total and current >= total else None
         return
     result.eta_seconds = max(0.0, result.elapsed_seconds / current * (total - current))
+
+
+def checkpoint_payload(result: Any) -> dict[str, Any]:
+    return {
+        "category_pages": result.category_pages,
+        "current_category": result.current_category,
+        "total_pages": result.total_pages,
+        "progress_current": result.progress_current,
+        "progress_total": result.progress_total,
+        "phase": result.phase,
+        "items_rejected": result.items_rejected,
+        "quarantined_records": result.quarantined_records,
+        "quarantine_reasons": result.quarantine_reasons,
+        "quarantine_samples": result.quarantine_samples,
+        "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+        if result.elapsed_seconds else 0,
+        "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
+        if result.elapsed_seconds else 0,
+        "resume_cursor": result.resume_cursor,
+        "connector_checkpoint": result.connector_checkpoint,
+        "detail_attempts": result.detail_attempts,
+        "detail_skipped_unchanged": result.detail_skipped_unchanged,
+        "detail_cache_hit_rate": round(
+            result.detail_skipped_unchanged
+            / max(1, result.detail_attempts + result.detail_skipped_unchanged),
+            4,
+        ),
+        "retry_count": result.retry_count,
+        "eta_seconds": round(result.eta_seconds, 1)
+        if result.eta_seconds is not None else None,
+    }
+
+
+def performance_profile(result: Any, profile_timings: bool) -> dict[str, Any]:
+    return {
+        **(
+            {key: round(value, 3) for key, value in result.timing_ms.items()}
+            if profile_timings else {}
+        ),
+        "sql_statements": result.sql_statements if profile_timings else 0,
+        "http_requests": result.http_requests if profile_timings else 0,
+        "response_bytes": result.response_bytes if profile_timings else 0,
+        "sql_statements_per_100_lots": (
+            round(result.sql_statements * 100 / result.items_seen, 2)
+            if profile_timings and result.items_seen else 0
+        ),
+        "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
+        if result.elapsed_seconds else 0,
+        "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
+        if result.elapsed_seconds else 0,
+        "detail_attempts": result.detail_attempts,
+        "detail_skipped_unchanged": result.detail_skipped_unchanged,
+        "detail_cache_hit_rate": round(
+            result.detail_skipped_unchanged
+            / max(1, result.detail_attempts + result.detail_skipped_unchanged),
+            4,
+        ),
+        "retry_count": result.retry_count,
+        "eta_seconds": round(result.eta_seconds, 1)
+        if result.eta_seconds is not None else None,
+    }
