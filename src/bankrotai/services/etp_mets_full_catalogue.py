@@ -276,6 +276,7 @@ def _request_page(
     *,
     sleep: Callable[[float], None],
     attempts: int = 3,
+    on_retry: Callable[[], None] | None = None,
 ) -> requests.Response:
     url = _page_url(page_number)
     for attempt in range(1, attempts + 1):
@@ -292,6 +293,8 @@ def _request_page(
         except requests.RequestException:
             if attempt >= attempts:
                 raise
+            if on_retry is not None:
+                on_retry()
             sleep(float(2 ** (attempt - 1)))
             continue
         if response.status_code != 200:
