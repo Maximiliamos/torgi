@@ -46,6 +46,9 @@ def _probe_cdtrf() -> dict[str, Any]:
                 lot = fetch_verified_cdtrf_lot(
                     str(hit["trade_id"]), str(hit["trade_lot_id"]), session=session,
                 )
+                if lot.category == "land":
+                    failures.append("standalone_land_out_of_scope")
+                    continue
                 return {
                     "success": True,
                     "source_system": "cdtrf.ru",
