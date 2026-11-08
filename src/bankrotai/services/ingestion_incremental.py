@@ -251,6 +251,10 @@ def result_fields(result: Any) -> dict[str, Any]:
         "catalogue_candidates": result.catalogue_candidates,
         "detail_attempts": result.detail_attempts,
         "detail_requests_saved": result.detail_requests_saved,
+        "detail_cache_hit_rate": (
+            round(result.detail_requests_saved / result.catalogue_candidates, 4)
+            if result.catalogue_candidates else 0.0
+        ),
         "retry_count": result.retry_count,
         "eta_seconds": (
             round(result.eta_seconds, 1)
