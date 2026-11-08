@@ -270,13 +270,15 @@ def cleanup_map_datasets(
                         session.rollback()
                         break
 
-                    # Materialize a small PK batch before DELETE. PostgreSQL
-                    # otherwise plans DELETE ... WHERE id IN (SELECT ... LIMIT),
-                    # which timed out on large historical datasets.
+                    # Fetch a bounded PK batch using the dataset_id index.
+                    # ORDER BY MapTile.id caused PostgreSQL to prefer a global
+                    # primary-key index scan through millions of unrelated tiles,
+                    # leading to statement_timeout even at LIMIT 250.
+                    # Order is irrelevant: each selected PK is deleted and
+                    # progress is preserved across transactions.
                     tile_ids = list(session.scalars(
                         select(MapTile.id)
                         .where(MapTile.dataset_id == dataset_id)
-                        .order_by(MapTile.id)
                         .limit(min(tile_batch_size, remaining_budget))
                     ))
                     removed = int(
