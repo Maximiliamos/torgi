@@ -14,6 +14,8 @@ class SourceSyncSpec:
     max_batches: int | None = None
     require_source_end: bool = False
     max_detail_attempts_per_page: int | None = None
+    reuse_unchanged_details: bool = False
+    resume_from_checkpoint: bool = False
 
 
 @dataclass(slots=True)
@@ -46,4 +48,10 @@ class SourceSyncResult:
     progress_total: int | None = None
     phase: str = "scanning"
     error: str | None = None
+    resume_cursor: str | None = None
+    connector_checkpoint: dict[str, Any] | None = None
+    detail_attempts: int = 0
+    detail_skipped_unchanged: int = 0
+    retry_count: int = 0
+    eta_seconds: float | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
