@@ -647,22 +647,23 @@ jobs:
           from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
           with SessionLocal() as session:
               active = list(session.scalars(
-                  select(LotSyncRun).where(LotSyncRun.status.in_(("queued", "running")))
+                  select(LotSyncRun.id).where(LotSyncRun.status.in_(("queued", "running")))
               ))
               if active:
                   payload = []
-                  for run in active:
+                  for run_id in active:
+                      run = session.get(LotSyncRun, run_id)
                       sources = list(session.scalars(
                           select(LotSyncSourceRun)
-                          .where(LotSyncSourceRun.sync_run_id == run.id)
+                          .where(LotSyncSourceRun.sync_run_id == run_id)
                           .order_by(LotSyncSourceRun.id)
                       ))
                       payload.append({
-                          "run_id": run.id,
-                          "status": run.status,
-                          "started_at": str(run.started_at) if run.started_at else None,
-                          "heartbeat_at": str(run.heartbeat_at) if run.heartbeat_at else None,
-                          "lease_expires_at": str(run.lease_expires_at) if run.lease_expires_at else None,
+                          "run_id": run_id,
+                          "status": run.status if run else "unknown",
+                          "started_at": str(run.started_at) if run and run.started_at else None,
+                          "heartbeat_at": str(run.heartbeat_at) if run and run.heartbeat_at else None,
+                          "lease_expires_at": str(run.lease_expires_at) if run and run.lease_expires_at else None,
                           "sources": [{
                               "source_system": row.source_system,
                               "status": row.status,
