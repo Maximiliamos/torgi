@@ -383,6 +383,7 @@ class MetsConnector(AuctionConnector):
     def __init__(self, *, session: requests.Session | None = None) -> None:
         self.pilot = MetsPublicPilot(session=session)
         self._source_crawler: MetsSourceCrawler | None = None
+        self._catalogue_selector = None
 
     async def search(self, filters=None, cursor=None) -> ConnectorPage:
         from bankrotai.connectors.registry.mets_sync import (
@@ -395,13 +396,38 @@ class MetsConnector(AuctionConnector):
 
         if isinstance(filters, MetsSyncFilters):
             if self._source_crawler is None:
-                self._source_crawler = MetsSourceCrawler(self.pilot)
+                self._source_crawler = MetsSourceCrawler(
+                    self.pilot, catalogue_selector=self._catalogue_selector
+                )
             return await self._source_crawler.search(filters, cursor)
         if not isinstance(filters, EtpIncrementalFilters) or filters.source_id != self.source_id:
             raise ConnectorCapabilityError(
                 "M-ETS only supports explicitly scoped non-archival incremental filters"
             )
         return await asyncio.to_thread(incremental_mets_search, self.pilot, filters, cursor)
+
+    def set_catalogue_selector(self, selector) -> None:
+        self._catalogue_selector = selector
+        if self._source_crawler is not None:
+            self._source_crawler.catalogue_selector = selector
+
+    def export_checkpoint(self):
+        if self._source_crawler is None:
+            return None
+        return self._source_crawler.export_checkpoint()
+
+    async def restore_checkpoint(self, filters, state) -> bool:
+        from bankrotai.connectors.registry.mets_sync import (
+            MetsSourceCrawler, MetsSyncFilters,
+        )
+
+        if not isinstance(filters, MetsSyncFilters):
+            return False
+        if self._source_crawler is None:
+            self._source_crawler = MetsSourceCrawler(
+                self.pilot, catalogue_selector=self._catalogue_selector
+            )
+        return await self._source_crawler.restore_checkpoint(filters, state)
 
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
         import asyncio
