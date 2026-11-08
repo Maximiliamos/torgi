@@ -40,9 +40,13 @@ def money(value: object) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
-        return Decimal(str(value))
-    except Exception:
+        parsed = Decimal(str(value))
+    except (ValueError, TypeError, ArithmeticError):
         return None
+    # NaN/Infinity and zero/negative prices cannot prove identity or freshness.
+    if not parsed.is_finite() or parsed <= 0:
+        return None
+    return parsed
 
 
 def catalogue_fingerprint(payload: Mapping[str, Any]) -> str:
