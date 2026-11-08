@@ -41,7 +41,7 @@ def test_source_detail_rate_cap_is_conservative(filters_cls):
         filters_cls(detail_requests_per_second=2.01)
 
 
-@pytest.mark.parametrize("transient_status", [429, 503])
+@pytest.mark.parametrize("transient_status", [502, 503])
 def test_mets_retry_attempts_are_all_rate_limited(monkeypatch, transient_status):
     class Response:
         def __init__(self, status_code):
@@ -71,6 +71,37 @@ def test_mets_retry_attempts_are_all_rate_limited(monkeypatch, transient_status)
     assert result == "detail"
     assert starts == ["https://m-ets.ru/1234-1", "https://m-ets.ru/1234-1"]
 
+
+
+def test_mets_429_is_not_retried_even_with_concurrent_rate_limiter(monkeypatch):
+    class Response:
+        status_code = 429
+        content = b""
+        text = ""
+        headers = {"Content-Type": "text/html"}
+
+        def raise_for_status(self):
+            raise requests.HTTPError("provider 429 refusal")
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, *args, **kwargs):
+            self.calls += 1
+            return Response()
+
+    starts = []
+    session = Session()
+    pilot = mets_sync.MetsPublicPilot(session=session)
+    monkeypatch.setattr("bankrotai.connectors.registry.mets_public.time.sleep", lambda _: None)
+    with pytest.raises(requests.HTTPError):
+        pilot._get(
+            "https://m-ets.ru/1234-1",
+            before_request=lambda url: starts.append(url),
+        )
+    assert session.calls == 1
+    assert starts == ["https://m-ets.ru/1234-1"]
 
 
 def test_mets_timeout_retries_are_bounded_and_rate_gated(monkeypatch):
