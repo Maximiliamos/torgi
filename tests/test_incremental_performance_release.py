@@ -41,8 +41,8 @@ def _snapshot(*, title: str = "Объект", status: str = "active", price: str
 
 
 def test_detail_cache_reuses_only_fresh_matching_business_evidence() -> None:
-    current = datetime.now(timezone.utc)
     snap = _snapshot()
+    current = datetime.now(timezone.utc)
     assert snapshot_reusable(
         snap,
         expected_price=Decimal("100"),
@@ -158,9 +158,9 @@ def test_preflight_fails_before_heavy_run(monkeypatch) -> None:
     assert result["failed_sources"] == ["bad"]
 
 
-def test_mets_scope_excludes_standalone_land_category() -> None:
+def test_mets_scope_preserves_existing_eight_category_property_contract() -> None:
     assert APARTMENTS_URL.endswith(
-        "eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
+        "eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSwxMSJ9"
     )
 
 
