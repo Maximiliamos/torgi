@@ -25,6 +25,7 @@ from bankrotai.db import (
     upsert_region_sync_state,
 )
 from bankrotai.logic import cleanup_closed_lots, persist_lot
+from bankrotai.services import scheduled_ingestion_preflight
 from bankrotai.services.ingestion import (
     NationwideIngestionService,
     SyncAlreadyRunningError,
@@ -954,7 +955,8 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         if mode == "fast":
             specs = _fast_nationwide_source_specs()
         elif mode in {"full", "incremental"}:
-            specs = _unpaused_source_specs(default_source_specs())
+            available = _unpaused_source_specs(default_source_specs())
+            specs = scheduled_ingestion_preflight.select_seven_source_specs(available)
         elif mode.startswith("source-fast:"):
             source_system = mode.removeprefix("source-fast:")
             specs = tuple(spec for spec in _fast_nationwide_source_specs() if spec.source_id == source_system)
@@ -1091,9 +1093,9 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
     if _global_source_network_blocked():
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
-    specs = _unpaused_source_specs(default_source_specs())
-    from bankrotai.services.scheduled_ingestion_preflight import scheduled_preflight_skip
-    if skipped := scheduled_preflight_skip(mode, specs):
+    available = _unpaused_source_specs(default_source_specs())
+    specs = scheduled_ingestion_preflight.select_seven_source_specs(available)
+    if skipped := scheduled_ingestion_preflight.scheduled_preflight_skip(mode, specs):
         return skipped
     return _run_automatic_nationwide_refresh(
         self,
