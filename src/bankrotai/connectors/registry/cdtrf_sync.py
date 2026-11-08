@@ -12,7 +12,9 @@ import hashlib
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from math import ceil
 
@@ -22,8 +24,9 @@ from bankrotai.connectors.base import ConnectorPage
 from bankrotai.connectors.registry.captured_etp_api import parse_cdtrf_api_page
 from bankrotai.connectors.registry.cdtrf_public import CdtrfEvidenceError
 from bankrotai.connectors.registry.etp_incremental import _property_ready, _cdtrf_rejection_code
+from bankrotai.services.catalogue_detail_freshness import mark_verified_detail
 from bankrotai.services.etp_cdtrf_canary import (
-    CdtrfCanaryError, fetch_verified_cdtrf_lot, API, MAX_RESPONSE, REQUEST_TIMEOUT,
+    CdtrfCanaryError, fetch_verified_cdtrf_lot, API, MAX_RESPONSE,
 )
 from bankrotai.services.etp_cdtrf_full_catalogue import (
     CDTRF_PAGE_SIZES, MAX_SCAN_PAGES, CdtrfCatalogueScanError, _url,
@@ -31,6 +34,8 @@ from bankrotai.services.etp_cdtrf_full_catalogue import (
 
 CURSOR = re.compile(r"^([1-9]\d{0,4}):([0-9a-f]{64})$")
 MAX_REJECTED_DETAIL_RATIO = 0.90
+CATALOGUE_TIMEOUT = (5, 20)
+CATALOGUE_RETRY_DELAYS = (1.0, 2.0, 4.0)
 SYSTEMIC_DETAIL_REJECTION_CODES = frozenset({
     "lot_identity_mismatch",
     "missing_lot_identity",
@@ -65,6 +70,7 @@ class CdtrfSyncFilters:
     detail_delay_seconds: float = 0.5
     detail_concurrency: int = 2
     detail_requests_per_second: float | None = None
+    detail_max_age_hours: int = 168
 
     def __post_init__(self):
         if type(self.page_size) is not int or self.page_size not in CDTRF_PAGE_SIZES:
@@ -77,13 +83,20 @@ class CdtrfSyncFilters:
             raise ValueError("Unsafe CDTRF detail_concurrency")
         if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 2:
             raise ValueError("CDTRF detail_requests_per_second must be 0..2")
+        if type(self.detail_max_age_hours) is not int or not 1 <= self.detail_max_age_hours <= 720:
+            raise ValueError("CDTRF detail_max_age_hours must be 1..720")
 
 
 class CdtrfSourceCrawler:
     """Stateful only within one ingestion run; fail closed on changed pages."""
 
-    def __init__(self, session: requests.Session):
+    def __init__(
+        self,
+        session: requests.Session,
+        catalogue_selector: Callable[[list[dict[str, Any]]], dict[str, dict[str, Any]]] | None = None,
+    ):
         self.session = session
+        self.catalogue_selector = catalogue_selector
         self._seen: set[str] = set()
         self._total: int | None = None
         self._pages_total = 0
@@ -92,6 +105,46 @@ class CdtrfSourceCrawler:
         self._prior_digest: str | None = None
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
+
+    def _fetch_catalogue_page(
+        self,
+        filters: CdtrfSyncFilters,
+        page_no: int,
+    ) -> requests.Response:
+        response = None
+        for attempt in range(len(CATALOGUE_RETRY_DELAYS) + 1):
+            try:
+                response = self.session.get(
+                    _url(page_no, filters.page_size),
+                    timeout=CATALOGUE_TIMEOUT,
+                    allow_redirects=False,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "TORGI-CDTRF-operator-sync/2",
+                    },
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt == len(CATALOGUE_RETRY_DELAYS):
+                    raise
+                time.sleep(CATALOGUE_RETRY_DELAYS[attempt])
+                continue
+            if response.status_code == 429:
+                raise CdtrfCatalogueScanError("CDTRF catalogue HTTP 429")
+            if 500 <= response.status_code <= 504:
+                if attempt == len(CATALOGUE_RETRY_DELAYS):
+                    raise CdtrfCatalogueScanError(
+                        f"CDTRF catalogue HTTP {response.status_code}"
+                    )
+                time.sleep(CATALOGUE_RETRY_DELAYS[attempt])
+                continue
+            break
+        if response is None:
+            raise CdtrfCatalogueScanError("CDTRF catalogue retry loop exhausted")
+        return response
 
     def _search(self, filters: CdtrfSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -107,35 +160,7 @@ class CdtrfSourceCrawler:
             page_no = int(match.group(1))
         if page_no > filters.max_pages:
             raise CdtrfCatalogueScanError("CDTRF page budget exceeded")
-        response = None
-        retry_delays = (1.0, 2.0, 4.0, 8.0)
-        for attempt in range(len(retry_delays) + 1):
-            try:
-                response = self.session.get(
-                    _url(page_no, filters.page_size),
-                    timeout=(10, 60),
-                    allow_redirects=False,
-                    headers={"Accept": "application/json", "User-Agent": "TORGI-CDTRF-operator-sync/1"},
-                )
-            except (
-                requests.Timeout,
-                requests.ConnectionError,
-                requests.exceptions.ChunkedEncodingError,
-            ):
-                if attempt == len(retry_delays):
-                    raise
-                time.sleep(retry_delays[attempt])
-                continue
-            if response.status_code == 429 or 500 <= response.status_code <= 504:
-                if attempt == len(retry_delays):
-                    raise CdtrfCatalogueScanError(
-                        f"CDTRF catalogue HTTP {response.status_code}"
-                    )
-                time.sleep(retry_delays[attempt])
-                continue
-            break
-        if response is None:
-            raise CdtrfCatalogueScanError("CDTRF catalogue retry loop exhausted")
+        response = self._fetch_catalogue_page(filters, page_no)
         if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
             raise CdtrfCatalogueScanError(f"CDTRF catalogue HTTP {response.status_code} or oversized")
         if "json" not in response.headers.get("Content-Type", "").lower():
@@ -177,6 +202,25 @@ class CdtrfSourceCrawler:
             hit for hit in data["property_candidates"]
             if str(hit["trade_lot_id"]) in new_ids
         ]
+        decisions = (
+            self.catalogue_selector(candidates)
+            if self.catalogue_selector is not None
+            else {}
+        )
+        skipped_catalogue: list[dict[str, str]] = []
+        detail_candidates: list[tuple[dict[str, Any], str | None]] = []
+        for hit in candidates:
+            external_id = str(hit["external_id"])
+            decision = decisions.get(external_id, {})
+            fingerprint = decision.get("fingerprint")
+            if decision.get("skip_detail") and isinstance(fingerprint, str):
+                skipped_catalogue.append(
+                    {"external_id": external_id, "fingerprint": fingerprint}
+                )
+            else:
+                detail_candidates.append(
+                    (hit, fingerprint if isinstance(fingerprint, str) else None)
+                )
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
         if self._detail_limiter is None:
             self._detail_limiter = HostRateLimiter(rate)
@@ -188,7 +232,8 @@ class CdtrfSourceCrawler:
             limiter=self._detail_limiter,
         )
 
-        def verify(hit):
+        def verify(entry):
+            hit, fingerprint = entry
             try:
                 lot = _verified_detail_with_retry(
                     str(hit["trade_id"]), str(hit["trade_lot_id"]),
@@ -224,11 +269,13 @@ class CdtrfSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
             }
+            if fingerprint is not None:
+                mark_verified_detail(lot, fingerprint)
             return lot, None
 
         # Details only are concurrent; catalogue cursor/coverage remain serial.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, candidates):
+            for lot, code in workers.map_ordered(executor, verify, detail_candidates):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
@@ -268,7 +315,10 @@ class CdtrfSourceCrawler:
                 "property_hint_candidates": inspected,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
-                "detail_attempts": len(candidates),
+                "catalogue_candidates": len(candidates),
+                "detail_attempts": len(detail_candidates),
+                "detail_requests_saved": len(skipped_catalogue),
+                "catalogue_unchanged": skipped_catalogue,
                 "detail_concurrency": filters.detail_concurrency,
                 "systemic_detail_rejections": systemic_rejections,
                 "catalogue_total_changes": self._total_changes,
@@ -280,6 +330,63 @@ class CdtrfSourceCrawler:
                 "reconcile_missing": False,
             },
         )
+
+    def export_checkpoint(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "source_system": "cdtrf.ru",
+            "expected_page": self._expected_page,
+            "prior_digest": self._prior_digest,
+            "seen_ids": sorted(self._seen),
+            "total": self._total,
+            "pages_total": self._pages_total,
+            "total_changes": self._total_changes,
+        }
+
+    def _restore_checkpoint(self, filters: CdtrfSyncFilters, state: dict[str, Any]) -> bool:
+        if state.get("version") != 1 or state.get("source_system") != "cdtrf.ru":
+            return False
+        expected_page = state.get("expected_page")
+        prior_digest = state.get("prior_digest")
+        seen_ids = state.get("seen_ids")
+        if (
+            type(expected_page) is not int
+            or expected_page <= 1
+            or expected_page > filters.max_pages
+            or not isinstance(prior_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", prior_digest)
+            or not isinstance(seen_ids, list)
+            or any(not isinstance(value, str) for value in seen_ids)
+        ):
+            return False
+        previous_page = expected_page - 1
+        response = self._fetch_catalogue_page(filters, previous_page)
+        if response.status_code != 200 or len(response.content) > MAX_RESPONSE:
+            return False
+        if "json" not in response.headers.get("Content-Type", "").lower():
+            return False
+        data = parse_cdtrf_api_page(
+            response.json(), page_num=previous_page, page_size=filters.page_size,
+        )
+        live_digest = hashlib.sha256(
+            "\n".join(sorted(data["observed_lot_ids"])).encode("ascii")
+        ).hexdigest()
+        if live_digest != prior_digest:
+            return False
+        self._seen = set(seen_ids)
+        self._expected_page = expected_page
+        self._prior_digest = prior_digest
+        self._total = state.get("total")
+        self._pages_total = int(state.get("pages_total") or 0)
+        self._total_changes = int(state.get("total_changes") or 0)
+        return True
+
+    async def restore_checkpoint(
+        self,
+        filters: CdtrfSyncFilters,
+        state: dict[str, Any],
+    ) -> bool:
+        return await asyncio.to_thread(self._restore_checkpoint, filters, state)
 
     async def search(self, filters: CdtrfSyncFilters, cursor: str | None = None) -> ConnectorPage:
         return await asyncio.to_thread(self._search, filters, cursor)
