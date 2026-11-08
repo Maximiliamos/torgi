@@ -9,6 +9,29 @@ from bankrotai.services.ingestion import default_source_specs, fast_source_specs
 from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
 
 
+SEVEN_SOURCE_IDS = frozenset({
+    "torgi.gov.ru",
+    "lot-online.ru",
+    "torgi-russia.ru",
+    "bidexpert.ru",
+    "m-ets.ru",
+    "cdtrf.ru",
+    "nistp.ru",
+})
+
+
+def production_seven_specs() -> tuple[Any, ...]:
+    specs = tuple(
+        spec for spec in default_source_specs()
+        if str(spec.source_id) in SEVEN_SOURCE_IDS
+    )
+    observed = {str(spec.source_id) for spec in specs}
+    if observed != SEVEN_SOURCE_IDS:
+        missing = sorted(SEVEN_SOURCE_IDS - observed)
+        raise RuntimeError(f"Seven-source production spec incomplete: {missing}")
+    return specs
+
+
 def fast_nationwide_source_specs(
     unpaused: Callable[[tuple[Any, ...]], tuple[Any, ...]],
 ) -> tuple[Any, ...]:
@@ -42,7 +65,7 @@ def resolve_nationwide_specs(
     if mode == "full":
         return unpaused(default_source_specs())
     if mode == "incremental":
-        return unpaused(incremental_specs(default_source_specs()))
+        return unpaused(incremental_specs(production_seven_specs()))
     if mode.startswith("source-fast:"):
         source_system = mode.removeprefix("source-fast:")
         specs = tuple(
@@ -66,9 +89,8 @@ def scheduled_specs(
     mode: str,
     unpaused: Callable[[tuple[Any, ...]], tuple[Any, ...]],
 ) -> tuple[Any, ...]:
-    if mode == "incremental":
-        return unpaused(incremental_specs(default_source_specs()))
-    return unpaused(default_source_specs())
+    base = production_seven_specs()
+    return unpaused(incremental_specs(base) if mode == "incremental" else base)
 
 
 def retry_spec_count(source_system: str, source_mode: str) -> tuple[str, int]:
