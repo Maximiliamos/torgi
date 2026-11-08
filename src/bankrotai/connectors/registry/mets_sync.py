@@ -8,6 +8,7 @@ import re
 import time
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from decimal import Decimal
 
@@ -20,6 +21,9 @@ from bankrotai.connectors.registry.mets_public import (
 )
 from bankrotai.services.etp_mets_full_catalogue import (
     MAX_SCAN_PAGES, MetsCatalogueScanError, _parse_page, _request_page,
+)
+from bankrotai.services.incremental_detail_cache import (
+    catalogue_fingerprint, snapshot_reusable,
 )
 
 CURSOR = re.compile(r"^([1-9]\d{0,3}):([0-9a-f]{64})$")
@@ -62,6 +66,68 @@ class MetsSourceCrawler:
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
         self._custom_detail_lock = threading.Lock()
+        self._detail_cache: dict[str, dict] = {}
+
+    def set_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._detail_cache = dict(snapshots)
+
+    @staticmethod
+    def _catalogue_fingerprint(item) -> str:
+        external_id, catalogue_price, catalogue_status, title = item
+        return catalogue_fingerprint({
+            "external_id": external_id,
+            "price": str(catalogue_price),
+            "status": catalogue_status,
+            "title": " ".join(str(title or "").split()),
+        })
+
+    @staticmethod
+    def _expected_status(catalogue_status: str) -> str:
+        return "active" if catalogue_status == "Торги в стадии приема заявок" else "scheduled"
+
+    def _can_reuse_detail(self, item) -> bool:
+        external_id, catalogue_price, catalogue_status, title = item
+        return snapshot_reusable(
+            self._detail_cache.get(external_id),
+            expected_price=catalogue_price,
+            expected_status=self._expected_status(catalogue_status),
+            expected_title=title,
+            fingerprint=self._catalogue_fingerprint(item),
+        )
+
+    def restore_checkpoint(self, checkpoint: dict) -> str | None:
+        if checkpoint.get("version") != 1 or checkpoint.get("source") != "m-ets.ru":
+            return None
+        next_cursor = checkpoint.get("next_cursor")
+        if not isinstance(next_cursor, str) or not CURSOR.fullmatch(next_cursor):
+            return None
+        seen = checkpoint.get("seen_ids")
+        if not isinstance(seen, list) or not all(isinstance(value, str) for value in seen):
+            return None
+        self._seen = set(seen)
+        self._total = int(checkpoint["total"])
+        self._minimum_total = int(checkpoint["minimum_total"])
+        self._maximum_total = int(checkpoint["maximum_total"])
+        self._page_size = int(checkpoint["page_size"])
+        self._overlap_count = int(checkpoint.get("overlap_count") or 0)
+        self._expected_page = int(next_cursor.split(":", 1)[0])
+        self._prior_digest = next_cursor.split(":", 1)[1]
+        return next_cursor
+
+    def _resume_checkpoint(self, next_cursor: str | None) -> dict | None:
+        if next_cursor is None:
+            return None
+        return {
+            "version": 1,
+            "source": "m-ets.ru",
+            "next_cursor": next_cursor,
+            "seen_ids": sorted(self._seen),
+            "total": self._total,
+            "minimum_total": self._minimum_total,
+            "maximum_total": self._maximum_total,
+            "page_size": self._page_size,
+            "overlap_count": self._overlap_count,
+        }
 
     def _search(self, filters: MetsSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -128,6 +194,9 @@ class MetsSourceCrawler:
 
         accepted = []
         rejected: dict[str, int] = {}
+        reused = [item for item in novel_observations if self._can_reuse_detail(item)]
+        reused_ids = [item[0] for item in reused]
+        detail_candidates = [item for item in novel_observations if item[0] not in set(reused_ids)]
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
         if self._detail_limiter is None:
             self._detail_limiter = HostRateLimiter(rate)
@@ -163,10 +232,7 @@ class MetsSourceCrawler:
                 lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
-                expected_status = (
-                    "active" if catalogue_status == "Торги в стадии приема заявок"
-                    else "scheduled"
-                )
+                expected_status = self._expected_status(catalogue_status)
                 if lot.auction_status != expected_status:
                     raise MetsEvidenceError("M-ETS detail status differs from catalogue")
                 detail_prices = {
@@ -206,13 +272,15 @@ class MetsSourceCrawler:
                 "catalogue_status_verified": True,
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
+                "detail_verified_at": datetime.now(timezone.utc).isoformat(),
+                "catalogue_fingerprint": self._catalogue_fingerprint(item),
             }
             return lot, None
 
         # map preserves catalogue ordering and propagates any fatal failure.
         # Only details overlap; the next catalogue page is never fetched early.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, novel_observations):
+            for lot, code in workers.map_ordered(executor, verify, detail_candidates):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
@@ -220,7 +288,7 @@ class MetsSourceCrawler:
 
         # Do not certify an apparently empty property catalogue when every
         # independent detail failed its evidence checks.
-        if len(novel_observations) >= 5 and not accepted:
+        if len(detail_candidates) >= 5 and not accepted and not reused_ids:
             raise MetsCatalogueScanError(
                 "M-ETS systemic detail verification failure: zero verified "
                 "property lots in a selected catalogue page"
@@ -245,9 +313,11 @@ class MetsSourceCrawler:
                 "live_total_minimum": self._minimum_total,
                 "live_total_maximum": self._maximum_total,
                 "cross_page_overlap": self._overlap_count,
-                "verified_property_lots": len(accepted),
+                "verified_property_lots": len(accepted) + len(reused_ids),
                 "details_rejected": sum(rejected.values()),
-                "detail_attempts": len(novel_observations),
+                "detail_attempts": len(detail_candidates),
+                "detail_skipped_unchanged": len(reused_ids),
+                "reused_existing_ids": reused_ids,
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
                 "requested_category_group": "mets_property_nonreconciling",
@@ -255,6 +325,7 @@ class MetsSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,
+                "resume_checkpoint": self._resume_checkpoint(next_cursor),
             },
         )
 
