@@ -1139,6 +1139,12 @@ export const toggleWatchlist = (lotId: number) => requestJson<{ watchlisted: boo
 export const fetchWatchlist = () => requestJson<LotsResponse>("/api/watchlist");
 export const fetchNotes = (lotId: number) => requestJson<Array<{ id: number; content: string; created_at: string }>>(`/api/lots/${lotId}/notes`);
 export const addNote = (lotId: number, content: string) => requestJson(`/api/lots/${lotId}/notes`, undefined, { method: "POST", body: JSON.stringify({ content }) });
+export const reportLotIssue = (lotId: number, content: string) =>
+  requestJson<{ id: number; lot_id: number; content: string; created_at: string }>(
+    `/api/lots/${lotId}/report-error`,
+    undefined,
+    { method: "POST", body: JSON.stringify({ content }) },
+  );
 
 export const fetchParticipation = (lotId: number) => requestJson<Participation>(`/api/lots/${lotId}/participation`);
 export const saveParticipation = (lotId: number, value: Omit<Participation, "lot_id" | "source_lot_id">) =>
