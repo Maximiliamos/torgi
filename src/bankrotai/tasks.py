@@ -131,7 +131,7 @@ celery_app.conf.update(
             # One complete run replaces the former quarter-hour discovery jobs
             # so source retries cannot keep the global ingestion lease busy all day.
             "schedule": crontab(hour="6,18", minute=0),
-            "args": ("full",),
+            "args": ("incremental",),
             "options": {"expires": 21_600},
         },
         "probe-source-network-health": {
@@ -953,7 +953,7 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
     try:
         if mode == "fast":
             specs = _fast_nationwide_source_specs()
-        elif mode == "full":
+        elif mode in {"full", "incremental"}:
             specs = _unpaused_source_specs(default_source_specs())
         elif mode.startswith("source-fast:"):
             source_system = mode.removeprefix("source-fast:")
@@ -1087,16 +1087,30 @@ def probe_source_network_health_task() -> dict[str, Any]:
 )
 def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     """Run one beat-triggered nationwide refresh under the durable run lease."""
-    if mode not in {"fast", "full"}:
+    if mode not in {"fast", "full", "incremental"}:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
     if _global_source_network_blocked():
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
+    specs = _unpaused_source_specs(default_source_specs())
+    if mode in {"full", "incremental"}:
+        from bankrotai.services.scheduled_ingestion_preflight import (
+            run_scheduled_source_preflight,
+        )
+
+        preflight = run_scheduled_source_preflight(specs)
+        if not preflight.get("passed"):
+            return {
+                "status": "skipped",
+                "reason": "scheduled_source_preflight_failed",
+                "mode": mode,
+                "preflight": preflight,
+            }
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
         trigger_type=f"scheduled_{mode}",
-        total_sources=len(_unpaused_source_specs(default_source_specs())),
-        retry_if_busy=mode == "full",
+        total_sources=len(specs),
+        retry_if_busy=mode in {"full", "incremental"},
     )
 
 
@@ -1217,7 +1231,7 @@ def _fast_nationwide_source_specs() -> tuple[Any, ...]:
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
-    if mode not in {"fast", "full"} and not mode.startswith("source:"):
+    if mode not in {"fast", "full", "incremental"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
     is_source_only = mode.startswith("source:")
     specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else _unpaused_source_specs(default_source_specs())
