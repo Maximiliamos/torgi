@@ -47,7 +47,7 @@ def core_source_specs() -> tuple[SourceSyncSpec, ...]:
         ),
         SourceSyncSpec(
             "bidexpert.ru",
-            BidExpertSearchFilters(category="all", page=1),
+            BidExpertSearchFilters(category="realty", page=1),
         ),
     )
     return core_specs
