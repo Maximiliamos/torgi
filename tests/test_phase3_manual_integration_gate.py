@@ -28,3 +28,14 @@ def test_phase3_ingestion_jobs_require_explicit_manual_dispatch() -> None:
     assert "    if: github.event_name == 'workflow_dispatch'" in deploy_job
     assert "    if: github.event_name == 'workflow_dispatch'" in reconcile_job
     assert "    if: github.event_name != 'push'" not in deploy_job
+    # A manual full run is prohibited until both independent acceptances
+    # succeeded at exactly the same deployed main SHA.
+    assert "Require current main SHA and successful manual P1/P11 acceptance" in deploy_job
+    assert 'if [ "${GITHUB_REF}" != "refs/heads/main" ]; then' in deploy_job
+    assert 'current="$(gh api "repos/$GITHUB_REPOSITORY/branches/main"' in deploy_job
+    assert '--event workflow_dispatch --limit 50' in deploy_job
+    assert 'p1-data-quality.yml p11-production-acceptance.yml' in deploy_job
+    assert 'row.get("headSha")==expected' in deploy_job
+    assert 'row.get("conclusion")=="success"' in deploy_job
+    assert 'row.get("status")=="completed"' in deploy_job
+    assert "Missing successful manually dispatched exact-SHA acceptance" in deploy_job
