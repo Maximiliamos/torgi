@@ -18,9 +18,9 @@ def _lot(external_id: str, price: float, status: str) -> NormalizedLot:
         external_id=external_id,
         source="m-ets.ru",
         source_system="m-ets.ru",
-        title="Земельный участок",
-        description="Земельный участок 01:01:0000001:1",
-        category="land",
+        title="Квартира",
+        description="Квартира, кадастровый номер 01:01:0000001:1",
+        category="apartment",
         region_slug=None,
         region_name=None,
         address=None,
@@ -59,7 +59,7 @@ def test_full_mets_crawler_reaches_reported_terminal_without_archival(monkeypatc
     }
     monkeypatch.setattr(
         mod, "_request_page",
-        lambda session, page, sleep: SimpleNamespace(text=str(page)),
+        lambda session, page, sleep, **kwargs: SimpleNamespace(text=str(page)),
     )
     monkeypatch.setattr(mod, "_parse_page", lambda text, page: pages[page])
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
@@ -73,7 +73,7 @@ def test_full_mets_crawler_reaches_reported_terminal_without_archival(monkeypatc
         ),
     )
     pilot = MetsPublicPilot(session=object())
-    monkeypatch.setattr(pilot, "_get", lambda url: url)
+    monkeypatch.setattr(pilot, "_get", lambda url, **kwargs: url)
     crawler = MetsSourceCrawler(pilot)
 
     first = asyncio.run(crawler.search(MetsSyncFilters(detail_delay_seconds=0.5)))
@@ -192,7 +192,7 @@ def test_full_mets_rejects_systemic_unverified_selected_catalogue(monkeypatch) -
 
     monkeypatch.setattr(mod, "parse_mets_lot", incomplete_detail)
     pilot = MetsPublicPilot(session=object())
-    monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
+    monkeypatch.setattr(pilot, "_get", lambda url, **kwargs: "lot html")
     with pytest.raises(MetsCatalogueScanError, match="systemic detail verification"):
         asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
 
@@ -218,9 +218,39 @@ def test_full_mets_provider_refusal_is_fatal_even_for_one_card(monkeypatch) -> N
     monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
     pilot = MetsPublicPilot(session=object())
 
-    def blocked(_url):
+    def blocked(_url, **_kwargs):
         raise MetsEvidenceError("M-ETS provider access explicitly refused")
 
     monkeypatch.setattr(pilot, "_get", blocked)
     with pytest.raises(MetsCatalogueScanError, match="detail access/refusal failure"):
         asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+
+def test_full_mets_rejects_standalone_land_even_if_detail_is_structurally_valid(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep, **kwargs: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 1,
+            "observations": [
+                ("244381-1", "100", "Объявленные торги", "Земельный участок")
+            ],
+            "next_page": None,
+        },
+    )
+    land = _lot("244381-1", 100, "scheduled")
+    land.category = "land"
+    land.title = "Земельный участок"
+    monkeypatch.setattr(mod, "parse_mets_lot", lambda html, url: land)
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url, **kwargs: "detail")
+
+    result = asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+    assert result.items == []
+    assert result.metadata["rejection_codes"] == {"standalone_land_out_of_scope": 1}
