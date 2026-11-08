@@ -1177,6 +1177,22 @@ class NationwideIngestionService:
                 "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
                 if result.elapsed_seconds
                 else 0,
+                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
+                if result.elapsed_seconds
+                else 0,
+                "resume_cursor": result.resume_cursor,
+                "connector_checkpoint": result.connector_checkpoint,
+                "detail_attempts": result.detail_attempts,
+                "detail_skipped_unchanged": result.detail_skipped_unchanged,
+                "detail_cache_hit_rate": round(
+                    result.detail_skipped_unchanged
+                    / max(1, result.detail_attempts + result.detail_skipped_unchanged),
+                    4,
+                ),
+                "retry_count": result.retry_count,
+                "eta_seconds": round(result.eta_seconds, 1)
+                if result.eta_seconds is not None
+                else None,
             }
             is_new = row is None
             previous_checkpoint = {} if row is None else (row.checkpoint_json or {})
@@ -1189,6 +1205,7 @@ class NationwideIngestionService:
                 or previous_checkpoint.get("progress_current") != result.progress_current
                 or previous_checkpoint.get("progress_total") != result.progress_total
                 or previous_checkpoint.get("phase") != result.phase
+                or previous_checkpoint.get("resume_cursor") != result.resume_cursor
             )
             if row is None:
                 row = LotSyncSourceRun(sync_run_id=run_id, source_system=result.source_system)
@@ -1324,22 +1341,37 @@ class NationwideIngestionService:
             "current_category": result.current_category,
             "total_pages": result.total_pages,
             "profile": {
-                **{key: round(value, 3) for key, value in result.timing_ms.items()},
-                "sql_statements": result.sql_statements,
-                "http_requests": result.http_requests,
-                "response_bytes": result.response_bytes,
-                "sql_statements_per_100_lots": round(result.sql_statements * 100 / result.items_seen, 2)
-                if result.items_seen
-                else 0,
+                **(
+                    {key: round(value, 3) for key, value in result.timing_ms.items()}
+                    if self.profile_timings
+                    else {}
+                ),
+                "sql_statements": result.sql_statements if self.profile_timings else 0,
+                "http_requests": result.http_requests if self.profile_timings else 0,
+                "response_bytes": result.response_bytes if self.profile_timings else 0,
+                "sql_statements_per_100_lots": (
+                    round(result.sql_statements * 100 / result.items_seen, 2)
+                    if self.profile_timings and result.items_seen
+                    else 0
+                ),
                 "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
                 if result.elapsed_seconds
                 else 0,
                 "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
                 if result.elapsed_seconds
                 else 0,
-            }
-            if self.profile_timings
-            else {},
+                "detail_attempts": result.detail_attempts,
+                "detail_skipped_unchanged": result.detail_skipped_unchanged,
+                "detail_cache_hit_rate": round(
+                    result.detail_skipped_unchanged
+                    / max(1, result.detail_attempts + result.detail_skipped_unchanged),
+                    4,
+                ),
+                "retry_count": result.retry_count,
+                "eta_seconds": round(result.eta_seconds, 1)
+                if result.eta_seconds is not None
+                else None,
+            },
             "error": result.error,
         }
 
