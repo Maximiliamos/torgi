@@ -7,7 +7,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 
 from bankrotai.db import LotSyncSourceRun, SourceLot, utc_now
-from bankrotai.services.incremental_detail_cache import snapshot_from_source_row
+from bankrotai.services.incremental_detail_cache import parse_timestamp, snapshot_from_source_row
 
 
 REUSABLE_DETAIL_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru"})
@@ -159,10 +159,13 @@ def mark_reused_rows(
             )
         for external_id in requested:
             row = by_id[external_id]
-            previous_seen = row.last_seen_at
             raw = dict(row.raw_data or {})
-            if not raw.get("detail_verified_at") and previous_seen is not None:
-                raw["detail_verified_at"] = previous_seen.isoformat()
+            # Reuse evidence must be independent of last_seen_at. Never turn
+            # catalogue observation into a fabricated detail verification.
+            if parse_timestamp(raw.get("detail_verified_at")) is None:
+                raise RuntimeError(
+                    f"{result.source_system}: cached detail has no independent verification date"
+                )
             fingerprint = fingerprint_by_id.get(external_id)
             if isinstance(fingerprint, str) and len(fingerprint) == 64:
                 raw["catalogue_fingerprint"] = fingerprint
