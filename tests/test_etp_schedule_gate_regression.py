@@ -28,7 +28,7 @@ def test_scheduled_nistp_detail_cap_matches_deployed_readonly_gate() -> None:
     assert specs["cdtrf.ru"].max_detail_attempts_per_page is None
 
     beat = celery_app.conf.beat_schedule["refresh-nationwide-sources-full"]
-    assert beat["args"] == ("full",)
+    assert beat["args"] == ("incremental",)
     assert set(beat["schedule"].hour) == {6, 18}
     assert set(beat["schedule"].minute) == {0}
 
