@@ -275,9 +275,10 @@ class CdtrfSourceCrawler:
                 self._reset_catalogue_state()
                 return None
             prepared_totals = [
-                int(page["reported_total"]) for page in self._prepared_pages.values()
+                int(self._prepared_pages[page]["data"]["reported_total"])
+                for page in range(1, expected_page)
             ]
-            self._total = prepared_totals[min(expected_page - 2, len(prepared_totals) - 1)]
+            self._total = prepared_totals[-1]
             self._pages_total = len(self._prepared_pages)
             self._total_changes = sum(
                 left != right
