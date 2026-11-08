@@ -16,6 +16,9 @@ from bankrotai.services.incremental_detail_cache import (
 )
 from bankrotai.services.ingestion import default_source_specs
 from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.scheduled_ingestion_modes import (
+    SEVEN_SOURCE_IDS, production_seven_specs,
+)
 from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
 from bankrotai.tasks import celery_app
 
@@ -126,7 +129,8 @@ def test_cdtrf_changed_detail_only_and_checkpoint_round_trip() -> None:
 def test_twice_daily_schedule_uses_incremental_detail_mode() -> None:
     beat = celery_app.conf.beat_schedule["refresh-nationwide-sources-full"]
     assert beat["args"] == ("incremental",)
-    specs = {spec.source_id: spec for spec in incremental_specs(default_source_specs())}
+    specs = {spec.source_id: spec for spec in incremental_specs(production_seven_specs())}
+    assert set(specs) == SEVEN_SOURCE_IDS
     assert specs["m-ets.ru"].reuse_unchanged_details is True
     assert specs["cdtrf.ru"].reuse_unchanged_details is True
     assert specs["nistp.ru"].reuse_unchanged_details is False
