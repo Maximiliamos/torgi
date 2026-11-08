@@ -112,8 +112,12 @@ def _mets_detail_rejection_code(exc: Exception) -> str:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in {401, 403, 429}:
             return "provider_access_refused"
+        if status in {404, 410}:
+            return "detail_not_found"
         return "detail_http_error"
     message = str(exc).casefold()
+    if "provider access explicitly refused" in message:
+        return "provider_access_refused"
     if "redirect" in message:
         return "untrusted_detail_redirect"
     if "sku" in message or "identifier" in message or "identity" in message:
