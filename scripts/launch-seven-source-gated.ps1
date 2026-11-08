@@ -26,7 +26,7 @@ function Invoke-GhText {
 }
 
 function Get-CurrentMain {
-    return (Invoke-GhText @('api', "repos/$repo/branches/main", '--jq', '.commit.sha'))
+    return (Invoke-GhText -Arguments @('api', "repos/$repo/branches/main", '--jq', '.commit.sha'))
 }
 
 function Assert-ExactMain {
@@ -52,7 +52,7 @@ function Assert-LocalRevision {
 
 function Get-WorkflowRuns {
     param([Parameter(Mandatory=$true)][string]$Workflow)
-    $body = Invoke-GhText @(
+    $body = Invoke-GhText -Arguments @(
         'run', 'list', '--repo', $repo,
         '--workflow', $Workflow, '--limit', '50',
         '--json', 'databaseId,headSha,status,conclusion,createdAt,event'
@@ -77,7 +77,7 @@ function Start-TrackedWorkflow {
     $priorIds = @(Get-WorkflowRuns $Workflow | ForEach-Object { [string]$_.databaseId })
     Write-Host "Dispatching $Workflow on exact main $ExpectedSha"
     $arguments = @('workflow', 'run', $Workflow, '--repo', $repo, '--ref', 'main') + $ExtraArgs
-    [void](Invoke-GhText $arguments)
+    [void](Invoke-GhText -Arguments $arguments)
 
     # GitHub dispatch is asynchronous. Only accept a *new* uniquely identified
     # workflow_dispatch run on the original exact SHA.
@@ -101,7 +101,7 @@ function Wait-ForAcceptance {
     param([long]$RunId, [string]$Workflow)
     $deadline = [DateTimeOffset]::UtcNow.AddMinutes($AcceptanceTimeoutMinutes)
     do {
-        $run = Invoke-GhText @(
+        $run = Invoke-GhText -Arguments @(
             'run', 'view', [string]$RunId, '--repo', $repo,
             '--json', 'headSha,status,conclusion'
         ) | ConvertFrom-Json
