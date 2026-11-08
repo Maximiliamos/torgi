@@ -12,6 +12,8 @@ def cdt(lot_id=900):
     return {"success": True, "totalCount": 10455, "items": [
         {"tradeId": 800, "tradeLotId": lot_id, "name": "PERSON NAME - DO NOT EXTRACT",
          "categories": ",21,", "regionId": 13, "actualPrice": 150000,
+         "requestTimeBegin": "2026-11-09T10:00:00",
+         "requestTimeEnd": "2026-12-14T17:00:00",
          "tradeStatusDescription": "Торги объявлены"},
         {"tradeId": 801, "tradeLotId": lot_id + 1, "categories": ",1,",
          "name": "Автомобиль", "actualPrice": 30000},
@@ -42,6 +44,8 @@ def test_cdtrf_identity_and_category_without_debtor_name():
     assert x["detail_url"] == "https://torgi.cdtrf.ru/trades/800"
     assert x["title"] is None and x["title_unverified"] is True
     assert x["current_price_rub"] is None
+    assert x["request_time_begin"] == "2026-11-09T10:00:00"
+    assert x["request_time_end"] == "2026-12-14T17:00:00"
     assert "PERSON" not in str(a)
     assert a["complete_source_inventory"] is False
 
