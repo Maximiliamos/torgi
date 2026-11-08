@@ -345,3 +345,179 @@ def test_mets_multi_lot_page_and_price_guard(monkeypatch):
     assert result.metadata["detail_attempts"] == 2
     assert result.metadata["reconcile_missing"] is False
     assert result.metadata["safe_for_archival"] is False
+
+
+def test_mets_unchanged_catalogue_candidates_make_zero_detail_requests(monkeypatch):
+    ids = ["1234-1", "1234-2"]
+    monkeypatch.setattr(
+        mets_sync,
+        "_request_page",
+        lambda *a, **kw: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mets_sync,
+        "_parse_page",
+        lambda *a, **kw: {
+            "total": 2,
+            "next_page": None,
+            "observations": [
+                (external_id, "100", "Торги в стадии приема заявок", "Квартира")
+                for external_id in ids
+            ],
+        },
+    )
+    detail_calls = []
+    monkeypatch.setattr(
+        mets_sync,
+        "parse_mets_lot",
+        lambda *a, **kw: detail_calls.append(1),
+    )
+    selector = lambda candidates: {
+        item["external_id"]: {
+            "skip_detail": True,
+            "fingerprint": item["external_id"].ljust(64, "a")[:64],
+        }
+        for item in candidates
+    }
+    crawler = mets_sync.MetsSourceCrawler(
+        mets_sync.MetsPublicPilot(session=object()),
+        catalogue_selector=selector,
+    )
+
+    result = asyncio.run(crawler.search(mets_sync.MetsSyncFilters()))
+
+    assert result.items == []
+    assert detail_calls == []
+    assert result.metadata["catalogue_candidates"] == 2
+    assert result.metadata["detail_attempts"] == 0
+    assert result.metadata["detail_requests_saved"] == 2
+    assert len(result.metadata["catalogue_unchanged"]) == 2
+
+
+def test_mets_only_changed_candidate_opens_detail(monkeypatch):
+    ids = ["1234-1", "1234-2"]
+    monkeypatch.setattr(
+        mets_sync,
+        "_request_page",
+        lambda *a, **kw: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mets_sync,
+        "_parse_page",
+        lambda *a, **kw: {
+            "total": 2,
+            "next_page": None,
+            "observations": [
+                (external_id, "100", "Торги в стадии приема заявок", "Квартира")
+                for external_id in ids
+            ],
+        },
+    )
+    detail_calls = []
+    pilot = mets_sync.MetsPublicPilot(session=object())
+    monkeypatch.setattr(
+        pilot,
+        "_get",
+        lambda url, **kwargs: (detail_calls.append(url), "detail")[1],
+    )
+    monkeypatch.setattr(mets_sync, "_property_ready", lambda lot: True)
+    monkeypatch.setattr(
+        mets_sync,
+        "parse_mets_lot",
+        lambda html, url: SimpleNamespace(
+            external_id=url.rsplit("/", 1)[-1],
+            auction_status="active",
+            category="apartment",
+            start_price=100,
+            current_price=None,
+            raw_data={},
+        ),
+    )
+
+    def selector(candidates):
+        return {
+            item["external_id"]: {
+                "skip_detail": item["external_id"] == "1234-1",
+                "fingerprint": item["external_id"].ljust(64, "b")[:64],
+            }
+            for item in candidates
+        }
+
+    result = asyncio.run(
+        mets_sync.MetsSourceCrawler(pilot, catalogue_selector=selector).search(
+            mets_sync.MetsSyncFilters()
+        )
+    )
+
+    assert [lot.external_id for lot in result.items] == ["1234-2"]
+    assert len(detail_calls) == 1
+    assert result.metadata["detail_attempts"] == 1
+    assert result.metadata["detail_requests_saved"] == 1
+
+
+def test_cdtrf_only_changed_candidate_opens_detail(monkeypatch):
+    session = requests.Session()
+    session.get = lambda *args, **kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        status_code=200,
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+        json=lambda: {},
+    )
+    hits = [
+        {
+            "trade_id": str(i),
+            "trade_lot_id": str(i),
+            "external_id": f"cdtrf:{i}",
+            "property_category_ids": [7],
+            "region_id": 76,
+            "source_status_text": "Прием заявок",
+            "listing_price_rub": 100,
+        }
+        for i in (1, 2)
+    ]
+    monkeypatch.setattr(
+        cdtrf_sync,
+        "parse_cdtrf_api_page",
+        lambda *a, **kw: {
+            "reported_total": 2,
+            "observed_rows": 2,
+            "observed_lot_ids": ["1", "2"],
+            "property_candidates": hits,
+        },
+    )
+    calls = []
+
+    def fetch(trade, lot, _session, limiter=None, on_retry=None):
+        calls.append(lot)
+        return SimpleNamespace(
+            external_id=f"cdtrf:{lot}",
+            auction_status="active",
+            category="apartment",
+            raw_data={},
+            cadastral_number="76:23:010101:1",
+            lot_url="https://example.test",
+            start_price=100,
+        )
+
+    monkeypatch.setattr(cdtrf_sync, "_verified_detail_with_retry", fetch)
+    monkeypatch.setattr(cdtrf_sync, "_property_ready", lambda lot: True)
+
+    def selector(candidates):
+        return {
+            item["external_id"]: {
+                "skip_detail": item["external_id"] == "cdtrf:1",
+                "fingerprint": item["external_id"].ljust(64, "c")[:64],
+            }
+            for item in candidates
+        }
+
+    result = asyncio.run(
+        cdtrf_sync.CdtrfSourceCrawler(
+            session, catalogue_selector=selector,
+        ).search(cdtrf_sync.CdtrfSyncFilters(max_pages=1))
+    )
+
+    assert calls == ["2"]
+    assert [lot.external_id for lot in result.items] == ["cdtrf:2"]
+    assert result.metadata["detail_attempts"] == 1
+    assert result.metadata["detail_requests_saved"] == 1
