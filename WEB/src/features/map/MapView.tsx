@@ -28,6 +28,7 @@ import {
   fetchNationwideLotSync,
   fetchOperationsProgress,
   pauseGeocoding,
+  reportLotIssue,
   resumeGeocoding,
   MapLot,
   MapDataset,
@@ -1039,7 +1040,37 @@ function LotPreview({
       ? [lot.image_url]
       : [];
   const [imageIndex, setImageIndex] = React.useState(0);
-  React.useEffect(() => setImageIndex(0), [lot.id]);
+  const [reportOpen, setReportOpen] = React.useState(false);
+  const [reportText, setReportText] = React.useState("");
+  const [reportBusy, setReportBusy] = React.useState(false);
+  const [reportMessage, setReportMessage] = React.useState("");
+  const [reportError, setReportError] = React.useState("");
+  React.useEffect(() => {
+    setImageIndex(0);
+    setReportOpen(false);
+    setReportText("");
+    setReportMessage("");
+    setReportError("");
+  }, [lot.id]);
+
+  const submitIssueReport = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const content = reportText.trim();
+    if (!content || reportBusy) return;
+    setReportBusy(true);
+    setReportError("");
+    setReportMessage("");
+    try {
+      await reportLotIssue(lot.id, content);
+      setReportText("");
+      setReportOpen(false);
+      setReportMessage("Спасибо. Сообщение об ошибке отправлено.");
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : "Не удалось отправить сообщение");
+    } finally {
+      setReportBusy(false);
+    }
+  };
 
   return (
     <aside className="mapLotPreview" aria-label="Карточка выбранного лота">
@@ -1182,6 +1213,41 @@ function LotPreview({
             ))}
           </div>
         </details>
+        <div className="mapIssueReport">
+          <button
+            type="button"
+            className="mapIssueReportButton"
+            onClick={() => {
+              setReportOpen((value) => !value);
+              setReportError("");
+              setReportMessage("");
+            }}
+          >
+            Сообщить об ошибке
+          </button>
+          {reportOpen && (
+            <form className="mapIssueReportForm" onSubmit={submitIssueReport}>
+              <textarea
+                value={reportText}
+                onChange={(event) => setReportText(event.target.value)}
+                maxLength={5000}
+                placeholder="Опишите, что не так с этим лотом"
+                aria-label="Описание ошибки лота"
+                required
+              />
+              <div>
+                <button type="submit" disabled={reportBusy || !reportText.trim()}>
+                  {reportBusy ? "Отправляем…" : "Отправить"}
+                </button>
+                <button type="button" onClick={() => setReportOpen(false)} disabled={reportBusy}>
+                  Отмена
+                </button>
+              </div>
+            </form>
+          )}
+          {reportMessage && <small className="mapIssueReportSuccess">{reportMessage}</small>}
+          {reportError && <small className="mapIssueReportError">{reportError}</small>}
+        </div>
         <h3 className="mapReviewTitle">Оценка лота</h3>
         <div className="mapReviewButtons">
           <button
