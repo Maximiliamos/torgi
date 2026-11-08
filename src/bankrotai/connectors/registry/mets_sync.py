@@ -67,6 +67,7 @@ class MetsSourceCrawler:
         self._detail_rate: float | None = None
         self._custom_detail_lock = threading.Lock()
         self._detail_cache: dict[str, dict] = {}
+        self._prepared_pages: dict[int, dict] = {}
 
     def set_detail_cache(self, snapshots: dict[str, dict]) -> None:
         self._detail_cache = dict(snapshots)
@@ -95,6 +96,83 @@ class MetsSourceCrawler:
             fingerprint=self._catalogue_fingerprint(item),
         )
 
+    def _reset_catalogue_state(self) -> None:
+        self._seen = set()
+        self._total = None
+        self._minimum_total = None
+        self._maximum_total = None
+        self._page_size = None
+        self._overlap_count = 0
+        self._expected_page = 1
+        self._prior_digest = None
+
+    @staticmethod
+    def _ids(parsed: dict) -> list[str]:
+        return [item[0] for item in parsed["observations"]]
+
+    def prepare_catalogue(self, filters: MetsSyncFilters) -> dict:
+        """Materialize and validate the selected catalogue before any detail request."""
+        if self._seen or self._expected_page != 1:
+            raise MetsCatalogueScanError("M-ETS catalogue preparation requires a fresh crawler")
+        prepared: dict[int, dict] = {}
+        seen: set[str] = set()
+        first_size: int | None = None
+        first_total: int | None = None
+        minimum_total: int | None = None
+        maximum_total: int | None = None
+        overlap_count = 0
+        for page_number in range(1, filters.max_pages + 1):
+            response = _request_page(self.pilot.session, page_number, sleep=time.sleep)
+            parsed = _parse_page(response.text, page_number)
+            identities = self._ids(parsed)
+            total = int(parsed["total"])
+            if first_size is None:
+                first_size, first_total = len(identities), total
+                minimum_total = maximum_total = total
+                if not first_size or math.ceil(total / first_size) > filters.max_pages:
+                    raise MetsCatalogueScanError("M-ETS catalogue exceeds page budget")
+            else:
+                assert first_total is not None and first_size is not None
+                assert minimum_total is not None and maximum_total is not None
+                minimum_total, maximum_total = min(minimum_total, total), max(maximum_total, total)
+            assert first_size is not None and first_total is not None
+            assert minimum_total is not None and maximum_total is not None
+            maximum_drift = max(first_size * 2, math.ceil(first_total * MAX_LIVE_TOTAL_DRIFT_RATIO))
+            if maximum_total - minimum_total > maximum_drift:
+                raise MetsCatalogueScanError("M-ETS reported total drift exceeds safe live-catalogue bound")
+            next_page = parsed.get("next_page")
+            if next_page is not None and next_page != page_number + 1:
+                raise MetsCatalogueScanError("M-ETS paginator is not sequential")
+            if next_page is not None and len(identities) != first_size:
+                raise MetsCatalogueScanError("M-ETS page size contradicts reported total")
+            if next_page is None and not 1 <= len(identities) <= first_size:
+                raise MetsCatalogueScanError("M-ETS terminal page size is invalid")
+            overlap = seen.intersection(identities)
+            if len(overlap) == len(identities):
+                raise MetsCatalogueScanError("M-ETS paginator repeated a complete page")
+            overlap_count += len(overlap)
+            if overlap_count > maximum_drift:
+                raise MetsCatalogueScanError("M-ETS live-catalogue overlap exceeds safe bound")
+            seen.update(identities)
+            prepared[page_number] = parsed
+            if next_page is None:
+                self._prepared_pages = prepared
+                self._reset_catalogue_state()
+                return {
+                    "pages": page_number,
+                    "observed_unique_ids": len(seen),
+                    "reported_total": total,
+                    "phase": "catalogue_discovery_complete",
+                }
+        raise MetsCatalogueScanError("M-ETS page budget exhausted during catalogue discovery")
+
+    def _parsed_page(self, page_number: int) -> dict:
+        prepared = self._prepared_pages.get(page_number)
+        if prepared is not None:
+            return prepared
+        response = _request_page(self.pilot.session, page_number, sleep=time.sleep)
+        return _parse_page(response.text, page_number)
+
     def restore_checkpoint(self, checkpoint: dict) -> str | None:
         if checkpoint.get("version") != 1 or checkpoint.get("source") != "m-ets.ru":
             return None
@@ -104,14 +182,30 @@ class MetsSourceCrawler:
         seen = checkpoint.get("seen_ids")
         if not isinstance(seen, list) or not all(isinstance(value, str) for value in seen):
             return None
+        expected_page = int(next_cursor.split(":", 1)[0])
+        prior_digest = next_cursor.split(":", 1)[1]
+        if self._prepared_pages:
+            prefix_ids = {
+                external_id
+                for page in range(1, expected_page)
+                for external_id in self._ids(self._prepared_pages.get(page, {}))
+            } if all(page in self._prepared_pages for page in range(1, expected_page)) else set()
+            anchor = self._prepared_pages.get(expected_page - 1)
+            anchor_digest = (
+                hashlib.sha256("\n".join(sorted(self._ids(anchor))).encode("ascii")).hexdigest()
+                if anchor is not None else None
+            )
+            if prefix_ids != set(seen) or anchor_digest != prior_digest:
+                self._reset_catalogue_state()
+                return None
         self._seen = set(seen)
         self._total = int(checkpoint["total"])
         self._minimum_total = int(checkpoint["minimum_total"])
         self._maximum_total = int(checkpoint["maximum_total"])
         self._page_size = int(checkpoint["page_size"])
         self._overlap_count = int(checkpoint.get("overlap_count") or 0)
-        self._expected_page = int(next_cursor.split(":", 1)[0])
-        self._prior_digest = next_cursor.split(":", 1)[1]
+        self._expected_page = expected_page
+        self._prior_digest = prior_digest
         return next_cursor
 
     def _resume_checkpoint(self, next_cursor: str | None) -> dict | None:
@@ -144,10 +238,7 @@ class MetsSourceCrawler:
         if page_number > filters.max_pages:
             raise MetsCatalogueScanError("M-ETS page budget exceeded")
 
-        response = _request_page(
-            self.pilot.session, page_number, sleep=time.sleep,
-        )
-        parsed = _parse_page(response.text, page_number)
+        parsed = self._parsed_page(page_number)
         observations = parsed["observations"]
         identities = [item[0] for item in observations]
         total = int(parsed["total"])
