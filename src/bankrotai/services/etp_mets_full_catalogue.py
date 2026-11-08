@@ -36,7 +36,7 @@ from bankrotai.connectors.registry.mets_public import (
 
 MAX_SCAN_PAGES = 500
 REQUEST_TIMEOUT = (5, 25)
-SELECTED_CATEGORY_IDS = ("36", "34", "39", "37", "38", "28", "41", "11")
+SELECTED_CATEGORY_IDS = ("36", "34", "39", "37", "38", "28", "41")
 SELECTED_STATUS_IDS = ("0", "1")
 SELECTED_SOURCE_STATUSES = (
     "Объявленные торги",
