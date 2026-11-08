@@ -181,7 +181,9 @@ def update_eta(result: Any) -> None:
     if not current or not total or current <= 0 or total <= current or result.elapsed_seconds <= 0:
         result.eta_seconds = 0.0 if current and total and current >= total else None
         return
-    result.eta_seconds = max(0.0, result.elapsed_seconds / current * (total - current))
+    discovery_seconds = float(result.timing_ms.get("catalogue_discovery_ms") or 0.0) / 1000.0
+    active_seconds = max(0.001, result.elapsed_seconds - discovery_seconds)
+    result.eta_seconds = max(0.0, active_seconds / current * (total - current))
 
 
 def checkpoint_payload(result: Any) -> dict[str, Any]:
@@ -210,6 +212,9 @@ def checkpoint_payload(result: Any) -> dict[str, Any]:
             4,
         ),
         "retry_count": result.retry_count,
+        "catalogue_discovery_ms": round(
+            float(result.timing_ms.get("catalogue_discovery_ms") or 0.0), 3
+        ),
         "eta_seconds": round(result.eta_seconds, 1)
         if result.eta_seconds is not None else None,
     }
@@ -240,6 +245,9 @@ def performance_profile(result: Any, profile_timings: bool) -> dict[str, Any]:
             4,
         ),
         "retry_count": result.retry_count,
+        "catalogue_discovery_ms": round(
+            float(result.timing_ms.get("catalogue_discovery_ms") or 0.0), 3
+        ),
         "eta_seconds": round(result.eta_seconds, 1)
         if result.eta_seconds is not None else None,
     }
