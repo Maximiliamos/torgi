@@ -48,6 +48,8 @@ class SourceSyncResult:
     progress_total: int | None = None
     phase: str = "scanning"
     error: str | None = None
+    filter_signature: str | None = None
+    resumed_from_run_id: str | None = None
     resume_cursor: str | None = None
     connector_checkpoint: dict[str, Any] | None = None
     detail_attempts: int = 0

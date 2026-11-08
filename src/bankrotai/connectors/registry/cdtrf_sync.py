@@ -118,6 +118,8 @@ class CdtrfSourceCrawler:
             "trade_id": hit.get("trade_id"),
             "price": str(hit.get("listing_price_rub")),
             "status": hit.get("source_status_text"),
+            "request_time_begin": hit.get("request_time_begin"),
+            "request_time_end": hit.get("request_time_end"),
             "region_id": hit.get("region_id"),
             "categories": hit.get("property_category_ids"),
         })

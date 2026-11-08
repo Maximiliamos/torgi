@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
+import hashlib
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -11,6 +13,30 @@ from bankrotai.services.incremental_detail_cache import parse_timestamp, snapsho
 
 
 REUSABLE_DETAIL_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru"})
+SAFE_RESUME_ERROR_CATEGORIES = frozenset({
+    "http_429",
+    "http_5xx",
+    "dns",
+    "tls",
+    "connect_timeout",
+    "read_timeout",
+    "unknown_upstream",
+})
+
+
+def filter_signature(spec: Any) -> str:
+    """Stable crawl-contract signature used to reject stale/incompatible checkpoints."""
+    payload = (
+        spec.source_id,
+        repr(spec.filters),
+        spec.archive_region_code,
+        spec.reconcile_missing,
+        spec.max_batches,
+        spec.require_source_end,
+        spec.max_detail_attempts_per_page,
+        spec.reuse_unchanged_details,
+    )
+    return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
 
 def incremental_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -50,7 +76,12 @@ def resume_checkpoint_for_source(
     session_factory: Callable[[], Any],
     run_id: str,
     source_id: str,
+    expected_filter_signature: str,
 ) -> dict[str, Any] | None:
+    """Return only a recent, transport-retryable checkpoint for the same crawl contract."""
+    from bankrotai.services.source_resilience import classify_source_error
+
+    cutoff = utc_now() - timedelta(hours=24)
     with session_factory() as session:
         rows = session.scalars(
             select(LotSyncSourceRun)
@@ -61,16 +92,28 @@ def resume_checkpoint_for_source(
                 LotSyncSourceRun.checkpoint_json.isnot(None),
             )
             .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
-            .limit(5)
+            .limit(10)
         ).all()
         for row in rows:
+            observed_at = row.finished_at or row.progress_at or row.started_at
+            if observed_at is None or observed_at < cutoff:
+                continue
+            classification = classify_source_error(row.error_message)
+            if (
+                not classification.retryable
+                or classification.category not in SAFE_RESUME_ERROR_CATEGORIES
+            ):
+                continue
             checkpoint = row.checkpoint_json if isinstance(row.checkpoint_json, dict) else {}
+            if checkpoint.get("filter_signature") != expected_filter_signature:
+                continue
             connector_checkpoint = checkpoint.get("connector_checkpoint")
             resume_cursor = checkpoint.get("resume_cursor")
             if isinstance(connector_checkpoint, dict) and isinstance(resume_cursor, str):
                 return {
                     "connector_checkpoint": connector_checkpoint,
                     "resume_cursor": resume_cursor,
+                    "resumed_from_run_id": str(row.sync_run_id),
                     "pages_scanned": int(row.pages_scanned or 0),
                     "items_seen": int(row.items_seen or 0),
                     "items_inserted": int(row.items_inserted or 0),
@@ -83,7 +126,6 @@ def resume_checkpoint_for_source(
                 }
     return None
 
-
 def prepare_source(
     session_factory: Callable[[], Any],
     connector: Any,
@@ -91,13 +133,16 @@ def prepare_source(
     run_id: str,
     result: Any,
 ) -> str | None:
+    result.filter_signature = filter_signature(spec)
     if spec.reuse_unchanged_details:
         connector.configure_incremental_detail_cache(
             detail_cache_snapshots(session_factory, spec.source_id)
         )
     if not spec.resume_from_checkpoint:
         return None
-    resume = resume_checkpoint_for_source(session_factory, run_id, spec.source_id)
+    resume = resume_checkpoint_for_source(
+        session_factory, run_id, spec.source_id, result.filter_signature
+    )
     if resume is None:
         return None
     restored = connector.restore_resume_checkpoint(resume["connector_checkpoint"])
@@ -105,6 +150,7 @@ def prepare_source(
         return None
     result.resume_cursor = restored
     result.connector_checkpoint = resume["connector_checkpoint"]
+    result.resumed_from_run_id = resume["resumed_from_run_id"]
     for field in (
         "pages_scanned", "items_seen", "items_inserted", "items_updated",
         "items_unchanged", "items_failed", "detail_attempts",
@@ -228,6 +274,8 @@ def checkpoint_payload(result: Any) -> dict[str, Any]:
         if result.elapsed_seconds else 0,
         "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
         if result.elapsed_seconds else 0,
+        "filter_signature": result.filter_signature,
+        "resumed_from_run_id": result.resumed_from_run_id,
         "resume_cursor": result.resume_cursor,
         "connector_checkpoint": result.connector_checkpoint,
         "detail_attempts": result.detail_attempts,
