@@ -117,6 +117,7 @@ from bankrotai.services.etp_direct_catalogue_api import create_etp_pilot_catalog
 from bankrotai.services.etp_incremental_preview_api import create_etp_incremental_preview_router
 from bankrotai.services.etp_qa_map_api import create_etp_qa_map_router
 from bankrotai.services.etp_parser_checklist_api import create_etp_parser_checklist_router
+from bankrotai.services.lot_issue_report_api import create_lot_issue_report_router
 from bankrotai.regions import REGION_DIRECTORY
 
 from bankrotai.core import DEFAULT_REGION, get_logger, get_region_query_values, get_settings, utc_now
@@ -448,7 +449,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return (
                 len(parts) == 5
                 and parts[3].isdigit()
-                and parts[4] in {"max-bid", "watchlist", "notes", "merge", "split", "documents-compare"}
+                and parts[4] in {"max-bid", "watchlist", "notes", "report-error", "merge", "split", "documents-compare"}
             )
         return False
     if method == "PUT" and path.startswith("/api/lots/"):
@@ -473,11 +474,10 @@ app.include_router(create_etp_pilot_catalogue_router(require_admin))
 app.include_router(create_etp_incremental_preview_router(require_admin))
 app.include_router(create_etp_qa_map_router(require_admin))
 app.include_router(create_etp_parser_checklist_router(require_admin))
-
+app.include_router(create_lot_issue_report_router(require_user))
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
-
 @app.get("/api/time")
 def current_time(_: AuthenticatedUser = Depends(require_user)):
     return trusted_time_status()

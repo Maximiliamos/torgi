@@ -48,7 +48,6 @@ import {
   splitLot,
   startNationwideLotSync,
 } from "../../lib/api";
-
 export const MAP_REDUCED_LIMIT = 500;
 // The measured populated tile is small (163 B in the deterministic benchmark),
 // while 512 entries preserve useful pan-back history without unbounded growth.
@@ -72,6 +71,7 @@ import {
 } from "./MapFiltersPanel";
 import type { MapFilterState, MapSourceOption } from "./MapFiltersPanel";
 import { EtpQaPanel, useEtpQa } from "./EtpQaPanel";
+import { LotIssueReport } from "./LotIssueReport";
 export { mapFilterUiState } from "./MapFiltersPanel";
 import type { TileCoordinate } from "./mapGeometry";
 // Keep the existing MapView public exports for all downstream imports.
@@ -990,7 +990,6 @@ if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textCon
     />
   );
 }
-
 function SourceButton({
   label,
   url,
@@ -1182,6 +1181,7 @@ function LotPreview({
             ))}
           </div>
         </details>
+        <LotIssueReport lotId={lot.id} />
         <h3 className="mapReviewTitle">Оценка лота</h3>
         <div className="mapReviewButtons">
           <button

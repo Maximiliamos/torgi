@@ -1,11 +1,11 @@
 """Complete two-pass read-only walk of the selected public M-ETS catalogue.
 
-The scanner proves only the exact seven-category, announced/application-intake
+The scanner proves only the exact eight-category, announced/application-intake
 filter encoded by :data:`APARTMENTS_URL`.  It never writes PostgreSQL, performs
 missing-lot reconciliation, archives records, geocodes lots or publishes maps.
-The selected category set deliberately does not include standalone land (11)
-or agricultural real estate (40), so even a successful result is not a claim
-of complete source inventory.
+The user's selected category set includes standalone land (11) but excludes
+agricultural real estate (40) and other property classes; a successful result
+is not a claim of complete source inventory.
 """
 from __future__ import annotations
 
@@ -36,13 +36,13 @@ from bankrotai.connectors.registry.mets_public import (
 
 MAX_SCAN_PAGES = 500
 REQUEST_TIMEOUT = (5, 25)
-SELECTED_CATEGORY_IDS = ("36", "34", "39", "37", "38", "28", "41")
+SELECTED_CATEGORY_IDS = ("36", "34", "39", "37", "38", "28", "41", "11")
 SELECTED_STATUS_IDS = ("0", "1")
 SELECTED_SOURCE_STATUSES = (
     "Объявленные торги",
     "Торги в стадии приема заявок",
 )
-OMITTED_PROPERTY_CATEGORY_IDS = ("11", "40")
+OMITTED_PROPERTY_CATEGORY_IDS = ("40",)
 _REGISTRATION = re.compile(
     r"(?P<trade>\d{4,9})-МЭТС\s*,\s*Лот\s*№\s*(?P<lot>\d{1,5})"
 )

@@ -22,10 +22,15 @@ vi.mock("../../lib/api", async (importOriginal) => {
   };
 });
 
+vi.mock("../../lib/lotIssueReportApi", () => ({
+  reportLotIssue: vi.fn(),
+}));
+
 import {
   ApiError,
   fetchCurrentMapDataset,
   fetchCurrentUser,
+  fetchMapLotDetail,
   fetchMapLotsSWR,
   fetchMapTile,
   fetchYandexMapTile,
@@ -39,6 +44,7 @@ import {
   type MapDataset,
   type YandexMapTilePayload,
 } from "../../lib/api";
+import { reportLotIssue } from "../../lib/lotIssueReportApi";
 
 function channelFrom(frame: HTMLIFrameElement) {
   const match = frame.srcdoc.match(/const channel=("[^"]+")/);
@@ -154,6 +160,47 @@ describe("direct Yandex tile transport", () => {
     });
     vi.mocked(fetchMapReviewStatuses).mockResolvedValue({
       items: [{ id: 77, review_status: "approved" }],
+    });
+    vi.mocked(fetchMapLotDetail).mockResolvedValue({
+      id: 77,
+      external_id: "77",
+      title: "Direct lot",
+      description: "Тестовый лот",
+      address: "Ярославль",
+      cadastral_number: null,
+      category: "commercial",
+      region: "76",
+      status: "active",
+      is_archived: false,
+      review_status: null,
+      current_price: 1_000_000,
+      start_price: 1_000_000,
+      minimum_price: null,
+      price_observed_at: null,
+      next_interval_price: null,
+      next_price_reduction_at: null,
+      lat: 55.7,
+      lon: 37.6,
+      geometry: null,
+      confidence: "exact",
+      source: "test",
+      source_name: "Test",
+      source_url: null,
+      gis_torgi_url: null,
+      etp_url: null,
+      torgi_russia_url: null,
+      image_url: null,
+      image_urls: [],
+      procedure_number: null,
+      application_deadline: null,
+      auction_at: null,
+      sources: [],
+    });
+    vi.mocked(reportLotIssue).mockResolvedValue({
+      id: 1,
+      lot_id: 77,
+      content: "Неверная цена",
+      created_at: "2026-11-08T19:00:00",
     });
     vi.mocked(fetchFilteredYandexMapTile).mockResolvedValue({
       type: "FeatureCollection",
@@ -361,6 +408,24 @@ describe("direct Yandex tile transport", () => {
       }),
       "*",
     ));
+  });
+
+  it("submits a simple user error report from the lot card", async () => {
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    act(() => send(frame, "bankrotai-select", { lotId: 77 }));
+
+    await waitFor(() => expect(fetchMapLotDetail).toHaveBeenCalledWith(77));
+    fireEvent.click(await screen.findByRole("button", { name: "Сообщить об ошибке" }));
+    fireEvent.change(screen.getByLabelText("Описание ошибки лота"), {
+      target: { value: "Неверная цена" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+
+    await waitFor(() => expect(reportLotIssue).toHaveBeenCalledWith(77, "Неверная цена"));
+    expect(await screen.findByText("Спасибо. Сообщение об ошибке отправлено.")).toBeInTheDocument();
   });
 
   it("keeps region and price filters on runtime-filtered direct tiles", async () => {

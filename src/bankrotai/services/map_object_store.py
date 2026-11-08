@@ -97,6 +97,7 @@ def _signed_headers(
     secret_key: str,
     region: str,
     now: datetime | None = None,
+    create_only: bool = False,
 ) -> tuple[str, dict[str, str]]:
     current = now or datetime.now(timezone.utc)
     amz_date = current.strftime("%Y%m%dT%H%M%SZ")
@@ -110,6 +111,8 @@ def _signed_headers(
         "x-amz-content-sha256": payload_hash,
         "x-amz-date": amz_date,
     }
+    if create_only:
+        headers["if-none-match"] = "*"
     signed_header_names = ";".join(sorted(headers))
     canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers))
     canonical_request = "\n".join(
@@ -152,6 +155,7 @@ def _put_object(
     *,
     cache_control: str,
     put: Callable[..., requests.Response] | None = None,
+    create_only: bool = False,
 ) -> None:
     assert settings.map_object_store_access_key is not None
     assert settings.map_object_store_secret_key is not None
@@ -168,6 +172,7 @@ def _put_object(
             access_key=settings.map_object_store_access_key,
             secret_key=settings.map_object_store_secret_key,
             region=settings.map_object_store_region,
+            create_only=create_only,
         )
         try:
             request_put = put or requests.put
@@ -491,8 +496,13 @@ def publish_dataset_to_object_store(
         f"datasets/{version}/manifest.json",
         manifest_body,
         cache_control="public, max-age=60",
+        create_only=True,
     )
     verified = _verify_public_manifest(settings, version)
+    if verified.get("point_count") != point_count or verified.get("tile_count") != uploaded:
+        raise RuntimeError("REG.RU S3 manifest point/tile count mismatch")
+    if verified.get("format") != "yandex-feature-collection-v1":
+        raise RuntimeError("REG.RU S3 manifest tile format mismatch")
     if verified.get("pipeline_revision") != MAP_DATASET_REVISION:
         raise RuntimeError(
             "REG.RU S3 manifest pipeline revision mismatch: "

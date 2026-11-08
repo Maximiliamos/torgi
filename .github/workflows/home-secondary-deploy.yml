@@ -631,6 +631,33 @@ jobs:
             Write-Output 'TBankrot session is not configured yet; Auth Center will request interactive login'
           }
 
+      - name: Refuse production redeploy while nationwide ingestion is active
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existingWorker = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
+          if ($existingWorker -ne 'bankrotai-home-ingestion-worker') {
+            throw 'Cannot prove nationwide ingestion is idle: canonical worker unavailable'
+          }
+          # Query durable active states before migration or worker replacement;
+          # stale active leases require explicit recovery, not forced restart.
+          $probe = @'
+          from sqlalchemy import select
+          from bankrotai.db import LotSyncRun, SessionLocal
+          with SessionLocal() as session:
+              active = list(session.scalars(
+                  select(LotSyncRun.id).where(LotSyncRun.status.in_(("queued", "running")))
+              ))
+          if active:
+              raise SystemExit("Active nationwide ingestion; refuse worker replacement")
+          print("NATIONWIDE_INGESTION_IDLE")
+          '@
+          $output = @($probe | docker exec -i bankrotai-home-ingestion-worker python - 2>&1)
+          if ($LASTEXITCODE -ne 0 -or -not ($output -contains 'NATIONWIDE_INGESTION_IDLE')) {
+            $output | ForEach-Object { Write-Output $_ }
+            throw 'Production redeploy blocked until durable nationwide ingestion is terminal'
+          }
+
       - name: Backup and migrate database schema before replacing production containers
         shell: powershell
         run: |

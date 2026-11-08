@@ -52,6 +52,11 @@ jobs:
               "git_status_unchanged": audit["git_status_unchanged"],
           }, indent=2))
           PY
+      - name: Compare M-ETS public detail hosts (diagnostic only, no credentials)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: python scripts/diagnose_mets_public_origins.py
       - run: ruff check src tests benchmarks
       - run: mypy src/bankrotai benchmarks/read_only_pipeline.py
       - run: bash -n scripts/*.sh
@@ -218,6 +223,46 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Parse guarded full-cycle operator script without executing it
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $source = Join-Path $PWD 'scripts/launch-seven-source-gated.ps1'
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $source, [ref]$tokens, [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            throw 'Gated release PowerShell parser rejected the script'
+          }
+      - name: Inspect checkout cleanliness before gated dry-run (read-only)
+        shell: pwsh
+        run: |
+          $tracked = @(git status --porcelain --untracked-files=no)
+          $untracked = @(git ls-files --others --exclude-standard)
+          Write-Output "tracked_change_count=$($tracked.Count);untracked_count=$($untracked.Count)"
+          # File paths only; never emit file content or environment secrets.
+          @($tracked + $untracked) | Select-Object -First 12 | ForEach-Object {
+            Write-Output "git_status_path=$_"
+          }
+      - name: Smoke guarded launcher in dry-run with stubbed gh (no network, no writes)
+        shell: pwsh
+        run: |
+          function gh {
+            param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Parts)
+            # Stub MUST reject any attempt to call workflow dispatch.
+            if ($Parts.Count -ne 4 -or
+                $Parts[0] -ne 'api' -or
+                $Parts[1] -ne 'repos/Maximiliamos/torgi/branches/main' -or
+                $Parts[2] -ne '--jq' -or
+                $Parts[3] -ne '.commit.sha') {
+              throw "Guarded launcher unexpectedly invoked gh: $($Parts -join ' ')"
+            }
+            Write-Output $env:GITHUB_SHA
+          }
+          & ./scripts/launch-seven-source-gated.ps1 -ExpectedSha $env:GITHUB_SHA
+          if (-not $?) { throw 'Guarded launcher dry-run smoke failed' }
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .

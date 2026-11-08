@@ -26,12 +26,50 @@ concurrency:
 
 jobs:
   wait-home-deploy:
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    # Integration safety: do not schedule production source work on code pushes.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Require current main SHA and successful manual P1/P11 acceptance
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo 'Only an explicit dispatch on main can start full ingestion' >&2
+            exit 1
+          fi
+          current="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')"
+          if [ "$EXPECTED_SHA" != "$current" ]; then
+            echo 'Refusing non-current SHA for full ingestion' >&2
+            exit 1
+          fi
+          # A skipped QA workflow is not acceptance. Require SUCCESS from
+          # a separate manual P1 and P11 run on this exact deployed SHA.
+          for workflow in p1-data-quality.yml p11-production-acceptance.yml; do
+            evidence="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow "$workflow" --commit "$EXPECTED_SHA" \
+              --event workflow_dispatch --limit 50 \
+              --json conclusion,headSha,status)"
+            printf '%s' "$evidence" | python -c '
+          import json,os,sys
+          expected=os.environ["EXPECTED_SHA"]
+          rows=json.load(sys.stdin)
+          valid=any(row.get("headSha")==expected and
+                    row.get("conclusion")=="success" and
+                    row.get("status")=="completed" for row in rows)
+          sys.exit(0 if valid else 1)
+          ' || {
+              echo "Missing successful manually dispatched exact-SHA acceptance for $workflow" >&2
+              exit 1
+            }
+          done
+          echo "Exact-SHA manual P1 and P11 acceptance verified"
       - name: Wait for the same main revision on the home origin
         if: github.event_name == 'push'
         shell: bash
@@ -75,6 +113,7 @@ jobs:
 
   reconcile:
     needs: wait-home-deploy
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 240
     steps:
@@ -84,6 +123,67 @@ jobs:
           $container = docker ps --filter 'name=^/bankrotai-home-ingestion-worker$' --format '{{.Names}}'
           if ($container -ne 'bankrotai-home-ingestion-worker') {
             throw 'Canonical home ingestion worker is not running'
+          }
+      - name: Checkout exact workflow SHA for read-only preflight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Configure Python for local checksum and capacity verification
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Read-only exact-SHA, seven-source, pause, circuit, DB and lease preflight
+        shell: powershell
+        run: |
+          $checkoutSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $checkoutSha -ne $env:GITHUB_SHA) {
+            throw "Checkout is not exact workflow SHA; checkout=$checkoutSha expected=$env:GITHUB_SHA"
+          }
+          $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$env:GITHUB_SHA") {
+            throw "Worker image does not match exact SHA: $image"
+          }
+          $sourceGate = Join-Path $env:GITHUB_WORKSPACE 'scripts/preflight_live_source_gate.py'
+          if (-not (Test-Path -LiteralPath $sourceGate -PathType Leaf)) {
+            throw 'Read-only live source gate file is missing'
+          }
+          $raw = @(Get-Content -LiteralPath $sourceGate -Raw |
+            docker exec -i bankrotai-home-ingestion-worker python -)
+          if ($LASTEXITCODE -ne 0 -or -not $raw.Count -or
+              $raw[-1] -notmatch '^SOURCE_PREFLIGHT=') {
+            throw "Read-only source preflight unavailable: $($raw -join '; ')"
+          }
+          $state = ($raw[-1] -replace '^SOURCE_PREFLIGHT=', '') | ConvertFrom-Json
+          if ($state.pass -ne $true) {
+            throw "Read-only source preflight blocked: $($state.errors -join '; ')"
+          }
+      - name: Verify last restore, local disk and signed S3 quota before heavy source run
+        shell: powershell
+        env:
+          TORGI_CAPACITY_EVIDENCE_HMAC_KEY: ${{ secrets.TORGI_CAPACITY_EVIDENCE_HMAC_KEY }}
+          TORGI_S3_CAPACITY_EVIDENCE_PATH: ${{ vars.TORGI_S3_CAPACITY_EVIDENCE_PATH }}
+        run: |
+          if (-not $env:TORGI_S3_CAPACITY_EVIDENCE_PATH) {
+            throw 'No S3 provider quota evidence path configured: fail closed before ingestion'
+          }
+          $buckets = @(docker exec bankrotai-home-ingestion-worker python -c 'from bankrotai.core import get_settings; print(get_settings().map_object_store_bucket or "")')
+          if ($LASTEXITCODE -ne 0 -or -not $buckets.Count -or -not $buckets[-1].Trim()) {
+            throw 'Cannot read independently configured MapDataset S3 bucket'
+          }
+          $expectedBucket = $buckets[-1].Trim()
+          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH --expected-bucket $expectedBucket)
+          if ($LASTEXITCODE -ne 0 -or -not $result.Count -or
+              $result[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
+            throw "Backup/disk/S3 capacity gate failed: $($result -join '; ')"
+          }
+          $state = ($result[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
+          if ($state.allowed -ne $true) {
+            throw "Backup/disk/S3 capacity blocked: $($state.errors -join '; ')"
+          }
+      - name: Verify fresh isolated PostgreSQL restore before scheduling
+        shell: powershell
+        run: |
+          & .\scripts\backup-home-postgres.ps1 -VerifyRestore -RetainCount 0
+          if (-not $?) {
+            throw 'Fresh isolated backup restore did not finish successfully'
           }
       - name: Request or adopt one durable full reconciliation and reclaim expired lease
         id: start

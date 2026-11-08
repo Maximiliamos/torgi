@@ -37,6 +37,7 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
+from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
@@ -139,7 +140,11 @@ class NationwideIngestionService:
         profile_timings: bool = False,
         use_gis_batch_persistence: bool = True,
         gis_batch_size: int = 500,
+        max_concurrent_sources: int = 3,
     ) -> None:
+        if not 1 <= max_concurrent_sources <= 7:
+            raise ValueError("max_concurrent_sources must be between 1 and 7")
+        self.max_concurrent_sources = max_concurrent_sources
         self.session_factory = session_factory
         self.connector_factory = connector_factory
         self.lease_minutes = lease_minutes
@@ -224,6 +229,9 @@ class NationwideIngestionService:
         heartbeat_thread.start()
         try:
             payload = await self._run_active(run_id, specs)
+        except Exception as exc:
+            logger.exception("Nationwide synchronization %s failed before finalization", run_id)
+            payload = {"status": "failed", "sources": [], "expired_after_auction": 0, "profile": {}, "error": str(exc)}
         finally:
             stop_heartbeat.set()
             heartbeat_thread.join()
@@ -232,13 +240,13 @@ class NationwideIngestionService:
         return payload
 
     async def _run_active(self, run_id: str, specs: tuple[SourceSyncSpec, ...]) -> dict[str, Any]:
-        if specs and all(not spec.reconcile_missing for spec in specs):
-            results = list(await asyncio.gather(*(self._sync_source(run_id, spec) for spec in specs)))
-        else:
-            results = []
-            for spec in specs:
-                result = await self._sync_source(run_id, spec)
-                results.append(result)
+        results = await run_bounded_sources(
+            run_id,
+            specs,
+            max_concurrent_sources=self.max_concurrent_sources,
+            sync_source=self._sync_source,
+            checkpoint_writer=self._upsert_source_run,
+        )
         dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
@@ -304,11 +312,11 @@ class NationwideIngestionService:
             ).all()
             if not running:
                 return False
-            latest_progress = max(
+            oldest_progress = min(
                 (row.progress_at or row.started_at or now for row in running),
                 default=now,
             )
-        return (now - latest_progress).total_seconds() > self._progress_stall_seconds
+        return (now - oldest_progress).total_seconds() > self._progress_stall_seconds
 
     def _raise_if_stalled(self, run_id: str) -> None:
         event = self._stall_events.get(run_id)
@@ -504,16 +512,19 @@ class NationwideIngestionService:
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
 
-            result.items_archived = self._archive_missing_after_complete_run(
-                run_id,
-                spec.source_id,
-                region_code=spec.archive_region_code,
-                progress_callback=reconciliation_progress,
+            result.items_archived = await run_serialized_reconciliation(
+                lambda: self._archive_missing_after_complete_run(
+                    run_id, spec.source_id,
+                    region_code=spec.archive_region_code,
+                    progress_callback=reconciliation_progress,
+                )
             )
             result.status = "success"
             result.phase = "complete"
             result.progress_current = result.progress_total
         except Exception as exc:
+            # Never present failed reconciliation as complete coverage.
+            result.complete_source_run = False
             result.status = "failed"
             result.phase = "failed"
             result.error = str(exc)
@@ -551,7 +562,6 @@ class NationwideIngestionService:
             if region_code is not None:
                 query = query.where(SourceLot.region_code == region_code)
             return len(session.scalars(query).all())
-
 
     def _repeatable_coverage_collapse_confirmed(
         self,
@@ -767,18 +777,18 @@ class NationwideIngestionService:
                     result.items_unchanged += 1
                     continue
                 changed_or_new.append(normalized)
-                if existed:
-                    result.items_updated += 1
-                else:
-                    result.items_inserted += 1
+                result.items_updated += int(existed)
+                result.items_inserted += int(not existed)
             persist_started = time.perf_counter()
-            persist_changed_lots_batch(
+            persist_stats = persist_changed_lots_batch(
                 session,
                 changed_or_new,
                 run_id,
                 batch_size=self.gis_batch_size,
                 existing_sources=existing_rows,
             )
+            result.items_updated -= persist_stats.semantic_skipped
+            result.items_unchanged += persist_stats.semantic_skipped
             self._add_timing(result, "persist_ms", persist_started)
             commit_started = time.perf_counter()
             session.commit()
@@ -860,10 +870,9 @@ class NationwideIngestionService:
                     row.archive_reason = "missing_after_two_complete_syncs"
                     self._reconcile_processed_after_source_archive(session, row, row.archived_at)
                     archived += 1
-                if index % batch_size == 0:
-                    session.commit()
-                    if progress_callback is not None:
-                        progress_callback(index, total)
+                if index % batch_size == 0 and progress_callback is not None:
+                    progress_callback(index, total)
+            # One commit keeps missing-lot reconciliation fail-closed.
             session.commit()
             if progress_callback is not None:
                 progress_callback(total, total)
