@@ -12,7 +12,6 @@ value of updated lots or that all newly geocoded lots entered public map tiles.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections import Counter
 from datetime import datetime
