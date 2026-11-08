@@ -1145,7 +1145,7 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
-        trigger_type=f"scheduled_{mode}",
+        trigger_type="scheduled_incr" if mode == "incremental" else f"scheduled_{mode}",
         total_sources=len(specs),
         retry_if_busy=mode in {"full", "incremental"},
     )
