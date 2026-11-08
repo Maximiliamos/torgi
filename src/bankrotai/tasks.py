@@ -1226,7 +1226,15 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
     if mode not in {"fast", "full", "incremental"} and not mode.startswith("source:"):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
     is_source_only = mode.startswith("source:")
-    specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else _unpaused_source_specs(default_source_specs())
+    if is_source_only:
+        specs = source_full_specs(mode.removeprefix("source:"))
+    elif mode in {"full", "incremental"}:
+        available = _unpaused_source_specs(default_source_specs())
+        specs = scheduled_ingestion_preflight.select_seven_source_specs(available)
+        if len(specs) != len(scheduled_ingestion_preflight.SCHEDULED_SOURCE_IDS):
+            raise QueueUnavailableError("All seven production sources must be available")
+    else:
+        specs = _unpaused_source_specs(default_source_specs())
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
