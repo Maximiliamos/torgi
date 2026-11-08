@@ -4,7 +4,6 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, NoReturn
 
@@ -31,11 +30,11 @@ from bankrotai.services.ingestion import (
     SyncAlreadyRunningError,
     default_source_specs,
     fast_source_specs,
-    incremental_source_specs,
     run_nationwide_sync,
     source_full_specs,
-    source_retry_specs,
 )
+from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
 from bankrotai.scrapers import (
     TorgiGovClient,
     TorgiGovSearchFilters,
@@ -743,36 +742,6 @@ def _unpaused_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
     )
 
 
-def _scheduled_source_preflight(specs: tuple[Any, ...]) -> dict[str, Any]:
-    """Bounded parallel reachability gate before a heavy scheduled catalogue walk."""
-    from bankrotai.services.source_resilience import probe_source_endpoint
-
-    source_ids = tuple(dict.fromkeys(str(spec.source_id) for spec in specs))
-    results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(source_ids)))) as executor:
-        futures = {
-            executor.submit(probe_source_endpoint, source_id, timeout_seconds=5.0): source_id
-            for source_id in source_ids
-        }
-        for future in as_completed(futures):
-            source_id = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                result = {"success": False, "source_system": source_id, "error": str(exc)[:500]}
-            results[source_id] = result
-    failed = sorted(
-        source_id for source_id, result in results.items()
-        if not bool(result.get("success"))
-    )
-    return {
-        "success": not failed,
-        "checked": len(source_ids),
-        "failed_sources": failed,
-        "results": results,
-    }
-
-
 def _failed_source_systems(result: dict[str, Any]) -> tuple[str, ...]:
     """Return each failed source once, preserving the ingestion result order."""
     failed: list[str] = []
@@ -991,14 +960,14 @@ def nationwide_lot_sync_task(self, run_id: str, mode: str = "full") -> dict:
         elif mode == "full":
             specs = _unpaused_source_specs(default_source_specs())
         elif mode == "incremental":
-            specs = _unpaused_source_specs(incremental_source_specs())
+            specs = _unpaused_source_specs(incremental_specs(default_source_specs()))
         elif mode.startswith("source-fast:"):
             source_system = mode.removeprefix("source-fast:")
             specs = tuple(spec for spec in _fast_nationwide_source_specs() if spec.source_id == source_system)
             if not specs:
                 raise ValueError(f"Unsupported source-only fast sync: {source_system}")
         elif mode.startswith("source-incremental:"):
-            specs = source_retry_specs(mode.removeprefix("source-incremental:"))
+            specs = retry_specs(default_source_specs(), mode.removeprefix("source-incremental:"))
         elif mode.startswith("source:"):
             specs = source_full_specs(mode.removeprefix("source:"))
         else:
@@ -1131,10 +1100,10 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     if _global_source_network_blocked():
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
     specs = _unpaused_source_specs(
-        incremental_source_specs() if mode == "incremental" else default_source_specs()
+        incremental_specs(default_source_specs()) if mode == "incremental" else default_source_specs()
     )
     if mode in {"full", "incremental"}:
-        preflight = _scheduled_source_preflight(specs)
+        preflight = run_scheduled_source_preflight(specs)
         if not preflight["success"]:
             return {
                 "status": "skipped",
@@ -1176,7 +1145,7 @@ def automatic_nationwide_source_retry_task(self, source_system: str, source_mode
         total_sources = 1
     elif source_mode == "incremental":
         mode = f"source-incremental:{source_system}"
-        total_sources = len(source_retry_specs(source_system))
+        total_sources = len(retry_specs(default_source_specs(), source_system))
     elif source_mode == "full":
         mode = f"source:{source_system}"
         total_sources = len(source_full_specs(source_system))
