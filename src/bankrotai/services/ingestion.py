@@ -777,18 +777,18 @@ class NationwideIngestionService:
                     result.items_unchanged += 1
                     continue
                 changed_or_new.append(normalized)
-                if existed:
-                    result.items_updated += 1
-                else:
-                    result.items_inserted += 1
+                result.items_updated += int(existed)
+                result.items_inserted += int(not existed)
             persist_started = time.perf_counter()
-            persist_changed_lots_batch(
+            persist_stats = persist_changed_lots_batch(
                 session,
                 changed_or_new,
                 run_id,
                 batch_size=self.gis_batch_size,
                 existing_sources=existing_rows,
             )
+            result.items_updated -= persist_stats.semantic_skipped
+            result.items_unchanged += persist_stats.semantic_skipped
             self._add_timing(result, "persist_ms", persist_started)
             commit_started = time.perf_counter()
             session.commit()
