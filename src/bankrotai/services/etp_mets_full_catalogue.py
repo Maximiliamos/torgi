@@ -3,8 +3,8 @@
 The scanner proves only the exact eight-category, announced/application-intake
 filter encoded by :data:`APARTMENTS_URL`.  It never writes PostgreSQL, performs
 missing-lot reconciliation, archives records, geocodes lots or publishes maps.
-The user's selected category set includes standalone land (11) but excludes
-agricultural real estate (40) and other property classes; a successful result
+The user's selected category set excludes standalone land (11), agricultural real
+estate (40), and other out-of-scope classes; a successful result
 is not a claim of complete source inventory.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ SELECTED_SOURCE_STATUSES = (
     "Объявленные торги",
     "Торги в стадии приема заявок",
 )
-OMITTED_PROPERTY_CATEGORY_IDS = ("40",)
+OMITTED_PROPERTY_CATEGORY_IDS = ("11", "40")
 _REGISTRATION = re.compile(
     r"(?P<trade>\d{4,9})-МЭТС\s*,\s*Лот\s*№\s*(?P<lot>\d{1,5})"
 )
