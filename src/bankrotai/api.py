@@ -49,6 +49,7 @@ from bankrotai.db import (
     MapTile,
     AppSetting,
     LotNote,
+    LotIssueReport,
     SavedMaxBidScenario,
     SavedSearch,
     SourceHealthState,
@@ -212,6 +213,7 @@ from bankrotai.api_models import (
     ParticipationChecklistRequest as ParticipationChecklistRequest,
     LoginRequest as LoginRequest,
     NoteRequest as NoteRequest,
+    LotIssueReportRequest as LotIssueReportRequest,
     SavedSearchRequest as SavedSearchRequest,
     DuplicateMergeRequest as DuplicateMergeRequest,
     DuplicateSplitRequest as DuplicateSplitRequest,
@@ -448,7 +450,7 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             return (
                 len(parts) == 5
                 and parts[3].isdigit()
-                and parts[4] in {"max-bid", "watchlist", "notes", "merge", "split", "documents-compare"}
+                and parts[4] in {"max-bid", "watchlist", "notes", "report-error", "merge", "split", "documents-compare"}
             )
         return False
     if method == "PUT" and path.startswith("/api/lots/"):
@@ -1606,6 +1608,41 @@ def create_lot_note(lot_id: int, request: NoteRequest, actor: AuthenticatedUser 
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         log_action(session, str(actor.id), "add_note", "lot", str(lot_id), {"note_id": note.id})
         return {"id": note.id, "lot_id": lot_id, "content": note.content, "created_at": note.created_at}
+
+
+@app.post("/api/lots/{lot_id}/report-error", status_code=201)
+def report_lot_error(
+    lot_id: int,
+    request: LotIssueReportRequest,
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Описание ошибки не может быть пустым")
+    with session_scope() as session:
+        if session.get(ProcessedLot, lot_id) is None:
+            raise HTTPException(status_code=404, detail="Lot not found")
+        report = LotIssueReport(
+            lot_id=lot_id,
+            user_id=str(actor.id),
+            content=content,
+        )
+        session.add(report)
+        session.flush()
+        log_action(
+            session,
+            str(actor.id),
+            "report_lot_error",
+            "lot",
+            str(lot_id),
+            {"report_id": report.id},
+        )
+        return {
+            "id": report.id,
+            "lot_id": lot_id,
+            "content": report.content,
+            "created_at": report.created_at,
+        }
 
 
 @app.put("/api/lots/{lot_id}/review-status")
