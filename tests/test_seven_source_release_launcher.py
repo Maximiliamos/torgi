@@ -19,6 +19,10 @@ def test_launch_defaults_to_dry_run_and_checks_current_main_sha():
     assert "if (-not $Execute)" in SCRIPT
     assert "DRY RUN ONLY; no workflows were dispatched." in SCRIPT
     assert "Assert-ExactMain" in SCRIPT
+    assert "Assert-LocalRevision" in SCRIPT
+    assert "git -C $root rev-parse HEAD" in SCRIPT
+    assert "git -C $root status --porcelain" in SCRIPT
+    assert "Local operator checkout is not the exact released main SHA" in SCRIPT
     assert "repos/$repo/branches/main" in SCRIPT
     assert "$current -cne $ExpectedSha" in SCRIPT
     assert "Test-Path" not in SCRIPT or "GH_TOKEN" not in SCRIPT
