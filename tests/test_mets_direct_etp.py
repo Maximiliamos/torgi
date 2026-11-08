@@ -259,3 +259,113 @@ def test_mets_provider_throttling_is_not_retried(monkeypatch):
     with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
         MetsPublicPilot(session=session)._get(URL)
     assert session.calls == 1
+
+
+
+def test_official_meetings_detail_domain_keeps_exact_trade_lot_identity():
+    mirror_url = "https://meetings.m-ets.ru/240512-1"
+    lot = parse_mets_lot(DETAIL, mirror_url)
+    assert lot.external_id == "240512-1"
+    assert lot.lot_url == URL
+    assert lot.source_system == "m-ets.ru"
+    assert discover_lot_urls(
+        '<a href="https://meetings.m-ets.ru/240512-1">official mirror</a>'
+    ) == [URL]
+
+
+def test_single_verified_official_detail_redirect_is_allowed(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class ExactMirrorSession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, *, timeout, allow_redirects, headers):
+            assert allow_redirects is False
+            self.calls.append(url)
+            if url == URL:
+                response = Response("", status_code=302)
+                response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
+                return response
+            assert url == "https://meetings.m-ets.ru/240512-1"
+            return Response(DETAIL)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = ExactMirrorSession()
+    starts = []
+    pilot = MetsPublicPilot(session=session)
+    html = pilot._get(URL, before_request=starts.append)
+    lot = parse_mets_lot(html, URL)
+    assert lot.external_id == "240512-1"
+    assert lot.start_price == 22_500_000
+    assert session.calls == [URL, "https://meetings.m-ets.ru/240512-1"]
+    assert starts == session.calls  # Both HTTP attempts pass rate limiter.
+
+
+@pytest.mark.parametrize("unsafe_location", [
+    "http://meetings.m-ets.ru/240512-1",  # TLS downgrade
+    "https://evil.example/240512-1",  # arbitrary host
+    "https://meetings.m-ets.ru/240512-2",  # different lot
+    "https://meetings.m-ets.ru/240512-1?next=1",  # query
+    "https://meetings.m-ets.ru@evil.example/240512-1",  # userinfo trick
+    "/240512-1",  # not an independently verified absolute HTTPS location
+])
+def test_detail_redirect_must_not_cross_identity_or_host(monkeypatch, unsafe_location):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class RedirectSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = Response("", status_code=302)
+            response.headers["Location"] = unsafe_location
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = RedirectSession()
+    with pytest.raises(MetsEvidenceError, match="Redirect"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1
+
+
+def test_second_detail_redirect_from_mirror_is_always_rejected(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class MultiHopSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = Response("", status_code=302)
+            response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = MultiHopSession()
+    with pytest.raises(MetsEvidenceError, match="no second hop"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 2
+
+
+def test_mirror_http_429_is_not_retried(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class MirrorThrottleSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = Response("", status_code=302 if self.calls == 1 else 429)
+            if self.calls == 1:
+                response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = MirrorThrottleSession()
+    with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 2  # no retry of the 429 response
