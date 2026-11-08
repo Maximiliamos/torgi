@@ -160,3 +160,80 @@ async def restore_safe_checkpoint(
         result.phase = "resumed"
         return cursor
     return None
+
+
+async def prepare_source(
+    session_factory: Any,
+    run_id: str,
+    result: Any,
+    spec: Any,
+    connector: Any,
+) -> str | None:
+    result.filter_signature = filter_signature(spec)
+    configure_catalogue_selector(session_factory, connector, spec)
+    if not spec.allow_checkpoint_resume:
+        return None
+    return await restore_safe_checkpoint(
+        session_factory, run_id, result, spec, connector,
+    )
+
+
+def record_page(
+    session_factory: Any,
+    run_id: str,
+    result: Any,
+    connector: Any,
+    metadata: dict[str, Any],
+    next_cursor: str | None,
+) -> None:
+    result.catalogue_candidates += int(metadata.get("catalogue_candidates") or 0)
+    result.detail_attempts += int(metadata.get("detail_attempts") or 0)
+    result.detail_requests_saved += int(metadata.get("detail_requests_saved") or 0)
+    result.retry_count += int(metadata.get("retry_count") or 0)
+    apply_catalogue_reuse(session_factory, run_id, result, metadata)
+    if result.progress_current is not None and result.progress_total:
+        completed = max(1, result.progress_current)
+        remaining = max(0, result.progress_total - result.progress_current)
+        result.eta_seconds = result.elapsed_seconds / completed * remaining
+    result.resume_cursor = next_cursor
+    exporter = getattr(connector, "export_checkpoint", None)
+    if callable(exporter):
+        checkpoint = exporter()
+        result.connector_checkpoint = (
+            checkpoint if isinstance(checkpoint, dict) else None
+        )
+
+
+def checkpoint_fields(result: Any) -> dict[str, Any]:
+    return {
+        "rows_per_second": (
+            round(result.items_seen / result.elapsed_seconds, 3)
+            if result.elapsed_seconds else 0
+        ),
+        "eta_seconds": (
+            round(result.eta_seconds, 1)
+            if result.eta_seconds is not None else None
+        ),
+        "catalogue_candidates": result.catalogue_candidates,
+        "detail_attempts": result.detail_attempts,
+        "detail_requests_saved": result.detail_requests_saved,
+        "retry_count": result.retry_count,
+        "filter_signature": result.filter_signature,
+        "resume_cursor": result.resume_cursor,
+        "connector_checkpoint": result.connector_checkpoint,
+        "resumed_from_run_id": result.resumed_from_run_id,
+    }
+
+
+def result_fields(result: Any) -> dict[str, Any]:
+    return {
+        "catalogue_candidates": result.catalogue_candidates,
+        "detail_attempts": result.detail_attempts,
+        "detail_requests_saved": result.detail_requests_saved,
+        "retry_count": result.retry_count,
+        "eta_seconds": (
+            round(result.eta_seconds, 1)
+            if result.eta_seconds is not None else None
+        ),
+        "resumed_from_run_id": result.resumed_from_run_id,
+    }
