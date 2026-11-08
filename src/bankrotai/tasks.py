@@ -1229,10 +1229,9 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
     if is_source_only:
         specs = source_full_specs(mode.removeprefix("source:"))
     elif mode in {"full", "incremental"}:
-        available = _unpaused_source_specs(default_source_specs())
-        specs = scheduled_ingestion_preflight.select_seven_source_specs(available)
-        if len(specs) != len(scheduled_ingestion_preflight.SCHEDULED_SOURCE_IDS):
-            raise QueueUnavailableError("All seven production sources must be available")
+        specs = scheduled_ingestion_preflight.require_seven_source_specs(
+            _unpaused_source_specs(default_source_specs())
+        )
     else:
         specs = _unpaused_source_specs(default_source_specs())
     if not broker_is_available():
