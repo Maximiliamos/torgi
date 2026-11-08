@@ -364,6 +364,18 @@ def test_automatic_full_refresh_retries_an_active_lease(monkeypatch) -> None:
         raise Retry()
 
     monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    # Exercise the active-lease retry after the new seven-source preflight gate.
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(
+        tasks, "scheduled_specs",
+        lambda _mode, _unpaused: tuple(
+            SimpleNamespace(source_id=x) for x in tasks.SEVEN_SOURCE_IDS
+        ),
+    )
+    monkeypatch.setattr(
+        tasks, "run_scheduled_source_preflight",
+        lambda _specs: {"success": True},
+    )
     monkeypatch.setattr(tasks.automatic_nationwide_lot_refresh_task, "retry", retry)
 
     with pytest.raises(Retry):
@@ -547,7 +559,8 @@ def test_recovery_probe_queues_safe_fast_retry(monkeypatch) -> None:
 
 def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> None:
     captured: dict = {}
-    bounded_spec = next(spec for spec in tasks.fast_source_specs(gis_publish_date_from="2026-09-25") if spec.source_id == "bidexpert.ru")
+    from bankrotai.services.ingestion import fast_source_specs
+    bounded_spec = next(spec for spec in fast_source_specs(gis_publish_date_from="2026-09-25") if spec.source_id == "bidexpert.ru")
 
     class FakeService:
         def __init__(self, _session_factory):
@@ -557,7 +570,10 @@ def test_targeted_fast_source_retry_cannot_reconcile_or_archive(monkeypatch) -> 
             return "fast-retry-run"
 
     monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
-    monkeypatch.setattr(tasks, "_fast_nationwide_source_specs", lambda: (bounded_spec,))
+    monkeypatch.setattr(
+        tasks, "resolve_nationwide_specs",
+        lambda mode, _unpaused: (bounded_spec,) if mode == "source-fast:bidexpert.ru" else (),
+    )
     monkeypatch.setattr(
         tasks,
         "run_nationwide_sync",
