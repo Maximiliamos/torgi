@@ -681,8 +681,15 @@ jobs:
                   raise SystemExit("Active nationwide ingestion; refuse worker replacement")
           print("NATIONWIDE_INGESTION_IDLE")
           '@
-          $output = @($probe | docker exec -i bankrotai-home-ingestion-worker python - 2>&1)
-          if ($LASTEXITCODE -ne 0 -or -not ($output -contains 'NATIONWIDE_INGESTION_IDLE')) {
+          $previousPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = @($probe | docker exec -i bankrotai-home-ingestion-worker python - 2>&1)
+            $status = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousPreference
+          }
+          if ($status -ne 0 -or -not ($output -contains 'NATIONWIDE_INGESTION_IDLE')) {
             $output | ForEach-Object { Write-Output $_ }
             throw 'Production redeploy blocked until durable nationwide ingestion is terminal'
           }
