@@ -141,12 +141,17 @@ class MetsSourceCrawler:
             if maximum_total - minimum_total > maximum_drift:
                 raise MetsCatalogueScanError("M-ETS reported total drift exceeds safe live-catalogue bound")
             next_page = parsed.get("next_page")
+            expected_last = math.ceil(total / first_size)
+            if next_page is None and page_number < expected_last:
+                next_page = page_number + 1
+                parsed = {**parsed, "next_page": next_page}
             if next_page is not None and next_page != page_number + 1:
                 raise MetsCatalogueScanError("M-ETS paginator is not sequential")
             if next_page is not None and len(identities) != first_size:
                 raise MetsCatalogueScanError("M-ETS page size contradicts reported total")
-            if next_page is None and not 1 <= len(identities) <= first_size:
-                raise MetsCatalogueScanError("M-ETS terminal page size is invalid")
+            if next_page is None:
+                if page_number != expected_last or not 1 <= len(identities) <= first_size:
+                    raise MetsCatalogueScanError("M-ETS terminal page contradicts reported total")
             overlap = seen.intersection(identities)
             if len(overlap) == len(identities):
                 raise MetsCatalogueScanError("M-ETS paginator repeated a complete page")
@@ -156,6 +161,10 @@ class MetsSourceCrawler:
             seen.update(identities)
             prepared[page_number] = parsed
             if next_page is None:
+                if len(seen) < max(1, minimum_total - maximum_drift):
+                    raise MetsCatalogueScanError(
+                        "M-ETS catalogue ended below reported unique coverage"
+                    )
                 self._prepared_pages = prepared
                 self._reset_catalogue_state()
                 return {
