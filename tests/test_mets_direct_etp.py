@@ -5,6 +5,7 @@ import pytest
 
 from bankrotai.connectors.registry.mets_public import (
     APARTMENTS_URL,
+    DETAIL_MIRROR,
     MetsEvidenceError,
     MetsPublicPilot,
     discover_lot_urls,
@@ -12,6 +13,7 @@ from bankrotai.connectors.registry.mets_public import (
 )
 
 URL = "https://m-ets.ru/240512-1"
+MIRROR_URL = f"{DETAIL_MIRROR}/240512-1"
 CATALOGUE = """
 <html><a href="/240512-1">Здание в Липецке</a>
 <a href="https://m-ets.ru/240512-1">Repeat</a>
@@ -113,9 +115,9 @@ class SessionStub:
             return Response("", status_code=302)
         if url == APARTMENTS_URL:
             return Response(CATALOGUE)
-        if url == URL:
+        if url == MIRROR_URL:
             return Response(DETAIL)
-        if url == "https://m-ets.ru/238380-1":
+        if url == f"{DETAIL_MIRROR}/238380-1":
             return Response("<html><h2>Broken card</h2></html>")
         raise AssertionError(f"Unexpected requested URL: {url}")
 
@@ -133,7 +135,7 @@ def test_pilot_is_bounded_and_never_claims_complete_coverage(monkeypatch):
     assert result["safe_for_archival"] is False
     assert result["written_to_database"] is False
     assert session.urls == [
-        APARTMENTS_URL, URL, "https://m-ets.ru/238380-1",
+        APARTMENTS_URL, MIRROR_URL, f"{DETAIL_MIRROR}/238380-1",
     ]
 
 
@@ -273,33 +275,29 @@ def test_official_meetings_detail_domain_keeps_exact_trade_lot_identity():
     ) == [URL]
 
 
-def test_single_verified_official_detail_redirect_is_allowed(monkeypatch):
+def test_canonical_detail_fetch_uses_official_mirror_without_legacy_403(monkeypatch):
     import bankrotai.connectors.registry.mets_public as mod
 
-    class ExactMirrorSession:
+    class MirrorOnlySession:
         def __init__(self):
             self.calls = []
 
         def get(self, url, *, timeout, allow_redirects, headers):
             assert allow_redirects is False
             self.calls.append(url)
-            if url == URL:
-                response = Response("", status_code=302)
-                response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
-                return response
-            assert url == "https://meetings.m-ets.ru/240512-1"
+            assert url == MIRROR_URL
             return Response(DETAIL)
 
     monkeypatch.setattr(mod.time, "sleep", lambda _: None)
-    session = ExactMirrorSession()
+    session = MirrorOnlySession()
     starts = []
     pilot = MetsPublicPilot(session=session)
     html = pilot._get(URL, before_request=starts.append)
     lot = parse_mets_lot(html, URL)
     assert lot.external_id == "240512-1"
     assert lot.start_price == 22_500_000
-    assert session.calls == [URL, "https://meetings.m-ets.ru/240512-1"]
-    assert starts == session.calls  # Both HTTP attempts pass rate limiter.
+    assert session.calls == [MIRROR_URL]
+    assert starts == session.calls
 
 
 @pytest.mark.parametrize("unsafe_location", [
@@ -310,7 +308,7 @@ def test_single_verified_official_detail_redirect_is_allowed(monkeypatch):
     "https://meetings.m-ets.ru@evil.example/240512-1",  # userinfo trick
     "/240512-1",  # not an independently verified absolute HTTPS location
 ])
-def test_detail_redirect_must_not_cross_identity_or_host(monkeypatch, unsafe_location):
+def test_any_redirect_from_official_detail_mirror_is_rejected(monkeypatch, unsafe_location):
     import bankrotai.connectors.registry.mets_public as mod
 
     class RedirectSession:
@@ -330,7 +328,7 @@ def test_detail_redirect_must_not_cross_identity_or_host(monkeypatch, unsafe_loc
     assert session.calls == 1
 
 
-def test_second_detail_redirect_from_mirror_is_always_rejected(monkeypatch):
+def test_mirror_does_not_follow_even_self_redirect(monkeypatch):
     import bankrotai.connectors.registry.mets_public as mod
 
     class MultiHopSession:
@@ -345,9 +343,9 @@ def test_second_detail_redirect_from_mirror_is_always_rejected(monkeypatch):
 
     monkeypatch.setattr(mod.time, "sleep", lambda _: None)
     session = MultiHopSession()
-    with pytest.raises(MetsEvidenceError, match="no second hop"):
+    with pytest.raises(MetsEvidenceError, match="Redirect"):
         MetsPublicPilot(session=session)._get(URL)
-    assert session.calls == 2
+    assert session.calls == 1
 
 
 def test_mirror_http_429_is_not_retried(monkeypatch):
@@ -359,13 +357,11 @@ def test_mirror_http_429_is_not_retried(monkeypatch):
 
         def get(self, url, **kwargs):
             self.calls += 1
-            response = Response("", status_code=302 if self.calls == 1 else 429)
-            if self.calls == 1:
-                response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
-            return response
+            assert url == MIRROR_URL
+            return Response("", status_code=429)
 
     monkeypatch.setattr(mod.time, "sleep", lambda _: None)
     session = MirrorThrottleSession()
     with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
         MetsPublicPilot(session=session)._get(URL)
-    assert session.calls == 2  # no retry of the 429 response
+    assert session.calls == 1  # never re-request the 429 response
