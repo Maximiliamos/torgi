@@ -1,12 +1,22 @@
 """Read-only public-origin diagnostic never forwards HTML, PII or credentials."""
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 import requests
 
-from scripts.diagnose_mets_public_origins import PUBLIC_ID, probe_origin
+_spec = importlib.util.spec_from_file_location(
+    "diagnose_mets_public_origins",
+    Path(__file__).resolve().parents[1] / "scripts" / "diagnose_mets_public_origins.py",
+)
+assert _spec is not None and _spec.loader is not None
+_diagnostic = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_diagnostic)
+PUBLIC_ID = _diagnostic.PUBLIC_ID
+probe_origin = _diagnostic.probe_origin
 
 
 class Response:
