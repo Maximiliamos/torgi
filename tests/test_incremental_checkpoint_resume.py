@@ -69,7 +69,7 @@ def _previous_source(
         session.add(
             LotSyncRun(
                 id="previous-run",
-                trigger_type="scheduled_incremental",
+                trigger_type="scheduled_incr",
                 status="partial",
                 total_sources=7,
                 started_at=now - timedelta(minutes=20),
