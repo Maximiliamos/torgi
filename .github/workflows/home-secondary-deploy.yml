@@ -642,14 +642,43 @@ jobs:
           # Query durable active states before migration or worker replacement;
           # stale active leases require explicit recovery, not forced restart.
           $probe = @'
+          import json
           from sqlalchemy import select
-          from bankrotai.db import LotSyncRun, SessionLocal
+          from bankrotai.db import LotSyncRun, LotSyncSourceRun, SessionLocal
           with SessionLocal() as session:
               active = list(session.scalars(
                   select(LotSyncRun.id).where(LotSyncRun.status.in_(("queued", "running")))
               ))
-          if active:
-              raise SystemExit("Active nationwide ingestion; refuse worker replacement")
+              if active:
+                  payload = []
+                  for run_id in active:
+                      run = session.get(LotSyncRun, run_id)
+                      sources = list(session.scalars(
+                          select(LotSyncSourceRun)
+                          .where(LotSyncSourceRun.sync_run_id == run_id)
+                          .order_by(LotSyncSourceRun.id)
+                      ))
+                      payload.append({
+                          "run_id": run_id,
+                          "status": run.status if run else "unknown",
+                          "started_at": str(run.started_at) if run and run.started_at else None,
+                          "heartbeat_at": str(run.heartbeat_at) if run and run.heartbeat_at else None,
+                          "lease_expires_at": str(run.lease_expires_at) if run and run.lease_expires_at else None,
+                          "sources": [{
+                              "source_system": row.source_system,
+                              "status": row.status,
+                              "complete_source_run": row.complete_source_run,
+                              "pages_scanned": row.pages_scanned,
+                              "items_seen": row.items_seen,
+                              "items_inserted": row.items_inserted,
+                              "items_updated": row.items_updated,
+                              "items_unchanged": row.items_unchanged,
+                              "items_failed": row.items_failed,
+                              "progress_at": str(row.progress_at) if row.progress_at else None,
+                          } for row in sources],
+                      })
+                  print("ACTIVE_NATIONWIDE_INGESTION=" + json.dumps(payload, ensure_ascii=False))
+                  raise SystemExit("Active nationwide ingestion; refuse worker replacement")
           print("NATIONWIDE_INGESTION_IDLE")
           '@
           $output = @($probe | docker exec -i bankrotai-home-ingestion-worker python - 2>&1)
