@@ -254,6 +254,8 @@ class CdtrfSourceCrawler:
                 raise CdtrfCatalogueScanError(
                     "CDTRF unexpected detail validation failure"
                 ) from exc
+            if lot.category == "land":
+                return None, "standalone_land_out_of_scope"
             if not (_property_ready(lot) or (
                 lot.auction_status == "closed"
                 and lot.cadastral_number
@@ -280,7 +282,7 @@ class CdtrfSourceCrawler:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
                     accepted.append(lot)
-        inspected = len(data["property_candidates"])
+        inspected = len(detail_candidates)
         # Content-level exclusions are normal within CDTRF's broad real-estate
         # categories (for example a movable asset mixed into a trade, or a
         # card without enough property evidence).  Only structural detail
@@ -312,7 +314,7 @@ class CdtrfSourceCrawler:
                 "progress_current": page_no,
                 "progress_total": pages_total,
                 "catalogue_lots": data["observed_rows"],
-                "property_hint_candidates": inspected,
+                "property_hint_candidates": len(candidates),
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
                 "catalogue_candidates": len(candidates),
