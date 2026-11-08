@@ -318,6 +318,9 @@ class MetsSourceCrawler:
                 "detail_attempts": len(detail_candidates),
                 "detail_skipped_unchanged": len(reused_ids),
                 "reused_existing_ids": reused_ids,
+                "reused_catalogue_fingerprints": {
+                    item[0]: self._catalogue_fingerprint(item) for item in reused
+                },
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
                 "requested_category_group": "mets_property_nonreconciling",
