@@ -119,18 +119,27 @@ def apply_page_metadata(result: Any, metadata: dict[str, Any], next_cursor: str 
     result.detail_attempts += int(metadata.get("detail_attempts") or 0)
     result.detail_skipped_unchanged += int(metadata.get("detail_skipped_unchanged") or 0)
     result.catalogue_observations += max(0, int(metadata.get("catalogue_lots") or 0))
-    result.property_hint_candidates += max(0, int(
-        metadata.get("property_hint_candidates") or metadata.get("catalogue_lots") or 0
-    ))
+    property_candidates = (
+        metadata["property_hint_candidates"]
+        if "property_hint_candidates" in metadata
+        else metadata.get("catalogue_lots")
+    )
+    result.property_hint_candidates += max(0, int(property_candidates or 0))
     result.verified_property_lots += max(0, int(metadata.get("verified_property_lots") or 0))
     result.details_rejected += max(0, int(metadata.get("details_rejected") or 0))
     # Persist only bounded machine-readable rejection categories, never raw
     # provider HTML/text or private lot metadata into the health checkpoint.
-    for reason, count in (metadata.get("rejection_codes") or {}).items():
-        if isinstance(reason, str) and reason.isascii() and 1 <= len(reason) <= 64:
-            if all(c.isalnum() or c == "_" for c in reason):
+    rejection_codes = metadata.get("rejection_codes")
+    if isinstance(rejection_codes, dict):
+        for reason, count in rejection_codes.items():
+            if (
+                isinstance(reason, str)
+                and reason.isascii() and 1 <= len(reason) <= 64
+                and all(c.isalnum() or c == "_" for c in reason)
+                and type(count) is int and count >= 0
+            ):
                 result.detail_rejection_reasons[reason] = (
-                    result.detail_rejection_reasons.get(reason, 0) + max(0, int(count))
+                    result.detail_rejection_reasons.get(reason, 0) + count
                 )
     result.retry_count += int(metadata.get("retry_count") or 0)
     result.resume_cursor = next_cursor
