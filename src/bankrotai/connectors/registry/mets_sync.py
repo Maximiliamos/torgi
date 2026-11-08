@@ -7,7 +7,9 @@ import math
 import re
 import time
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from decimal import Decimal
 
@@ -18,6 +20,7 @@ from bankrotai.connectors.registry.etp_incremental import _property_ready
 from bankrotai.connectors.registry.mets_public import (
     BASE, MetsEvidenceError, MetsPublicPilot, parse_mets_lot,
 )
+from bankrotai.services.catalogue_detail_freshness import mark_verified_detail
 from bankrotai.services.etp_mets_full_catalogue import (
     MAX_SCAN_PAGES, MetsCatalogueScanError, _parse_page, _request_page,
 )
@@ -34,6 +37,7 @@ class MetsSyncFilters:
     detail_delay_seconds: float = 0.5
     detail_concurrency: int = 2
     detail_requests_per_second: float | None = None
+    detail_max_age_hours: int = 168
 
     def __post_init__(self) -> None:
         if type(self.max_pages) is not int or not 1 <= self.max_pages <= MAX_SCAN_PAGES:
@@ -44,13 +48,20 @@ class MetsSyncFilters:
             raise ValueError("Unsafe M-ETS detail_concurrency")
         if self.detail_requests_per_second is not None and not 0 < self.detail_requests_per_second <= 2:
             raise ValueError("M-ETS detail_requests_per_second must be 0..2")
+        if type(self.detail_max_age_hours) is not int or not 1 <= self.detail_max_age_hours <= 720:
+            raise ValueError("M-ETS detail_max_age_hours must be 1..720")
 
 
 class MetsSourceCrawler:
     """Stateful catalogue/verified-detail walk for one ingestion run."""
 
-    def __init__(self, pilot: MetsPublicPilot) -> None:
+    def __init__(
+        self,
+        pilot: MetsPublicPilot,
+        catalogue_selector: Callable[[list[dict[str, Any]]], dict[str, dict[str, Any]]] | None = None,
+    ) -> None:
         self.pilot = pilot
+        self.catalogue_selector = catalogue_selector
         self._seen: set[str] = set()
         self._total: int | None = None
         self._minimum_total: int | None = None
@@ -126,6 +137,35 @@ class MetsSourceCrawler:
         novel_observations = [item for item in observations if item[0] not in self._seen]
         self._seen.update(item[0] for item in novel_observations)
 
+        catalogue_candidates = [
+            {
+                "external_id": external_id,
+                "catalogue_price": catalogue_price,
+                "catalogue_status": catalogue_status,
+                "title": title,
+            }
+            for external_id, catalogue_price, catalogue_status, title in novel_observations
+        ]
+        decisions = (
+            self.catalogue_selector(catalogue_candidates)
+            if self.catalogue_selector is not None
+            else {}
+        )
+        skipped_catalogue: list[dict[str, str]] = []
+        verify_observations: list[tuple[tuple[Any, ...], str | None]] = []
+        for item in novel_observations:
+            external_id = str(item[0])
+            decision = decisions.get(external_id, {})
+            fingerprint = decision.get("fingerprint")
+            if decision.get("skip_detail") and isinstance(fingerprint, str):
+                skipped_catalogue.append(
+                    {"external_id": external_id, "fingerprint": fingerprint}
+                )
+            else:
+                verify_observations.append(
+                    (item, fingerprint if isinstance(fingerprint, str) else None)
+                )
+
         accepted = []
         rejected: dict[str, int] = {}
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
@@ -139,7 +179,8 @@ class MetsSourceCrawler:
             limiter=self._detail_limiter,
         )
 
-        def verify(item):
+        def verify(entry):
+            item, fingerprint = entry
             external_id, catalogue_price, catalogue_status, _title = item
             url = f"{BASE}/{external_id}"
             try:
@@ -207,12 +248,14 @@ class MetsSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
             }
+            if fingerprint is not None:
+                mark_verified_detail(lot, fingerprint)
             return lot, None
 
         # map preserves catalogue ordering and propagates any fatal failure.
         # Only details overlap; the next catalogue page is never fetched early.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, novel_observations):
+            for lot, code in workers.map_ordered(executor, verify, verify_observations):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
@@ -220,7 +263,7 @@ class MetsSourceCrawler:
 
         # Do not certify an apparently empty property catalogue when every
         # independent detail failed its evidence checks.
-        if len(novel_observations) >= 5 and not accepted:
+        if len(verify_observations) >= 5 and not accepted:
             raise MetsCatalogueScanError(
                 "M-ETS systemic detail verification failure: zero verified "
                 "property lots in a selected catalogue page"
@@ -247,7 +290,10 @@ class MetsSourceCrawler:
                 "cross_page_overlap": self._overlap_count,
                 "verified_property_lots": len(accepted),
                 "details_rejected": sum(rejected.values()),
-                "detail_attempts": len(novel_observations),
+                "catalogue_candidates": len(novel_observations),
+                "detail_attempts": len(verify_observations),
+                "detail_requests_saved": len(skipped_catalogue),
+                "catalogue_unchanged": skipped_catalogue,
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
                 "requested_category_group": "mets_property_nonreconciling",
@@ -257,6 +303,62 @@ class MetsSourceCrawler:
                 "reconcile_missing": False,
             },
         )
+
+    def export_checkpoint(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "source_system": "m-ets.ru",
+            "expected_page": self._expected_page,
+            "prior_digest": self._prior_digest,
+            "seen_ids": sorted(self._seen),
+            "total": self._total,
+            "minimum_total": self._minimum_total,
+            "maximum_total": self._maximum_total,
+            "page_size": self._page_size,
+            "overlap_count": self._overlap_count,
+        }
+
+    def _restore_checkpoint(self, filters: MetsSyncFilters, state: dict[str, Any]) -> bool:
+        if state.get("version") != 1 or state.get("source_system") != "m-ets.ru":
+            return False
+        expected_page = state.get("expected_page")
+        prior_digest = state.get("prior_digest")
+        seen_ids = state.get("seen_ids")
+        if (
+            type(expected_page) is not int
+            or expected_page <= 1
+            or expected_page > filters.max_pages
+            or not isinstance(prior_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", prior_digest)
+            or not isinstance(seen_ids, list)
+            or any(not isinstance(value, str) for value in seen_ids)
+        ):
+            return False
+        previous_page = expected_page - 1
+        response = _request_page(self.pilot.session, previous_page, sleep=time.sleep)
+        parsed = _parse_page(response.text, previous_page)
+        previous_ids = [item[0] for item in parsed["observations"]]
+        live_digest = hashlib.sha256(
+            "\n".join(sorted(previous_ids)).encode("ascii")
+        ).hexdigest()
+        if live_digest != prior_digest:
+            return False
+        self._seen = set(seen_ids)
+        self._expected_page = expected_page
+        self._prior_digest = prior_digest
+        self._total = state.get("total")
+        self._minimum_total = state.get("minimum_total")
+        self._maximum_total = state.get("maximum_total")
+        self._page_size = state.get("page_size")
+        self._overlap_count = int(state.get("overlap_count") or 0)
+        return True
+
+    async def restore_checkpoint(
+        self,
+        filters: MetsSyncFilters,
+        state: dict[str, Any],
+    ) -> bool:
+        return await asyncio.to_thread(self._restore_checkpoint, filters, state)
 
     async def search(
         self, filters: MetsSyncFilters, cursor: str | None = None,
