@@ -690,6 +690,17 @@ class LotNote(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
+class LotIssueReport(Base):
+    __tablename__ = "lot_issue_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_lots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, index=True)
+
+
 class SavedSearch(Base):
     __tablename__ = "saved_searches"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -784,7 +795,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "3dc4e5f6a7b8"
+SCHEMA_REVISION = "4ef5a6b7c8d9"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False
