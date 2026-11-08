@@ -521,3 +521,64 @@ def test_cdtrf_only_changed_candidate_opens_detail(monkeypatch):
     assert [lot.external_id for lot in result.items] == ["cdtrf:2"]
     assert result.metadata["detail_attempts"] == 1
     assert result.metadata["detail_requests_saved"] == 1
+
+
+def test_mets_detail_uses_bounded_timeout_and_retry_budget(monkeypatch):
+    calls = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            calls.append(kwargs["timeout"])
+            raise requests.Timeout("offline")
+
+    pilot = mets_sync.MetsPublicPilot(session=Session())
+    monkeypatch.setattr("bankrotai.connectors.registry.mets_public.time.sleep", lambda _: None)
+
+    with pytest.raises(requests.Timeout):
+        pilot._get("https://m-ets.ru/1234-1")
+
+    assert calls == [(5, 20)] * 4
+
+
+def test_cdtrf_catalogue_timeout_and_429_are_fail_fast(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 429
+        content = b"{}"
+        headers = {"Content-Type": "application/json"}
+
+    class Session:
+        def get(self, *args, **kwargs):
+            calls.append(kwargs["timeout"])
+            return Response()
+
+    crawler = cdtrf_sync.CdtrfSourceCrawler(Session())
+    with pytest.raises(cdtrf_sync.CdtrfCatalogueScanError, match="HTTP 429"):
+        crawler._fetch_catalogue_page(cdtrf_sync.CdtrfSyncFilters(), 1)
+
+    assert calls == [(5, 20)]
+    assert crawler._retry_count == 0
+
+
+def test_cdtrf_catalogue_503_retries_are_bounded_and_counted(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, status):
+            self.status_code = status
+            self.content = b"{}"
+            self.headers = {"Content-Type": "application/json"}
+
+    class Session:
+        def get(self, *args, **kwargs):
+            calls.append(kwargs["timeout"])
+            return Response(503 if len(calls) < 4 else 200)
+
+    monkeypatch.setattr(cdtrf_sync.time, "sleep", lambda _: None)
+    crawler = cdtrf_sync.CdtrfSourceCrawler(Session())
+    response = crawler._fetch_catalogue_page(cdtrf_sync.CdtrfSyncFilters(), 1)
+
+    assert response.status_code == 200
+    assert calls == [(5, 20)] * 4
+    assert crawler._retry_count == 3
