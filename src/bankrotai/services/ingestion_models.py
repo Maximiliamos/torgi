@@ -52,6 +52,11 @@ class SourceSyncResult:
     connector_checkpoint: dict[str, Any] | None = None
     detail_attempts: int = 0
     detail_skipped_unchanged: int = 0
+    catalogue_observations: int = 0
+    property_hint_candidates: int = 0
+    verified_property_lots: int = 0
+    details_rejected: int = 0
+    detail_rejection_reasons: dict[str, int] = field(default_factory=dict)
     retry_count: int = 0
     eta_seconds: float | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
