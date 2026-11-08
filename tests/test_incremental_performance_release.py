@@ -402,3 +402,11 @@ def test_incremental_writer_rejects_fake_legacy_detail_proof() -> None:
     assert session.did_commit is False
     assert session.row.last_seen_at is not None
     assert result.items_seen == 0
+
+
+@pytest.mark.parametrize("bad_price", ["NaN", "Infinity", "-Infinity", "0", "-2"])
+def test_detail_cache_rejects_nonfinite_or_nonpositive_price(bad_price: str) -> None:
+    assert not snapshot_reusable(
+        _snapshot(), expected_price=bad_price,
+        expected_status="active", expected_title="Объект",
+    )
