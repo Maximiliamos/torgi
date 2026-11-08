@@ -55,6 +55,14 @@ def test_retention_is_bounded_restartable_and_preserves_live_map():
         session.commit()
 
     deleted_per_statement = []
+    dataset_tile_selection_sql = []
+
+    def capture_tile_selection(_conn, _cursor, statement, _params, _context, _executemany):
+        sql = statement.upper()
+        if "SELECT MAP_TILES.ID" in sql and "WHERE MAP_TILES.DATASET_ID" in sql:
+            dataset_tile_selection_sql.append(sql)
+
+    event.listen(engine, "before_cursor_execute", capture_tile_selection)
 
     def record_statement(_conn, _cursor, statement, _params, _context, _executemany):
         if statement.lstrip().upper().startswith("DELETE FROM MAP_TILES"):
@@ -82,6 +90,10 @@ def test_retention_is_bounded_restartable_and_preserves_live_map():
     assert second["deleted_versions"] == ["failed-old"]
     assert second["tile_budget_exhausted"] is False
     assert deleted_per_statement and max(deleted_per_statement) <= 2
+    assert dataset_tile_selection_sql
+    # PostgreSQL must be able to use its existing index on dataset_id for LIMIT;
+    # a global ORDER BY id can time out when old datasets dominate the table.
+    assert all("ORDER BY" not in statement for statement in dataset_tile_selection_sql)
 
     # Capture the actual DELETE shape used by the retention worker.
     delete_sql = []
