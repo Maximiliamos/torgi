@@ -16,7 +16,11 @@ from bankrotai.services.incremental_detail_cache import (
     snapshot_reusable,
 )
 from bankrotai.services.ingestion import default_source_specs
-from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs, mark_reused_rows
+from bankrotai.services.ingestion_incremental import (
+    incremental_specs, retry_specs, mark_reused_rows,
+    apply_page_metadata, checkpoint_payload,
+)
+from bankrotai.services.ingestion_models import SourceSyncResult
 from bankrotai.services.scheduled_ingestion_modes import (
     SEVEN_SOURCE_IDS, production_seven_specs,
 )
@@ -410,3 +414,45 @@ def test_detail_cache_rejects_nonfinite_or_nonpositive_price(bad_price: str) -> 
         _snapshot(), expected_price=bad_price,
         expected_status="active", expected_title="Объект",
     )
+
+
+def test_source_funnel_counters_preserve_zero_hints_and_bounded_reasons() -> None:
+    result = SourceSyncResult("m-ets.ru")
+    apply_page_metadata(result, {
+        "catalogue_lots": 20,
+        "property_hint_candidates": 0,
+        "verified_property_lots": 1,
+        "details_rejected": 19,
+        "detail_attempts": 20,
+        "rejection_codes": {
+            "property_evidence_missing": 17,
+            "status_mismatch": 2,
+            "provider-cookie:private": 8,
+            "negative_count": -4,
+        },
+    }, None)
+    assert result.catalogue_observations == 20
+    assert result.property_hint_candidates == 0
+    assert result.verified_property_lots == 1
+    assert result.details_rejected == 19
+    assert result.detail_rejection_reasons == {
+        "property_evidence_missing": 17,
+        "status_mismatch": 2,
+    }
+    apply_page_metadata(result, {
+        "catalogue_lots": 3,
+        "property_hint_candidates": 2,
+        "verified_property_lots": 1,
+        "details_rejected": 1,
+        "detail_attempts": 2,
+        "rejection_codes": {"property_evidence_missing": 1},
+    }, None)
+    stored = checkpoint_payload(result)
+    assert stored["catalogue_observations"] == 23
+    assert stored["property_hint_candidates"] == 2
+    assert stored["verified_property_lots"] == 2
+    assert stored["details_rejected"] == 20
+    assert stored["detail_rejection_reasons"] == {
+        "property_evidence_missing": 18,
+        "status_mismatch": 2,
+    }
