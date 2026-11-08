@@ -26,6 +26,16 @@ def test_scheduled_nistp_detail_cap_matches_deployed_readonly_gate() -> None:
     assert specs["nistp.ru"].max_detail_attempts_per_page == 2
     assert specs["m-ets.ru"].max_detail_attempts_per_page is None
     assert specs["cdtrf.ru"].max_detail_attempts_per_page is None
+    assert specs["m-ets.ru"].allow_checkpoint_resume is True
+    assert specs["cdtrf.ru"].allow_checkpoint_resume is True
+    assert specs["bidexpert.ru"].filters.category == "realty"
+
+    from bankrotai.services.etp_mets_full_catalogue import (
+        OMITTED_PROPERTY_CATEGORY_IDS,
+        SELECTED_CATEGORY_IDS,
+    )
+    assert SELECTED_CATEGORY_IDS == ("36", "34", "39", "37", "38", "28", "41")
+    assert {"11", "40"} <= set(OMITTED_PROPERTY_CATEGORY_IDS)
 
     beat = celery_app.conf.beat_schedule["refresh-nationwide-sources-full"]
     assert beat["args"] == ("incremental",)
@@ -57,3 +67,69 @@ def test_p1_p11_gate_is_not_silently_disabled_or_bypassed_by_fix() -> None:
     assert "github.event_name == 'workflow_dispatch'" in p11
     assert "verify-etp-canary-acceptance.ps1" in preflight
     assert "restore_verification -ne 'passed'" in preflight
+
+
+def test_incremental_preflight_failure_prevents_nationwide_run_creation(monkeypatch) -> None:
+    import bankrotai.tasks as tasks
+    import bankrotai.services.scheduled_ingestion_preflight as preflight
+
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "default_source_specs", lambda: ("spec",))
+    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda specs: specs)
+    monkeypatch.setattr(
+        preflight,
+        "run_scheduled_source_preflight",
+        lambda specs: {
+            "passed": False,
+            "checked": 7,
+            "failures": [{"source_system": "m-ets.ru"}],
+            "results": [],
+            "database_writes": 0,
+        },
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("heavy nationwide run must not start after failed preflight")
+
+    monkeypatch.setattr(tasks, "_run_automatic_nationwide_refresh", forbidden)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "scheduled_source_preflight_failed"
+    assert result["preflight"]["database_writes"] == 0
+
+
+def test_incremental_preflight_passes_into_bounded_nationwide_run(monkeypatch) -> None:
+    import bankrotai.tasks as tasks
+    import bankrotai.services.scheduled_ingestion_preflight as preflight
+
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "default_source_specs", lambda: ("a", "b"))
+    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda specs: specs)
+    monkeypatch.setattr(
+        preflight,
+        "run_scheduled_source_preflight",
+        lambda specs: {
+            "passed": True,
+            "checked": 2,
+            "failures": [],
+            "results": [],
+            "database_writes": 0,
+        },
+    )
+    captured = {}
+
+    def run(task, **kwargs):
+        captured.update(kwargs)
+        return {"status": "success", "run_id": "offline"}
+
+    monkeypatch.setattr(tasks, "_run_automatic_nationwide_refresh", run)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert result["status"] == "success"
+    assert captured["mode"] == "incremental"
+    assert captured["trigger_type"] == "scheduled_incremental"
+    assert captured["total_sources"] == 2
+    assert captured["retry_if_busy"] is True
