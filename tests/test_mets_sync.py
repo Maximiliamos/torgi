@@ -162,3 +162,36 @@ def test_full_mets_crawler_rejects_repeated_complete_page(monkeypatch) -> None:
 
     with pytest.raises(MetsCatalogueScanError, match="repeated a complete page"):
         asyncio.run(crawler.search(MetsSyncFilters(), first.next_cursor))
+
+
+def test_full_mets_rejects_systemic_unverified_selected_catalogue(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    identities = [f"244381-{i}" for i in range(1, 6)]
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 5,
+            "observations": [
+                (identity, "100", "Объявленные торги", "Земельный участок")
+                for identity in identities
+            ],
+            "next_page": None,
+        },
+    )
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
+
+    def incomplete_detail(_html, url):
+        lot = _lot(url.rsplit("/", 1)[-1], 100, "scheduled")
+        lot.cadastral_number = None  # no independently verified cadastre
+        return lot
+
+    monkeypatch.setattr(mod, "parse_mets_lot", incomplete_detail)
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
+    with pytest.raises(MetsCatalogueScanError, match="systemic detail verification"):
+        asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
