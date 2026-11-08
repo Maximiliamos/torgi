@@ -236,7 +236,7 @@ class CdtrfSourceCrawler:
     def _catalogue_page(self, page_no: int, page_size: int) -> tuple[dict, int]:
         prepared = self._prepared_pages.get(page_no)
         if prepared is not None:
-            return prepared["data"], int(prepared.get("retry_count") or 0)
+            return prepared["data"], 0
         return self._fetch_catalogue_page(page_no, page_size)
 
     def restore_checkpoint(self, checkpoint: dict) -> str | None:
