@@ -406,6 +406,112 @@ class NationwideIngestionService:
                 archived += len(rows)
         return archived
 
+    def _detail_cache_snapshots(self, source_id: str) -> dict[str, dict[str, Any]]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(SourceLot).where(
+                    SourceLot.source_system == source_id,
+                    SourceLot.is_archived.is_(False),
+                    SourceLot.processed_lot_id.isnot(None),
+                )
+            ).all()
+            return {row.external_id: snapshot_from_source_row(row) for row in rows}
+
+    def _resume_checkpoint_for_source(self, run_id: str, source_id: str) -> dict[str, Any] | None:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(LotSyncSourceRun)
+                .where(
+                    LotSyncSourceRun.sync_run_id != run_id,
+                    LotSyncSourceRun.source_system == source_id,
+                    LotSyncSourceRun.status.in_(("failed", "partial")),
+                    LotSyncSourceRun.checkpoint_json.isnot(None),
+                )
+                .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
+                .limit(5)
+            ).all()
+            for row in rows:
+                checkpoint = row.checkpoint_json if isinstance(row.checkpoint_json, dict) else {}
+                connector_checkpoint = checkpoint.get("connector_checkpoint")
+                resume_cursor = checkpoint.get("resume_cursor")
+                if isinstance(connector_checkpoint, dict) and isinstance(resume_cursor, str):
+                    return {
+                        "connector_checkpoint": connector_checkpoint,
+                        "resume_cursor": resume_cursor,
+                        "pages_scanned": int(row.pages_scanned or 0),
+                        "items_seen": int(row.items_seen or 0),
+                        "items_inserted": int(row.items_inserted or 0),
+                        "items_updated": int(row.items_updated or 0),
+                        "items_unchanged": int(row.items_unchanged or 0),
+                        "items_failed": int(row.items_failed or 0),
+                        "detail_attempts": int(checkpoint.get("detail_attempts") or 0),
+                        "detail_skipped_unchanged": int(
+                            checkpoint.get("detail_skipped_unchanged") or 0
+                        ),
+                        "retry_count": int(checkpoint.get("retry_count") or 0),
+                    }
+        return None
+
+    def _mark_reused_catalogue_rows(
+        self,
+        run_id: str,
+        result: SourceSyncResult,
+        metadata: dict[str, Any],
+    ) -> None:
+        raw_ids = metadata.get("reused_existing_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return
+        fingerprints = metadata.get("reused_catalogue_fingerprints")
+        fingerprint_by_id = fingerprints if isinstance(fingerprints, dict) else {}
+        requested = [
+            str(value) for value in raw_ids
+            if isinstance(value, str) and value not in result.seen_external_ids
+        ]
+        if not requested:
+            return
+        now = utc_now()
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(SourceLot).where(
+                    SourceLot.source_system == result.source_system,
+                    SourceLot.external_id.in_(requested),
+                    SourceLot.is_archived.is_(False),
+                    SourceLot.processed_lot_id.isnot(None),
+                )
+            ).all()
+            by_id = {row.external_id: row for row in rows}
+            missing = sorted(set(requested) - set(by_id))
+            if missing:
+                raise RuntimeError(
+                    f"{result.source_system}: incremental detail cache lost {len(missing)} persisted rows"
+                )
+            for external_id in requested:
+                row = by_id[external_id]
+                previous_seen = row.last_seen_at
+                raw = dict(row.raw_data or {})
+                if not raw.get("detail_verified_at") and previous_seen is not None:
+                    raw["detail_verified_at"] = previous_seen.isoformat()
+                fingerprint = fingerprint_by_id.get(external_id)
+                if isinstance(fingerprint, str) and len(fingerprint) == 64:
+                    raw["catalogue_fingerprint"] = fingerprint
+                row.raw_data = raw
+                row.last_sync_run_id = run_id
+                row.last_seen_at = now
+                row.missing_successful_runs = 0
+                result.items_seen += 1
+                result.items_unchanged += 1
+                result.seen_external_ids.add(external_id)
+            session.commit()
+
+    @staticmethod
+    def _update_eta(result: SourceSyncResult) -> None:
+        current, total = result.progress_current, result.progress_total
+        if not current or not total or current <= 0 or total <= current or result.elapsed_seconds <= 0:
+            result.eta_seconds = 0.0 if current and total and current >= total else None
+            return
+        per_unit = result.elapsed_seconds / current
+        result.eta_seconds = max(0.0, per_unit * (total - current))
+
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
