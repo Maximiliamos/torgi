@@ -50,6 +50,7 @@ class DirectEtpPilotConnector(AuctionConnector):
         self.profile = PROFILE_BY_ID[source_id]
         self.session = session or requests.Session()
         self._cdtrf_source_crawler: CdtrfSourceCrawler | None = None
+        self._catalogue_selector = None
 
     async def search(self, filters=None, cursor: str | None = None) -> ConnectorPage:
         if self.source_id == "cdtrf.ru":
@@ -58,7 +59,9 @@ class DirectEtpPilotConnector(AuctionConnector):
             )
             if isinstance(filters, CdtrfSyncFilters):
                 if self._cdtrf_source_crawler is None:
-                    self._cdtrf_source_crawler = CdtrfSourceCrawler(self.session)
+                    self._cdtrf_source_crawler = CdtrfSourceCrawler(
+                        self.session, catalogue_selector=self._catalogue_selector
+                    )
                 return await self._cdtrf_source_crawler.search(filters, cursor)
             from bankrotai.connectors.registry.etp_incremental import (
                 EtpIncrementalFilters, incremental_cdtrf_search,
@@ -71,6 +74,31 @@ class DirectEtpPilotConnector(AuctionConnector):
             f"{self.source_id}: complete pagination/detail/status contracts unverified; "
             "only specifically approved non-archival windows are allowed"
         )
+
+    def set_catalogue_selector(self, selector) -> None:
+        self._catalogue_selector = selector
+        if self._cdtrf_source_crawler is not None:
+            self._cdtrf_source_crawler.catalogue_selector = selector
+
+    def export_checkpoint(self):
+        if self.source_id != "cdtrf.ru" or self._cdtrf_source_crawler is None:
+            return None
+        return self._cdtrf_source_crawler.export_checkpoint()
+
+    async def restore_checkpoint(self, filters, state) -> bool:
+        if self.source_id != "cdtrf.ru":
+            return False
+        from bankrotai.connectors.registry.cdtrf_sync import (
+            CdtrfSourceCrawler, CdtrfSyncFilters,
+        )
+
+        if not isinstance(filters, CdtrfSyncFilters):
+            return False
+        if self._cdtrf_source_crawler is None:
+            self._cdtrf_source_crawler = CdtrfSourceCrawler(
+                self.session, catalogue_selector=self._catalogue_selector
+            )
+        return await self._cdtrf_source_crawler.restore_checkpoint(filters, state)
 
     def _preview(self, limit: int) -> dict:
         if not 1 <= limit <= 20:
