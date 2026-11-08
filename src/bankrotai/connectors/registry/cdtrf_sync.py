@@ -392,6 +392,8 @@ class CdtrfSourceCrawler:
                 raise CdtrfCatalogueScanError(
                     "CDTRF unexpected detail validation failure"
                 ) from exc
+            if lot.category == "land":
+                return None, "standalone_land_out_of_scope"
             if not (_property_ready(lot) or (
                 lot.auction_status == "closed"
                 and lot.cadastral_number
