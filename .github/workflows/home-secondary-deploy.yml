@@ -710,6 +710,36 @@ jobs:
       - name: Backup and migrate database schema before replacing production containers
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-BoundedDockerCommand {
+            param(
+              [string[]]$Arguments,
+              [int]$TimeoutSeconds,
+              [string]$Label,
+              [string]$EphemeralContainerName = ''
+            )
+            Write-Host "Starting $Label with a $TimeoutSeconds second timeout"
+            $process = Start-Process -FilePath 'docker.exe' -ArgumentList $Arguments -PassThru -NoNewWindow
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Write-Warning "$Label timed out after $TimeoutSeconds seconds; terminating docker client"
+              & taskkill.exe /PID $process.Id /T /F *> $null
+              try { $process.WaitForExit(10000) | Out-Null } catch {}
+              if ($EphemeralContainerName) {
+                & docker.exe rm --force $EphemeralContainerName *> $null
+              }
+              return -1
+            }
+            try {
+              $process.WaitForExit()
+              $process.Refresh()
+              return [int]$process.ExitCode
+            } catch {
+              Write-Warning "$Label completed but its process ExitCode was unavailable"
+              return 255
+            }
+          }
+
           $photon = docker ps --filter 'name=^/bankrotai-photon$' --format '{{.Names}}'
           if ($photon -ne 'bankrotai-photon') {
             throw 'Local Photon container is not running'
@@ -721,61 +751,93 @@ jobs:
           }
 
           $schemaAtHead = $false
-          docker run --rm `
-            --network $env:DOCKER_NETWORK `
-            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            python -m alembic current --check-heads
-          if ($LASTEXITCODE -eq 0) {
+          $schemaCheckContainer = "bankrotai-schema-check-$($env:GITHUB_SHA.Substring(0,12))"
+          & docker.exe rm --force $schemaCheckContainer *> $null
+          $schemaCheckArgs = @(
+            'run','--rm','--name',$schemaCheckContainer,
+            '--network',$env:DOCKER_NETWORK,
+            '--env-file',(Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'),
+            "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+            'python','-m','alembic','current','--check-heads'
+          )
+          $schemaCheckExit = Invoke-BoundedDockerCommand -Arguments $schemaCheckArgs -TimeoutSeconds 120 -Label 'Alembic schema head check' -EphemeralContainerName $schemaCheckContainer
+          if ($schemaCheckExit -eq 0) {
             $schemaAtHead = $true
             Write-Output "Database schema is already at application head; skipping pre-migration backup and migration"
+          } elseif ($schemaCheckExit -eq -1) {
+            throw 'Database schema head check timed out; existing production containers were left running'
           } else {
             Write-Output "Database schema is not proven current; preserving pre-migration backup and migration path"
           }
 
           if (-not $schemaAtHead) {
-          $backupRoot = 'D:\BankrotAI\db-backups'
-          if (-not (Get-PSDrive -Name D -ErrorAction SilentlyContinue)) {
-            throw 'Pre-migration backup refused: D: drive is not available'
-          }
-          New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
-          $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
-          docker exec $env:POSTGRES_CONTAINER pg_dump `
-            --username bankrotai --dbname bankrotai --format=custom `
-            --file $containerBackup
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not create pre-migration PostgreSQL backup; existing production containers were left running"
-          }
+            $backupRoot = 'D:\BankrotAI\db-backups'
+            if (-not (Get-PSDrive -Name D -ErrorAction SilentlyContinue)) {
+              throw 'Pre-migration backup refused: D: drive is not available'
+            }
+            New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+            $containerBackup = "/tmp/pre-migration-${env:GITHUB_SHA}.dump"
 
-          $hostBackup = Join-Path $backupRoot "pre-migration-${env:GITHUB_SHA}.dump"
-          docker cp "${env:POSTGRES_CONTAINER}:${containerBackup}" $hostBackup
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostBackup)) {
-            throw "Could not preserve pre-migration PostgreSQL backup; existing production containers were left running"
-          }
-          docker exec $env:POSTGRES_CONTAINER rm -f $containerBackup | Out-Null
+            $dumpArgs = @(
+              'exec',$env:POSTGRES_CONTAINER,
+              'pg_dump',
+              '--username','bankrotai',
+              '--dbname','bankrotai',
+              '--format=custom',
+              '--lock-wait-timeout=30s',
+              '--file',$containerBackup
+            )
+            $dumpExit = Invoke-BoundedDockerCommand -Arguments $dumpArgs -TimeoutSeconds 900 -Label 'Pre-migration PostgreSQL backup'
+            if ($dumpExit -ne 0) {
+              & docker.exe exec $env:POSTGRES_CONTAINER rm -f $containerBackup *> $null
+              if ($dumpExit -eq -1) {
+                throw "Pre-migration PostgreSQL backup timed out; existing production containers were left running"
+              }
+              throw "Could not create pre-migration PostgreSQL backup; existing production containers were left running"
+            }
 
-          Get-ChildItem -LiteralPath $backupRoot -Filter 'pre-migration-*.dump' -File |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -Skip 1 |
-            Remove-Item -Force
+            $hostBackup = Join-Path $backupRoot "pre-migration-${env:GITHUB_SHA}.dump"
+            docker cp "${env:POSTGRES_CONTAINER}:${containerBackup}" $hostBackup
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostBackup)) {
+              throw "Could not preserve pre-migration PostgreSQL backup; existing production containers were left running"
+            }
+            docker exec $env:POSTGRES_CONTAINER rm -f $containerBackup | Out-Null
 
-          docker run --rm `
-            --network $env:DOCKER_NETWORK `
-            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            python -m alembic upgrade head
-          if ($LASTEXITCODE -ne 0) {
-            throw "Database migration failed; backup preserved at $hostBackup and existing production containers were left running"
-          }
+            Get-ChildItem -LiteralPath $backupRoot -Filter 'pre-migration-*.dump' -File |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -Skip 1 |
+              Remove-Item -Force
 
-          docker run --rm `
-            --network $env:DOCKER_NETWORK `
-            --env-file (Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env') `
-            "${env:IMAGE_NAME}:${env:GITHUB_SHA}" `
-            python -m alembic current --check-heads
-          if ($LASTEXITCODE -ne 0) {
-            throw "Database schema did not reach the tested application head; backup preserved at $hostBackup and existing production containers were left running"
-          }
+            $migrationContainer = "bankrotai-schema-upgrade-$($env:GITHUB_SHA.Substring(0,12))"
+            & docker.exe rm --force $migrationContainer *> $null
+            $migrationArgs = @(
+              'run','--rm','--name',$migrationContainer,
+              '--network',$env:DOCKER_NETWORK,
+              '--env-file',(Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'),
+              "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+              'python','-m','alembic','upgrade','head'
+            )
+            $migrationExit = Invoke-BoundedDockerCommand -Arguments $migrationArgs -TimeoutSeconds 600 -Label 'Alembic schema migration' -EphemeralContainerName $migrationContainer
+            if ($migrationExit -ne 0) {
+              if ($migrationExit -eq -1) {
+                throw "Database migration timed out; backup preserved at $hostBackup and existing production containers were left running"
+              }
+              throw "Database migration failed; backup preserved at $hostBackup and existing production containers were left running"
+            }
+
+            $verifyContainer = "bankrotai-schema-verify-$($env:GITHUB_SHA.Substring(0,12))"
+            & docker.exe rm --force $verifyContainer *> $null
+            $verifyArgs = @(
+              'run','--rm','--name',$verifyContainer,
+              '--network',$env:DOCKER_NETWORK,
+              '--env-file',(Join-Path $env:CONFIG_ROOT 'home-ingestion-worker.env'),
+              "${env:IMAGE_NAME}:${env:GITHUB_SHA}",
+              'python','-m','alembic','current','--check-heads'
+            )
+            $verifyExit = Invoke-BoundedDockerCommand -Arguments $verifyArgs -TimeoutSeconds 120 -Label 'Post-migration Alembic head verification' -EphemeralContainerName $verifyContainer
+            if ($verifyExit -ne 0) {
+              throw "Database schema did not reach the tested application head; backup preserved at $hostBackup and existing production containers were left running"
+            }
           }
 
       - name: Start private queue and replace API and trusted ingestion worker
