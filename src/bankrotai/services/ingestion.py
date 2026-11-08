@@ -70,15 +70,18 @@ def incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
 
 
 def source_retry_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
-    """Targeted retry with resumable cursor and changed-detail-only where supported."""
+    """Targeted retry of the production spec with resumable cursor where supported."""
     reusable = {"m-ets.ru", "cdtrf.ru"}
+    matched = tuple(spec for spec in default_source_specs() if spec.source_id == source_id)
+    if not matched:
+        raise ValueError(f"Unsupported source retry: {source_id}")
     return tuple(
         replace(
             spec,
             reuse_unchanged_details=spec.source_id in reusable,
             resume_from_checkpoint=True,
         )
-        for spec in source_full_specs(source_id)
+        for spec in matched
     )
 
 
