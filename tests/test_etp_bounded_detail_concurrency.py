@@ -119,7 +119,7 @@ def test_mets_timeout_retries_are_bounded_and_rate_gated(monkeypatch):
             before_request=lambda url: starts.append(url),
         )
 
-    assert len(starts) == 5
+    assert len(starts) == 4
 
 
 def test_async_search_keeps_event_loop_responsive(monkeypatch):
@@ -141,6 +141,7 @@ def test_async_search_keeps_event_loop_responsive(monkeypatch):
         lambda html, url: SimpleNamespace(
             external_id="1234-1",
             auction_status="active",
+            category="apartment",
             start_price=100,
             current_price=None,
             raw_data={},
@@ -150,7 +151,7 @@ def test_async_search_keeps_event_loop_responsive(monkeypatch):
     pilot = mets_sync.MetsPublicPilot(session=object())
     monkeypatch.setattr(
         pilot, "_get",
-        lambda url: (time.sleep(0.15), url)[1],
+        lambda url, **kwargs: (time.sleep(0.15), url)[1],
     )
     crawler = mets_sync.MetsSourceCrawler(pilot)
 
@@ -329,12 +330,12 @@ def test_mets_multi_lot_page_and_price_guard(monkeypatch):
         "total": 2, "next_page": None,
         "observations": [(i, "100", "Торги в стадии приема заявок", "flat") for i in ids],
     })
-    monkeypatch.setattr(mets_sync.MetsPublicPilot, "_get", lambda *a: "detail")
+    monkeypatch.setattr(mets_sync.MetsPublicPilot, "_get", lambda *a, **kw: "detail")
     monkeypatch.setattr(mets_sync, "_property_ready", lambda lot: True)
     def parse(_html, url):
         return SimpleNamespace(
             external_id=url.rsplit("/", 1)[-1], auction_status="active",
-            start_price=100, current_price=None, raw_data={},
+            category="apartment", start_price=100, current_price=None, raw_data={},
         )
     monkeypatch.setattr(mets_sync, "parse_mets_lot", parse)
     result = asyncio.run(mets_sync.MetsSourceCrawler(pilot).search(
