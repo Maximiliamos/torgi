@@ -148,6 +148,14 @@ class MetsSourceCrawler:
                 ) from exc
             except MetsEvidenceError as exc:
                 message = str(exc).casefold()
+                if any(marker in message for marker in (
+                    "provider access explicitly refused",
+                    "redirect from public",
+                    "http ",
+                )):
+                    raise MetsCatalogueScanError(
+                        "M-ETS detail access/refusal failure; no source reconciliation"
+                    ) from exc
                 code = (
                     "identity_mismatch" if "identity" in message
                     else "status_mismatch" if "status" in message
