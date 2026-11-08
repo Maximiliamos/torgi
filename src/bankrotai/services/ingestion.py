@@ -39,6 +39,7 @@ from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
+from bankrotai.services.incremental_detail_cache import snapshot_from_source_row
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -57,6 +58,28 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.ingestion_spec_builders import core_source_specs
     from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
     return core_source_specs() + scheduled_etp_source_specs()
+
+
+def incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
+    """Exhaust every catalogue but reuse fresh unchanged detail where proven safe."""
+    reusable = {"m-ets.ru", "cdtrf.ru"}
+    return tuple(
+        replace(spec, reuse_unchanged_details=spec.source_id in reusable)
+        for spec in default_source_specs()
+    )
+
+
+def source_retry_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
+    """Targeted retry with resumable cursor and changed-detail-only where supported."""
+    reusable = {"m-ets.ru", "cdtrf.ru"}
+    return tuple(
+        replace(
+            spec,
+            reuse_unchanged_details=spec.source_id in reusable,
+            resume_from_checkpoint=True,
+        )
+        for spec in source_full_specs(source_id)
+    )
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
