@@ -17,11 +17,14 @@ vi.mock("../../lib/api", async (importOriginal) => {
     fetchMapReviewStatuses: vi.fn(),
     fetchOperationsProgress: vi.fn(),
     fetchRegions: vi.fn(),
-    reportLotIssue: vi.fn(),
     fetchMapSourceOptions: vi.fn(),
     setReviewStatus: vi.fn(),
   };
 });
+
+vi.mock("../../lib/lotIssueReportApi", () => ({
+  reportLotIssue: vi.fn(),
+}));
 
 import {
   ApiError,
@@ -38,10 +41,10 @@ import {
   fetchOperationsProgress,
   fetchRegions,
   fetchMapSourceOptions,
-  reportLotIssue,
   type MapDataset,
   type YandexMapTilePayload,
 } from "../../lib/api";
+import { reportLotIssue } from "../../lib/lotIssueReportApi";
 
 function channelFrom(frame: HTMLIFrameElement) {
   const match = frame.srcdoc.match(/const channel=("[^"]+")/);
