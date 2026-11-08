@@ -126,8 +126,30 @@ def run_report(run_id: str, *, public_s3: bool = False) -> dict[str, Any]:
                 .group_by(SourceLot.archive_reason)
             ).all()
             archive_count = sum(safe_count(x[1]) for x in archive_reasons)
+            # Bounded forensic samples, not a claim that this run caused them.
+            archive_examples = db.execute(
+                select(
+                    SourceLot.external_id, SourceLot.archive_reason,
+                    SourceLot.source_status, SourceLot.last_sync_run_id,
+                    SourceLot.missing_successful_runs, SourceLot.archived_at,
+                ).where(
+                    SourceLot.source_system == row.source_system,
+                    SourceLot.is_archived.is_(True),
+                    SourceLot.archived_at >= run.started_at,
+                    SourceLot.archived_at <= run_finished,
+                ).order_by(SourceLot.archived_at.desc(), SourceLot.id.desc())
+                .limit(20)
+            ).all()
             archive_windows.append({
                 "source": row.source_system,
+                "sample_recent_archives": [{
+                    "external_id": x.external_id,
+                    "reason": x.archive_reason,
+                    "source_status": x.source_status,
+                    "last_sync_run_id": x.last_sync_run_id,
+                    "missing_successful_runs": x.missing_successful_runs,
+                    "archived_at": dt(x.archived_at),
+                } for x in archive_examples],
                 "run_reported_archived": row.items_archived,
                 "currently_archived_in_run_time_window": archive_count,
                 "reason_counts": {str(reason or "missing_reason"): int(n)
@@ -154,7 +176,14 @@ def run_report(run_id: str, *, public_s3: bool = False) -> dict[str, Any]:
                 and x.current_geo_lon is not None
                 and x.is_archived is False and x.duplicate_of_id is None
             )
-            no_geo = len(first_seen) - with_geo
+            with_coordinates = sum(
+                x.current_geo_lat is not None and x.current_geo_lon is not None
+                for x in first_seen
+            )
+            without_coordinates = len(first_seen) - with_coordinates
+            non_map_eligible_with_coordinates = with_coordinates - with_geo
+            # first_seen_at is approximate run association; source lots can
+            # be updated, deduplicated, archived or remapped afterward.
             evidence: dict[str, Any] = {}
             if row.source_system == "nistp.ru":
                 evidence = {
@@ -178,7 +207,9 @@ def run_report(run_id: str, *, public_s3: bool = False) -> dict[str, Any]:
                 "source": row.source_system,
                 "new_source_rows_by_first_seen_window": len(first_seen),
                 "active_canonical_new_rows_with_current_coordinates": with_geo,
-                "other_new_rows_including_no_geo_or_archive_or_duplicate": no_geo,
+                "new_source_rows_with_coordinates_now": with_coordinates,
+                "new_source_rows_without_coordinates_now": without_coordinates,
+                "new_source_rows_with_coordinates_but_not_map_eligible": non_map_eligible_with_coordinates,
                 "equals_reported_inserted": len(first_seen) == safe_count(row.items_inserted),
                 "attribution": "currently visible source first_seen_at, not immutable historical map membership",
                 "nistp_detail_evidence": evidence if evidence else None,
