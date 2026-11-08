@@ -22,7 +22,6 @@ def upgrade() -> None:
         sa.Column("user_id", sa.String(length=100), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(["lot_id"], ["processed_lots.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_lot_issue_reports_lot_id", "lot_issue_reports", ["lot_id"])
