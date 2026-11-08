@@ -152,3 +152,17 @@ async def _run(specs: tuple[Any, ...]) -> dict[str, Any]:
 
 def run_scheduled_source_preflight(specs: tuple[Any, ...]) -> dict[str, Any]:
     return asyncio.run(_run(specs))
+
+
+def scheduled_preflight_skip(mode: str, specs: tuple[Any, ...]) -> dict[str, Any] | None:
+    if mode not in {"full", "incremental"}:
+        return None
+    preflight = run_scheduled_source_preflight(specs)
+    if preflight.get("passed"):
+        return None
+    return {
+        "status": "skipped",
+        "reason": "scheduled_source_preflight_failed",
+        "mode": mode,
+        "preflight": preflight,
+    }
