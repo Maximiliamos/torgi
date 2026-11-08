@@ -57,6 +57,20 @@ class DirectEtpPilotConnector(AuctionConnector):
         if self._cdtrf_source_crawler is not None:
             self._cdtrf_source_crawler.set_detail_cache(self._incremental_detail_cache)
 
+    async def prepare_catalogue(self, filters) -> dict | None:
+        if self.source_id != "cdtrf.ru":
+            return None
+        from bankrotai.connectors.registry.cdtrf_sync import (
+            CdtrfSourceCrawler, CdtrfSyncFilters,
+        )
+        if not isinstance(filters, CdtrfSyncFilters):
+            return None
+        if self._cdtrf_source_crawler is None:
+            self._cdtrf_source_crawler = CdtrfSourceCrawler(self.session)
+        return await asyncio.to_thread(
+            self._cdtrf_source_crawler.prepare_catalogue, filters
+        )
+
     def restore_resume_checkpoint(self, checkpoint: dict) -> str | None:
         if self.source_id != "cdtrf.ru":
             return None
