@@ -164,8 +164,12 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     cadastral_scope = title + " " + description
     if not primary_description and not scope.select("a.card-item"):
         cadastral_scope = text[:4000]
-    cadastral_match = CADASTRE.search(cadastral_scope)
-    cadastral = cadastral_match.group(1) if cadastral_match else None
+    # A single M-ETS lot can contain both land and buildings, each with a
+    # distinct cadastre. Retain all *uniquely observed* numbers from the verified
+    # main description; cadastral_number remains a legacy representative,
+    # never proof that a multi-object lot has only one property.
+    cadastral_numbers = list(dict.fromkeys(CADASTRE.findall(cadastral_scope)))
+    cadastral = cadastral_numbers[0] if cadastral_numbers else None
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
     current = None
@@ -240,6 +244,8 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         raw_data={
             "source": "official_public_etp",
             "evidence_scope": "pilot_non_exhaustive",
+            "cadastral_numbers": cadastral_numbers,
+            "cadastral_multi_object": len(cadastral_numbers) > 1,
             "trade_number": f"{trade}-МЭТС",
             "lot_number": int(lot_number),
             "status_evidence": status,
