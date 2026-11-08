@@ -22,6 +22,10 @@ if TYPE_CHECKING:
     from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
 
 BASE = "https://m-ets.ru"
+# Official public detail mirror: allow a single exact-identity HTTPS hop only.
+# The source/system identifier and normalized canonical URL remain m-ets.ru.
+DETAIL_MIRROR = "https://meetings.m-ets.ru"
+OFFICIAL_DETAIL_HOSTS = frozenset({"m-ets.ru", "meetings.m-ets.ru"})
 # User-observed search filter for seven real-estate category IDs; full paging unverified.
 APARTMENTS_URL = (
     BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
@@ -40,7 +44,7 @@ class MetsEvidenceError(ValueError):
 def _host_lot_url(url: str) -> tuple[str, str, str]:
     parsed = urlsplit(url)
     match = DETAIL_PATH.fullmatch(parsed.path)
-    if parsed.scheme != "https" or parsed.netloc != "m-ets.ru" or not match:
+    if parsed.scheme != "https" or parsed.netloc not in OFFICIAL_DETAIL_HOSTS or not match:
         raise MetsEvidenceError("Expected an HTTPS M-ETS lot URL with <trade>-<lot> identity")
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise MetsEvidenceError("M-ETS lot URL cannot have a query, fragment or credentials")
@@ -286,7 +290,48 @@ class MetsPublicPilot:
             raise RuntimeError("M-ETS request retry loop exhausted")
         response.raise_for_status()
         if 300 <= response.status_code < 400:
-            raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
+            # A single official-host redirect with exactly the SAME trade/lot
+            # path is allowed. Do not follow login redirects, arbitrary links,
+            # downgrade to HTTP, changes of identity, query strings, or loops.
+            location = response.headers.get("Location", "")
+            try:
+                normalized, _, _ = _host_lot_url(location)
+                destination = urlsplit(location)
+                original = urlsplit(url)
+            except (MetsEvidenceError, ValueError) as exc:
+                raise MetsEvidenceError(
+                    "Redirect from public M-ETS page; untrusted destination"
+                ) from exc
+            if (
+                response.status_code not in {301, 302, 307, 308}
+                or original.netloc != "m-ets.ru"
+                or destination.netloc != "meetings.m-ets.ru"
+                or normalized != url
+                or url == APARTMENTS_URL
+            ):
+                raise MetsEvidenceError(
+                    "Redirect from public M-ETS page; identity/host not verified"
+                )
+            # Rate-limit each HTTP request, including this one extra hop.
+            if self._last_request_at is not None:
+                wait = 0.5 - (time.monotonic() - self._last_request_at)
+                if wait > 0:
+                    time.sleep(wait)
+            self._last_request_at = time.monotonic()
+            if before_request is not None:
+                before_request(location)
+            response = self.session.get(
+                location, timeout=(10, 60), allow_redirects=False,
+                headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
+            )
+            if response.status_code in {401, 403, 429}:
+                response.raise_for_status()
+                raise MetsEvidenceError("M-ETS provider access explicitly refused")
+            response.raise_for_status()
+            if 300 <= response.status_code < 400:
+                raise MetsEvidenceError(
+                    "Redirect from official M-ETS mirror; no second hop allowed"
+                )
         if len(response.content) > MAX_HTML_BYTES:
             raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
         if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
