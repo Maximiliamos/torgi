@@ -582,3 +582,54 @@ def test_cdtrf_catalogue_503_retries_are_bounded_and_counted(monkeypatch):
     assert response.status_code == 200
     assert calls == [(5, 20)] * 4
     assert crawler._retry_count == 3
+
+
+def test_cdtrf_rejects_standalone_land_after_detail(monkeypatch):
+    session = requests.Session()
+    session.get = lambda *args, **kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        status_code=200,
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+        json=lambda: {},
+    )
+    hit = {
+        "trade_id": "1",
+        "trade_lot_id": "1",
+        "external_id": "cdtrf:1",
+        "property_category_ids": [4],
+        "region_id": 76,
+        "source_status_text": "Прием заявок",
+        "listing_price_rub": 100,
+    }
+    monkeypatch.setattr(
+        cdtrf_sync,
+        "parse_cdtrf_api_page",
+        lambda *a, **kw: {
+            "reported_total": 1,
+            "observed_rows": 1,
+            "observed_lot_ids": ["1"],
+            "property_candidates": [hit],
+        },
+    )
+    monkeypatch.setattr(
+        cdtrf_sync,
+        "_verified_detail_with_retry",
+        lambda *a, **kw: SimpleNamespace(
+            external_id="cdtrf:1",
+            auction_status="active",
+            category="land",
+            raw_data={},
+            cadastral_number="76:23:010101:1",
+            lot_url="https://example.test",
+            start_price=100,
+        ),
+    )
+
+    result = asyncio.run(
+        cdtrf_sync.CdtrfSourceCrawler(session).search(
+            cdtrf_sync.CdtrfSyncFilters(max_pages=1)
+        )
+    )
+
+    assert result.items == []
+    assert result.metadata["rejection_codes"] == {"standalone_land_out_of_scope": 1}
