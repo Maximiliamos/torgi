@@ -274,7 +274,11 @@ class MetsPublicPilot:
         self._last_request_at: float | None = None
 
     def _get(
-        self, url: str, *, before_request: Callable[[str], None] | None = None,
+        self,
+        url: str,
+        *,
+        before_request: Callable[[str], None] | None = None,
+        on_retry: Callable[[], None] | None = None,
     ) -> str:
         # Catalogue remains on its proven original source endpoint.
         # Verified PUBLIC detail is served by the official meetings subdomain:
@@ -308,6 +312,8 @@ class MetsPublicPilot:
             ):
                 if delay is None:
                     raise
+                if on_retry is not None:
+                    on_retry()
                 time.sleep(delay)
                 continue
             # Authentication refusals and provider throttling are hard stops:
@@ -319,6 +325,8 @@ class MetsPublicPilot:
                 if delay is None:
                     response.raise_for_status()
                     raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
+                if on_retry is not None:
+                    on_retry()
                 time.sleep(delay)
                 continue
             break
