@@ -26,9 +26,12 @@ BASE = "https://m-ets.ru"
 # The source/system identifier and normalized canonical URL remain m-ets.ru.
 DETAIL_MIRROR = "https://meetings.m-ets.ru"
 OFFICIAL_DETAIL_HOSTS = frozenset({"m-ets.ru", "meetings.m-ets.ru"})
-# User-observed search filter for seven real-estate category IDs; full paging unverified.
+# User-captured November 2026 UI: eight selected real-estate categories,
+# including standalone land (11). Status select is (0, 1), representing
+# announced and application-intake listings. Excludes other site categories.
+# This is a selected-scope catalogue, never a complete platform inventory.
 APARTMENTS_URL = (
-    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
+    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSwxMSJ9"
 )
 DETAIL_PATH = re.compile(r"^/(\d{4,9})-(\d{1,5})/?$")
 CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
