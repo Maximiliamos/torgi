@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from bankrotai.db import LotSyncSourceRun, utc_now
+from bankrotai.db import LotSyncRun, LotSyncSourceRun, utc_now
 
 
 def filter_signature(spec: Any) -> str:
@@ -95,21 +95,24 @@ async def restore_safe_checkpoint(
         return None
     cutoff = utc_now() - timedelta(hours=24)
     with session_factory() as session:
-        candidates = session.scalars(
+        rows = session.scalars(
             select(LotSyncSourceRun)
             .where(
                 LotSyncSourceRun.sync_run_id != run_id,
                 LotSyncSourceRun.source_system == spec.source_id,
-                LotSyncSourceRun.status.in_(("failed", "partial")),
-                LotSyncSourceRun.finished_at.isnot(None),
-                LotSyncSourceRun.finished_at >= cutoff,
+                LotSyncSourceRun.status.in_(("failed", "partial", "running")),
             )
-            .order_by(
-                LotSyncSourceRun.finished_at.desc(),
-                LotSyncSourceRun.id.desc(),
-            )
-            .limit(5)
+            .order_by(LotSyncSourceRun.id.desc())
+            .limit(10)
         ).all()
+        candidates: list[tuple[Any, LotSyncRun]] = []
+        for row in rows:
+            parent = session.get(LotSyncRun, row.sync_run_id)
+            if parent is None or parent.created_at < cutoff:
+                continue
+            if row.status == "running" and parent.status != "failed":
+                continue
+            candidates.append((row, parent))
 
     from bankrotai.services.source_resilience import classify_source_error
 
@@ -121,9 +124,22 @@ async def restore_safe_checkpoint(
         "connect_timeout",
         "read_timeout",
     }
-    for previous in candidates:
-        classification = classify_source_error(previous.error_message)
-        if classification.category not in retryable_categories:
+    interruption_markers = (
+        "lease expired",
+        "soft time limit",
+        "hard time limit",
+        "worker lost",
+        "worker terminated",
+    )
+    for previous, parent in candidates:
+        error_text = str(previous.error_message or parent.error_message or "")
+        interrupted = (
+            previous.status == "running"
+            and parent.status == "failed"
+            and any(marker in error_text.casefold() for marker in interruption_markers)
+        )
+        classification = classify_source_error(error_text)
+        if not interrupted and classification.category not in retryable_categories:
             continue
         checkpoint = previous.checkpoint_json or {}
         if checkpoint.get("filter_signature") != result.filter_signature:
