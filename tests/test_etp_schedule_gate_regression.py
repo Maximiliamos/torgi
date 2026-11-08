@@ -74,8 +74,12 @@ def test_incremental_preflight_failure_prevents_nationwide_run_creation(monkeypa
     import bankrotai.services.scheduled_ingestion_preflight as preflight
 
     monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
-    monkeypatch.setattr(tasks, "default_source_specs", lambda: ("spec",))
-    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda specs: specs)
+    specs = tuple(
+        SimpleNamespace(source_id=source)
+        for source in preflight.SCHEDULED_SOURCE_IDS
+    )
+    monkeypatch.setattr(tasks, "default_source_specs", lambda: specs)
+    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda rows: rows)
     monkeypatch.setattr(
         preflight,
         "run_scheduled_source_preflight",
@@ -105,8 +109,12 @@ def test_incremental_preflight_passes_into_bounded_nationwide_run(monkeypatch) -
     import bankrotai.services.scheduled_ingestion_preflight as preflight
 
     monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
-    monkeypatch.setattr(tasks, "default_source_specs", lambda: ("a", "b"))
-    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda specs: specs)
+    specs = tuple(
+        SimpleNamespace(source_id=source)
+        for source in preflight.SCHEDULED_SOURCE_IDS
+    )
+    monkeypatch.setattr(tasks, "default_source_specs", lambda: specs)
+    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda rows: rows)
     monkeypatch.setattr(
         preflight,
         "run_scheduled_source_preflight",
@@ -131,5 +139,30 @@ def test_incremental_preflight_passes_into_bounded_nationwide_run(monkeypatch) -
     assert result["status"] == "success"
     assert captured["mode"] == "incremental"
     assert captured["trigger_type"] == "scheduled_incr"
-    assert captured["total_sources"] == 2
+    assert captured["total_sources"] == 7
     assert captured["retry_if_busy"] is True
+
+
+def test_incremental_schedule_refuses_six_of_seven_sources(monkeypatch) -> None:
+    import bankrotai.tasks as tasks
+    import bankrotai.services.scheduled_ingestion_preflight as preflight
+
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    specs = tuple(
+        SimpleNamespace(source_id=source)
+        for source in preflight.SCHEDULED_SOURCE_IDS[:-1]
+    )
+    monkeypatch.setattr(tasks, "default_source_specs", lambda: specs)
+    monkeypatch.setattr(tasks, "_unpaused_source_specs", lambda rows: rows)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("six-source scheduled run must not start")
+
+    monkeypatch.setattr(tasks, "_run_automatic_nationwide_refresh", forbidden)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "scheduled_source_set_incomplete"
+    assert result["missing_sources"] == ["nistp.ru"]
+    assert result["database_writes"] == 0
