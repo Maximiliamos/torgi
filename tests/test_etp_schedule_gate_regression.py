@@ -130,6 +130,6 @@ def test_incremental_preflight_passes_into_bounded_nationwide_run(monkeypatch) -
 
     assert result["status"] == "success"
     assert captured["mode"] == "incremental"
-    assert captured["trigger_type"] == "scheduled_incremental"
+    assert captured["trigger_type"] == "scheduled_incr"
     assert captured["total_sources"] == 2
     assert captured["retry_if_busy"] is True
