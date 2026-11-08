@@ -223,9 +223,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with: { python-version: "3.11", cache: pip }
-      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Parse guarded full-cycle operator script without executing it
         shell: pwsh
         run: |
@@ -256,6 +253,9 @@ jobs:
           }
           & ./scripts/launch-seven-source-gated.ps1 -ExpectedSha $env:GITHUB_SHA
           if (-not $?) { throw 'Guarded launcher dry-run smoke failed' }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Check source desktop through START_TORGI.bat
         shell: cmd
         run: START_TORGI.bat --check
