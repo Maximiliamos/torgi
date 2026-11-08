@@ -350,6 +350,9 @@ class CdtrfSourceCrawler:
                 "detail_attempts": len(detail_candidates),
                 "detail_skipped_unchanged": len(reused_ids),
                 "reused_existing_ids": reused_ids,
+                "reused_catalogue_fingerprints": {
+                    str(hit["external_id"]): self._catalogue_fingerprint(hit) for hit in reused
+                },
                 "retry_count": catalogue_retries,
                 "detail_concurrency": filters.detail_concurrency,
                 "systemic_detail_rejections": systemic_rejections,
