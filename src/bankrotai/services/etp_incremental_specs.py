@@ -68,5 +68,6 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
         SourceSyncSpec(
             "nistp.ru", EtpSearchFilters(page=1),
             reconcile_missing=False, max_batches=500, require_source_end=True,
+            max_detail_attempts_per_page=2,
         ),
     )
