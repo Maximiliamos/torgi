@@ -117,12 +117,12 @@ def test_home_schema_backup_and_migration_commands_are_bounded() -> None:
 
     assert "function Invoke-BoundedDockerCommand" in workflow
     assert "WaitForExit($TimeoutSeconds * 1000)" in workflow
-    assert "Pre-migration PostgreSQL backup' -TimeoutSeconds 900" in workflow
-    assert "Alembic schema migration' -TimeoutSeconds 600" in workflow
-    assert "Post-migration Alembic head verification' -TimeoutSeconds 120" in workflow
+    assert "-TimeoutSeconds 900 -Label \'Pre-migration PostgreSQL backup\'" in workflow
+    assert "-TimeoutSeconds 600 -Label \'Alembic schema migration\'" in workflow
+    assert "-TimeoutSeconds 120 -Label \'Post-migration Alembic head verification\'" in workflow
     assert "--lock-wait-timeout=30s" in workflow
     assert "Database schema head check timed out; existing production containers were left running" in workflow
-    assert "Pre-migration PostgreSQL backup timed out; existing production containers were left running" in workflow
+    assert "-TimeoutSeconds 900 -Label \'Pre-migration PostgreSQL backup\'" in workflow
     assert "Database migration timed out; backup preserved at $hostBackup and existing production containers were left running" in workflow
 
 
