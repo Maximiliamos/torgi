@@ -1,5 +1,50 @@
 # ETP stage checklist — operator contract
 
+**ТЕСТЫ обновлённой интеграции:** [Production reliability run 42532420382](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) на кодовом SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3` завершился успешно: **9/9 проверок, SQLite 1 472 passed / 11 deselected**, PostgreSQL, WEB, lint/types, миграции, Windows и оба Docker smoke. REG.RU S3 diagnostics 42532420330 тоже success, но это проверка CI, не proof публичного manifest 8 ноября. Последний документационный commit проверяется отдельно.
+
+**Фоновый GEO-статус Home:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) от 8 Nov показал `geo_percent=61.3`, `geo_actionable_remaining=9`, `geo_deferred_no_match=45408`, `geo_deferred_validation=1836`, `geo_network_wait=3`, `geo_external_network_degraded=false` и одну текущую MapDataset; статистика по всей системе, **не доказательство GEO 87 новых лотов**.
+
+
+## 2026-11-09 — source-end, SQL archive evidence and map verification gates
+
+Run `f572bdff-3db1-41bf-94a4-1f75ab690232` (8 Nov 21:00 MSK):
+operator SQL confirms `partial`, 87 inserted / 6 235 updated /
+1 383 archived, with **6 success and Torgi Russia partial**.
+Reason-code archival breakdown remains **UNVERIFIED**:
+
+| Source | Pages | Seen | Inserted | Updated | Archived | Source full acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| GIS | 1 873 | 16 945 | 12 | 6 | 49 | success / complete |
+| Lot-online | 45 | 3 042 | 4 | 34 | 2 | success / complete |
+| Torgi Russia | 1 366 | 20 427 | 50 | 234 | 0 | PARTIAL, 1 malformed quarantine |
+| BidExpert | 1 620 | 7 200 | 0 | 4 380 | 1 332 | success / complete; archive AUDIT BLOCKER |
+| M-ETS | 153 | 1 | 1 | 0 | 0 | success / NOT complete, collapsed funnel |
+| CDTRF | 32 | 1 595 | 17 | 1 578 | 0 | success / NOT complete, DB churn audit |
+| NISTP | 143 | 202 | 3 | 3 | 0 | success / NOT complete, statuses/detail evidence pending |
+
+Previous 7 Nov run `7810df7b-fb90-4c9f-9039-546ed151172b`
+showed M-ETS 155 pages/1 191 eligible, versus one in this run;
+neither successful page traversal nor `items_seen=1` is a full
+source acceptance. NISTP #1115/#1116 remain open.
+
+REG.RU/WEB: current DB MapDataset
+`20261108T215500614188Z-r6-bundle-s3`, 73 488 points. Public S3
+manifest and run-specific GEO/marker presence **NOT_TESTED** in this audit.
+
+| Stage | Code | Tests | Merged | Deployed | Home verified | Accepted |
+| --- | --- | --- | --- | --- | --- | --- |
+| PR #1157 parallel seven-source baseline | YES | CI success before merge | YES | Latest Home merge guard held while run active | 8 Nov source rows only | NO 7/7 |
+| PR #1162 incremental full-catalogue + detail reuse | IN PROGRESS | latest CI required | NO | NO | NO | NO |
+| BidExpert archive reason audit | read-only exporter prepared | offline AST contract | NO | NO | NO | NO |
+| M-ETS detail funnel and NISTP per-lot proof | checkpoint inspection prepared | selected regressions | NO | NO | NO | NO |
+| CDTRF semantic-write proof | metrics available | needs DB profiling | NO | NO | NO | NO |
+| 8 Nov public GEO/S3/map acceptance | current DB dataset known | public manifest outstanding | n/a | n/a | DB row only | NO |
+
+Do not disable source reconciliation/identity/price guards, bypass
+lease or auto-publish to turn status green. See
+`docs/ETP_SEVEN_SOURCE_RUN_2026-11-08_FINAL_AUDIT.md`.
+
+
 ## 2026-11-07 — первый full-selected Home run после PR #1130
 
 Run `7810df7b-fb90-4c9f-9039-546ed151172b` завершил source walks, но общий
@@ -395,3 +440,34 @@ local MapDataset builds failed S3 promotion with `403 QuotaExceeded`.
 - Do not use a successful page-1 response as a production readiness claim.
 - Never automatically import an unaccepted source.
 - Separate retryable access failures from HTML schema failures.
+
+
+## 2026-11-09 — Home read-only audit executed
+
+Operator executed `scripts/run-readonly-postrun-audit-home.ps1` against the running Home worker image:
+
+- running image: `bankrotai-home-api:66a91d8ef2a73ec83b80c70363b8406d6b2e1d64`;
+- report: `D:\\BankrotAI\\etp-operator-logs\\audit-20261108-20261109-021857.json`;
+- run status: `partial`;
+- current map: `20261108T215500614188Z-r6-bundle-s3`;
+- public REG.RU S3 manifest: **verified**;
+- source-counter archive total: **1,383**;
+- run-window archive rows exactly matched the source counters:
+  - BidExpert: **1,332 / 1,332**;
+  - GIS: **49 / 49**;
+  - Lot-online: **2 / 2**;
+  - all other selected sources: **0 / 0**.
+
+This closes the previous uncertainty that the aggregate archive counters might not correspond to rows archived in the run time window. It does **not** by itself prove that every archive was semantically correct; reason-code/sample review remains the provenance gate before any source-scope narrowing, especially BidExpert `all -> realty`.
+
+The audit also independently confirms that the published public S3 manifest exists for the current MapDataset. Run-specific GEO attribution for all 87 inserted source rows still remains a separate evidence question unless the JSON report contains the per-row GEO counts/samples.
+
+Release gate update:
+- CODE: YES
+- TEST: re-run required on final integration head after importing remaining safe #1160 changes
+- HOME READ-ONLY AUDIT: YES
+- PUBLIC S3 MANIFEST: YES
+- ARCHIVE WINDOW COUNTERS: YES
+- ARCHIVE SEMANTIC CORRECTNESS: NOT FULLY PROVEN
+- MERGED: NO
+- DEPLOYED: NO

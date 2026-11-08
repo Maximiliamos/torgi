@@ -1,5 +1,47 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
+**ТЕСТЫ обновлённой интеграции:** [Production reliability run 42532420382](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) на кодовом SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3` завершился успешно: **9/9 проверок, SQLite 1 472 passed / 11 deselected**, PostgreSQL, WEB, lint/types, миграции, Windows и оба Docker smoke. REG.RU S3 diagnostics 42532420330 тоже success, но это проверка CI, не proof публичного manifest 8 ноября. Последний документационный commit проверяется отдельно.
+
+**Фоновый GEO-статус Home:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) от 8 Nov показал `geo_percent=61.3`, `geo_actionable_remaining=9`, `geo_deferred_no_match=45408`, `geo_deferred_validation=1836`, `geo_network_wait=3`, `geo_external_network_degraded=false` и одну текущую MapDataset; статистика по всей системе, **не доказательство GEO 87 новых лотов**.
+
+
+## 09.11.2026 — завершающий аудит 8 ноября и единая интеграция PR #1162
+
+**RUN:** `f572bdff-3db1-41bf-94a4-1f75ab690232`, 8 ноября 21:00 МСК.
+Подтверждено непосредственно операторским SQL: `partial`, **6 success /
+1 Torgi Russia partial**, 87 новых, 6 235 обновлённых, 1 383
+архивированных. Архивы: BidExpert 1 332, ГИС 49, Lot-online 2;
+причины **НЕ ПОДТВЕРЖДЕНЫ**. M-ETS 153 страницы / 1 seen, тогда как
+7 ноября было 155 / 1 191; это критичная аномалия приёмки, не
+полный success. CDTRF 32 / 1 595 (17 inserts, 1 578 updates), NISTP
+143 / 202 (3 inserts, 3 updates). Все три новые ЭТП имеют
+`complete_source_run=false` и не имеют архивирования отсутствующих лотов.
+
+Карта: в PostgreSQL `20261108T215500614188Z-r6-bundle-s3`,
+73 488 точек; public S3 manifest, новые GEO-координаты и WEB-маркеры
+**ещё не проверены независимо**.
+
+- [x] **КОД (PR #1162):** консолидирована ветка #1161, восстановлена
+  прежняя восьмикатегорийная область M-ETS и CDTRF land, не
+  менялся BidExpert `all`, запрещён кэш деталей по `last_seen_at`.
+- [x] **ДИАГНОСТИКА:** добавлен SELECT-only операторский отчёт
+  `scripts/audit_20261108_nationwide_readonly.py` с причинными
+  группировками архивов по временному окну и историей полных прогонов.
+- [ ] **ТЕСТ:** дождаться полного зелёного CI на финальном SHA #1162.
+- [ ] **АУДИТ HOME:** выполнить exporter, исследовать 1 332/49/2
+  архивирований, несоответствие M-ETS 1 против 1 191, CDTRF
+  повторные UPDATE и НИСТП спорные статусы.
+- [ ] **GEO/S3/WEB:** отдельно подтвердить источник каждой новой метки.
+- [ ] **MERGE:** #1162, только при зелёном CI + безопасном source
+  audit. #1160/#1161 не объединять поверх друг друга.
+- [ ] **DEPLOY/HOME:** exact-SHA Home/WEB/Cloudflare после проверки
+  отсутствия активного sync lease и backup/restore evidence.
+- [ ] **SOURCE ACCEPTED:** 7/7 не подтверждено.
+
+Подробный handoff:
+`docs/ETP_SEVEN_SOURCE_RUN_2026-11-08_FINAL_AUDIT.md`.
+
+
 ## 07.11.2026 — итог первого full-selected production run после PR #1130
 
 - [x] Run `7810df7b-fb90-4c9f-9039-546ed151172b` дошёл до всех семи
@@ -1032,3 +1074,34 @@ Remaining: сценарии импорта и изменения данных д
   orphan set; merge/deploy exact SHA; backup/restore preflight; rerun full seven
   sources; finish GEO; publish and verify S3 manifest + sterdez.online map;
   then observe two independent 09:00/21:00 scheduled cycles.
+
+
+## 2026-11-09 — Home read-only audit executed
+
+Operator executed `scripts/run-readonly-postrun-audit-home.ps1` against the running Home worker image:
+
+- running image: `bankrotai-home-api:66a91d8ef2a73ec83b80c70363b8406d6b2e1d64`;
+- report: `D:\\BankrotAI\\etp-operator-logs\\audit-20261108-20261109-021857.json`;
+- run status: `partial`;
+- current map: `20261108T215500614188Z-r6-bundle-s3`;
+- public REG.RU S3 manifest: **verified**;
+- source-counter archive total: **1,383**;
+- run-window archive rows exactly matched the source counters:
+  - BidExpert: **1,332 / 1,332**;
+  - GIS: **49 / 49**;
+  - Lot-online: **2 / 2**;
+  - all other selected sources: **0 / 0**.
+
+This closes the previous uncertainty that the aggregate archive counters might not correspond to rows archived in the run time window. It does **not** by itself prove that every archive was semantically correct; reason-code/sample review remains the provenance gate before any source-scope narrowing, especially BidExpert `all -> realty`.
+
+The audit also independently confirms that the published public S3 manifest exists for the current MapDataset. Run-specific GEO attribution for all 87 inserted source rows still remains a separate evidence question unless the JSON report contains the per-row GEO counts/samples.
+
+Release gate update:
+- CODE: YES
+- TEST: re-run required on final integration head after importing remaining safe #1160 changes
+- HOME READ-ONLY AUDIT: YES
+- PUBLIC S3 MANIFEST: YES
+- ARCHIVE WINDOW COUNTERS: YES
+- ARCHIVE SEMANTIC CORRECTNESS: NOT FULLY PROVEN
+- MERGED: NO
+- DEPLOYED: NO

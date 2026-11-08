@@ -39,6 +39,10 @@ from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
+from bankrotai.services.ingestion_incremental import (
+    apply_page_metadata, checkpoint_payload, mark_reused_rows,
+    performance_profile, prepare_source, update_eta,
+)
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -388,10 +392,22 @@ class NationwideIngestionService:
         started = utc_now()
         wall_started = time.perf_counter()
         active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
-        self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
-        cursor: str | None = None
+        self._upsert_source_run(run_id, result, started_at=started)
         try:
+            discovery_started = time.perf_counter()
+            prepared = await self._await_with_lease_heartbeat(
+                run_id, connector.prepare_catalogue(spec.filters),
+            )
+            if isinstance(prepared, dict):
+                result.phase = "catalogue_discovery_complete"
+                result.total_pages = int(prepared.get("pages") or 0) or result.total_pages
+                result.retry_count += int(prepared.get("retry_count") or 0)
+                result.timing_ms["catalogue_discovery_ms"] = (
+                    time.perf_counter() - discovery_started
+                ) * 1000
+                self._upsert_source_run(run_id, result, started_at=started)
+            cursor = prepare_source(self.session_factory, connector, spec, run_id, result)
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
                 raise ConnectorCapabilityError(f"{spec.source_id}: missing-lot reconciliation is forbidden")
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
@@ -412,6 +428,7 @@ class NationwideIngestionService:
                     result.progress_current = int(page.metadata["progress_current"])
                 if page.metadata.get("progress_total") is not None:
                     result.progress_total = int(page.metadata["progress_total"])
+                apply_page_metadata(result, page.metadata, page.next_cursor)
                 if self.profile_timings:
                     for key, value in page.metadata.get("timings", {}).items():
                         if isinstance(value, (int, float)):
@@ -430,16 +447,20 @@ class NationwideIngestionService:
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 merge_page_quarantine(result, page.metadata)
+                mark_reused_rows(self.session_factory, run_id, result, page.metadata)
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
+                update_eta(result)
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
                     reached_source_end = True
+                    result.resume_cursor = None
+                    result.connector_checkpoint = None
                     break
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
@@ -996,21 +1017,7 @@ class NationwideIngestionService:
                 )
             )
             now = utc_now()
-            checkpoint = {
-                "category_pages": result.category_pages,
-                "current_category": result.current_category,
-                "total_pages": result.total_pages,
-                "progress_current": result.progress_current,
-                "progress_total": result.progress_total,
-                "phase": result.phase,
-                "items_rejected": result.items_rejected,
-                "quarantined_records": result.quarantined_records,
-                "quarantine_reasons": result.quarantine_reasons,
-                "quarantine_samples": result.quarantine_samples,
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-            }
+            checkpoint = checkpoint_payload(result)
             is_new = row is None
             previous_checkpoint = {} if row is None else (row.checkpoint_json or {})
             progress_changed = bool(
@@ -1022,6 +1029,7 @@ class NationwideIngestionService:
                 or previous_checkpoint.get("progress_current") != result.progress_current
                 or previous_checkpoint.get("progress_total") != result.progress_total
                 or previous_checkpoint.get("phase") != result.phase
+                or previous_checkpoint.get("resume_cursor") != result.resume_cursor
             )
             if row is None:
                 row = LotSyncSourceRun(sync_run_id=run_id, source_system=result.source_system)
@@ -1156,23 +1164,7 @@ class NationwideIngestionService:
             "category_pages": result.category_pages,
             "current_category": result.current_category,
             "total_pages": result.total_pages,
-            "profile": {
-                **{key: round(value, 3) for key, value in result.timing_ms.items()},
-                "sql_statements": result.sql_statements,
-                "http_requests": result.http_requests,
-                "response_bytes": result.response_bytes,
-                "sql_statements_per_100_lots": round(result.sql_statements * 100 / result.items_seen, 2)
-                if result.items_seen
-                else 0,
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-            }
-            if self.profile_timings
-            else {},
+            "profile": performance_profile(result, self.profile_timings),
             "error": result.error,
         }
 

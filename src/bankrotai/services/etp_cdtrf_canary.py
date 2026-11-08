@@ -24,7 +24,7 @@ BASE = "https://torgi.cdtrf.ru/trades/"
 # CDTRF regularly needs more than the generic three-second network window.
 # The operator catalogue sync is intentionally infrequent, so prefer a bounded
 # wait over rejecting the whole source before its first durable checkpoint.
-REQUEST_TIMEOUT = (10, 30)
+REQUEST_TIMEOUT = (5, 20)
 MAX_RESPONSE = 2_000_000
 # Shares and lease rights are legitimate property lots selected by CDTRF's
 # official real-estate categories.  They must retain their legal nature, not

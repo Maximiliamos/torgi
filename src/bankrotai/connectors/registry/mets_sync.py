@@ -8,6 +8,7 @@ import re
 import time
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from bankrotai.connectors.registry.detail_transport import DetailWorkers, HostRateLimiter
 from decimal import Decimal
 
@@ -20,6 +21,9 @@ from bankrotai.connectors.registry.mets_public import (
 )
 from bankrotai.services.etp_mets_full_catalogue import (
     MAX_SCAN_PAGES, MetsCatalogueScanError, _parse_page, _request_page,
+)
+from bankrotai.services.incremental_detail_cache import (
+    catalogue_fingerprint, snapshot_reusable,
 )
 
 CURSOR = re.compile(r"^([1-9]\d{0,3}):([0-9a-f]{64})$")
@@ -62,6 +66,190 @@ class MetsSourceCrawler:
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
         self._custom_detail_lock = threading.Lock()
+        self._detail_cache: dict[str, dict] = {}
+        self._prepared_pages: dict[int, dict] = {}
+
+    def set_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._detail_cache = dict(snapshots)
+
+    @staticmethod
+    def _catalogue_fingerprint(item) -> str:
+        external_id, catalogue_price, catalogue_status, title = item
+        return catalogue_fingerprint({
+            "external_id": external_id,
+            "price": str(catalogue_price),
+            "status": catalogue_status,
+            "title": " ".join(str(title or "").split()),
+        })
+
+    @staticmethod
+    def _expected_status(catalogue_status: str) -> str:
+        return "active" if catalogue_status == "Торги в стадии приема заявок" else "scheduled"
+
+    def _can_reuse_detail(self, item) -> bool:
+        external_id, catalogue_price, catalogue_status, title = item
+        return snapshot_reusable(
+            self._detail_cache.get(external_id),
+            expected_price=catalogue_price,
+            expected_status=self._expected_status(catalogue_status),
+            expected_title=title,
+            fingerprint=self._catalogue_fingerprint(item),
+        )
+
+    def _reset_catalogue_state(self) -> None:
+        self._seen = set()
+        self._total = None
+        self._minimum_total = None
+        self._maximum_total = None
+        self._page_size = None
+        self._overlap_count = 0
+        self._expected_page = 1
+        self._prior_digest = None
+
+    @staticmethod
+    def _ids(parsed: dict) -> list[str]:
+        return [item[0] for item in parsed["observations"]]
+
+    def prepare_catalogue(self, filters: MetsSyncFilters) -> dict:
+        """Materialize and validate the selected catalogue before any detail request."""
+        if self._seen or self._expected_page != 1:
+            raise MetsCatalogueScanError("M-ETS catalogue preparation requires a fresh crawler")
+        prepared: dict[int, dict] = {}
+        seen: set[str] = set()
+        first_size: int | None = None
+        first_total: int | None = None
+        minimum_total: int | None = None
+        maximum_total: int | None = None
+        overlap_count = 0
+        for page_number in range(1, filters.max_pages + 1):
+            response = _request_page(self.pilot.session, page_number, sleep=time.sleep)
+            parsed = _parse_page(response.text, page_number)
+            identities = self._ids(parsed)
+            total = int(parsed["total"])
+            if first_size is None:
+                first_size, first_total = len(identities), total
+                minimum_total = maximum_total = total
+                if not first_size or math.ceil(total / first_size) > filters.max_pages:
+                    raise MetsCatalogueScanError("M-ETS catalogue exceeds page budget")
+            else:
+                assert first_total is not None and first_size is not None
+                assert minimum_total is not None and maximum_total is not None
+                minimum_total, maximum_total = min(minimum_total, total), max(maximum_total, total)
+            assert first_size is not None and first_total is not None
+            assert minimum_total is not None and maximum_total is not None
+            maximum_drift = max(first_size * 2, math.ceil(first_total * MAX_LIVE_TOTAL_DRIFT_RATIO))
+            if maximum_total - minimum_total > maximum_drift:
+                raise MetsCatalogueScanError("M-ETS reported total drift exceeds safe live-catalogue bound")
+            next_page = parsed.get("next_page")
+            expected_last = math.ceil(total / first_size)
+            if next_page is None and page_number < expected_last:
+                next_page = page_number + 1
+                parsed = {**parsed, "next_page": next_page}
+            if next_page is not None and next_page != page_number + 1:
+                raise MetsCatalogueScanError("M-ETS paginator is not sequential")
+            if next_page is not None and len(identities) != first_size:
+                raise MetsCatalogueScanError("M-ETS page size contradicts reported total")
+            if next_page is None:
+                if page_number != expected_last or not 1 <= len(identities) <= first_size:
+                    raise MetsCatalogueScanError("M-ETS terminal page contradicts reported total")
+            overlap = seen.intersection(identities)
+            if len(overlap) == len(identities):
+                raise MetsCatalogueScanError("M-ETS paginator repeated a complete page")
+            overlap_count += len(overlap)
+            if overlap_count > maximum_drift:
+                raise MetsCatalogueScanError("M-ETS live-catalogue overlap exceeds safe bound")
+            seen.update(identities)
+            prepared[page_number] = parsed
+            if next_page is None:
+                if len(seen) < max(1, minimum_total - maximum_drift):
+                    raise MetsCatalogueScanError(
+                        "M-ETS catalogue ended below reported unique coverage"
+                    )
+                self._prepared_pages = prepared
+                self._reset_catalogue_state()
+                return {
+                    "pages": page_number,
+                    "observed_unique_ids": len(seen),
+                    "reported_total": total,
+                    "phase": "catalogue_discovery_complete",
+                }
+        raise MetsCatalogueScanError("M-ETS page budget exhausted during catalogue discovery")
+
+    def _parsed_page(self, page_number: int) -> dict:
+        prepared = self._prepared_pages.get(page_number)
+        if prepared is not None:
+            return prepared
+        response = _request_page(self.pilot.session, page_number, sleep=time.sleep)
+        return _parse_page(response.text, page_number)
+
+    def restore_checkpoint(self, checkpoint: dict) -> str | None:
+        if checkpoint.get("version") != 1 or checkpoint.get("source") != "m-ets.ru":
+            return None
+        next_cursor = checkpoint.get("next_cursor")
+        if not isinstance(next_cursor, str) or not CURSOR.fullmatch(next_cursor):
+            return None
+        seen = checkpoint.get("seen_ids")
+        if not isinstance(seen, list) or not all(isinstance(value, str) for value in seen):
+            return None
+        expected_page = int(next_cursor.split(":", 1)[0])
+        prior_digest = next_cursor.split(":", 1)[1]
+        if self._prepared_pages:
+            prefix_pages = [
+                self._prepared_pages.get(page)
+                for page in range(1, expected_page)
+            ]
+            if any(page is None for page in prefix_pages):
+                self._reset_catalogue_state()
+                return None
+            prefix_ids: set[str] = set()
+            overlap_count = 0
+            totals: list[int] = []
+            for page in prefix_pages:
+                assert page is not None
+                ids = set(self._ids(page))
+                overlap_count += len(prefix_ids.intersection(ids))
+                prefix_ids.update(ids)
+                totals.append(int(page["total"]))
+            anchor = prefix_pages[-1] if prefix_pages else None
+            anchor_digest = (
+                hashlib.sha256("\n".join(sorted(self._ids(anchor))).encode("ascii")).hexdigest()
+                if anchor is not None else None
+            )
+            if prefix_ids != set(seen) or anchor_digest != prior_digest or not totals:
+                self._reset_catalogue_state()
+                return None
+            self._total = totals[0]
+            self._minimum_total = min(totals)
+            self._maximum_total = max(totals)
+            first = prefix_pages[0]
+            assert first is not None
+            self._page_size = len(self._ids(first))
+            self._overlap_count = overlap_count
+        else:
+            self._total = int(checkpoint["total"])
+            self._minimum_total = int(checkpoint["minimum_total"])
+            self._maximum_total = int(checkpoint["maximum_total"])
+            self._page_size = int(checkpoint["page_size"])
+            self._overlap_count = int(checkpoint.get("overlap_count") or 0)
+        self._seen = set(seen)
+        self._expected_page = expected_page
+        self._prior_digest = prior_digest
+        return next_cursor
+
+    def _resume_checkpoint(self, next_cursor: str | None) -> dict | None:
+        if next_cursor is None:
+            return None
+        return {
+            "version": 1,
+            "source": "m-ets.ru",
+            "next_cursor": next_cursor,
+            "seen_ids": sorted(self._seen),
+            "total": self._total,
+            "minimum_total": self._minimum_total,
+            "maximum_total": self._maximum_total,
+            "page_size": self._page_size,
+            "overlap_count": self._overlap_count,
+        }
 
     def _search(self, filters: MetsSyncFilters, cursor: str | None) -> ConnectorPage:
         if cursor is None:
@@ -78,10 +266,7 @@ class MetsSourceCrawler:
         if page_number > filters.max_pages:
             raise MetsCatalogueScanError("M-ETS page budget exceeded")
 
-        response = _request_page(
-            self.pilot.session, page_number, sleep=time.sleep,
-        )
-        parsed = _parse_page(response.text, page_number)
+        parsed = self._parsed_page(page_number)
         observations = parsed["observations"]
         identities = [item[0] for item in observations]
         total = int(parsed["total"])
@@ -128,6 +313,9 @@ class MetsSourceCrawler:
 
         accepted = []
         rejected: dict[str, int] = {}
+        reused = [item for item in novel_observations if self._can_reuse_detail(item)]
+        reused_ids = [item[0] for item in reused]
+        detail_candidates = [item for item in novel_observations if item[0] not in set(reused_ids)]
         rate = filters.detail_requests_per_second or 1.0 / filters.detail_delay_seconds
         if self._detail_limiter is None:
             self._detail_limiter = HostRateLimiter(rate)
@@ -163,10 +351,7 @@ class MetsSourceCrawler:
                 lot = parse_mets_lot(html, url)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
-                expected_status = (
-                    "active" if catalogue_status == "Торги в стадии приема заявок"
-                    else "scheduled"
-                )
+                expected_status = self._expected_status(catalogue_status)
                 if lot.auction_status != expected_status:
                     raise MetsEvidenceError("M-ETS detail status differs from catalogue")
                 detail_prices = {
@@ -206,13 +391,15 @@ class MetsSourceCrawler:
                 "catalogue_status_verified": True,
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
+                "detail_verified_at": datetime.now(timezone.utc).isoformat(),
+                "catalogue_fingerprint": self._catalogue_fingerprint(item),
             }
             return lot, None
 
         # map preserves catalogue ordering and propagates any fatal failure.
         # Only details overlap; the next catalogue page is never fetched early.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, novel_observations):
+            for lot, code in workers.map_ordered(executor, verify, detail_candidates):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
                 elif lot is not None:
@@ -220,7 +407,7 @@ class MetsSourceCrawler:
 
         # Do not certify an apparently empty property catalogue when every
         # independent detail failed its evidence checks.
-        if len(novel_observations) >= 5 and not accepted:
+        if len(detail_candidates) >= 5 and not accepted and not reused_ids:
             raise MetsCatalogueScanError(
                 "M-ETS systemic detail verification failure: zero verified "
                 "property lots in a selected catalogue page"
@@ -245,9 +432,14 @@ class MetsSourceCrawler:
                 "live_total_minimum": self._minimum_total,
                 "live_total_maximum": self._maximum_total,
                 "cross_page_overlap": self._overlap_count,
-                "verified_property_lots": len(accepted),
+                "verified_property_lots": len(accepted) + len(reused_ids),
                 "details_rejected": sum(rejected.values()),
-                "detail_attempts": len(novel_observations),
+                "detail_attempts": len(detail_candidates),
+                "detail_skipped_unchanged": len(reused_ids),
+                "reused_existing_ids": reused_ids,
+                "reused_catalogue_fingerprints": {
+                    item[0]: self._catalogue_fingerprint(item) for item in reused
+                },
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
                 "requested_category_group": "mets_property_nonreconciling",
@@ -255,6 +447,7 @@ class MetsSourceCrawler:
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,
+                "resume_checkpoint": self._resume_checkpoint(next_cursor),
             },
         )
 

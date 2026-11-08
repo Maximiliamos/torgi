@@ -87,6 +87,8 @@ def parse_cdtrf_api_page(body: object, *, page_num: int, page_size: int = 20) ->
             "region_id": item.get("regionId") if type(item.get("regionId")) is int else None,
             "source_status_text": str(item.get("tradeStatusDescription") or "")[:120],
             "listing_price_rub": _rub(item.get("actualPrice")),
+            "request_time_begin": str(item.get("requestTimeBegin") or "")[:40] or None,
+            "request_time_end": str(item.get("requestTimeEnd") or "")[:40] or None,
             "current_price_rub": None,
             "evidence": "public_api_catalogue_only", "verified_detail": False,
             "ready_for_ingestion": False, "safe_for_archival": False,

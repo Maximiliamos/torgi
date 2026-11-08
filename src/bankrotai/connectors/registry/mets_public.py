@@ -26,9 +26,9 @@ BASE = "https://m-ets.ru"
 # The source/system identifier and normalized canonical URL remain m-ets.ru.
 DETAIL_MIRROR = "https://meetings.m-ets.ru"
 OFFICIAL_DETAIL_HOSTS = frozenset({"m-ets.ru", "meetings.m-ets.ru"})
-# User-captured November 2026 UI: eight selected real-estate categories,
-# including standalone land (11). Status select is (0, 1), representing
-# announced and application-intake listings. Excludes other site categories.
+# Preserve the eight-category operator-captured property scope, including
+# standalone land (11). Any change to scope needs a separately accepted
+# before/after archive and source identity audit. Statuses remain (0, 1).
 # This is a selected-scope catalogue, never a complete platform inventory.
 APARTMENTS_URL = (
     BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSwxMSJ9"
@@ -288,13 +288,13 @@ class MetsPublicPilot:
                 time.sleep(remaining)
         self._last_request_at = time.monotonic()
         response = None
-        for delay in (1.0, 2.0, 4.0, 8.0, None):
+        for delay in (0.5, 1.0, 2.0, None):
             try:
                 if before_request is not None:
                     before_request(request_url)
                 response = self.session.get(
                     request_url,
-                    timeout=(10, 60),
+                    timeout=(5, 20),
                     allow_redirects=False,
                     headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
                 )
@@ -383,6 +383,29 @@ class MetsConnector(AuctionConnector):
     def __init__(self, *, session: requests.Session | None = None) -> None:
         self.pilot = MetsPublicPilot(session=session)
         self._source_crawler: MetsSourceCrawler | None = None
+        self._incremental_detail_cache: dict[str, dict] = {}
+
+    def configure_incremental_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._incremental_detail_cache = dict(snapshots)
+        if self._source_crawler is not None:
+            self._source_crawler.set_detail_cache(self._incremental_detail_cache)
+
+    async def prepare_catalogue(self, filters) -> dict | None:
+        from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler, MetsSyncFilters
+        import asyncio
+
+        if not isinstance(filters, MetsSyncFilters):
+            return None
+        if self._source_crawler is None:
+            self._source_crawler = MetsSourceCrawler(self.pilot)
+        return await asyncio.to_thread(self._source_crawler.prepare_catalogue, filters)
+
+    def restore_resume_checkpoint(self, checkpoint: dict) -> str | None:
+        from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
+        if self._source_crawler is None:
+            self._source_crawler = MetsSourceCrawler(self.pilot)
+            self._source_crawler.set_detail_cache(self._incremental_detail_cache)
+        return self._source_crawler.restore_checkpoint(checkpoint)
 
     async def search(self, filters=None, cursor=None) -> ConnectorPage:
         from bankrotai.connectors.registry.mets_sync import (
@@ -396,6 +419,7 @@ class MetsConnector(AuctionConnector):
         if isinstance(filters, MetsSyncFilters):
             if self._source_crawler is None:
                 self._source_crawler = MetsSourceCrawler(self.pilot)
+                self._source_crawler.set_detail_cache(self._incremental_detail_cache)
             return await self._source_crawler.search(filters, cursor)
         if not isinstance(filters, EtpIncrementalFilters) or filters.source_id != self.source_id:
             raise ConnectorCapabilityError(
