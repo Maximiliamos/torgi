@@ -1199,10 +1199,12 @@ def _retry_automatic_refresh(
 
 
 def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> str:
-    if mode not in {"fast", "full"} and not mode.startswith("source:"):
+    if mode not in {"fast", "full", "incremental"} and not mode.startswith(
+        ("source:", "source-incremental:")
+    ):
         raise ValueError(f"Unsupported nationwide sync mode: {mode}")
-    is_source_only = mode.startswith("source:")
-    specs = source_full_specs(mode.removeprefix("source:")) if is_source_only else _unpaused_source_specs(default_source_specs())
+    is_source_only = mode.startswith(("source:", "source-incremental:"))
+    specs = resolve_nationwide_specs(mode, _unpaused_source_specs)
     if not broker_is_available():
         raise QueueUnavailableError("Background task queue is unavailable")
     service = NationwideIngestionService(SessionLocal)
@@ -1211,7 +1213,13 @@ def schedule_nationwide_lot_sync(*, triggered_by: str, mode: str = "fast") -> st
         # LotSyncRun.trigger_type is a legacy VARCHAR(20). The source identity
         # is represented by LotSyncSourceRun, so keep this operational label
         # stable and within the existing schema limit.
-        trigger_type="manual_source_full" if is_source_only else f"manual_{mode}",
+        trigger_type=(
+            "manual_source_incr"
+            if mode.startswith("source-incremental:")
+            else "manual_source_full"
+            if is_source_only
+            else f"manual_{mode}"
+        ),
         total_sources=len(specs),
     )
     try:
