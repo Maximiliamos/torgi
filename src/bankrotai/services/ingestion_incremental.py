@@ -168,6 +168,7 @@ async def restore_safe_checkpoint(
         result.total_pages = checkpoint.get("total_pages")
         result.progress_current = checkpoint.get("progress_current")
         result.progress_total = checkpoint.get("progress_total")
+        result.resume_base_progress = int(result.progress_current or 0)
         result.category_pages = dict(checkpoint.get("category_pages") or {})
         result.resume_cursor = cursor
         result.connector_checkpoint = state
@@ -208,7 +209,7 @@ def record_page(
     result.retry_count += int(metadata.get("retry_count") or 0)
     apply_catalogue_reuse(session_factory, run_id, result, metadata)
     if result.progress_current is not None and result.progress_total:
-        completed = max(1, result.progress_current)
+        completed = max(1, result.progress_current - result.resume_base_progress)
         remaining = max(0, result.progress_total - result.progress_current)
         result.eta_seconds = result.elapsed_seconds / completed * remaining
     result.resume_cursor = next_cursor
@@ -233,6 +234,10 @@ def checkpoint_fields(result: Any) -> dict[str, Any]:
         "catalogue_candidates": result.catalogue_candidates,
         "detail_attempts": result.detail_attempts,
         "detail_requests_saved": result.detail_requests_saved,
+        "detail_cache_hit_rate": (
+            round(result.detail_requests_saved / result.catalogue_candidates, 4)
+            if result.catalogue_candidates else 0.0
+        ),
         "retry_count": result.retry_count,
         "filter_signature": result.filter_signature,
         "resume_cursor": result.resume_cursor,
