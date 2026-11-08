@@ -247,8 +247,14 @@ class MetsPublicPilot:
     def _get(
         self, url: str, *, before_request: Callable[[str], None] | None = None,
     ) -> str:
+        # Catalogue remains on its proven original source endpoint.
+        # Verified PUBLIC detail is served by the official meetings subdomain:
+        # requesting the legacy root detail URL returns 403 (observed from CI).
+        # Normalize the trade/lot identity BEFORE sending any HTTP request.
+        request_url = url
         if url != APARTMENTS_URL:
-            _host_lot_url(url)
+            canonical, _, _ = _host_lot_url(url)
+            request_url = DETAIL_MIRROR + urlsplit(canonical).path
         if self._last_request_at is not None:
             remaining = 0.5 - (time.monotonic() - self._last_request_at)
             if remaining > 0:
@@ -258,9 +264,9 @@ class MetsPublicPilot:
         for delay in (1.0, 2.0, 4.0, 8.0, None):
             try:
                 if before_request is not None:
-                    before_request(url)
+                    before_request(request_url)
                 response = self.session.get(
-                    url,
+                    request_url,
                     timeout=(10, 60),
                     allow_redirects=False,
                     headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
@@ -289,49 +295,10 @@ class MetsPublicPilot:
         if response is None:
             raise RuntimeError("M-ETS request retry loop exhausted")
         response.raise_for_status()
+        # Never follow a redirect on either the catalogue or the official
+        # detail mirror: a location change must not silently alter the lot.
         if 300 <= response.status_code < 400:
-            # A single official-host redirect with exactly the SAME trade/lot
-            # path is allowed. Do not follow login redirects, arbitrary links,
-            # downgrade to HTTP, changes of identity, query strings, or loops.
-            location = response.headers.get("Location", "")
-            try:
-                normalized, _, _ = _host_lot_url(location)
-                destination = urlsplit(location)
-                original = urlsplit(url)
-            except (MetsEvidenceError, ValueError) as exc:
-                raise MetsEvidenceError(
-                    "Redirect from public M-ETS page; untrusted destination"
-                ) from exc
-            if (
-                response.status_code not in {301, 302, 307, 308}
-                or original.netloc != "m-ets.ru"
-                or destination.netloc != "meetings.m-ets.ru"
-                or normalized != url
-                or url == APARTMENTS_URL
-            ):
-                raise MetsEvidenceError(
-                    "Redirect from public M-ETS page; identity/host not verified"
-                )
-            # Rate-limit each HTTP request, including this one extra hop.
-            if self._last_request_at is not None:
-                wait = 0.5 - (time.monotonic() - self._last_request_at)
-                if wait > 0:
-                    time.sleep(wait)
-            self._last_request_at = time.monotonic()
-            if before_request is not None:
-                before_request(location)
-            response = self.session.get(
-                location, timeout=(10, 60), allow_redirects=False,
-                headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
-            )
-            if response.status_code in {401, 403, 429}:
-                response.raise_for_status()
-                raise MetsEvidenceError("M-ETS provider access explicitly refused")
-            response.raise_for_status()
-            if 300 <= response.status_code < 400:
-                raise MetsEvidenceError(
-                    "Redirect from official M-ETS mirror; no second hop allowed"
-                )
+            raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
         if len(response.content) > MAX_HTML_BYTES:
             raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
         if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
