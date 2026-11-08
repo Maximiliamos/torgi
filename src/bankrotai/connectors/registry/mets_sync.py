@@ -166,6 +166,16 @@ class MetsSourceCrawler:
             }
             accepted.append(lot)
 
+        # A selected *real-estate* catalogue with many candidates but no
+        # independently verified detail is not a successful source scan.
+        # Preserve fail-closed semantics instead of proving an empty page and
+        # eventually certifying a false source-end with zero persisted lots.
+        if len(novel_observations) >= 5 and not accepted:
+            raise MetsCatalogueScanError(
+                "M-ETS systemic detail verification failure: zero verified "
+                "property lots in a selected catalogue page"
+            )
+
         digest = hashlib.sha256("\n".join(sorted(identities)).encode("ascii")).hexdigest()
         next_page = page_number + 1
         self._prior_digest = digest
