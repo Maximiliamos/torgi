@@ -37,12 +37,7 @@ from bankrotai.scrapers import (
 from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
-from bankrotai.services.ingestion_incremental import (
-    apply_catalogue_reuse,
-    configure_catalogue_selector,
-    filter_signature,
-    restore_safe_checkpoint,
-)
+from bankrotai.services import ingestion_incremental
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.etp_nistp_schedule_guard import (
@@ -391,19 +386,16 @@ class NationwideIngestionService:
 
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
-        result.filter_signature = filter_signature(spec)
         started = utc_now()
         wall_started = time.perf_counter()
         active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
         self._upsert_source_run(run_id, result, started_at=started)
         connector = self.connector_factory(spec.source_id)
-        configure_catalogue_selector(self.session_factory, connector, spec)
         cursor: str | None = None
         try:
-            if spec.allow_checkpoint_resume:
-                cursor = await restore_safe_checkpoint(
-                    self.session_factory, run_id, result, spec, connector,
-                )
+            cursor = await ingestion_incremental.prepare_source(
+                self.session_factory, run_id, result, spec, connector,
+            )
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
                 raise ConnectorCapabilityError(f"{spec.source_id}: missing-lot reconciliation is forbidden")
             page_limit = min(self.max_pages_per_source, spec.max_batches or self.max_pages_per_source)
@@ -442,33 +434,16 @@ class NationwideIngestionService:
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 merge_page_quarantine(result, page.metadata)
-                result.catalogue_candidates += int(
-                    page.metadata.get("catalogue_candidates") or 0
-                )
-                result.detail_attempts += int(page.metadata.get("detail_attempts") or 0)
-                result.detail_requests_saved += int(
-                    page.metadata.get("detail_requests_saved") or 0
-                )
-                apply_catalogue_reuse(
-                    self.session_factory, run_id, result, page.metadata,
-                )
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
-                if result.progress_current is not None and result.progress_total:
-                    completed = max(1, result.progress_current)
-                    remaining = max(0, result.progress_total - result.progress_current)
-                    result.eta_seconds = result.elapsed_seconds / completed * remaining
-                result.resume_cursor = page.next_cursor
-                exporter = getattr(connector, "export_checkpoint", None)
-                if callable(exporter):
-                    checkpoint = exporter()
-                    result.connector_checkpoint = (
-                        checkpoint if isinstance(checkpoint, dict) else None
-                    )
+                ingestion_incremental.record_page(
+                    self.session_factory, run_id, result, connector,
+                    page.metadata, page.next_cursor,
+                )
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
@@ -477,8 +452,6 @@ class NationwideIngestionService:
                 cursor = page.next_cursor
             if not spec.reconcile_missing:
                 result.complete_source_run = False
-                if reached_source_end:
-                    result.resume_cursor = None
                 if spec.require_source_end and not reached_source_end:
                     raise RuntimeError("operator source page limit exhausted before last page")
                 if result.quarantined_records:
@@ -1042,20 +1015,7 @@ class NationwideIngestionService:
                 "quarantined_records": result.quarantined_records,
                 "quarantine_reasons": result.quarantine_reasons,
                 "quarantine_samples": result.quarantine_samples,
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "eta_seconds": round(result.eta_seconds, 1)
-                if result.eta_seconds is not None
-                else None,
-                "catalogue_candidates": result.catalogue_candidates,
-                "detail_attempts": result.detail_attempts,
-                "detail_requests_saved": result.detail_requests_saved,
-                "retry_count": result.retry_count,
-                "filter_signature": result.filter_signature,
-                "resume_cursor": result.resume_cursor,
-                "connector_checkpoint": result.connector_checkpoint,
-                "resumed_from_run_id": result.resumed_from_run_id,
+                **ingestion_incremental.checkpoint_fields(result),
             }
             is_new = row is None
             previous_checkpoint = {} if row is None else (row.checkpoint_json or {})
@@ -1202,14 +1162,7 @@ class NationwideIngestionService:
             "category_pages": result.category_pages,
             "current_category": result.current_category,
             "total_pages": result.total_pages,
-            "catalogue_candidates": result.catalogue_candidates,
-            "detail_attempts": result.detail_attempts,
-            "detail_requests_saved": result.detail_requests_saved,
-            "retry_count": result.retry_count,
-            "eta_seconds": round(result.eta_seconds, 1)
-            if result.eta_seconds is not None
-            else None,
-            "resumed_from_run_id": result.resumed_from_run_id,
+            **ingestion_incremental.result_fields(result),
             "profile": {
                 **{key: round(value, 3) for key, value in result.timing_ms.items()},
                 "sql_statements": result.sql_statements,
