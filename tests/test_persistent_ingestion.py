@@ -124,6 +124,26 @@ def test_streaming_sync_is_idempotent_and_persists_region_and_price(sessions) ->
         assert float(rows[0].start_price or 0) == 500_000
 
 
+def test_same_deadline_in_different_timezones_counts_as_unchanged(sessions) -> None:
+    # CDTRF-like Moscow-aware deadline must compare as the same UTC instant.
+    from datetime import timezone
+
+    first_lot = lot("cdtrf-deadline-same-instant")
+    second_lot = lot("cdtrf-deadline-same-instant")
+    first_lot.application_deadline = datetime(
+        2026, 11, 12, 9, tzinfo=timezone(timedelta(hours=3))
+    )
+    second_lot.application_deadline = datetime(2026, 11, 12, 6, tzinfo=timezone.utc)
+
+    service = NationwideIngestionService(sessions)
+    _, first = run_with(service, FakeConnector([[first_lot]]))
+    _, second = run_with(service, FakeConnector([[second_lot]]))
+
+    assert first["sources"][0]["items_inserted"] == 1
+    assert second["sources"][0]["items_updated"] == 0
+    assert second["sources"][0]["items_unchanged"] == 1
+
+
 def test_source_lot_observation_timestamps_remain_ordered_on_resync(sessions) -> None:
     service = NationwideIngestionService(sessions)
     run_with(service, FakeConnector([[lot()]]))
