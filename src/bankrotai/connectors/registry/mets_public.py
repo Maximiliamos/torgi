@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -22,9 +22,16 @@ if TYPE_CHECKING:
     from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
 
 BASE = "https://m-ets.ru"
-# User-observed search filter for seven real-estate category IDs; full paging unverified.
+# Official public detail mirror: allow a single exact-identity HTTPS hop only.
+# The source/system identifier and normalized canonical URL remain m-ets.ru.
+DETAIL_MIRROR = "https://meetings.m-ets.ru"
+OFFICIAL_DETAIL_HOSTS = frozenset({"m-ets.ru", "meetings.m-ets.ru"})
+# User-captured November 2026 UI: eight selected real-estate categories,
+# including standalone land (11). Status select is (0, 1), representing
+# announced and application-intake listings. Excludes other site categories.
+# This is a selected-scope catalogue, never a complete platform inventory.
 APARTMENTS_URL = (
-    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSJ9"
+    BASE + "/search?q=eyJzZWFyY2hfY2F0ZWdvcnkiOiIzNiwzNCwzOSwzNywzOCwyOCw0MSwxMSJ9"
 )
 DETAIL_PATH = re.compile(r"^/(\d{4,9})-(\d{1,5})/?$")
 CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
@@ -40,7 +47,7 @@ class MetsEvidenceError(ValueError):
 def _host_lot_url(url: str) -> tuple[str, str, str]:
     parsed = urlsplit(url)
     match = DETAIL_PATH.fullmatch(parsed.path)
-    if parsed.scheme != "https" or parsed.netloc != "m-ets.ru" or not match:
+    if parsed.scheme != "https" or parsed.netloc not in OFFICIAL_DETAIL_HOSTS or not match:
         raise MetsEvidenceError("Expected an HTTPS M-ETS lot URL with <trade>-<lot> identity")
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise MetsEvidenceError("M-ETS lot URL cannot have a query, fragment or credentials")
@@ -137,14 +144,32 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # The first 4k characters of saved HTML are login/crypto dialogs.
     # Read only the primary lot panel so recommended cards cannot overwrite it.
     primary_description = scope.select_one('[itemprop="description"]')
+    if primary_description is None and scope is not soup and len(sku_nodes) == 1:
+        # Official November 2026 HTML puts the primary detail description
+        # OUTSIDE .lot-container, although the verified SKU/title/price/status
+        # remain inside. Never borrow a description from another lot or a
+        # recommended-card subtree; only one independently identified SKU
+        # and exactly one official unscoped description make this safe.
+        all_descriptions = soup.select('[itemprop="description"]')
+        if len(all_descriptions) == 1:
+            candidate = all_descriptions[0]
+            if (
+                candidate.find_parent(class_="lot-container") is None
+                and candidate.find_parent(class_="card-item") is None
+            ):
+                primary_description = candidate
     description = primary_description.get_text(" ", strip=True) if primary_description else ""
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
     cadastral_scope = title + " " + description
     if not primary_description and not scope.select("a.card-item"):
         cadastral_scope = text[:4000]
-    cadastral_match = CADASTRE.search(cadastral_scope)
-    cadastral = cadastral_match.group(1) if cadastral_match else None
+    # A single M-ETS lot can contain both land and buildings, each with a
+    # distinct cadastre. Retain all *uniquely observed* numbers from the verified
+    # main description; cadastral_number remains a legacy representative,
+    # never proof that a multi-object lot has only one property.
+    cadastral_numbers = list(dict.fromkeys(CADASTRE.findall(cadastral_scope)))
+    cadastral = cadastral_numbers[0] if cadastral_numbers else None
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
     current = None
@@ -193,6 +218,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         date_source, "Окончание приема заявок на периоде"
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    # Keep the platform/external identifier stable while exposing the
+    # provider's actual working public link to end users (the old root
+    # detail path returns HTTP 403).
+    public_detail_url = DETAIL_MIRROR + urlsplit(canonical).path
     return NormalizedLot(
         external_id=f"{trade}-{lot_number}",
         source="m-ets.ru",
@@ -209,12 +238,14 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         start_price=initial,
         current_price=current,
         auction_status=status,
-        lot_url=canonical,
-        source_url=canonical,
+        lot_url=public_detail_url,
+        source_url=public_detail_url,
         detail_level="public_detail",
         raw_data={
             "source": "official_public_etp",
             "evidence_scope": "pilot_non_exhaustive",
+            "cadastral_numbers": cadastral_numbers,
+            "cadastral_multi_object": len(cadastral_numbers) > 1,
             "trade_number": f"{trade}-МЭТС",
             "lot_number": int(lot_number),
             "status_evidence": status,
@@ -240,9 +271,17 @@ class MetsPublicPilot:
         self.session = session or requests.Session()
         self._last_request_at: float | None = None
 
-    def _get(self, url: str) -> str:
+    def _get(
+        self, url: str, *, before_request: Callable[[str], None] | None = None,
+    ) -> str:
+        # Catalogue remains on its proven original source endpoint.
+        # Verified PUBLIC detail is served by the official meetings subdomain:
+        # requesting the legacy root detail URL returns 403 (observed from CI).
+        # Normalize the trade/lot identity BEFORE sending any HTTP request.
+        request_url = url
         if url != APARTMENTS_URL:
-            _host_lot_url(url)
+            canonical, _, _ = _host_lot_url(url)
+            request_url = DETAIL_MIRROR + urlsplit(canonical).path
         if self._last_request_at is not None:
             remaining = 0.5 - (time.monotonic() - self._last_request_at)
             if remaining > 0:
@@ -251,8 +290,10 @@ class MetsPublicPilot:
         response = None
         for delay in (1.0, 2.0, 4.0, 8.0, None):
             try:
+                if before_request is not None:
+                    before_request(request_url)
                 response = self.session.get(
-                    url,
+                    request_url,
                     timeout=(10, 60),
                     allow_redirects=False,
                     headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
@@ -266,7 +307,12 @@ class MetsPublicPilot:
                     raise
                 time.sleep(delay)
                 continue
-            if response.status_code == 429 or 500 <= response.status_code <= 504:
+            # Authentication refusals and provider throttling are hard stops:
+            # never retry 401/403/429 or turn them into missing-lot evidence.
+            if response.status_code in {401, 403, 429}:
+                response.raise_for_status()
+                raise MetsEvidenceError("M-ETS provider access explicitly refused")
+            if 500 <= response.status_code <= 504:
                 if delay is None:
                     response.raise_for_status()
                     raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
@@ -276,6 +322,8 @@ class MetsPublicPilot:
         if response is None:
             raise RuntimeError("M-ETS request retry loop exhausted")
         response.raise_for_status()
+        # Never follow a redirect on either the catalogue or the official
+        # detail mirror: a location change must not silently alter the lot.
         if 300 <= response.status_code < 400:
             raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
         if len(response.content) > MAX_HTML_BYTES:

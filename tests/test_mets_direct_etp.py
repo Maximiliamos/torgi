@@ -5,6 +5,7 @@ import pytest
 
 from bankrotai.connectors.registry.mets_public import (
     APARTMENTS_URL,
+    DETAIL_MIRROR,
     MetsEvidenceError,
     MetsPublicPilot,
     discover_lot_urls,
@@ -12,6 +13,7 @@ from bankrotai.connectors.registry.mets_public import (
 )
 
 URL = "https://m-ets.ru/240512-1"
+MIRROR_URL = f"{DETAIL_MIRROR}/240512-1"
 CATALOGUE = """
 <html><a href="/240512-1">Здание в Липецке</a>
 <a href="https://m-ets.ru/240512-1">Repeat</a>
@@ -113,9 +115,9 @@ class SessionStub:
             return Response("", status_code=302)
         if url == APARTMENTS_URL:
             return Response(CATALOGUE)
-        if url == URL:
+        if url == MIRROR_URL:
             return Response(DETAIL)
-        if url == "https://m-ets.ru/238380-1":
+        if url == f"{DETAIL_MIRROR}/238380-1":
             return Response("<html><h2>Broken card</h2></html>")
         raise AssertionError(f"Unexpected requested URL: {url}")
 
@@ -133,7 +135,7 @@ def test_pilot_is_bounded_and_never_claims_complete_coverage(monkeypatch):
     assert result["safe_for_archival"] is False
     assert result["written_to_database"] is False
     assert session.urls == [
-        APARTMENTS_URL, URL, "https://m-ets.ru/238380-1",
+        APARTMENTS_URL, MIRROR_URL, f"{DETAIL_MIRROR}/238380-1",
     ]
 
 
@@ -240,3 +242,231 @@ def test_lot_meta_sku_disagreement_fails_closed():
     )
     with pytest.raises(MetsEvidenceError, match="SKU"):
         parse_mets_lot(html, URL)
+
+
+def test_mets_provider_throttling_is_not_retried(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class ThrottledSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            assert kwargs["allow_redirects"] is False
+            return Response("", status_code=429)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = ThrottledSession()
+    with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1
+
+
+
+def test_official_meetings_detail_domain_keeps_exact_trade_lot_identity():
+    mirror_url = "https://meetings.m-ets.ru/240512-1"
+    lot = parse_mets_lot(DETAIL, mirror_url)
+    assert lot.external_id == "240512-1"
+    assert lot.lot_url == MIRROR_URL
+    assert lot.source_system == "m-ets.ru"
+    assert discover_lot_urls(
+        '<a href="https://meetings.m-ets.ru/240512-1">official mirror</a>'
+    ) == [URL]
+
+
+def test_canonical_detail_fetch_uses_official_mirror_without_legacy_403(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class MirrorOnlySession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, *, timeout, allow_redirects, headers):
+            assert allow_redirects is False
+            self.calls.append(url)
+            assert url == MIRROR_URL
+            return Response(DETAIL)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = MirrorOnlySession()
+    starts = []
+    pilot = MetsPublicPilot(session=session)
+    html = pilot._get(URL, before_request=starts.append)
+    lot = parse_mets_lot(html, URL)
+    assert lot.external_id == "240512-1"
+    assert lot.start_price == 22_500_000
+    assert session.calls == [MIRROR_URL]
+    assert starts == session.calls
+
+
+@pytest.mark.parametrize("unsafe_location", [
+    "http://meetings.m-ets.ru/240512-1",  # TLS downgrade
+    "https://evil.example/240512-1",  # arbitrary host
+    "https://meetings.m-ets.ru/240512-2",  # different lot
+    "https://meetings.m-ets.ru/240512-1?next=1",  # query
+    "https://meetings.m-ets.ru@evil.example/240512-1",  # userinfo trick
+    "/240512-1",  # not an independently verified absolute HTTPS location
+])
+def test_any_redirect_from_official_detail_mirror_is_rejected(monkeypatch, unsafe_location):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class RedirectSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = Response("", status_code=302)
+            response.headers["Location"] = unsafe_location
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = RedirectSession()
+    with pytest.raises(MetsEvidenceError, match="Redirect"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1
+
+
+def test_mirror_does_not_follow_even_self_redirect(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class MultiHopSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = Response("", status_code=302)
+            response.headers["Location"] = "https://meetings.m-ets.ru/240512-1"
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = MultiHopSession()
+    with pytest.raises(MetsEvidenceError, match="Redirect"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1
+
+
+def test_mirror_http_429_is_not_retried(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class MirrorThrottleSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            assert url == MIRROR_URL
+            return Response("", status_code=429)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = MirrorThrottleSession()
+    with pytest.raises(MetsEvidenceError, match="provider access explicitly refused"):
+        MetsPublicPilot(session=session)._get(URL)
+    assert session.calls == 1  # never re-request the 429 response
+
+
+
+def test_live_meetings_dom_description_outside_single_verified_lot_container():
+    # Observed on the official 2026 public detail mirror: SKU, price and
+    # status are inside .lot-container but itemprop=description is outside.
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове, 82,7 кв.м.</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div class="lot-cost-item price"><div class="value">7 500 000 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Объявленные торги</div></div></div>'
+        '<section><span itemprop="description">'
+        'Квартира, кадастровый номер: 68:29:0212001:4089, 82,7 кв.м.'
+        '</span></section>'
+        '<a class="card-item">Рекомендованный лот с данными третьего лица</a>'
+        '</html>'
+    )
+    lot = parse_mets_lot(html, "https://meetings.m-ets.ru/244602-1")
+    assert lot.external_id == "244602-1"
+    assert lot.lot_url == "https://meetings.m-ets.ru/244602-1"
+    assert lot.cadastral_number == "68:29:0212001:4089"
+    assert lot.start_price == 7_500_000
+    assert lot.auction_status == "scheduled"
+    assert "Рекомендованный" not in lot.description
+
+
+def test_unscoped_description_is_not_attributed_to_one_of_multiple_skus():
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div>Объявленные торги</div>'
+        '<div>7 500 000 ₽ Начальная цена</div></div>'
+        '<div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-2">'
+        '<h2>Чужой лот</h2></div>'
+        '<span itemprop="description">Кадастровый номер: 68:29:0212001:4089</span>'
+        '</html>'
+    )
+    lot = parse_mets_lot(html, "https://m-ets.ru/244602-1")
+    assert lot.external_id == "244602-1"
+    assert lot.cadastral_number is None
+    assert "Кадастровый номер" not in lot.description
+
+
+def test_recommended_card_description_cannot_be_main_property_evidence():
+    html = (
+        '<html><div class="lot-container">'
+        '<meta itemprop="sku" content="244602-МЭТС-1">'
+        '<h2>Квартира в Тамбове</h2>'
+        '<div>Идентификационный номер: 244602-МЭТС-1</div>'
+        '<div>Объявленные торги</div>'
+        '<div>7 500 000 ₽ Начальная цена</div></div>'
+        '<div class="card-item">'
+        '<span itemprop="description">Кадастровый номер: 68:29:0212001:4089</span>'
+        '</div></html>'
+    )
+    lot = parse_mets_lot(html, "https://m-ets.ru/244602-1")
+    assert lot.cadastral_number is None
+
+
+
+def test_user_captured_8_nov_2026_land_lot_preserves_two_cadastral_numbers():
+    # Sanitized reproduction of uploaded HTML 4.txt (244758-METS-1).
+    html = DETAIL.replace(
+        "48:20:0021101:37",
+        "27:01:0000050:624, кадастровый номер 27:17:0302204:451",
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.cadastral_number == "27:01:0000050:624"
+    assert lot.raw_data["cadastral_numbers"] == [
+        "27:01:0000050:624", "27:17:0302204:451",
+    ]
+    assert lot.raw_data["cadastral_multi_object"] is True
+
+
+def test_user_captured_mixed_building_land_lot_preserves_five_cadastres():
+    # Sanitized reproduction of uploaded HTML 6.txt (244745-METS-1).
+    numbers = [
+        "50:20:0040710:160",
+        "50:20:0040710:1906",
+        "50:20:0040636:3254",
+        "50:20:0040710:1895",
+        "50:20:0040636:8073",
+    ]
+    html = DETAIL.replace(
+        "48:20:0021101:37",
+        "; ".join("Кадастровый номер " + number for number in numbers),
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.raw_data["cadastral_numbers"] == numbers
+    assert lot.raw_data["cadastral_multi_object"] is True
+    # Do not infer one of these numbers represents the entire complex.
+    assert len(lot.raw_data["cadastral_numbers"]) == 5
+
+
+def test_single_cadastre_lot_is_explicitly_not_composite():
+    lot = parse_mets_lot(DETAIL, URL)
+    assert lot.raw_data["cadastral_numbers"] == ["48:20:0021101:37"]
+    assert lot.raw_data["cadastral_multi_object"] is False

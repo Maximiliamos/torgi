@@ -2,13 +2,20 @@
 # DO NOT re-run ingestion or bypass Torgi Russia's fail-closed region guard.
 [CmdletBinding()]
 param(
-    [string]$ExpectedSha = 'ce362342c8bb954cd2e55bb1efcbe8efe49c738a',
-    [string]$RunId = '26ca1925-068f-4d86-ad7b-53d6482f5c21',
+    [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}
+    [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9-]{36}
     [ValidateRange(1, 500)][int]$GeoBatchSize = 250,
     [ValidateRange(1, 64)][int]$GeoMaxBatches = 16,
-    [switch]$AcceptSixSourcePartial
+    [switch]$AcceptSixSourcePartial,
+    [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
+# This legacy continuation intentionally accepts only six successful sources.
+# It cannot prove the seventh source's region filter and must not publish
+# a MapDataset. Its diagnostic preflight remains available as a dry-run.
+if (-not $DryRun) {
+    throw 'Six-source partial GEO/Map publication is disabled fail-closed. Retry the failed source via a separately verified targeted source-run, then require seven-source coverage.'
+}
 if (-not $AcceptSixSourcePartial) {
     throw 'Specify -AcceptSixSourcePartial: Torgi Russia is excluded because its region filter was not proven.'
 }
@@ -103,7 +110,11 @@ with SessionLocal() as s:
         throw 'Partial-run GEO/map preflight failed; no GEO or map publication started'
     }
     $rows | ForEach-Object { Write-Host $_ }
+    Write-Host 'DRY_RUN_ONLY: six-source status diagnosed; seventh source missing; no GEO or MapDataset publication is allowed.'
+    return
 
+    # Legacy implementation retained for static guard regression compatibility.
+    # Unreachable by design: production use is blocked at entry and DryRun exits above.
     Write-Host '=== GEO: bounded pending-lot geocoding; no source ingestion ===' -ForegroundColor Cyan
     $geoScript = @'
 import json,os,time
