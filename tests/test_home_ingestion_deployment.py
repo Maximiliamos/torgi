@@ -101,15 +101,29 @@ def test_home_deploy_preserves_local_database_and_only_checks_schema() -> None:
 def test_home_deploy_skips_heavy_backup_only_when_schema_is_proven_current() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    precheck = 'python -m alembic current --check-heads'
-    backup = 'pg_dump `'
-    migrate = 'python -m alembic upgrade head'
+    precheck = "'python','-m','alembic','current','--check-heads'"
+    backup = "'pg_dump'"
+    migrate = "'python','-m','alembic','upgrade','head'"
 
     assert '$schemaAtHead = $false' in workflow
     assert 'if (-not $schemaAtHead)' in workflow
     assert 'Database schema is already at application head; skipping pre-migration backup and migration' in workflow
     assert 'Database schema is not proven current; preserving pre-migration backup and migration path' in workflow
     assert workflow.index(precheck) < workflow.index(backup) < workflow.index(migrate)
+
+
+def test_home_schema_backup_and_migration_commands_are_bounded() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "function Invoke-BoundedDockerCommand" in workflow
+    assert "WaitForExit($TimeoutSeconds * 1000)" in workflow
+    assert "Pre-migration PostgreSQL backup' -TimeoutSeconds 900" in workflow
+    assert "Alembic schema migration' -TimeoutSeconds 600" in workflow
+    assert "Post-migration Alembic head verification' -TimeoutSeconds 120" in workflow
+    assert "--lock-wait-timeout=30s" in workflow
+    assert "Database schema head check timed out; existing production containers were left running" in workflow
+    assert "Pre-migration PostgreSQL backup timed out; existing production containers were left running" in workflow
+    assert "Database migration timed out; backup preserved at $hostBackup and existing production containers were left running" in workflow
 
 
 def test_home_deploy_clears_only_orphaned_geo_lock_after_worker_stop() -> None:
