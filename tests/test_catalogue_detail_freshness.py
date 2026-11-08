@@ -34,6 +34,8 @@ def _persist_verified_source(
     source_status: str,
     raw_data: dict,
     last_seen_at: datetime,
+    application_start_at: datetime | None = None,
+    application_deadline: datetime | None = None,
 ):
     with sessions.begin() as session:
         processed = ProcessedLot(
@@ -68,6 +70,8 @@ def _persist_verified_source(
                 current_price=price,
                 source_status=source_status,
                 raw_data=raw_data,
+                application_start_at=application_start_at,
+                application_deadline=application_deadline,
                 last_seen_at=last_seen_at,
             )
         )
@@ -91,6 +95,8 @@ def _cdtrf_candidate(price: float = 1_000_000) -> dict:
         "region_id": 76,
         "source_status_text": "Прием заявок",
         "listing_price_rub": price,
+        "request_time_begin": "2026-11-09T10:00:00",
+        "request_time_end": "2026-12-27T18:00:00",
     }
 
 
@@ -179,6 +185,8 @@ def test_cdtrf_legacy_verified_unchanged_candidate_skips_detail() -> None:
             "source_status_text": "Прием заявок",
         },
         last_seen_at=now - timedelta(hours=1),
+        application_start_at=datetime(2026, 11, 9, 7, 0),
+        application_deadline=datetime(2026, 12, 27, 15, 0),
     )
     with sessions() as session:
         decision = select_catalogue_candidates(
@@ -230,3 +238,32 @@ def test_explicit_catalogue_fingerprint_is_reused_and_liveness_advances() -> Non
         ).one()
         assert row.last_seen_at == now
         assert row.last_sync_run_id == "incremental-test-run"
+
+
+def test_cdtrf_changed_application_deadline_forces_detail() -> None:
+    sessions = _sessions()
+    now = datetime(2026, 11, 8, 20, 0)
+    candidate = _cdtrf_candidate()
+    _persist_verified_source(
+        sessions,
+        source_system="cdtrf.ru",
+        external_id="cdtrf:101",
+        price=Decimal("1000000"),
+        source_status="active",
+        raw_data={
+            "evidence": "url_html_nuxt_identity_match",
+            "category_evidence": "lotInfo_and_official_badge",
+            "trade_id": "77",
+            "trade_lot_id": "101",
+            "source_status_text": "Прием заявок",
+        },
+        last_seen_at=now - timedelta(hours=1),
+        application_start_at=datetime(2026, 11, 9, 7, 0),
+        application_deadline=datetime(2026, 12, 27, 15, 0),
+    )
+    candidate["request_time_end"] = "2026-12-28T18:00:00"
+    with sessions() as session:
+        decision = select_catalogue_candidates(
+            session, "cdtrf.ru", [candidate], now=now,
+        )["cdtrf:101"]
+    assert decision["skip_detail"] is False
