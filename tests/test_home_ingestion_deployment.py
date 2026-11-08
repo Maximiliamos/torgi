@@ -94,7 +94,7 @@ def test_home_deploy_preserves_local_database_and_only_checks_schema() -> None:
     assert "gh run download" not in workflow
     assert "pg_restore" not in workflow
     assert "python -m bankrotai.cli init-db" not in workflow
-    assert "python -m alembic current --check-heads" in workflow
+    assert "'python','-m','alembic','current','--check-heads'" in workflow
 
 
 
