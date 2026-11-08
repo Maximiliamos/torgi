@@ -1092,19 +1092,9 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     if _global_source_network_blocked():
         return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
     specs = _unpaused_source_specs(default_source_specs())
-    if mode in {"full", "incremental"}:
-        from bankrotai.services.scheduled_ingestion_preflight import (
-            run_scheduled_source_preflight,
-        )
-
-        preflight = run_scheduled_source_preflight(specs)
-        if not preflight.get("passed"):
-            return {
-                "status": "skipped",
-                "reason": "scheduled_source_preflight_failed",
-                "mode": mode,
-                "preflight": preflight,
-            }
+    from bankrotai.services.scheduled_ingestion_preflight import scheduled_preflight_skip
+    if skipped := scheduled_preflight_skip(mode, specs):
+        return skipped
     return _run_automatic_nationwide_refresh(
         self,
         mode=mode,
