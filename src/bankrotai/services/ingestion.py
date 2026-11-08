@@ -39,7 +39,9 @@ from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
-from bankrotai.services.incremental_detail_cache import snapshot_from_source_row
+from bankrotai.services.ingestion_incremental import (
+    apply_page_metadata, mark_reused_rows, prepare_source, update_eta,
+)
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
 )
@@ -58,31 +60,6 @@ def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.ingestion_spec_builders import core_source_specs
     from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
     return core_source_specs() + scheduled_etp_source_specs()
-
-
-def incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
-    """Exhaust every catalogue but reuse fresh unchanged detail where proven safe."""
-    reusable = {"m-ets.ru", "cdtrf.ru"}
-    return tuple(
-        replace(spec, reuse_unchanged_details=spec.source_id in reusable)
-        for spec in default_source_specs()
-    )
-
-
-def source_retry_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
-    """Targeted retry of the production spec with resumable cursor where supported."""
-    reusable = {"m-ets.ru", "cdtrf.ru"}
-    matched = tuple(spec for spec in default_source_specs() if spec.source_id == source_id)
-    if not matched:
-        raise ValueError(f"Unsupported source retry: {source_id}")
-    return tuple(
-        replace(
-            spec,
-            reuse_unchanged_details=spec.source_id in reusable,
-            resume_from_checkpoint=True,
-        )
-        for spec in matched
-    )
 
 
 def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ...]:
@@ -409,143 +386,13 @@ class NationwideIngestionService:
                 archived += len(rows)
         return archived
 
-    def _detail_cache_snapshots(self, source_id: str) -> dict[str, dict[str, Any]]:
-        with self.session_factory() as session:
-            rows = session.scalars(
-                select(SourceLot).where(
-                    SourceLot.source_system == source_id,
-                    SourceLot.is_archived.is_(False),
-                    SourceLot.processed_lot_id.isnot(None),
-                )
-            ).all()
-            return {row.external_id: snapshot_from_source_row(row) for row in rows}
-
-    def _resume_checkpoint_for_source(self, run_id: str, source_id: str) -> dict[str, Any] | None:
-        with self.session_factory() as session:
-            rows = session.scalars(
-                select(LotSyncSourceRun)
-                .where(
-                    LotSyncSourceRun.sync_run_id != run_id,
-                    LotSyncSourceRun.source_system == source_id,
-                    LotSyncSourceRun.status.in_(("failed", "partial")),
-                    LotSyncSourceRun.checkpoint_json.isnot(None),
-                )
-                .order_by(LotSyncSourceRun.finished_at.desc(), LotSyncSourceRun.id.desc())
-                .limit(5)
-            ).all()
-            for row in rows:
-                checkpoint = row.checkpoint_json if isinstance(row.checkpoint_json, dict) else {}
-                connector_checkpoint = checkpoint.get("connector_checkpoint")
-                resume_cursor = checkpoint.get("resume_cursor")
-                if isinstance(connector_checkpoint, dict) and isinstance(resume_cursor, str):
-                    return {
-                        "connector_checkpoint": connector_checkpoint,
-                        "resume_cursor": resume_cursor,
-                        "pages_scanned": int(row.pages_scanned or 0),
-                        "items_seen": int(row.items_seen or 0),
-                        "items_inserted": int(row.items_inserted or 0),
-                        "items_updated": int(row.items_updated or 0),
-                        "items_unchanged": int(row.items_unchanged or 0),
-                        "items_failed": int(row.items_failed or 0),
-                        "detail_attempts": int(checkpoint.get("detail_attempts") or 0),
-                        "detail_skipped_unchanged": int(
-                            checkpoint.get("detail_skipped_unchanged") or 0
-                        ),
-                        "retry_count": int(checkpoint.get("retry_count") or 0),
-                    }
-        return None
-
-    def _mark_reused_catalogue_rows(
-        self,
-        run_id: str,
-        result: SourceSyncResult,
-        metadata: dict[str, Any],
-    ) -> None:
-        raw_ids = metadata.get("reused_existing_ids")
-        if not isinstance(raw_ids, list) or not raw_ids:
-            return
-        fingerprints = metadata.get("reused_catalogue_fingerprints")
-        fingerprint_by_id = fingerprints if isinstance(fingerprints, dict) else {}
-        requested = [
-            str(value) for value in raw_ids
-            if isinstance(value, str) and value not in result.seen_external_ids
-        ]
-        if not requested:
-            return
-        now = utc_now()
-        with self.session_factory() as session:
-            rows = session.scalars(
-                select(SourceLot).where(
-                    SourceLot.source_system == result.source_system,
-                    SourceLot.external_id.in_(requested),
-                    SourceLot.is_archived.is_(False),
-                    SourceLot.processed_lot_id.isnot(None),
-                )
-            ).all()
-            by_id = {row.external_id: row for row in rows}
-            missing = sorted(set(requested) - set(by_id))
-            if missing:
-                raise RuntimeError(
-                    f"{result.source_system}: incremental detail cache lost {len(missing)} persisted rows"
-                )
-            for external_id in requested:
-                row = by_id[external_id]
-                previous_seen = row.last_seen_at
-                raw = dict(row.raw_data or {})
-                if not raw.get("detail_verified_at") and previous_seen is not None:
-                    raw["detail_verified_at"] = previous_seen.isoformat()
-                fingerprint = fingerprint_by_id.get(external_id)
-                if isinstance(fingerprint, str) and len(fingerprint) == 64:
-                    raw["catalogue_fingerprint"] = fingerprint
-                row.raw_data = raw
-                row.last_sync_run_id = run_id
-                row.last_seen_at = now
-                row.missing_successful_runs = 0
-                result.items_seen += 1
-                result.items_unchanged += 1
-                result.seen_external_ids.add(external_id)
-            session.commit()
-
-    @staticmethod
-    def _update_eta(result: SourceSyncResult) -> None:
-        current, total = result.progress_current, result.progress_total
-        if not current or not total or current <= 0 or total <= current or result.elapsed_seconds <= 0:
-            result.eta_seconds = 0.0 if current and total and current >= total else None
-            return
-        per_unit = result.elapsed_seconds / current
-        result.eta_seconds = max(0.0, per_unit * (total - current))
-
     async def _sync_source(self, run_id: str, spec: SourceSyncSpec) -> SourceSyncResult:
         result = SourceSyncResult(source_system=spec.source_id)
         started = utc_now()
         wall_started = time.perf_counter()
         active_baseline = self._active_source_count(spec.source_id, region_code=spec.archive_region_code)
         connector = self.connector_factory(spec.source_id)
-        cursor: str | None = None
-        if spec.reuse_unchanged_details:
-            connector.configure_incremental_detail_cache(
-                self._detail_cache_snapshots(spec.source_id)
-            )
-        if spec.resume_from_checkpoint:
-            resume = self._resume_checkpoint_for_source(run_id, spec.source_id)
-            if resume is not None:
-                restored = connector.restore_resume_checkpoint(
-                    resume["connector_checkpoint"]
-                )
-                if restored == resume["resume_cursor"]:
-                    cursor = restored
-                    result.resume_cursor = restored
-                    result.connector_checkpoint = resume["connector_checkpoint"]
-                    result.pages_scanned = resume["pages_scanned"]
-                    result.items_seen = resume["items_seen"]
-                    result.items_inserted = resume["items_inserted"]
-                    result.items_updated = resume["items_updated"]
-                    result.items_unchanged = resume["items_unchanged"]
-                    result.items_failed = resume["items_failed"]
-                    result.detail_attempts = resume["detail_attempts"]
-                    result.detail_skipped_unchanged = resume["detail_skipped_unchanged"]
-                    result.retry_count = resume["retry_count"]
-                    result.phase = "resumed"
+        cursor = prepare_source(self.session_factory, connector, spec, run_id, result)
         self._upsert_source_run(run_id, result, started_at=started)
         try:
             if spec.reconcile_missing and not connector.safe_for_reconciliation:
@@ -568,16 +415,7 @@ class NationwideIngestionService:
                     result.progress_current = int(page.metadata["progress_current"])
                 if page.metadata.get("progress_total") is not None:
                     result.progress_total = int(page.metadata["progress_total"])
-                result.detail_attempts += int(page.metadata.get("detail_attempts") or 0)
-                result.detail_skipped_unchanged += int(
-                    page.metadata.get("detail_skipped_unchanged") or 0
-                )
-                result.retry_count += int(page.metadata.get("retry_count") or 0)
-                result.resume_cursor = page.next_cursor
-                connector_checkpoint = page.metadata.get("resume_checkpoint")
-                result.connector_checkpoint = (
-                    connector_checkpoint if isinstance(connector_checkpoint, dict) else None
-                )
+                apply_page_metadata(result, page.metadata, page.next_cursor)
                 if self.profile_timings:
                     for key, value in page.metadata.get("timings", {}).items():
                         if isinstance(value, (int, float)):
@@ -596,14 +434,14 @@ class NationwideIngestionService:
                     group = str(category_group)
                     result.category_pages[group] = result.category_pages.get(group, 0) + 1
                 merge_page_quarantine(result, page.metadata)
-                self._mark_reused_catalogue_rows(run_id, result, page.metadata)
+                mark_reused_rows(self.session_factory, run_id, result, page.metadata)
                 await self._persist_page(
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
-                self._update_eta(result)
+                update_eta(result)
                 self._heartbeat(run_id)
                 self._upsert_source_run(run_id, result, started_at=started)
                 if page.next_cursor is None:
