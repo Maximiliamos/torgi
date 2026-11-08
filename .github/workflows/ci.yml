@@ -234,6 +234,23 @@ jobs:
             $parseErrors | ForEach-Object { Write-Error $_.Message }
             throw 'Gated release PowerShell parser rejected the script'
           }
+      - name: Smoke guarded launcher in dry-run with stubbed gh (no network, no writes)
+        shell: pwsh
+        run: |
+          function gh {
+            param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Parts)
+            # Stub MUST reject any attempt to call workflow dispatch.
+            if ($Parts.Count -ne 4 -or
+                $Parts[0] -ne 'api' -or
+                $Parts[1] -ne 'repos/Maximiliamos/torgi/branches/main' -or
+                $Parts[2] -ne '--jq' -or
+                $Parts[3] -ne '.commit.sha') {
+              throw "Guarded launcher unexpectedly invoked gh: $($Parts -join ' ')"
+            }
+            Write-Output $env:GITHUB_SHA
+          }
+          & ./scripts/launch-seven-source-gated.ps1 -ExpectedSha $env:GITHUB_SHA
+          if (-not $?) { throw 'Guarded launcher dry-run smoke failed' }
       - name: Check source desktop through START_TORGI.bat
         shell: cmd
         run: START_TORGI.bat --check
