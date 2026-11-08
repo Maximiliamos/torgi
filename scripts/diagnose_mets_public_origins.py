@@ -12,9 +12,11 @@ import json
 from urllib.parse import urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 
 from bankrotai.connectors.registry.etp_incremental import PROPERTY_CATEGORIES
 from bankrotai.connectors.registry.mets_public import (
+    CADASTRE,
     MAX_HTML_BYTES,
     MetsEvidenceError,
     _host_lot_url,
@@ -75,6 +77,30 @@ def probe_origin(
         if "text/html" not in response.headers.get("Content-Type", "").lower():
             result["reason"] = "not_html"
             return result
+        # Collect presence counts only. This diagnoses where independently
+        # visible cadastral evidence lives without logging an owner's data,
+        # HTML, or any non-approved host. It is NOT a basis for accepting lots.
+        soup = BeautifulSoup(response.text, "html.parser")
+        for node in soup(["script", "style", "noscript"]):
+            node.decompose()
+        primary = soup.select_one(".lot-container")
+        descriptions = soup.select('[itemprop="description"]')
+        result["page_cadastre_count"] = min(
+            len(set(CADASTRE.findall(soup.get_text(" ", strip=True)))), 100
+        )
+        result["primary_container_cadastre_count"] = (
+            min(len(set(CADASTRE.findall(primary.get_text(" ", strip=True)))), 100)
+            if primary is not None else None
+        )
+        result["description_cadastre_count"] = min(
+            len(set(CADASTRE.findall(" ".join(
+                node.get_text(" ", strip=True) for node in descriptions[:3]
+            )))), 100
+        )
+        result["primary_container_present"] = primary is not None
+        result["itemprop_description_count"] = len(descriptions)
+        result["sku_meta_count"] = len(soup.select('[itemprop="sku"][content]'))
+        result["recommended_cards_count"] = len(soup.select("a.card-item"))
         try:
             lot = parse_mets_lot(response.text, url)
         except (MetsEvidenceError, ValueError):
