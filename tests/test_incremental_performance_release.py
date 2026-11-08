@@ -6,6 +6,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import requests
+import pytest
 
 from bankrotai.connectors.registry.cdtrf_sync import CdtrfSourceCrawler
 from bankrotai.connectors.registry.mets_public import APARTMENTS_URL, MetsPublicPilot
@@ -15,7 +16,7 @@ from bankrotai.services.incremental_detail_cache import (
     snapshot_reusable,
 )
 from bankrotai.services.ingestion import default_source_specs
-from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs, mark_reused_rows
 from bankrotai.services.scheduled_ingestion_modes import (
     SEVEN_SOURCE_IDS, production_seven_specs,
 )
@@ -340,3 +341,64 @@ def test_mets_resume_rejects_shifted_fresh_catalogue_prefix(monkeypatch) -> None
         "overlap_count": 0,
     }
     assert crawler.restore_checkpoint(checkpoint) is None
+
+
+def test_legacy_seen_timestamp_never_bootstraps_detail_cache() -> None:
+    from bankrotai.services.incremental_detail_cache import snapshot_from_source_row
+    now = datetime.now(timezone.utc)
+    legacy = SimpleNamespace(
+        external_id="242937-2", title="Объект",
+        start_price=Decimal("100"), current_price=None,
+        source_status="active", category="building",
+        cadastral_number="76:23:010101:1",
+        lot_url="https://m-ets.ru/242937-2", source_url=None,
+        raw_data={}, last_seen_at=now, is_archived=False,
+    )
+    snapshot = snapshot_from_source_row(legacy)
+    assert snapshot["detail_verified_at"] is None
+    assert snapshot["bootstrap_verified_at"] is None
+    assert not snapshot_reusable(
+        snapshot, expected_price=Decimal("100"),
+        expected_status="active", expected_title="Объект", now=now,
+    )
+
+
+def test_incremental_writer_rejects_fake_legacy_detail_proof() -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.row = SimpleNamespace(
+                external_id="242937-2",
+                raw_data={"bootstrap_verified_at": datetime.now(timezone.utc).isoformat()},
+                last_seen_at=datetime.now(timezone.utc),
+                missing_successful_runs=0,
+            )
+            self.did_commit = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalars(self, _sql):
+            return self
+
+        def all(self):
+            return [self.row]
+
+        def commit(self):
+            self.did_commit = True
+
+    session = Session()
+    result = SimpleNamespace(
+        source_system="m-ets.ru", seen_external_ids=set(),
+        items_seen=0, items_unchanged=0,
+    )
+    with pytest.raises(RuntimeError, match="no independent verification date"):
+        mark_reused_rows(
+            lambda: session, "run-test", result,
+            {"reused_existing_ids": ["242937-2"]},
+        )
+    assert session.did_commit is False
+    assert session.row.last_seen_at is not None
+    assert result.items_seen == 0
