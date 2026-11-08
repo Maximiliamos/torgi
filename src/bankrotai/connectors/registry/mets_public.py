@@ -390,6 +390,16 @@ class MetsConnector(AuctionConnector):
         if self._source_crawler is not None:
             self._source_crawler.set_detail_cache(self._incremental_detail_cache)
 
+    async def prepare_catalogue(self, filters) -> dict | None:
+        from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler, MetsSyncFilters
+        import asyncio
+
+        if not isinstance(filters, MetsSyncFilters):
+            return None
+        if self._source_crawler is None:
+            self._source_crawler = MetsSourceCrawler(self.pilot)
+        return await asyncio.to_thread(self._source_crawler.prepare_catalogue, filters)
+
     def restore_resume_checkpoint(self, checkpoint: dict) -> str | None:
         from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
         if self._source_crawler is None:
