@@ -134,7 +134,9 @@ def test_beat_keeps_geo_watchdogs_and_minute_map_publication_watchdog() -> None:
     full_schedule = schedule["refresh-nationwide-sources-full"]["schedule"]
     assert full_schedule.hour == {6, 18}
     assert full_schedule.minute == {0}
-    assert schedule["refresh-nationwide-sources-full"]["args"] == ("full",)
+    # Scheduled mode still discovers every catalogue page; only unchanged
+    # independently verified details may be reused.
+    assert schedule["refresh-nationwide-sources-full"]["args"] == ("incremental",)
     source_probe = schedule["probe-source-network-health"]["schedule"]
     assert source_probe.hour == {5, 17}
     assert source_probe.minute == {55}
