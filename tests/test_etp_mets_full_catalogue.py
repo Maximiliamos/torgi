@@ -333,7 +333,7 @@ def test_cross_page_duplicate_identity_is_rejected() -> None:
     "categories,statuses,match",
     [
         (("36", "34"), ("0", "1"), "category filter"),
-        (("36", "34", "39", "37", "38", "28", "41"), ("1",), "status filter"),
+        (("36", "34", "39", "37", "38", "28", "41", "11"), ("1",), "status filter"),
     ],
 )
 def test_selected_filter_mismatch_is_rejected(categories, statuses, match) -> None:
