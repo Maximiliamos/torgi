@@ -19,7 +19,7 @@ function Invoke-GhText {
     param([Parameter(Mandatory=$true)][string[]]$Arguments)
     $lines = @(& gh @Arguments 2>&1)
     $code = $LASTEXITCODE
-    if ($code -ne 0) {
+    if ($null -ne $code -and $code -ne 0) {
         throw "GitHub CLI command failed (exit $code). Check authentication and workflow permissions."
     }
     return ($lines -join "`n").Trim()
