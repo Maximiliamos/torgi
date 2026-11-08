@@ -383,6 +383,19 @@ class MetsConnector(AuctionConnector):
     def __init__(self, *, session: requests.Session | None = None) -> None:
         self.pilot = MetsPublicPilot(session=session)
         self._source_crawler: MetsSourceCrawler | None = None
+        self._incremental_detail_cache: dict[str, dict] = {}
+
+    def configure_incremental_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._incremental_detail_cache = dict(snapshots)
+        if self._source_crawler is not None:
+            self._source_crawler.set_detail_cache(self._incremental_detail_cache)
+
+    def restore_resume_checkpoint(self, checkpoint: dict) -> str | None:
+        from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
+        if self._source_crawler is None:
+            self._source_crawler = MetsSourceCrawler(self.pilot)
+            self._source_crawler.set_detail_cache(self._incremental_detail_cache)
+        return self._source_crawler.restore_checkpoint(checkpoint)
 
     async def search(self, filters=None, cursor=None) -> ConnectorPage:
         from bankrotai.connectors.registry.mets_sync import (
@@ -396,6 +409,7 @@ class MetsConnector(AuctionConnector):
         if isinstance(filters, MetsSyncFilters):
             if self._source_crawler is None:
                 self._source_crawler = MetsSourceCrawler(self.pilot)
+                self._source_crawler.set_detail_cache(self._incremental_detail_cache)
             return await self._source_crawler.search(filters, cursor)
         if not isinstance(filters, EtpIncrementalFilters) or filters.source_id != self.source_id:
             raise ConnectorCapabilityError(
