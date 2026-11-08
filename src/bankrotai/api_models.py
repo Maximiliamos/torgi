@@ -88,6 +88,12 @@ class NoteRequest(BaseModel):
     content: str = Field(min_length=1, max_length=10_000)
 
 
+class LotIssueReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=5_000)
+
+
 class SavedSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
