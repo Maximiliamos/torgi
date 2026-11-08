@@ -28,7 +28,6 @@ import {
   fetchNationwideLotSync,
   fetchOperationsProgress,
   pauseGeocoding,
-  reportLotIssue,
   resumeGeocoding,
   MapLot,
   MapDataset,
@@ -49,7 +48,6 @@ import {
   splitLot,
   startNationwideLotSync,
 } from "../../lib/api";
-
 export const MAP_REDUCED_LIMIT = 500;
 // The measured populated tile is small (163 B in the deterministic benchmark),
 // while 512 entries preserve useful pan-back history without unbounded growth.
@@ -73,6 +71,7 @@ import {
 } from "./MapFiltersPanel";
 import type { MapFilterState, MapSourceOption } from "./MapFiltersPanel";
 import { EtpQaPanel, useEtpQa } from "./EtpQaPanel";
+import { LotIssueReport } from "./LotIssueReport";
 export { mapFilterUiState } from "./MapFiltersPanel";
 import type { TileCoordinate } from "./mapGeometry";
 // Keep the existing MapView public exports for all downstream imports.
@@ -991,7 +990,6 @@ if(window.ymaps){ymaps.ready(init);}else{document.getElementById('hint').textCon
     />
   );
 }
-
 function SourceButton({
   label,
   url,
@@ -1040,37 +1038,7 @@ function LotPreview({
       ? [lot.image_url]
       : [];
   const [imageIndex, setImageIndex] = React.useState(0);
-  const [reportOpen, setReportOpen] = React.useState(false);
-  const [reportText, setReportText] = React.useState("");
-  const [reportBusy, setReportBusy] = React.useState(false);
-  const [reportMessage, setReportMessage] = React.useState("");
-  const [reportError, setReportError] = React.useState("");
-  React.useEffect(() => {
-    setImageIndex(0);
-    setReportOpen(false);
-    setReportText("");
-    setReportMessage("");
-    setReportError("");
-  }, [lot.id]);
-
-  const submitIssueReport = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const content = reportText.trim();
-    if (!content || reportBusy) return;
-    setReportBusy(true);
-    setReportError("");
-    setReportMessage("");
-    try {
-      await reportLotIssue(lot.id, content);
-      setReportText("");
-      setReportOpen(false);
-      setReportMessage("Спасибо. Сообщение об ошибке отправлено.");
-    } catch (error) {
-      setReportError(error instanceof Error ? error.message : "Не удалось отправить сообщение");
-    } finally {
-      setReportBusy(false);
-    }
-  };
+  React.useEffect(() => setImageIndex(0), [lot.id]);
 
   return (
     <aside className="mapLotPreview" aria-label="Карточка выбранного лота">
@@ -1213,41 +1181,7 @@ function LotPreview({
             ))}
           </div>
         </details>
-        <div className="mapIssueReport">
-          <button
-            type="button"
-            className="mapIssueReportButton"
-            onClick={() => {
-              setReportOpen((value) => !value);
-              setReportError("");
-              setReportMessage("");
-            }}
-          >
-            Сообщить об ошибке
-          </button>
-          {reportOpen && (
-            <form className="mapIssueReportForm" onSubmit={submitIssueReport}>
-              <textarea
-                value={reportText}
-                onChange={(event) => setReportText(event.target.value)}
-                maxLength={5000}
-                placeholder="Опишите, что не так с этим лотом"
-                aria-label="Описание ошибки лота"
-                required
-              />
-              <div>
-                <button type="submit" disabled={reportBusy || !reportText.trim()}>
-                  {reportBusy ? "Отправляем…" : "Отправить"}
-                </button>
-                <button type="button" onClick={() => setReportOpen(false)} disabled={reportBusy}>
-                  Отмена
-                </button>
-              </div>
-            </form>
-          )}
-          {reportMessage && <small className="mapIssueReportSuccess">{reportMessage}</small>}
-          {reportError && <small className="mapIssueReportError">{reportError}</small>}
-        </div>
+        <LotIssueReport lotId={lot.id} />
         <h3 className="mapReviewTitle">Оценка лота</h3>
         <div className="mapReviewButtons">
           <button
