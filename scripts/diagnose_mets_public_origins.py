@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from bankrotai.connectors.registry.etp_incremental import PROPERTY_CATEGORIES
 from bankrotai.connectors.registry.mets_public import (
     MAX_HTML_BYTES,
     MetsEvidenceError,
@@ -80,7 +81,7 @@ def probe_origin(
             result["reason"] = "detail_schema_invalid"
             return result
         result["schema_verified"] = lot.external_id == lot_id
-        result["category_verified"] = lot.category in {"land", "apartment", "house", "commercial", "garage", "property", "building", "room"}
+        result["category_verified"] = lot.category in PROPERTY_CATEGORIES
         result["cadastral_verified"] = lot.cadastral_number is not None
         result["price_verified"] = lot.start_price is not None or lot.current_price is not None
         result["status_verified"] = lot.auction_status in {"active", "scheduled"}
