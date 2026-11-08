@@ -33,6 +33,43 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Require current main SHA and successful manual P1/P11 acceptance
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo 'Only an explicit dispatch on main can start full ingestion' >&2
+            exit 1
+          fi
+          current="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')"
+          if [ "$EXPECTED_SHA" != "$current" ]; then
+            echo 'Refusing non-current SHA for full ingestion' >&2
+            exit 1
+          fi
+          # A skipped QA workflow is not acceptance. Require SUCCESS from
+          # a separate manual P1 and P11 run on this exact deployed SHA.
+          for workflow in p1-data-quality.yml p11-production-acceptance.yml; do
+            evidence="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow "$workflow" --commit "$EXPECTED_SHA" \
+              --event workflow_dispatch --limit 50 \
+              --json conclusion,headSha,status)"
+            printf '%s' "$evidence" | python -c '
+          import json,os,sys
+          expected=os.environ["EXPECTED_SHA"]
+          rows=json.load(sys.stdin)
+          valid=any(row.get("headSha")==expected and
+                    row.get("conclusion")=="success" and
+                    row.get("status")=="completed" for row in rows)
+          sys.exit(0 if valid else 1)
+          ' || {
+              echo "Missing successful manually dispatched exact-SHA acceptance for $workflow" >&2
+              exit 1
+            }
+          done
+          echo "Exact-SHA manual P1 and P11 acceptance verified"
       - name: Wait for the same main revision on the home origin
         if: github.event_name == 'push'
         shell: bash
