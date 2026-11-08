@@ -171,6 +171,14 @@ def select_seven_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
     return tuple(by_id[source] for source in SCHEDULED_SOURCE_IDS if source in by_id)
 
 
+def require_seven_source_specs(specs: tuple[Any, ...]) -> tuple[Any, ...]:
+    selected = select_seven_source_specs(specs)
+    if len(selected) != len(SCHEDULED_SOURCE_IDS):
+        missing = sorted(set(SCHEDULED_SOURCE_IDS) - {str(spec.source_id) for spec in selected})
+        raise RuntimeError("Required production sources unavailable: " + ",".join(missing))
+    return selected
+
+
 def scheduled_preflight_skip(mode: str, specs: tuple[Any, ...]) -> dict[str, Any] | None:
     if mode not in {"full", "incremental"}:
         return None
