@@ -161,3 +161,177 @@ def test_mets_scope_excludes_standalone_land_category() -> None:
 
 def test_catalogue_fingerprint_is_order_stable() -> None:
     assert catalogue_fingerprint({"a": 1, "b": 2}) == catalogue_fingerprint({"b": 2, "a": 1})
+
+
+
+def test_mets_catalogue_first_reuses_unchanged_without_detail(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as module
+    from types import SimpleNamespace
+
+    pages = {
+        1: {
+            "total": 3,
+            "observations": [
+                ("1001-1", "100", "Торги в стадии приема заявок", "Объект 1"),
+                ("1002-1", "200", "Объявленные торги", "Объект 2"),
+            ],
+            "next_page": 2,
+        },
+        2: {
+            "total": 3,
+            "observations": [
+                ("1003-1", "300", "Объявленные торги", "Объект 3"),
+            ],
+            "next_page": None,
+        },
+    }
+    monkeypatch.setattr(
+        module, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text=str(page)),
+    )
+    monkeypatch.setattr(module, "_parse_page", lambda text, page: pages[page])
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(
+        pilot, "_get",
+        lambda _url: (_ for _ in ()).throw(AssertionError("unchanged detail fetched")),
+    )
+    crawler = MetsSourceCrawler(pilot)
+    filters = MetsSyncFilters()
+    discovery = crawler.prepare_catalogue(filters)
+    assert discovery["pages"] == 2
+
+    now = datetime.now(timezone.utc).isoformat()
+    snapshots = {}
+    for external_id, price, status, title in pages[1]["observations"] + pages[2]["observations"]:
+        snapshots[external_id] = {
+            "external_id": external_id,
+            "title": title,
+            "start_price": price,
+            "current_price": None,
+            "source_status": "active" if "приема заявок" in status else "scheduled",
+            "cadastral_number": "76:23:010101:1",
+            "lot_url": f"https://m-ets.ru/{external_id}",
+            "is_archived": False,
+            "detail_verified_at": now,
+            "bootstrap_verified_at": now,
+            "catalogue_fingerprint": None,
+        }
+    crawler.set_detail_cache(snapshots)
+
+    first = asyncio.run(crawler.search(filters))
+    second = asyncio.run(crawler.search(filters, first.next_cursor))
+    assert first.items == []
+    assert second.items == []
+    assert first.metadata["detail_attempts"] == 0
+    assert first.metadata["detail_skipped_unchanged"] == 2
+    assert second.metadata["detail_attempts"] == 0
+    assert second.metadata["detail_skipped_unchanged"] == 1
+
+
+def test_cdtrf_catalogue_first_reuses_unchanged_without_detail(monkeypatch) -> None:
+    import bankrotai.connectors.registry.cdtrf_sync as module
+
+    rows = [
+        {
+            "external_id": "cdtrf:101",
+            "trade_id": "201",
+            "trade_lot_id": "101",
+            "listing_price_rub": 100,
+            "source_status_text": "Прием заявок",
+            "region_id": 76,
+            "property_category_ids": [41],
+        },
+        {
+            "external_id": "cdtrf:102",
+            "trade_id": "202",
+            "trade_lot_id": "102",
+            "listing_price_rub": 200,
+            "source_status_text": "Объявлены",
+            "region_id": 76,
+            "property_category_ids": [41],
+        },
+    ]
+    data = {
+        "reported_total": 2,
+        "observed_rows": 2,
+        "observed_lot_ids": ["101", "102"],
+        "property_candidates": rows,
+    }
+    crawler = CdtrfSourceCrawler(requests.Session())
+    monkeypatch.setattr(crawler, "_fetch_catalogue_page", lambda page, size: (data, 0))
+    discovery = crawler.prepare_catalogue(module.CdtrfSyncFilters(page_size=100))
+    assert discovery["pages"] == 1
+
+    now = datetime.now(timezone.utc).isoformat()
+    crawler.set_detail_cache({
+        row["external_id"]: {
+            "external_id": row["external_id"],
+            "title": "Объект",
+            "start_price": str(row["listing_price_rub"]),
+            "current_price": None,
+            "source_status": "active" if "Прием" in row["source_status_text"] else "scheduled",
+            "cadastral_number": "76:23:010101:1",
+            "lot_url": f"https://torgi.cdtrf.ru/trades/{row['trade_id']}",
+            "is_archived": False,
+            "detail_verified_at": now,
+            "bootstrap_verified_at": now,
+            "catalogue_fingerprint": None,
+        }
+        for row in rows
+    })
+    monkeypatch.setattr(
+        module, "_verified_detail_with_retry",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unchanged CDTRF detail fetched")
+        ),
+    )
+    page = asyncio.run(
+        crawler.search(module.CdtrfSyncFilters(page_size=100))
+    )
+    assert page.items == []
+    assert page.metadata["detail_attempts"] == 0
+    assert page.metadata["detail_skipped_unchanged"] == 2
+    assert page.metadata["verified_property_lots"] == 2
+
+
+def test_mets_resume_rejects_shifted_fresh_catalogue_prefix(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as module
+    from types import SimpleNamespace
+
+    pages = {
+        1: {
+            "total": 3,
+            "observations": [
+                ("1001-1", "100", "Объявленные торги", "Объект 1"),
+                ("1002-1", "200", "Объявленные торги", "Объект 2"),
+            ],
+            "next_page": 2,
+        },
+        2: {
+            "total": 3,
+            "observations": [
+                ("1003-1", "300", "Объявленные торги", "Объект 3"),
+            ],
+            "next_page": None,
+        },
+    }
+    monkeypatch.setattr(
+        module, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text=str(page)),
+    )
+    monkeypatch.setattr(module, "_parse_page", lambda text, page: pages[page])
+    crawler = MetsSourceCrawler(MetsPublicPilot(session=object()))
+    crawler.prepare_catalogue(MetsSyncFilters())
+    old_digest = catalogue_fingerprint({"different": "old"})
+    checkpoint = {
+        "version": 1,
+        "source": "m-ets.ru",
+        "next_cursor": "2:" + old_digest,
+        "seen_ids": ["old-id"],
+        "total": 3,
+        "minimum_total": 3,
+        "maximum_total": 3,
+        "page_size": 2,
+        "overlap_count": 0,
+    }
+    assert crawler.restore_checkpoint(checkpoint) is None
