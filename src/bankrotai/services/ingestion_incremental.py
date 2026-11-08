@@ -20,7 +20,6 @@ SAFE_RESUME_ERROR_CATEGORIES = frozenset({
     "tls",
     "connect_timeout",
     "read_timeout",
-    "unknown_upstream",
 })
 
 
