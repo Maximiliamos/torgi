@@ -50,6 +50,21 @@ class DirectEtpPilotConnector(AuctionConnector):
         self.profile = PROFILE_BY_ID[source_id]
         self.session = session or requests.Session()
         self._cdtrf_source_crawler: CdtrfSourceCrawler | None = None
+        self._incremental_detail_cache: dict[str, dict] = {}
+
+    def configure_incremental_detail_cache(self, snapshots: dict[str, dict]) -> None:
+        self._incremental_detail_cache = dict(snapshots)
+        if self._cdtrf_source_crawler is not None:
+            self._cdtrf_source_crawler.set_detail_cache(self._incremental_detail_cache)
+
+    def restore_resume_checkpoint(self, checkpoint: dict) -> str | None:
+        if self.source_id != "cdtrf.ru":
+            return None
+        from bankrotai.connectors.registry.cdtrf_sync import CdtrfSourceCrawler
+        if self._cdtrf_source_crawler is None:
+            self._cdtrf_source_crawler = CdtrfSourceCrawler(self.session)
+            self._cdtrf_source_crawler.set_detail_cache(self._incremental_detail_cache)
+        return self._cdtrf_source_crawler.restore_checkpoint(checkpoint)
 
     async def search(self, filters=None, cursor: str | None = None) -> ConnectorPage:
         if self.source_id == "cdtrf.ru":
@@ -59,6 +74,7 @@ class DirectEtpPilotConnector(AuctionConnector):
             if isinstance(filters, CdtrfSyncFilters):
                 if self._cdtrf_source_crawler is None:
                     self._cdtrf_source_crawler = CdtrfSourceCrawler(self.session)
+                    self._cdtrf_source_crawler.set_detail_cache(self._incremental_detail_cache)
                 return await self._cdtrf_source_crawler.search(filters, cursor)
             from bankrotai.connectors.registry.etp_incremental import (
                 EtpIncrementalFilters, incremental_cdtrf_search,
