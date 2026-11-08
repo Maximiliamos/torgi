@@ -56,4 +56,5 @@ class SourceSyncResult:
     resume_cursor: str | None = None
     connector_checkpoint: dict[str, Any] | None = None
     resumed_from_run_id: str | None = None
+    resume_base_progress: int = 0
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
