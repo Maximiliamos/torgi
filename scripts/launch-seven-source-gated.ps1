@@ -36,6 +36,20 @@ function Assert-ExactMain {
     }
 }
 
+function Assert-LocalRevision {
+    # Never launch from an unreleased PR checkout or a modified local script.
+    $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    $local = ( & git -C $root rev-parse HEAD 2>$null )
+    if ($LASTEXITCODE -ne 0 -or @($local).Count -ne 1 -or
+        ([string]$local).Trim() -cne $ExpectedSha) {
+        throw 'Local operator checkout is not the exact released main SHA'
+    }
+    $dirty = @(& git -C $root status --porcelain 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $dirty.Count -gt 0) {
+        throw 'Local operator checkout contains uncommitted or untracked changes'
+    }
+}
+
 function Get-WorkflowRuns {
     param([Parameter(Mandatory=$true)][string]$Workflow)
     $body = Invoke-GhText @(
@@ -110,7 +124,8 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     throw 'GitHub CLI (gh) is required; authenticate with gh auth login.'
 }
 Assert-ExactMain
-Write-Host "Current main SHA verified: $ExpectedSha"
+Assert-LocalRevision
+Write-Host "Current main SHA and clean local checkout verified: $ExpectedSha"
 if (-not $Execute) {
     Write-Host 'DRY RUN ONLY; no workflows were dispatched.'
     Write-Host 'After independent review and deployment, pass -Execute to run P1, P11, then Phase 3.'
