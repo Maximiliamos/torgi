@@ -12,6 +12,7 @@ import hashlib
 import os
 import re
 import time
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -114,9 +115,11 @@ class CdtrfSourceCrawler:
         self._detail_limiter: HostRateLimiter | None = None
         self._detail_rate: float | None = None
         self._retry_count = 0
+        self._retry_lock = threading.Lock()
 
     def _record_retry(self) -> None:
-        self._retry_count += 1
+        with self._retry_lock:
+            self._retry_count += 1
 
     def _fetch_catalogue_page(
         self,
@@ -152,6 +155,7 @@ class CdtrfSourceCrawler:
                     raise CdtrfCatalogueScanError(
                         f"CDTRF catalogue HTTP {response.status_code}"
                     )
+                self._record_retry()
                 time.sleep(CATALOGUE_RETRY_DELAYS[attempt])
                 continue
             break
