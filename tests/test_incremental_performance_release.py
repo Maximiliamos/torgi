@@ -9,7 +9,7 @@ import requests
 
 from bankrotai.connectors.registry.cdtrf_sync import CdtrfSourceCrawler
 from bankrotai.connectors.registry.mets_public import APARTMENTS_URL, MetsPublicPilot
-from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
+from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler, MetsSyncFilters
 from bankrotai.services.incremental_detail_cache import (
     catalogue_fingerprint,
     snapshot_reusable,
