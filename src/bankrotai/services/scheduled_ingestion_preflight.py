@@ -53,6 +53,7 @@ def _probe_mets() -> dict[str, Any]:
                     lot.external_id != external_id
                     or lot.auction_status != expected_status
                     or Decimal(catalogue_price) not in detail_prices
+                    or lot.category == "land"
                     or not _property_ready(lot)
                 ):
                     rejection_codes["detail_contract"] = (
@@ -91,6 +92,8 @@ def _probe_cdtrf() -> dict[str, Any]:
             )
             if lot.external_id != candidate["external_id"]:
                 raise RuntimeError("CDTRF preflight detail identity mismatch")
+            if lot.category == "land":
+                continue
             verified += 1
         return {
             "source_system": "cdtrf.ru",
