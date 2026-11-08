@@ -38,6 +38,8 @@ CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
 PRICE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,12})(?:[,\.](\d{1,2}))?\s*₽")
 DATE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})")
 MAX_HTML_BYTES = 2_000_000
+DETAIL_TIMEOUT = (5, 20)
+DETAIL_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
 class MetsEvidenceError(ValueError):
@@ -288,13 +290,14 @@ class MetsPublicPilot:
                 time.sleep(remaining)
         self._last_request_at = time.monotonic()
         response = None
-        for delay in (1.0, 2.0, 4.0, 8.0, None):
+        retry_delays = (*DETAIL_RETRY_DELAYS, None)
+        for delay in retry_delays:
             try:
                 if before_request is not None:
                     before_request(request_url)
                 response = self.session.get(
                     request_url,
-                    timeout=(10, 60),
+                    timeout=DETAIL_TIMEOUT,
                     allow_redirects=False,
                     headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
                 )
