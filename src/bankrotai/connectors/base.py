@@ -62,5 +62,16 @@ class AuctionConnector(ABC):
     async def fetch_events(self, external_id: str) -> list[dict[str, Any]]:
         raise ConnectorCapabilityError(f"{self.source_id} does not implement fetch_events")
 
+    def configure_incremental_detail_cache(self, snapshots: dict[str, dict[str, Any]]) -> None:
+        """Provide immutable persisted source evidence for changed-detail-only scans."""
+        return None
+
+    def restore_resume_checkpoint(self, checkpoint: dict[str, Any]) -> str | None:
+        """Restore connector-local cursor state for a targeted retry.
+
+        Connectors that cannot prove safe restoration return None and restart.
+        """
+        return None
+
     async def healthcheck(self) -> ConnectorHealth:
         return ConnectorHealth(status="unknown", message="Connector has no active healthcheck")
