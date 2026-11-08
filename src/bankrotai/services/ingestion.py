@@ -40,7 +40,8 @@ from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
 from bankrotai.services.ingestion_incremental import (
-    apply_page_metadata, mark_reused_rows, prepare_source, update_eta,
+    apply_page_metadata, checkpoint_payload, mark_reused_rows,
+    performance_profile, prepare_source, update_eta,
 )
 from bankrotai.services.etp_nistp_schedule_guard import (
     catalogue_row_eligible_for_detail, independent_detail_proven,
@@ -1004,37 +1005,7 @@ class NationwideIngestionService:
                 )
             )
             now = utc_now()
-            checkpoint = {
-                "category_pages": result.category_pages,
-                "current_category": result.current_category,
-                "total_pages": result.total_pages,
-                "progress_current": result.progress_current,
-                "progress_total": result.progress_total,
-                "phase": result.phase,
-                "items_rejected": result.items_rejected,
-                "quarantined_records": result.quarantined_records,
-                "quarantine_reasons": result.quarantine_reasons,
-                "quarantine_samples": result.quarantine_samples,
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "resume_cursor": result.resume_cursor,
-                "connector_checkpoint": result.connector_checkpoint,
-                "detail_attempts": result.detail_attempts,
-                "detail_skipped_unchanged": result.detail_skipped_unchanged,
-                "detail_cache_hit_rate": round(
-                    result.detail_skipped_unchanged
-                    / max(1, result.detail_attempts + result.detail_skipped_unchanged),
-                    4,
-                ),
-                "retry_count": result.retry_count,
-                "eta_seconds": round(result.eta_seconds, 1)
-                if result.eta_seconds is not None
-                else None,
-            }
+            checkpoint = checkpoint_payload(result)
             is_new = row is None
             previous_checkpoint = {} if row is None else (row.checkpoint_json or {})
             progress_changed = bool(
@@ -1181,38 +1152,7 @@ class NationwideIngestionService:
             "category_pages": result.category_pages,
             "current_category": result.current_category,
             "total_pages": result.total_pages,
-            "profile": {
-                **(
-                    {key: round(value, 3) for key, value in result.timing_ms.items()}
-                    if self.profile_timings
-                    else {}
-                ),
-                "sql_statements": result.sql_statements if self.profile_timings else 0,
-                "http_requests": result.http_requests if self.profile_timings else 0,
-                "response_bytes": result.response_bytes if self.profile_timings else 0,
-                "sql_statements_per_100_lots": (
-                    round(result.sql_statements * 100 / result.items_seen, 2)
-                    if self.profile_timings and result.items_seen
-                    else 0
-                ),
-                "rows_per_second": round(result.items_seen / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "pages_per_second": round(result.pages_scanned / result.elapsed_seconds, 3)
-                if result.elapsed_seconds
-                else 0,
-                "detail_attempts": result.detail_attempts,
-                "detail_skipped_unchanged": result.detail_skipped_unchanged,
-                "detail_cache_hit_rate": round(
-                    result.detail_skipped_unchanged
-                    / max(1, result.detail_attempts + result.detail_skipped_unchanged),
-                    4,
-                ),
-                "retry_count": result.retry_count,
-                "eta_seconds": round(result.eta_seconds, 1)
-                if result.eta_seconds is not None
-                else None,
-            },
+            "profile": performance_profile(result, self.profile_timings),
             "error": result.error,
         }
 
