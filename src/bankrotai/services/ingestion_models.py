@@ -14,6 +14,7 @@ class SourceSyncSpec:
     max_batches: int | None = None
     require_source_end: bool = False
     max_detail_attempts_per_page: int | None = None
+    allow_checkpoint_resume: bool = False
 
 
 @dataclass(slots=True)
@@ -39,6 +40,11 @@ class SourceSyncResult:
     sql_statements: int = 0
     http_requests: int = 0
     response_bytes: int = 0
+    catalogue_candidates: int = 0
+    detail_attempts: int = 0
+    detail_requests_saved: int = 0
+    retry_count: int = 0
+    eta_seconds: float | None = None
     elapsed_seconds: float = 0.0
     current_category: str | None = None
     total_pages: int | None = None
@@ -46,4 +52,8 @@ class SourceSyncResult:
     progress_total: int | None = None
     phase: str = "scanning"
     error: str | None = None
+    filter_signature: str | None = None
+    resume_cursor: str | None = None
+    connector_checkpoint: dict[str, Any] | None = None
+    resumed_from_run_id: str | None = None
     seen_external_ids: set[str] = field(default_factory=set, repr=False)
