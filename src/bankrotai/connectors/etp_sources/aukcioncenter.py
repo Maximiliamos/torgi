@@ -478,7 +478,7 @@ def browser_url(external_id: str) -> str:
 
 def lot_index_url(provider_id: str, *, page: int = 1) -> str:
     """Public first-party lot loader without selecting one lot."""
-    if not re.fullmatch(r"[1-9]\\d{5,12}", provider_id) or page < 1:
+    if not re.fullmatch(r"[1-9]\d{5,12}", provider_id) or page < 1:
         raise ValueError("aukcioncenter_invalid_lot_index_identity")
     return (
         BASE_URL + _INNER_LOTS_PATH + "?"
@@ -502,14 +502,16 @@ def discover_lot_numbers(html: str | bytes) -> tuple[int, ...]:
     numbers = {int(match.group("lot")) for match in _LOT_RE.finditer(text)}
     for node in soup.select("[name*=lot i][value]"):
         raw = str(node.get("value") or "")
-        if re.fullmatch(r"[1-9]\\d{0,4}", raw):
+        if re.fullmatch(r"[1-9]\d{0,4}", raw):
             numbers.add(int(raw))
     for node in soup.select("a[href]"):
         query = parse_qs(urlparse(urljoin(BASE_URL, str(node.get("href") or ""))).query)
         for raw in query.get("lotNumber", []):
-            if re.fullmatch(r"[1-9]\\d{0,4}", raw):
+            if re.fullmatch(r"[1-9]\d{0,4}", raw):
                 numbers.add(int(raw))
     return tuple(sorted(numbers))
+
+
 def detail_request_url(external_id: str, *, page: int = 1) -> str:
     """First-party AJAX lot-loader contract from /etp/scripts/viewLots.js."""
     provider_id, lot_number = _external_parts(external_id)
