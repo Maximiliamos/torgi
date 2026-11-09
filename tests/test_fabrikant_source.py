@@ -9,8 +9,11 @@ from bankrotai.connectors.etp_sources import (
     PROFILES,
     SOURCE_CONNECTOR_TYPES,
     SourceSchemaError,
-    parse_detail_html,
     parse_listing_html,
+)
+from bankrotai.connectors.etp_sources.fabrikant import (
+    external_id_from_lot_url,
+    parse_detail_lot,
 )
 
 
@@ -60,10 +63,10 @@ def test_fabrikant_lot_route_has_unambiguous_two_token_identity() -> None:
       </a>
     </article>
     """
-    lots = parse_listing_html(profile(), html)
-    assert [lot.external_id for lot in lots] == [
+    href = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-token_1/LOT-token_2"
+    assert external_id_from_lot_url(href) == (
         "fabrikant.ru:PROC-token_1:LOT-token_2"
-    ]
+    )
 
 
 def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
@@ -90,7 +93,7 @@ def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
         "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
         "PROC-token_1/LOT-token_2"
     )
-    lot = parse_detail_html(profile(), html, detail_url=url)
+    lot = parse_detail_lot(profile(), html, detail_url=url)
 
     assert lot.external_id == "fabrikant.ru:PROC-token_1:LOT-token_2"
     assert lot.start_price == 555_345
@@ -123,7 +126,7 @@ def test_fabrikant_public_offer_schedule_does_not_replace_lot_initial_price() ->
       <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
     </body></html>
     """
-    lot = parse_detail_html(
+    lot = parse_detail_lot(
         profile(),
         html,
         detail_url=(
@@ -147,7 +150,7 @@ def test_fabrikant_ended_status_is_explicit_not_application_date_inference() -> 
       <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
     </body></html>
     """
-    lot = parse_detail_html(
+    lot = parse_detail_lot(
         profile(),
         html,
         detail_url=(
@@ -169,7 +172,7 @@ def test_fabrikant_review_stage_remains_unknown_without_terminal_marker() -> Non
       <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
     </body></html>
     """
-    lot = parse_detail_html(
+    lot = parse_detail_lot(
         profile(),
         html,
         detail_url=(
