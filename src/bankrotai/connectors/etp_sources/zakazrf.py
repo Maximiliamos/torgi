@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +10,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
+from bankrotai.connectors.etp_sources.source_specific import apply_detail
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 
@@ -643,4 +646,64 @@ class ZakazRfReadonlyClient:
             response.content,
             detail_url=detail_url,
             external_id=external_id,
+        )
+
+
+
+class ZakazRfConnector(AuctionConnector):
+    """Drop-in connector whose source behaviour is fully owned by this module."""
+
+    source_id = SOURCE_ID
+    capabilities = frozenset(
+        {"search", "fetch_lot", "healthcheck", "detail_enrichment"}
+    )
+    safe_for_reconciliation = False
+
+    def __init__(
+        self, *, session: requests.Session | None = None, timeout: float = 25.0
+    ) -> None:
+        self.client = ZakazRfReadonlyClient(session=session, timeout=timeout)
+
+    async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
+        page = max(1, int(cursor or 1))
+        result = await asyncio.to_thread(self.client.search_page, page)
+        return ConnectorPage(
+            items=result.items,
+            next_cursor=str(result.next_page) if result.next_page is not None else None,
+            metadata={
+                "source": SOURCE_ID,
+                "page": page,
+                "items_on_page": len(result.items),
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+                "reconcile_missing": False,
+                "maturity": "pilot",
+                "response_url": result.response_url,
+            },
+        )
+
+    async def fetch_lot(self, external_id: str) -> NormalizedLot:
+        return await asyncio.to_thread(self.client.fetch_lot, external_id)
+
+    async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+        detail = await self.fetch_lot(lot.external_id)
+        return apply_detail(lot, detail, version=self.detail_enrichment_version)
+
+    async def healthcheck(self) -> ConnectorHealth:
+        try:
+            result = await asyncio.to_thread(self.client.search_page, 1)
+        except Exception as exc:
+            return ConnectorHealth(
+                "degraded", str(exc), {"source": SOURCE_ID}
+            )
+        status = "ok" if result.items else "degraded"
+        return ConnectorHealth(
+            status,
+            f"matched {len(result.items)} public lot links",
+            {
+                "source": SOURCE_ID,
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+                "reconcile_missing": False,
+            },
         )
