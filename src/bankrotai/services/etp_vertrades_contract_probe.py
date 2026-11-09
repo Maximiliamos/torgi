@@ -7,7 +7,9 @@ archival or production scheduling.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import time
 from typing import Callable
 
@@ -128,3 +130,24 @@ def probe_vertrades_contract(
         "archival_allowed": False,
         "production_enabled": False,
     }
+
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-pages", type=int, default=4)
+    parser.add_argument("--passes", type=int, default=2)
+    parser.add_argument("--delay-seconds", type=float, default=1.0)
+    args = parser.parse_args()
+    with requests.Session() as session:
+        report = probe_vertrades_contract(
+            session,
+            max_pages=args.max_pages,
+            passes=args.passes,
+            delay_seconds=args.delay_seconds,
+        )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
