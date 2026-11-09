@@ -28,13 +28,18 @@ jobs:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 5
     steps:
+      - name: Checkout exact exporter source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - name: Export reports from deployed worker without writes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $inside = '/tmp/lot-issue-reports.json'
           $outside = Join-Path $env:RUNNER_TEMP 'lot-issue-reports.json'
-          docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.lot_issue_report_export --limit 200 --output $inside
+          $source = Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\lot_issue_report_export.py'
+          if (-not (Test-Path -LiteralPath $source)) { throw 'Exporter source is missing from checkout' }
+          Get-Content -LiteralPath $source -Raw -Encoding UTF8 |
+            docker exec -i bankrotai-home-ingestion-worker python - --limit 200 --output $inside
           if ($LASTEXITCODE -ne 0) { throw 'Read-only report export failed' }
           docker cp "bankrotai-home-ingestion-worker:$inside" $outside
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
