@@ -314,6 +314,62 @@ def etpu_detail_contract(value: str) -> dict[str, Any]:
     }
 
 
+
+def build_etpu_detail_lot(
+    value: str,
+    *,
+    external_id: str,
+    detail_url: str,
+    platform_name: str,
+    platform_code: str,
+    complete_source_inventory: bool,
+    safe_for_archival: bool,
+) -> NormalizedLot:
+    """Build one ETPU lot entirely from its isolated official detail section."""
+    contract = etpu_detail_contract(value)
+    cadastral = re.search(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)", value)
+    vin = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", value, re.IGNORECASE)
+    area_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", value, re.IGNORECASE)
+    case_match = re.search(
+        r"номер дела о банкротстве\s*[:№]?\s*([A-ZА-Я0-9/.-]{4,50})",
+        value,
+        re.IGNORECASE,
+    )
+    raw_data = {
+        "complete_source_inventory": complete_source_inventory,
+        "safe_for_archival": safe_for_archival,
+        "reconcile_missing": False,
+        **contract["raw_data"],
+    }
+    return NormalizedLot(
+        external_id=external_id,
+        source="etpu",
+        source_system="etpu.ru",
+        title=(contract["title"] or "Лот")[:500],
+        description=value[:5000],
+        category=contract["category"] or "other",
+        region_slug=None,
+        region_name=None,
+        address=None,
+        cadastral_number=cadastral.group(1) if cadastral else None,
+        vin=vin.group(0).upper() if vin else None,
+        area=float(area_match.group(1).replace(",", ".")) if area_match else None,
+        start_price=contract["start_price"],
+        current_price=contract["current_price"],
+        auction_status=contract["auction_status"],
+        lot_url=detail_url,
+        source_url=detail_url,
+        detail_level="detail",
+        raw_data=raw_data,
+        platform_name=platform_name,
+        platform_code=platform_code,
+        procedure_number=contract["procedure_number"],
+        bankruptcy_case_number=case_match.group(1) if case_match else None,
+        application_deadline=contract["application_deadline"],
+        auction_at=contract["auction_at"],
+        auction_timezone="Europe/Moscow",
+    )
+
 def _checked_amount(value: object) -> Decimal | None:
     if value is None:
         return None
