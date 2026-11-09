@@ -870,7 +870,13 @@ def build_next_request(
 class EtpuClient:
     RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 
-    def __init__(self, *, session: requests.Session | Any | None = None, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        session: requests.Session | Any | None = None,
+        timeout: float = 30.0,
+        status_filter: EtpuStatusFilter | None = None,
+    ) -> None:
         self.session = session or requests.Session()
         if hasattr(self.session, "headers"):
             self.session.headers.setdefault(
@@ -878,6 +884,7 @@ class EtpuClient:
                 "BankrotAI-ETPU-Readonly-Audit/1.0 (+https://github.com/Maximiliamos/torgi)",
             )
         self.timeout = timeout
+        self.status_filter = status_filter
         self._last_response: Any | None = None
         self._last_page: int | None = None
         self._fingerprints: dict[int, str] = {}
@@ -909,17 +916,46 @@ class EtpuClient:
         )
         return parse_filter_contract(response.content)
 
+    def _filtered_first_page(self) -> Any:
+        initial = self._read(
+            "get",
+            LISTING_URL,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        if self.status_filter is None:
+            return initial
+        request = build_filter_request(
+            initial.content,
+            current_url=str(getattr(initial, "url", LISTING_URL) or LISTING_URL),
+            status_filter=self.status_filter,
+        )
+        response = self._read(
+            "post",
+            request.action,
+            data=request.data,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        selected = selected_status_filter(response.content)
+        if selected is None or (
+            selected.value != self.status_filter.value
+            or _status_key(selected.text) != _status_key(self.status_filter.text)
+        ):
+            raise EtpuSchemaError(
+                "etpu.ru: provider did not retain requested official status filter"
+            )
+        return response
+
     def fetch_catalogue_page(self, page: int) -> EtpuCataloguePage:
         if page < 1:
             raise EtpuSchemaError("etpu.ru: page must be >= 1")
         if page == 1:
-            response = self._read("get", LISTING_URL, timeout=self.timeout, allow_redirects=False)
+            response = self._filtered_first_page()
         else:
             previous = self._last_response if self._last_page == page - 1 else None
             sequential = previous is not None
-            previous = previous or self._read(
-                "get", LISTING_URL, timeout=self.timeout, allow_redirects=False
-            )
+            previous = previous or self._filtered_first_page()
             request = build_next_request(
                 previous.content,
                 current_url=str(getattr(previous, "url", LISTING_URL) or LISTING_URL),
@@ -941,7 +977,21 @@ class EtpuClient:
             raise EtpuSchemaError(f"etpu.ru: repeated catalogue page content at page {page}")
         self._fingerprints[page] = fingerprint
         self._last_response, self._last_page = response, page
-        items = parse_catalogue_page(response.content, page=page)
+        if self.status_filter is not None:
+            selected = selected_status_filter(response.content)
+            if selected is None or (
+                selected.value != self.status_filter.value
+                or _status_key(selected.text) != _status_key(self.status_filter.text)
+            ):
+                raise EtpuSchemaError(
+                    "etpu.ru: requested status filter was lost during pagination"
+                )
+        items = parse_catalogue_page(
+            response.content,
+            page=page,
+            expected_status=self.status_filter,
+            allow_empty=self.status_filter is not None,
+        )
         return EtpuCataloguePage(
             page=page,
             items=items,
