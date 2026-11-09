@@ -12,7 +12,7 @@ from bankrotai.scraper_contracts import TBankrotSearchFilters
 class TBankrotConnector(AuctionConnector):
     source_id = "tbankrot.ru"
     capabilities = frozenset({"search", "detail_enrichment"})
-    detail_enrichment_version = 2
+    detail_enrichment_version = 3
 
     def __init__(self) -> None:
         from bankrotai.scrapers import TBankrotClient
@@ -32,8 +32,9 @@ class TBankrotConnector(AuctionConnector):
         """Fill missing source-backed fields without requiring every listing to hit detail."""
         raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
         listing_complete = (
-            lot.current_price is not None
+            (lot.start_price is not None or lot.current_price is not None)
             and lot.application_deadline is not None
+            and lot.auction_at is not None
             and lot.auction_status not in {"", "unknown"}
         )
         if listing_complete:
