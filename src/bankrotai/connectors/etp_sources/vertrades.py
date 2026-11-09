@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 
 if TYPE_CHECKING:
-    from bankrotai.connectors.etp_sources.common import HtmlEtpConnector
+    from bankrotai.connectors.etp_sources.common import EtpSourceProfile, HtmlEtpConnector
 
 SOURCE_ID = "vertrades.ru"
 CATALOGUE_URL = "https://arest.vertrades.ru/bidding"
@@ -558,7 +558,7 @@ async def enrich_vertrades_lot(
 
 
 
-def connector_type(profile: object):
+def connector_type(profile: "EtpSourceProfile") -> type["HtmlEtpConnector"]:
     """Build the registered Vertrades connector without modifying generic ETP rules."""
     from bankrotai.connectors.base import ConnectorHealth, ConnectorPage
     from bankrotai.connectors.etp_sources.common import (
