@@ -218,6 +218,53 @@ def parse_filter_form_contract(html: str | bytes) -> dict[str, object]:
     return {"method": method, "action_path": parsed.path, "field_names": names}
 
 
+def catalogue_structure_summary(html: str | bytes) -> dict[str, int]:
+    """Return non-sensitive structural counts for fail-closed live diagnostics."""
+    soup = _soup(html)
+    summary = {
+        "table_rows": 0,
+        "rows_with_10_cells": 0,
+        "trade_code_rows": 0,
+        "numeric_lot_rows": 0,
+        "property_text_rows": 0,
+        "show_trades_id_rows": 0,
+    }
+    for tr in soup.select("tr"):
+        summary["table_rows"] += 1
+        cells = tr.find_all("td", recursive=False)
+        if len(cells) < 10:
+            continue
+        summary["rows_with_10_cells"] += 1
+        trade_text = _clean(cells[0].get_text(" ", strip=True))
+        lot_text = _clean(cells[1].get_text(" ", strip=True))
+        title = _clean(cells[3].get_text(" ", strip=True))
+        if _TRADE.fullmatch(trade_text):
+            summary["trade_code_rows"] += 1
+        if re.fullmatch(r"[1-9]\d{0,4}", lot_text):
+            summary["numeric_lot_rows"] += 1
+        if _PROPERTY.search(title):
+            summary["property_text_rows"] += 1
+        links = (
+            cells[3].select("a[href]")
+            + cells[0].select("a[href]")
+            + cells[1].select("a[href]")
+        )
+        if any(
+            _is_vertrades_detail_href(str(anchor.get("href") or ""))
+            for anchor in links
+        ):
+            summary["show_trades_id_rows"] += 1
+    return summary
+
+
+def _is_vertrades_detail_href(href: str) -> bool:
+    try:
+        _provider_id(_safe_url(href))
+    except VertradesCardError:
+        return False
+    return True
+
+
 def parse_catalogue_page(
     html: str | bytes, *, page: int = 1, limit: int = 100,
 ) -> list[NormalizedLot]:
