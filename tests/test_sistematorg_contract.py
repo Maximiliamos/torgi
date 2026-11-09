@@ -44,10 +44,10 @@ def test_sistematorg_multi_lot_detail_never_copies_first_price() -> None:
     html = """
     <html><body>
     Идентификационный номер: 20401-ОАОФ
-    Вид торгов: Открытый аукцион
-    Дата начала приема заявок: 01.11.2026 10:00
-    Дата окончания приема заявок: 20.11.2026 10:00
-    Дата проведения: 25.11.2026 10:00
+    Тип торгов: Аукцион с открытой формой представления цены
+    Дата начала представления заявок на участие: 01.11.2026 10:00 (время московское)
+    Дата окончания представления заявок на участие: 20.11.2026 10:00 (время московское)
+    Дата проведения: 25.11.2026 10:00 (время московское)
     Всего лотов: 2.
     Лот № 1:
       Номер лота: 1
@@ -62,6 +62,7 @@ def test_sistematorg_multi_lot_detail_never_copies_first_price() -> None:
       Сведения об имуществе: кадастровый номер 76:12:0000123:456, площадь 1200 кв. м,
       расположен по адресу: Ярославская область, Некрасовский район
       Начальная цена: 1 950 000.50 руб.
+      Шаг аукциона: 97 500.03 руб.
       Размер задатка: 195 000.05 руб.
       Статус торгов: Прием заявок
     </body></html>
@@ -80,6 +81,11 @@ def test_sistematorg_multi_lot_detail_never_copies_first_price() -> None:
     assert lots[1].raw_data["price_trade_id"] == "70001"
     assert lots[1].raw_data["price_lot_id"] == "2"
     assert lots[1].raw_data["per_lot_detail_verified"] is True
+    assert lots[1].application_start_at.isoformat() == "2026-11-01T10:00:00"
+    assert lots[1].application_deadline.isoformat() == "2026-11-20T10:00:00"
+    assert lots[1].auction_at.isoformat() == "2026-11-25T10:00:00"
+    assert lots[1].auction_step_amount == 97_500.03
+    assert lots[1].auction_type == "Аукцион с открытой формой представления цены"
 
 
 def test_sistematorg_public_offer_periods_stay_bound_to_the_lot() -> None:
