@@ -315,7 +315,7 @@ CATALOGUE_URL = "https://bankrupt.utpl.ru/public/purchases-all/"
 PRODUCTION_ENABLED = False
 SAFE_FOR_RECONCILIATION = False
 _DETAIL_PATH = re.compile(
-    r"/public/(?P<sale_type>auctions|contests|public-offers)/lots/view/(?P<detail_id>\d+)/?\\Z",
+    r"/public/(?P<sale_type>auctions|contests|public-offers)/lots/view/(?P<detail_id>\d+)/?\Z",
     re.I,
 )
 
@@ -377,9 +377,9 @@ def is_terminal_page(html: str | bytes, current_page: int) -> bool:
 
 def _numeric_cell(value: str) -> float | None:
     cleaned = _text(value)
-    cleaned = re.sub(r"(?:₽|руб(?:\\.|лей)?)$", "", cleaned, flags=re.I).strip()
-    cleaned = re.sub(r"[\\s\\u00a0\\u202f]", "", cleaned)
-    if not re.fullmatch(r"\\d{1,14}(?:[.,]\\d{1,2})?", cleaned):
+    cleaned = re.sub(r"(?:₽|руб(?:\.|лей)?)$", "", cleaned, flags=re.I).strip()
+    cleaned = re.sub(r"[\s\u00a0\u202f]", "", cleaned)
+    if not re.fullmatch(r"\d{1,14}(?:[.,]\d{1,2})?", cleaned):
         return None
     try:
         amount = Decimal(cleaned.replace(",", "."))
@@ -437,17 +437,17 @@ def parse_utpl_catalogue_page(html: str | bytes, *, page: int = 1) -> list[UtplC
         procedure = None
         lot_number = None
         for heading, value in by_heading.items():
-            if re.search(r"начальн\\w*\\s+цен|цена\\s+лот", heading, re.I):
+            if re.search(r"начальн\w*\s+цен|цена\s+лот", heading, re.I):
                 initial = _numeric_cell(value)
-            elif re.search(r"текущ\\w*\\s+цен", heading, re.I):
+            elif re.search(r"текущ\w*\s+цен", heading, re.I):
                 current = _numeric_cell(value)
             elif "статус" in heading:
                 status = value or None
             elif re.search(r"(?:номер|№).*?(?:процедур|торг|извещ)", heading, re.I):
-                m = re.search(r"\\b0*([0-9]{4,12})\\b", value)
+                m = re.search(r"\b0*([0-9]{4,12})\b", value)
                 procedure = m.group(1) if m else value or None
             elif re.search(r"(?:номер|№).*?лот|лот.*?(?:номер|№)", heading, re.I):
-                m = re.search(r"\\b(\\d{1,5})\\b", value)
+                m = re.search(r"\b(\d{1,5})\b", value)
                 lot_number = m.group(1) if m else None
 
         if external_id in rows:
