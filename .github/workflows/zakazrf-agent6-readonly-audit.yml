@@ -102,6 +102,9 @@ jobs:
           if ($r.pass_1.unique_ids -lt 30 -or $r.detail.requested -lt 30 -or $r.detail.checked -lt 30) {
             throw 'Fewer than 30 individual details verified'
           }
+          if (@($r.detail.identity_mismatches).Count -ne 0) {
+            throw 'Requested and returned individual lot IDs do not match'
+          }
           if ($r.detail.start_price_success -lt 1 -or $r.detail.status_success -lt 1 -or $r.detail.structured_classifier_success -lt 1) {
             throw 'Price/status/classifier contract has no positive live proof'
           }
