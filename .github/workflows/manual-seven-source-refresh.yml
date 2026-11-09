@@ -1,0 +1,121 @@
+name: Manual seven-source production refresh
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-seven-source-production-refresh
+  cancel-in-progress: false
+
+jobs:
+  queue-refresh:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-seven-source-now]') }}
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Require main
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.ref }}' -ne 'refs/heads/main') {
+            throw "This operator workflow may run only from main; got ${{ github.ref }}"
+          }
+
+      - name: Verify canonical ingestion worker
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $running = docker ps --filter "name=^/$worker$" --format '{{.Names}}'
+          if ($running -ne $worker) { throw 'Canonical ingestion worker is unavailable' }
+
+          $image = (docker inspect $worker --format '{{.Config.Image}}').Trim()
+          $current = '${{ github.sha }}'
+          $fixedBase = 'fc79489c8e42597b45b72ef927db783cd18139ae'
+          if (($image -notlike "*:$current") -and ($image -notlike "*:$fixedBase")) {
+            throw "Ingestion worker is neither the repaired base nor this workflow-only revision: $image"
+          }
+          Write-Output "Verified ingestion worker image: $image"
+
+      - name: Refuse a second active nationwide ingestion lease
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $py = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.core import utc_now
+          from bankrotai.db import LotSyncRun, SessionLocal
+
+          now = utc_now()
+          with SessionLocal() as session:
+              active = session.scalar(
+                  select(LotSyncRun)
+                  .where(
+                      LotSyncRun.status.in_(("queued", "running")),
+                      LotSyncRun.lease_expires_at.isnot(None),
+                      LotSyncRun.lease_expires_at > now,
+                  )
+                  .order_by(LotSyncRun.created_at.desc())
+              )
+              if active is not None:
+                  print(json.dumps({
+                      "active": True,
+                      "run_id": active.id,
+                      "status": active.status,
+                      "trigger_type": active.trigger_type,
+                      "lease_expires_at": active.lease_expires_at.isoformat() if active.lease_expires_at else None,
+                  }, default=str))
+                  raise SystemExit(20)
+          print(json.dumps({"active": False}))
+          '@
+          $result = @($py | docker exec -i $worker python - 2>&1)
+          $result | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -eq 20) { throw 'A nationwide ingestion run already owns the durable lease' }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect nationwide ingestion lease' }
+
+      - name: Queue repaired seven-source incremental sweep
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $env:QUEUED_AT = (Get-Date).ToUniversalTime().ToString('o')
+          $py = @'
+          import json
+          from bankrotai.tasks import automatic_nationwide_lot_refresh_task
+
+          task = automatic_nationwide_lot_refresh_task.apply_async(
+              args=("incremental",),
+              queue="ingestion",
+          )
+          print(json.dumps({"task_id": task.id, "mode": "incremental", "source_count": 7}))
+          '@
+          $queued = @($py | docker exec -i $worker python - 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+            $queued | ForEach-Object { Write-Output $_ }
+            throw 'Could not queue seven-source production refresh'
+          }
+          $queued | ForEach-Object { Write-Output $_ }
+
+          $deadline = (Get-Date).AddMinutes(5)
+          do {
+            Start-Sleep -Seconds 5
+            $probe = docker exec $worker python -c "import json; from sqlalchemy import select; from bankrotai.db import LotSyncRun,SessionLocal; s=SessionLocal(); r=s.scalar(select(LotSyncRun).where(LotSyncRun.trigger_type=='scheduled_incr').order_by(LotSyncRun.created_at.desc())); print(json.dumps({'run_id': r.id if r else None, 'status': r.status if r else None, 'created_at': r.created_at.isoformat() if r and r.created_at else None, 'checkpoint': r.checkpoint_json if r else None}, default=str)); s.close()"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect queued seven-source run' }
+            $line = (($probe | Select-Object -Last 1) -as [string]).Trim()
+            Write-Output $line
+            $state = $line | ConvertFrom-Json
+            if ($state.run_id -and $state.status -in @('queued','running','success','partial','failed','skipped')) {
+              "run_id=$($state.run_id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "status=$($state.status)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              exit 0
+            }
+          } while ((Get-Date) -lt $deadline)
+
+          throw 'Celery accepted the task but no durable scheduled_incr LotSyncRun appeared within five minutes'
