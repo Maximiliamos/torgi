@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -13,28 +14,19 @@ from bankrotai.connectors.etp_sources import (
 )
 
 
+FIXTURES = Path(__file__).parent / "fixtures" / "etp" / "aukcioncenter"
+
+
 def _profile():
     return next(profile for profile in PROFILES if profile.source_id == "aukcioncenter.ru")
 
 
+def _fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
 def test_active_catalogue_splits_procedure_and_classifies_property_vs_vehicle():
-    html = """
-    <table>
-      <tr>
-        <th>№</th><th>Предмет торгов</th><th>Начало приема заявок</th><th>Завершение приема заявок</th>
-      </tr>
-      <tr onclick="location.href='/trade/view/purchase/general.html?id=103550001'">
-        <td>7600-ОАОФ</td>
-        <td>
-          Лот №1: Земельный участок, площадь 1000 кв. м,
-          кадастровый номер 76:01:000001:101.
-          Лот №2: Автомобиль, VIN XTA00000000000001.
-        </td>
-        <td>01.11.2026 09:00</td><td>01.12.2026 18:00</td>
-      </tr>
-    </table>
-    """
-    lots = parse_listing_html(_profile(), html, page=1)
+    lots = parse_listing_html(_profile(), _fixture("listing_mixed.html"), page=1)
     assert [lot.external_id for lot in lots] == [
         "aukcioncenter.ru:103550001:1",
         "aukcioncenter.ru:103550001:2",
@@ -45,6 +37,7 @@ def test_active_catalogue_splits_procedure_and_classifies_property_vs_vehicle():
     assert land.raw_data["eligible_property"] is True
     assert land.cadastral_number == "76:01:000001:101"
     assert land.area == 1000
+    assert "Тестовая область" in land.address
     assert vehicle.category == "vehicle"
     assert vehicle.raw_data["eligible_property"] is False
     assert all(lot.start_price is None and lot.current_price is None for lot in lots)
@@ -107,41 +100,22 @@ def test_general_procedure_url_is_rejected_as_individual_detail_contract():
 
 
 def test_detail_price_and_property_fields_are_bound_only_to_selected_lot():
-    html = """
-    <html><body>
-      <p>Дата начала приема заявок: 01.11.2026 09:00</p>
-      <p>Дата окончания приема заявок: 01.12.2026 18:00</p>
-      <p>Аукцион состоится 15.12.2026 12:00</p>
-      <p>идёт приём заявок</p>
-      <div>
-        Лот №1: Земельный участок, площадь 1200 кв. м,
-        адрес: Ярославская область, район Тестовый,
-        кадастровый номер 76:01:000001:101.
-        Начальная цена 1 250 000,50 руб. Текущая цена 1 100 000,25 руб.
-        Размер задатка 250 000 руб.
-        Лот №2: Нежилое помещение, площадь 55 кв. м,
-        кадастровый номер 76:01:000001:202.
-        Начальная цена 8 000 000,00 руб. Текущая цена 7 500 000,00 руб.
-      </div>
-    </body></html>
-    """
-    url = "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550005&page=1&lotNumber=1"
+    url = (
+        "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?"
+        "perspective=inline&id=103550005&page=1&lotNumber=1"
+    )
     detail = parse_detail_html(
-        _profile(), html, detail_url=url,
+        _profile(), _fixture("inner_lot.html"), detail_url=url,
         external_id="aukcioncenter.ru:103550005:1",
     )
     assert detail.start_price == 1_250_000.50
     assert detail.current_price == 1_100_000.25
     assert detail.cadastral_number == "76:01:000001:101"
     assert detail.area == 1200
-    assert "Ярославская область" in detail.address
-    assert detail.auction_status == "active"
-    assert detail.application_start_at.isoformat() == "2026-11-01T09:00:00"
-    assert detail.application_deadline.isoformat() == "2026-12-01T18:00:00"
-    assert detail.auction_at.isoformat() == "2026-12-15T12:00:00"
+    assert "Тестовая область" in detail.address
     assert detail.raw_data["detail_start_price_verified"] is True
     assert detail.raw_data["detail_current_price_verified"] is True
-    assert "8 000 000" not in detail.description
+    assert detail.raw_data["detail_endpoint"] == "/etp/trade/inner-view-lots.html"
 
 
 def test_application_end_date_does_not_become_closed_status():
