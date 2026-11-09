@@ -67,11 +67,16 @@ def _amount(section: str, label: str) -> float | None:
 
 def _structured_property_kinds(classifier: str, lot_text: str) -> tuple[str, ...]:
     source = classifier.lower()
+    lot_lower = lot_text.lower()
     kinds: list[str] = []
-    if re.search(r"прав[ао]\s+требован|уступк\w*\s+требован|дебитор", source, re.I):
+    if re.search(
+        r"прав[ао]\s+требован|уступк\w*\s+требован|дебитор",
+        source + " " + lot_lower,
+        re.I,
+    ):
         kinds.append("receivables")
     if re.search(r"аренд|право пользования", source, re.I) or re.search(
-        r"право\s+аренды|право\s+пользования", lot_text, re.I
+        r"право\s+аренды|право\s+пользования", lot_lower, re.I
     ):
         kinds.append("lease")
     if re.search(r"земельн|земл[ия]|участк", source, re.I):
@@ -174,14 +179,22 @@ def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
     area_match = _AREA.search(lot_text)
     vin_match = _VIN.search(lot_text)
     address_match = re.search(
-        r"\bадрес(?:\s+(?:объекта|расположения))?\s*:\s*(.{5,300}?)(?=\s+(?:"
-        r"кадастров|площад|назначение|вид права|Классификатор)|$)",
+        r"\b(?:адрес(?:\s+(?:объекта|расположения))?|местоположение)\s*:\s*"
+        r"(.{5,300}?)(?=\s+(?:кадастров|площад|назначение|вид права|"
+        r"Классификатор)|$)",
         lot_text,
+        re.I,
+    )
+    procedure_match = re.search(
+        r"Информация\s+(?:об\s+аукционе|о\s+конкурсе|о\s+публичном\s+предложении)"
+        r"\s*№\s*(\d+)\b",
+        full_text,
         re.I,
     )
 
     return {
         "lot_number": number,
+        "procedure_number": procedure_match.group(1) if procedure_match else None,
         "title": title,
         "category": category,
         "classifier": classifier or None,
