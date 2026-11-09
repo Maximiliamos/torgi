@@ -10,7 +10,6 @@ import asyncio
 import hashlib
 import json
 import math
-from dataclasses import asdict
 from typing import Any
 
 from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceSchemaError
