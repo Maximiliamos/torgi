@@ -27,6 +27,9 @@ BASE_URL = (
     "?section_ids%5B%5D=6&page_limit=10"
 )
 PROCEDURE_RE = re.compile(r"/v2/trades/procedure/view/([^/?#]+)", re.I)
+LOT_RE = re.compile(
+    r"/v2/trades/procedure/lot/view/([^/?#]+)/([^/?#]+)(?:[/?#]|$)", re.I
+)
 PAGE_PARAM = "page_number"
 MONEY_RE = re.compile(
     r"(?P<label>начальн\w*\s+цен\w*|текущ\w*\s+цен\w*|"
@@ -356,6 +359,55 @@ def traverse(
     }
 
 
+def resolve_individual_lots(
+    s: requests.Session,
+    procedure_ids: list[str],
+    *,
+    timeout: float,
+    pause: float,
+) -> dict[str, Any]:
+    lot_urls: list[str] = []
+    lot_ids: list[str] = []
+    unresolved: list[str] = []
+    for procedure_id in procedure_ids:
+        procedure_url = (
+            "https://www.fabrikant.ru/v2/trades/procedure/view/" + procedure_id
+        )
+        response = fetch(s, procedure_url, timeout)
+        if response.status_code != 200:
+            unresolved.append(procedure_id)
+            continue
+        soup = BeautifulSoup(response.content, "html.parser")
+        found = 0
+        for anchor in soup.select("a[href]"):
+            href = urljoin(response.url or procedure_url, str(anchor.get("href") or ""))
+            parsed = urlparse(href)
+            match = LOT_RE.search(parsed.path)
+            if not match:
+                continue
+            lot_id = f"{match.group(1)}:{match.group(2)}"
+            url = (
+                "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
+                f"{match.group(1)}/{match.group(2)}"
+            )
+            if lot_id not in lot_ids:
+                lot_ids.append(lot_id)
+                lot_urls.append(url)
+            found += 1
+        if found == 0:
+            unresolved.append(procedure_id)
+        time.sleep(pause)
+    digest = hashlib.sha256("\n".join(lot_ids).encode("utf-8")).hexdigest()
+    return {
+        "unique_lot_ids": lot_ids,
+        "unique_lot_count": len(lot_ids),
+        "lot_urls": lot_urls,
+        "unresolved_procedure_ids": unresolved,
+        "unresolved_procedure_count": len(unresolved),
+        "lot_id_digest_sha256": digest,
+    }
+
+
 def out_of_range_probe(
     s: requests.Session,
     terminal_page: int | None,
@@ -393,12 +445,18 @@ def main() -> int:
     ]
 
     first = traversals[0]
-    sample_ids = first["unique_procedure_ids"][: args.detail_limit]
+    resolved = resolve_individual_lots(
+        s,
+        first["unique_procedure_ids"],
+        timeout=args.timeout,
+        pause=args.pause,
+    )
     details: list[DetailObservation] = []
-    for procedure_id in sample_ids:
-        url = f"https://www.fabrikant.ru/v2/trades/procedure/view/{procedure_id}"
+    for lot_id, url in list(zip(
+        resolved["unique_lot_ids"], resolved["lot_urls"], strict=True
+    ))[: args.detail_limit]:
         r = fetch(s, url, args.timeout)
-        details.append(parse_detail(r, procedure_id))
+        details.append(parse_detail(r, lot_id))
         time.sleep(args.pause)
 
     stable_two_passes = False
@@ -422,6 +480,9 @@ def main() -> int:
         "out_of_range_after_terminal": out_of_range_probe(
             s, first["terminal_page"], timeout=args.timeout
         ),
+        "individual_lots": {
+            key: value for key, value in resolved.items() if key != "lot_urls"
+        },
         "details_checked": len(details),
         "details": [asdict(x) for x in details],
     }
