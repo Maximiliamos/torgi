@@ -207,6 +207,81 @@ def test_etpu_multi_lot_catalogue_keeps_individual_lot_ids_and_prices() -> None:
     assert [lot.start_price for lot in lots] == [2_500_000, 900_000]
 
 
+class _PagedResponse:
+    status_code = 200
+
+    def __init__(self, body: str, url: str = "https://bankrupt.etpu.ru/public/purchases-all/") -> None:
+        self.content = body.encode()
+        self.url = url
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _PostbackSession:
+    def __init__(self, responses: list[_PagedResponse]) -> None:
+        self.responses = list(responses)
+        self.headers: dict[str, str] = {}
+        self.posts: list[dict[str, str]] = []
+
+    def _next(self) -> _PagedResponse:
+        return self.responses.pop(0)
+
+    def get(self, *_args, **_kwargs):
+        return self._next()
+
+    def post(self, _url, *, data=None, **_kwargs):
+        self.posts.append(dict(data or {}))
+        return self._next()
+
+
+def test_etpu_pager_crosses_ten_page_block_and_finds_real_terminal() -> None:
+    page_one = """
+    <html><body><form>
+      <input type="hidden" name="__VIEWSTATE" value="one">
+      <a href="javascript:__doPostBack('pager','Page$10')">10</a>
+      <a href="javascript:__doPostBack('pager','Page$Next')">&gt;&gt;</a>
+    </form></body></html>
+    """
+    page_ten = """
+    <html><body><form>
+      <input type="hidden" name="__VIEWSTATE" value="ten">
+      <a href="javascript:__doPostBack('pager','Page$9')">9</a>
+      <a href="javascript:__doPostBack('pager','Page$10')">10</a>
+      <a href="javascript:__doPostBack('pager','Page$Next')">&gt;&gt;</a>
+      <table><tr><td>
+        <a href="/public/auctions/lots/view/150010/">Лот страницы 10</a>
+      </td></tr></table>
+    </form></body></html>
+    """
+    page_eleven_terminal = """
+    <html><body><form>
+      <input type="hidden" name="__VIEWSTATE" value="eleven">
+      <a href="javascript:__doPostBack('pager','Page$11')">11</a>
+      <table><tr><td>
+        <a href="/public/auctions/lots/view/150011/">Лот страницы 11</a>
+      </td></tr></table>
+    </form></body></html>
+    """
+    session = _PostbackSession([
+        _PagedResponse(page_one),
+        _PagedResponse(page_ten),
+        _PagedResponse(page_eleven_terminal),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
+
+    page10 = asyncio.run(connector.search({}, cursor="10"))
+    assert page10.next_cursor == "11"
+    assert [item.external_id for item in page10.items] == ["etpu.ru:auctions-150010"]
+
+    page11 = asyncio.run(connector.search({}, cursor=page10.next_cursor))
+    assert page11.next_cursor is None
+    assert [item.external_id for item in page11.items] == ["etpu.ru:auctions-150011"]
+
+    assert session.posts[0]["__EVENTARGUMENT"] == "Page$10"
+    assert session.posts[1]["__EVENTARGUMENT"] == "Page$Next"
+
+
 class _Response:
     status_code = 200
     url = "https://bankrupt.etpu.ru/public/auctions/lots/view/143436/"
