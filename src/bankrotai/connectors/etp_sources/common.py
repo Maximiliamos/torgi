@@ -502,7 +502,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             source_system=profile.source_id,
             title=title[:500],
             description=context[:5000],
-            category=_category(context),
+            category=("other" if profile.source_id == "zakazrf.ru" else _category(context)),
             region_slug=None,
             region_name=None,
             address=None,
@@ -524,6 +524,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
+                "classification_requires_detail": profile.source_id == "zakazrf.ru",
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
