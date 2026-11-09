@@ -1,0 +1,132 @@
+name: Diagnose partial seven-source run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-partial-seven-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 12
+    steps:
+      - name: Read exact production run without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $state = (docker inspect --format '{{.State.Status}}' $worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') { throw 'Trusted ingestion worker unavailable' }
+          $code = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun, SourceHealthState
+
+          target = "03351d17-e4bd-41ca-a8b5-fd7a9ce1e31c"
+          with SessionLocal() as s:
+              run = s.get(LotSyncRun, target)
+              if run is None:
+                  raise SystemExit("target run missing")
+              rows = list(s.scalars(
+                  select(LotSyncSourceRun)
+                  .where(LotSyncSourceRun.sync_run_id == target)
+                  .order_by(LotSyncSourceRun.source_system)
+              ))
+              active = s.scalar(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.status.in_(("queued","running")))
+                  .order_by(LotSyncRun.created_at.desc())
+              )
+              active_rows = []
+              if active is not None:
+                  active_rows = list(s.scalars(
+                      select(LotSyncSourceRun)
+                      .where(LotSyncSourceRun.sync_run_id == active.id)
+                      .order_by(LotSyncSourceRun.source_system)
+                  ))
+              health = {
+                  h.source_system: {
+                      "status": h.status,
+                      "last_started_at": str(h.last_started_at) if h.last_started_at else None,
+                      "last_success_at": str(h.last_success_at) if h.last_success_at else None,
+                      "last_failure_at": str(h.last_failure_at) if h.last_failure_at else None,
+                      "last_error": (h.last_error or "")[:1200],
+                      "items_seen": h.items_seen,
+                      "metadata_json": h.metadata_json,
+                  }
+                  for h in s.scalars(select(SourceHealthState))
+                  if h.source_system in {
+                      "torgi.gov.ru","lot-online.ru","torgi-russia.ru",
+                      "bidexpert.ru","m-ets.ru","cdtrf.ru","nistp.ru"
+                  }
+              }
+
+          def src(r):
+              return {
+                  "source_system": r.source_system,
+                  "status": r.status,
+                  "complete_source_run": bool(r.complete_source_run),
+                  "pages_scanned": r.pages_scanned,
+                  "items_seen": r.items_seen,
+                  "items_inserted": r.items_inserted,
+                  "items_updated": r.items_updated,
+                  "items_unchanged": r.items_unchanged,
+                  "items_archived": r.items_archived,
+                  "items_failed": r.items_failed,
+                  "duration_ms": r.duration_ms,
+                  "error_message": (r.error_message or "")[:2000],
+                  "checkpoint_json": r.checkpoint_json,
+                  "started_at": str(r.started_at) if r.started_at else None,
+                  "finished_at": str(r.finished_at) if r.finished_at else None,
+                  "progress_at": str(r.progress_at) if r.progress_at else None,
+              }
+
+          out = {
+              "read_only": True,
+              "target": {
+                  "id": run.id,
+                  "status": run.status,
+                  "trigger_type": run.trigger_type,
+                  "created_at": str(run.created_at),
+                  "started_at": str(run.started_at),
+                  "finished_at": str(run.finished_at),
+                  "error_message": (run.error_message or "")[:2000],
+                  "checkpoint_json": run.checkpoint_json,
+                  "result_json": run.result_json,
+                  "sources": [src(r) for r in rows],
+              },
+              "active": None if active is None else {
+                  "id": active.id,
+                  "status": active.status,
+                  "trigger_type": active.trigger_type,
+                  "created_at": str(active.created_at),
+                  "started_at": str(active.started_at),
+                  "heartbeat_at": str(active.heartbeat_at),
+                  "lease_expires_at": str(active.lease_expires_at),
+                  "error_message": (active.error_message or "")[:2000],
+                  "result_json": active.result_json,
+                  "sources": [src(r) for r in active_rows],
+              },
+              "source_health": health,
+          }
+          print(json.dumps(out, ensure_ascii=False, default=str))
+          '@
+          $output = @($code | docker exec -i $worker python -)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'Read-only run diagnostic failed' }
+          $json = $output[-1]
+          $json | Set-Content -LiteralPath "$env:RUNNER_TEMP/partial-run-diagnostic.json" -Encoding UTF8
+          $json
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: partial-run-diagnostic
+          path: ${{ runner.temp }}/partial-run-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 3
