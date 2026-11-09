@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+import requests
 
 from bankrotai.connectors.etp_sources import (
     SOURCE_CONNECTOR_TYPES,
@@ -12,7 +13,34 @@ from bankrotai.connectors.etp_sources import (
     parse_sberbank_json,
 )
 from bankrotai.connectors.etp_sources.profiles import PROFILES
-from tests.test_etp_sources import FakeResponse, FakeSession
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, content: bytes, url: str = "https://www.sberbank-ast.ru/api/Processing/main") -> None:
+        self.status_code = status_code
+        self.content = content
+        self.url = url
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self):
+        return json.loads(self.content)
+
+
+class FakeSession:
+    def __init__(self, response: FakeResponse) -> None:
+        self.response = response
+        self.headers: dict[str, str] = {}
+        self.posts: list[tuple[str, object]] = []
+
+    def post(self, url, *, data=None, json=None, **_kwargs):
+        self.posts.append((url, data if data is not None else json))
+        return self.response
+
+    def get(self, *_args, **_kwargs):
+        return self.response
 
 
 BANKRUPTCY = "Продажа имущества (предприятия) банкротов"
