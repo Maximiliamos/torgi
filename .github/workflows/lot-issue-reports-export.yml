@@ -34,18 +34,35 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $inside = '/tmp/lot-issue-reports.json'
           $outside = Join-Path $env:RUNNER_TEMP 'lot-issue-reports.json'
           $source = Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\lot_issue_report_export.py'
           if (-not (Test-Path -LiteralPath $source)) { throw 'Exporter source is missing from checkout' }
-          Get-Content -LiteralPath $source -Raw -Encoding UTF8 |
-            docker exec -i bankrotai-home-ingestion-worker python - --limit 200 --output $inside
-          if ($LASTEXITCODE -ne 0) { throw 'Read-only report export failed' }
-          docker cp "bankrotai-home-ingestion-worker:$inside" $outside
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
-            throw 'Could not copy report export from worker'
+
+          # Pass the exact checked-out exporter as data, not as a file or stdin.
+          # The production container remains read-only and only supplies the
+          # installed models plus its production database connection.
+          $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($source))
+          $bootstrap = "import base64,sys; code=base64.b64decode(sys.argv[1]); sys.argv=['lot_issue_report_export.py']+sys.argv[2:]; exec(compile(code,'lot_issue_report_export.py','exec'))"
+          $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -c $bootstrap $encoded --limit 200 --stdout 2>&1)
+          $exit = $LASTEXITCODE
+          if ($exit -ne 0) {
+            Write-Host ('Read-only report export failed with exit code ' + $exit)
+            throw 'Read-only report export failed'
           }
-          docker exec bankrotai-home-ingestion-worker python -c "import os; os.remove(r'/tmp/lot-issue-reports.json')"
+          $json = $output -join [Environment]::NewLine
+          try {
+            $parsed = $json | ConvertFrom-Json
+          } catch {
+            throw 'Read-only report export did not return valid JSON'
+          }
+          if ($null -eq $parsed.count -or $null -eq $parsed.items) {
+            throw 'Read-only report export JSON has an invalid schema'
+          }
+          [IO.File]::WriteAllText(
+            $outside,
+            $json,
+            [Text.UTF8Encoding]::new($false)
+          )
       - name: Upload triage artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
