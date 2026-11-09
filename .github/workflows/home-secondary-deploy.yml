@@ -913,6 +913,18 @@ jobs:
                 $env:REDIS_CONTAINER redis-cli DEL bankrotai:geocoding:batch
               if ($LASTEXITCODE -ne 0) { throw "Could not clear orphaned geocoding lock" }
               Write-Output "Cleared orphaned geocoding lock before replacement worker: $clearedGeoLock"
+
+              # The killed worker can no longer finish its BackgroundTaskState.
+              # Reconcile only rows that were actually running; queued work is
+              # preserved for the replacement worker and map publication stays
+              # fail-closed if any real GEO work remains.
+              $interruptedGeo = docker exec $env:CONTAINER_NAME python -m `
+                bankrotai.services.geo_deploy_recovery `
+                --reason "interrupted_by_home_deploy:$env:GITHUB_SHA"
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not reconcile interrupted geocoding progress state"
+              }
+              Write-Output "Interrupted GEO progress rows reconciled: $interruptedGeo"
             }
             if ($spec.Name -eq $env:MAP_WORKER_CONTAINER) {
               # The map build lock outlives a force-removed worker for up to 30
