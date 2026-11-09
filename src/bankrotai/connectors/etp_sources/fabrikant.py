@@ -6,13 +6,19 @@ from dataclasses import dataclass
 from datetime import datetime
 import re
 from typing import Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.domain import NormalizedLot
 
+
+CATALOGUE_URL = (
+    "https://www.fabrikant.ru/procedure/search/sales"
+    "?section_ids%5B%5D=6&page_limit=10"
+)
+PAGE_PARAMETER = "page_number"
 
 PROCEDURE_PATH_RE = re.compile(r"/v2/trades/procedure/view/([^/?#]+)(?:[/?#]|$)", re.I)
 LOT_PATH_RE = re.compile(
@@ -76,6 +82,74 @@ def _safe_public_url(base_url: str, href: str) -> str | None:
     ):
         return None
     return url
+
+
+
+@dataclass(frozen=True, slots=True)
+class FabrikantCataloguePage:
+    procedure_urls: tuple[str, ...]
+    visible_page_numbers: tuple[int, ...]
+    has_next_page: bool
+    next_url: str | None
+    total_hints: tuple[str, ...]
+
+
+def build_catalogue_url(page: int) -> str:
+    """Build the official GET catalogue URL without changing its source filter."""
+    if page <= 1:
+        return CATALOGUE_URL
+    parsed = urlparse(CATALOGUE_URL)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query[PAGE_PARAMETER] = [str(page)]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def parse_catalogue_page(
+    html: str | bytes, *, base_url: str, page: int
+) -> FabrikantCataloguePage:
+    """Parse only Fabrikant procedure candidates and its visible GET paginator."""
+    soup = _soup(html)
+    procedures = tuple(procedure_urls(html, base_url=base_url))
+    visible: set[int] = set()
+    next_url: str | None = None
+
+    for anchor in soup.select("a[href]"):
+        url = _safe_public_url(base_url, str(anchor.get("href") or ""))
+        if not url:
+            continue
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        for raw in query.get(PAGE_PARAMETER, []):
+            if raw.isdigit():
+                visible.add(int(raw))
+        text = _clean(anchor.get_text(" ", strip=True)).lower()
+        if (
+            str(page + 1) in query.get(PAGE_PARAMETER, [])
+            or text in {"следующая", "далее", ">", "›", "»"}
+        ):
+            next_url = url
+
+    page_text = _clean(soup.get_text(" ", strip=True))
+    hints: list[str] = []
+    for pattern in (
+        r"(?:найдено|всего|результат\w*)[^\d]{0,30}\d{1,7}",
+        r"\d{1,7}[^\d]{0,20}(?:процедур\w*|торг\w*|результат\w*)",
+        r"страниц\w*[^\d]{0,20}\d{1,6}",
+    ):
+        for match in re.finditer(pattern, page_text, re.I):
+            value = _clean(match.group(0))
+            if value and value not in hints:
+                hints.append(value[:140])
+            if len(hints) >= 10:
+                break
+
+    return FabrikantCataloguePage(
+        procedure_urls=procedures,
+        visible_page_numbers=tuple(sorted(visible)),
+        has_next_page=(page + 1 in visible) or next_url is not None,
+        next_url=next_url,
+        total_hints=tuple(hints),
+    )
 
 
 def procedure_urls(html: str | bytes, *, base_url: str) -> list[str]:
