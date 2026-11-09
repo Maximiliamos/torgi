@@ -8,7 +8,7 @@
 - Generic profile at `src/bankrotai/connectors/etp_sources/profiles.py` selects `SUPCOMING` and `SSALE`, the upcoming-sales `LotList` hall, **not** the browser-confirmed active filter `stateFilter_GD`.
 - Existing `supports_get_pagination=True` and `LotList.pageNum.lots` are unsupported assumptions for the actual active search: observed UI pager uses `href="#"` JavaScript actions. The real request method, endpoint, payload, page numbering and exact filter keys are **not captured**.
 - The generic parser can parse candidate links but has no verified ALFALOT property-scope filter. Keyword matching is not proof of a sale/property inventory, nor does an `OfferCard` procedure identify a single `LotCard` lot.
-- A former test used synthetic `SUPCOMING` GET page-2 links as if evidence-backed; that test is removed for ALFALOT only.
+- A historical shared test treated a synthetic `SUPCOMING` page-2 GET as evidence. It remains unchanged in integration-owned shared tests; the independent ALFALOT test suite now asserts that active GD HTTP import is blocked until proven.
 
 ## Evidence, strictly separated by date
 
@@ -27,7 +27,7 @@
 | Property | Second card: building 4,177.1 m², cadastre `78:12:0007135:1054` | Official structured property classification and exclusions |
 | Procedure types | `BUYING`, `RFI`, `SMALL_PURCHASE`, `SALE`, `DEBTOR_SALE` all selected | Sale/property-only scope; mixed procedures excluded |
 
-**2026-11-09 work:** inspected main parser, `direct_etp_catalogue.py`, tests, 2026-11-02/06 historical reports, and used publicly available web retrieval for source navigation. Network browsing here cannot expose a fresh browser's raw GD click request or repeat the old operator's three-page session. **No new live GD page counts, price/status rates, or two-pass digests are claimed.**
+**Fresh read-only GitHub Actions evidence — 2026-11-09:** [workflow run 42550388590](https://github.com/Maximiliamos/torgi/actions/runs/42550388590), [sanitized artifact 13645192643](https://github.com/Maximiliamos/torgi/actions/runs/42550388590/artifacts/13645192643). At 02:21:53 UTC, first-party browser GWT UI rendered one selected `stateFilter_GD` labelled «прием заявки» with **20 individual LotCard links** on page 1. Clicking GD issued **GET `https://etp.alfalot.ru/searchServlet`** (XHR, HTTP **200**, `application/javascript`) with query **names** `filter`, `limit`, `query`, `sort`. Only names were retained, not raw values, so filter meaning, actual pageSize/offset and exact raw request remain **unverified**. Current paginator UI presents bold page `1`, clickable `2`, `>`, `>>` in `.pages`. This is fresh **page-1 UI and request-shape** proof, not a backend-filter or terminal/full-walk proof. Provider data not written to DB. Other live job failures are diagnostic and cannot be interpreted as acceptance.
 
 The public detail identifiers above are **archived historical observations**, not fresh individual-detail verification.
 
@@ -71,11 +71,40 @@ an individual LotCard record.
 
 ## Changes in this PR
 
-- `src/bankrotai/connectors/etp_sources/profiles.py`: refuse the unverified ALFALOT generic GET import with explicit `blocked_reason`; remove `supports_get_pagination`. No other source profile modified.
-- `src/bankrotai/connectors/etp_sources/alfalot_audit.py`: pure, fail-closed URL/individual identity, two-pass pagination, structured labelled-detail/price and triage helpers. A keyword-based `property_candidate` remains **unverified** and never turns `property_scope_verified` true.
-- `scripts/probe-alfalot-readonly.py`: bounded local Playwright public-UI GD filter, 2 full UI walks when accessible, sanitized request *shapes*, optional 30 individual public page opens. Captures no cookies, tokens, response bodies, private HTML, prices, titles, or personal information. It **does not** claim to be the missing raw payload capture.
-- `tests/test_alfalot_audit.py`: synthetic minimal fixture cases: lot-vs-procedure, cross-lot price isolation, same-host URL, duplicate ID and changed-walk fail-closed.
-- `tests/test_etp_sources.py`: remove previously unverified ALFALOT GET fixture.
+- `src/bankrotai/connectors/etp_sources/alfalot_audit.py`: source-only, independently importable parser/validators for individual LT/LF identity, two-pass IDs/digests, exact initial/current prices, per-lot statuses, property triage, explicit GD state and terminal controls. Exposes `require_verified_active_http_contract()` for centralized fail-closed integration.
+- `scripts/probe-alfalot-readonly.py`: public Chromium GWT source-only read-only filter/pager diagnostic, sanitized request-response shapes, two-pass candidate support (fails closed on unknown pager), bounded individual details, no personal data or credentials retained.
+- `tests/test_alfalot_audit.py`: isolated offline regression cases for identity, price/status isolation, GD scope, terminal controls, changed ID digests and multi-lot distinctions.
+- `.github/workflows/etp-alfalot-live-readonly.yml`: ALFALOT-only focused tests and independently labelled live diagnostic job. The live diagnostic failure is never construed as source acceptance.
+
+**Integration-owned files restored exactly to `main`:** `profiles.py` and `tests/test_etp_sources.py`. No changes to `common.py`, `pagination.py`, `source_specific.py` or `direct_etp_catalogue.py`; none of the existing root causes, evidence, tests or fixtures were discarded.
+
+## Integration hook required
+
+The existing `profiles.py` has a legacy `SUPCOMING` GET configuration that is **not** the validated GD contract. No new shared wiring is shipped in this PR. Until the centralized integrator proves official GD request values and property scope, the minimal safe hook is:
+
+```python
+# Central integration (future integration-owned PR only):
+from bankrotai.connectors.etp_sources.alfalot_audit import require_verified_active_http_contract
+# In the ALFALOT path of HtmlEtpConnector._request before legacy pagination:
+require_verified_active_http_contract()  # fails closed
+```
+
+After full verified HTTP contract, the integrator may replace that guard by delegating ALFALOT `parse_listing_html` / detail / paginator operations to `alfalot_audit.py`. Avoid altering shared generic semantics or invoking the old unverified URL as a production inventory. **Current PR does not enable or schedule ALFALOT.**
+
+## Isolation review
+
+- Source-specific module: `src/bankrotai/connectors/etp_sources/alfalot_audit.py`.
+- Shared files modified: **NONE**.
+- Source-specific logic remaining in `common.py`: **NONE added by PR** (existing legacy generic behaviour predates it).
+- Source-specific logic remaining in `pagination.py`: **NONE added by PR**.
+- Source-specific logic remaining in `profiles.py`: **NONE added by PR** (legacy unchanged).
+- Source-specific logic remaining in `source_specific.py`: **NONE added by PR**.
+- Source-specific logic remaining in `direct_etp_catalogue.py`: **NONE added by PR** (legacy unchanged).
+- Integration hook required: **YES**, specified above; integrator-owned.
+- Existing work preserved: **YES**.
+- Live evidence preserved: **YES**, archived original and sanitized 2026-11-09 run.
+- Regression tests preserved: **YES**, now source-specific.
+- **PRODUCTION ENABLED: NO**.
 
 ## Required remaining operator verification
 
@@ -88,8 +117,8 @@ an individual LotCard record.
 
 ## Acceptance and CI
 
-Source contract: **NOT READY**. Terminal page: *historical UI only*. Distinct IDs: *22 previously observed on pages 2–3, not current complete proof*. Fresh individual details: **0** in this environment. Live price/status success rate: **NOT MEASURED**. Production acceptance: **NO**.
+Source contract: **NOT READY**. Terminal page: *historical UI only*. Distinct IDs: *22 previously observed on pages 2–3, not current complete proof*. Fresh individual details: **0 verified** in the 2026-11-09 GD sample; page-1 catalogue links: **20**. Live price/status success rate: **NOT MEASURED**. Production acceptance: **NO**.
 
-Tests: `pytest -q tests/test_alfalot_audit.py tests/test_etp_sources.py` and repository CI; results belong in PR after workflow completion, never fabricate local PASS.
+Tests: `pytest -q tests/test_alfalot_audit.py` for standalone module; project-wide applicable CI verifies shared behaviour. No synthetic fixture is presented as live provider evidence.
 
 **PRODUCTION ENABLED: NO**
