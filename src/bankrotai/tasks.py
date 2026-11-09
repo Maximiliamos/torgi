@@ -1071,12 +1071,6 @@ def probe_source_network_health_task() -> dict[str, Any]:
     return {"checked": len(due), "results": results}
 
 
-@celery_app.task(
-    bind=True,
-    name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
-    soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
-    time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
-)
 def _scheduled_trigger_type(mode: str) -> str:
     return "scheduled_incr" if mode == "incremental" else f"scheduled_{mode}"
 
