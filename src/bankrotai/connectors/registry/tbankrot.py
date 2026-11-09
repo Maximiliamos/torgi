@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from bankrotai.connectors.base import AuctionConnector, ConnectorPage
+from bankrotai.domain import NormalizedLot
 from bankrotai.scraper_contracts import TBankrotSearchFilters
 
 
@@ -27,7 +28,7 @@ class TBankrotConnector(AuctionConnector):
         return ConnectorPage(items=lots, next_cursor=next_cursor, metadata=metadata)
 
 
-    async def enrich_lot(self, lot):
+    async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
         """Fill missing source-backed fields without requiring every listing to hit detail."""
         raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
         listing_complete = (
