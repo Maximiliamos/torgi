@@ -1079,54 +1079,36 @@ def probe_source_network_health_task() -> dict[str, Any]:
     time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
 def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
-    """Run one beat-triggered nationwide refresh with a durable scheduled attempt."""
     if mode not in {"fast", "full", "incremental"}:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
-
-    # Fast recovery runs retain the historical lightweight path. The heavy
-    # 09:00/21:00 sweeps create their durable row *before* any gate so an
-    # operator can always answer why a scheduled attempt did or did not run.
     if mode == "fast":
         if _global_source_network_blocked():
             return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
         specs = scheduled_specs(mode, _unpaused_source_specs)
         return _run_automatic_nationwide_refresh(
-            self,
-            mode=mode,
-            trigger_type=f"scheduled_{mode}",
-            total_sources=len(specs),
-            retry_if_busy=False,
+            self, mode=mode, trigger_type="scheduled_fast",
+            total_sources=len(specs), retry_if_busy=False,
         )
-
     try:
         attempt = ScheduledRefreshAttempt.create(
-            mode=mode,
-            total_sources=len(SEVEN_SOURCE_IDS),
-            session_factory=SessionLocal,
+            mode=mode, total_sources=len(SEVEN_SOURCE_IDS), session_factory=SessionLocal,
         )
     except SyncAlreadyRunningError as exc:
         _retry_automatic_refresh(
-            self,
-            exc,
-            max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+            self, exc, max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
             base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
         )
     skipped, specs, preflight = attempt.prepare(
         global_network_blocked=_global_source_network_blocked,
         resolve_specs=lambda: scheduled_specs(mode, _unpaused_source_specs),
-        required_sources=SEVEN_SOURCE_IDS,
-        preflight_runner=run_scheduled_source_preflight,
+        required_sources=SEVEN_SOURCE_IDS, preflight_runner=run_scheduled_source_preflight,
     )
     if skipped is not None:
         return skipped
     assert specs is not None and preflight is not None
     result = _run_automatic_nationwide_refresh(
-        self,
-        mode=mode,
-        trigger_type=attempt.trigger_type,
-        total_sources=len(specs),
-        retry_if_busy=True,
-        existing_run_id=attempt.run_id,
+        self, mode=mode, trigger_type=attempt.trigger_type,
+        total_sources=len(specs), retry_if_busy=True, existing_run_id=attempt.run_id,
     )
     return attempt.annotate_result(result, preflight)
 
