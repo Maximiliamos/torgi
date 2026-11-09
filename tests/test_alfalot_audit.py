@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceAccessError
 from bankrotai.connectors.etp_sources.alfalot_audit import (
     AlfalotContractError,
+    ALFALOT_BLOCKED_REASON,
+    require_verified_active_http_contract,
+    terminal_controls_confirmed,
+    verify_gd_filter_state,
     PageProof,
     extract_detail_fields,
     extract_lot_references,
@@ -25,12 +26,26 @@ def _page(n: int, ids: tuple[str, ...], last: bool = False) -> PageProof:
     )
 
 
-def test_unproven_alfalot_http_contract_fails_closed_without_network() -> None:
-    connector = SOURCE_CONNECTOR_TYPES["alfalot.ru"]()
-    with pytest.raises(SourceAccessError, match="ALFALOT active GD"):
-        asyncio.run(connector.search({}))
-    with pytest.raises(SourceAccessError, match="ALFALOT active GD"):
-        asyncio.run(connector.fetch_lot("alfalot.ru:0026026025DS.lot1"))
+def test_unverified_active_http_contract_stays_blocked_inside_alfalot_module() -> None:
+    assert "raw HTTP" in ALFALOT_BLOCKED_REASON
+    with pytest.raises(AlfalotContractError, match="raw HTTP"):
+        require_verified_active_http_contract()
+
+
+@pytest.mark.parametrize(("label", "selected"), [
+    ("прием заявки", False),
+    ("все", True),
+    ("торги завершены", True),
+])
+def test_gd_scope_refuses_other_or_unselected_ui_states(label: str, selected: bool) -> None:
+    with pytest.raises(AlfalotContractError):
+        verify_gd_filter_state(label, selected=selected)
+
+
+def test_page_terminal_must_have_explicit_disabled_next_and_end_controls() -> None:
+    assert terminal_controls_confirmed(["1", "2", "3"], [">", ">>"]) is True
+    assert terminal_controls_confirmed(["1", "2", "3"], []) is False
+    assert terminal_controls_confirmed(["1", "2", ">"], [">>"]) is False
 
 
 def test_only_first_party_individual_lotcard_is_accepted() -> None:
