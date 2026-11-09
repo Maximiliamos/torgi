@@ -10,6 +10,12 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.etp_sources.fabrikant import (
+    lot_identity as fabrikant_lot_identity,
+    lot_urls as fabrikant_lot_urls,
+    parse_detail_fields as parse_fabrikant_detail_fields,
+    procedure_urls as fabrikant_procedure_urls,
+)
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
@@ -178,7 +184,12 @@ def _label_value(value: str, label: str, pattern: str) -> str | None:
 
 def _external_id(profile: EtpSourceProfile, href: str, match: re.Match[str]) -> str:
     groups = [part for part in match.groups() if part]
-    if groups:
+    if profile.source_id == "fabrikant.ru" and len(groups) == 2:
+        # Fabrikant tokens are base64url-like and may themselves contain '-'.
+        # ':' cannot occur in either URL path token, so it preserves the
+        # procedure/lot boundary without inventing an ambiguous composite ID.
+        identity = ":".join(groups)
+    elif groups:
         identity = "-".join(groups)
     else:
         parsed = urlparse(href)
@@ -536,6 +547,68 @@ def parse_detail_html(
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
+    if profile.source_id == "fabrikant.ru":
+        match = profile.lot_url_re.search(detail_url)
+        if external_id is None:
+            if not match:
+                raise SourceSchemaError(
+                    "fabrikant.ru: detail URL is not an individual lot route"
+                )
+            external_id = _external_id(profile, detail_url, match)
+        expected = external_id.removeprefix("fabrikant.ru:")
+        identity = fabrikant_lot_identity(detail_url)
+        if identity is None or expected != f"{identity[0]}:{identity[1]}":
+            raise SourceSchemaError("fabrikant.ru: detail lot identity mismatch")
+        fields = parse_fabrikant_detail_fields(html)
+        if not fields.title:
+            raise SourceSchemaError("fabrikant.ru: individual detail title is not proven")
+        return NormalizedLot(
+            external_id=external_id,
+            source="fabrikant",
+            source_system=profile.source_id,
+            title=fields.title,
+            description=text_value[:5000],
+            category=fields.category,
+            region_slug=None,
+            region_name=None,
+            address=fields.address,
+            cadastral_number=fields.cadastral_number,
+            vin=None,
+            area=fields.area,
+            start_price=fields.start_price,
+            current_price=fields.current_price,
+            auction_status=(
+                __import__(
+                    "bankrotai.connectors.etp_sources.fabrikant",
+                    fromlist=["fabrikant_status"],
+                ).fabrikant_status(text_value)[0]
+            ),
+            lot_url=detail_url,
+            source_url=detail_url,
+            detail_level="detail",
+            raw_data={
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+                "reconcile_missing": False,
+                "individual_lot_identity_verified": True,
+                "fabrikant_category_text": fields.category_text,
+                "fabrikant_source_status_text": fields.source_status_text,
+                "detail_start_price_verified": fields.start_price is not None,
+                "detail_current_price_verified": fields.current_price is not None,
+                "detail_status_verified": (
+                    __import__(
+                        "bankrotai.connectors.etp_sources.fabrikant",
+                        fromlist=["fabrikant_status"],
+                    ).fabrikant_status(text_value)[0]
+                    != "unknown"
+                ),
+            },
+            platform_name=profile.platform_name,
+            platform_code=profile.platform_code,
+            application_deadline=fields.application_deadline,
+            auction_at=fields.auction_at,
+        )
+
     if profile.source_id == "sistematorg.com":
         trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
@@ -835,6 +908,75 @@ class HtmlEtpConnector(AuctionConnector):
         self._last_response, self._last_page = response, page
         return response
 
+    def _fabrikant_page_lots(
+        self, response: requests.Response, *, page: int
+    ) -> list[NormalizedLot]:
+        """Resolve catalogue procedures to canonical individual lot cards.
+
+        A procedure token is never emitted as a lot identity. Every procedure
+        observed on the catalogue page must expose at least one public
+        /procedure/lot/view/{procedure}/{lot} route or the page fails closed.
+        """
+        procedures = fabrikant_procedure_urls(
+            response.content, base_url=response.url or self.profile.listing_url
+        )
+        if not procedures:
+            raise SourceSchemaError(
+                "fabrikant.ru: no procedure cards matched the verified catalogue schema"
+            )
+        lots: list[NormalizedLot] = []
+        seen: set[str] = set()
+        unresolved: list[str] = []
+        for procedure_url in procedures:
+            procedure_response = self._read_request(
+                "get", _safe_provider_url(self.profile, procedure_url),
+                timeout=self.timeout, allow_redirects=False,
+            )
+            urls = fabrikant_lot_urls(
+                procedure_response.content,
+                base_url=procedure_response.url or procedure_url,
+            )
+            if not urls:
+                unresolved.append(procedure_url)
+                continue
+            for detail_url in urls:
+                identity = fabrikant_lot_identity(detail_url)
+                if identity is None:
+                    continue
+                external_id = f"fabrikant.ru:{identity[0]}:{identity[1]}"
+                if external_id in seen:
+                    continue
+                seen.add(external_id)
+                detail_response = self._read_request(
+                    "get", _safe_provider_url(self.profile, detail_url),
+                    timeout=self.timeout, allow_redirects=False,
+                )
+                detail = parse_detail_html(
+                    self.profile,
+                    detail_response.content,
+                    detail_url=detail_url,
+                    external_id=external_id,
+                )
+                raw = dict(detail.raw_data or {})
+                raw.update({
+                    "listing_page": page,
+                    "catalogue_procedure_url": procedure_url,
+                    "trade_id": identity[0],
+                    "lot_id": identity[1],
+                    "trade_level_listing": False,
+                })
+                detail.raw_data = raw
+                lots.append(detail)
+        if unresolved:
+            raise SourceSchemaError(
+                "fabrikant.ru: catalogue procedure did not expose an individual lot route"
+            )
+        if not lots:
+            raise SourceSchemaError(
+                "fabrikant.ru: no individually identified lots resolved from catalogue page"
+            )
+        return lots
+
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         normalized = filters if isinstance(filters, EtpSearchFilters) else EtpSearchFilters(**(filters or {}))
         page = max(1, int(cursor or normalized.page))
@@ -853,7 +995,11 @@ class HtmlEtpConnector(AuctionConnector):
             total = int(payload.get("Total") or 0)
             next_cursor = str(page + 1) if page * 21 < total else None
         else:
-            lots = parse_listing_html(self.profile, response.content, page=page)
+            lots = (
+                await asyncio.to_thread(self._fabrikant_page_lots, response, page=page)
+                if self.source_id == "fabrikant.ru"
+                else parse_listing_html(self.profile, response.content, page=page)
+            )
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
         structurally_valid_empty_nistp_page = False
@@ -922,6 +1068,11 @@ class HtmlEtpConnector(AuctionConnector):
             or not all(part.isdigit() for part in profit_parts[1:])
         ):
             raise SourceSchemaError("etp-profit.ru: invalid kind/trade/lot identity")
+        fabrikant_parts = identity.split(":", 1) if self.source_id == "fabrikant.ru" else []
+        if self.source_id == "fabrikant.ru" and (
+            len(fabrikant_parts) != 2 or not all(fabrikant_parts)
+        ):
+            raise SourceSchemaError("fabrikant.ru: invalid procedure/lot identity")
         detail_url = template.format(
             identity=identity,
             identity_path=identity_path,
@@ -930,6 +1081,8 @@ class HtmlEtpConnector(AuctionConnector):
             profit_kind=profit_parts[0] if profit_parts else "",
             profit_trade_id=profit_parts[1] if profit_parts else "",
             profit_lot_id=profit_parts[2] if profit_parts else "",
+            fabrikant_procedure_id=fabrikant_parts[0] if fabrikant_parts else "",
+            fabrikant_lot_id=fabrikant_parts[1] if fabrikant_parts else "",
         )
         detail_url = _safe_provider_url(self.profile, detail_url)
         response = await asyncio.to_thread(
