@@ -110,7 +110,7 @@ The audit script imports the isolated module directly. No ZakazRF-specific
 logic remains in `common.py`, `pagination.py`, `profiles.py`,
 `source_specific.py` or `direct_etp_catalogue.py`.
 
-`SOURCE_CONNECTOR_TYPES["zakazrf.ru"]` is wired to the isolated `ZakazRfConnector` for the existing pilot/QA registry. This does **not** add ZakazRF to `default_source_specs()`, scheduled ingestion, reconciliation, archival, GEO or map publication.
+Production wiring is intentionally deferred to the integration PR. The isolated `ZakazRfConnector` is ready for central registration, but this source PR does not modify the shared registry.
 
 ## Contract implemented
 
