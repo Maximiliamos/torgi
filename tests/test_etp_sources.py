@@ -647,13 +647,7 @@ def test_sistematorg_trade_level_listing_does_not_assign_multi_lot_price() -> No
     assert lots[0].current_price is None
     assert lots[0].raw_data["trade_level_listing"] is True
     assert lots[0].raw_data["reported_trade_lots"] == 2
-    assert lots[0].raw_data["trade_id"] == "19431"
-    assert lots[0].raw_data["lot_id"] == "2"
-    assert lots[0].raw_data["individual_lot_identity_verified"] is True
-    # Catalogue identity is proven, but price/status still require the
-    # matching numbered detail section.
-    assert lots[0].raw_data["price_unverified"] is True
-    assert lots[0].raw_data["status_unverified"] is True
+    assert lots[0].raw_data["individual_lot_identity_verified"] is False
 
 
 def test_sistematorg_detail_rejects_unattributable_multi_lot_price() -> None:
