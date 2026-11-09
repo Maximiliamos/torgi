@@ -8,7 +8,10 @@ on:
       - "scripts/probe_sberbank_ast_live_raw.py"
       - "scripts/audit_sberbank_ast_bankruptcy_readonly.py"
       - "src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py"
+      - "src/bankrotai/connectors/etp_sources/common.py"
+      - "src/bankrotai/connectors/etp_sources/profiles.py"
       - "tests/test_sberbank_ast_contract.py"
+      - "tests/test_etp_sources.py"
       - "tests/fixtures/sberbank_ast/**"
       - "docs/ETP_SBERBANK_AST_AUDIT_2026-11-09.md"
       - ".github/workflows/etp-sberbank-ast-readonly-contract.yml"
@@ -34,6 +37,8 @@ jobs:
         run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Run Sberbank-AST isolated contract tests
         run: pytest -q tests/test_sberbank_ast_contract.py
+      - name: Run Sberbank-AST registry integration tests
+        run: pytest -q tests/test_etp_sources.py -k sberbank
 
   live-contract:
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
