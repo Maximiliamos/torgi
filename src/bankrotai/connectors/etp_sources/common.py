@@ -362,11 +362,6 @@ def _parse_multi_lot_catalogue(
         provider_id = next(iter(query.get("trade_nid", []) or query.get("id", [])), None)
         if not provider_id or not item.get("lot"):
             raise SourceSchemaError(f"{profile.source_id}: per-lot provider identity is missing")
-        source_status_text = str(item.get("source_status_text") or "")
-        normalized_status = _status(source_status_text)
-        if profile.source_id == "vertrades.ru":
-            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import _vertrades_status
-            normalized_status = _vertrades_status(source_status_text)
         lots.append(NormalizedLot(
             external_id=f"{profile.source_id}:{provider_id}:{item['lot']}",
             source=profile.source_id.removesuffix(".ru"),
@@ -382,7 +377,7 @@ def _parse_multi_lot_catalogue(
             area=None,
             start_price=price,
             current_price=None,
-            auction_status=normalized_status,
+            auction_status=_status(str(item.get("source_status_text") or "")),
             lot_url=detail_url,
             source_url=detail_url,
             detail_level="search",
@@ -905,8 +900,9 @@ class HtmlEtpConnector(AuctionConnector):
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
             return await fetch_nistp_lot(self, external_id)
         if self.source_id == "vertrades.ru":
-            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import fetch_vertrades_lot
-            return await fetch_vertrades_lot(self, external_id)
+            raise SourceAccessError(
+                f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
+            )
         template = self.profile.detail_url_template
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
@@ -951,9 +947,6 @@ class HtmlEtpConnector(AuctionConnector):
         if self.source_id == "nistp.ru":
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import enrich_nistp_lot
             return await enrich_nistp_lot(self, lot)
-        if self.source_id == "vertrades.ru":
-            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import enrich_vertrades_lot
-            return await enrich_vertrades_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
         return apply_detail(lot, detail, version=self.detail_enrichment_version)
 
@@ -990,9 +983,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
     if profile.source_id == "vertrades.ru":
-        ProfiledConnector.capabilities = frozenset({
-            "search", "fetch_lot", "healthcheck", "detail_enrichment",
-        })
+        ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
     return ProfiledConnector
