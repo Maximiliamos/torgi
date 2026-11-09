@@ -160,6 +160,16 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
 
+def _source_status(profile: EtpSourceProfile, value: str) -> str:
+    """Apply only provider-proven status wording before generic normalization."""
+    lowered = _clean(value).lower()
+    if profile.source_id == "arbbitlot.ru" and (
+        "отменён организатором" in lowered or "отменен организатором" in lowered
+    ):
+        return "closed"
+    return _status(value)
+
+
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -503,7 +513,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             area=area,
             start_price=price,
             current_price=current_price,
-            auction_status=_status(context),
+            auction_status=_source_status(profile, context),
             lot_url=href,
             source_url=href,
             detail_level="list",
@@ -618,7 +628,7 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(text_value),
+        auction_status=_source_status(profile, text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
