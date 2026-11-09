@@ -134,7 +134,10 @@ def _datetime_after(text: str, label: str) -> datetime | None:
 
 
 def _procedure_number(text: str) -> str:
-    found = [_clean(m.group(1)).replace(" ", "") for m in _PROCEDURE.finditer(text)]
+    found = [
+        re.sub(r"[-–—]", "-", _clean(m.group(1)).replace(" ", "")).upper()
+        for m in _PROCEDURE.finditer(text)
+    ]
     found = list(dict.fromkeys(found))
     if len(found) != 1:
         raise VertradesCardError("missing_or_ambiguous_procedure_number")
