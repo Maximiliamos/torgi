@@ -17,7 +17,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import requests
 from bs4 import BeautifulSoup
