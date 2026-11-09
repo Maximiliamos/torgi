@@ -10,11 +10,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from bankrotai.connectors.etp_sources.arbbitlot import (
-    ArbbitlotContractError,
-    apply_detail_contract as apply_arbbitlot_detail_contract,
-    apply_listing_contract as apply_arbbitlot_listing_contract,
-)
+import bankrotai.connectors.etp_sources.arbbitlot as arbbitlot_contract
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
     postback_link_for_page,
@@ -529,7 +525,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             platform_code=profile.platform_code,
         )
         if profile.source_id == "arbbitlot.ru":
-            apply_arbbitlot_listing_contract(lot, container, context)
+            arbbitlot_contract.apply_listing_contract(lot, container, context)
         lots.append(lot)
     return lots
 
@@ -627,8 +623,8 @@ def parse_detail_html(
     )
     if profile.source_id == "arbbitlot.ru":
         try:
-            apply_arbbitlot_detail_contract(lot, text_value)
-        except ArbbitlotContractError as exc:
+            arbbitlot_contract.apply_detail_contract(lot, text_value)
+        except arbbitlot_contract.ArbbitlotContractError as exc:
             raise SourceSchemaError(str(exc)) from exc
     return lot
 
