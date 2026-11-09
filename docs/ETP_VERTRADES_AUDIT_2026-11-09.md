@@ -33,7 +33,7 @@ Observed first-party GET routes:
 - closed tenders: `/bidding?bidding_type=2`;
 - pagination: `/bidding?page=N`.
 
-No separate first-party XHR/JSON API was proved or required for the parser. The underlying submission method/parameter names for every optional search-panel field were not captured; therefore they are not asserted as part of the contract.
+No separate first-party XHR/JSON API was proved or required for the parser. The source-specific live check now inspects the public search form structurally on page 1 and records only its HTTP method, same-origin action path and field names (never field values). The same form contract must match on both catalogue passes. This makes the GET/POST transport evidence explicit without collecting query contents or personal data.
 
 ### Pagination
 
@@ -147,7 +147,7 @@ Known detail status forms explicitly covered include `Торги заверше�
 - `src/bankrotai/connectors/etp_sources/vertrades_detail_adapter.py` — public `showTrades?id=...` fetch/enrichment adapter with identity and price cross-checks.
 - `src/bankrotai/connectors/etp_sources/common.py` — source-specific adapter hook and source-specific status normalization only for Vertrades.
 - `src/bankrotai/connectors/registry/direct_etp_catalogue.py` — parse real `NNN-АП/NNN-АЗ` procedure codes; existing positive property gate remains.
-- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe plus one-response 30-lot live detail proof; executable as `python -m bankrotai.services.etp_vertrades_contract_probe`.
+- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe, safe filter-form transport inspection and one-response 30-lot live detail proof; executable as `python -m bankrotai.services.etp_vertrades_contract_probe`.
 - `tests/test_direct_etp_catalogue_batch.py` — the old synthetic numeric-only Vertrades trade ID was replaced with the verified `NNN-АП` format; assertions remain strict.
 - `tests/test_vertrades_catalogue_contract.py` — mixed-asset/property and composite-ID regression.
 - `tests/test_vertrades_detail_sections.py` — section isolation, price/status, dates, address/cadastre/area and fail-closed cases.
@@ -185,7 +185,7 @@ No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, produ
 ## Remaining limitations
 
 1. The source's public register is stale/historical; no active 2026 auction sample was observed.
-2. Optional search-panel form submission fields were not reverse-engineered because the canonical unfiltered public register and required pagination/detail contract are available without them.
+2. The live probe records the public search form's method/action/field names but intentionally does not submit arbitrary user search values; the canonical unfiltered catalogue is sufficient for source inventory proof.
 3. The exact two-pass SHA-256 result from `etp_vertrades_contract_probe.py` still requires a network-capable repository runtime; the current agent container cannot resolve external DNS.
 4. Source-specific focused tests and live proof plus the repository-wide CI must be green before this PR is treated as review-ready.
 
