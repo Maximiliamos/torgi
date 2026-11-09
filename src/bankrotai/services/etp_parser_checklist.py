@@ -110,7 +110,8 @@ def _connector(source: str) -> tuple[Any, Any]:
             category_id=LotOnlineClient.DEFAULT_CATEGORY_ID,
             archive_mode="false", page=1, page_size=96,
         )
-    return SOURCE_CONNECTOR_TYPES[source](timeout=20), EtpSearchFilters(page=1)
+    connector_cls: Any = SOURCE_CONNECTOR_TYPES[source]
+    return connector_cls(timeout=20), EtpSearchFilters(page=1)
 
 
 async def diagnose_source(

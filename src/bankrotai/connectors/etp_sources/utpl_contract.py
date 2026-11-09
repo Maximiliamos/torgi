@@ -282,7 +282,9 @@ def utpl_next_postback(html: str | bytes, current_page: int) -> tuple[str, str] 
             r"__doPostBack\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]\s*\)",
             href,
         )
-        return match.groups() if match else None
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
 
     wanted = str(current_page + 1)
     for anchor in anchors:

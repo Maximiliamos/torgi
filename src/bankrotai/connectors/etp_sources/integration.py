@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -86,6 +86,12 @@ class AlfalotBlockedConnector(AuctionConnector):
     source_id = "alfalot.ru"
     safe_for_reconciliation = False
     capabilities = frozenset({"search", "healthcheck"})
+
+    def __init__(
+        self, *, session: requests.Session | None = None, timeout: float = 25.0
+    ) -> None:
+        self.session = session
+        self.timeout = timeout
 
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         from bankrotai.connectors.etp_sources.alfalot_audit import (
@@ -539,7 +545,7 @@ class AukcionCenterConnector(HtmlEtpConnector):
 
         page = _page(filters, cursor)
         response = await asyncio.to_thread(self._request, page)
-        lots = parse_listing(self.profile, response.content, page=page, active_filter=True)
+        lots = parse_listing(cast(Any, self.profile), response.content, page=page, active_filter=True)
         if not lots:
             raise SourceSchemaError("aukcioncenter.ru: no verified individual lots")
         return ConnectorPage(
@@ -571,7 +577,7 @@ class AukcionCenterConnector(HtmlEtpConnector):
             allow_redirects=False,
         )
         return parse_detail(
-            self.profile,
+            cast(Any, self.profile),
             response.content,
             detail_url_value=detail_url,
             external_id=external_id,

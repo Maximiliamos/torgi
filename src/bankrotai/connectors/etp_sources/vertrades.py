@@ -476,12 +476,14 @@ def get_vertrades_lot(
 
     status = _one_labeled(section, _STATUS_LABEL, required=True)
     title = _one_labeled(section, _TITLE_LABEL, required=True)
+    price_text = _one_labeled(section, _PRICE_LABEL, required=True)
+    assert status is not None and title is not None and price_text is not None
     description = _one_labeled(
         section, _DESCRIPTION_LABEL, required=False, multiline=True,
     ) or title
-    price = _money(_one_labeled(section, _PRICE_LABEL, required=True), required=True)
+    price = _money(price_text, required=True)
     deposit = _money(_one_labeled(section, _DEPOSIT_LABEL, required=False), required=False)
-    assert status is not None and title is not None and price is not None
+    assert price is not None
 
     asset_text = _clean(title + " " + description)
     cadastre = _CADASTRE.search(asset_text)
