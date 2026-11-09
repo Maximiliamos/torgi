@@ -2,11 +2,6 @@ name: Phase 3 Lite production health
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/phase3-lite-health.yml"
-      - "src/bankrotai/services/lot_issue_report_export.py"
   schedule:
     - cron: '17,47 * * * *'
   workflow_run:
@@ -46,33 +41,6 @@ jobs:
           path: ${{ runner.temp }}\phase3-health.json
           if-no-files-found: ignore
           retention-days: 14
-      - name: Export developer lot issue reports read-only
-        if: always()
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $inside = '/tmp/lot-issue-reports.json'
-          $insideScript = '/tmp/lot-issue-report-export.py'
-          $outside = Join-Path $env:RUNNER_TEMP 'lot-issue-reports.json'
-          $source = Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\lot_issue_report_export.py'
-          if (-not (Test-Path -LiteralPath $source)) { throw 'Exporter source is missing from checkout' }
-          docker cp $source "bankrotai-home-ingestion-worker:$insideScript"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not stage exporter source in worker tmpfs' }
-          docker exec bankrotai-home-ingestion-worker python $insideScript --limit 200 --output $inside
-          if ($LASTEXITCODE -ne 0) { throw 'Read-only report export failed' }
-          docker cp "bankrotai-home-ingestion-worker:$inside" $outside
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
-            throw 'Could not copy report export from worker'
-          }
-          docker exec bankrotai-home-ingestion-worker python -c "import os; [os.remove(p) for p in (r'/tmp/lot-issue-reports.json', r'/tmp/lot-issue-report-export.py') if os.path.exists(p)]"
-      - name: Upload developer lot issue reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: lot-issue-reports-${{ github.run_id }}
-          path: ${{ runner.temp }}\lot-issue-reports.json
-          if-no-files-found: error
-          retention-days: 3
 
   alert:
     needs: inspect
