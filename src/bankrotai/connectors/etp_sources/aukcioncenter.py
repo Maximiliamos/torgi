@@ -205,6 +205,14 @@ def _asset_class(value: str) -> str:
 
 
 def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
+    """Use only an explicit rendered lifecycle marker as status evidence.
+
+    processStatus=BID_SUBMISSION is a catalogue-selection contract, not a
+    trustworthy per-row lifecycle assertion: the provider can render explicit
+    finished rows inside that result set.  Application dates are likewise not
+    status evidence.
+    """
+    del active_filter  # retained in the call interface as provenance only
     lowered = text.lower()
     explicit = next((marker for marker in _STATUS_MARKERS if marker in lowered), None)
     if explicit:
@@ -213,11 +221,6 @@ def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
         if explicit in {"торги завершены", "торги отменены"}:
             return "closed", explicit
         return "active", explicit
-    if active_filter:
-        # The official processStatus=BID_SUBMISSION filter itself is source
-        # evidence that the procedure is accepting applications. A deadline
-        # alone never produces this state.
-        return "active", "processStatus=BID_SUBMISSION"
     return "unknown", None
 
 
@@ -408,6 +411,15 @@ def parse_listing(
             detail_url = browser_url(
                 f"{profile.source_id}:{provider_id}:{lot_number}"
             )
+            # A catalogue price is accepted only inside an explicit
+            # "Лот №N" segment and only behind an initial-price label.  Generic
+            # amounts, deposits, auction steps, nominal values and procedure
+            # totals remain unusable.  Rows identified only by a lotNumber URL
+            # keep price fail-closed because their prose can still describe the
+            # whole procedure.
+            listing_initial_price = (
+                _money(_INITIAL_PRICE_RE.search(segment)) if parts else None
+            )
             output.append(NormalizedLot(
                 external_id=external_id,
                 source="aukcioncenter",
@@ -421,9 +433,7 @@ def parse_listing(
                 cadastral_number=cadastral.group(1) if cadastral else None,
                 vin=None,
                 area=area,
-                # Listing prose can contain deposits, nominal values and even
-                # historical prices. Price is accepted only from isolated detail.
-                start_price=None,
+                start_price=listing_initial_price,
                 current_price=None,
                 auction_status=auction_status,
                 lot_url=detail_url,
@@ -442,7 +452,8 @@ def parse_listing(
                     "eligible_property": asset_class in {"land", "real_estate"},
                     "active_filter_verified": active_filter,
                     "individual_lot_identity_verified": True,
-                    "listing_price_unverified": True,
+                    "listing_initial_price_verified": listing_initial_price is not None,
+                    "listing_current_price_verified": False,
                     "complete_source_inventory": False,
                     "safe_for_archival": False,
                     "reconcile_missing": False,
