@@ -267,7 +267,9 @@ def _parse_sistematorg_procedure_lots(
                 raw_data={
                     "listing_page": page,
                     "trade_id": procedure.trade_id,
+                    "procedure_id": procedure.trade_id,
                     "lot_id": item.lot_id,
+                    "lot_number": item.lot_id,
                     "procedure_number": procedure.procedure_number,
                     "reported_trade_lots": procedure.declared_lot_count,
                     "trade_level_listing": True,
