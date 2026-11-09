@@ -70,7 +70,11 @@ jobs:
               "start_price_success": details["start_price_success"],
               "status_success": details["status_success"],
               "public_offer_details_checked": details["public_offer_details_checked"],
-              "current_price_success": details["current_price_success"],
+              "catalogue_current_price_success": details["catalogue_current_price_success"],
+              "detail_current_price_success": details["detail_current_price_success"],
+              "catalogue_detail_current_price_match": details["catalogue_detail_current_price_match"],
+              "catalogue_detail_start_price_match": details["catalogue_detail_start_price_match"],
+              "catalogue_detail_status_match": details["catalogue_detail_status_match"],
               "multi_lot_procedure_count": len(details["multi_lot_procedures"]),
           }, ensure_ascii=False, indent=2))
           PY
