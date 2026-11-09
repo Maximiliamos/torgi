@@ -57,9 +57,6 @@ def test_sberbank_json_rejects_untrusted_lot_link() -> None:
     raw = {
         "objectHref": "http://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
         "title": "Земельный участок",
-        "ObjectSource": "Продажа имущества (предприятия) банкротов",
-        "SourceTradeSectionId": "13",
-        "BranchGroup": "Недвижимое имущество",
     }
     with pytest.raises(SourceAccessError, match="unsafe provider URL"):
         parse_sberbank_json(
@@ -426,9 +423,6 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
     base = {
         "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
         "title": "Земельный участок, кадастровый номер 47:16:0420001:37",
-        "ObjectSource": "Продажа имущества (предприятия) банкротов",
-        "SourceTradeSectionId": "13",
-        "BranchGroup": "Недвижимое имущество",
         "purchAmountRUB": "722100",
         "purchAmount": "900000",
     }
@@ -597,20 +591,17 @@ def test_sberbank_api_pagination_and_mapping() -> None:
         "Total": 22,
         "PurchaseList": [{
             "_source": {
-                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/51583",
-                "title": "Квартира 87,2 кв. м, кадастровый номер 77:05:0000000:3121",
-                "purchName": "Продажа недвижимого имущества",
-                "ObjectSource": "Продажа имущества (предприятия) банкротов",
-                "SourceTradeSectionId": "13",
-                "BranchGroup": "Недвижимое имущество",
-                "purchAmount": "24643766",
+                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
+                "title": "Автомобиль LADA VESTA, VIN XTAGFK110NY607362",
+                "purchName": "Торги по реализации автомобиля",
+                "purchAmount": "890000",
                 "purchCurrency": "RUB",
                 "PurchaseStageTerm": "Прием заявок",
-                "purchCode": "SBR013-TEST-0",
-                "RegionNameTerm": "Москва",
-                "Address": "Москва, тестовый адрес",
-                "RequestStopDate": "25.11.2026 14:00",
-                "AuctionResultDate": "03.12.2026 14:00",
+                "purchCode": "SBR013-2610260004-0",
+                "RegionNameTerm": "Г. Санкт-Петербург",
+                "Address": "Г. Санкт-Петербург",
+                "RequestStopDate": "03.12.2026 10:00",
+                "AuctionResultDate": "07.12.2026 17:00",
             }
         }],
     }
@@ -618,25 +609,18 @@ def test_sberbank_api_pagination_and_mapping() -> None:
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](session=session)
     result = asyncio.run(connector.search({}))
     assert result.next_cursor == "2"
-    assert result.items[0].external_id == "sberbank-ast.ru:11-0-0-51583"
-    assert result.items[0].start_price == 24643766
-    assert result.items[0].cadastral_number == "77:05:0000000:3121"
-    assert result.items[0].raw_data["bankruptcy_filter_verified"] is True
-    assert result.items[0].raw_data["property_scope_verified"] is True
-    assert result.metadata["terminal_page_proven"] is False
+    assert result.items[0].external_id == "sberbank-ast.ru:8-0-0-53571"
+    assert result.items[0].start_price == 890000
+    assert result.items[0].vin == "XTAGFK110NY607362"
     assert session.posts[0][0] == "https://www.sberbank-ast.ru/api/Processing/main"
-    assert "Продажа имущества (предприятия) банкротов" in session.posts[0][1]["filterBody"]
 
 
-def test_sberbank_healthcheck_uses_verified_bankruptcy_json_contract() -> None:
+def test_sberbank_healthcheck_uses_json_contract() -> None:
     payload = {
         "Total": 1,
         "PurchaseList": [{"_source": {
-            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/51583",
-            "title": "Нежилое помещение",
-            "ObjectSource": "Продажа имущества (предприятия) банкротов",
-            "SourceTradeSectionId": "13",
-            "BranchGroup": "Недвижимое имущество",
+            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
+            "title": "Автомобиль LADA VESTA",
         }}],
     }
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
