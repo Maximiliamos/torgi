@@ -64,6 +64,30 @@ def test_sberbank_json_rejects_untrusted_lot_link() -> None:
         )
 
 
+def test_ruson_detail_enrichment_reads_labelled_price_and_dates_without_rub_suffix() -> None:
+    html = """
+    <html><body><h1>Нежилое помещение 50:46:0060406:241</h1>
+    Начальная цена 5205000.00
+    Дата окончания приема заявок 19.08.2022 18:00
+    Дата проведения 22.08.2022 10:00
+    Торги не состоялись
+    Официальная карточка содержит подробное описание продаваемого имущества.
+    </body></html>
+    """
+    parsed = parse_detail_html(
+        profile("rus-on.ru"),
+        html,
+        detail_url="https://rus-on.ru/bankrot/lot_view.php?lot_nid=27424",
+        external_id="rus-on.ru:27424",
+    )
+
+    assert parsed.start_price == 5_205_000
+    assert parsed.application_deadline.isoformat() == "2022-08-19T18:00:00"
+    assert parsed.auction_at.isoformat() == "2022-08-22T10:00:00"
+    assert parsed.auction_status == "closed"
+    assert "detail_enrichment" in SOURCE_CONNECTOR_TYPES["rus-on.ru"].capabilities
+
+
 def test_duplicate_links_do_not_duplicate_lots() -> None:
     href = "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115011"
     html = f"<div><a href='{href}'>Лот 1</a><a href='{href}'>Земельный участок площадью 792 кв. м.</a></div>"
