@@ -5,20 +5,38 @@ import asyncio
 import pytest
 import requests
 
-from bankrotai.connectors.etp_sources import (
-    PROFILES,
-    SOURCE_CONNECTOR_TYPES,
+from bankrotai.connectors.etp_sources.common import (
+    EtpSourceProfile,
     SourceSchemaError,
-    parse_listing_html,
 )
 from bankrotai.connectors.etp_sources.fabrikant import (
     external_id_from_lot_url,
     parse_detail_lot,
+    procedure_urls,
+)
+from bankrotai.connectors.etp_sources.fabrikant_connector import FabrikantConnector
+
+
+FABRIKANT_PROFILE = EtpSourceProfile(
+    source_id="fabrikant.ru",
+    platform_name="Фабрикант",
+    platform_code="fabrikant",
+    listing_url=(
+        "https://www.fabrikant.ru/procedure/search/sales"
+        "?section_ids%5B%5D=6&page_limit=10"
+    ),
+    lot_url_pattern=(
+        r"fabrikant\.ru/v2/trades/procedure/lot/view/"
+        r"([^/?#]+)/([^/?#]+)/?"
+    ),
+    page_parameter="page_number",
+    supports_get_pagination=True,
+    allowed_hosts=("fabrikant.ru", "www.fabrikant.ru"),
 )
 
 
-def profile():
-    return next(item for item in PROFILES if item.source_id == "fabrikant.ru")
+class IsolatedFabrikantConnector(FabrikantConnector):
+    profile = FABRIKANT_PROFILE
 
 
 class FakeResponse:
@@ -47,16 +65,18 @@ class RouteSession:
 
 
 def test_procedure_route_is_not_an_individual_fabrikant_lot() -> None:
-    html = """
-    <a href="https://www.fabrikant.ru/v2/trades/procedure/view/PROC_token-1">
-      Земельный участок
-    </a>
-    """
-    assert parse_listing_html(profile(), html) == []
+    procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC_token-1"
+    html = f'<a href="{procedure}">Земельный участок</a>'
+
+    assert external_id_from_lot_url(procedure) is None
+    assert procedure_urls(html, base_url=FABRIKANT_PROFILE.listing_url) == [procedure]
 
 
 def test_fabrikant_lot_route_has_unambiguous_two_token_identity() -> None:
-    href = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-token_1/LOT-token_2"
+    href = (
+        "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
+        "PROC-token_1/LOT-token_2"
+    )
     assert external_id_from_lot_url(href) == (
         "fabrikant.ru:PROC-token_1:LOT-token_2"
     )
@@ -71,7 +91,8 @@ def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
       <div>Категория объекта Квартира</div>
       <div>Характеристики объекта Кадастровый номер: 62:24:0010110:419
       Общая площадь, м²: 57,90</div>
-      <div>Местонахождение объекта продажи Адрес: Тестовая область, г. Тест, ул. Проверочная, д. 1</div>
+      <div>Местонахождение объекта продажи Адрес: Тестовая область,
+      г. Тест, ул. Проверочная, д. 1</div>
       <div>Начальная цена предмета договора Цена без НДС:
       555 345,00 Рубль (RUB)</div>
       <div>Размер задатка 111 069,00 Рубль (RUB)</div>
@@ -86,7 +107,7 @@ def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
         "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
         "PROC-token_1/LOT-token_2"
     )
-    lot = parse_detail_lot(profile(), html, detail_url=url)
+    lot = parse_detail_lot(FABRIKANT_PROFILE, html, detail_url=url)
 
     assert lot.external_id == "fabrikant.ru:PROC-token_1:LOT-token_2"
     assert lot.start_price == 555_345
@@ -120,7 +141,7 @@ def test_fabrikant_public_offer_schedule_does_not_replace_lot_initial_price() ->
     </body></html>
     """
     lot = parse_detail_lot(
-        profile(),
+        FABRIKANT_PROFILE,
         html,
         detail_url=(
             "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
@@ -144,7 +165,7 @@ def test_fabrikant_ended_status_is_explicit_not_application_date_inference() -> 
     </body></html>
     """
     lot = parse_detail_lot(
-        profile(),
+        FABRIKANT_PROFILE,
         html,
         detail_url=(
             "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
@@ -166,7 +187,7 @@ def test_fabrikant_review_stage_remains_unknown_without_terminal_marker() -> Non
     </body></html>
     """
     lot = parse_detail_lot(
-        profile(),
+        FABRIKANT_PROFILE,
         html,
         detail_url=(
             "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
@@ -177,7 +198,7 @@ def test_fabrikant_review_stage_remains_unknown_without_terminal_marker() -> Non
 
 
 def test_fabrikant_catalogue_expands_procedure_to_individual_lot_detail() -> None:
-    listing = "https://www.fabrikant.ru/procedure/search/sales?section_ids%5B%5D=6&page_limit=10"
+    listing = FABRIKANT_PROFILE.listing_url
     procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A"
     detail = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-A/LOT-A"
 
@@ -211,7 +232,7 @@ def test_fabrikant_catalogue_expands_procedure_to_individual_lot_detail() -> Non
         procedure: FakeResponse(procedure_html, procedure),
         detail: FakeResponse(detail_html, detail),
     })
-    connector = SOURCE_CONNECTOR_TYPES["fabrikant.ru"](session=session)
+    connector = IsolatedFabrikantConnector(session=session)
 
     result = asyncio.run(connector.search({}))
 
@@ -227,15 +248,17 @@ def test_fabrikant_catalogue_expands_procedure_to_individual_lot_detail() -> Non
 
 
 def test_fabrikant_catalogue_fails_closed_when_procedure_has_no_lot_route() -> None:
-    listing = "https://www.fabrikant.ru/procedure/search/sales?section_ids%5B%5D=6&page_limit=10"
+    listing = FABRIKANT_PROFILE.listing_url
     procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC-ONLY"
     catalogue = f'<a href="{procedure}">Процедура</a>'.encode()
-    procedure_html = b"<html><body><h2>Lot data but no canonical lot link</h2></body></html>"
+    procedure_html = (
+        b"<html><body><h2>Lot data but no canonical lot link</h2></body></html>"
+    )
     session = RouteSession({
         listing: FakeResponse(catalogue, listing),
         procedure: FakeResponse(procedure_html, procedure),
     })
-    connector = SOURCE_CONNECTOR_TYPES["fabrikant.ru"](session=session)
+    connector = IsolatedFabrikantConnector(session=session)
 
     with pytest.raises(SourceSchemaError, match="individual lot route"):
         asyncio.run(connector.search({}))
