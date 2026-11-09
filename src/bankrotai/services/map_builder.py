@@ -520,7 +520,16 @@ def _promote_map_dataset(
                 settings.min_map_points,
                 math.ceil(baseline_points * settings.min_map_coverage_ratio),
             )
-        if current is not None and baseline_points > 0 and dataset.point_count < minimum_points:
+        empty_replacement = (
+            current is not None
+            and int(current.point_count or 0) > 0
+            and int(dataset.point_count or 0) == 0
+        )
+        if empty_replacement or (
+            current is not None
+            and baseline_points > 0
+            and dataset.point_count < minimum_points
+        ):
             dataset.status = "rejected"
             session.commit()
             logger.warning(
@@ -536,7 +545,7 @@ def _promote_map_dataset(
                 "status": "rejected",
                 "reason": (
                     "empty_dataset_would_replace_nonempty_current"
-                    if dataset.point_count == 0
+                    if empty_replacement
                     else "dataset_coverage_below_threshold"
                 ),
                 "current_dataset_id": current.id,
