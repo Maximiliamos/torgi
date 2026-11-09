@@ -7,7 +7,6 @@ on:
     paths:
       - "scripts/probe_sberbank_ast_live_raw.py"
       - "scripts/audit_sberbank_ast_bankruptcy_readonly.py"
-      - "src/bankrotai/connectors/etp_sources/common.py"
       - "src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py"
       - "tests/test_sberbank_ast_contract.py"
       - "tests/fixtures/sberbank_ast/**"
