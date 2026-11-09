@@ -900,9 +900,8 @@ class HtmlEtpConnector(AuctionConnector):
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
             return await fetch_nistp_lot(self, external_id)
         if self.source_id == "vertrades.ru":
-            raise SourceAccessError(
-                f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
-            )
+            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import fetch_vertrades_lot
+            return await fetch_vertrades_lot(self, external_id)
         template = self.profile.detail_url_template
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
@@ -947,6 +946,9 @@ class HtmlEtpConnector(AuctionConnector):
         if self.source_id == "nistp.ru":
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import enrich_nistp_lot
             return await enrich_nistp_lot(self, lot)
+        if self.source_id == "vertrades.ru":
+            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import enrich_vertrades_lot
+            return await enrich_vertrades_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
         return apply_detail(lot, detail, version=self.detail_enrichment_version)
 
@@ -983,7 +985,9 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
     if profile.source_id == "vertrades.ru":
-        ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
+        ProfiledConnector.capabilities = frozenset({
+            "search", "fetch_lot", "healthcheck", "detail_enrichment",
+        })
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
     return ProfiledConnector
