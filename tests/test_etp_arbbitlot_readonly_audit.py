@@ -60,9 +60,13 @@ def test_arbbitlot_readonly_audit_proves_terminal_and_repeatable_ids() -> None:
     assert report["details"]["details_checked"] == 3
     assert report["details"]["detail_success"] == 3
     assert report["details"]["start_price_success"] == 3
+    assert report["details"]["catalogue_detail_start_price_match"] == 3
     assert report["details"]["status_success"] == 3
+    assert report["details"]["catalogue_detail_status_match"] == 3
     assert report["details"]["public_offer_details_checked"] == 1
-    assert report["details"]["current_price_success"] == 1
+    assert report["details"]["catalogue_current_price_success"] == 0
+    assert report["details"]["detail_current_price_success"] == 1
+    assert report["details"]["catalogue_detail_current_price_match"] == 1
     assert report["details"]["multi_lot_procedures"] == {
         "777": ["arbbitlot.ru:auctions-1", "arbbitlot.ru:auctions-3"]
     }
