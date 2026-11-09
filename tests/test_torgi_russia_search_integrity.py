@@ -122,10 +122,11 @@ def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
     search_url = "https://xn----etbpba5admdlad.xn--p1ai/search"
     detail_url = "https://xn----etbpba5admdlad.xn--p1ai/lot/7266197"
     mets_url = "https://m-ets.ru/242937-2"
+    mets_public_url = "https://meetings.m-ets.ru/242937-2"
     session = RoutedSession({
         search_url: html_with_meta([search_record], total=1),
         detail_url: detail_html,
-        mets_url: mets_html,
+        mets_public_url: mets_html,
     })
     client = TorgiRussiaClient(session=session)
 
@@ -135,9 +136,10 @@ def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
     assert lots[0].external_id == "torgi-russia:7266197"
     assert lots[0].title == "Земельный участок 600 кв. м"
     assert lots[0].raw_data["title_evidence"] == "official_mets_detail"
-    assert lots[0].raw_data["title_evidence_url"] == mets_url
+    assert lots[0].raw_data["title_evidence_url"] == mets_public_url
+    assert lots[0].raw_data["title_evidence_canonical_url"] == mets_url
     assert lots[0].raw_data["title_evidence_external_id"] == "242937-2"
-    assert session.urls == [search_url, detail_url, mets_url]
+    assert session.urls == [search_url, detail_url, mets_public_url]
 
 
 def test_empty_title_fallback_rejects_mets_price_mismatch():
@@ -162,17 +164,18 @@ def test_empty_title_fallback_rejects_mets_price_mismatch():
     search_url = "https://xn----etbpba5admdlad.xn--p1ai/search"
     detail_url = "https://xn----etbpba5admdlad.xn--p1ai/lot/7266197"
     mets_url = "https://m-ets.ru/242937-2"
+    mets_public_url = "https://meetings.m-ets.ru/242937-2"
     client = TorgiRussiaClient(session=RoutedSession({
         search_url: html_with_meta([search_record], total=1),
         detail_url: html_with_meta([detail_record], total=1),
-        mets_url: mets_html,
+        mets_public_url: mets_html,
     }))
 
     lots, metadata = client.search_lots(TorgiRussiaSearchFilters(region_id=36))
     assert lots == []
     assert metadata["quarantine_reasons"] == {"empty_title": 1}
     assert metadata["quarantine_samples"][0]["external_id"] == "7266197"
-    assert metadata["quarantine_samples"][0]["recovery_failure"] == "RuntimeError"
+    assert metadata["quarantine_samples"][0]["recovery_failure"] == "RuntimeError:mets_price_mismatch"
     assert "unknown_parser_drop" not in metadata["quarantine_reasons"]
 
 
