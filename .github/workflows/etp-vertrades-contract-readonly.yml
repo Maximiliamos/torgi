@@ -50,6 +50,7 @@ jobs:
 
           from bankrotai.services.etp_vertrades_contract_probe import (
               probe_vertrades_contract,
+              probe_vertrades_detail_sample,
           )
 
           with requests.Session() as session:
@@ -59,6 +60,7 @@ jobs:
                   passes=2,
                   delay_seconds=1.0,
               )
+              detail = probe_vertrades_detail_sample(session)
 
           if report["terminal_page"] != 4:
               raise SystemExit("Vertrades terminal page changed from verified page 4")
@@ -70,6 +72,12 @@ jobs:
               raise SystemExit("Read-only probe unexpectedly enabled destructive semantics")
           if report["production_enabled"]:
               raise SystemExit("Read-only probe unexpectedly enabled production")
+          if detail["details_checked"] != 30:
+              raise SystemExit("Vertrades live detail sample did not verify 30 lots")
+          if detail["price_verified"] != 30 or detail["status_verified"] != 30:
+              raise SystemExit("Vertrades live detail price/status proof is incomplete")
+          if detail["database_writes"] != 0 or detail["production_enabled"]:
+              raise SystemExit("Vertrades live detail proof violated read-only boundary")
 
           # Deliberately emit no source HTML, titles, addresses or person data.
           print(json.dumps({
@@ -78,6 +86,14 @@ jobs:
               "unique_property_lot_ids": report["unique_property_lot_ids"],
               "id_digest_sha256": report["id_digest_sha256"],
               "stable_between_passes": report["stable_between_passes"],
-              "production_enabled": report["production_enabled"],
+              "details_checked": detail["details_checked"],
+              "price_verified": detail["price_verified"],
+              "status_verified": detail["status_verified"],
+              "cadastre_present": detail["cadastre_present"],
+              "address_present": detail["address_present"],
+              "area_present": detail["area_present"],
+              "dates_verified": detail["dates_verified"],
+              "detail_digest_sha256": detail["detail_digest_sha256"],
+              "production_enabled": False,
           }, ensure_ascii=False, sort_keys=True))
           PY
