@@ -349,6 +349,155 @@ def test_automatic_nationwide_refresh_skips_existing_run(monkeypatch) -> None:
     }
 
 
+def test_scheduled_incremental_persists_preflight_and_continues_on_one_source_failure(monkeypatch) -> None:
+    created: dict = {}
+    persisted: list[tuple[str, dict]] = []
+    attached: list[tuple[str, dict, bool]] = []
+
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **kwargs):
+            created.update(kwargs)
+            return "scheduled-incremental"
+
+    specs = tuple(SimpleNamespace(source_id=x) for x in sorted(tasks.SEVEN_SOURCE_IDS))
+    preflight = {
+        "success": False,
+        "checked": 7,
+        "failed_sources": ["m-ets.ru"],
+        "results": {
+            "m-ets.ru": {
+                "success": False,
+                "source_system": "m-ets.ru",
+                "error_type": "TimeoutError",
+                "error": "read timeout",
+            }
+        },
+    }
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "scheduled_specs", lambda _mode, _unpaused: specs)
+    monkeypatch.setattr(tasks, "run_scheduled_source_preflight", lambda _specs: preflight)
+    monkeypatch.setattr(
+        tasks,
+        "_persist_scheduled_preflight",
+        lambda run_id, value: persisted.append((run_id, value)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_attach_preflight_to_completed_run",
+        lambda run_id, value, *, warning: attached.append((run_id, value, warning)),
+    )
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "run",
+        lambda run_id, mode: {
+            "status": "partial",
+            "run_id": run_id,
+            "mode": mode,
+            "sources": [
+                {"source_system": "m-ets.ru", "status": "failed", "error": "read timeout"},
+                {"source_system": "torgi.gov.ru", "status": "success"},
+            ],
+        },
+    )
+    monkeypatch.setattr(tasks, "_schedule_partial_source_retries", lambda *_args, **_kwargs: [])
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert created == {
+        "triggered_by": "celery-beat",
+        "trigger_type": "scheduled_incr",
+        "total_sources": 7,
+    }
+    assert persisted == [("scheduled-incremental", preflight)]
+    assert attached == [("scheduled-incremental", preflight, True)]
+    assert result["run_id"] == "scheduled-incremental"
+    assert result["status"] == "partial"
+    assert result["preflight"] == preflight
+    assert result["preflight_warning"] == "source_preflight_failed"
+
+
+def test_scheduled_incremental_persists_global_circuit_skip(monkeypatch) -> None:
+    created: dict = {}
+    finalized: list[tuple[str, str, str]] = []
+
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **kwargs):
+            created.update(kwargs)
+            return "scheduled-skipped"
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: True)
+    monkeypatch.setattr(
+        tasks,
+        "_finalize_scheduled_skip",
+        lambda run_id, *, mode, reason, details=None: (
+            finalized.append((run_id, mode, reason))
+            or {"run_id": run_id, "status": "skipped", "reason": reason, "mode": mode}
+        ),
+    )
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert created["trigger_type"] == "scheduled_incr"
+    assert created["total_sources"] == 7
+    assert finalized == [("scheduled-skipped", "incremental", "global_source_network_circuit")]
+    assert result == {
+        "run_id": "scheduled-skipped",
+        "status": "skipped",
+        "reason": "global_source_network_circuit",
+        "mode": "incremental",
+    }
+
+
+def test_scheduled_incremental_persists_missing_source_skip(monkeypatch) -> None:
+    class FakeService:
+        def __init__(self, _session_factory):
+            pass
+
+        def create_run(self, **_kwargs):
+            return "scheduled-missing"
+
+    specs = tuple(
+        SimpleNamespace(source_id=x)
+        for x in sorted(tasks.SEVEN_SOURCE_IDS - {"nistp.ru"})
+    )
+    finalized: list[dict] = []
+
+    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "scheduled_specs", lambda _mode, _unpaused: specs)
+    monkeypatch.setattr(
+        tasks,
+        "_finalize_scheduled_skip",
+        lambda run_id, *, mode, reason, details=None: (
+            finalized.append(
+                {"run_id": run_id, "mode": mode, "reason": reason, "details": details}
+            )
+            or {"run_id": run_id, "status": "skipped", "reason": reason, "mode": mode, **(details or {})}
+        ),
+    )
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert finalized == [
+        {
+            "run_id": "scheduled-missing",
+            "mode": "incremental",
+            "reason": "required_source_not_runnable",
+            "details": {"missing_sources": ["nistp.ru"]},
+        }
+    ]
+    assert result["missing_sources"] == ["nistp.ru"]
+
+
 def test_automatic_full_refresh_retries_an_active_lease(monkeypatch) -> None:
     class FakeService:
         def __init__(self, _session_factory):
