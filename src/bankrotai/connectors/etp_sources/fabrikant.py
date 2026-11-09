@@ -11,7 +11,6 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from bankrotai.domain import NormalizedLot
 
 
 CATALOGUE_URL = (
@@ -454,6 +453,8 @@ def parse_detail_lot(
     detail_url: str,
     external_id: str | None = None,
 ) -> NormalizedLot:
+    from bankrotai.domain import NormalizedLot
+
     identity = lot_identity(detail_url)
     if identity is None:
         raise FabrikantContractError("detail URL is not an individual lot route")
