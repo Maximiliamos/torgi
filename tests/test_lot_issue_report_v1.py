@@ -111,3 +111,87 @@ def test_authenticated_report_persists_after_lot_deletion(monkeypatch) -> None:
         assert unauthorized.status_code == 401
 
     engine.dispose()
+
+
+
+def test_readonly_report_export_uses_source_lot_for_dates(monkeypatch) -> None:
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from bankrotai.services import lot_issue_report_export as report_export
+
+    report = SimpleNamespace(
+        id=9,
+        lot_id=77,
+        user_id="3",
+        created_at=datetime(2026, 11, 9, 0, 30),
+        content="Нет даты проведения",
+    )
+    # Deliberately omit application_deadline/auction_at: these fields do not
+    # exist on ProcessedLot and caused the production exporter to crash.
+    lot = SimpleNamespace(
+        external_id="test:77",
+        source="test",
+        source_system="test.ru",
+        title="Test lot",
+        description="Description",
+        region_code="50",
+        region_name="Московская область",
+        address="г. Электросталь",
+        cadastral_number="50:46:0000000:77",
+        start_price=None,
+        current_price=None,
+        auction_status="closed",
+        is_archived=False,
+        closed_at=None,
+        current_geo_lat=55.78,
+        current_geo_lon=38.44,
+        current_geo_source="photon",
+        current_geo_confidence="high",
+        lot_url="https://example.test/77",
+        source_url="https://example.test/77",
+    )
+    source_lot = SimpleNamespace(
+        source_status="Торги завершены",
+        application_start_at=datetime(2026, 10, 1, 9, 0),
+        application_deadline=datetime(2026, 10, 20, 18, 0),
+        auction_at=datetime(2026, 10, 23, 10, 0),
+        auction_timezone="Europe/Moscow",
+        is_active=False,
+        is_archived=True,
+        archive_reason="closed_upstream",
+        raw_data={
+            "detail_enrichment_status": "success",
+            "detail_dates_verified": True,
+        },
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def scalars(self, _statement):
+            return [report]
+
+        def get(self, model, identity):
+            assert model is report_export.ProcessedLot
+            assert identity == 77
+            return lot
+
+        def scalar(self, _statement):
+            return source_lot
+
+    monkeypatch.setattr(report_export, "SessionLocal", lambda: FakeSession())
+
+    payload = report_export.export_lot_issue_reports(limit=10)
+
+    assert payload["count"] == 1
+    item = payload["items"][0]
+    assert item["application_deadline"] == "2026-10-20T18:00:00"
+    assert item["auction_at"] == "2026-10-23T10:00:00"
+    assert item["source_status"] == "Торги завершены"
+    assert item["current_geo_lat"] == 55.78
+    assert item["raw_debug"]["detail_dates_verified"] is True
