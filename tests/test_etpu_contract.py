@@ -89,6 +89,29 @@ def test_etpu_public_offer_keeps_initial_and_current_prices_distinct() -> None:
     assert parsed.category == "receivables"
 
 
+def test_etpu_public_offer_uses_last_interval_as_application_deadline() -> None:
+    html = _detail(
+        classifier="Права требования к физическим лицам",
+        title="Право требования",
+        start_price="503 500,00",
+        current_price="503 500,00",
+    ).replace(
+        "Дата окончания представления заявок на участие (Московское время): 30.11.2026 10:00:00",
+        "Дата окончания последнего интервала (Московское время): 30.11.2026 14:00:00",
+    ).replace(
+        "Дата проведения (Московское время): 04.12.2026 12:00:00",
+        "Дата начала первого интервала (Московское время): 09.11.2026 14:00:00",
+    )
+    parsed = parse_detail_html(
+        _profile(),
+        html,
+        detail_url="https://bankrupt.etpu.ru/public/public-offers/lots/view/143362/",
+    )
+
+    assert parsed.application_deadline.isoformat() == "2026-11-30T14:00:00"
+    assert parsed.auction_at.isoformat() == "2026-11-09T14:00:00"
+
+
 def test_etpu_does_not_invent_price_from_deposit_or_interval_amount() -> None:
     html = """
     <html><body>
