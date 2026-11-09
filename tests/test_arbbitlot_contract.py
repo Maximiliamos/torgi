@@ -189,6 +189,27 @@ def test_multi_lot_catalogue_keeps_per_lot_ids_prices_and_displayed_identity() -
     assert [lot.raw_data["lot_number"] for lot in lots] == ["1", "2", "3"]
 
 
+def test_live_engine_row_without_th_proves_lot_number_from_linked_cell() -> None:
+    html = """
+    <table>
+      <tr>
+        <td>0037314</td><td>Имущество должника</td><td>1</td>
+        <td><a href="/public/auctions/lots/view/44914/">
+          Доля 1/5 в праве на квартиру 56:44:0236001:47
+        </a></td>
+        <td>452 906,10</td><td>Организатор</td>
+        <td>14.12.2026 10:00</td><td>15.12.2026 10:00</td>
+        <td>Извещение опубликовано</td><td></td>
+        <td>Открытый аукцион</td>
+      </tr>
+    </table>
+    """
+    lot = parse_catalogue_page(html)[0]
+    assert lot.external_id == "arbbitlot.ru:auctions-44914"
+    assert lot.procedure_number == "0037314"
+    assert lot.raw_data["lot_number"] == "1"
+
+
 def test_public_offer_catalogue_keeps_per_lot_start_and_current_price() -> None:
     html = """
     <table>
