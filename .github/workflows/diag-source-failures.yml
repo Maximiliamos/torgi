@@ -1,0 +1,129 @@
+name: Read-only source failure probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Probe M-ETS and Torgi Russia without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $code = @'
+          import json
+          from decimal import Decimal
+          import requests
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, SourceLot
+          from bankrotai.connectors.registry.etp_incremental import _property_ready
+          from bankrotai.connectors.registry.mets_public import BASE as METS_BASE, MetsPublicPilot, parse_mets_lot
+          from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
+          from bankrotai.services.etp_mets_full_catalogue import _parse_page, _request_page
+          from bankrotai.scraper_contracts import parse_money
+          from bankrotai.torgi_russia import BASE_URL, TorgiRussiaClient
+          from bankrotai.torgi_russia_title_recovery import recover_empty_title
+
+          out = {"read_only": True, "database_writes": 0, "mets": [], "torgi_russia": {}}
+
+          session = requests.Session()
+          pilot = MetsPublicPilot(session=session)
+          try:
+              for page_number in (1, 31):
+                  response = _request_page(session, page_number, sleep=lambda _s: None)
+                  parsed = _parse_page(response.text, page_number)
+                  page_rows = []
+                  for external_id, catalogue_price, catalogue_status, title in parsed["observations"][:5]:
+                      expected = MetsSourceCrawler._expected_status(catalogue_status)
+                      row = {"external_id": external_id, "catalogue_price": catalogue_price,
+                             "catalogue_status": catalogue_status, "expected_status": expected}
+                      try:
+                          html = pilot._get(f"{METS_BASE}/{external_id}")
+                          lot = parse_mets_lot(html, f"{METS_BASE}/{external_id}")
+                          prices = {Decimal(str(x)) for x in (lot.start_price, lot.current_price) if x is not None}
+                          if lot.auction_status != expected:
+                              verdict = "status_mismatch"
+                          elif Decimal(str(catalogue_price)) not in prices:
+                              verdict = "price_mismatch"
+                          elif not _property_ready(lot):
+                              verdict = "property_evidence_missing"
+                          else:
+                              verdict = "accepted"
+                          row.update({"verdict": verdict, "detail_status": lot.auction_status,
+                                      "detail_start_price": lot.start_price,
+                                      "detail_current_price": lot.current_price,
+                                      "detail_category": lot.category,
+                                      "cadastral": bool(lot.cadastral_number),
+                                      "address": bool(lot.address), "url": lot.lot_url})
+                      except Exception as exc:
+                          row.update({"verdict": "exception", "error_type": type(exc).__name__,
+                                      "error": str(exc)[:500]})
+                      page_rows.append(row)
+                  out["mets"].append({"page": page_number, "reported_total": parsed["total"],
+                                      "sample": page_rows})
+          finally:
+              session.close()
+
+          target = "7266197"
+          tr = TorgiRussiaClient(timeout=20)
+          tres = {"external_id": target}
+          with SessionLocal() as db:
+              old = db.scalar(select(SourceLot).where(
+                  SourceLot.source_system == "torgi-russia.ru",
+                  SourceLot.external_id == target,
+              ))
+              tres["previously_persisted"] = old is not None
+              if old is not None:
+                  tres["stored_title"] = old.title
+                  tres["stored_lot_url"] = old.lot_url
+                  tres["stored_start_price"] = str(old.start_price) if old.start_price is not None else None
+                  tres["stored_current_price"] = str(old.current_price) if old.current_price is not None else None
+
+          try:
+              response = tr._get_with_retry(f"{BASE_URL}/lot/{target}")
+              records = [x for x in tr._extract_public_lot_records(response.text, require_linked=False)
+                         if str(x.get("id")) == target]
+              tres["http_status"] = response.status_code
+              tres["response_url"] = response.url
+              tres["matching_records"] = len(records)
+              if records:
+                  record = records[0]
+                  tres["detail_title"] = str(record.get("title") or "")[:300]
+                  tres["keys"] = sorted(record.keys())
+                  tres["start_price"] = record.get("start_price")
+                  tres["current_price"] = record.get("current_price")
+                  tres["source_links"] = [
+                      {"title": str(x.get("title") or "")[:120], "link": str(x.get("link") or "")[:500]}
+                      for x in (record.get("source_links") or []) if isinstance(x, dict)
+                  ][:10]
+                  candidate = dict(record)
+              else:
+                  candidate = {"id": int(target), "title": ""}
+              candidate["id"] = int(target)
+              candidate["title"] = ""
+              try:
+                  recovered = recover_empty_title(
+                      candidate, base_url=BASE_URL, get_with_retry=tr._get_with_retry,
+                      extract_records=tr._extract_public_lot_records, parse_price=parse_money,
+                  )
+                  tres["recovery"] = {"status": "success", "title": recovered.get("title"),
+                                      "title_evidence": recovered.get("title_evidence")}
+              except Exception as exc:
+                  tres["recovery"] = {"status": "failed", "error_type": type(exc).__name__,
+                                      "error": str(exc)[:800]}
+          except Exception as exc:
+              tres["fetch"] = {"status": "failed", "error_type": type(exc).__name__,
+                               "error": str(exc)[:800]}
+          out["torgi_russia"] = tres
+          print(json.dumps(out, ensure_ascii=False, default=str))
+          '@
+          $result = @($code | docker exec -i $worker python -)
+          $result | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) { throw 'Read-only source probe failed' }
