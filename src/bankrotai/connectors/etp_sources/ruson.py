@@ -387,3 +387,23 @@ def build_ruson_detail_lot(
         next_interval_price=values.get("next_interval_price"),
         next_price_reduction_at=values.get("next_price_reduction_at"),
     )
+
+
+
+def enrich_ruson_lot(lot: NormalizedLot, detail: NormalizedLot) -> NormalizedLot:
+    """Copy verified RUSSIA OnLine lifecycle fields after generic identity/price guards."""
+    for field_name in (
+        "deposit_amount", "application_start_at", "auction_timezone",
+        "auction_step_amount", "auction_type", "public_offer_schedule",
+        "next_interval_price", "next_price_reduction_at",
+    ):
+        value = getattr(detail, field_name, None)
+        if value is not None:
+            setattr(lot, field_name, value)
+    raw = dict(lot.raw_data or {})
+    raw.update({
+        key: value for key, value in (detail.raw_data or {}).items()
+        if key.startswith("ruson_")
+    })
+    lot.raw_data = raw
+    return lot

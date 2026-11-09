@@ -15,7 +15,7 @@ from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
-from bankrotai.connectors.etp_sources.ruson import build_ruson_detail_lot
+from bankrotai.connectors.etp_sources.ruson import build_ruson_detail_lot, enrich_ruson_lot
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
@@ -960,22 +960,7 @@ class HtmlEtpConnector(AuctionConnector):
             return await enrich_nistp_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
         enriched = apply_detail(lot, detail, version=self.detail_enrichment_version)
-        if self.source_id == "rus-on.ru":
-            for field_name in (
-                "deposit_amount", "application_start_at", "auction_timezone",
-                "auction_step_amount", "auction_type", "public_offer_schedule",
-                "next_interval_price", "next_price_reduction_at",
-            ):
-                value = getattr(detail, field_name, None)
-                if value is not None:
-                    setattr(enriched, field_name, value)
-            raw = dict(enriched.raw_data or {})
-            raw.update({
-                key: value for key, value in (detail.raw_data or {}).items()
-                if key.startswith("ruson_")
-            })
-            enriched.raw_data = raw
-        return enriched
+        return enrich_ruson_lot(enriched, detail) if self.source_id == "rus-on.ru" else enriched
 
     async def healthcheck(self) -> ConnectorHealth:
         if self.profile.blocked_reason:
