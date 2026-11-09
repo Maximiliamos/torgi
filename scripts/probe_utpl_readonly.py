@@ -150,6 +150,12 @@ def walk_catalogue(
         seen_ids.update(page_ids)
         ids.extend(page_ids)
         urls.extend(lot["detail_url"] for lot in lots)
+        if page % 100 == 0:
+            print(
+                f"utpl audit progress: page={page} unique_ids={len(seen_ids)}",
+                file=sys.stderr,
+                flush=True,
+            )
         page_digests.append(
             hashlib.sha256("\n".join(page_ids).encode("utf-8")).hexdigest()
         )
