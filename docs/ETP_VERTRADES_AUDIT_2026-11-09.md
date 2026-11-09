@@ -148,6 +148,7 @@ Known detail status forms explicitly covered include `Торги заверше�
 - `src/bankrotai/connectors/etp_sources/common.py` — source-specific adapter hook and source-specific status normalization only for Vertrades.
 - `src/bankrotai/connectors/registry/direct_etp_catalogue.py` — parse real `NNN-АП/NNN-АЗ` procedure codes; existing positive property gate remains.
 - `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe plus one-response 30-lot live detail proof; executable as `python -m bankrotai.services.etp_vertrades_contract_probe`.
+- `tests/test_direct_etp_catalogue_batch.py` — the old synthetic numeric-only Vertrades trade ID was replaced with the verified `NNN-АП` format; assertions remain strict.
 - `tests/test_vertrades_catalogue_contract.py` — mixed-asset/property and composite-ID regression.
 - `tests/test_vertrades_detail_sections.py` — section isolation, price/status, dates, address/cadastre/area and fail-closed cases.
 - `tests/test_vertrades_detail_adapter.py` — fetch/enrichment identity, conflict and redirect regressions.
