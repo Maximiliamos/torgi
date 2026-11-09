@@ -1098,17 +1098,17 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
             self, exc, max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
             base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
         )
-    skipped, specs, preflight = attempt.prepare(
+    skipped, scheduled_run_specs, preflight = attempt.prepare(
         global_network_blocked=_global_source_network_blocked,
         resolve_specs=lambda: scheduled_specs(mode, _unpaused_source_specs),
         required_sources=SEVEN_SOURCE_IDS, preflight_runner=run_scheduled_source_preflight,
     )
     if skipped is not None:
         return skipped
-    assert specs is not None and preflight is not None
+    assert scheduled_run_specs is not None and preflight is not None
     result = _run_automatic_nationwide_refresh(
         self, mode=mode, trigger_type=attempt.trigger_type,
-        total_sources=len(specs), retry_if_busy=True, existing_run_id=attempt.run_id,
+        total_sources=len(scheduled_run_specs), retry_if_busy=True, existing_run_id=attempt.run_id,
     )
     return attempt.annotate_result(result, preflight)
 
