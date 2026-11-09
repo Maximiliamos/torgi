@@ -357,11 +357,19 @@ def test_scheduled_incremental_persists_preflight_and_continues_on_one_source_fa
         run_id = "scheduled-incremental"
         trigger_type = "scheduled_incr"
 
-        def persist_preflight(self, value):
+        def prepare(self, *, global_network_blocked, resolve_specs, required_sources, preflight_runner):
+            assert global_network_blocked() is False
+            specs = resolve_specs()
+            assert {x.source_id for x in specs} == set(required_sources)
+            value = preflight_runner(specs)
             persisted.append(value)
+            return None, specs, value
 
-        def attach_preflight(self, value, *, warning):
-            attached.append((value, warning))
+        def annotate_result(self, result, value):
+            attached.append((value, not bool(value.get("success"))))
+            result["preflight"] = value
+            result["preflight_warning"] = "source_preflight_failed"
+            return result
 
     specs = tuple(SimpleNamespace(source_id=x) for x in sorted(tasks.SEVEN_SOURCE_IDS))
     preflight = {
@@ -418,15 +426,19 @@ def test_scheduled_incremental_persists_global_circuit_skip(monkeypatch) -> None
         run_id = "scheduled-skipped"
         trigger_type = "scheduled_incr"
 
-        def finalize_skip(self, *, reason, details=None):
-            finalized.append(reason)
-            return {
-                "run_id": self.run_id,
-                "status": "skipped",
-                "reason": reason,
-                "mode": "incremental",
-                **(details or {}),
-            }
+        def prepare(self, *, global_network_blocked, **_kwargs):
+            assert global_network_blocked() is True
+            finalized.append("global_source_network_circuit")
+            return (
+                {
+                    "run_id": self.run_id,
+                    "status": "skipped",
+                    "reason": "global_source_network_circuit",
+                    "mode": "incremental",
+                },
+                None,
+                None,
+            )
 
     monkeypatch.setattr(
         tasks.ScheduledRefreshAttempt,
@@ -453,15 +465,23 @@ def test_scheduled_incremental_persists_missing_source_skip(monkeypatch) -> None
         run_id = "scheduled-missing"
         trigger_type = "scheduled_incr"
 
-        def finalize_skip(self, *, reason, details=None):
-            finalized.append({"reason": reason, "details": details})
-            return {
-                "run_id": self.run_id,
-                "status": "skipped",
-                "reason": reason,
-                "mode": "incremental",
-                **(details or {}),
-            }
+        def prepare(self, *, global_network_blocked, resolve_specs, required_sources, **_kwargs):
+            assert global_network_blocked() is False
+            resolved = resolve_specs()
+            missing = sorted(set(required_sources) - {x.source_id for x in resolved})
+            details = {"missing_sources": missing}
+            finalized.append({"reason": "required_source_not_runnable", "details": details})
+            return (
+                {
+                    "run_id": self.run_id,
+                    "status": "skipped",
+                    "reason": "required_source_not_runnable",
+                    "mode": "incremental",
+                    **details,
+                },
+                None,
+                None,
+            )
 
     specs = tuple(
         SimpleNamespace(source_id=x)
