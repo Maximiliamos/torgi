@@ -110,6 +110,21 @@ def arbbitlot_detail_fields(value: str) -> dict[str, float | str | None]:
     }
 
 
+def arbbitlot_efrsb_classifier(value: str) -> str | None:
+    """Return ARBbitLot's structured EFRSB classifier block, if present."""
+    match = re.search(
+        r"классификатор\s+ефрсб\s*:\s*(.{2,500}?)"
+        r"(?=\s+(?:обеспечение\s+заявки|интервалы\s+снижения\s+цены|документы\b|"
+        r"всего\s+подано\s+заявок|порядок\s+внесения|$))",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    classifier = re.sub(r"\s+", " ", match.group(1)).strip(" ;")
+    return classifier or None
+
+
 def profit_initial_money(value: str) -> float | None:
     """Profit renders a labelled decimal without a RUB suffix."""
     match = re.search(
