@@ -12,10 +12,12 @@ import requests
 
 from bankrotai.connectors.etp_sources.aukcioncenter import (
     LISTING_URL,
+    browser_url,
     catalogue_params,
     declared_pages,
     detail_request_url,
     discover_lot_numbers,
+    discover_trade_subroutes,
     lot_index_url,
     observation_digest,
     parse_detail,
@@ -285,6 +287,38 @@ def _select_detail_candidates(
     return selected[:details]
 
 
+def _route_evidence(
+    session: requests.Session,
+    candidates: list[dict[str, Any]],
+    *,
+    pause: float,
+    sample_size: int = 3,
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for index, item in enumerate(candidates[:sample_size]):
+        if index:
+            time.sleep(pause)
+        url = browser_url(str(item["external_id"]))
+        try:
+            response = _get(session, url)
+            routes = discover_trade_subroutes(_body(response), base_url=url)
+        except Exception as exc:
+            evidence.append({
+                "sample": index + 1,
+                "trade_number": item.get("trade_number"),
+                "verified": False,
+                "error_type": type(exc).__name__,
+            })
+            continue
+        evidence.append({
+            "sample": index + 1,
+            "trade_number": item.get("trade_number"),
+            "verified": True,
+            "routes": routes,
+        })
+    return evidence
+
+
 def _probe_details(
     session: requests.Session,
     candidates: list[dict[str, Any]],
@@ -403,6 +437,9 @@ def run(*, pause: float, details: int) -> dict[str, Any]:
         session, observations, pause=pause
     )
     candidates = _detail_candidates(lots, observations, discovered)
+    route_evidence = _route_evidence(
+        session, _select_detail_candidates(candidates, min(details, 3)), pause=pause
+    )
     detail_results, detail_counts = _probe_details(
         session, candidates, details=details, pause=pause
     )
@@ -429,6 +466,7 @@ def run(*, pause: float, details: int) -> dict[str, Any]:
         },
         "unresolved_lot_index_evidence": discovery_evidence,
         "detail_candidate_count": len(candidates),
+        "trade_route_evidence": route_evidence,
         "individual_details_requested": min(details, len(candidates)),
         "individual_details_checked": len(detail_results),
         "detail_counts": detail_counts,
