@@ -1,0 +1,119 @@
+name: ZakazRF one-time Home read-only source audit
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zakazrf-agent6-readonly-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    if: >-
+      github.event.pull_request.number == 1176 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent6/zakazrf-contract-20261109'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 100
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify exact head and trusted worker
+        shell: powershell
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw "Unexpected checkout SHA: $head" }
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted Home ingestion worker unavailable'
+          }
+
+      - name: Run ZakazRF audit from PR code without database writes
+        id: probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inside = '/tmp/zakazrf-agent6-audit'
+          $outside = Join-Path $env:RUNNER_TEMP 'zakazrf-agent6-audit.json'
+          $log = Join-Path $env:RUNNER_TEMP 'zakazrf-agent6-audit.log'
+
+          docker exec bankrotai-home-ingestion-worker sh -lc "rm -rf $inside && mkdir -p $inside"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare isolated /tmp audit directory' }
+
+          docker cp "$env:GITHUB_WORKSPACE\src\bankrotai" "bankrotai-home-ingestion-worker:$inside/"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not copy PR connector source into isolated audit directory' }
+          docker cp "$env:GITHUB_WORKSPACE\scripts\audit_zakazrf_readonly.py" "bankrotai-home-ingestion-worker:$inside/audit_zakazrf_readonly.py"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not copy PR audit script' }
+
+          $previous = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = @(& docker.exe exec -e "PYTHONPATH=$inside" -e "PYTHONDONTWRITEBYTECODE=1" bankrotai-home-ingestion-worker python "$inside/audit_zakazrf_readonly.py" --max-pages 5000 --detail-limit 30 --delay-seconds 0.75 --output "$inside/result.json" 2>&1)
+            $status = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previous
+          }
+          $output | Set-Content -LiteralPath $log -Encoding utf8
+
+          docker cp "bankrotai-home-ingestion-worker:$inside/result.json" $outside
+          $copyStatus = $LASTEXITCODE
+          docker exec bankrotai-home-ingestion-worker sh -lc "rm -rf $inside" | Out-Null
+
+          if ($copyStatus -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
+            $output | ForEach-Object { Write-Output $_ }
+            throw 'ZakazRF audit did not produce sanitized JSON evidence'
+          }
+
+          $report = Get-Content -LiteralPath $outside -Raw -Encoding UTF8 | ConvertFrom-Json
+          Write-Output ("ZakazRF pass1: pages={0}; items={1}; unique={2}; duplicates={3}; terminal={4}" -f $report.pass_1.pages,$report.pass_1.raw_items,$report.pass_1.unique_ids,$report.pass_1.duplicate_ids,$report.pass_1.terminal_page_proven)
+          Write-Output ("ZakazRF pass2: pages={0}; items={1}; unique={2}; duplicates={3}; terminal={4}" -f $report.pass_2.pages,$report.pass_2.raw_items,$report.pass_2.unique_ids,$report.pass_2.duplicate_ids,$report.pass_2.terminal_page_proven)
+          Write-Output ("ZakazRF details: checked={0}/{1}; start_price={2}; current_price_present={3}; status={4}; classifier={5}" -f $report.detail.checked,$report.detail.requested,$report.detail.start_price_success,$report.detail.current_price_present,$report.detail.status_success,$report.detail.structured_classifier_success)
+
+          if ($status -ne 0) {
+            throw "ZakazRF strict audit failed with exit code $status"
+          }
+
+      - name: Enforce source-contract acceptance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'zakazrf-agent6-audit.json'
+          $r = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not $r.read_only -or $r.production_enabled) { throw 'Read-only contract violated' }
+          if (-not $r.pass_1.terminal_page_proven -or -not $r.pass_2.terminal_page_proven) {
+            throw 'Terminal page not proven in both passes'
+          }
+          if (-not $r.two_pass_ids_equal -or -not $r.comparison.same_id_set) {
+            throw 'Two full catalogue passes differ'
+          }
+          if ($r.pass_1.duplicate_ids -ne 0 -or $r.pass_2.duplicate_ids -ne 0) {
+            throw 'Duplicate lot identities detected'
+          }
+          if ($r.pass_1.unique_ids -lt 30 -or $r.detail.requested -lt 30 -or $r.detail.checked -lt 30) {
+            throw 'Fewer than 30 individual details verified'
+          }
+          if ($r.detail.start_price_success -lt 1 -or $r.detail.status_success -lt 1 -or $r.detail.structured_classifier_success -lt 1) {
+            throw 'Price/status/classifier contract has no positive live proof'
+          }
+          Write-Output 'ZAKAZRF_SOURCE_CONTRACT_ACCEPTANCE_PASS'
+
+      - name: Preserve sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zakazrf-agent6-readonly-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}\zakazrf-agent6-audit.json
+            ${{ runner.temp }}\zakazrf-agent6-audit.log
+          if-no-files-found: warn
+          retention-days: 30
