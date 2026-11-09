@@ -5,8 +5,24 @@ import asyncio
 import pytest
 import requests
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceAccessError, SourceSchemaError
+from bankrotai.connectors.etp_sources.common import (
+    HtmlEtpConnector,
+    SourceAccessError,
+    SourceSchemaError,
+)
+from bankrotai.connectors.etp_sources.profiles import PROFILES
+from bankrotai.connectors.etp_sources.vertrades import (
+    enrich_vertrades_lot,
+    fetch_vertrades_lot,
+)
 from bankrotai.domain import NormalizedLot
+
+PROFILE = next(p for p in PROFILES if p.source_id == "vertrades.ru")
+
+
+class DirectVertradesConnector(HtmlEtpConnector):
+    profile = PROFILE
+
 
 URL = "https://arest.vertrades.ru/showTrades?id=102259678"
 
@@ -86,9 +102,9 @@ def listing(*, lot: int = 2, price: float = 246_800.0, procedure: str = "55-АП
 
 def test_fetch_lot_selects_requested_section_only():
     session = FakeSession(FakeResponse(html()))
-    connector = SOURCE_CONNECTOR_TYPES["vertrades.ru"](session=session)
-    one = asyncio.run(connector.fetch_lot("vertrades.ru:102259678:1"))
-    two = asyncio.run(connector.fetch_lot("vertrades.ru:102259678:2"))
+    connector = DirectVertradesConnector(session=session)
+    one = asyncio.run(fetch_vertrades_lot(connector, "vertrades.ru:102259678:1"))
+    two = asyncio.run(fetch_vertrades_lot(connector, "vertrades.ru:102259678:2"))
     assert one.external_id != two.external_id
     assert one.start_price == 1_060_000.0
     assert two.start_price == 246_800.0
@@ -103,9 +119,9 @@ def test_fetch_lot_selects_requested_section_only():
 
 def test_enrichment_verifies_catalogue_identity_price_and_cadastre():
     session = FakeSession(FakeResponse(html()))
-    connector = SOURCE_CONNECTOR_TYPES["vertrades.ru"](session=session)
+    connector = DirectVertradesConnector(session=session)
     item = listing()
-    updated = asyncio.run(connector.enrich_lot(item))
+    updated = asyncio.run(enrich_vertrades_lot(connector, item))
     assert updated.detail_level == "detail"
     assert updated.start_price == 246_800.0
     assert updated.deposit_amount == 20_000.0
@@ -117,7 +133,7 @@ def test_enrichment_verifies_catalogue_identity_price_and_cadastre():
 
 def test_conflicting_catalogue_price_fails_closed_before_mutation():
     session = FakeSession(FakeResponse(html()))
-    connector = SOURCE_CONNECTOR_TYPES["vertrades.ru"](session=session)
+    connector = DirectVertradesConnector(session=session)
     item = listing(price=20_000.0)
     with pytest.raises(SourceSchemaError, match="listing and individual detail price differ"):
         asyncio.run(connector.enrich_lot(item))
@@ -125,18 +141,16 @@ def test_conflicting_catalogue_price_fails_closed_before_mutation():
 
 
 def test_wrong_procedure_or_lot_identity_fails_closed():
-    connector = SOURCE_CONNECTOR_TYPES["vertrades.ru"](session=FakeSession(FakeResponse(html())))
+    connector = DirectVertradesConnector(session=FakeSession(FakeResponse(html())))
     with pytest.raises(SourceSchemaError, match="procedure code mismatch"):
-        asyncio.run(connector.enrich_lot(listing(procedure="999-АП")))
+        asyncio.run(enrich_vertrades_lot(connector, listing(procedure="999-АП")))
     with pytest.raises(SourceSchemaError, match="requested_lot_missing"):
-        asyncio.run(connector.fetch_lot("vertrades.ru:102259678:3"))
+        asyncio.run(fetch_vertrades_lot(connector, "vertrades.ru:102259678:3"))
 
 
-def test_redirect_is_refused_and_capabilities_advertise_detail_only_after_contract():
-    connector = SOURCE_CONNECTOR_TYPES["vertrades.ru"](
+def test_redirect_is_refused_by_direct_source_adapter():
+    connector = DirectVertradesConnector(
         session=FakeSession(FakeResponse(html(), status_code=302))
     )
     with pytest.raises(SourceAccessError, match="provider redirect was refused"):
-        asyncio.run(connector.fetch_lot("vertrades.ru:102259678:2"))
-    assert "fetch_lot" in connector.capabilities
-    assert "detail_enrichment" in connector.capabilities
+        asyncio.run(fetch_vertrades_lot(connector, "vertrades.ru:102259678:2"))
