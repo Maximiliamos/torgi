@@ -1,0 +1,121 @@
+name: Temporary launch Phase 3 verification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  launch:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'ops/launch-phase3-check-20261109'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch required exact-SHA acceptance and Phase 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          expected_sha="$(gh api "repos/$repo/branches/main" --jq '.commit.sha')"
+          echo "EXPECTED_MAIN_SHA=$expected_sha"
+
+          latest_exact_run() {
+            local workflow="$1"
+            gh run list --repo "$repo" \
+              --workflow "$workflow" \
+              --event workflow_dispatch \
+              --limit 100 \
+              --json databaseId,headSha,status,conclusion \
+              | EXPECTED_SHA="$expected_sha" python -c '
+          import json, os, sys
+          expected = os.environ["EXPECTED_SHA"]
+          rows = [r for r in json.load(sys.stdin) if r.get("headSha") == expected]
+          rows.sort(key=lambda r: int(r.get("databaseId") or 0), reverse=True)
+          print(rows[0]["databaseId"] if rows else "")
+          '
+          }
+
+          successful_exact_run() {
+            local workflow="$1"
+            gh run list --repo "$repo" \
+              --workflow "$workflow" \
+              --event workflow_dispatch \
+              --limit 100 \
+              --json databaseId,headSha,status,conclusion \
+              | EXPECTED_SHA="$expected_sha" python -c '
+          import json, os, sys
+          expected = os.environ["EXPECTED_SHA"]
+          rows = [
+              r for r in json.load(sys.stdin)
+              if r.get("headSha") == expected
+              and r.get("status") == "completed"
+              and r.get("conclusion") == "success"
+          ]
+          rows.sort(key=lambda r: int(r.get("databaseId") or 0), reverse=True)
+          print(rows[0]["databaseId"] if rows else "")
+          '
+          }
+
+          ensure_acceptance() {
+            local workflow="$1"
+            local existing
+            existing="$(successful_exact_run "$workflow")"
+            if [ -n "$existing" ]; then
+              echo "Reusing successful exact-SHA acceptance: $workflow run=$existing"
+              return 0
+            fi
+
+            echo "Dispatching $workflow on main"
+            gh workflow run "$workflow" --repo "$repo" --ref main
+
+            local id=""
+            for _ in $(seq 1 80); do
+              sleep 3
+              id="$(latest_exact_run "$workflow")"
+              if [ -n "$id" ]; then break; fi
+            done
+            if [ -z "$id" ]; then
+              echo "Could not locate dispatched $workflow run" >&2
+              exit 1
+            fi
+            echo "Waiting for $workflow run=$id"
+            gh run watch "$id" --repo "$repo" --exit-status
+          }
+
+          ensure_acceptance p1-data-quality.yml
+          ensure_acceptance p11-production-acceptance.yml
+
+          current_sha="$(gh api "repos/$repo/branches/main" --jq '.commit.sha')"
+          if [ "$current_sha" != "$expected_sha" ]; then
+            echo "main moved during acceptance: expected=$expected_sha current=$current_sha" >&2
+            exit 1
+          fi
+
+          echo "Dispatching Phase 3 Lite full source reconciliation"
+          before="$(latest_exact_run phase3-lite-full-reconcile.yml)"
+          gh workflow run phase3-lite-full-reconcile.yml --repo "$repo" --ref main
+
+          phase3_id=""
+          for _ in $(seq 1 80); do
+            sleep 3
+            candidate="$(latest_exact_run phase3-lite-full-reconcile.yml)"
+            if [ -n "$candidate" ] && [ "$candidate" != "$before" ]; then
+              phase3_id="$candidate"
+              break
+            fi
+          done
+          if [ -z "$phase3_id" ]; then
+            echo "Could not locate newly dispatched Phase 3 run" >&2
+            exit 1
+          fi
+
+          echo "PHASE3_RUN_ID=$phase3_id"
+          echo "PHASE3_SHA=$expected_sha"
