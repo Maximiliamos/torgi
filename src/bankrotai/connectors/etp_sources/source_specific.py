@@ -63,6 +63,175 @@ def profit_initial_money(value: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
+
+_ETPU_CLASSIFIER_END_RE = re.compile(
+    r"\s+(?:Интервалы\s+снижения\s+цены|Обеспечение\s+заявки|Документы|Изображения)\b",
+    re.IGNORECASE,
+)
+
+
+def etpu_lot_section(value: str) -> str:
+    """Return only the ETPU per-lot section, excluding procedure-level prose."""
+    match = re.search(r"Информация\s+о\s+лоте\s+№\s*\d+", value, re.IGNORECASE)
+    return value[match.start():] if match else value
+
+
+def etpu_labelled_money(value: str, label: str) -> float | None:
+    """Read ETPU labelled ruble amounts without adjacent-field guesses."""
+    match = re.search(
+        label + r"\s*,?\s*руб\.?\s*:\s*(\d[\d\s\u00a0]{0,30}(?:[.,]\d{1,2})?)",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    raw = re.sub(r"[\s\u00a0]", "", match.group(1)).replace(",", ".")
+    try:
+        amount = Decimal(raw)
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or not (Decimal(0) < amount < Decimal("1e15")):
+        return None
+    return float(amount)
+
+
+def etpu_prices(value: str) -> tuple[float | None, float | None]:
+    """Return only explicitly labelled individual ETPU start/current prices."""
+    section = etpu_lot_section(value)
+    return (
+        etpu_labelled_money(section, r"Начальная\s+цена"),
+        etpu_labelled_money(section, r"Текущая\s+цена"),
+    )
+
+
+def etpu_lot_title(value: str) -> str | None:
+    section = etpu_lot_section(value)
+    match = re.search(
+        r"Наименование\s*:\s*(.{4,1500}?)"
+        r"(?=\s+Дата\s+(?:проведения|начала\s+первого\s+интервала)"
+        r"(?:\s*\(\s*Московское\s+время\s*\))?\s*:|\s+Статус\s*:)",
+        section,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
+
+
+def etpu_explicit_status(value: str) -> str | None:
+    section = etpu_lot_section(value)
+    match = re.search(
+        r"Статус\s*:\s*(.{2,120}?)(?=\s+Дата\s+(?:начала|окончания|проведения)\b)",
+        section,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
+
+
+def etpu_procedure_number(value: str) -> str | None:
+    match = re.search(
+        r"Информация\s+(?:об\s+аукционе|о\s+конкурсе|о\s+публичном\s+предложении)"
+        r"\s*№\s*([0-9]{3,20})",
+        value,
+        re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
+def etpu_moscow_datetime(value: str, *labels: str) -> datetime | None:
+    """Parse only the platform's explicitly labelled Moscow-time timestamps."""
+    section = etpu_lot_section(value)
+    for label in labels:
+        match = re.search(
+            label
+            + r"\s*\(\s*Московское\s+время\s*\)\s*:\s*"
+            + r"(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}(?::\d{2})?)",
+            section,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        raw = match.group(1)
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                pass
+    return None
+
+
+def etpu_classifier_section(value: str) -> str | None:
+    """Extract text belonging to the structured EFRSB classifier block."""
+    section = etpu_lot_section(value)
+    marker = re.search(r"Классификатор\s+ЕФРСБ\s*:\s*", section, re.IGNORECASE)
+    if not marker:
+        return None
+    tail = section[marker.end():]
+    end = _ETPU_CLASSIFIER_END_RE.search(tail)
+    raw = tail[:end.start()] if end else tail[:2000]
+    cleaned = re.sub(r"\s+", " ", raw).strip()
+    return cleaned[:2000] or None
+
+
+def etpu_classifier_flags(value: str) -> tuple[str, ...]:
+    """Map the official EFRSB classifier block to conservative source tags."""
+    classifier = etpu_classifier_section(value)
+    if not classifier:
+        return ()
+    lowered = classifier.lower()
+    flags: list[str] = []
+
+    def add(flag: str, *patterns: str) -> None:
+        if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in patterns):
+            flags.append(flag)
+
+    add("lease", r"\bправо\s+аренды\b")
+    add("shares", r"\bправа\s+долевой\s+собственности\b")
+    add("receivables", r"\bправа?\s+требован", r"\bдебитор")
+    add(
+        "vehicle",
+        r"\bавтомобил",
+        r"\bприцеп",
+        r"\bполуприцеп",
+        r"\bмотоцикл",
+        r"\bавтобус",
+    )
+    add(
+        "equipment",
+        r"\bоборудован",
+        r"\bмашины\b",
+        r"\bспециализированная\s+техника\b",
+        r"\bэлектродвигател",
+        r"\bгенератор",
+        r"\bтрансформатор",
+        r"\bинструмент\b",
+    )
+    add("land", r"\bземельные\s+участки\b")
+    add(
+        "real_estate",
+        r"\bжилые\s+здания",
+        r"\bздания\s*\(помещения\)",
+        r"\bздания\s+и\s+сооружения",
+        r"\bнезавершенн\w*\s+строительств",
+        r"\bнедвижим",
+    )
+    if not flags and re.search(r"\bпрочее\b", lowered, re.IGNORECASE):
+        flags.append("other")
+    return tuple(flags)
+
+
+def etpu_category(value: str) -> str | None:
+    """Choose one normalized category while retaining every source flag in raw_data."""
+    flags = etpu_classifier_flags(value)
+    if not flags:
+        return None
+    for preferred in (
+        "lease", "shares", "receivables", "real_estate", "land",
+        "vehicle", "equipment", "other",
+    ):
+        if preferred in flags:
+            return preferred
+    return None
+
+
 def _checked_amount(value: object) -> Decimal | None:
     if value is None:
         return None
