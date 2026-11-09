@@ -252,6 +252,9 @@ def test_reported_mets_detail_keeps_price_address_photos_and_deadline_separate()
           <div class="value">30.11.2026 00:00</div>
         </div>
         <div class="lot-cost-item status"><div class="lot-status-name">Объявленные торги</div></div>
+        <div class="lot-cost-item date">
+          <div class="title">Дата торгов:</div><div class="value">01.12.2026 13:00</div>
+        </div>
         <img data-src="/uploads/lots/241542/main.jpg">
       </div>
     </body></html>
@@ -261,6 +264,7 @@ def test_reported_mets_detail_keeps_price_address_photos_and_deadline_separate()
     assert lot.start_price == 10_160_100
     assert lot.raw_data["deposit_rub"] == 1_016_010
     assert lot.application_deadline.isoformat() == "2026-11-30T00:00:00"
+    assert lot.auction_at.isoformat() == "2026-12-01T13:00:00"
     assert "Алексеевское" in lot.address
     assert lot.raw_data["image_urls"] == [
         "https://meetings.m-ets.ru/uploads/lots/241542/main.jpg"
