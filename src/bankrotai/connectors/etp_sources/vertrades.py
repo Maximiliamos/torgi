@@ -93,6 +93,18 @@ def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
 
 
+def _soup(html: str | bytes) -> BeautifulSoup:
+    """Decode legacy provider HTML without trusting a stale charset declaration."""
+    if isinstance(html, bytes):
+        try:
+            decoded = html.decode("utf-8")
+        except UnicodeDecodeError:
+            probe = BeautifulSoup(html, "html.parser")
+            decoded = html.decode(probe.original_encoding or "windows-1251", errors="replace")
+        return BeautifulSoup(decoded, "html.parser")
+    return BeautifulSoup(html, "html.parser")
+
+
 def _safe_url(href: str) -> str:
     absolute = urljoin(CATALOGUE_URL, href.strip())
     parsed = urlsplit(absolute)
@@ -163,7 +175,7 @@ def has_next_catalogue_page(html: str | bytes, page: int) -> bool:
     """Treat only a same-origin explicit page+1 control as proof of continuation."""
     if page < 1:
         raise ValueError("Vertrades page must be >= 1")
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     for anchor in soup.select("a[href]"):
         try:
             url = _safe_url(str(anchor.get("href") or ""))
@@ -180,7 +192,7 @@ def has_next_catalogue_page(html: str | bytes, page: int) -> bool:
 
 def parse_filter_form_contract(html: str | bytes) -> dict[str, object]:
     """Return structural form metadata only; never field values."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     candidates = []
     for form in soup.find_all("form"):
         text = " ".join(form.stripped_strings).lower()
@@ -214,7 +226,7 @@ def parse_catalogue_page(
         raise ValueError("Vertrades catalogue limit must be 1..100")
     if page < 1:
         raise ValueError("Vertrades page must be >= 1")
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
     for tr in soup.select("tr"):
@@ -298,7 +310,7 @@ def parse_catalogue_page(
 def _lines(html: str | bytes) -> list[str]:
     if len(html) > _MAX_HTML:
         raise VertradesCardError("vertrades_detail_page_too_large")
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     for node in soup(["script", "style"]):
         node.decompose()
     return [_clean(x) for x in soup.get_text("\n").splitlines() if _clean(x)]
