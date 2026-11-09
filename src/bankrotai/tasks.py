@@ -1077,38 +1077,174 @@ def probe_source_network_health_task() -> dict[str, Any]:
     soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
     time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
-def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
-    """Run one beat-triggered nationwide refresh under the durable run lease."""
-    if mode not in {"fast", "full", "incremental"}:
-        raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
-    if _global_source_network_blocked():
-        return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
-    specs = scheduled_specs(mode, _unpaused_source_specs)
-    if mode in {"full", "incremental"}:
-        runnable = {str(spec.source_id) for spec in specs}
-        missing = sorted(SEVEN_SOURCE_IDS - runnable)
-        if missing:
-            return {
-                "status": "skipped",
-                "reason": "required_source_not_runnable",
-                "mode": mode,
-                "missing_sources": missing,
-            }
-        preflight = run_scheduled_source_preflight(specs)
-        if not preflight["success"]:
-            return {
-                "status": "skipped",
-                "reason": "source_preflight_failed",
-                "mode": mode,
+def _scheduled_trigger_type(mode: str) -> str:
+    return "scheduled_incr" if mode == "incremental" else f"scheduled_{mode}"
+
+
+def _persist_scheduled_preflight(run_id: str, preflight: dict[str, Any]) -> None:
+    """Persist bounded preflight evidence before the heavy source sweep starts."""
+    now = _utc_now()
+    with session_scope() as session:
+        run = session.get(LotSyncRun, run_id)
+        if run is None:
+            return
+        checkpoint = dict(run.checkpoint_json or {})
+        checkpoint.update(
+            {
+                "phase": "preflight_complete",
+                "preflight_completed_at": now.isoformat(),
                 "preflight": preflight,
             }
-    return _run_automatic_nationwide_refresh(
+        )
+        run.checkpoint_json = checkpoint
+        run.heartbeat_at = now
+
+
+def _finalize_scheduled_skip(
+    run_id: str,
+    *,
+    mode: str,
+    reason: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Finish an attempted schedule gate durably instead of losing the attempt."""
+    now = _utc_now()
+    payload: dict[str, Any] = {"status": "skipped", "reason": reason, "mode": mode}
+    if details:
+        payload.update(details)
+    with session_scope() as session:
+        run = session.get(LotSyncRun, run_id)
+        if run is not None:
+            run.status = "skipped"
+            run.finished_at = now
+            run.heartbeat_at = now
+            run.lease_expires_at = None
+            run.result_json = payload
+            run.error_message = f"Scheduled run skipped: {reason}"[:2000]
+            checkpoint = dict(run.checkpoint_json or {})
+            checkpoint.update(
+                {
+                    "phase": "skipped_before_ingestion",
+                    "skip_reason": reason,
+                    "finished_at": now.isoformat(),
+                }
+            )
+            run.checkpoint_json = checkpoint
+    return {"run_id": run_id, **payload}
+
+
+def _attach_preflight_to_completed_run(
+    run_id: str,
+    preflight: dict[str, Any],
+    *,
+    warning: bool,
+) -> None:
+    """Keep preflight evidence after ingestion finalization overwrites result_json."""
+    with session_scope() as session:
+        run = session.get(LotSyncRun, run_id)
+        if run is None:
+            return
+        result = dict(run.result_json or {})
+        result["preflight"] = preflight
+        if warning:
+            result["preflight_warning"] = "source_preflight_failed"
+        run.result_json = result
+        checkpoint = dict(run.checkpoint_json or {})
+        checkpoint["preflight"] = preflight
+        checkpoint["preflight_warning"] = bool(warning)
+        run.checkpoint_json = checkpoint
+
+
+@celery_app.task(
+    bind=True,
+    name="bankrotai.tasks.automatic_nationwide_lot_refresh_task",
+    soft_time_limit=_DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
+)
+def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
+    """Run one beat-triggered nationwide refresh with a durable scheduled attempt."""
+    if mode not in {"fast", "full", "incremental"}:
+        raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
+
+    # Fast recovery runs retain the historical lightweight path. The heavy
+    # 09:00/21:00 sweeps create their durable row *before* any gate so an
+    # operator can always answer why a scheduled attempt did or did not run.
+    if mode == "fast":
+        if _global_source_network_blocked():
+            return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
+        specs = scheduled_specs(mode, _unpaused_source_specs)
+        return _run_automatic_nationwide_refresh(
+            self,
+            mode=mode,
+            trigger_type=_scheduled_trigger_type(mode),
+            total_sources=len(specs),
+            retry_if_busy=False,
+        )
+
+    service = NationwideIngestionService(SessionLocal)
+    trigger_type = _scheduled_trigger_type(mode)
+    try:
+        run_id = service.create_run(
+            triggered_by="celery-beat",
+            trigger_type=trigger_type,
+            total_sources=len(SEVEN_SOURCE_IDS),
+        )
+    except SyncAlreadyRunningError as exc:
+        _retry_automatic_refresh(
+            self,
+            exc,
+            max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+            base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+        )
+
+    if _global_source_network_blocked():
+        return _finalize_scheduled_skip(
+            run_id,
+            mode=mode,
+            reason="global_source_network_circuit",
+        )
+
+    try:
+        specs = scheduled_specs(mode, _unpaused_source_specs)
+    except Exception as exc:
+        return _finalize_scheduled_skip(
+            run_id,
+            mode=mode,
+            reason="scheduled_spec_resolution_failed",
+            details={"error": str(exc)[:1000]},
+        )
+
+    runnable = {str(spec.source_id) for spec in specs}
+    missing = sorted(SEVEN_SOURCE_IDS - runnable)
+    if missing:
+        return _finalize_scheduled_skip(
+            run_id,
+            mode=mode,
+            reason="required_source_not_runnable",
+            details={"missing_sources": missing},
+        )
+
+    preflight = run_scheduled_source_preflight(specs)
+    _persist_scheduled_preflight(run_id, preflight)
+
+    # A source-specific preflight failure is diagnostic, not a global kill
+    # switch. Each connector remains fail-closed, and the normal source result
+    # plus targeted retry path records the real failure. This prevents one ETP
+    # from turning an otherwise useful seven-source schedule into 0/7.
+    result = _run_automatic_nationwide_refresh(
         self,
         mode=mode,
-        trigger_type="scheduled_incr" if mode == "incremental" else f"scheduled_{mode}",
+        trigger_type=trigger_type,
         total_sources=len(specs),
-        retry_if_busy=mode in {"full", "incremental"},
+        retry_if_busy=True,
+        existing_run_id=run_id,
     )
+    warning = not bool(preflight.get("success"))
+    _attach_preflight_to_completed_run(run_id, preflight, warning=warning)
+    result["preflight"] = preflight
+    if warning:
+        result["preflight_warning"] = "source_preflight_failed"
+    return result
 
 
 @celery_app.task(
@@ -1146,24 +1282,28 @@ def _run_automatic_nationwide_refresh(
     trigger_type: str,
     total_sources: int,
     retry_if_busy: bool,
+    existing_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a durable run before work and preserve explicit retry diagnostics."""
+    """Run against an existing durable attempt or create one for lightweight paths."""
     service = NationwideIngestionService(SessionLocal)
-    try:
-        run_id = service.create_run(
-            triggered_by="celery-beat",
-            trigger_type=trigger_type,
-            total_sources=total_sources,
-        )
-    except SyncAlreadyRunningError as exc:
-        if retry_if_busy:
-            _retry_automatic_refresh(
-                task,
-                exc,
-                max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
-                base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+    if existing_run_id is not None:
+        run_id = existing_run_id
+    else:
+        try:
+            run_id = service.create_run(
+                triggered_by="celery-beat",
+                trigger_type=trigger_type,
+                total_sources=total_sources,
             )
-        return {"status": "skipped", "reason": "already_running", "run_id": exc.run_id}
+        except SyncAlreadyRunningError as exc:
+            if retry_if_busy:
+                _retry_automatic_refresh(
+                    task,
+                    exc,
+                    max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+                    base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+                )
+            return {"status": "skipped", "reason": "already_running", "run_id": exc.run_id}
 
     try:
         result = nationwide_lot_sync_task.run(run_id, mode)
