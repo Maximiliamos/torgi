@@ -14,13 +14,14 @@ import time
 from typing import Callable
 
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-
-from bankrotai.connectors.etp_sources import PROFILES, parse_listing_html
-from bankrotai.connectors.etp_sources.pagination import has_next_page, page_url
-
-_PROFILE = next(profile for profile in PROFILES if profile.source_id == "vertrades.ru")
+from bankrotai.connectors.etp_sources.vertrades import (
+    _vertrades_status,
+    catalogue_page_url,
+    get_vertrades_lot,
+    has_next_catalogue_page,
+    parse_catalogue_page,
+    parse_filter_form_contract,
+)
 _MAX_RESPONSE_BYTES = 2_000_000
 _TIMEOUT = (5, 25)
 _DETAIL_PROVIDER_ID = "102288306"
@@ -36,37 +37,11 @@ class VertradesProbeError(RuntimeError):
 
 
 def _filter_form_contract(html: str | bytes) -> dict:
-    """Return safe structural metadata for the public auction search form."""
-    soup = BeautifulSoup(html, "html.parser")
-    candidates = []
-    for form in soup.find_all("form"):
-        text = " ".join(form.stripped_strings).lower()
-        if "№ торгов" in text or "наименование лота" in text:
-            candidates.append(form)
-    if len(candidates) != 1:
-        raise VertradesProbeError("catalogue_filter_form_missing_or_ambiguous")
-
-    form = candidates[0]
-    method = str(form.get("method") or "get").strip().lower()
-    if method not in {"get", "post"}:
-        raise VertradesProbeError("catalogue_filter_form_method_unexpected")
-    action = urljoin(_PROFILE.listing_url, str(form.get("action") or "").strip())
-    parsed = urlparse(action)
-    if parsed.scheme != "https" or parsed.hostname != "arest.vertrades.ru":
-        raise VertradesProbeError("catalogue_filter_form_action_not_same_origin")
-
-    names = sorted({
-        str(node.get("name")).strip()
-        for node in form.select("[name]")
-        if str(node.get("name") or "").strip()
-    })
-    if not names:
-        raise VertradesProbeError("catalogue_filter_form_has_no_named_fields")
-    return {
-        "method": method,
-        "action_path": parsed.path or "/",
-        "field_names": names,
-    }
+    """Compatibility wrapper around the isolated source contract."""
+    try:
+        return parse_filter_form_contract(html)
+    except ValueError as exc:
+        raise VertradesProbeError(str(exc)) from exc
 
 
 def _scan_pass(
@@ -81,7 +56,7 @@ def _scan_pass(
     for page in range(1, max_pages + 1):
         if page > 1:
             sleep(delay_seconds)
-        url = page_url(_PROFILE, page)
+        url = catalogue_page_url(page)
         response = session.get(
             url,
             timeout=_TIMEOUT,
@@ -103,7 +78,7 @@ def _scan_pass(
         if page == 1:
             filter_form = _filter_form_contract(response.content)
 
-        lots = parse_listing_html(_PROFILE, response.content, page=page)
+        lots = parse_catalogue_page(response.content, page=page)
         ids = {lot.external_id for lot in lots}
         if not ids:
             raise VertradesProbeError(f"no_property_lot_ids_on_page:{page}")
@@ -112,7 +87,7 @@ def _scan_pass(
             raise VertradesProbeError(f"duplicate_lot_ids_across_pages:{page}")
         seen.update(ids)
 
-        has_next = has_next_page(_PROFILE, response.content, page)
+        has_next = has_next_catalogue_page(response.content, page)
         pages.append({
             "page": page,
             "property_lot_ids": len(ids),
@@ -137,9 +112,6 @@ def probe_vertrades_detail_sample(
     lot_numbers: tuple[int, ...] = _DETAIL_LOT_NUMBERS,
 ) -> dict:
     """Verify >=30 exact lots from one shared public procedure response."""
-    from bankrotai.connectors.etp_sources.vertrades_detail_adapter import _vertrades_status
-    from bankrotai.connectors.etp_sources.vertrades_detail_sections import get_vertrades_lot
-
     if len(lot_numbers) < 30 or len(set(lot_numbers)) != len(lot_numbers):
         raise ValueError("Vertrades live detail proof requires at least 30 unique lot numbers")
     if not provider_id.isdigit():
