@@ -38,7 +38,8 @@ jobs:
 
   live-browser-discovery:
     name: ALFALOT official public GD discovery (NOT acceptance)
-    runs-on: ubuntu-latest
+    # Playwright 1.55 lock supports Ubuntu 24.04, not the newest ubuntu-latest 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
