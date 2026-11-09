@@ -219,6 +219,121 @@ def _purchase_routes(html: str) -> list[dict[str, object]]:
     return sorted(found.values(), key=lambda item: (str(item["route"]), item["query_keys"]))
 
 
+def _safe_structural_hints(html: str) -> dict[str, object]:
+    """Return endpoint/DOM structure only; never persist page text or field values."""
+    soup = BeautifulSoup(html, "html.parser")
+    forms: list[dict[str, object]] = []
+    for form in soup.select("form"):
+        action = urljoin(BASE, str(form.get("action") or ""))
+        parsed = urlparse(action)
+        if parsed.hostname not in {None, "aukcioncenter.ru"}:
+            continue
+        field_names = sorted({
+            str(node.get("name") or "")
+            for node in form.select("[name]")
+            if str(node.get("name") or "")
+        })
+        forms.append({
+            "action_path": parsed.path,
+            "query_keys": sorted(parse_qs(parsed.query).keys()),
+            "method": str(form.get("method") or "get").lower(),
+            "field_names": field_names[:80],
+        })
+
+    endpoint_shapes: set[tuple[str, tuple[str, ...]]] = set()
+    raw_candidates: list[str] = []
+    raw_candidates.extend(str(node.get("href") or "") for node in soup.select("a[href]"))
+    raw_candidates.extend(str(node.get("action") or "") for node in soup.select("form[action]"))
+    for script in soup.select("script"):
+        source = str(script.get("src") or "")
+        if source:
+            raw_candidates.append(source)
+        inline = script.string or script.get_text(" ", strip=False)
+        raw_candidates.extend(
+            match.group(1)
+            for match in re.finditer(
+                r"['\"]([^'\"<>]{1,300}(?:lot|purchase|trade|price|offer)[^'\"<>]{0,300})['\"]",
+                inline,
+                re.I,
+            )
+        )
+
+    script_sources: set[str] = set()
+    for script in soup.select("script[src]"):
+        absolute = urljoin(BASE, str(script.get("src") or ""))
+        parsed = urlparse(absolute)
+        if parsed.hostname == "aukcioncenter.ru":
+            script_sources.add(parsed.path)
+
+    for raw in raw_candidates:
+        absolute = urljoin(BASE, raw.replace("&amp;", "&"))
+        parsed = urlparse(absolute)
+        if parsed.hostname != "aukcioncenter.ru":
+            continue
+        query_keys = tuple(sorted(parse_qs(parsed.query).keys()))
+        lower = parsed.path.lower()
+        if (
+            any(token in lower for token in ("lot", "purchase", "trade", "price", "offer"))
+            or "lotNumber" in query_keys
+            or "id" in query_keys
+        ):
+            endpoint_shapes.add((parsed.path, query_keys))
+
+    dom_tokens: set[str] = set()
+    for node in soup.find_all(True):
+        node_id = str(node.get("id") or "")
+        classes = node.get("class") or []
+        for token in [node_id, *map(str, classes)]:
+            if token and re.search(r"lot|price|trade|purchase|offer|bid|auction", token, re.I):
+                dom_tokens.add(token)
+
+    return {
+        "forms": forms[:30],
+        "endpoint_shapes": [
+            {"path": path, "query_keys": list(keys)}
+            for path, keys in sorted(endpoint_shapes)
+        ][:80],
+        "script_sources": sorted(script_sources)[:40],
+        "dom_tokens": sorted(dom_tokens)[:80],
+    }
+
+
+def _script_endpoint_hints(session: requests.Session, script_paths: list[str]) -> list[dict[str, object]]:
+    """Inspect first-party public JS for endpoint literals, without recording JS bodies."""
+    results: list[dict[str, object]] = []
+    for path in script_paths[:10]:
+        if not path.lower().endswith(".js"):
+            continue
+        try:
+            response = _get(session, urljoin(BASE, path))
+        except Exception as exc:
+            results.append({"script": path, "error": type(exc).__name__})
+            continue
+        body = response.text
+        endpoint_shapes: set[tuple[str, tuple[str, ...]]] = set()
+        for match in re.finditer(
+            r"['\"]([^'\"<>]{1,300}(?:lot|purchase|trade|price|offer)[^'\"<>]{0,300})['\"]",
+            body,
+            re.I,
+        ):
+            candidate = match.group(1)
+            if not candidate.startswith(("/", "http")):
+                continue
+            absolute = urljoin(BASE, candidate)
+            parsed = urlparse(absolute)
+            if parsed.hostname != "aukcioncenter.ru":
+                continue
+            endpoint_shapes.add((parsed.path, tuple(sorted(parse_qs(parsed.query).keys()))))
+        results.append({
+            "script": path,
+            "endpoint_shapes": [
+                {"path": endpoint, "query_keys": list(keys)}
+                for endpoint, keys in sorted(endpoint_shapes)
+            ][:80],
+        })
+    return results
+
+
 def _text_features(html: str) -> dict[str, object]:
     soup = BeautifulSoup(html, "html.parser")
     text = _clean(soup.get_text(" ", strip=True))
@@ -248,6 +363,7 @@ def _text_features(html: str) -> dict[str, object]:
         "status_hits": status_hits,
         "cadastral_count": len(cads),
         "purchase_routes": _purchase_routes(html),
+        "structure": _safe_structural_hints(html),
     }
 
 
@@ -337,6 +453,7 @@ def run(*, pause: float, details: int) -> dict[str, object]:
     route_shapes: dict[str, set[tuple[str, ...]]] = {}
     isolated_payloads = 0
     base_cache: dict[str, dict[str, object]] = {}
+    script_paths: set[str] = set()
     for index, (row, lot) in enumerate(selected):
         if index:
             time.sleep(pause)
@@ -349,6 +466,8 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             base_cache[row.provider_id] = base_features
             for route in base_features["purchase_routes"]:
                 route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
+            for script_path in base_features["structure"]["script_sources"]:
+                script_paths.add(str(script_path))
 
         lot_response = _get(session, _url_for_lot(base_url, lot))
         lot_features = _text_features(lot_response.text)
@@ -393,6 +512,9 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             route: [list(keys) for keys in sorted(shapes)]
             for route, shapes in sorted(route_shapes.items())
         },
+        "first_party_script_endpoint_hints": _script_endpoint_hints(
+            session, sorted(script_paths)
+        ),
         "details": detail_results,
     }
 
