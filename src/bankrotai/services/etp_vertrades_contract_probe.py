@@ -14,6 +14,8 @@ import time
 from typing import Callable
 
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 
 from bankrotai.connectors.etp_sources import PROFILES, parse_listing_html
 from bankrotai.connectors.etp_sources.pagination import has_next_page, page_url
@@ -33,6 +35,40 @@ class VertradesProbeError(RuntimeError):
     pass
 
 
+def _filter_form_contract(html: str | bytes) -> dict:
+    """Return safe structural metadata for the public auction search form."""
+    soup = BeautifulSoup(html, "html.parser")
+    candidates = []
+    for form in soup.find_all("form"):
+        text = " ".join(form.stripped_strings).lower()
+        if "№ торгов" in text or "наименование лота" in text:
+            candidates.append(form)
+    if len(candidates) != 1:
+        raise VertradesProbeError("catalogue_filter_form_missing_or_ambiguous")
+
+    form = candidates[0]
+    method = str(form.get("method") or "get").strip().lower()
+    if method not in {"get", "post"}:
+        raise VertradesProbeError("catalogue_filter_form_method_unexpected")
+    action = urljoin(_PROFILE.listing_url, str(form.get("action") or "").strip())
+    parsed = urlparse(action)
+    if parsed.scheme != "https" or parsed.hostname != "arest.vertrades.ru":
+        raise VertradesProbeError("catalogue_filter_form_action_not_same_origin")
+
+    names = sorted({
+        str(node.get("name")).strip()
+        for node in form.select("[name]")
+        if str(node.get("name") or "").strip()
+    })
+    if not names:
+        raise VertradesProbeError("catalogue_filter_form_has_no_named_fields")
+    return {
+        "method": method,
+        "action_path": parsed.path or "/",
+        "field_names": names,
+    }
+
+
 def _scan_pass(
     session: requests.Session, *, max_pages: int,
     delay_seconds: float, sleep: Callable[[float], None],
@@ -40,6 +76,7 @@ def _scan_pass(
     seen: set[str] = set()
     pages: list[dict] = []
     terminal_page: int | None = None
+    filter_form: dict | None = None
 
     for page in range(1, max_pages + 1):
         if page > 1:
@@ -62,6 +99,9 @@ def _scan_pass(
             raise VertradesProbeError("catalogue_response_too_large")
         if "text/html" not in response.headers.get("Content-Type", "").lower():
             raise VertradesProbeError("catalogue_response_not_html")
+
+        if page == 1:
+            filter_form = _filter_form_contract(response.content)
 
         lots = parse_listing_html(_PROFILE, response.content, page=page)
         ids = {lot.external_id for lot in lots}
@@ -88,6 +128,7 @@ def _scan_pass(
         "terminal_page": terminal_page,
         "unique_property_lot_ids": len(seen),
         "id_digest_sha256": hashlib.sha256(ordered).hexdigest(),
+        "filter_form": filter_form,
     }
 
 
@@ -210,6 +251,7 @@ def probe_vertrades_contract(
         first["terminal_page"] == second["terminal_page"]
         and first["unique_property_lot_ids"] == second["unique_property_lot_ids"]
         and first["id_digest_sha256"] == second["id_digest_sha256"]
+        and first["filter_form"] == second["filter_form"]
     )
     if not stable:
         raise VertradesProbeError("catalogue_identity_digest_changed_between_passes")
@@ -224,6 +266,7 @@ def probe_vertrades_contract(
         "id_digest_sha256": first["id_digest_sha256"],
         "stable_between_passes": True,
         "pages": first["pages"],
+        "filter_form": first["filter_form"],
         "complete_source_inventory": False,
         "database_writes": 0,
         "reconciliation_allowed": False,
