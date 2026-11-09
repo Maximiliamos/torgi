@@ -82,7 +82,7 @@ def zakazrf_title(value: str) -> str | None:
     """Extract the lot's own labelled name, not the procedure-level name."""
     section = _zakazrf_lot_section(value)
     match = re.search(
-        r"\bнаименование\s*:\s*(.{4,1200}?)(?=\s+(?:дата\s+(?:начала|окончания|проведения|подведения)|статус)\s*:)",
+        r"\bнаименование\s*:\s*(.{4,1200}?)(?=\s+(?:(?:дата\s+(?:начала|окончания|проведения|подведения)[^:]{0,80})|статус)\s*:)",
         section,
         re.IGNORECASE,
     )
