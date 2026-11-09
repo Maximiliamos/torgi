@@ -30,6 +30,15 @@ EXTERNAL_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+STATUS_FILTER_FIELD = (
+    "ctl00$ctl00$MainExpandableArea$phExpandCollapse$PurchasesSearchCriteria$"
+    "vPurchaseLot_purchaseStatusID_Статус"
+)
+SEARCH_BUTTON_FIELD = (
+    "ctl00$ctl00$MainExpandableArea$phExpandCollapse$SearchButton"
+)
+SEARCH_CRITERIA_MARKER = "$PurchasesSearchCriteria$"
+
 _SPACE_RE = re.compile(r"\s+")
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
@@ -46,6 +55,23 @@ class EtpuAccessError(RuntimeError):
 
 class EtpuSchemaError(RuntimeError):
     """The observed ETPU page no longer satisfies the verified source contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class EtpuStatusFilter:
+    value: str
+    text: str
+
+
+NON_TERMINAL_STATUS_FILTERS = (
+    EtpuStatusFilter("5", "Извещение опубликовано"),
+    EtpuStatusFilter("7", "Прием заявок"),
+    EtpuStatusFilter("14", "Прием заявок на интервале не активен"),
+    EtpuStatusFilter("8", "Определение участников торгов"),
+    EtpuStatusFilter("1", "Идут торги"),
+    EtpuStatusFilter("15", "Подведение результатов"),
+    EtpuStatusFilter("13", "Приостановлен"),
+)
 
 
 @dataclass(frozen=True, slots=True)
