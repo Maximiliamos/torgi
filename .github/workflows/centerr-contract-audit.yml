@@ -10,6 +10,7 @@ on:
       - "tests/test_centerr_contract.py"
       - "tests/fixtures/centerr_duplicate_wrong_id.html"
       - ".github/workflows/centerr-contract-audit.yml"
+      - "docs/ETP_CENTERR_AUDIT_2026-11-09.md"
   workflow_dispatch:
 
 permissions:
