@@ -7,11 +7,12 @@ changing shared ETP parser code. Production wiring is intentionally external.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import re
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
 from bs4 import BeautifulSoup
@@ -554,3 +555,95 @@ async def enrich_vertrades_lot(
     raw["detail_enrichment_version"] = connector.detail_enrichment_version
     enriched.raw_data = raw
     return enriched
+
+
+
+def connector_type(profile: object):
+    """Build the registered Vertrades connector without modifying generic ETP rules."""
+    from bankrotai.connectors.base import ConnectorHealth, ConnectorPage
+    from bankrotai.connectors.etp_sources.common import (
+        EtpSearchFilters,
+        HtmlEtpConnector,
+        SourceSchemaError,
+    )
+
+    class VertradesConnector(HtmlEtpConnector):
+        capabilities = frozenset({
+            "search", "fetch_lot", "healthcheck", "detail_enrichment",
+        })
+
+        async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
+            normalized = (
+                filters
+                if isinstance(filters, EtpSearchFilters)
+                else EtpSearchFilters(**(filters or {}))
+            )
+            page = max(1, int(cursor or normalized.page))
+            response = await asyncio.to_thread(self._request, page)
+            fingerprint = hashlib.sha256(response.content).hexdigest()
+            if page > 1 and fingerprint in {
+                value
+                for number, value in self._page_fingerprints.items()
+                if number < page
+            }:
+                raise SourceSchemaError(
+                    f"{SOURCE_ID}: repeated catalogue page content at page {page}"
+                )
+            self._page_fingerprints[page] = fingerprint
+            try:
+                lots = parse_catalogue_page(response.content, page=page, limit=100)
+                has_next = has_next_catalogue_page(response.content, page)
+            except VertradesCardError as exc:
+                raise SourceSchemaError(f"{SOURCE_ID}: {exc}") from exc
+            if not lots:
+                raise SourceSchemaError(
+                    f"{SOURCE_ID}: no property lots matched verified catalogue schema "
+                    f"on page {page}"
+                )
+            return ConnectorPage(
+                items=lots,
+                next_cursor=str(page + 1) if has_next else None,
+                metadata={
+                    "source": SOURCE_ID,
+                    "page": page,
+                    "items_on_page": len(lots),
+                    "total_items": None,
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "reconcile_missing": False,
+                    "maturity": self.profile.status,
+                    "response_url": response.url,
+                },
+            )
+
+        async def fetch_lot(self, external_id: str) -> NormalizedLot:
+            return await fetch_vertrades_lot(self, external_id)
+
+        async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+            return await enrich_vertrades_lot(self, lot)
+
+        async def healthcheck(self) -> ConnectorHealth:
+            try:
+                response = await asyncio.to_thread(self._request, 1)
+                lots = parse_catalogue_page(response.content, page=1, limit=100)
+            except Exception as exc:
+                return ConnectorHealth(
+                    "degraded", str(exc), {"source": SOURCE_ID}
+                )
+            status = "ok" if lots else "degraded"
+            return ConnectorHealth(
+                status,
+                f"matched {len(lots)} verified public property lots",
+                {
+                    "source": SOURCE_ID,
+                    "detail_contract": "shared_procedure_exact_lot_section",
+                    "safe_for_archival": False,
+                    "reconcile_missing": False,
+                    "production_enabled": False,
+                },
+            )
+
+    VertradesConnector.profile = profile
+    VertradesConnector.__name__ = "VertradesConnector"
+    VertradesConnector.__qualname__ = "VertradesConnector"
+    return VertradesConnector
