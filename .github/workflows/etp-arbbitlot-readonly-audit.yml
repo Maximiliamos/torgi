@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: arbbitlot-readonly-source-contract
+  cancel-in-progress: true
+
 # Evidence-only workflow. It performs no database, scheduler, reconciliation, or archival writes.
 
 jobs:
