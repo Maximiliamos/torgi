@@ -1292,3 +1292,42 @@ def test_zakazrf_title_stops_before_extended_application_date_label() -> None:
     assert lot.cadastral_number == "77:01:0001001:55"
     assert lot.area == 80.0
     assert lot.address == "г. Москва, ул. Тестовая, д. 1"
+
+
+def test_zakazrf_postback_pager_crosses_ten_page_group() -> None:
+    page_nine = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state9'>
+      <a href="javascript:__doPostBack('grid$page10','')">10</a>
+    </form>
+    """
+    page_ten = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state10'>
+      <a href='/public/auctions/lots/view/19990/'>Page ten apartment</a>
+      <a href="javascript:__doPostBack('grid$nextGroup','')">&gt;&gt;</a>
+    </form>
+    """
+    page_eleven = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state11'>
+      <a href='/public/auctions/lots/view/19991/'>Page eleven apartment</a>
+    </form>
+    """
+    session = FakeSession([
+        FakeResponse(200, page_nine, "https://bankrot.zakazrf.ru/public/purchases-all/"),
+        FakeResponse(200, page_ten, "https://bankrot.zakazrf.ru/public/purchases-all/"),
+        FakeResponse(200, page_eleven, "https://bankrot.zakazrf.ru/public/purchases-all/"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["zakazrf.ru"](session=session)
+
+    page10 = asyncio.run(connector.search({}, cursor="10"))
+    assert [lot.external_id for lot in page10.items] == ["zakazrf.ru:auctions-19990"]
+    assert page10.next_cursor == "11"
+
+    page11 = asyncio.run(connector.search({}, cursor="11"))
+    assert [lot.external_id for lot in page11.items] == ["zakazrf.ru:auctions-19991"]
+    assert page11.next_cursor is None
+    assert session.posts[0][1]["__EVENTTARGET"] == "grid$page10"
+    assert session.posts[1][1]["__EVENTTARGET"] == "grid$nextGroup"
+    assert session.posts[1][1]["__VIEWSTATE"] == "state10"
