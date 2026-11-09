@@ -47,7 +47,8 @@ permissions:
 
 concurrency:
   group: cloudflare-edge-production
-  cancel-in-progress: false
+  # A newer main SHA supersedes an edge rollout waiting for an obsolete staged origin.
+  cancel-in-progress: true
 
 jobs:
   create-sterdez-zone:
