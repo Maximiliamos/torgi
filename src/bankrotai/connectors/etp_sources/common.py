@@ -445,7 +445,6 @@ def _parse_multi_lot_catalogue(
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
-            procedure_number=arbbitlot_procedure_id,
         ))
     return lots
 
@@ -584,6 +583,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
+            procedure_number=arbbitlot_procedure_id,
         ))
     return lots
 
