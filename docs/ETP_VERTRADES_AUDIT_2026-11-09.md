@@ -47,7 +47,7 @@ Read-only page retrieval proved:
 
 Therefore **terminal page = 4 is proved for the currently published all-trades register**.
 
-The browser retrieval layer was repeated and the page-leading procedure identities remained `150-АП / 108-АП / 69-АП / 27-АП`. A cryptographic digest of every raw catalogue row could not be executed from the agent container because outbound DNS is unavailable. To close that exact diagnostic gap, this branch adds a bounded source-specific two-pass probe that makes at most 8 public GETs, compares all parsed composite IDs and their SHA-256 digest, and stores no raw HTML or personal data.
+The browser retrieval layer was repeated and the page-leading procedure identities remained `150-АП / 108-АП / 69-АП / 27-АП`. The local agent container has no outbound DNS, so this branch adds a bounded source-specific GitHub Actions proof: exactly two passes over at most four public catalogue pages (maximum 8 GETs), comparing all parsed composite IDs and their SHA-256 digest. It stores no raw HTML or personal data.
 
 ### Mixed catalogue and property scope
 
@@ -109,6 +109,8 @@ Result:
 
 Additional sections later in the same card (36, 38–48, 50, etc.) confirm the same shared-card structure. A second public procedure card (`102259678`, visible procedure `55-АП`) was also inspected and shows the same numbered section/price/status contract, including cancelled lots.
 
+The source-specific CI additionally fetches the shared `102288306` card once from the provider and applies the exact-lot parser to all 30 selected lot numbers from that single response. The check requires 30/30 explicit prices and 30/30 recognized per-lot statuses and emits only aggregate counts plus SHA-256, never source HTML, names, addresses or descriptions.
+
 The public catalogue currently served by the site is historical (primarily 2021–2022 records); no claim is made that these auctions are active in 2026. They are, however, the records currently published by the official register and were rechecked on 2026-11-09.
 
 ## Fields and fail-closed rules
@@ -145,11 +147,12 @@ Known detail status forms explicitly covered include `Торги заверше�
 - `src/bankrotai/connectors/etp_sources/vertrades_detail_adapter.py` — public `showTrades?id=...` fetch/enrichment adapter with identity and price cross-checks.
 - `src/bankrotai/connectors/etp_sources/common.py` — source-specific adapter hook and source-specific status normalization only for Vertrades.
 - `src/bankrotai/connectors/registry/direct_etp_catalogue.py` — parse real `NNN-АП/NNN-АЗ` procedure codes; existing positive property gate remains.
-- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe.
+- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe plus one-response 30-lot live detail proof; executable as `python -m bankrotai.services.etp_vertrades_contract_probe`.
 - `tests/test_vertrades_catalogue_contract.py` — mixed-asset/property and composite-ID regression.
 - `tests/test_vertrades_detail_sections.py` — section isolation, price/status, dates, address/cadastre/area and fail-closed cases.
 - `tests/test_vertrades_detail_adapter.py` — fetch/enrichment identity, conflict and redirect regressions.
-- `tests/test_etp_vertrades_contract_probe.py` — two-pass/terminal/digest/safety regressions.
+- `tests/test_etp_vertrades_contract_probe.py` — two-pass/terminal/digest/safety regressions plus the 30-lot detail-sample contract.
+- `.github/workflows/etp-vertrades-contract-readonly.yml` — source-specific PR check: focused Vertrades tests, then live two-pass catalogue proof and 30-lot detail proof.
 - this audit document.
 
 No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, production scheduling, reconciliation or archival logic was changed.
@@ -174,7 +177,7 @@ No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, produ
 | Dates | PASS at procedure level |
 | Title/address/cadastre/area | Proven where explicitly present in requested section; optional fields remain null when absent |
 | Two browser-layer catalogue passes | PASS for page/leading-procedure stability |
-| Full raw-ID SHA-256 two-pass run | Probe implemented; execution pending network-capable CI/Home environment |
+| Full raw-ID SHA-256 two-pass run | Source-specific network CI check included; exact run output is recorded in PR checks |
 | CAPTCHA/auth bypass | None attempted |
 | Production enablement | NO |
 
@@ -183,7 +186,7 @@ No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, produ
 1. The source's public register is stale/historical; no active 2026 auction sample was observed.
 2. Optional search-panel form submission fields were not reverse-engineered because the canonical unfiltered public register and required pagination/detail contract are available without them.
 3. The exact two-pass SHA-256 result from `etp_vertrades_contract_probe.py` still requires a network-capable repository runtime; the current agent container cannot resolve external DNS.
-4. The source-specific focused/full CI status must be recorded from GitHub Actions before this PR is treated as review-ready.
+4. Source-specific focused tests and live proof plus the repository-wide CI must be green before this PR is treated as review-ready.
 
 ## Acceptance boundary
 
