@@ -10,18 +10,28 @@ class FakeConnector:
     def __init__(self) -> None:
         self.calls: list[str | None] = []
 
+    @staticmethod
+    def listing(external_id: str, procedure_id: str, lot_number: str, current_price=None):
+        return SimpleNamespace(
+            external_id=external_id,
+            start_price=100.0,
+            current_price=current_price,
+            auction_status="active",
+            raw_data={"procedure_id": procedure_id, "lot_number": lot_number},
+        )
+
     async def search(self, _filters, cursor=None):
         self.calls.append(cursor)
         if cursor is None:
             return SimpleNamespace(
                 items=[
-                    SimpleNamespace(external_id="arbbitlot.ru:auctions-1"),
-                    SimpleNamespace(external_id="arbbitlot.ru:public-offers-2"),
+                    self.listing("arbbitlot.ru:auctions-1", "777", "1"),
+                    self.listing("arbbitlot.ru:public-offers-2", "778", "1", 90.0),
                 ],
                 next_cursor="2",
             )
         return SimpleNamespace(
-            items=[SimpleNamespace(external_id="arbbitlot.ru:auctions-3")],
+            items=[self.listing("arbbitlot.ru:auctions-3", "777", "2")],
             next_cursor=None,
         )
 
@@ -36,7 +46,10 @@ class FakeConnector:
             cadastral_number="76:01:000000:1",
             area=20.0,
             address="Test",
-            raw_data={"lot_number": "1"},
+            raw_data={
+                "procedure_id": "777" if external_id.endswith(("1", "3")) else "778",
+                "lot_number": "2" if external_id.endswith("3") else "1",
+            },
         )
 
 
@@ -60,11 +73,13 @@ def test_arbbitlot_readonly_audit_proves_terminal_and_repeatable_ids() -> None:
     assert report["details"]["details_checked"] == 3
     assert report["details"]["detail_success"] == 3
     assert report["details"]["start_price_success"] == 3
+    assert report["details"]["catalogue_detail_procedure_match"] == 3
+    assert report["details"]["catalogue_detail_lot_number_match"] == 3
     assert report["details"]["catalogue_detail_start_price_match"] == 3
     assert report["details"]["status_success"] == 3
     assert report["details"]["catalogue_detail_status_match"] == 3
     assert report["details"]["public_offer_details_checked"] == 1
-    assert report["details"]["catalogue_current_price_success"] == 0
+    assert report["details"]["catalogue_current_price_success"] == 1
     assert report["details"]["detail_current_price_success"] == 1
     assert report["details"]["catalogue_detail_current_price_match"] == 1
     assert report["details"]["multi_lot_procedures"] == {
