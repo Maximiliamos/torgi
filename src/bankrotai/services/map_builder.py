@@ -28,7 +28,11 @@ from bankrotai.services.map_bundle_store import (
     normalize_map_region_code,
     publish_dataset_to_regional_bundles,
 )
-from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION, build_map_dataset_version
+from bankrotai.services.map_dataset_version import (
+    MAP_DATASET_REVISION,
+    build_map_dataset_version,
+    dataset_pipeline_revision,
+)
 from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
 
 MAX_DATASET_ZOOM = 14
@@ -380,13 +384,31 @@ def _dimension_coverage_failures(
     new_ids = _dataset_lot_ids(session, new_dataset_id)
     if not old_ids:
         return []
+    previous = session.get(MapDataset, current_dataset_id)
+    candidate = session.get(MapDataset, new_dataset_id)
+    # r7 intentionally removed ended auctions that r6 still displayed.
+    # Exclude only those explicitly ended legacy rows from the old baseline;
+    # never relax the guard for an active row, another revision or a repeat.
+    ended_membership_migration = bool(
+        previous is not None
+        and candidate is not None
+        and dataset_pipeline_revision(previous.version) == "r6"
+        and dataset_pipeline_revision(candidate.version) == "r7"
+    )
     old_counts: dict[tuple[str, str], int] = defaultdict(int)
     new_counts: dict[tuple[str, str], int] = defaultdict(int)
-    for lot_id, source_system, region_code in session.execute(
-        select(ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.region_code)
+    for lot_id, source_system, region_code, auction_status in session.execute(
+        select(
+            ProcessedLot.id,
+            ProcessedLot.source_system,
+            ProcessedLot.region_code,
+            ProcessedLot.auction_status,
+        )
     ):
         dimensions = (("source", source_system or "unknown"), ("region", region_code or "unknown"))
-        if lot_id in old_ids:
+        if lot_id in old_ids and not (
+            ended_membership_migration and auction_status in ENDED_STATUSES
+        ):
             for dimension in dimensions:
                 old_counts[dimension] += 1
         if lot_id in new_ids:
