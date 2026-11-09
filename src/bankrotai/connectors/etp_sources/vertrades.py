@@ -229,7 +229,11 @@ def parse_catalogue_page(
             continue
         if not _PROPERTY.search(title):
             continue
-        links = cells[3].select("a[href]") + cells[0].select("a[href]")
+        links = (
+            cells[3].select("a[href]")
+            + cells[0].select("a[href]")
+            + cells[1].select("a[href]")
+        )
         detail_url = None
         provider_id = None
         for anchor in links:
