@@ -579,13 +579,10 @@ def parse_detail_html(
     if profile.source_id == "zakazrf.ru":
         return build_zakazrf_detail_lot(
             text_value,
-            external_id=external_id,
-            detail_url=detail_url,
-            platform_name=profile.platform_name,
-            platform_code=profile.platform_code,
+            external_id=external_id, detail_url=detail_url,
+            platform_name=profile.platform_name, platform_code=profile.platform_code,
             complete_source_inventory=profile.complete_source_inventory,
-            safe_for_archival=profile.safe_for_archival,
-            procedure_number=procedure_number,
+            safe_for_archival=profile.safe_for_archival, procedure_number=procedure_number,
             bankruptcy_case_number=case_number,
         )
 
