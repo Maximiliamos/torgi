@@ -52,6 +52,12 @@ def test_listing_links_must_use_trusted_https_endpoint(href: str) -> None:
     assert parse_listing_html(profile("etpu.ru"), html) == []
 
 
+def test_sberbank_profile_uses_canonical_bankruptcy_entry_point() -> None:
+    assert profile("sberbank-ast.ru").listing_url == (
+        "https://utp.sberbank-ast.ru/Bankruptcy/NBT/Index/0/0/0/0"
+    )
+
+
 def test_sberbank_json_rejects_untrusted_lot_link() -> None:
     from bankrotai.connectors.etp_sources import parse_sberbank_json
     raw = {
