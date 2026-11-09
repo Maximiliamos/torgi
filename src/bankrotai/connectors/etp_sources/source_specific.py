@@ -138,6 +138,25 @@ def etpu_explicit_status(value: str) -> str | None:
     return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
 
 
+def etpu_status(value: str) -> str:
+    """Normalize only explicit ETPU lifecycle states, conservatively."""
+    raw = etpu_explicit_status(value)
+    if raw is None:
+        return "unknown"
+    lowered = raw.lower().replace("ё", "е")
+    if lowered == "извещение опубликовано":
+        return "scheduled"
+    if lowered in {"прием заявок", "идут торги"}:
+        return "active"
+    if lowered == "приостановлен":
+        return "paused"
+    if lowered in {"окончен", "не состоялся", "отменен организатором"}:
+        return "closed"
+    # Between-interval, participant determination and result-calculation
+    # phases are deliberately not collapsed into an active/closed guess.
+    return "unknown"
+
+
 def etpu_procedure_number(value: str) -> str | None:
     match = re.search(
         r"Информация\s+(?:об\s+аукционе|о\s+конкурсе|о\s+публичном\s+предложении)"
