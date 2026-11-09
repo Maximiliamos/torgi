@@ -19,7 +19,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - name: Focused Fabrikant regression tests
+        run: pytest -q tests/test_fabrikant_source.py tests/test_etp_sources.py
+
   audit:
+    needs: unit
     runs-on: [self-hosted, Windows, X64, bankrotai-home]
     timeout-minutes: 25
     steps:
@@ -62,9 +73,11 @@ jobs:
               $parsed.production_enabled -ne $false) {
             throw 'Fabrikant probe violated read-only contract'
           }
-          Write-Output ("FABRIKANT_AUDIT pages={0}; unique={1}; terminal={2}; reason={3}; stable_two_passes={4}; details={5}" -f
+          Write-Output ("FABRIKANT_AUDIT pages={0}; procedures={1}; lots={2}; unresolved={3}; terminal={4}; reason={5}; stable_two_passes={6}; details={7}" -f
             $parsed.passes[0].pages_checked,
             $parsed.passes[0].unique_procedure_count,
+            $parsed.individual_lots.unique_lot_count,
+            $parsed.individual_lots.unresolved_procedure_count,
             $parsed.passes[0].terminal_page,
             $parsed.passes[0].terminal_reason,
             $parsed.stable_two_passes,
