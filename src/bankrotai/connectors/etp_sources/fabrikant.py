@@ -491,7 +491,7 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
     return FabrikantDetailFields(
         title=title[:500] if title else None,
         source_status_text=status_text,
-        auction_status=status,
+        auction_status=fields.auction_status,
         start_price=fabrikant_initial_money(text),
         current_price=fabrikant_current_money(text),
         category_text=category_text,
@@ -530,6 +530,7 @@ def parse_detail_lot(
     fields = parse_detail_fields(html)
     if not fields.title:
         raise FabrikantContractError("individual detail title is not proven")
+    text = _clean(_soup(html).get_text(" ", strip=True))
     return NormalizedLot(
         external_id=external_id or expected_id,
         source="fabrikant",
@@ -558,7 +559,7 @@ def parse_detail_lot(
             "fabrikant_source_status_text": fields.source_status_text,
             "detail_start_price_verified": fields.start_price is not None,
             "detail_current_price_verified": fields.current_price is not None,
-            "detail_status_verified": status != "unknown",
+            "detail_status_verified": fields.auction_status != "unknown",
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
