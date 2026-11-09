@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Read-only source-contract audit for the Ural ETP bankruptcy catalogue.
 
-The probe performs only public GET/POST reads required by the site's own
-ASP.NET pagination and individual lot detail pages. It never writes provider or
-TORGI data and never enables reconciliation/archival/scheduling.
+The probe talks only to public ETPU pages and never writes provider or TORGI
+state. It intentionally bypasses the shared ETP dispatcher so the source
+contract can be reviewed and tested in isolation.
 """
 from __future__ import annotations
 
@@ -11,21 +11,18 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import time
 from typing import Any
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
-
-
-SOURCE_ID = "etpu.ru"
+from bankrotai.connectors.etp_sources.etpu import EtpuClient, SOURCE_ID
 
 
 def _digest(rows: list[str]) -> str:
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
-async def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any]:
-    connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
-    cursor: str | None = None
+def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any]:
+    client = EtpuClient()
     page = 1
     ordered_ids: list[str] = []
     record_rows: list[str] = []
@@ -33,7 +30,7 @@ async def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any
     terminal_proven = False
 
     while page <= max_pages:
-        result = await connector.search({}, cursor=cursor)
+        result = client.fetch_catalogue_page(page)
         ids = [lot.external_id for lot in result.items]
         page_sizes.append(len(ids))
         ordered_ids.extend(ids)
@@ -48,25 +45,22 @@ async def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any
             )
             for lot in result.items
         )
-        if result.next_cursor is None:
+        if result.next_page is None:
             terminal_proven = True
             break
-        cursor = result.next_cursor
-        page += 1
+        page = result.next_page
         if delay_seconds:
-            import asyncio
-            await asyncio.sleep(delay_seconds)
+            time.sleep(delay_seconds)
 
     unique_ids = set(ordered_ids)
-    duplicate_ids = len(ordered_ids) - len(unique_ids)
     return {
         "pages": len(page_sizes),
         "page_sizes": page_sizes,
-        "terminal_page": len(page_sizes) if terminal_proven else None,
+        "terminal_page": page if terminal_proven else None,
         "terminal_page_proven": terminal_proven,
         "items": len(ordered_ids),
         "unique_ids": len(unique_ids),
-        "duplicate_ids": duplicate_ids,
+        "duplicate_ids": len(ordered_ids) - len(unique_ids),
         "ordered_id_digest": _digest(ordered_ids),
         "sorted_id_digest": _digest(sorted(unique_ids)),
         "record_digest": _digest(record_rows),
@@ -74,12 +68,12 @@ async def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any
     }
 
 
-async def _details(ids: list[str], limit: int, delay_seconds: float) -> dict[str, Any]:
-    connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
+def _details(ids: list[str], limit: int, delay_seconds: float) -> dict[str, Any]:
+    client = EtpuClient()
     selected = ids[: min(limit, len(ids))]
     results: list[dict[str, Any]] = []
     for external_id in selected:
-        detail = await connector.fetch_lot(external_id)
+        detail = client.fetch_detail(external_id)
         raw = detail.raw_data or {}
         results.append(
             {
@@ -92,13 +86,16 @@ async def _details(ids: list[str], limit: int, delay_seconds: float) -> dict[str
                 "classifier_ok": bool(raw.get("efrsb_classifier")),
                 "category": detail.category,
                 "classifier_flags": raw.get("efrsb_classifier_flags") or [],
+                "cadastre_present": detail.cadastral_number is not None,
+                "address_present": detail.address is not None,
+                "area_present": detail.area is not None,
             }
         )
         if delay_seconds:
-            import asyncio
-            await asyncio.sleep(delay_seconds)
+            time.sleep(delay_seconds)
 
     count = len(results)
+
     def rate(field: str) -> float:
         return round(sum(bool(row[field]) for row in results) / count, 4) if count else 0.0
 
@@ -111,13 +108,18 @@ async def _details(ids: list[str], limit: int, delay_seconds: float) -> dict[str
         "classifier_success_rate": rate("classifier_ok"),
         "normalized_statuses": dict(Counter(str(row["normalized_status"]) for row in results)),
         "categories": dict(Counter(str(row["category"]) for row in results)),
+        "property_field_presence": {
+            "cadastre": sum(bool(row["cadastre_present"]) for row in results),
+            "address": sum(bool(row["address_present"]) for row in results),
+            "area": sum(bool(row["area_present"]) for row in results),
+        },
         "results": results,
     }
 
 
-async def run(max_pages: int, detail_limit: int, delay_seconds: float) -> dict[str, Any]:
-    first = await _catalogue_pass(max_pages, delay_seconds)
-    second = await _catalogue_pass(max_pages, delay_seconds)
+def run(max_pages: int, detail_limit: int, delay_seconds: float) -> dict[str, Any]:
+    first = _catalogue_pass(max_pages, delay_seconds)
+    second = _catalogue_pass(max_pages, delay_seconds)
 
     passes_match = (
         first["terminal_page_proven"]
@@ -125,11 +127,12 @@ async def run(max_pages: int, detail_limit: int, delay_seconds: float) -> dict[s
         and first["sorted_id_digest"] == second["sorted_id_digest"]
         and first["record_digest"] == second["record_digest"]
     )
-    details = await _details(first["ids"], detail_limit, delay_seconds)
+    details = _details(first["ids"], detail_limit, delay_seconds)
 
     return {
         "source": SOURCE_ID,
         "mode": "public_read_only",
+        "isolated_source_module": "bankrotai.connectors.etp_sources.etpu",
         "production_enabled": False,
         "safe_for_archival": False,
         "reconcile_missing": False,
@@ -158,9 +161,7 @@ def main() -> int:
     if args.delay_seconds < 0:
         parser.error("--delay-seconds must be >= 0")
 
-    import asyncio
-
-    report = asyncio.run(run(args.max_pages, args.details, args.delay_seconds))
+    report = run(args.max_pages, args.details, args.delay_seconds)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
 
     pass1 = report["pass_1"]
