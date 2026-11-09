@@ -7,6 +7,7 @@ import pytest
 from bankrotai.connectors.etp_sources import (
     PROFILES,
     SOURCE_CONNECTOR_TYPES,
+    SourceSchemaError,
     parse_detail_html,
     parse_listing_html,
 )
@@ -269,7 +270,7 @@ def test_etpu_pager_does_not_use_block_jump_for_random_access() -> None:
     session = _PostbackSession([_PagedResponse(page_one)])
     connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
 
-    with pytest.raises(Exception, match="page 15 postback target disappeared"):
+    with pytest.raises(SourceSchemaError, match="page 15 postback target disappeared"):
         asyncio.run(connector.search({}, cursor="15"))
 
     assert session.posts == []
