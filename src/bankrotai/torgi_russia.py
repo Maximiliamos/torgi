@@ -707,6 +707,7 @@ class TorgiRussiaClient:
                         "trade_form": item.get("trade_form"),
                         "title_evidence": item.get("title_evidence") or "catalogue",
                         "title_evidence_url": item.get("title_evidence_url"),
+                        "title_evidence_canonical_url": item.get("title_evidence_canonical_url"),
                         "title_evidence_external_id": item.get("title_evidence_external_id"),
                         "begin_offer_time": item.get("begin_offer_time"),
                         "status_id": item.get("status_id"),
