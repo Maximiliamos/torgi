@@ -189,7 +189,8 @@ def zakazrf_address(title: str | None) -> str | None:
     if not title:
         return None
     match = re.search(
-        r"\bадрес\s*:\s*(.+?)(?=,\s*(?:кадастров(?:ый)?\s+номер|кад\.?\s*№)|$)",
+        r"\b(?:адрес|по\s+адресу)\s*:\s*(.+?)"
+        r"(?=,\s*(?:кадастров(?:ый)?\s+номер|кад\.?\s*№)|$)",
         title,
         re.IGNORECASE,
     )
