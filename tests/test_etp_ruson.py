@@ -3,19 +3,23 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from bankrotai.connectors.etp_sources import PROFILES, parse_detail_html
+import pytest
+
+from bankrotai.connectors.etp_sources.ruson import (
+    RusonSchemaError,
+    build_next_request,
+    is_terminal_page,
+    parse_catalogue_page,
+    parse_detail_html,
+    verify_identity,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "etp" / "ruson"
 
 
-def _profile():
-    return next(item for item in PROFILES if item.source_id == "rus-on.ru")
-
-
 def _parse(name: str, lot_id: str, *, observed_at_utc: datetime | None = None):
     return parse_detail_html(
-        _profile(),
         (FIXTURES / name).read_text(encoding="utf-8"),
         detail_url=f"https://rus-on.ru/bankrot/lot_view.php?lot_nid={lot_id}",
         external_id=f"rus-on.ru:{lot_id}",
@@ -101,3 +105,67 @@ def test_ruson_public_offer_end_minute_is_inclusive_without_one_minute_price_gap
     )
     assert before_boundary.current_price == 293_222.25
     assert at_boundary.current_price == 278_561.14
+
+
+def test_ruson_legacy_1166_case_keeps_labelled_no_rub_price_dates_and_ended_status() -> None:
+    html = """
+    <html><body><h1>Нежилое помещение 50:46:0060406:241</h1>
+    Начальная цена 5205000.00
+    Дата окончания приема заявок 19.08.2022 18:00
+    Дата проведения 22.08.2022 10:00
+    Торги не состоялись
+    Официальная карточка содержит подробное описание продаваемого имущества.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        html,
+        external_id="rus-on.ru:27424",
+        detail_url="https://rus-on.ru/bankrot/lot_view.php?lot_nid=27424",
+    )
+    assert lot.start_price == 5_205_000
+    assert lot.application_deadline == datetime(2022, 8, 19, 18, 0)
+    assert lot.auction_at == datetime(2022, 8, 22, 10, 0)
+    assert lot.auction_status == "closed"
+
+
+def test_ruson_catalogue_identity_deduplicates_same_lot_and_proves_next_page() -> None:
+    html = """
+    <form id="tradesearch" method="get" action="/bankrot/trade_list.php">
+      <input type="hidden" name="pagenum" value="1">
+      <input type="checkbox" checked name="trade_state[]" value="Прием заявок">
+      <input type="checkbox" name="trade_state[]" value="Торги завершены">
+      <a href="/bankrot/lot_view.php?lot_nid=115011">Лот 1</a>
+      <a href="/bankrot/lot_view.php?lot_nid=115011">Земельный участок площадью 792 кв. м.</a>
+      <a onclick="pagenum_send(2)">2</a>
+    </form>
+    """
+    page = parse_catalogue_page(html, page=1)
+    assert [item.external_id for item in page.items] == ["rus-on.ru:115011"]
+    assert page.next_cursor == "2"
+    request = build_next_request(html, page=1)
+    assert request.method == "get"
+    assert request.target_page == 2
+    assert ("pagenum", "2") in request.fields
+    assert ("trade_state[]", "Прием заявок") in request.fields
+    assert ("trade_state[]", "Торги завершены") not in request.fields
+
+
+def test_ruson_terminal_page_and_identity_mismatch_fail_closed() -> None:
+    html = """
+    <form id="tradesearch" method="get" action="/bankrot/trade_list.php">
+      <input type="hidden" name="pagenum" value="3">
+      <a href="/bankrot/lot_view.php?lot_nid=115011">Земельный участок</a>
+    </form>
+    """
+    page = parse_catalogue_page(html, page=3)
+    assert page.next_cursor is None
+    assert is_terminal_page(html, page=3) is True
+    assert verify_identity(
+        "rus-on.ru:115011",
+        "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115011",
+    ) == "115011"
+    with pytest.raises(RusonSchemaError, match="identity mismatch"):
+        verify_identity(
+            "rus-on.ru:115011",
+            "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115012",
+        )

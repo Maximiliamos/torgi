@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
+import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.status_normalization import _status
+from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 
 
+SOURCE_ID = "rus-on.ru"
+PLATFORM_NAME = "RUSSIA OnLine"
+PLATFORM_CODE = "ruson"
+LISTING_URL = "https://rus-on.ru/bankrot/trade_list.php"
+DETAIL_URL_TEMPLATE = "https://rus-on.ru/bankrot/lot_view.php?lot_nid={identity}"
+FORM_ID = "tradesearch"
+PAGE_FIELD = "pagenum"
+LOT_URL_RE = re.compile(r"^https://rus-on\.ru/bankrot/lot_view\.php\?[^#]*\blot_nid=(\d+)(?:[&#]|$)", re.I)
 MOSCOW = ZoneInfo("Europe/Moscow")
 _SPACE_RE = re.compile(r"\s+")
 _CURRENCY_RE = re.compile(r"(?:₽|руб(?:\.|лей)?|RUB)", re.IGNORECASE)
@@ -439,3 +453,374 @@ def enrich_ruson_lot(lot: NormalizedLot, detail: NormalizedLot) -> NormalizedLot
     })
     lot.raw_data = raw
     return lot
+
+
+class RusonAccessError(RuntimeError):
+    """The official public RUSSIA OnLine endpoint refused read-only access."""
+
+
+class RusonSchemaError(RuntimeError):
+    """The observed RUSSIA OnLine page no longer matches the verified contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class RusonCatalogueItem:
+    external_id: str
+    detail_url: str
+    title: str
+
+
+@dataclass(slots=True)
+class RusonCatalogueResult:
+    items: list[RusonCatalogueItem]
+    next_cursor: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RusonNextRequest:
+    method: str
+    url: str
+    fields: tuple[tuple[str, str], ...]
+    target_page: int
+
+
+def _parse_soup(html: str | bytes) -> BeautifulSoup:
+    if isinstance(html, bytes):
+        try:
+            decoded = html.decode("utf-8")
+        except UnicodeDecodeError:
+            probe = BeautifulSoup(html, "lxml")
+            decoded = html.decode(probe.original_encoding or "windows-1251", errors="replace")
+        return BeautifulSoup(decoded, "html.parser")
+    return BeautifulSoup(html, "html.parser")
+
+
+def _safe_source_url(value: str) -> str:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "rus-on.ru"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+    ):
+        raise RusonAccessError("rus-on.ru: refused unsafe provider URL")
+    return value
+
+
+def _lot_identity_from_url(detail_url: str) -> str:
+    safe_url = _safe_source_url(detail_url)
+    match = LOT_URL_RE.search(safe_url)
+    if not match:
+        raise RusonSchemaError("rus-on.ru: detail URL does not match lot_nid contract")
+    return match.group(1)
+
+
+def verify_identity(external_id: str, detail_url: str) -> str:
+    match = re.fullmatch(r"rus-on\.ru:(\d+)", external_id)
+    if not match:
+        raise RusonSchemaError("rus-on.ru: invalid external ID")
+    identity = match.group(1)
+    if _lot_identity_from_url(detail_url) != identity:
+        raise RusonSchemaError("rus-on.ru: catalogue/detail lot_nid identity mismatch")
+    return identity
+
+
+def parse_detail_html(
+    html: str | bytes,
+    *,
+    external_id: str,
+    detail_url: str | None = None,
+    observed_at_utc: datetime | None = None,
+) -> NormalizedLot:
+    identity = re.fullmatch(r"rus-on\.ru:(\d+)", external_id)
+    if not identity:
+        raise RusonSchemaError("rus-on.ru: invalid external ID")
+    canonical_url = detail_url or DETAIL_URL_TEMPLATE.format(identity=identity.group(1))
+    verify_identity(external_id, canonical_url)
+    soup = _parse_soup(html)
+    text_value = _clean(soup.get_text(" ", strip=True))
+    if len(text_value) < 80:
+        raise RusonSchemaError("rus-on.ru: detail page has insufficient content")
+    return build_ruson_detail_lot(
+        soup,
+        external_id=external_id,
+        detail_url=canonical_url,
+        platform_name=PLATFORM_NAME,
+        platform_code=PLATFORM_CODE,
+        observed_at_utc=observed_at_utc,
+        complete_source_inventory=False,
+        safe_for_archival=False,
+    )
+
+
+def _catalogue_title(anchor: Tag) -> str:
+    title = _clean(anchor.get_text(" ", strip=True)) or _clean(str(anchor.get("title") or ""))
+    container = anchor.find_parent("tr") or anchor.find_parent("article") or anchor.find_parent("li")
+    if isinstance(container, Tag):
+        cells = [_clean(cell.get_text(" ", strip=True)) for cell in container.select("td")]
+        candidates = [value for value in cells if len(value) >= 4 and not value.isdigit()]
+        if candidates:
+            title = max(candidates, key=len)
+    return title or "Лот"
+
+
+def parse_catalogue_page(html: str | bytes, *, page: int = 1) -> RusonCatalogueResult:
+    if page < 1:
+        raise ValueError("page must be >= 1")
+    soup = _parse_soup(html)
+    items: list[RusonCatalogueItem] = []
+    seen: set[str] = set()
+    for anchor in soup.select("a[href]"):
+        href = urljoin(LISTING_URL, str(anchor.get("href") or "").strip())
+        try:
+            identity = _lot_identity_from_url(href)
+        except (RusonAccessError, RusonSchemaError):
+            continue
+        external_id = f"{SOURCE_ID}:{identity}"
+        if external_id in seen:
+            continue
+        seen.add(external_id)
+        items.append(RusonCatalogueItem(
+            external_id=external_id,
+            detail_url=href,
+            title=_catalogue_title(anchor)[:500],
+        ))
+    next_page = parse_next_page(html, page=page)
+    if next_page is not None and next_page != page + 1:
+        raise RusonSchemaError(
+            f"rus-on.ru: non-sequential pagination target {next_page} after page {page}"
+        )
+    return RusonCatalogueResult(
+        items=items,
+        next_cursor=str(next_page) if next_page is not None else None,
+        metadata={
+            "source": SOURCE_ID,
+            "page": page,
+            "items_on_page": len(items),
+            "terminal_page": next_page is None,
+            "complete_source_inventory": False,
+            "safe_for_archival": False,
+            "reconcile_missing": False,
+        },
+    )
+
+
+def parse_next_page(html: str | bytes, *, page: int) -> int | None:
+    soup = _parse_soup(html)
+    targets: set[int] = set()
+    for node in soup.select("[onclick]"):
+        onclick = str(node.get("onclick") or "")
+        match = re.search(r"pagenum_send\(\s*(\d+)\s*\)", onclick)
+        if match:
+            targets.add(int(match.group(1)))
+    higher = sorted(target for target in targets if target > page)
+    return higher[0] if higher else None
+
+
+def is_terminal_page(html: str | bytes, *, page: int) -> bool:
+    return parse_next_page(html, page=page) is None
+
+
+def _form_fields(form: Tag, target_page: int) -> tuple[tuple[str, str], ...]:
+    fields: list[tuple[str, str]] = []
+    page_seen = False
+    for node in form.select("input[name]"):
+        field_type = str(node.get("type") or "").lower()
+        if field_type in {"submit", "button", "image", "file"}:
+            continue
+        if field_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+            continue
+        name = str(node.get("name") or "")
+        if not name:
+            continue
+        value = str(node.get("value") or "")
+        if name == PAGE_FIELD:
+            value = str(target_page)
+            page_seen = True
+        fields.append((name, value))
+    for select in form.select("select[name]"):
+        name = str(select.get("name") or "")
+        if not name:
+            continue
+        options = select.select("option[selected]") or select.select("option")[:1]
+        for option in options:
+            fields.append((name, str(option.get("value") or option.get_text(" ", strip=True))))
+    if not page_seen:
+        fields.append((PAGE_FIELD, str(target_page)))
+    return tuple(fields)
+
+
+def build_next_request(html: str | bytes, *, page: int) -> RusonNextRequest:
+    target_page = parse_next_page(html, page=page)
+    if target_page is None:
+        raise RusonSchemaError(f"rus-on.ru: page {page} is terminal")
+    if target_page != page + 1:
+        raise RusonSchemaError("rus-on.ru: pagination skipped a sequential page")
+    soup = _parse_soup(html)
+    form = soup.find("form", id=FORM_ID)
+    if not isinstance(form, Tag):
+        raise RusonSchemaError("rus-on.ru: pagination form disappeared")
+    method = str(form.get("method") or "get").strip().lower()
+    if method not in {"get", "post"}:
+        raise RusonSchemaError("rus-on.ru: unsupported pagination form method")
+    action = _safe_source_url(urljoin(LISTING_URL, str(form.get("action") or LISTING_URL)))
+    if method == "get":
+        parsed = urlparse(action)
+        action = parsed._replace(query="", fragment="").geturl()
+    return RusonNextRequest(
+        method=method,
+        url=action,
+        fields=_form_fields(form, target_page),
+        target_page=target_page,
+    )
+
+
+def pagination_shape(html: str | bytes) -> dict[str, Any]:
+    soup = _parse_soup(html)
+    form = soup.find("form", id=FORM_ID)
+    controls: list[dict[str, Any]] = []
+    for node in soup.select("[onclick]"):
+        onclick = str(node.get("onclick") or "")
+        match = re.search(r"pagenum_send\(\s*(\d+)\s*\)", onclick)
+        if match:
+            controls.append({
+                "text": _clean(node.get_text(" ", strip=True))[:80],
+                "page": int(match.group(1)),
+            })
+    page_input = form.find("input", attrs={"name": PAGE_FIELD}) if isinstance(form, Tag) else None
+    return {
+        "form_found": isinstance(form, Tag),
+        "form_method": str(form.get("method") or "get").lower() if isinstance(form, Tag) else None,
+        "form_action": str(form.get("action") or "") if isinstance(form, Tag) else None,
+        "pagenum_value": str(page_input.get("value") or "") if isinstance(page_input, Tag) else None,
+        "pagination_controls": controls,
+        "control_count": len(controls),
+    }
+
+
+class RusonReadonlyConnector:
+    """Standalone read-only source adapter used for proof before integration wiring."""
+
+    RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+
+    def __init__(self, *, session: requests.Session | None = None, timeout: float = 25.0) -> None:
+        self.source_id = SOURCE_ID
+        self.session = session or requests.Session()
+        self.timeout = timeout
+        self._last_response: requests.Response | None = None
+        self._last_page = 0
+        self._page_fingerprints: dict[int, str] = {}
+        self.session.headers.setdefault(
+            "User-Agent",
+            "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
+        )
+
+    def _check_response(self, response: requests.Response) -> requests.Response:
+        status = int(getattr(response, "status_code", 0) or 0)
+        if 300 <= status < 400:
+            raise RusonAccessError("rus-on.ru: provider redirect was refused")
+        if status in {401, 403, 429}:
+            raise RusonAccessError(f"rus-on.ru: provider returned HTTP {status}")
+        response.raise_for_status()
+        response_url = str(getattr(response, "url", "") or "")
+        if response_url:
+            _safe_source_url(response_url)
+        return response
+
+    def _read(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        response = request_with_retries(
+            self.session,
+            method,
+            _safe_source_url(url),
+            delays=self.RETRY_DELAYS_SECONDS,
+            **kwargs,
+        )
+        return self._check_response(response)
+
+    def _first_page(self) -> requests.Response:
+        response = self._read(
+            "get", LISTING_URL, timeout=self.timeout, allow_redirects=False
+        )
+        self._last_response = response
+        self._last_page = 1
+        return response
+
+    def _request_page(self, page: int) -> requests.Response:
+        if page < 1:
+            raise ValueError("page must be >= 1")
+        if page == 1:
+            return self._first_page()
+        if self._last_response is None or self._last_page < 1 or self._last_page >= page:
+            self._first_page()
+        while self._last_page < page:
+            if self._last_response is None:
+                raise RusonSchemaError("rus-on.ru: missing prior catalogue response")
+            request = build_next_request(self._last_response.content, page=self._last_page)
+            if request.target_page != self._last_page + 1:
+                raise RusonSchemaError("rus-on.ru: pagination target is not sequential")
+            kwargs: dict[str, Any] = {
+                "timeout": self.timeout,
+                "allow_redirects": False,
+            }
+            if request.method == "get":
+                kwargs["params"] = list(request.fields)
+            else:
+                kwargs["data"] = list(request.fields)
+            response = self._read(request.method, request.url, **kwargs)
+            self._last_response = response
+            self._last_page = request.target_page
+        if self._last_response is None:
+            raise RusonSchemaError("rus-on.ru: catalogue request produced no response")
+        return self._last_response
+
+    async def search(self, filters: Any = None, cursor: str | None = None) -> RusonCatalogueResult:
+        page = 1
+        if cursor is not None:
+            page = int(cursor)
+        elif isinstance(filters, dict) and filters.get("page") is not None:
+            page = int(filters["page"])
+        response = await asyncio.to_thread(self._request_page, page)
+        fingerprint = hashlib.sha256(response.content).hexdigest()
+        if any(
+            old == fingerprint
+            for number, old in self._page_fingerprints.items()
+            if number < page
+        ):
+            raise RusonSchemaError(
+                f"rus-on.ru: repeated catalogue page content at page {page}"
+            )
+        self._page_fingerprints[page] = fingerprint
+        parsed = parse_catalogue_page(response.content, page=page)
+        if not parsed.items:
+            raise RusonSchemaError(
+                f"rus-on.ru: no lot_nid links matched the catalogue on page {page}"
+            )
+        parsed.metadata["response_url"] = str(getattr(response, "url", "") or LISTING_URL)
+        return parsed
+
+    async def fetch_lot(self, external_id: str) -> NormalizedLot:
+        match = re.fullmatch(r"rus-on\.ru:(\d+)", external_id)
+        if not match:
+            raise RusonSchemaError("rus-on.ru: invalid external ID")
+        detail_url = DETAIL_URL_TEMPLATE.format(identity=match.group(1))
+        response = await asyncio.to_thread(
+            self._read,
+            "get",
+            detail_url,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        return parse_detail_html(
+            response.content,
+            external_id=external_id,
+            detail_url=detail_url,
+        )
+
+    def inspect_pagination_shape(self) -> dict[str, Any]:
+        response = self._first_page()
+        result = pagination_shape(response.content)
+        result["http_status"] = int(response.status_code)
+        result["response_url"] = str(getattr(response, "url", "") or LISTING_URL)
+        return result

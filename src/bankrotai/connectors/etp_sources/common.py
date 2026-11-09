@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -15,7 +14,6 @@ from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
-from bankrotai.connectors.etp_sources.ruson import build_ruson_detail_lot, enrich_ruson_lot
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
@@ -23,12 +21,15 @@ from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     datetime_after,
     profit_initial_money,
+    ruson_initial_money,
     sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
+
 class SourceAccessError(RuntimeError):
     """The provider explicitly refused public read-only access."""
+
 
 class SourceSchemaError(RuntimeError):
     """The listing no longer matches the evidence-backed source profile."""
@@ -530,28 +531,11 @@ def parse_detail_html(
     *,
     detail_url: str,
     external_id: str | None = None,
-    observed_at_utc: datetime | None = None,
 ) -> NormalizedLot:
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
-    match = profile.lot_url_re.search(detail_url)
-    if external_id is None:
-        if not match:
-            raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
-        external_id = _external_id(profile, detail_url, match)
-    if profile.source_id == "rus-on.ru":
-        return build_ruson_detail_lot(
-            soup,
-            external_id=external_id,
-            detail_url=detail_url,
-            platform_name=profile.platform_name,
-            platform_code=profile.platform_code,
-            observed_at_utc=observed_at_utc,
-            complete_source_inventory=profile.complete_source_inventory,
-            safe_for_archival=profile.safe_for_archival,
-        )
     if profile.source_id == "sistematorg.com":
         trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
@@ -564,6 +548,11 @@ def parse_detail_html(
             raise SourceSchemaError(
                 "ausib.ru: procedure detail does not prove exactly one independently identified lot"
             )
+    match = profile.lot_url_re.search(detail_url)
+    if external_id is None:
+        if not match:
+            raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
+        external_id = _external_id(profile, detail_url, match)
 
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
@@ -588,6 +577,8 @@ def parse_detail_html(
     price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
+    if price is None and profile.source_id == "rus-on.ru":
+        price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
@@ -957,8 +948,7 @@ class HtmlEtpConnector(AuctionConnector):
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import enrich_nistp_lot
             return await enrich_nistp_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
-        enriched = apply_detail(lot, detail, version=self.detail_enrichment_version)
-        return enrich_ruson_lot(enriched, detail) if self.source_id == "rus-on.ru" else enriched
+        return apply_detail(lot, detail, version=self.detail_enrichment_version)
 
     async def healthcheck(self) -> ConnectorHealth:
         if self.profile.blocked_reason:

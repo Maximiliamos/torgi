@@ -5,12 +5,13 @@ on:
     branches: [fix/ruson-contract-20261109]
     paths:
       - '.github/workflows/etp-ruson-contract-readonly.yml'
-      - 'src/bankrotai/connectors/etp_sources/common.py'
       - 'src/bankrotai/connectors/etp_sources/ruson.py'
       - 'src/bankrotai/services/etp_ruson_contract_audit.py'
+      - 'scripts/ruson_readonly_audit.py'
       - 'tests/test_etp_ruson.py'
       - 'tests/test_etp_ruson_contract_audit.py'
       - 'tests/fixtures/etp/ruson/**'
+      - 'docs/ETP_RUSON_AUDIT_2026-11-09.md'
   workflow_dispatch:
 
 permissions:
@@ -29,37 +30,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements.lock && pip install --no-deps -e .
-      - name: Inspect official pagination controls
+      - name: Inspect official pagination controls through source module
         run: |
           python - <<'PY'
           import json
-          import re
-          from bs4 import BeautifulSoup
-          from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
-
-          connector = SOURCE_CONNECTOR_TYPES["rus-on.ru"]()
-          response = connector._request(1)
-          soup = BeautifulSoup(response.content, "html.parser")
-          form = soup.find("form", id="tradesearch")
-          controls = []
-          for node in soup.select("[onclick]"):
-              onclick = str(node.get("onclick") or "")
-              match = re.search(r"pagenum_send\(\s*(\d+)\s*\)", onclick)
-              if match:
-                  controls.append({
-                      "text": " ".join(node.get_text(" ", strip=True).split())[:80],
-                      "page": int(match.group(1)),
-                  })
-          page_input = form.find("input", attrs={"name": "pagenum"}) if form else None
-          print(json.dumps({
-              "http_status": response.status_code,
-              "form_found": form is not None,
-              "form_method": str(form.get("method") or "get").lower() if form else None,
-              "form_action": str(form.get("action") or "") if form else None,
-              "pagenum_value": str(page_input.get("value") or "") if page_input else None,
-              "pagination_controls": controls,
-              "control_count": len(controls),
-          }, ensure_ascii=False, sort_keys=True))
+          from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector
+          print(json.dumps(
+              RusonReadonlyConnector().inspect_pagination_shape(),
+              ensure_ascii=False,
+              sort_keys=True,
+          ))
           PY
 
   source-contract:
@@ -71,19 +51,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
-      - name: Run focused RUSSIA OnLine regressions
+      - name: Run focused RUSSIA OnLine source-module regressions
         run: |
-          pytest -q \
-            tests/test_etp_ruson.py \
-            tests/test_etp_ruson_contract_audit.py \
-            tests/test_etp_sources.py::test_ruson_detail_enrichment_reads_labelled_price_and_dates_without_rub_suffix \
-            tests/test_etp_sources.py::test_duplicate_links_do_not_duplicate_lots
+          pytest -q tests/test_etp_ruson.py tests/test_etp_ruson_contract_audit.py
       - name: Run two-pass catalogue and detail audit
         run: |
-          python -m bankrotai.services.etp_ruson_contract_audit \
+          python scripts/ruson_readonly_audit.py \
             --details 35 \
             --max-attempts 50 \
-            --max-pages 10000 \
+            --max-pages 500 \
             --delay-seconds 0.35 > ruson-contract-readonly.json
       - name: Enforce source-contract evidence
         run: |

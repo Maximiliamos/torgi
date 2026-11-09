@@ -14,7 +14,7 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector
 
 
 SOURCE = "rus-on.ru"
@@ -209,7 +209,7 @@ async def audit_ruson_contract(
     if not 0 <= delay_seconds <= 5:
         raise ValueError("delay_seconds must be in 0..5")
 
-    factory = connector_factory or (lambda: SOURCE_CONNECTOR_TYPES[SOURCE]())
+    factory = connector_factory or RusonReadonlyConnector
     terminal_page, terminal_probes = await _discover_terminal_page(
         factory(), max_pages=max_pages, delay_seconds=delay_seconds
     )
