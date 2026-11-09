@@ -25,11 +25,6 @@ from bankrotai.connectors.etp_sources.source_specific import (
     sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
-from bankrotai.connectors.etp_sources.sistematorg_contract import (
-    parse_sistematorg_catalogue_page,
-    parse_sistematorg_detail_lots,
-    parse_sistematorg_external_id,
-)
 
 
 class SourceAccessError(RuntimeError):
@@ -235,45 +230,91 @@ def _safe_provider_url(profile: EtpSourceProfile, value: str) -> str:
 def _parse_sistematorg_procedure_lots(
     profile: EtpSourceProfile, html: str | bytes, *, page: int
 ) -> list[NormalizedLot]:
-    """Expose catalogue candidates with stable trade_id + lot_id, never prices."""
-    observed = parse_sistematorg_catalogue_page(html, page=page)
+    """Represent source trade rows as individual *candidate* property lots.
+
+    A trade_nid names the whole procedure, not a sellable asset. Neither
+    a procedure-level price nor an unrelated lot's status can be attached
+    to a candidate. Detail-level truth is still mandatory before promotion.
+    """
+    soup = _parse_soup(html)
     result: list[NormalizedLot] = []
-    for procedure in observed.procedures:
-        for item in procedure.lots:
-            if not item.is_property:
+    seen: set[str] = set()
+    lot_marker = re.compile(r"лот\s*№\s*(\d{1,5})\s*[:.\-]?\s*", re.I)
+    property_words = re.compile(
+        r"недвижим|земельн|участок|квартир|комнат|помещен|здани|"
+        r"гараж|машино.?мест|жилой\s+дом|склад|сооружен", re.I
+    )
+    for row in soup.select("tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) < 3:
+            continue
+        procedure_urls: list[str] = []
+        for anchor in row.select("a[href]"):
+            procedure_urls.append(urljoin(profile.listing_url, str(anchor.get("href") or "")))
+        clickable_nodes = ([row] if row.has_attr("onclick") else []) + row.select("[onclick]")
+        for node in clickable_nodes:
+            for candidate in re.findall(r"['\"]([^'\"]+)['\"]", str(node.get("onclick") or "")):
+                if candidate.startswith(("/", "https://")):
+                    procedure_urls.append(urljoin(profile.listing_url, candidate))
+        trusted: list[tuple[str, re.Match[str]]] = []
+        for url in procedure_urls:
+            try:
+                _safe_provider_url(profile, url)
+            except SourceAccessError:
                 continue
-            cadastral = _CADASTRAL_RE.search(item.title)
-            area_match = _AREA_RE.search(item.title)
-            area = float(area_match.group(1).replace(",", ".")) if area_match else None
+            matched = profile.lot_url_re.search(url)
+            if matched:
+                trusted.append((url, matched))
+        if not trusted:
+            continue
+        detail_url, match = trusted[0]
+        trade_id = match.group(1)
+        # Layouts observed in saved pages use both three and four columns.
+        # Scan the row's data cells rather than assigning a semantic meaning
+        # to one fixed column index.
+        cell_text = _clean(" ".join(cell.get_text(" ", strip=True) for cell in cells[1:]))
+        reported_match = re.search(r"всего\s+лотов\s*:\s*(\d{1,5})", cell_text, re.I)
+        reported_trade_lots = int(reported_match.group(1)) if reported_match else None
+        markers = list(lot_marker.finditer(cell_text))
+        if not markers:
+            # There is no safe way to infer the lot number from a trade row.
+            continue
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(cell_text)
+            title = _clean(cell_text[marker.end():end])
+            if len(title) < 8 or not property_words.search(title):
+                continue
+            external_id = f"{profile.source_id}:{trade_id}:{marker.group(1)}"
+            if external_id in seen:
+                continue
+            seen.add(external_id)
+            cadastre = _CADASTRAL_RE.search(title)
             result.append(NormalizedLot(
-                external_id=item.external_id,
+                external_id=external_id,
                 source="sistematorg",
                 source_system=profile.source_id,
-                title=item.title[:500],
-                description=item.title[:5000],
-                category=item.category,
+                title=title[:500],
+                description=title[:5000],
+                category=_category(title),
                 region_slug=None,
                 region_name=None,
                 address=None,
-                cadastral_number=cadastral.group(1) if cadastral else None,
+                cadastral_number=cadastre.group(1) if cadastre else None,
                 vin=None,
-                area=area,
+                area=None,
                 start_price=None,
                 current_price=None,
                 auction_status="unknown",
-                lot_url=procedure.detail_url,
-                source_url=procedure.detail_url,
+                lot_url=detail_url,
+                source_url=detail_url,
                 detail_level="search",
                 raw_data={
                     "listing_page": page,
-                    "trade_id": procedure.trade_id,
-                    "procedure_id": procedure.trade_id,
-                    "lot_id": item.lot_id,
-                    "lot_number": item.lot_id,
-                    "procedure_number": procedure.procedure_number,
-                    "reported_trade_lots": procedure.declared_lot_count,
+                    "procedure_id": trade_id,
+                    "lot_number": marker.group(1),
                     "trade_level_listing": True,
-                    "individual_lot_identity_verified": True,
+                    "reported_trade_lots": reported_trade_lots,
+                    "individual_lot_identity_verified": False,
                     "per_lot_detail_verified": False,
                     "price_unverified": True,
                     "status_unverified": True,
@@ -283,7 +324,6 @@ def _parse_sistematorg_procedure_lots(
                 },
                 platform_name=profile.platform_name,
                 platform_code=profile.platform_code,
-                procedure_number=procedure.procedure_number,
             ))
     return result
 
@@ -497,31 +537,11 @@ def parse_detail_html(
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
     if profile.source_id == "sistematorg.com":
-        try:
-            lots = parse_sistematorg_detail_lots(
-                html, detail_url=detail_url,
-                platform_name=profile.platform_name, platform_code=profile.platform_code,
+        trade_lots = sistematorg_lot_count(text_value)
+        if trade_lots != 1:
+            raise SourceSchemaError(
+                "sistematorg.com: cannot attribute a trade-level price to an individual lot"
             )
-        except ValueError as exc:
-            if external_id is None:
-                raise SourceSchemaError(
-                    "sistematorg.com: cannot attribute a trade-level price to an individual lot"
-                ) from exc
-            raise SourceSchemaError(str(exc)) from exc
-        if external_id is None:
-            if len(lots) != 1:
-                raise SourceSchemaError(
-                    "sistematorg.com: cannot attribute a trade-level price to an individual lot"
-                )
-            return lots[0]
-        try:
-            _trade_id, lot_id = parse_sistematorg_external_id(external_id)
-        except ValueError as exc:
-            raise SourceSchemaError(str(exc)) from exc
-        matched = [lot for lot in lots if lot.raw_data.get("lot_id") == lot_id]
-        if len(matched) != 1:
-            raise SourceSchemaError("sistematorg.com: requested lot section was not isolated")
-        return matched[0]
     if profile.source_id == "ausib.ru":
         lot_tables = soup.select("table[id^=lotNumber]")
         if len(lot_tables) != 1:
