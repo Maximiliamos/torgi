@@ -315,6 +315,53 @@ def test_tbankrot_enrichment_repairs_missing_detail_fields(monkeypatch) -> None:
     assert enriched.raw_data["detail_dates_verified"] is True
 
 
+
+def test_tbankrot_enrichment_fetches_detail_when_only_auction_date_is_missing(monkeypatch) -> None:
+    connector = TBankrotConnector()
+    calls = []
+    monkeypatch.setattr(connector.client, "fetch_detail_fields", lambda url: (
+        calls.append(url) or {
+            "start_price": 3_500_000,
+            "current_price": 3_342_780,
+            "application_deadline": datetime(2026, 10, 20, 18, 0),
+            "auction_at": datetime(2026, 10, 23, 10, 0),
+            "auction_status": "closed",
+            "image_urls": [],
+            "detail_url": url,
+        }
+    ))
+    lot = NormalizedLot(
+        external_id="tbankrot:7896849",
+        source="tbankrot",
+        source_system="tbankrot.ru",
+        title="Квартира",
+        description="",
+        category="real_estate",
+        region_slug="50",
+        region_name="Московская область",
+        address="Московская область, г. Электросталь, ул. Мира, д. 2",
+        cadastral_number="50:46:0020401:120",
+        vin=None,
+        area=45.6,
+        start_price=None,
+        current_price=3_342_780,
+        auction_status="closed",
+        lot_url="https://tbankrot.ru/item?id=7896849",
+        source_url="https://tbankrot.ru/item?id=7896849",
+        detail_level="search",
+        raw_data={},
+        application_deadline=datetime(2026, 10, 20, 18, 0),
+        auction_at=None,
+    )
+
+    enriched = asyncio.run(connector.enrich_lot(lot))
+
+    assert calls == ["https://tbankrot.ru/item?id=7896849"]
+    assert enriched.auction_at == datetime(2026, 10, 23, 10, 0)
+    assert enriched.start_price == 3_500_000
+    assert enriched.raw_data["detail_enrichment_version"] == 3
+
+
 def test_tbankrot_address_stops_before_encumbrance_metadata() -> None:
     text = (
         'Адрес: Московская область, г. Электросталь, ул. Мира, д. 2, кв. 17 '
