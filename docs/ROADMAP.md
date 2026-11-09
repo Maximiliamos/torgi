@@ -6,11 +6,8 @@
 
 ## Где проект находится сейчас
 
-Текущий `main` — `f40eabb39d92b8afd9bc8faefe725d6fcdc87f99`.
-PR **#1162, #1163, #1164, #1165, #1166 и #1167 уже merged**.
-Единственный открытый PR — [#1168](https://github.com/Maximiliamos/torgi/pull/1168),
-который устраняет stale PostgreSQL GEO `running` state после замены worker,
-не ослабляя map-publication blocker.
+Текущий `main` — `cfbe9d7012c08fa965754287aace3a4d241e2225`.
+PR **#1162–#1168 уже merged**. PR #1168 устранил stale PostgreSQL GEO `running` state после замены worker, не ослабляя map-publication blocker. Его Production reliability завершён успешно.
 
 Nationwide run 8 ноября 21:00
 `f572bdff-3db1-41bf-94a4-1f75ab690232` имеет **7/7 принятых terminal
@@ -27,16 +24,11 @@ Torgi Russia, а не «6/7».
 
 ## P0 — закончить уже начатый релиз
 
-1. **#1168: CI → review → merge.**
-   На текущем срезе S3 diagnostics green, Production reliability ещё running.
-2. **Повторить exact-SHA Home rollout после merge #1168.**
-   Текущий `f40eabb...` Home workflow 42543772788 не принят: build,
-   backup/migrations и API/worker replacement прошли, но map publication gate
-   завершился failure.
+1. **#1168 — DONE:** merged в `cfbe9d7...`, Production reliability success.
+2. **Дождаться exact-SHA Home rollout `cfbe9d7...`.** Workflow 42544887673 сейчас running. Предыдущий `f40eabb...` rollout упал на map-publication gate.
 3. **Получить r7 MapDataset и подтвердить public REG.RU S3 manifest.**
    PR #1167 уже сменил обязательную map revision с r6 на r7.
-4. **После зелёного Home — REG.RU + Cloudflare/public WEB на том же release SHA.**
-   Текущий REG.RU run 42543772815 остановился до staging, ожидая Home.
+4. **REG.RU + Cloudflare/public WEB на `cfbe9d7...`.** Оба workflow уже running; принимать только после terminal success и совпадения release SHA.
 5. **Post-deploy read-only acceptance:** exact runtime SHA, отсутствие stale
    GEO `running`, отсутствие stuck nationwide lease, source circuits healthy,
    API/WEB smoke, current r7 dataset/manifest.
@@ -77,7 +69,7 @@ P1 не должен блокировать фиксацию честного **
 
 - [x] 7/7 terminal source-completion на run 08.11 по разрешённым semantics.
 - [x] #1162–#1167 merged.
-- [ ] #1168 merged с зелёным CI.
+- [x] #1168 merged; Production reliability green.
 - [ ] exact-SHA Home deployment green through r7 map publication.
 - [ ] REG.RU + Cloudflare/public WEB green на том же release SHA.
 - [ ] post-deploy read-only evidence clean.
