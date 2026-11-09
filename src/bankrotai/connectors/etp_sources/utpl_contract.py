@@ -1,8 +1,8 @@
-"""Fail-closed field isolation for UTPL individual bankruptcy lot pages.
+"""Fail-closed UTPL individual-lot extraction.
 
-The procedure header, settlement instructions and price-period rows are not
-individual lot fields. Only the section beginning 'Информация о лоте №N'
-is allowed to supply lot identity, description, category and prices.
+Only the provider's numbered individual-lot section may supply identity,
+prices, status and property fields. Procedure headers, deposits, auction steps
+and public-offer schedule rows are never reused as lot values.
 """
 from __future__ import annotations
 
@@ -16,13 +16,25 @@ class UtplLotSchemaError(ValueError):
     pass
 
 
+_SPACE = re.compile(r"\s+")
+_CADASTRAL = re.compile(r"(?<!\d)\d{2}:\d{1,3}:\d{5,9}:\d{1,9}(?!\d)")
+_AREA = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.I)
+_VIN = re.compile(r"(?<![A-Z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9])", re.I)
+
+
+def _text(value: str) -> str:
+    return _SPACE.sub(" ", value.replace("\xa0", " ")).strip()
+
+
 def _amount(section: str, label: str) -> float | None:
-    pattern = (
-        r"(?<![\w])" + label +
-        r"\s*[:：]\s*(\d[\d\s\u00a0\u202f]*?(?:[.,]\d{1,2})?)"
-        r"(?=\s*(?:Начальная цена|Текущая цена|Порядок|Тип снижения|$))"
+    match = re.search(
+        r"(?<![\w])" + label
+        + r"\s*[:：]\s*(\d[\d\s\u00a0\u202f]*?(?:[.,]\d{1,2})?)"
+        + r"(?=\s*(?:Дата|Начальная цена|Текущая цена|Порядок|Тип снижения|"
+          r"Шаг|Сведения об имуществе|Классификатор ЕФРСБ|$))",
+        section,
+        re.I,
     )
-    match = re.search(pattern, section, re.I)
     if match is None:
         return None
     raw = re.sub(r"[\s\u00a0\u202f]", "", match.group(1)).replace(",", ".")
@@ -35,74 +47,151 @@ def _amount(section: str, label: str) -> float | None:
     return float(amount)
 
 
+def _structured_property_kinds(classifier: str, lot_text: str) -> tuple[str, ...]:
+    source = classifier.lower()
+    kinds: list[str] = []
+    if re.search(r"прав[ао]\s+требован|уступк\w*\s+требован|дебитор", source, re.I):
+        kinds.append("receivables")
+    if re.search(r"аренд|право пользования", source, re.I) or re.search(
+        r"право\s+аренды|право\s+пользования", lot_text, re.I
+    ):
+        kinds.append("lease")
+    if re.search(r"земельн|земл[ия]|участк", source, re.I):
+        kinds.append("land")
+    if re.search(
+        r"недвижим|жил\w*\s+(?:здани|помещ)|нежил\w*|квартир|помещен|"
+        r"здани|сооружен|незавершенн\w*\s+строительств|гараж",
+        source,
+        re.I,
+    ):
+        kinds.append("real_estate")
+    if re.search(r"автомоб|транспорт|воздушн\w*\s+суд|самолет|прицеп", source, re.I):
+        kinds.append("vehicle")
+    if re.search(r"машин|оборудован|специализированн\w*\s+техник|станок|подъемн", source, re.I):
+        kinds.append("equipment")
+    if re.search(r"товарн\w*\s+знак|интеллектуальн|патент", source, re.I):
+        kinds.append("intellectual_property")
+    return tuple(dict.fromkeys(kinds))
+
+
+def _domain_category(kinds: tuple[str, ...], title: str) -> str:
+    if "receivables" in kinds:
+        return "receivables"
+    if "lease" in kinds:
+        return "other"
+    if "real_estate" in kinds:
+        return "real_estate"
+    if "land" in kinds:
+        return "land"
+    if "vehicle" in kinds:
+        return "vehicle"
+    lowered = title.lower()
+    if re.search(r"прав[оа]\s+требован|дебитор", lowered):
+        return "receivables"
+    if re.search(r"аренд|право пользования", lowered):
+        return "other"
+    if re.search(r"земельн|участок|кадастров", lowered):
+        return "land"
+    if re.search(r"квартир|помещен|здани|сооружен|жилой дом", lowered):
+        return "real_estate"
+    if re.search(r"автомоб|транспорт|vin", lowered):
+        return "vehicle"
+    return "other"
+
+
 def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
     soup = BeautifulSoup(html, "html.parser")
-    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-    sections = list(re.finditer(r"Информация о лоте\s*№\s*(\d+)\b", text, re.I))
+    full_text = _text(soup.get_text(" ", strip=True))
+    sections = list(re.finditer(r"Информация о лоте\s*№\s*(\d+)\b", full_text, re.I))
     if len(sections) != 1:
         raise UtplLotSchemaError("UTPL requires exactly one individual lot section")
-    section = text[sections[0].end():]
+
+    section = full_text[sections[0].end():]
     number = sections[0].group(1)
     explicit_number = re.search(r"\bНомер:\s*(\d+)\b", section)
     if explicit_number and int(explicit_number.group(1)) != int(number):
         raise UtplLotSchemaError("UTPL lot section number mismatch")
+
     name = re.search(
-        r"\bНаименование:\s*(.+?)\s*(?=Дата окончания|Статус:|Текущая цена|Начальная цена)",
-        section, re.I,
+        r"\bНаименование:\s*(.+?)\s*(?=Дата\s+(?:начала|окончания|проведения|подведения)|"
+        r"Статус:|Текущая цена|Начальная цена|Порядок оформления)",
+        section,
+        re.I,
     )
     if name is None or len(name.group(1).strip()) < 6:
         raise UtplLotSchemaError("UTPL individual lot name unverified")
-    # Restrict prices to the lot's own labelled summary, never to the schedule
-    # of future intervals or deposit instructions.
+    title = _text(name.group(1))
+
     summary = section.split("Порядок оформления участия", 1)[0]
     initial = _amount(summary, r"Начальная цена,?\s*руб\.?")
     current = _amount(summary, r"Текущая цена,?\s*руб\.?")
     status_match = re.search(
-        r"\bСтатус:\s*(.+?)\s*(?=Текущая цена|Начальная цена|Порядок оформления)", summary, re.I,
+        r"\bСтатус:\s*(.+?)\s*(?=Дата\s+(?:начала|окончания|проведения|подведения|"
+        r"завершения)|Текущая цена|Начальная цена|Порядок оформления)",
+        summary,
+        re.I,
     )
+
     classifier_match = re.search(
-        r"Классификатор ЕФРСБ:\s*(.{1,110}?)(?=Интервалы снижения цены|Обеспечение заявки|$)",
-        section, re.I,
+        r"Классификатор ЕФРСБ:\s*(.{1,350}?)(?=Интервалы снижения цены|"
+        r"Обеспечение заявки|Шаг,\s*%|Документы|$)",
+        section,
+        re.I,
     )
-    classifier = classifier_match.group(1).strip() if classifier_match else ""
-    title = name.group(1).strip()
-    category_text = classifier.lower() if classifier else title.lower()
-    # Rights to claim or lease are not a land/freehold sale merely because
-    # the name refers to a flat, plot or cadastral number.
-    if re.search(r"прав[оа]\s+требован|дебитор", category_text, re.I):
-        category = "receivables"
-    elif re.search(r"аренд|право пользования", category_text, re.I):
-        category = "other"
-    elif re.search(r"земельн|земл[ия]|участк", category_text, re.I):
-        category = "land"
-    elif re.search(r"недвижим|квартир|помещен|здани|жилой дом|гараж|сооружен", category_text, re.I):
-        category = "real_estate"
-    elif re.search(r"автомоб|транспорт|воздушн|судн|оборудован", category_text, re.I):
-        category = "vehicle" if re.search(r"автомоб|транспорт|воздушн|судн", category_text, re.I) else "other"
-    else:
-        category = "other"
+    classifier = _text(classifier_match.group(1)) if classifier_match else ""
+
+    asset_match = re.search(
+        r"Сведения об имуществе должника[^:]*:\s*(.{1,3000}?)(?=Классификатор ЕФРСБ:|"
+        r"Интервалы снижения цены|Обеспечение заявки|Документы|$)",
+        section,
+        re.I,
+    )
+    asset_text = _text(asset_match.group(1)) if asset_match else title
+    lot_text = _text(title + " " + asset_text)
+
+    kinds = _structured_property_kinds(classifier, lot_text)
+    category = _domain_category(kinds, title)
+
+    cadastral_match = _CADASTRAL.search(lot_text)
+    area_match = _AREA.search(lot_text)
+    vin_match = _VIN.search(lot_text)
+    address_match = re.search(
+        r"\bадрес(?:\s+(?:объекта|расположения))?\s*:\s*(.{5,300}?)(?=\s+(?:"
+        r"кадастров|площад|назначение|вид права|Классификатор)|$)",
+        lot_text,
+        re.I,
+    )
+
     return {
         "lot_number": number,
         "title": title,
         "category": category,
         "classifier": classifier or None,
+        "property_kinds": kinds,
         "initial_price": initial,
         "current_price": current,
-        "source_status_text": status_match.group(1).strip() if status_match else None,
+        "source_status_text": _text(status_match.group(1)) if status_match else None,
+        "cadastral_number": cadastral_match.group(0) if cadastral_match else None,
+        "area": float(area_match.group(1).replace(",", ".")) if area_match else None,
+        "vin": vin_match.group(0).upper() if vin_match else None,
+        "address": _text(address_match.group(1)) if address_match else None,
     }
 
+
 def normalize_utpl_status(value: str | None) -> str:
-    """Only official UTPL lot-state labels; never infer end from dates."""
+    """Map only explicit official UTPL lot-state labels; never infer from dates."""
     if value is None:
         return "unknown"
-    label = re.sub(r"\s+", " ", value).strip().lower().replace("ё", "е")
+    label = _text(value).lower().replace("ё", "е")
     exact = {
         "прием заявок": "active",
         "извещение опубликовано": "scheduled",
         "не состоялся": "closed",
         "не состоялись": "closed",
         "окончен": "closed",
+        "торги завершены": "closed",
         "отменен": "closed",
+        "отменен организатором": "closed",
         "приостановлен": "paused",
     }
     return exact.get(label, "unknown")
