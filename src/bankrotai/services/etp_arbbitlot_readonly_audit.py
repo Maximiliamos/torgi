@@ -121,7 +121,7 @@ async def verify_details(
                 "detail_current_price_ok": detail.current_price is not None,
                 "catalogue_detail_current_price_match": detail_current_matches_catalogue,
                 "status_ok": detail.auction_status != "unknown",
-                "catalogue_detail_status_match": status_match,
+                "catalogue_detail_status_match": status_match_count,
                 "procedure_id": detail.procedure_number,
                 "lot_number": (detail.raw_data or {}).get("lot_number"),
                 "cadastral_number_ok": detail.cadastral_number is not None,
@@ -149,11 +149,11 @@ async def verify_details(
     checked = len(samples)
     detail_ok = sum(bool(item["detail_ok"]) for item in samples)
     start_ok = sum(bool(item["start_price_ok"]) for item in samples)
-    procedure_match = sum(bool(item["catalogue_detail_procedure_match"]) for item in samples)
-    lot_number_match = sum(bool(item["catalogue_detail_lot_number_match"]) for item in samples)
-    start_match = sum(bool(item["catalogue_detail_start_price_match"]) for item in samples)
+    procedure_match_count = sum(bool(item["catalogue_detail_procedure_match"]) for item in samples)
+    lot_number_match_count = sum(bool(item["catalogue_detail_lot_number_match"]) for item in samples)
+    start_match_count = sum(bool(item["catalogue_detail_start_price_match"]) for item in samples)
     status_ok = sum(bool(item["status_ok"]) for item in samples)
-    status_match = sum(bool(item["catalogue_detail_status_match"]) for item in samples)
+    status_match_count = sum(bool(item["catalogue_detail_status_match"]) for item in samples)
     public_offer_samples = [
         item for item in samples if ":public-offers-" in str(item["external_id"])
     ]
@@ -175,9 +175,9 @@ async def verify_details(
         "details_checked": checked,
         "detail_success": detail_ok,
         "start_price_success": start_ok,
-        "catalogue_detail_procedure_match": procedure_match,
-        "catalogue_detail_lot_number_match": lot_number_match,
-        "catalogue_detail_start_price_match": start_match,
+        "catalogue_detail_procedure_match": procedure_match_count,
+        "catalogue_detail_lot_number_match": lot_number_match_count,
+        "catalogue_detail_start_price_match": start_match_count,
         "status_success": status_ok,
         "catalogue_detail_status_match": status_match,
         "public_offer_details_checked": len(public_offer_samples),
