@@ -14,7 +14,6 @@ from bs4 import BeautifulSoup, Tag
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 
-
 SOURCE_ID = "etpu.ru"
 SOURCE = "etpu"
 PLATFORM_NAME = "Уральская ЭТП"
@@ -48,20 +47,16 @@ _CLASSIFIER_END_RE = re.compile(
     re.IGNORECASE,
 )
 
-
 class EtpuAccessError(RuntimeError):
     """The official ETPU endpoint refused a public read-only request."""
 
-
 class EtpuSchemaError(RuntimeError):
     """The observed ETPU page no longer satisfies the verified source contract."""
-
 
 @dataclass(frozen=True, slots=True)
 class EtpuStatusFilter:
     value: str
     text: str
-
 
 NON_TERMINAL_STATUS_FILTERS = (
     EtpuStatusFilter("5", "Извещение опубликовано"),
@@ -73,14 +68,12 @@ NON_TERMINAL_STATUS_FILTERS = (
     EtpuStatusFilter("13", "Приостановлен"),
 )
 
-
 @dataclass(frozen=True, slots=True)
 class EtpuPropertyFields:
     address: str | None
     cadastral_number: str | None
     area: float | None
     vin: str | None
-
 
 @dataclass(frozen=True, slots=True)
 class EtpuCataloguePage:
@@ -89,16 +82,13 @@ class EtpuCataloguePage:
     next_page: int | None
     fingerprint: str
 
-
 @dataclass(frozen=True, slots=True)
 class EtpuPostbackRequest:
     action: str
     data: dict[str, str]
 
-
 def normalize_text(value: str) -> str:
     return _SPACE_RE.sub(" ", value.replace("\xa0", " ")).strip()
-
 
 def parse_soup(html: str | bytes) -> BeautifulSoup:
     if isinstance(html, bytes):
@@ -109,7 +99,6 @@ def parse_soup(html: str | bytes) -> BeautifulSoup:
             decoded = html.decode(probe.original_encoding or "windows-1251", errors="replace")
         return BeautifulSoup(decoded, "html.parser")
     return BeautifulSoup(html, "html.parser")
-
 
 def _safe_url(value: str) -> str:
     parsed = urlparse(value)
@@ -123,13 +112,11 @@ def _safe_url(value: str) -> str:
         raise EtpuAccessError("etpu.ru: refused unsafe provider URL")
     return value
 
-
 def _external_id_from_url(value: str) -> str:
     match = LOT_URL_RE.search(value)
     if not match:
         raise EtpuSchemaError("etpu.ru: detail URL does not match verified lot schema")
     return f"{SOURCE_ID}:{match.group(1).lower()}-{match.group(2)}"
-
 
 def detail_url_for_external_id(external_id: str) -> str:
     match = EXTERNAL_ID_RE.fullmatch(external_id)
@@ -139,11 +126,9 @@ def detail_url_for_external_id(external_id: str) -> str:
         f"https://bankrupt.etpu.ru/public/{match.group(1).lower()}/lots/view/{match.group(2)}/"
     )
 
-
 def lot_section(value: str) -> str:
     match = re.search(r"Информация\s+о\s+лоте\s+№\s*\d+", value, re.IGNORECASE)
     return value[match.start():] if match else value
-
 
 def _labelled_money(value: str, label: str) -> float | None:
     match = re.search(
@@ -162,14 +147,11 @@ def _labelled_money(value: str, label: str) -> float | None:
         return None
     return float(amount)
 
-
 def parse_initial_price(value: str) -> float | None:
     return _labelled_money(lot_section(value), r"Начальная\s+цена")
 
-
 def parse_current_price(value: str) -> float | None:
     return _labelled_money(lot_section(value), r"Текущая\s+цена")
-
 
 def parse_deposit(value: str) -> float | None:
     section = lot_section(value)
@@ -178,10 +160,8 @@ def parse_deposit(value: str) -> float | None:
         or _labelled_money(section, r"Размер\s+задатка")
     )
 
-
 def parse_auction_step(value: str) -> float | None:
     return _labelled_money(lot_section(value), r"Шаг(?:\s+аукциона)?")
-
 
 def parse_title(value: str) -> str | None:
     section = lot_section(value)
@@ -193,7 +173,6 @@ def parse_title(value: str) -> str | None:
         re.IGNORECASE,
     )
     return normalize_text(match.group(1)) if match else None
-
 
 def parse_source_status(value: str) -> str | None:
     section = lot_section(value)
@@ -215,7 +194,6 @@ def parse_source_status(value: str) -> str | None:
     )
     return normalize_text(match.group(1)) if match else None
 
-
 def parse_status(value: str) -> str:
     raw = parse_source_status(value)
     if raw is None:
@@ -231,7 +209,6 @@ def parse_status(value: str) -> str:
         return "closed"
     return "unknown"
 
-
 def parse_procedure_id(value: str) -> str | None:
     match = re.search(
         r"Информация\s+(?:об\s+аукционе|о\s+конкурсе|о\s+публичном\s+предложении)"
@@ -240,7 +217,6 @@ def parse_procedure_id(value: str) -> str | None:
         re.IGNORECASE,
     )
     return match.group(1) if match else None
-
 
 def _moscow_datetime(value: str, *labels: str) -> datetime | None:
     section = lot_section(value)
@@ -262,7 +238,6 @@ def _moscow_datetime(value: str, *labels: str) -> datetime | None:
                 continue
     return None
 
-
 def parse_dates(value: str) -> dict[str, datetime | None]:
     return {
         "application_start_at": _moscow_datetime(
@@ -283,7 +258,6 @@ def parse_dates(value: str) -> dict[str, datetime | None]:
         ),
     }
 
-
 def classifier_section(value: str) -> str | None:
     section = lot_section(value)
     marker = re.search(r"Классификатор\s+ЕФРСБ\s*:\s*", section, re.IGNORECASE)
@@ -294,7 +268,6 @@ def classifier_section(value: str) -> str | None:
     raw = tail[:end.start()] if end else tail[:2000]
     cleaned = normalize_text(raw)
     return cleaned[:2000] or None
-
 
 def classifier_flags(value: str) -> tuple[str, ...]:
     classifier = classifier_section(value)
@@ -352,7 +325,6 @@ def classifier_flags(value: str) -> tuple[str, ...]:
         flags.append("other")
     return tuple(flags)
 
-
 def classify_property(value: str) -> str | None:
     if classifier_section(value) is None:
         return None
@@ -371,7 +343,6 @@ def classify_property(value: str) -> str | None:
             return preferred
     return None
 
-
 def parse_property_fields(value: str) -> EtpuPropertyFields:
     section = lot_section(value)
     cadastral = _CADASTRAL_RE.search(section)
@@ -389,7 +360,6 @@ def parse_property_fields(value: str) -> EtpuPropertyFields:
         area=float(area_match.group(1).replace(",", ".")) if area_match else None,
         vin=vin.group(0).upper() if vin else None,
     )
-
 
 def _parse_interval_schedule(soup: BeautifulSoup) -> list[dict[str, str]] | None:
     for table in soup.select("table"):
@@ -410,7 +380,6 @@ def _parse_interval_schedule(soup: BeautifulSoup) -> list[dict[str, str]] | None
             result.append(dict(zip(headers, cells)))
         return result or None
     return None
-
 
 def parse_detail(html: str | bytes, *, detail_url: str, external_id: str | None = None) -> NormalizedLot:
     soup = parse_soup(html)
@@ -489,7 +458,6 @@ def parse_detail(html: str | bytes, *, detail_url: str, external_id: str | None 
         public_offer_schedule=_parse_interval_schedule(soup) if kind == "public-offers" else None,
     )
 
-
 def _row_container(anchor: Tag) -> Tag:
     row = anchor.find_parent("tr")
     if isinstance(row, Tag):
@@ -503,7 +471,6 @@ def _row_container(anchor: Tag) -> Tag:
         return parent
     return anchor.parent if isinstance(anchor.parent, Tag) else anchor
 
-
 def _parse_table_amount(raw: str) -> float | None:
     cleaned = normalize_text(raw).replace(" ", "").replace("\xa0", "")
     cleaned = re.sub(r"(?:₽|руб(?:\.|лей)?)$", "", cleaned, flags=re.IGNORECASE)
@@ -511,7 +478,6 @@ def _parse_table_amount(raw: str) -> float | None:
         return None
     amount = float(cleaned.replace(",", "."))
     return amount if 0 < amount < 1e15 else None
-
 
 def _table_cells_by_heading(row: Tag) -> dict[str, Tag]:
     if row.name != "tr":
@@ -530,7 +496,6 @@ def _table_cells_by_heading(row: Tag) -> dict[str, Tag]:
         return {}
     return dict(zip(headings, cells))
 
-
 def _table_prices(row: Tag) -> tuple[float | None, float | None]:
     cells = _table_cells_by_heading(row)
     initial = current = None
@@ -541,10 +506,8 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             current = _parse_table_amount(cell.get_text(" ", strip=True))
     return initial, current
 
-
 def _status_key(value: str) -> str:
     return normalize_text(value).lower().replace("ё", "е")
-
 
 def _catalogue_source_status(row: Tag, context: str) -> str | None:
     for heading, cell in _table_cells_by_heading(row).items():
@@ -561,7 +524,6 @@ def _catalogue_source_status(row: Tag, context: str) -> str | None:
             return status_filter.text
     return None
 
-
 def _catalogue_status(value: str | None) -> str:
     if not value:
         return "unknown"
@@ -575,7 +537,6 @@ def _catalogue_status(value: str | None) -> str:
     if lowered in {"окончен", "не состоялся", "отменен организатором"}:
         return "closed"
     return "unknown"
-
 
 def parse_catalogue_page(
     html: str | bytes,
@@ -664,7 +625,6 @@ def parse_catalogue_page(
         raise EtpuSchemaError(f"etpu.ru: no lot links on catalogue page {page}")
     return tuple(lots)
 
-
 def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
     """Return only public, non-secret catalogue filter names and option values."""
     soup = parse_soup(html)
@@ -710,13 +670,11 @@ def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
         "controls": controls,
     }
 
-
 def _selected_option_value(select: Tag) -> str:
     selected = select.find("option", selected=True)
     if not isinstance(selected, Tag):
         selected = select.find("option")
     return str(selected.get("value") or "") if isinstance(selected, Tag) else ""
-
 
 def _successful_search_form_data(form: Tag) -> dict[str, str]:
     """Collect only browser-successful ASP.NET state and public search controls."""
@@ -740,13 +698,11 @@ def _successful_search_form_data(form: Tag) -> dict[str, str]:
             data[name] = _selected_option_value(node)
     return data
 
-
 def _status_select(form: Tag) -> Tag:
     node = form.find("select", attrs={"name": STATUS_FILTER_FIELD})
     if not isinstance(node, Tag):
         raise EtpuSchemaError("etpu.ru: official status filter disappeared")
     return node
-
 
 def _verify_status_option(form: Tag, status_filter: EtpuStatusFilter) -> None:
     select = _status_select(form)
@@ -759,7 +715,6 @@ def _verify_status_option(form: Tag, status_filter: EtpuStatusFilter) -> None:
             "etpu.ru: official status filter option changed for "
             f"{status_filter.value}:{status_filter.text}"
         )
-
 
 def selected_status_filter(html: str | bytes) -> EtpuStatusFilter | None:
     soup = parse_soup(html)
@@ -774,7 +729,6 @@ def selected_status_filter(html: str | bytes) -> EtpuStatusFilter | None:
         str(selected.get("value") or ""),
         normalize_text(selected.get_text(" ", strip=True)),
     )
-
 
 def build_filter_request(
     html: str | bytes,
@@ -796,14 +750,12 @@ def build_filter_request(
     action = urljoin(current_url or LISTING_URL, str(form.get("action") or ""))
     return EtpuPostbackRequest(action=_safe_url(action), data=data)
 
-
 def _postback_links(soup: BeautifulSoup) -> list[Tag]:
     return [
         node
         for node in soup.select("a[href]")
         if "__doPostBack" in str(node.get("href") or "")
     ]
-
 
 def parse_next_page(html: str | bytes, *, page: int) -> int | None:
     soup = parse_soup(html)
@@ -815,10 +767,8 @@ def parse_next_page(html: str | bytes, *, page: int) -> int | None:
         return page + 1
     return None
 
-
 def is_terminal_page(html: str | bytes, *, page: int) -> bool:
     return parse_next_page(html, page=page) is None
-
 
 def build_next_request(
     html: str | bytes,
@@ -865,7 +815,6 @@ def build_next_request(
         action=_safe_url(urljoin(current_url or LISTING_URL, action) if action else current_url or LISTING_URL),
         data=data,
     )
-
 
 class EtpuClient:
     RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
