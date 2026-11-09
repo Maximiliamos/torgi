@@ -25,6 +25,13 @@ _LOT_RE = re.compile(r"Лот\s*№\s*(?P<lot>\d{1,5})\s*[:.\-]?\s*", re.I)
 _DETAIL_PATH_RE = re.compile(r"/(?:etp/)?trade/view/purchase/general\.html$", re.I)
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}(?::\d{1,9}){2,4})(?!\d)")
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.I)
+_AREA_EXPLICIT_RE = re.compile(
+    r"(?:площад(?:ь|ью|и)?|S)\s*[:=]?\s*"
+    r"(\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?)"
+    r"(?:\s*\+/-\s*\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?)?\s*"
+    r"(?:кв\.?\s*м|м[²2])",
+    re.I,
+)
 _DATETIME_RE = re.compile(r"\b(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})\b")
 _PROPERTY_RE = re.compile(
     r"недвижим|земельн|участок|квартир|комнат|помещен|здани|сооружен|"
@@ -69,6 +76,22 @@ _ADDRESS_RE = re.compile(
 
 def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def _area_values(value: str) -> list[float]:
+    matches = _AREA_EXPLICIT_RE.findall(value)
+    if not matches:
+        matches = _AREA_RE.findall(value)
+    output: list[float] = []
+    for raw in matches:
+        normalized = re.sub(r"[\s\u00a0\u202f]", "", raw).replace(",", ".")
+        try:
+            area = float(normalized)
+        except ValueError:
+            continue
+        if area > 0:
+            output.append(area)
+    return output
 
 
 def _parse_datetime(value: str) -> datetime | None:
@@ -149,6 +172,8 @@ def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
     lowered = text.lower()
     explicit = next((marker for marker in _STATUS_MARKERS if marker in lowered), None)
     if explicit:
+        if explicit == "объявлены":
+            return "scheduled", explicit
         return _status(explicit), explicit
     if active_filter:
         # The official processStatus=BID_SUBMISSION filter itself is source
@@ -234,11 +259,8 @@ def parse_listing(
             seen.add(external_id)
             cadastral_numbers = list(dict.fromkeys(_CADASTRAL_RE.findall(segment)))
             cadastral = _CADASTRAL_RE.search(segment)
-            area_values = [
-                float(value.replace(",", ".")) for value in _AREA_RE.findall(segment)
-            ]
-            area_match = _AREA_RE.search(segment)
-            area = float(area_match.group(1).replace(",", ".")) if area_match else None
+            area_values = _area_values(segment)
+            area = area_values[0] if area_values else None
             detail_url = (
                 f"https://aukcioncenter.ru/trade/view/purchase/general.html?"
                 f"id={provider_id}&lotNumber={lot_number}"
@@ -360,8 +382,7 @@ def parse_detail(
     current_price = _money(_CURRENT_PRICE_RE.search(selected))
     cadastral_numbers = list(dict.fromkeys(_CADASTRAL_RE.findall(selected)))
     cadastral = _CADASTRAL_RE.search(selected)
-    area_values = [float(value.replace(",", ".")) for value in _AREA_RE.findall(selected)]
-    area_match = _AREA_RE.search(selected)
+    area_values = _area_values(selected)
     address_match = _ADDRESS_RE.search(selected)
 
     # Status is only accepted from an explicit lifecycle marker. Application
@@ -414,7 +435,7 @@ def parse_detail(
         address=_clean(address_match.group(1)) if address_match else None,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=None,
-        area=float(area_match.group(1).replace(",", ".")) if area_match else None,
+        area=area_values[0] if area_values else None,
         start_price=start_price,
         current_price=current_price,
         auction_status=normalized_status,
