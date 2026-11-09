@@ -197,6 +197,51 @@ def test_full_mets_rejects_systemic_unverified_selected_catalogue(monkeypatch) -
         asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
 
 
+def test_prepared_mets_page_is_refreshed_before_detail_validation(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    requests_by_page: dict[int, int] = {}
+
+    def request_page(_session, page, sleep):
+        requests_by_page[page] = requests_by_page.get(page, 0) + 1
+        phase = "prepared" if requests_by_page[page] == 1 else "fresh"
+        return SimpleNamespace(text=f"{phase}:{page}")
+
+    def parse_page(text, page):
+        price = "100" if text.startswith("prepared:") else "110"
+        return {
+            "total": 1,
+            "observations": [
+                ("244381-1", price, "Объявленные торги", "Земельный участок")
+            ],
+            "next_page": None,
+        }
+
+    monkeypatch.setattr(mod, "_request_page", request_page)
+    monkeypatch.setattr(mod, "_parse_page", parse_page)
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        mod,
+        "parse_mets_lot",
+        lambda html, url: _lot(url.rsplit("/", 1)[-1], 110, "scheduled"),
+    )
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
+    crawler = MetsSourceCrawler(pilot)
+    filters = MetsSyncFilters()
+
+    prepared = crawler.prepare_catalogue(filters)
+    page = asyncio.run(crawler.search(filters))
+
+    assert prepared["pages"] == 1
+    assert requests_by_page == {1: 2}
+    assert len(page.items) == 1
+    assert page.items[0].start_price == 110
+    assert page.metadata["prepared_catalogue_page_lots"] == 1
+    assert page.metadata["catalogue_identity_drift"] == 0
+    assert page.metadata["catalogue_observation_drift"] == 1
+
+
 def test_full_mets_provider_refusal_is_fatal_even_for_one_card(monkeypatch) -> None:
     import bankrotai.connectors.registry.mets_sync as mod
     from bankrotai.connectors.registry.mets_public import MetsEvidenceError
