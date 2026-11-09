@@ -75,13 +75,8 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
 
 
 def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
-    if source_id == "cdtrf.ru":
-        from bankrotai.connectors.registry.cdtrf_sync import operator_sync_spec
-        return (operator_sync_spec(),)
-    for spec in default_source_specs():
-        if spec.source_id == source_id:
-            return (spec,)
-    raise ValueError(f"Unsupported source-only full sync: {source_id}")
+    from bankrotai.services.operator_source_specs import operator_source_full_specs
+    return operator_source_full_specs(source_id, default_source_specs())
 
 
 def regional_source_specs(
