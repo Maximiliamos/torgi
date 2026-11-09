@@ -1,0 +1,91 @@
+name: ETP Fabrikant source-contract read-only
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/etp-fabrikant-readonly.yml"
+      - "scripts/audit_fabrikant_readonly.py"
+      - "src/bankrotai/connectors/etp_sources/**"
+      - "tests/test_fabrikant_source.py"
+      - "docs/ETP_FABRIKANT_AUDIT_2026-11-09.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etp-fabrikant-readonly-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify probe has no persistence integration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $text = Get-Content scripts/audit_fabrikant_readonly.py -Raw
+          foreach ($forbidden in @('sqlalchemy', 'SessionLocal', 'celery', 'boto3', 's3', 'delete(', 'post(')) {
+            if ($text -match [regex]::Escape($forbidden)) {
+              throw "Forbidden write/persistence token in Fabrikant probe: $forbidden"
+            }
+          }
+
+      - name: Run public Fabrikant source-contract audit inside trusted worker
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Join-Path $env:RUNNER_TEMP 'fabrikant-readonly.json'
+          $script = Get-Content scripts/audit_fabrikant_readonly.py -Raw
+          $previous = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = @($script | docker.exe exec -i bankrotai-home-ingestion-worker python - --max-pages 200 --detail-limit 30 --passes 2 --pause 0.4 2>&1)
+            $status = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previous
+          }
+          if ($status -ne 0 -or $output.Count -lt 1) {
+            $output | ForEach-Object { Write-Output $_ }
+            throw 'Fabrikant read-only probe failed'
+          }
+          $jsonLine = $output[-1]
+          $parsed = $jsonLine | ConvertFrom-Json
+          if ($parsed.source -ne 'fabrikant.ru' -or
+              $parsed.database_writes -ne 0 -or
+              $parsed.map_writes -ne 0 -or
+              $parsed.production_enabled -ne $false) {
+            throw 'Fabrikant probe violated read-only contract'
+          }
+          $jsonLine | Set-Content -LiteralPath $report -Encoding utf8
+          Write-Output ("FABRIKANT_AUDIT pages={0}; unique={1}; terminal={2}; reason={3}; stable_two_passes={4}; details={5}" -f
+            $parsed.passes[0].pages_checked,
+            $parsed.passes[0].unique_procedure_count,
+            $parsed.passes[0].terminal_page,
+            $parsed.passes[0].terminal_reason,
+            $parsed.stable_two_passes,
+            $parsed.details_checked)
+          foreach ($page in $parsed.passes[0].pages) {
+            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}" -f
+              $page.page,$page.http_status,$page.procedure_count,$page.has_next_link,
+              (@($page.visible_page_numbers) -join ','))
+          }
+          foreach ($detail in $parsed.details) {
+            Write-Output ("FABRIKANT_DETAIL id={0}; status={1}; lot_markers={2}; money_labels={3}; status_labels={4}; lot_routes={5}" -f
+              $detail.procedure_id,$detail.http_status,$detail.lot_marker_count,
+              @($detail.money_labels).Count,@($detail.status_labels).Count,@($detail.lot_route_shapes).Count)
+          }
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etp-fabrikant-readonly-${{ github.run_id }}
+          path: ${{ runner.temp }}\\fabrikant-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
