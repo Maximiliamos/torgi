@@ -822,6 +822,7 @@ class HtmlEtpConnector(AuctionConnector):
             return response
 
         previous = self._last_response if self._last_page == page - 1 else None
+        sequential_previous = previous is not None
         previous = previous or self._read_request(
             "get",
             _safe_provider_url(self.profile, self.profile.listing_url),
@@ -872,9 +873,15 @@ class HtmlEtpConnector(AuctionConnector):
                 node for node in postback_links
                 if _clean(node.get_text(" ", strip=True)) == str(page)
             ), None)
-            if not isinstance(link, Tag) and self.source_id == "etpu.ru":
+            if (
+                not isinstance(link, Tag)
+                and self.source_id == "etpu.ru"
+                and sequential_previous
+            ):
                 # ETPU renders pages in ten-page blocks. Crossing 10 -> 11,
                 # 20 -> 21, ... is done by the provider's own ">>" postback.
+                # This control is valid only from the immediately preceding
+                # page; it must never stand in for arbitrary random access.
                 link = next((
                     node for node in postback_links
                     if _clean(node.get_text(" ", strip=True)) in {">>", "»"}
