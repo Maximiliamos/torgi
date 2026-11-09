@@ -6,6 +6,7 @@ trade number and lot number are retained as independent cross-checks.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -163,6 +164,86 @@ def _identity_from_url(detail_url: str) -> tuple[str, str, str]:
     sale_type = match.group("sale_type").lower()
     provider_lot_id = match.group("provider_lot_id")
     return sale_type, provider_lot_id, f"centerr.ru:{sale_type}-{provider_lot_id}"
+
+
+def parse_next_page_postback(
+    html: str | bytes,
+    *,
+    next_page: int,
+) -> tuple[str, str, dict[str, str]] | None:
+    """Return the exact ASP.NET postback needed for the next CenterR page.
+
+    Absence of a matching numeric/next control is the terminal-page signal.
+    Hidden form values are returned unchanged so the caller can issue the
+    provider-owned POST without inventing pagination state.
+    """
+    if next_page < 2:
+        raise ValueError("CenterR next_page must be >= 2")
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: list[tuple[str, str, str]] = []
+    for anchor in soup.select("a[href]"):
+        href = str(anchor.get("href") or "")
+        if "__doPostBack" not in href:
+            continue
+        parsed = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", href)
+        if parsed:
+            candidates.append((
+                _clean(anchor.get_text(" ", strip=True)),
+                parsed.group(1),
+                parsed.group(2),
+            ))
+    selected = next((item for item in candidates if item[0] == str(next_page)), None)
+    if selected is None:
+        selected = next((item for item in candidates if item[0] in {">>", "››", "»"}), None)
+    if selected is None:
+        return None
+    hidden = {
+        str(node.get("name")): str(node.get("value") or "")
+        for node in soup.select("input[type=hidden][name]")
+    }
+    return selected[1], selected[2], hidden
+
+
+def summarize_catalogue_identities(rows: list[CenterRCatalogueLot]) -> dict[str, object]:
+    """Summarize cross-page lot identity without silently deduplicating conflicts."""
+    identities: dict[str, tuple[str, str, str, str]] = {}
+    collisions: list[str] = []
+    ordered_ids: list[str] = []
+    for row in rows:
+        current = (row.trade_id, row.lot_number, row.detail_url, row.title)
+        previous = identities.get(row.external_id)
+        if previous is not None and previous != current:
+            collisions.append(row.external_id)
+        identities[row.external_id] = current
+        ordered_ids.append(row.external_id)
+    unique_ids = sorted(set(ordered_ids))
+    return {
+        "unique_ids": unique_ids,
+        "unique_count": len(unique_ids),
+        "duplicate_same_identity_count": len(ordered_ids) - len(unique_ids),
+        "collisions": sorted(set(collisions)),
+        "id_digest": hashlib.sha256("\n".join(unique_ids).encode()).hexdigest(),
+    }
+
+
+def verify_identity(
+    catalogue: CenterRCatalogueLot,
+    detail: CenterRDetailFacts,
+) -> None:
+    """Fail closed unless catalogue and detail prove the same individual lot."""
+    if (
+        detail.external_id != catalogue.external_id
+        or detail.trade_id != catalogue.trade_id
+        or detail.lot_number != catalogue.lot_number
+        or detail.provider_lot_id != catalogue.provider_lot_id
+        or detail.sale_type != catalogue.sale_type
+    ):
+        raise CenterRContractError(
+            "CenterR catalogue/detail identity mismatch: "
+            f"catalogue={catalogue.trade_id}/{catalogue.lot_number}/"
+            f"{catalogue.provider_lot_id}; "
+            f"detail={detail.trade_id}/{detail.lot_number}/{detail.provider_lot_id}"
+        )
 
 
 def parse_catalogue_lots(html: str | bytes) -> list[CenterRCatalogueLot]:
