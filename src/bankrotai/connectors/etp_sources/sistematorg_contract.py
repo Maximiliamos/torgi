@@ -12,7 +12,8 @@ from decimal import Decimal, InvalidOperation
 import re
 from urllib.parse import parse_qs, urljoin, urlparse
 
-from bs4 import BeautifulSoup
+import requests
+from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.domain import NormalizedLot
@@ -546,3 +547,138 @@ def parse_sistematorg_detail_lots(
             property_type=category,
         ))
     return lots
+
+
+class SistematorgReadonlyClient:
+    """Provider-owned read-only HTTP client used by the isolated audit.
+
+    Pagination semantics intentionally live here instead of shared pagination.py.
+    The client never writes provider or project state and refuses redirects/auth
+    gates/rate-limit responses.
+    """
+
+    USER_AGENT = (
+        "TORGI-Sistematorg-audit/1.0 "
+        "(+https://github.com/Maximiliamos/torgi; public read-only audit)"
+    )
+
+    def __init__(
+        self, *, session: requests.Session | None = None, timeout: float = 25.0,
+    ) -> None:
+        self.session = session or requests.Session()
+        self.timeout = timeout
+        self.session.headers.setdefault("User-Agent", self.USER_AGENT)
+        self._last_response: requests.Response | None = None
+        self._last_page = 0
+
+    def reset(self) -> None:
+        self._last_response = None
+        self._last_page = 0
+
+    @staticmethod
+    def _check_response(response: requests.Response) -> requests.Response:
+        if 300 <= response.status_code < 400:
+            raise ValueError("sistematorg_redirect_refused")
+        if response.status_code in {401, 403, 429}:
+            raise ValueError(f"sistematorg_http_{response.status_code}")
+        response.raise_for_status()
+        return response
+
+    @staticmethod
+    def _safe_catalogue_url(raw: str) -> str:
+        absolute = urljoin(BASE_URL, raw.strip())
+        parsed = urlparse(absolute)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "sistematorg.com"
+            or parsed.port not in {None, 443}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path != "/tradelist.php"
+        ):
+            raise ValueError("sistematorg_untrusted_catalogue_url")
+        return absolute
+
+    @staticmethod
+    def _form_params(form: Tag, page: int) -> list[tuple[str, str]]:
+        params: list[tuple[str, str]] = []
+        for node in form.select("input[name]"):
+            field_type = str(node.get("type") or "").lower()
+            if field_type in {"submit", "button", "image", "file"}:
+                continue
+            if field_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+                continue
+            name = str(node.get("name"))
+            value = str(page) if name == "pagenum" else str(node.get("value") or "")
+            params.append((name, value))
+        if not any(name == "pagenum" for name, _ in params):
+            params.append(("pagenum", str(page)))
+        return params
+
+    @staticmethod
+    def has_next_page(html: str | bytes, page: int) -> bool:
+        soup = BeautifulSoup(html, "html.parser")
+        expected = str(page + 1)
+        return any(
+            _clean(node.get_text(" ", strip=True)) == expected
+            and re.search(
+                rf"pagenum_send\(\s*{page + 1}\s*\)",
+                str(node.get("onclick") or ""),
+            )
+            for node in soup.select("[onclick]")
+        )
+
+    def fetch_catalogue_page(self, page: int) -> requests.Response:
+        if type(page) is not int or page < 1:
+            raise ValueError("sistematorg_invalid_page")
+        if page == 1:
+            response = self._check_response(self.session.get(
+                BASE_URL, timeout=self.timeout, allow_redirects=False,
+            ))
+            self._last_response, self._last_page = response, 1
+            return response
+
+        previous = self._last_response if self._last_page == page - 1 else None
+        if previous is None:
+            previous = self.fetch_catalogue_page(1)
+        soup = BeautifulSoup(previous.content, "html.parser")
+        form = soup.find("form", id="tradesearch")
+        if not isinstance(form, Tag):
+            raise ValueError("sistematorg_pagination_form_missing")
+        method = str(form.get("method") or "get").strip().lower()
+        if method != "get":
+            raise ValueError("sistematorg_pagination_method_changed")
+        action = self._safe_catalogue_url(
+            urljoin(previous.url or BASE_URL, str(form.get("action") or ""))
+        )
+        parsed = urlparse(action)
+        action = parsed._replace(query="", fragment="").geturl()
+        response = self._check_response(self.session.get(
+            action,
+            params=self._form_params(form, page),
+            timeout=self.timeout,
+            allow_redirects=False,
+        ))
+        self._last_response, self._last_page = response, page
+        return response
+
+    def fetch_detail(self, detail_url: str) -> requests.Response:
+        trusted = _trusted_detail_url(detail_url)
+        if trusted is None:
+            raise ValueError("sistematorg_untrusted_detail_url")
+        response = self._check_response(self.session.get(
+            trusted[0], timeout=self.timeout, allow_redirects=False,
+        ))
+        return response
+
+
+def property_catalogue_lots(
+    page: SistematorgCataloguePage,
+) -> tuple[SistematorgCatalogueLot, ...]:
+    """Return only individually numbered property candidates from one page."""
+    return tuple(
+        lot
+        for procedure in page.procedures
+        for lot in procedure.lots
+        if lot.is_property
+    )
