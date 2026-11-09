@@ -925,7 +925,12 @@ class HtmlEtpConnector(AuctionConnector):
                 if _clean(node.get_text(" ", strip=True)) == str(page)
                 and "__doPostBack" in str(node.get("href") or "")
             ), None)
-            if not isinstance(link, Tag) and self.source_id == "arbbitlot.ru":
+            if (
+                not isinstance(link, Tag)
+                and self.source_id == "arbbitlot.ru"
+                and page > 1
+                and (page - 1) % 10 == 0
+            ):
                 # FogSoft's ARBbitLot pager exposes numeric links in groups of
                 # ten and uses ">>" to advance to the next group. On page 10,
                 # 20, ... there is no visible numeric link for page+1.
