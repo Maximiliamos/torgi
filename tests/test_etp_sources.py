@@ -1130,15 +1130,15 @@ def test_arbbitlot_does_not_infer_start_price_from_deposit_or_step() -> None:
       Подробные сведения об имуществе и порядке участия в торгах.
     </body></html>
     """
-    lot = parse_detail_html(
-        profile("arbbitlot.ru"),
-        html,
-        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
-    )
-    assert lot.start_price is None
-    assert lot.current_price is None
-    assert lot.deposit_amount == 90000
-    assert lot.auction_step_amount == 45000
+    with pytest.raises(
+        SourceSchemaError,
+        match="individual detail does not prove an explicit start price",
+    ):
+        parse_detail_html(
+            profile("arbbitlot.ru"),
+            html,
+            detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
+        )
 
 
 def test_arbbitlot_enrichment_fails_closed_without_individual_start_price() -> None:
