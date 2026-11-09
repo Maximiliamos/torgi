@@ -495,14 +495,25 @@ def parse_detail_html(
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
     if profile.source_id == "sistematorg.com":
-        if external_id is None:
-            raise SourceSchemaError("sistematorg.com: detail requires explicit trade_id + lot_id")
         try:
-            _trade_id, lot_id = parse_sistematorg_external_id(external_id)
             lots = parse_sistematorg_detail_lots(
                 html, detail_url=detail_url,
                 platform_name=profile.platform_name, platform_code=profile.platform_code,
             )
+        except ValueError as exc:
+            if external_id is None:
+                raise SourceSchemaError(
+                    "sistematorg.com: cannot attribute a trade-level price to an individual lot"
+                ) from exc
+            raise SourceSchemaError(str(exc)) from exc
+        if external_id is None:
+            if len(lots) != 1:
+                raise SourceSchemaError(
+                    "sistematorg.com: cannot attribute a trade-level price to an individual lot"
+                )
+            return lots[0]
+        try:
+            _trade_id, lot_id = parse_sistematorg_external_id(external_id)
         except ValueError as exc:
             raise SourceSchemaError(str(exc)) from exc
         matched = [lot for lot in lots if lot.raw_data.get("lot_id") == lot_id]
