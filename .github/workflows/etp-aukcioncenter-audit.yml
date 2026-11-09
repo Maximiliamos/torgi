@@ -1,0 +1,42 @@
+name: ETP AukcionCenter read-only audit
+
+on:
+  push:
+    branches:
+      - audit/aukcioncenter-detail-contract-20261109
+    paths:
+      - "scripts/etp_aukcioncenter_audit.py"
+      - ".github/workflows/etp-aukcioncenter-audit.yml"
+      - "src/bankrotai/connectors/etp_sources/**"
+      - "tests/test_etp_aukcioncenter_contract.py"
+  pull_request:
+    paths:
+      - "scripts/etp_aukcioncenter_audit.py"
+      - ".github/workflows/etp-aukcioncenter-audit.yml"
+      - "src/bankrotai/connectors/etp_sources/**"
+      - "tests/test_etp_aukcioncenter_contract.py"
+
+permissions:
+  contents: read
+
+jobs:
+  readonly-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install probe dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4
+      - name: Run two-pass AukcionCenter source-contract probe
+        run: |
+          python scripts/etp_aukcioncenter_audit.py --details 30 --pause 0.35 --output aukcioncenter-audit.json
+      - name: Upload sanitized audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: aukcioncenter-readonly-audit
+          path: aukcioncenter-audit.json
+          if-no-files-found: error
+          retention-days: 7
