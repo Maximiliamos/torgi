@@ -38,6 +38,15 @@ class UtplDetailFields(TypedDict):
     auction_at: datetime | None
 
 
+class UtplParsedDetail(UtplDetailFields):
+    external_id: str
+    status: str
+    structured_classifier_verified: bool
+    property_classification_verified: bool
+    production_enabled: bool
+    safe_for_reconciliation: bool
+
+
 _SPACE = re.compile(r"\s+")
 _CADASTRAL = re.compile(r"(?<!\d)\d{2}:\d{1,3}:\d{5,9}:\d{1,9}(?!\d)")
 _AREA = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.I)
@@ -476,8 +485,8 @@ def parse_utpl_detail(
     html: str | bytes,
     *,
     external_id: str | None = None,
-) -> dict[str, object]:
-    """Complete source-specific detail contract, independent of shared dispatchers."""
+) -> UtplParsedDetail:
+    """Complete source-specific detail contract with verified per-lot identity."""
     canonical = verify_detail_identity(detail_url, external_id)
     fields = parse_utpl_detail_fields(html)
     return {
