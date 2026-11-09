@@ -103,6 +103,25 @@ def row_identity(row: Tag) -> tuple[str | None, str | None]:
         value = _clean(cells[0].get_text(" ", strip=True))
         if re.fullmatch(r"\d{4,12}", value):
             procedure_number = value
+
+    # The live ARBbitLot catalogue currently renders the data rows with the
+    # stable public-engine layout even when semantic <th> headers are not
+    # available to the HTML parser: trade number, trade title, lot number,
+    # individual lot link, price, ... .  Accept the positional lot number only
+    # when cell 3 itself proves the individual provider lot URL.  This keeps
+    # the fallback source-specific and prevents a neighbouring numeric cell
+    # from becoming a lot identity.
+    if lot_number is None and len(cells) >= 4:
+        positional_lot = _clean(cells[2].get_text(" ", strip=True))
+        has_individual_link = any(
+            PROFILE.lot_url_re.search(
+                urljoin(LISTING_URL, str(anchor.get("href") or "").strip())
+            )
+            for anchor in cells[3].select("a[href]")
+        )
+        if has_individual_link and re.fullmatch(r"\d{1,6}", positional_lot):
+            lot_number = positional_lot
+
     return procedure_number, lot_number
 
 
