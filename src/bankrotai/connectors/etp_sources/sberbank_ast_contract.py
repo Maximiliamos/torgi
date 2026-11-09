@@ -186,23 +186,34 @@ def parse_initial_price(raw: dict[str, Any]) -> float | None:
 
 
 def normalize_status(value: object) -> str:
+    """Map Sberbank lifecycle labels onto TORGI canonical status values."""
     text = normalize_text(value).lower()
     if not text:
         return "unknown"
 
-    # Terminal/exception states must win over historic application-date labels
-    # that can remain visible on a completed GoodsView page.
-    if "отмен" in text or "аннулир" in text:
-        return "cancelled"
+    # Final trade state wins even when old application dates/labels remain on the card.
+    if any(marker in text for marker in (
+        "торги отмен", "аннулир", "не состоял", "торги заверш", "торги окончен",
+    )):
+        return "closed"
     if "приостанов" in text:
-        return "suspended"
-    if "не состоял" in text:
-        return "failed"
-    if any(marker in text for marker in ("торги завершены", "завершен", "завершён", "состоялись")):
-        return "finished"
-    if "идут торги" in text or "проведение торгов" in text:
-        return "active"
-    if any(marker in text for marker in ("прием заявок", "приём заявок", "торги объявлены")):
+        return "paused"
+    if re.search(
+        r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)",
+        text,
+    ):
+        return "unknown"
+    if any(marker in text for marker in (
+        "торги объявлен", "торги назначен",
+        "ожидается начало приема заявок", "ожидается начало приёма заявок",
+    )):
+        return "scheduled"
+    if (
+        re.search(r"при[её]м\s+заявок(?!\s+заверш)", text)
+        or "идут торги" in text
+        or "проведение торгов" in text
+        or "заявки принимаются" in text
+    ):
         return "active"
     return "unknown"
 
