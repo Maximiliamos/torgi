@@ -59,7 +59,7 @@ async def _catalogue_pass(*, max_pages: int, delay_seconds: float) -> dict[str, 
 
 
 async def _detail_sample(ids: list[str], *, limit: int, delay_seconds: float) -> dict[str, Any]:
-    connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
+    connector = ZakazRfReadonlyClient()
     checked = 0
     failures: list[dict[str, str]] = []
     price_ok = 0
