@@ -189,3 +189,29 @@ def test_ruson_source_connector_fetches_detail_without_shared_dispatcher(monkeyp
     actual = asyncio.run(connector.fetch_lot("rus-on.ru:900001"))
     assert actual is expected
     assert calls == ["rus-on.ru:900001"]
+
+
+def test_ruson_reported_pereslavl_location_uses_property_location_field() -> None:
+    html = """
+    <html><body><table>
+      <tr><td>Наименование имущества</td><td>Земельный участок</td></tr>
+      <tr><td>Сведения об имуществе (предприятии) должника, выставляемом на торги, его составе, характеристиках, описание</td>
+          <td>Земельный участок, кадастровый номер 76:11:043902:114</td></tr>
+      <tr><td>Местонахождение имущества</td>
+          <td>Ярославская область, р-н. Переславский, Глебовский</td></tr>
+      <tr><td>Начальная цена</td><td>1 000 000.00</td></tr>
+      <tr><td>Статус торгов</td><td>Торги не состоялись</td></tr>
+    </table>
+    Дополнительные публичные сведения о порядке продажи и имуществе должника.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        html,
+        external_id="rus-on.ru:26414",
+        detail_url="https://rus-on.ru/bankrot/lot_view.php?lot_nid=26414",
+    )
+
+    assert lot.address == "Ярославская область, р-н. Переславский, Глебовский"
+    assert lot.cadastral_number == "76:11:043902:114"
+    assert lot.start_price == 1_000_000
+    assert lot.auction_status == "closed"
