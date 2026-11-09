@@ -578,12 +578,7 @@ def parse_detail_html(
             area=fields.area,
             start_price=fields.start_price,
             current_price=fields.current_price,
-            auction_status=(
-                __import__(
-                    "bankrotai.connectors.etp_sources.fabrikant",
-                    fromlist=["fabrikant_status"],
-                ).fabrikant_status(text_value)[0]
-            ),
+            auction_status=fabrikant_status(text_value)[0],
             lot_url=detail_url,
             source_url=detail_url,
             detail_level="detail",
