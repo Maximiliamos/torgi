@@ -54,11 +54,14 @@ def _clean(value: str) -> str:
 
 def _soup(html: str | bytes) -> BeautifulSoup:
     if isinstance(html, bytes):
+        raw = html
         try:
-            html = html.decode("utf-8")
+            decoded = raw.decode("utf-8")
         except UnicodeDecodeError:
-            html = html.decode("windows-1251", errors="replace")
-    return BeautifulSoup(html, "html.parser")
+            decoded = raw.decode("windows-1251", errors="replace")
+    else:
+        decoded = html
+    return BeautifulSoup(decoded, "html.parser")
 
 
 def _safe_public_url(base_url: str, href: str) -> str | None:
