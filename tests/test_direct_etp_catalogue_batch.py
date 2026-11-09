@@ -89,16 +89,16 @@ def test_alfalot_lot_card_link_is_first_party_and_identity_is_trade_plus_lot():
 
 def test_verdict_arrest_listing_keeps_separate_lot_identity_and_status_text():
     html = """
-    <table><tr><td><a href="/bidding/140008">140008</a></td>
+    <table><tr><td><a href="/bidding">150-АП</a></td>
     <td>2</td><td>Должник</td>
-    <td><a href="/showTrades?id=140008">Нежилое здание 76:23:0001203:42</a></td>
+    <td><a href="/showTrades?id=102288306">Нежилое здание 76:23:0001203:42</a></td>
     <td>4 500 000,00</td><td>Организатор</td>
     <td>01.11.2026</td><td>15.11.2026</td><td>16.11.2026</td>
     <td>Подача заявок</td></tr></table>
     """
     rows = parse_catalogue(PROFILE_BY_ID["vertrades.ru"], html)
     assert len(rows) == 1
-    assert rows[0]["external_id"] == "140008:2"
+    assert rows[0]["external_id"] == "150-АП:2"
     assert rows[0]["cadastral_number"] == "76:23:0001203:42"
     assert rows[0]["listing_price_rub"] == 4500000.0
     assert rows[0]["source_status_text"] == "Подача заявок"
