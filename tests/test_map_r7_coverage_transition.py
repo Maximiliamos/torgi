@@ -13,6 +13,7 @@ def _coverage_check(
     old_revision: str = "r6",
     new_revision: str = "r7",
     surviving_active: int = 25,
+    ended_count: int = 35,
 ) -> list[dict[str, object]]:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -38,7 +39,7 @@ def _coverage_check(
                 title="Land",
                 category="land",
                 region_code="76",
-                auction_status=("completed" if i < 20 else "closed" if i < 35 else "active"),
+                auction_status=("completed" if i < 20 else "closed" if i < ended_count else "active"),
             )
             for i in range(60)
         ]
@@ -57,7 +58,7 @@ def _coverage_check(
         session.add_all(legacy_source + steady_source)
         session.flush()
         old_members = legacy_source + steady_source
-        new_members = legacy_source[35:35 + surviving_active] + steady_source
+        new_members = legacy_source[ended_count:ended_count + surviving_active] + steady_source
         session.add_all([
             MapTile(
                 dataset_id=previous.id,
@@ -117,5 +118,17 @@ def test_unrelated_revision_transition_keeps_original_coverage_guard():
     assert any(
         failure["dimension"] == "source"
         and failure["value"] == "affected-source"
+        for failure in failures
+    )
+
+
+def test_small_active_remainder_is_still_covered_by_original_baseline():
+    failures = _coverage_check(ended_count=56, surviving_active=0)
+    assert any(
+        failure["dimension"] == "source"
+        and failure["value"] == "affected-source"
+        and failure["previous"] == 4
+        and failure["current"] == 0
+        and failure["required"] == 2
         for failure in failures
     )
