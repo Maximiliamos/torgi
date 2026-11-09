@@ -102,3 +102,50 @@ jobs:
             ${{ runner.temp }}/sberbank-ast-live-probe.log
           if-no-files-found: warn
           retention-days: 30
+
+
+  hosted-public-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install standalone probe dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4
+      - name: Probe public Sberbank-AST contract from GitHub-hosted network
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python scripts/probe_sberbank_ast_live_raw.py > "$RUNNER_TEMP/sberbank-ast-hosted-probe.log" 2>&1
+          code=$?
+          json_line=$(grep '^{' "$RUNNER_TEMP/sberbank-ast-hosted-probe.log" | tail -n 1)
+          if [ -n "$json_line" ]; then
+            printf '%s\n' "$json_line" > "$RUNNER_TEMP/sberbank-ast-hosted-evidence.json"
+            python - "$RUNNER_TEMP/sberbank-ast-hosted-evidence.json" <<'PY'
+import json, sys
+p=sys.argv[1]
+d=json.load(open(p, encoding="utf-8"))
+print("source=", d.get("source"))
+print("api_total=", d.get("api_total"))
+print("completeness=", d.get("completeness"))
+print("two_full_walks_stable=", d.get("two_full_walks_stable"))
+print("details_verified=", d.get("details_verified"))
+PY
+          fi
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload hosted-network evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sberbank-ast-hosted-network-evidence
+          path: |
+            ${{ runner.temp }}/sberbank-ast-hosted-evidence.json
+            ${{ runner.temp }}/sberbank-ast-hosted-probe.log
+          if-no-files-found: warn
+          retention-days: 14
