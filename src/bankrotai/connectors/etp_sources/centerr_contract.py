@@ -166,6 +166,12 @@ def _identity_from_url(detail_url: str) -> tuple[str, str, str]:
     return sale_type, provider_lot_id, f"centerr.ru:{sale_type}-{provider_lot_id}"
 
 
+def page_fingerprint(html: str | bytes) -> str:
+    """Stable digest used only to prove that CenterR pagination advanced."""
+    payload = html.encode("utf-8") if isinstance(html, str) else html
+    return hashlib.sha256(payload).hexdigest()
+
+
 def parse_next_page_postback(
     html: str | bytes,
     *,
