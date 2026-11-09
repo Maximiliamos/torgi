@@ -154,7 +154,7 @@ def parse_deposit(value: str) -> float | None:
 
 
 def parse_auction_step(value: str) -> float | None:
-    return _labelled_money(lot_section(value), r"Шаг")
+    return _labelled_money(lot_section(value), r"Шаг(?:\s+аукциона)?")
 
 
 def parse_title(value: str) -> str | None:
