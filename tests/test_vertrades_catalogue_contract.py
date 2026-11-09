@@ -1,12 +1,14 @@
 """Vertrades catalogue contract regressions from the public mixed register."""
 from __future__ import annotations
 
-from bankrotai.connectors.etp_sources import PROFILES, parse_listing_html
-from bankrotai.connectors.registry.direct_etp_catalogue import PROFILE_BY_ID, parse_catalogue
+import pytest
 
-
-PROFILE = next(p for p in PROFILES if p.source_id == "vertrades.ru")
-DIRECT = PROFILE_BY_ID["vertrades.ru"]
+from bankrotai.connectors.etp_sources.vertrades import (
+    VertradesCardError,
+    catalogue_page_url,
+    has_next_catalogue_page,
+    parse_catalogue_page,
+)
 
 
 def _row(trade: str, lot: int, title: str, price: str, provider: int, status: str) -> str:
@@ -51,19 +53,8 @@ def _catalogue() -> str:
     ]) + "</table></body></html>"
 
 
-def test_direct_catalogue_keeps_only_proven_property_rows_and_real_trade_codes():
-    items = parse_catalogue(DIRECT, _catalogue(), limit=100)
-    assert [(x["trade"], x["lot"]) for x in items] == [
-        ("55-АП", "1"), ("55-АП", "2"), ("150-АЗ", "4"),
-    ]
-    assert [x["listing_price_rub"] for x in items] == [1060000.0, 246800.0, 750000.0]
-    assert all("Автомобиль" not in x["title"] for x in items)
-    assert all("Право требования" not in x["title"] for x in items)
-    assert all("Оборудование" not in x["title"] for x in items)
-
-
-def test_profiled_catalogue_identity_is_provider_procedure_plus_lot_number():
-    lots = parse_listing_html(PROFILE, _catalogue(), page=2)
+def test_catalogue_keeps_only_proven_property_rows_and_composite_identity():
+    lots = parse_catalogue_page(_catalogue(), page=2)
     assert [x.external_id for x in lots] == [
         "vertrades.ru:102259678:1",
         "vertrades.ru:102259678:2",
@@ -72,8 +63,9 @@ def test_profiled_catalogue_identity_is_provider_procedure_plus_lot_number():
     assert [x.raw_data["trade_id"] for x in lots] == ["55-АП", "55-АП", "150-АЗ"]
     assert [x.raw_data["lot_number"] for x in lots] == ["1", "2", "4"]
     assert all(x.raw_data["listing_page"] == 2 for x in lots)
-    assert lots[0].start_price == 1060000.0
-    assert lots[1].start_price == 246800.0
+    assert [x.start_price for x in lots] == [1060000.0, 246800.0, 750000.0]
+    assert lots[0].cadastral_number == "34:02:010003:2648"
+    assert lots[1].cadastral_number == "34:34:080147:2677"
     assert lots[0].auction_status == "closed"
     assert lots[1].auction_status == "closed"
 
@@ -83,5 +75,24 @@ def test_unicode_dash_trade_code_is_canonicalized():
         "150–АП", 7, "земельный участок 500 кв.м.", "500000.00",
         102259683, "Торги завершены",
     ) + "</table>"
-    item = parse_catalogue(DIRECT, html, limit=10)[0]
-    assert item["trade"] == "150-АП"
+    lot = parse_catalogue_page(html, limit=10)[0]
+    assert lot.raw_data["trade_id"] == "150-АП"
+
+
+def test_duplicate_individual_identity_fails_closed():
+    row = _row(
+        "55-АП", 1, "жилое здание 29,6 кв.м.", "1060000.00",
+        102259678, "Завершенные торги",
+    )
+    with pytest.raises(VertradesCardError, match="duplicate_individual"):
+        parse_catalogue_page("<table>" + row + row + "</table>")
+
+
+def test_page_urls_and_terminal_signal_require_explicit_same_origin_next_page():
+    assert catalogue_page_url(1) == "https://arest.vertrades.ru/bidding"
+    assert catalogue_page_url(4).endswith("?page=4")
+    assert has_next_catalogue_page(
+        "<a href='/bidding?page=2'>2</a><a href='https://evil.example/bidding?page=2'>x</a>",
+        1,
+    ) is True
+    assert has_next_catalogue_page("<a href='/bidding?page=4'>4</a>", 4) is False
