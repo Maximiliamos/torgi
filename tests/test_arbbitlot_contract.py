@@ -257,7 +257,7 @@ def test_verified_merge_preserves_catalogue_current_when_detail_has_no_current_l
 
 
 def test_aspnet_page_two_posts_state_and_reaches_terminal_page() -> None:
-    first = b"""
+    first = """
     <form action='/public/purchases-all/'>
       <input type='hidden' name='__VIEWSTATE' value='arb-state'>
       <a href="javascript:__doPostBack('pager$page2','')">2</a>
@@ -268,8 +268,8 @@ def test_aspnet_page_two_posts_state_and_reaches_terminal_page() -> None:
       <td><a href='/public/auctions/lots/view/41000/'>Участок 76:01:000000:199</a></td>
       <td>800 000,00</td><td>Прием заявок</td></tr>
     </table>
-    """
-    second = b"""
+    """.encode("utf-8")
+    second = """
     <form action='/public/purchases-all/'>
       <input type='hidden' name='__VIEWSTATE' value='arb-state-2'>
     </form>
@@ -282,7 +282,7 @@ def test_aspnet_page_two_posts_state_and_reaches_terminal_page() -> None:
       <td><a href='/public/auctions/lots/view/41003/'>Склад 76:01:000000:201</a></td>
       <td>1 500 000,00</td><td>Прием заявок</td></tr>
     </table>
-    """
+    """.encode("utf-8")
     session = FakeSession([
         FakeResponse(200, first),
         FakeResponse(200, second),
