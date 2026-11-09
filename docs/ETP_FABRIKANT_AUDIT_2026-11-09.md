@@ -222,6 +222,8 @@ It is designed to prove:
 
 - catalogue pages;
 - procedure IDs;
+- selected filters plus available status/section/type controls;
+- public form method/action contract (sanitized path only);
 - visible pagination;
 - terminal condition;
 - two full passes and ID digest stability;
@@ -251,7 +253,7 @@ run is still required before live completeness can be claimed.
 
 The following must remain explicitly **NOT PROVEN** until the trusted Home live probe actually completes:
 
-- whether `section_ids[]=6` alone is the correct current *active* bankruptcy-sale filter;
+- whether `section_ids[]=6` alone is the correct current *active* bankruptcy-sale filter; the live probe now records the available/selected filter controls so this is decided from the current HTML rather than guessed;
 - the real active catalogue size on 2026-11-09;
 - whether the previous 9 observed procedure candidates are the whole active catalogue;
 - page 2;
