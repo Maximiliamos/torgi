@@ -29,7 +29,7 @@ _ADDRESS = re.compile(
 )
 _STATUS_LABEL = re.compile(r"^Статус\s+торгов\s+по\s+лоту\b", re.I)
 _TITLE_LABEL = re.compile(
-    r"^Краткие\s+сведения\s+об\s+имуществе\s*\(наименование\s+лота\)\b",
+    r"^Краткие\\s+сведения\\s+об\\s+имуществе\\s*\\(наименование\\s+лота\\)",
     re.I,
 )
 _DESCRIPTION_LABEL = re.compile(
