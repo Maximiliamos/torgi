@@ -613,12 +613,22 @@ def parse_detail_html(
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
     address = None
+    application_start_at = None
+    auction_at = datetime_after(text_value, r"дата проведения")
     if profile.source_id == "sberbank-ast.ru":
         address = _label_value(
             text_value,
             r"(?:адрес(?: объекта)?|местонахождение(?: имущества)?)",
             r".{5,300}?(?=\s+(?:кадастров|площад|начальн|текущ|статус|дата|лот\b|$))",
         )
+        application_start_at = datetime_after(
+            text_value,
+            r"(?:начало|дата начала)\s+(?:приема|приёма|представления)\s+заявок",
+        )
+        auction_at = datetime_after(
+            text_value,
+            r"(?:дата\s+(?:начала\s+)?проведения(?:\s+торгов)?|дата\s+торгов|дата\s+аукциона)",
+        ) or auction_at
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -653,11 +663,12 @@ def parse_detail_html(
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
+        application_start_at=application_start_at,
         application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
-        auction_at=datetime_after(text_value, r"дата проведения"),
+        auction_at=auction_at,
     )
 
 
