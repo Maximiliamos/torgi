@@ -85,7 +85,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $worker = 'bankrotai-home-ingestion-worker'
-          $env:QUEUED_AT = (Get-Date).ToUniversalTime().ToString('o')
+          $before = docker exec $worker python -c "from sqlalchemy import select; from bankrotai.db import LotSyncRun,SessionLocal; s=SessionLocal(); r=s.scalar(select(LotSyncRun).where(LotSyncRun.trigger_type=='scheduled_incr').order_by(LotSyncRun.created_at.desc())); print(r.id if r else ''); s.close()"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect previous scheduled_incr run' }
+          $beforeRunId = (($before | Select-Object -Last 1) -as [string]).Trim()
+          Write-Output "Previous scheduled_incr run_id=$beforeRunId"
           $py = @'
           import json
           from bankrotai.tasks import automatic_nationwide_lot_refresh_task
@@ -111,7 +114,7 @@ jobs:
             $line = (($probe | Select-Object -Last 1) -as [string]).Trim()
             Write-Output $line
             $state = $line | ConvertFrom-Json
-            if ($state.run_id -and $state.status -in @('queued','running','success','partial','failed','skipped')) {
+            if ($state.run_id -and $state.run_id -ne $beforeRunId -and $state.status -in @('queued','running','success','partial','failed','skipped')) {
               "run_id=$($state.run_id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
               "status=$($state.status)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
               exit 0
