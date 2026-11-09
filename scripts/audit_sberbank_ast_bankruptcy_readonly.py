@@ -1,135 +1,197 @@
-"""Read-only Sberbank-AST bankruptcy catalogue contract probe.
+"""Read-only Sberbank-AST bankruptcy source-contract audit.
 
-This probe never persists lots and never enables reconciliation.  It verifies the
-provider-returned bankruptcy markers before accepting any property row.
+This script imports only the isolated Sberbank-AST module. It performs no
+production persistence, reconciliation, archival or scheduler changes.
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
-import math
 from typing import Any
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES, SourceSchemaError
+import requests
 
-SOURCE = "sberbank-ast.ru"
-PAGE_SIZE = 21
-DISPLAY_CAP = 10_000
+from bankrotai.connectors.etp_sources.sberbank_ast_contract import (
+    DISPLAY_LIMIT,
+    PAGE_SIZE,
+    SberbankAstContractError,
+    build_catalogue_request,
+    page_digest,
+    parse_catalogue_page,
+    parse_detail,
+)
+
+TIMEOUT = 30.0
 
 
-def _lot_evidence(lot: Any) -> dict[str, Any]:
-    raw = lot.raw_data or {}
+def _post_page(session: requests.Session, page: int):
+    url, payload = build_catalogue_request(page)
+    response = session.post(url, json=payload, timeout=TIMEOUT, allow_redirects=False)
+    if response.status_code in {401, 403, 429}:
+        raise SberbankAstContractError(f"provider returned HTTP {response.status_code}")
+    if response.status_code != 200:
+        raise SberbankAstContractError(f"catalogue returned HTTP {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise SberbankAstContractError("catalogue response is not JSON") from exc
+    return parse_catalogue_page(data, page=page)
+
+
+def _detail_evidence(session: requests.Session, lot: Any) -> dict[str, Any]:
+    response = session.get(lot.lot_url, timeout=TIMEOUT, allow_redirects=False)
+    if response.status_code in {401, 403, 429}:
+        return {
+            "external_id": lot.external_id,
+            "verified": False,
+            "reason": f"http_{response.status_code}",
+        }
+    if response.status_code != 200:
+        return {
+            "external_id": lot.external_id,
+            "verified": False,
+            "reason": f"http_{response.status_code}",
+        }
+    try:
+        detail = parse_detail(
+            response.content,
+            detail_url=lot.lot_url,
+            external_id=lot.external_id,
+        )
+    except SberbankAstContractError as exc:
+        return {
+            "external_id": lot.external_id,
+            "verified": False,
+            "reason": str(exc),
+        }
     return {
-        "external_id": lot.external_id,
-        "procedure_number": lot.procedure_number,
-        "category": lot.category,
-        "price_present": lot.start_price is not None or lot.current_price is not None,
-        "status": lot.auction_status,
-        "application_deadline_present": lot.application_deadline is not None,
-        "auction_at_present": lot.auction_at is not None,
-        "address_present": bool(lot.address),
-        "cadastral_number_present": bool(lot.cadastral_number),
-        "area_present": lot.area is not None,
-        "bankruptcy_filter_verified": raw.get("bankruptcy_filter_verified") is True,
-        "property_scope_verified": raw.get("property_scope_verified") is True,
-        "individual_lot_identity_verified": raw.get("individual_lot_identity_verified") is True,
+        "external_id": detail.external_id,
+        "verified": True,
+        "procedure_number": detail.procedure_number,
+        "initial_price_present": detail.start_price is not None,
+        "current_price_present": detail.current_price is not None,
+        "status": detail.auction_status,
+        "application_start_present": detail.application_start_at is not None,
+        "application_deadline_present": detail.application_deadline is not None,
+        "auction_date_present": detail.auction_at is not None,
+        "address_present": bool(detail.address),
+        "cadastre_present": bool(detail.cadastral_number),
+        "area_present": detail.area is not None,
     }
 
 
-async def _walk(*, full: bool, detail_limit: int) -> dict[str, Any]:
-    connector = SOURCE_CONNECTOR_TYPES[SOURCE]()
-    first = await connector.search({})
-    total = int(first.metadata.get("api_total_reported") or 0)
-    if total <= 0:
-        raise SourceSchemaError(f"{SOURCE}: API total is not positive")
+def _page_plan(first, *, full: bool) -> list[int]:
+    if full:
+        if not first.source_total_proven or first.terminal_page is None:
+            raise SberbankAstContractError(
+                f"full traversal refused because API total reached display cap {DISPLAY_LIMIT}"
+            )
+        return list(range(1, first.terminal_page + 1))
 
-    completeness = "NOT_PROVEN"
-    terminal_page = None
-    if total < DISPLAY_CAP:
-        terminal_page = max(1, math.ceil(total / PAGE_SIZE))
-        completeness = "PROVEN_BY_TOTAL_CONTRACT"
     pages = [1]
-    if total > PAGE_SIZE:
+    if first.api_total_reported > PAGE_SIZE:
         pages.append(2)
-    if terminal_page and terminal_page not in pages:
-        pages.append(terminal_page)
-    if full and terminal_page:
-        pages = list(range(1, terminal_page + 1))
+    if first.terminal_page and first.terminal_page not in pages:
+        pages.append(first.terminal_page)
+    return pages
 
-    page_results: dict[int, Any] = {1: first}
+
+def _walk(
+    session: requests.Session,
+    *,
+    full: bool,
+    detail_limit: int,
+) -> dict[str, Any]:
+    first = _post_page(session, 1)
+    pages = _page_plan(first, full=full)
+    results = {1: first}
     for page in pages:
         if page == 1:
             continue
-        page_results[page] = await connector.search({}, cursor=str(page))
+        results[page] = _post_page(session, page)
 
-    ids: list[str] = []
+    lots_by_id: dict[str, Any] = {}
     page_digests: dict[str, str] = {}
-    details: list[dict[str, Any]] = []
+    raw_rows = 0
     for page in pages:
-        result = page_results[page]
-        page_ids = [lot.external_id for lot in result.items]
-        ids.extend(page_ids)
-        page_digests[str(page)] = hashlib.sha256(
-            "\n".join(page_ids).encode("utf-8")
-        ).hexdigest()
-        for lot in result.items:
-            if len(details) >= detail_limit:
-                break
-            detail = await connector.fetch_lot(lot.external_id)
-            details.append(_lot_evidence(detail))
+        result = results[page]
+        raw_rows += result.raw_rows
+        page_digests[str(page)] = page_digest(result.lots)
+        for lot in result.lots:
+            previous = lots_by_id.get(lot.external_id)
+            if previous is not None:
+                raise SberbankAstContractError(
+                    f"duplicate accepted lot identity across pages: {lot.external_id}"
+                )
+            lots_by_id[lot.external_id] = lot
 
-    if len(ids) != len(set(ids)):
-        raise SourceSchemaError(f"{SOURCE}: duplicate accepted lot identities in probed pages")
-
+    details = [
+        _detail_evidence(session, lot)
+        for lot in list(lots_by_id.values())[:detail_limit]
+    ]
+    verified = [row for row in details if row["verified"]]
     return {
-        "source": SOURCE,
-        "api_total": total,
-        "display_cap": DISPLAY_CAP,
-        "source_completeness": completeness,
-        "terminal_page": terminal_page,
+        "api_total_reported": first.api_total_reported,
+        "source_total_proven": first.source_total_proven,
+        "terminal_page": first.terminal_page,
         "pages_checked": pages,
+        "raw_rows_checked": raw_rows,
+        "unique_property_ids": len(lots_by_id),
         "page_digests": page_digests,
-        "unique_accepted_property_ids": len(set(ids)),
-        "details_checked": len(details),
+        "details_requested": len(details),
+        "details_verified": len(verified),
+        "detail_initial_price_success": sum(row["initial_price_present"] for row in verified),
+        "detail_current_price_success": sum(row["current_price_present"] for row in verified),
+        "detail_known_status_success": sum(row["status"] != "unknown" for row in verified),
         "details": details,
-        "production_enabled": False,
-        "reconciliation_enabled": False,
     }
-
-
-async def _main(args: argparse.Namespace) -> int:
-    runs = []
-    for _ in range(args.passes):
-        runs.append(await _walk(full=args.full, detail_limit=args.details))
-
-    stable = len(runs) < 2 or runs[0]["page_digests"] == runs[1]["page_digests"]
-    output = {
-        "contract": "sberbank_ast_bankruptcy_readonly_v1",
-        "passes": len(runs),
-        "stable_page_digests": stable,
-        "runs": runs,
-    }
-    print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
-    if args.passes >= 2 and not stable:
-        return 2
-    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--passes", type=int, choices=(1, 2), default=2)
     parser.add_argument("--details", type=int, default=30)
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="walk every page only when API Total is below the 10,000 display cap",
-    )
+    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
     if not 0 <= args.details <= 100:
         parser.error("--details must be between 0 and 100")
-    return asyncio.run(_main(args))
+
+    session = requests.Session()
+    session.headers.setdefault(
+        "User-Agent",
+        "TORGI-Sberbank-AST-readonly-audit/1.0 (+https://github.com/Maximiliamos/torgi)",
+    )
+
+    runs = [
+        _walk(session, full=args.full, detail_limit=args.details)
+        for _ in range(args.passes)
+    ]
+    stable = (
+        len(runs) < 2
+        or (
+            runs[0]["api_total_reported"] == runs[1]["api_total_reported"]
+            and runs[0]["page_digests"] == runs[1]["page_digests"]
+        )
+    )
+    summary = {
+        "contract": "sberbank_ast_bankruptcy_isolated_v2",
+        "read_only": True,
+        "database_writes": 0,
+        "production_changes": 0,
+        "passes": len(runs),
+        "stable_page_digests": stable,
+        "evidence_digest": hashlib.sha256(
+            json.dumps(runs, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest(),
+        "runs": runs,
+        "production_enabled": False,
+        "reconciliation_enabled": False,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    if args.passes == 2 and not stable:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
