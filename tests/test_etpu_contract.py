@@ -120,7 +120,7 @@ def test_etpu_does_not_invent_price_from_deposit_or_interval_amount() -> None:
         ("Земельные участки", "land"),
         ("Права долевой собственности", "shares"),
         ("Права аренды земельного участка", "lease"),
-        ("Автомобили", "vehicle"),
+        ("Средства транспортные прочие, не включенные в другие группировки", "vehicle"),
         ("Производственное, промышленное оборудование", "equipment"),
         ("Права требования к физическим лицам", "receivables"),
     ],
@@ -129,6 +129,20 @@ def test_etpu_structured_efrsb_categories(classifier: str, expected: str) -> Non
     text = f"Информация о лоте № 1 Классификатор ЕФРСБ: {classifier} Документы"
     assert etpu_category(text) == expected
     assert expected in etpu_classifier_flags(text)
+
+
+def test_etpu_unknown_structured_classifier_fails_closed_to_other() -> None:
+    parsed = parse_detail_html(
+        _profile(),
+        _detail(
+            classifier="Ценные бумаги и иные финансовые инструменты",
+            title="Автомобиль указан только в свободном описании",
+        ),
+        detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/143412/",
+    )
+
+    assert parsed.category == "other"
+    assert parsed.raw_data["efrsb_classifier_flags"] == ["other"]
 
 
 def test_etpu_official_other_classifier_is_not_overridden_by_free_text() -> None:
