@@ -1314,3 +1314,81 @@ def test_arbbitlot_enrichment_preserves_explicit_catalogue_current_price_when_de
     assert enriched.raw_data["detail_start_price_verified"] is True
     assert enriched.raw_data["detail_current_price_verified"] is False
     assert enriched.raw_data["listing_current_price_used_as_fallback"] is True
+
+
+def test_arbbitlot_pager_double_arrow_advances_beyond_visible_page_group() -> None:
+    page_ten = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state-page-10'>
+      <a href="javascript:__doPostBack('pager$first','')">1</a>
+      <span>10</span>
+      <a href="javascript:__doPostBack('pager$nextGroup','')">&gt;&gt;</a>
+    </form>
+    """
+    page_eleven = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state-page-11'>
+      <span>11</span>
+      <a href="javascript:__doPostBack('pager$page12','')">12</a>
+    </form>
+    <table><tr><td>
+      <a href='/public/auctions/lots/view/51011/'>
+        Zemelniy uchastok 76:01:000000:211
+      </a>
+    </td></tr></table>
+    """
+    session = FakeSession([
+        FakeResponse(
+            200,
+            page_eleven,
+            "https://torgi.arbbitlot.ru/public/purchases-all/",
+        ),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["arbbitlot.ru"](session=session)
+    connector._last_response = FakeResponse(
+        200,
+        page_ten,
+        "https://torgi.arbbitlot.ru/public/purchases-all/",
+    )
+    connector._last_page = 10
+
+    result = asyncio.run(connector.search({}, cursor="11"))
+
+    assert result.next_cursor == "12"
+    assert [lot.external_id for lot in result.items] == [
+        "arbbitlot.ru:auctions-51011"
+    ]
+    assert session.posts[0][1]["__VIEWSTATE"] == "state-page-10"
+    assert session.posts[0][1]["__EVENTTARGET"] == "pager$nextGroup"
+
+
+def test_arbbitlot_organizer_cancelled_status_is_closed_only_for_arbbitlot() -> None:
+    listing = """
+    <table><tr>
+      <td><a href="/public/auctions/lots/view/51012/">
+        Avtomobil VIN XTA219110GY223704
+      </a></td>
+      <td>2 300 000,00</td>
+      <td>Отменён организатором</td>
+    </tr></table>
+    """
+    parsed = parse_listing_html(profile("arbbitlot.ru"), listing)
+    assert len(parsed) == 1
+    assert parsed[0].auction_status == "closed"
+
+    detail = """
+    <html><body>
+      <h1>Автомобиль VIN XTA219110GY223704</h1>
+      Информация об аукционе №0037281
+      Информация о лоте №1
+      Статус: Отменён организатором
+      Начальная цена, руб.: 2 300 000,00
+      Подробные сведения об имуществе должника и порядке проведения торгов.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"),
+        detail,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/51012/",
+    )
+    assert lot.auction_status == "closed"
