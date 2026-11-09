@@ -94,8 +94,9 @@ def _post_next(
     if postback is None:
         return None
     soup = BeautifulSoup(response.content, "html.parser")
-    form = soup.find("form")
-    action = urljoin(response.url, str(form.get("action") or "")) if form is not None else response.url
+    # ASP.NET posts back to the exact catalogue document we just verified.
+    # Do not trust or invent a different action path.
+    action = response.url
     _check_provider_url(action, catalogue=True)
     data = {
         str(node.get("name")): str(node.get("value") or "")
