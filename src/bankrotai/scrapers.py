@@ -2481,7 +2481,10 @@ class TBankrotClient:
         page_text = soup.get_text(" ", strip=True).casefold()
         auction_status = (
             "closed"
-            if any(token in page_text for token in ("торги завершены", "торги завершены", "лот снят с торгов"))
+            if any(token in page_text for token in (
+                "торги завершены", "торги не состоялись", "торги состоялись",
+                "прием заявок завершен", "приём заявок завершен", "лот снят с торгов",
+            ))
             else "active"
             if any(token in page_text for token in ("текущая цена", "идут торги", "прием заявок", "приём заявок"))
             else "unknown"
