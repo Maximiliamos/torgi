@@ -11,10 +11,9 @@ import hashlib
 import json
 from collections import Counter
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
-from bankrotai.connectors.etp_sources.pagination import has_next_page
 from bankrotai.connectors.etp_sources.sistematorg_contract import (
     PROPERTY_CATEGORIES,
+    SistematorgReadonlyClient,
     parse_sistematorg_catalogue_page,
     parse_sistematorg_detail_lots,
 )
@@ -33,7 +32,7 @@ async def audit_sistematorg(
     if not 0 <= delay_seconds <= 10:
         raise ValueError("delay_seconds must be in 0..10")
 
-    source = connector or SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
+    source = connector or SistematorgReadonlyClient()
     pass_results: list[dict] = []
     detail_targets: list[tuple[str, str]] = []
 
@@ -41,12 +40,12 @@ async def audit_sistematorg(
         counts: Counter[str] = Counter()
         ids: list[str] = []
         terminal_page = None
-        source._last_response = None
-        source._last_page = 0
+        if hasattr(source, "reset"):
+            source.reset()
         for page in range(1, max_pages + 1):
             if page > 1 and delay_seconds:
                 await asyncio.sleep(delay_seconds)
-            response = await asyncio.to_thread(source._request, page)
+            response = await asyncio.to_thread(source.fetch_catalogue_page, page)
             observed = parse_sistematorg_catalogue_page(response.content, page=page)
             counts["catalogue_pages"] += 1
             for reason, value in observed.rejects.items():
@@ -66,7 +65,7 @@ async def audit_sistematorg(
                             detail_targets.append((procedure.detail_url, lot.external_id))
                     else:
                         counts["non_property_lots"] += 1
-            if not has_next_page(source.profile, response.content, page):
+            if not source.has_next_page(response.content, page):
                 terminal_page = page
                 break
         if terminal_page is None:
@@ -85,14 +84,9 @@ async def audit_sistematorg(
         if index and delay_seconds:
             await asyncio.sleep(delay_seconds)
         try:
-            response = await asyncio.to_thread(
-                source._read_request, "get", detail_url,
-                timeout=source.timeout, allow_redirects=False,
-            )
+            response = await asyncio.to_thread(source.fetch_detail, detail_url)
             parsed = parse_sistematorg_detail_lots(
                 response.content, detail_url=detail_url,
-                platform_name=source.profile.platform_name,
-                platform_code=source.profile.platform_code,
             )
             matched = [lot for lot in parsed if lot.external_id == expected_external_id]
             if len(matched) != 1:
@@ -136,40 +130,74 @@ async def audit_sistematorg(
 async def audit_price_evidence(
     *, max_details: int = 10, delay_seconds: float = 1.0, connector=None,
 ) -> dict:
-    """Preserve the original bounded single-lot probe API for operators/tests.
+    """Preserve the original bounded single-lot probe API.
 
-    This legacy probe does not expand multi-lot access; the new full auditor
-    is available separately as audit_sistematorg.
+    With no connector this uses the isolated Sistematorg client.  A connector
+    may still be injected by the legacy zero-write tests.
     """
-    from bankrotai.connectors.etp_sources import EtpSearchFilters
-
     if type(max_details) is not int or not 1 <= max_details <= 20:
         raise ValueError("max_details must be in 1..20")
     if not 0.5 <= delay_seconds <= 10:
         raise ValueError("delay_seconds must be in 0.5..10")
-    source = connector or SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
-    page = await source.search(EtpSearchFilters(page=1))
+
     counts: Counter[str] = Counter()
-    for candidate in page.items:
-        counts["catalogue_trade_rows"] += 1
-        if candidate.raw_data.get("reported_trade_lots") != 1:
-            counts["multiple_or_unknown_lots"] += 1
-            continue
-        counts["single_lot_trade_rows"] += 1
-        if counts["detail_attempts"] >= max_details:
-            continue
-        if counts["detail_attempts"]:
-            await asyncio.sleep(delay_seconds)
-        counts["detail_attempts"] += 1
-        try:
-            detail = await source.fetch_lot(candidate.external_id)
-        except Exception as exc:
-            counts["detail_failure_" + type(exc).__name__] += 1
-            continue
-        if detail.start_price is not None or detail.current_price is not None:
-            counts["single_lot_detail_with_labelled_price"] += 1
-        else:
-            counts["single_lot_detail_missing_labelled_price"] += 1
+
+    if connector is not None:
+        page = await connector.search({})
+        for candidate in page.items:
+            counts["catalogue_trade_rows"] += 1
+            if candidate.raw_data.get("reported_trade_lots") != 1:
+                counts["multiple_or_unknown_lots"] += 1
+                continue
+            counts["single_lot_trade_rows"] += 1
+            if counts["detail_attempts"] >= max_details:
+                continue
+            if counts["detail_attempts"]:
+                await asyncio.sleep(delay_seconds)
+            counts["detail_attempts"] += 1
+            try:
+                detail = await connector.fetch_lot(candidate.external_id)
+            except Exception as exc:
+                counts["detail_failure_" + type(exc).__name__] += 1
+                continue
+            if detail.start_price is not None or detail.current_price is not None:
+                counts["single_lot_detail_with_labelled_price"] += 1
+            else:
+                counts["single_lot_detail_missing_labelled_price"] += 1
+    else:
+        client = SistematorgReadonlyClient()
+        response = await asyncio.to_thread(client.fetch_catalogue_page, 1)
+        page = parse_sistematorg_catalogue_page(response.content, page=1)
+        for procedure in page.procedures:
+            counts["catalogue_trade_rows"] += 1
+            if procedure.declared_lot_count != 1:
+                counts["multiple_or_unknown_lots"] += 1
+                continue
+            counts["single_lot_trade_rows"] += 1
+            if counts["detail_attempts"] >= max_details:
+                continue
+            if counts["detail_attempts"]:
+                await asyncio.sleep(delay_seconds)
+            counts["detail_attempts"] += 1
+            try:
+                detail_response = await asyncio.to_thread(
+                    client.fetch_detail, procedure.detail_url
+                )
+                details = parse_sistematorg_detail_lots(
+                    detail_response.content, detail_url=procedure.detail_url,
+                )
+            except Exception as exc:
+                counts["detail_failure_" + type(exc).__name__] += 1
+                continue
+            if len(details) != 1:
+                counts["detail_failure_identity"] += 1
+                continue
+            detail = details[0]
+            if detail.start_price is not None or detail.current_price is not None:
+                counts["single_lot_detail_with_labelled_price"] += 1
+            else:
+                counts["single_lot_detail_missing_labelled_price"] += 1
+
     return {
         "source": "sistematorg.com",
         "mode": "read_only_first_page_trade_price_evidence",
