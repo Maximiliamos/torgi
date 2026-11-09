@@ -18,6 +18,7 @@ from bankrotai.connectors.etp_sources.sberbank_ast_contract import (
     parse_catalogue_row,
     parse_detail,
     parse_initial_price,
+    normalize_status,
     split_sberbank_lot_code,
     terminal_page_for_total,
     verify_identity,
@@ -143,6 +144,14 @@ def test_terminal_page_is_proven_only_below_display_cap() -> None:
     assert terminal.terminal_page_proven is True
     assert terminal.source_total_proven is True
     assert terminal.next_page is None
+
+
+
+
+def test_terminal_status_wins_over_historic_application_text() -> None:
+    text = "Дата окончания приема заявок 01.11.2026. Торги завершены."
+    assert normalize_status(text) == "finished"
+    assert normalize_status("Торги не состоялись") == "failed"
 
 
 def test_explicit_ruble_price_rules_do_not_invent_price() -> None:
