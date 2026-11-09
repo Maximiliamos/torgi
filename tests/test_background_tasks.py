@@ -349,32 +349,175 @@ def test_automatic_nationwide_refresh_skips_existing_run(monkeypatch) -> None:
     }
 
 
+def test_scheduled_incremental_persists_preflight_and_continues_on_one_source_failure(monkeypatch) -> None:
+    persisted: list[dict] = []
+    attached: list[tuple[dict, bool]] = []
+
+    class FakeAttempt:
+        run_id = "scheduled-incremental"
+        trigger_type = "scheduled_incr"
+
+        def prepare(self, *, global_network_blocked, resolve_specs, required_sources, preflight_runner):
+            assert global_network_blocked() is False
+            specs = resolve_specs()
+            assert {x.source_id for x in specs} == set(required_sources)
+            value = preflight_runner(specs)
+            persisted.append(value)
+            return None, specs, value
+
+        def annotate_result(self, result, value):
+            attached.append((value, not bool(value.get("success"))))
+            result["preflight"] = value
+            result["preflight_warning"] = "source_preflight_failed"
+            return result
+
+    specs = tuple(SimpleNamespace(source_id=x) for x in sorted(tasks.SEVEN_SOURCE_IDS))
+    preflight = {
+        "success": False,
+        "checked": 7,
+        "failed_sources": ["m-ets.ru"],
+        "results": {
+            "m-ets.ru": {
+                "success": False,
+                "source_system": "m-ets.ru",
+                "error_type": "TimeoutError",
+                "error": "read timeout",
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        tasks.ScheduledRefreshAttempt,
+        "create",
+        lambda **_kwargs: FakeAttempt(),
+    )
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "scheduled_specs", lambda _mode, _unpaused: specs)
+    monkeypatch.setattr(tasks, "run_scheduled_source_preflight", lambda _specs: preflight)
+    monkeypatch.setattr(
+        tasks.nationwide_lot_sync_task,
+        "run",
+        lambda run_id, mode: {
+            "status": "partial",
+            "run_id": run_id,
+            "mode": mode,
+            "sources": [
+                {"source_system": "m-ets.ru", "status": "failed", "error": "read timeout"},
+                {"source_system": "torgi.gov.ru", "status": "success"},
+            ],
+        },
+    )
+    monkeypatch.setattr(tasks, "_schedule_partial_source_retries", lambda *_args, **_kwargs: [])
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert persisted == [preflight]
+    assert attached == [(preflight, True)]
+    assert result["run_id"] == "scheduled-incremental"
+    assert result["status"] == "partial"
+    assert result["preflight"] == preflight
+    assert result["preflight_warning"] == "source_preflight_failed"
+
+
+def test_scheduled_incremental_persists_global_circuit_skip(monkeypatch) -> None:
+    finalized: list[str] = []
+
+    class FakeAttempt:
+        run_id = "scheduled-skipped"
+        trigger_type = "scheduled_incr"
+
+        def prepare(self, *, global_network_blocked, **_kwargs):
+            assert global_network_blocked() is True
+            finalized.append("global_source_network_circuit")
+            return (
+                {
+                    "run_id": self.run_id,
+                    "status": "skipped",
+                    "reason": "global_source_network_circuit",
+                    "mode": "incremental",
+                },
+                None,
+                None,
+            )
+
+    monkeypatch.setattr(
+        tasks.ScheduledRefreshAttempt,
+        "create",
+        lambda **_kwargs: FakeAttempt(),
+    )
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: True)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert finalized == ["global_source_network_circuit"]
+    assert result == {
+        "run_id": "scheduled-skipped",
+        "status": "skipped",
+        "reason": "global_source_network_circuit",
+        "mode": "incremental",
+    }
+
+
+def test_scheduled_incremental_persists_missing_source_skip(monkeypatch) -> None:
+    finalized: list[dict] = []
+
+    class FakeAttempt:
+        run_id = "scheduled-missing"
+        trigger_type = "scheduled_incr"
+
+        def prepare(self, *, global_network_blocked, resolve_specs, required_sources, **_kwargs):
+            assert global_network_blocked() is False
+            resolved = resolve_specs()
+            missing = sorted(set(required_sources) - {x.source_id for x in resolved})
+            details = {"missing_sources": missing}
+            finalized.append({"reason": "required_source_not_runnable", "details": details})
+            return (
+                {
+                    "run_id": self.run_id,
+                    "status": "skipped",
+                    "reason": "required_source_not_runnable",
+                    "mode": "incremental",
+                    **details,
+                },
+                None,
+                None,
+            )
+
+    specs = tuple(
+        SimpleNamespace(source_id=x)
+        for x in sorted(tasks.SEVEN_SOURCE_IDS - {"nistp.ru"})
+    )
+
+    monkeypatch.setattr(
+        tasks.ScheduledRefreshAttempt,
+        "create",
+        lambda **_kwargs: FakeAttempt(),
+    )
+    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
+    monkeypatch.setattr(tasks, "scheduled_specs", lambda _mode, _unpaused: specs)
+
+    result = tasks.automatic_nationwide_lot_refresh_task.run("incremental")
+
+    assert finalized == [
+        {
+            "reason": "required_source_not_runnable",
+            "details": {"missing_sources": ["nistp.ru"]},
+        }
+    ]
+    assert result["missing_sources"] == ["nistp.ru"]
+
+
 def test_automatic_full_refresh_retries_an_active_lease(monkeypatch) -> None:
-    class FakeService:
-        def __init__(self, _session_factory):
-            pass
-
-        def create_run(self, **_kwargs):
-            raise SyncAlreadyRunningError("fast-run")
-
     captured: dict = {}
 
     def retry(**kwargs):
         captured.update(kwargs)
         raise Retry()
 
-    monkeypatch.setattr(tasks, "NationwideIngestionService", FakeService)
-    # Exercise the active-lease retry after the new seven-source preflight gate.
-    monkeypatch.setattr(tasks, "_global_source_network_blocked", lambda: False)
     monkeypatch.setattr(
-        tasks, "scheduled_specs",
-        lambda _mode, _unpaused: tuple(
-            SimpleNamespace(source_id=x) for x in tasks.SEVEN_SOURCE_IDS
-        ),
-    )
-    monkeypatch.setattr(
-        tasks, "run_scheduled_source_preflight",
-        lambda _specs: {"success": True},
+        tasks.ScheduledRefreshAttempt,
+        "create",
+        lambda **_kwargs: (_ for _ in ()).throw(SyncAlreadyRunningError("fast-run")),
     )
     monkeypatch.setattr(tasks.automatic_nationwide_lot_refresh_task, "retry", retry)
 

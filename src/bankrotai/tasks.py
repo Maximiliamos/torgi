@@ -35,6 +35,7 @@ from bankrotai.services.scheduled_ingestion_modes import (
     SEVEN_SOURCE_IDS, resolve_nationwide_specs, retry_spec_count, scheduled_specs,
 )
 from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
+from bankrotai.services.scheduled_refresh_attempt import ScheduledRefreshAttempt
 from bankrotai.scrapers import (
     TorgiGovClient,
     TorgiGovSearchFilters,
@@ -1078,37 +1079,38 @@ def probe_source_network_health_task() -> dict[str, Any]:
     time_limit=_DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS,
 )
 def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
-    """Run one beat-triggered nationwide refresh under the durable run lease."""
     if mode not in {"fast", "full", "incremental"}:
         raise ValueError(f"Unsupported automatic nationwide sync mode: {mode}")
-    if _global_source_network_blocked():
-        return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
-    specs = scheduled_specs(mode, _unpaused_source_specs)
-    if mode in {"full", "incremental"}:
-        runnable = {str(spec.source_id) for spec in specs}
-        missing = sorted(SEVEN_SOURCE_IDS - runnable)
-        if missing:
-            return {
-                "status": "skipped",
-                "reason": "required_source_not_runnable",
-                "mode": mode,
-                "missing_sources": missing,
-            }
-        preflight = run_scheduled_source_preflight(specs)
-        if not preflight["success"]:
-            return {
-                "status": "skipped",
-                "reason": "source_preflight_failed",
-                "mode": mode,
-                "preflight": preflight,
-            }
-    return _run_automatic_nationwide_refresh(
-        self,
-        mode=mode,
-        trigger_type="scheduled_incr" if mode == "incremental" else f"scheduled_{mode}",
-        total_sources=len(specs),
-        retry_if_busy=mode in {"full", "incremental"},
+    if mode == "fast":
+        if _global_source_network_blocked():
+            return {"status": "skipped", "reason": "global_source_network_circuit", "mode": mode}
+        specs = scheduled_specs(mode, _unpaused_source_specs)
+        return _run_automatic_nationwide_refresh(
+            self, mode=mode, trigger_type="scheduled_fast",
+            total_sources=len(specs), retry_if_busy=False,
+        )
+    try:
+        attempt = ScheduledRefreshAttempt.create(
+            mode=mode, total_sources=len(SEVEN_SOURCE_IDS), session_factory=SessionLocal,
+        )
+    except SyncAlreadyRunningError as exc:
+        _retry_automatic_refresh(
+            self, exc, max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+            base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+        )
+    skipped, scheduled_run_specs, preflight = attempt.prepare(
+        global_network_blocked=_global_source_network_blocked,
+        resolve_specs=lambda: scheduled_specs(mode, _unpaused_source_specs),
+        required_sources=SEVEN_SOURCE_IDS, preflight_runner=run_scheduled_source_preflight,
     )
+    if skipped is not None:
+        return skipped
+    assert scheduled_run_specs is not None and preflight is not None
+    result = _run_automatic_nationwide_refresh(
+        self, mode=mode, trigger_type=attempt.trigger_type,
+        total_sources=len(scheduled_run_specs), retry_if_busy=True, existing_run_id=attempt.run_id,
+    )
+    return attempt.annotate_result(result, preflight)
 
 
 @celery_app.task(
@@ -1146,24 +1148,28 @@ def _run_automatic_nationwide_refresh(
     trigger_type: str,
     total_sources: int,
     retry_if_busy: bool,
+    existing_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a durable run before work and preserve explicit retry diagnostics."""
+    """Run against an existing durable attempt or create one for lightweight paths."""
     service = NationwideIngestionService(SessionLocal)
-    try:
-        run_id = service.create_run(
-            triggered_by="celery-beat",
-            trigger_type=trigger_type,
-            total_sources=total_sources,
-        )
-    except SyncAlreadyRunningError as exc:
-        if retry_if_busy:
-            _retry_automatic_refresh(
-                task,
-                exc,
-                max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
-                base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+    if existing_run_id is not None:
+        run_id = existing_run_id
+    else:
+        try:
+            run_id = service.create_run(
+                triggered_by="celery-beat",
+                trigger_type=trigger_type,
+                total_sources=total_sources,
             )
-        return {"status": "skipped", "reason": "already_running", "run_id": exc.run_id}
+        except SyncAlreadyRunningError as exc:
+            if retry_if_busy:
+                _retry_automatic_refresh(
+                    task,
+                    exc,
+                    max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
+                    base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
+                )
+            return {"status": "skipped", "reason": "already_running", "run_id": exc.run_id}
 
     try:
         result = nationwide_lot_sync_task.run(run_id, mode)

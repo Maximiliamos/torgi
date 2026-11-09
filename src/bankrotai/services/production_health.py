@@ -100,6 +100,45 @@ def build_phase3_health(
         lease_expires_at=active_sync.lease_expires_at if active_sync is not None else None,
     )
 
+    latest_scheduled = session.scalar(
+        select(LotSyncRun)
+        .where(LotSyncRun.trigger_type.in_(("scheduled_fast", "scheduled_full", "scheduled_incr")))
+        .order_by(LotSyncRun.created_at.desc())
+        .limit(1)
+    )
+    scheduled_result = (
+        dict(latest_scheduled.result_json or {})
+        if latest_scheduled is not None
+        else {}
+    )
+    scheduled_checkpoint = (
+        dict(latest_scheduled.checkpoint_json or {})
+        if latest_scheduled is not None
+        else {}
+    )
+    preflight = scheduled_result.get("preflight") or scheduled_checkpoint.get("preflight") or {}
+    failed_preflight_sources = list(preflight.get("failed_sources") or []) if isinstance(preflight, dict) else []
+    scheduled_status = latest_scheduled.status if latest_scheduled is not None else None
+    scheduled_reason = (
+        scheduled_result.get("reason")
+        or scheduled_checkpoint.get("skip_reason")
+        if latest_scheduled is not None
+        else None
+    )
+    add(
+        "scheduled-refresh-last-attempt",
+        latest_scheduled is not None and scheduled_status not in {"failed", "skipped"},
+        severity="warning",
+        run_id=latest_scheduled.id if latest_scheduled is not None else None,
+        trigger_type=latest_scheduled.trigger_type if latest_scheduled is not None else None,
+        status=scheduled_status,
+        created_at=latest_scheduled.created_at if latest_scheduled is not None else None,
+        started_at=latest_scheduled.started_at if latest_scheduled is not None else None,
+        finished_at=latest_scheduled.finished_at if latest_scheduled is not None else None,
+        reason=scheduled_reason,
+        failed_preflight_sources=failed_preflight_sources,
+    )
+
     all_sources = list_source_health(session, now=now)
     configured_sources = expected_sources or {spec.source_id for spec in default_source_specs()}
     source_by_name = {source.source_system: source for source in all_sources}
@@ -238,6 +277,10 @@ def build_phase3_health(
             "legacy_source_count": len(legacy_sources),
             "source_global_network_degraded": bool(source_network.get("circuit_open")),
             "source_global_network_degraded_sources": source_network.get("degraded_sources") or [],
+            "scheduled_run_id": latest_scheduled.id if latest_scheduled is not None else None,
+            "scheduled_run_status": scheduled_status,
+            "scheduled_run_reason": scheduled_reason,
+            "scheduled_preflight_failed_sources": failed_preflight_sources,
             "geo_percent": geo.get("percent"),
             "geo_classified_percent": geo.get("classified_percent"),
             "geo_actionable_remaining": actionable,
