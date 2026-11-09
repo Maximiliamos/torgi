@@ -288,8 +288,10 @@ def test_reported_mets_current_price_is_not_minimum_or_deposit() -> None:
     lot = parse_mets_lot(html, "https://m-ets.ru/230747-5")
 
     assert lot.current_price == 3_600_000
+    assert lot.raw_data["minimum_price"] == 450_000
     assert lot.raw_data["deposit_rub"] == 720_000
     assert lot.raw_data["period_deadline"] == "2026-11-09T10:00:00"
+    assert lot.next_price_reduction_at.isoformat() == "2026-11-09T10:00:00"
 
 
 def test_homepage_event_feed_never_counts_as_full_search_result():
