@@ -258,6 +258,7 @@ def parse_listing(
             cadastral = _CADASTRAL_RE.search(segment)
             area_values = _area_values(segment)
             area = area_values[0] if area_values else None
+            address_match = _ADDRESS_RE.search(segment)
             detail_url = browser_url(
                 f"{profile.source_id}:{provider_id}:{lot_number}"
             )
@@ -270,7 +271,7 @@ def parse_listing(
                 category=asset_class,
                 region_slug=None,
                 region_name=None,
-                address=None,
+                address=_clean(address_match.group(1)) if address_match else None,
                 cadastral_number=cadastral.group(1) if cadastral else None,
                 vin=None,
                 area=area,
