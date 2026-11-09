@@ -143,20 +143,70 @@ Known detail status forms explicitly covered include `Торги заверше�
 
 ## Changed code
 
-- `src/bankrotai/connectors/etp_sources/vertrades_detail_sections.py` — exact requested-lot section parser.
-- `src/bankrotai/connectors/etp_sources/vertrades_detail_adapter.py` — public `showTrades?id=...` fetch/enrichment adapter with identity and price cross-checks.
-- `src/bankrotai/connectors/etp_sources/common.py` — source-specific adapter hook and source-specific status normalization only for Vertrades.
-- `src/bankrotai/connectors/registry/direct_etp_catalogue.py` — parse real `NNN-АП/NNN-АЗ` procedure codes; existing positive property gate remains.
-- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded two-pass pagination/ID-digest probe, safe filter-form transport inspection and one-response 30-lot live detail proof; executable as `python -m bankrotai.services.etp_vertrades_contract_probe`.
-- `tests/test_direct_etp_catalogue_batch.py` — the old synthetic numeric-only Vertrades trade ID was replaced with the verified `NNN-АП` format; assertions remain strict.
-- `tests/test_vertrades_catalogue_contract.py` — mixed-asset/property and composite-ID regression.
-- `tests/test_vertrades_detail_sections.py` — section isolation, price/status, dates, address/cadastre/area and fail-closed cases.
-- `tests/test_vertrades_detail_adapter.py` — fetch/enrichment identity, conflict and redirect regressions.
-- `tests/test_etp_vertrades_contract_probe.py` — two-pass/terminal/digest/safety regressions plus the 30-lot detail-sample contract.
-- `.github/workflows/etp-vertrades-contract-readonly.yml` — source-specific PR check: focused Vertrades tests, then live two-pass catalogue proof and 30-lot detail proof.
+- `src/bankrotai/connectors/etp_sources/vertrades.py` — the single source-specific contract module: mixed catalogue rows, property gate, `NNN-АП/NNN-АЗ` procedure identity, provider procedure ID, lot ID, GET pagination/terminal signal, filter-form structure, per-lot detail section isolation, initial price, status, dates, address, cadastre, area, deposit, detail fetch and enrichment cross-checks.
+- `src/bankrotai/connectors/etp_sources/vertrades_detail_sections.py` — compatibility re-exports only; no parser logic remains here.
+- `src/bankrotai/connectors/etp_sources/vertrades_detail_adapter.py` — compatibility re-exports only; no parser logic remains here.
+- `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded read-only orchestration using only the isolated Vertrades module for catalogue/detail parsing.
+- `tests/test_vertrades_catalogue_contract.py` — source-module catalogue, mixed-asset, identity and pagination regressions.
+- `tests/test_vertrades_detail_sections.py` — exact-section price/status, dates, address/cadastre/area and fail-closed regressions imported directly from `vertrades.py`.
+- `tests/test_vertrades_detail_adapter.py` — fetch/enrichment tests call `vertrades.py` directly without shared dispatcher wiring.
+- `tests/test_etp_vertrades_contract_probe.py` — bounded two-pass/terminal/digest/safety regressions and 30-lot detail-sample contract.
+- `.github/workflows/etp-vertrades-contract-readonly.yml` — focused source tests plus bounded live two-pass catalogue and 30-lot detail proof.
 - this audit document.
 
-No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, production scheduling, reconciliation or archival logic was changed.
+The earlier changes in `common.py`, `direct_etp_catalogue.py` and `tests/test_direct_etp_catalogue_batch.py` were preserved conceptually by moving their Vertrades-specific behavior into `vertrades.py`, then those integration-owned files were restored to current `main`. No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, scheduler, reconciliation or archival logic is changed.
+
+## Integration hook required
+
+A later centralized integration PR should make only minimal wiring changes:
+
+1. `src/bankrotai/connectors/etp_sources/common.py`
+   - for `source_id == "vertrades.ru"`, use `vertrades.parse_catalogue_page(...)` instead of the generic/direct registry parser;
+   - `fetch_lot()` delegates to `vertrades.fetch_vertrades_lot(...)`;
+   - `enrich_lot()` delegates to `vertrades.enrich_vertrades_lot(...)`;
+   - advertise `fetch_lot` / `detail_enrichment` only after that wiring is reviewed.
+2. `src/bankrotai/connectors/registry/direct_etp_catalogue.py`
+   - if the legacy direct-ETP inventory must continue to expose Vertrades, make its Vertrades branch a thin adapter to `vertrades.parse_catalogue_page(...)`; do not duplicate trade-code or price parsing.
+
+No other shared behavior is required.
+
+## Isolation review
+
+Source-specific module:
+`src/bankrotai/connectors/etp_sources/vertrades.py`
+
+Shared files modified:
+NONE
+
+Source-specific logic remaining in common.py:
+NONE in this PR; integration hook documented above.
+
+Source-specific logic remaining in pagination.py:
+NONE
+
+Source-specific logic remaining in profiles.py:
+NONE added by this PR; existing profile stays integration-owned.
+
+Source-specific logic remaining in source_specific.py:
+NONE
+
+Source-specific logic remaining in direct_etp_catalogue.py:
+NONE in this PR; integration hook documented above.
+
+Compatibility wrappers:
+`vertrades_detail_sections.py` and `vertrades_detail_adapter.py` contain re-exports only.
+
+Existing work preserved:
+YES
+
+Live evidence preserved:
+YES
+
+Regression tests preserved:
+YES
+
+PRODUCTION ENABLED:
+NO
 
 ## Verification matrix
 
