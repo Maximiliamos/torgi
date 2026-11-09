@@ -1165,7 +1165,7 @@ def test_arbbitlot_enrichment_fails_closed_without_individual_start_price() -> N
             lot_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
             source_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
             detail_level=detail_level,
-            raw_data={},
+            raw_data={"procedure_id": "0037314", "lot_number": "2"},
         )
 
     listing = make_lot(detail_level="list", start_price=900000)
