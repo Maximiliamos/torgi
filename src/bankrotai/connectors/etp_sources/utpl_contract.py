@@ -9,12 +9,32 @@ from __future__ import annotations
 import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
+from typing import TypedDict
 
 from bs4 import BeautifulSoup
 
 
 class UtplLotSchemaError(ValueError):
     pass
+
+
+class UtplDetailFields(TypedDict):
+    lot_number: str
+    procedure_number: str | None
+    title: str
+    category: str
+    classifier: str | None
+    property_kinds: tuple[str, ...]
+    initial_price: float | None
+    current_price: float | None
+    source_status_text: str | None
+    cadastral_number: str | None
+    area: float | None
+    vin: str | None
+    address: str | None
+    application_start: datetime | None
+    application_deadline: datetime | None
+    auction_at: datetime | None
 
 
 _SPACE = re.compile(r"\s+")
@@ -140,7 +160,7 @@ def _domain_category(kinds: tuple[str, ...], title: str) -> str:
     return "other"
 
 
-def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
+def parse_utpl_detail_fields(html: str | bytes) -> UtplDetailFields:
     soup = BeautifulSoup(html, "html.parser")
     full_text = _text(soup.get_text(" ", strip=True))
     sections = list(re.finditer(r"Информация о лоте\s*№\s*(\d+)\b", full_text, re.I))
