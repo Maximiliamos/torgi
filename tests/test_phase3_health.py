@@ -77,6 +77,67 @@ def test_phase3_health_accepts_current_map_and_fresh_complete_source() -> None:
     assert checks["geo-backlog-liveness"]["ok"] is True
 
 
+def test_phase3_health_exposes_latest_scheduled_preflight_skip() -> None:
+    factory = _factory()
+    now = datetime(2026, 11, 9, 6, 5, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r6-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                published_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        session.add(
+            LotSyncRun(
+                id="scheduled-preflight-skip",
+                triggered_by="celery-beat",
+                trigger_type="scheduled_incr",
+                status="skipped",
+                total_sources=7,
+                created_at=now.replace(tzinfo=None),
+                finished_at=(now + timedelta(seconds=15)).replace(tzinfo=None),
+                checkpoint_json={
+                    "phase": "skipped_before_ingestion",
+                    "skip_reason": "source_preflight_failed",
+                    "preflight": {
+                        "success": False,
+                        "failed_sources": ["m-ets.ru"],
+                    },
+                },
+                result_json={
+                    "status": "skipped",
+                    "reason": "source_preflight_failed",
+                    "mode": "incremental",
+                },
+            )
+        )
+        session.commit()
+
+        health = build_phase3_health(
+            session,
+            now=now + timedelta(minutes=1),
+            expected_sources={"torgi.gov.ru"},
+        )
+
+    checks = {item["name"]: item for item in health["checks"]}
+    scheduled = checks["scheduled-refresh-last-attempt"]
+    assert scheduled["ok"] is False
+    assert scheduled["severity"] == "warning"
+    assert scheduled["run_id"] == "scheduled-preflight-skip"
+    assert scheduled["status"] == "skipped"
+    assert scheduled["reason"] == "source_preflight_failed"
+    assert scheduled["failed_preflight_sources"] == ["m-ets.ru"]
+    assert health["summary"]["scheduled_run_id"] == "scheduled-preflight-skip"
+    assert health["summary"]["scheduled_run_status"] == "skipped"
+    assert health["summary"]["scheduled_preflight_failed_sources"] == ["m-ets.ru"]
+
+
 def test_phase3_health_fails_for_expired_sync_lease_and_failed_newer_map() -> None:
     factory = _factory()
     now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
