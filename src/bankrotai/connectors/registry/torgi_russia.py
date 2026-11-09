@@ -12,8 +12,8 @@ from bankrotai.torgi_russia import PUBLIC_REGION_FILTER_IDS, TorgiRussiaClient
 
 class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
-    detail_enrichment_version = 4
-    compatible_detail_enrichment_versions = frozenset({3, 4})
+    detail_enrichment_version = 5
+    compatible_detail_enrichment_versions = frozenset({5})
     # Listing-page price/status/photo changes do not invalidate stable detail
     # fields such as address/cadastral/procedure data. This also prevents the
     # new Next.js transport shape from forcing a mass detail refetch.

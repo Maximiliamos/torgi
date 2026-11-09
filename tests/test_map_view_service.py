@@ -216,6 +216,50 @@ def test_map_payload_reports_viewport_truncation(
     assert response["truncated"] is expected_truncated
 
 
+
+
+@pytest.mark.parametrize("terminal_status", ["closed", "completed", "finished", "expired", "cancelled"])
+def test_active_map_hides_terminal_status_even_if_archive_flag_lags(terminal_status: str) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(
+            external_id=f"terminal-{terminal_status}",
+            source="rus-on",
+            source_system="rus-on.ru",
+            title="Завершённый лот",
+            description="",
+            category="real_estate",
+            auction_status=terminal_status,
+            is_archived=False,
+            current_geo_lat=55.79,
+            current_geo_lon=38.44,
+            current_geo_source="address",
+            current_geo_confidence="high",
+        )
+        session.add(lot)
+        session.flush()
+        session.add(LotGeoSnapshot(
+            lot_id=lot.id,
+            geo_source="address",
+            geo_method="fixture",
+            geo_confidence="high",
+            centroid_lat=55.79,
+            centroid_lon=38.44,
+        ))
+        session.commit()
+
+        active = build_map_lots_response(
+            session, city_slug=None, include_archived=False, limit=100,
+        )
+        history = build_map_lots_response(
+            session, city_slug=None, include_archived=True, limit=100,
+        )
+
+    assert active["items"] == []
+    assert [item["status"] for item in history["items"]] == [terminal_status]
+
+
 def test_map_filters_by_subject_and_start_price_in_database() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

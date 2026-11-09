@@ -227,6 +227,73 @@ def test_multi_lot_procedure_scopes_fields_to_url_sku():
     assert "6138" not in lot.description
 
 
+
+
+def test_reported_mets_detail_keeps_price_address_photos_and_deadline_separate() -> None:
+    html = """
+    <html><body>
+      <div class="lot-container">
+        <meta itemprop="sku" content="241542-МЭТС-1">
+        <h2 class="lot-title">Жилой дом с земельным участком</h2>
+        <div>Идентификационный номер: 241542-МЭТС-1</div>
+        <span itemprop="description">
+          Жилой дом, расположенный по адресу: Российская Федерация, обл. Ярославская область,
+          м.р-н Ярославский, с/п Карабихское, д. Алексеевское.
+          Кадастровый номер: 76:17:010101:42
+        </span>
+        <div class="lot-cost-item">
+          <div class="value">10 160 100 ₽</div><div class="title">Начальная цена</div>
+        </div>
+        <div class="lot-cost-item zadat">
+          <div class="value">1 016 010 ₽</div><div class="title">Размер задатка</div>
+        </div>
+        <div class="lot-cost-item date">
+          <div class="title">Окончание приема заявок:</div>
+          <div class="value">30.11.2026 00:00</div>
+        </div>
+        <div class="lot-cost-item status"><div class="lot-status-name">Объявленные торги</div></div>
+        <div class="lot-cost-item date">
+          <div class="title">Дата торгов:</div><div class="value">01.12.2026 13:00</div>
+        </div>
+        <img data-src="/uploads/lots/241542/main.jpg">
+      </div>
+    </body></html>
+    """
+    lot = parse_mets_lot(html, "https://m-ets.ru/241542-1")
+
+    assert lot.start_price == 10_160_100
+    assert lot.raw_data["deposit_rub"] == 1_016_010
+    assert lot.application_deadline.isoformat() == "2026-11-30T00:00:00"
+    assert lot.auction_at.isoformat() == "2026-12-01T13:00:00"
+    assert "Алексеевское" in lot.address
+    assert lot.raw_data["image_urls"] == [
+        "https://meetings.m-ets.ru/uploads/lots/241542/main.jpg"
+    ]
+
+
+def test_reported_mets_current_price_is_not_minimum_or_deposit() -> None:
+    html = """
+    <html><body><div class="lot-container">
+      <meta itemprop="sku" content="230747-МЭТС-5">
+      <h2 class="lot-title">Недвижимое имущество</h2>
+      <div>Идентификационный номер: 230747-МЭТС-5</div>
+      <span itemprop="description">Квартира по адресу: г. Москва, ул. Тестовая, д. 1</span>
+      <div class="lot-cost-item"><div class="value">3 600 000 ₽</div><div class="title">Текущая цена</div></div>
+      <div class="lot-cost-item"><div class="value">450 000 ₽</div><div class="title">Минимальная цена</div></div>
+      <div class="lot-cost-item zadat"><div class="value">720 000 ₽</div><div class="title">Размер задатка</div></div>
+      <div class="lot-cost-item status"><div class="lot-status-name">Торги в стадии приема заявок</div></div>
+      <div>Окончание приема заявок на периоде: 09.11.2026 10:00</div>
+    </div></body></html>
+    """
+    lot = parse_mets_lot(html, "https://m-ets.ru/230747-5")
+
+    assert lot.current_price == 3_600_000
+    assert lot.raw_data["minimum_price"] == 450_000
+    assert lot.raw_data["deposit_rub"] == 720_000
+    assert lot.raw_data["period_deadline"] == "2026-11-09T10:00:00"
+    assert lot.next_price_reduction_at.isoformat() == "2026-11-09T10:00:00"
+
+
 def test_homepage_event_feed_never_counts_as_full_search_result():
     html = (
         '<html><head><meta property="og:url" content="https://m-ets.ru/">'
@@ -470,3 +537,42 @@ def test_single_cadastre_lot_is_explicitly_not_composite():
     lot = parse_mets_lot(DETAIL, URL)
     assert lot.raw_data["cadastral_numbers"] == ["48:20:0021101:37"]
     assert lot.raw_data["cadastral_multi_object"] is False
+
+
+def test_reported_mets_kostroma_lot_keeps_price_address_and_final_deadline() -> None:
+    html = """
+    <html><body>
+      <div class="lot-container">
+        <meta itemprop="sku" content="238002-МЭТС-4">
+        <h2 class="lot-title">Гаражный бокс</h2>
+        <div>Идентификационный номер: 238002-МЭТС-4</div>
+        <span itemprop="description">
+          Гаражный бокс, адрес: Костромская обл., г. Кострома,
+          ул. Боровая, территория ГСК 61, бокс 128 - В
+        </span>
+        <div class="lot-cost-item">
+          <div class="value">630 000 ₽</div><div class="title">Начальная цена</div>
+        </div>
+        <div class="lot-cost-item zadat">
+          <div class="value">63 000 ₽</div><div class="title">Размер задатка</div>
+        </div>
+        <div class="lot-cost-item status">
+          <div class="lot-status-name">Торги в стадии приема заявок</div>
+        </div>
+        <div class="lot-cost-item date">
+          <div class="title">Окончание приема заявок:</div>
+          <div class="value">11.11.2026 12:00</div>
+        </div>
+      </div>
+    </body></html>
+    """
+    lot = parse_mets_lot(html, "https://m-ets.ru/238002-4")
+
+    assert lot.start_price == 630_000
+    assert lot.raw_data["deposit_rub"] == 63_000
+    assert lot.address == (
+        "Костромская обл., г. Кострома, ул. Боровая, "
+        "территория ГСК 61, бокс 128 - В"
+    )
+    assert lot.application_deadline.isoformat() == "2026-11-11T12:00:00"
+    assert lot.auction_status == "active"

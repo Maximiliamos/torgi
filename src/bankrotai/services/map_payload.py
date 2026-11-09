@@ -7,6 +7,8 @@ ENDED_STATUSES = frozenset(
     {
         "closed",
         "completed",
+        "finished",
+        "expired",
         "cancelled",
         "canceled",
         "failed",

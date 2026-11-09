@@ -576,7 +576,18 @@ class TorgiRussiaClient:
         return records, metadata
 
     @staticmethod
-    def parse_detail_payload(data: dict) -> dict:
+    def _property_address_from_description(description: str) -> str | None:
+        normalized = re.sub(r"\s+", " ", description or "").strip()
+        match = re.search(
+            r"(?:по адресу|адрес(?: местонахождения)?)\s*:\s*(.+?)"
+            r"(?=\s*[,;]?\s*(?:К[\\/]?н|Кадастров)|$)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return match.group(1).strip(" ,.;") if match else None
+
+    @classmethod
+    def parse_detail_payload(cls, data: dict) -> dict:
         information_html = str(data.get("information") or "")
         description = BeautifulSoup(information_html, "html.parser").get_text("\n", strip=True)
         raw_cadastrals = data.get("cadastrals")
@@ -584,12 +595,7 @@ class TorgiRussiaClient:
         cadastres = [normalize_cadastral_number(str(value)) for value in cadastral_values if value]
         if not cadastres:
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(description)]
-        address_match = re.search(
-            r"(?:по адресу|адрес(?: местонахождения)?):\s*(.+?)"
-            r"(?=\s+(?:К[\\/]?н|Кадастров)|\n|$)",
-            description,
-            flags=re.IGNORECASE,
-        )
+        address = cls._property_address_from_description(description)
         raw_pictures = data.get("pictures")
         pictures: list = raw_pictures if isinstance(raw_pictures, list) else []
         image_urls = [
@@ -599,7 +605,7 @@ class TorgiRussiaClient:
         ]
         return {
             "description": description,
-            "address": address_match.group(1).strip(" .;") if address_match else None,
+            "address": address,
             "cadastral_numbers": list(dict.fromkeys(cadastres)),
             "image_urls": list(dict.fromkeys(image_urls)),
             "etp_url": data.get("trade_link"),
@@ -926,6 +932,16 @@ class TorgiRussiaClient:
             )
         flight_detail = cls.parse_detail_payload(flight_record) if isinstance(flight_record, dict) else {}
 
+        labelled_description = labelled(
+            "описание лота", "описание имущества", "сведения об имуществе"
+        )
+        description = (
+            str(flight_detail.get("description") or "").strip()
+            or str(labelled_description or "").strip()
+            or None
+        )
+        property_address = cls._property_address_from_description(description or "")
+
         text = soup.get_text(" ", strip=True)
         cadastres = list(
             dict.fromkeys(
@@ -944,21 +960,29 @@ class TorgiRussiaClient:
             etp_url=etp_url,
             image_urls=list(dict.fromkeys(image_urls)),
             cadastral_numbers=cadastres,
-            description=str(flight_detail.get("description") or "").strip() or None,
+            description=description,
             procedure_number=(
                 match.group(0)
                 if (match := re.search(r"\b[A-Z0-9]{7,12}-\d{4}-\d{4}-\d\b", text))
                 else None
             ),
-            address=flight_detail.get("address") or labelled("адрес", "местонахожд"),
+            address=(
+                property_address
+                or flight_detail.get("address")
+                or labelled("адрес местонахождения имущества", "местонахождение имущества")
+            ),
             category=labelled("категор", "вид имущества"),
-            application_start_at=parse_date(labelled("начало приема заявок", "начало приёма заявок")),
+            application_start_at=parse_date(labelled(
+                "начало приема заявок", "начало приёма заявок", "начало подачи заявок"
+            )),
             application_deadline=parse_date(
                 labelled(
                     "конец приема заявок",
                     "конец приёма заявок",
                     "окончание приема заявок",
                     "окончание приёма заявок",
+                    "конец подачи заявок",
+                    "окончание подачи заявок",
                 )
             ),
             auction_at=parse_date(
@@ -967,6 +991,7 @@ class TorgiRussiaClient:
                     "конец приёма ценовых предложений",
                     "дата торгов",
                     "дата аукцион",
+                    "дата проведения",
                     "проведен",
                 )
             ),

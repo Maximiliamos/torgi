@@ -929,3 +929,47 @@ def test_p14_legacy_html_unknown_is_not_assumed_active() -> None:
     assert TorgiRussiaClient.parse_search_page(
         with_status, "https://xn----etbpba5admdlad.xn--p1ai/search?history_only=0"
     )[0].auction_status == "closed"
+
+
+def test_torgi_russia_lot_page_prefers_property_description_over_generic_address() -> None:
+    html = """
+    <table>
+      <tr><th>Описание лота</th><td>
+        Земельный участок, площадью 885 кв. м., по адресу:
+        Ярославская область, Гаврилов-Ямский, с/п Заячье-Холмский,
+        с. Унимерь, кадастровый номер 76:04:033901:2483
+      </td></tr>
+      <tr><th>Адрес</th><td>
+        Ярославская область, г. Переславль-Залесский, Кривоколенный переулок, 16
+      </td></tr>
+      <tr><th>Конец подачи заявок</th><td>10.11.2026 18:00</td></tr>
+      <tr><th>Дата проведения</th><td>14.11.2026 10:30</td></tr>
+    </table>
+    """
+
+    detail = TorgiRussiaClient.parse_lot_page(
+        html, "https://xn----etbpba5admdlad.xn--p1ai/lot/7267108"
+    )
+
+    assert detail.address == (
+        "Ярославская область, Гаврилов-Ямский, "
+        "с/п Заячье-Холмский, с. Унимерь"
+    )
+    assert detail.application_deadline.isoformat() == "2026-11-10T18:00:00"
+    assert detail.auction_at.isoformat() == "2026-11-14T10:30:00"
+    assert "76:04:033901:2483" in detail.description
+
+
+def test_torgi_russia_detail_description_address_accepts_location_phrase() -> None:
+    detail = TorgiRussiaClient.parse_detail_payload({
+        "information": (
+            "Земельный участок, по адресу: Ярославская область, "
+            "Гаврилов-Ямский, с/п Заячье-Холмский, с. Унимерь, "
+            "Кадастровый номер: 76:04:033901:2483"
+        )
+    })
+
+    assert detail["address"] == (
+        "Ярославская область, Гаврилов-Ямский, "
+        "с/п Заячье-Холмский, с. Унимерь"
+    )

@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError, ConnectorPage
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import classify_category
+from bankrotai.extractors import extract_address
 
 if TYPE_CHECKING:
     from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
@@ -173,11 +174,12 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
     current = None
+    minimum = None
     for item in summary_nodes:
         classes = item.get("class", [])
         label = item.select_one(".title")
         value = item.select_one(".value")
-        if label is None or value is None or "price" not in classes:
+        if label is None or value is None:
             continue
         label_text = label.get_text(" ", strip=True)
         parsed_price = _price_before_label(
@@ -187,6 +189,8 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             initial = parsed_price
         elif label_text == "Текущая цена":
             current = parsed_price
+        elif label_text == "Минимальная цена":
+            minimum = parsed_price
     deposit_node = scope.select_one(".lot-cost-item.zadat")
     deposit = None
     if deposit_node is not None:
@@ -196,9 +200,14 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
                 deposit_value.get_text(" ", strip=True) + " Размер задатка",
                 "Размер задатка",
             )
-    if not summary_nodes:  # Compatibility with earlier minimal mocked HTML.
-        initial = _price_before_label(text[:4000], "Начальная цена")
-        current = _price_before_label(text[:4000], "Текущая цена")
+    # Some current provider templates omit the historical CSS class on price
+    # blocks. Labels are the contract; never substitute deposit/minimum price.
+    if initial is None:
+        initial = _price_before_label(text[:5000], "Начальная цена")
+    if current is None:
+        current = _price_before_label(text[:5000], "Текущая цена")
+    if minimum is None:
+        minimum = _price_before_label(text[:5000], "Минимальная цена")
     status_node = scope.select_one(".lot-cost-item.status .lot-status-name")
     source_status = (
         status_node.get_text(" ", strip=True) if status_node
@@ -217,7 +226,63 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     period_deadline = _date_after_label(
         date_source, "Окончание приема заявок на периоде"
     )
+    auction_at = (
+        _date_after_label(date_source, "Дата торгов")
+        or _date_after_label(date_source, "Дата проведения торгов")
+        or _date_after_label(date_source, "Подведение итогов")
+    )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    address = extract_address(description) or extract_address((title + " " + description)[:5000])
+
+    image_urls: list[str] = []
+    image_scope = scope
+    for node in image_scope.select("img, a[href], [style*='background-image']"):
+        candidates = [
+            str(node.get("data-src") or ""),
+            str(node.get("data-original") or ""),
+            str(node.get("src") or ""),
+            str(node.get("href") or ""),
+        ]
+        candidates.extend(re.findall(
+            r"url\(['\"]?([^)'\"]+)", str(node.get("style") or ""), re.I
+        ))
+        for raw_image in candidates:
+            raw_image = raw_image.strip()
+            if not raw_image or raw_image.startswith(("data:", "javascript:")):
+                continue
+            lowered = raw_image.casefold()
+            if any(token in lowered for token in ("logo", "icon", "avatar", "captcha", "spinner")):
+                continue
+            path = urlsplit(raw_image).path.casefold()
+            if not (
+                re.search(r"\.(?:jpe?g|png|webp)(?:$|\?)", lowered)
+                or any(token in path for token in ("/upload", "/photo", "/image", "/file"))
+            ):
+                continue
+            image_url = urljoin(DETAIL_MIRROR + "/", raw_image)
+            if image_url not in image_urls:
+                image_urls.append(image_url)
+    if not image_urls and scope is not soup and len(sku_nodes) == 1:
+        # The official page may render its gallery outside .lot-container,
+        # just like its primary description.  With one independently verified
+        # SKU it is safe to inspect only gallery/photo-shaped nodes outside
+        # recommendation cards.
+        for node in soup.select(
+            ".gallery img, [class*='gallery'] img, [class*='photo'] img, "
+            "a[href$='.jpg'], a[href$='.jpeg'], a[href$='.png'], a[href$='.webp']"
+        ):
+            if node.find_parent(class_="card-item") is not None:
+                continue
+            raw_image = str(
+                node.get("data-src") or node.get("data-original")
+                or node.get("src") or node.get("href") or ""
+            ).strip()
+            if not raw_image:
+                continue
+            image_url = urljoin(DETAIL_MIRROR + "/", raw_image)
+            if image_url not in image_urls:
+                image_urls.append(image_url)
+
     # Keep the platform/external identifier stable while exposing the
     # provider's actual working public link to end users (the old root
     # detail path returns HTTP 403).
@@ -231,7 +296,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         category=category,
         region_slug=None,
         region_name=None,
-        address=None,
+        address=address,
         cadastral_number=cadastral,
         vin=None,
         area=None,
@@ -254,11 +319,16 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "source_initial_price_observed": initial is not None,
             "source_status_text": source_status[:160] if status_node else None,
             "deposit_rub": deposit,
+            "minimum_price": minimum,
+            "image_url": image_urls[0] if image_urls else None,
+            "image_urls": image_urls,
             "mentions_pledge": ("залоге" in description.lower() or "залог" in description.lower()),
             "complete_search_pagination": False,
         },
         application_deadline=deadline,
+        auction_at=auction_at,
         auction_timezone="Europe/Moscow",
+        next_price_reduction_at=period_deadline,
         procedure_number=f"{trade}-МЭТС",
         platform_name="МЭТС",
     )

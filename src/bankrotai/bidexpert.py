@@ -4,7 +4,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -81,12 +81,22 @@ class BidExpertClient:
         soup = BeautifulSoup(html, "lxml")
         result: list[NormalizedLot] = []
         for link in soup.select('a[href*="/bids/lot/?n="]'):
-            href = link.get("href") or ""
-            match = re.search(r"[?&]n=(\d+)", href)
+            raw_href = str(link.get("href") or "")
+            match = re.search(r"[?&]n=(\d+)", raw_href)
             if not match:
                 continue
-            card = link.find_parent("div", class_=re.compile(r"lot|item|bid", re.I)) or link.parent
+            href = urljoin(self.BASE_URL, raw_href)
+            # A broad class regex used to climb into a wrapper containing many
+            # adjacent lots. That mixed title/price fields between identities.
+            card = link.find_parent("div", class_="bid-item") or link.parent
             if card is None:
+                continue
+            linked_ids = {
+                found.group(1)
+                for anchor in card.select('a[href*="/bids/lot/?n="]')
+                if (found := re.search(r"[?&]n=(\d+)", str(anchor.get("href") or "")))
+            }
+            if linked_ids and linked_ids != {match.group(1)}:
                 continue
             text = card.get_text(" ", strip=True)
             title_node = card.select_one(".title")
@@ -97,6 +107,15 @@ class BidExpertClient:
                 continue
             numbers = extract_cadastral_numbers(title)
             price_node = card.select_one(".start-price")
+            price = parse_money(price_node.get_text(" ", strip=True) if price_node else None)
+            if price is None:
+                money = re.search(
+                    r"(?<!\d)(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d{1,2})?|"
+                    r"\d{4,14}(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:\.|лей)?)",
+                    text,
+                    re.IGNORECASE,
+                )
+                price = parse_money(money.group(0)) if money else None
             deadline_node = card.select_one(".application-submit-end span")
             deadline = self._parse_moscow_datetime(deadline_node.get_text(" ", strip=True) if deadline_node else "")
             address = extract_address(title)
@@ -106,7 +125,7 @@ class BidExpertClient:
                 region_slug=(numbers[0].split(":", 1)[0].zfill(2) if numbers else None), region_name=None,
                 address=address,
                 cadastral_number=numbers[0] if numbers else None, vin=None, area=None,
-                start_price=parse_money(price_node.get_text(" ", strip=True) if price_node else None), current_price=None,
+                start_price=price, current_price=None,
                 auction_status="active", lot_url=href, source_url=href, detail_level="search",
                 raw_data={"cadastral_numbers": numbers, "application_deadline": deadline.isoformat() if deadline else None, "raw_endpoint": endpoint, "source_category": filters.category},
                 application_deadline=deadline,

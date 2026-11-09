@@ -1221,12 +1221,44 @@ class TorgiGovClient:
         else:
             lot_url = urljoin(self.BASE_URL, lot_url)
 
-        image_ids = payload.get("lotImages") if isinstance(payload.get("lotImages"), list) else []
-        image_urls = [
-            f"{self.BASE_URL}/new/image-preview/v1/{image_id}?disposition=inline&resize=600x600!"
-            for image_id in dict.fromkeys(self._clean_text(value) for value in image_ids)
-            if image_id
-        ]
+        # lotImages may be nested in the API response and newer payloads
+        # may expose image objects instead of a flat list of UUID strings.
+        raw_images = self._find_key(payload, "lotImages")
+        if raw_images in (None, "", [], {}):
+            raw_images = self._find_key(payload, "lotImageIds")
+        image_items = raw_images if isinstance(raw_images, list) else ([raw_images] if raw_images else [])
+        image_urls: list[str] = []
+        for item in image_items:
+            direct_url = None
+            image_id = None
+            if isinstance(item, dict):
+                for key in ("url", "href", "src", "downloadUrl", "previewUrl"):
+                    candidate = item.get(key)
+                    if candidate:
+                        direct_url = self._clean_text(candidate)
+                        break
+                for key in ("id", "imageId", "fileId", "guid", "uuid"):
+                    candidate = item.get(key)
+                    if candidate:
+                        image_id = self._clean_text(candidate)
+                        break
+            else:
+                candidate = self._clean_text(item)
+                if candidate.startswith(("http://", "https://", "/")):
+                    direct_url = candidate
+                else:
+                    image_id = candidate
+            if direct_url:
+                image_url = urljoin(self.BASE_URL, direct_url)
+            elif image_id:
+                image_url = (
+                    f"{self.BASE_URL}/new/image-preview/v1/{image_id}"
+                    "?disposition=inline&resize=600x600!"
+                )
+            else:
+                continue
+            if image_url not in image_urls:
+                image_urls.append(image_url)
 
         raw_data = {
             "source": "torgi_gov_json",

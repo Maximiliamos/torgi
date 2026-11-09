@@ -108,6 +108,9 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
         assert processed.title == "Проверенное название"
         assert float(processed.current_price or 0) == 450_000
         assert processed.auction_status == "closed"
+        assert processed.is_archived is True
+        assert processed.archived_at is not None
+        assert processed.closed_at is not None
         assert source is not None and source.title == "Новое название источника"
         price_events = session.scalars(select(LotPriceEvent).order_by(LotPriceEvent.id)).all()
         assert [(event.price_kind, float(event.amount)) for event in price_events] == [

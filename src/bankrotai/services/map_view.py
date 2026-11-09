@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.services.map_source_filters import source_match_condition
+from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
 
@@ -194,6 +195,12 @@ def _map_base_filters(
         filters.append(ProcessedLot.start_price <= max_start_price)
     if not include_archived:
         filters.append(ProcessedLot.is_archived.is_(False))
+        # Source status is independent terminal evidence.  A stale projection
+        # archive flag must never keep a completed lot on the active map.
+        filters.append(or_(
+            ProcessedLot.auction_status.is_(None),
+            func.lower(ProcessedLot.auction_status).notin_(ENDED_STATUSES),
+        ))
     if review_status:
         filters.append(ProcessedLot.review_status == review_status)
     return filters

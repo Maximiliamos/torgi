@@ -899,6 +899,11 @@ class HtmlEtpConnector(AuctionConnector):
         if self.source_id == "nistp.ru":
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
             return await fetch_nistp_lot(self, external_id)
+        if self.source_id == "rus-on.ru":
+            from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector
+            return await RusonReadonlyConnector(
+                session=self.session, timeout=self.timeout,
+            ).fetch_lot(external_id)
         if self.source_id == "vertrades.ru":
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
@@ -948,7 +953,11 @@ class HtmlEtpConnector(AuctionConnector):
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import enrich_nistp_lot
             return await enrich_nistp_lot(self, lot)
         detail = await self.fetch_lot(lot.external_id)
-        return apply_detail(lot, detail, version=self.detail_enrichment_version)
+        enriched = apply_detail(lot, detail, version=self.detail_enrichment_version)
+        if self.source_id == "rus-on.ru":
+            from bankrotai.connectors.etp_sources.ruson import enrich_ruson_lot
+            return enrich_ruson_lot(enriched, detail)
+        return enriched
 
     async def healthcheck(self) -> ConnectorHealth:
         if self.profile.blocked_reason:
