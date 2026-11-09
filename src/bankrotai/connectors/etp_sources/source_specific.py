@@ -152,11 +152,11 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
         for key in ("procedure_id", "lot_number"):
             listing_identity = listing_raw.get(key)
             detail_identity = detail_raw.get(key)
-            if (
-                listing_identity is not None
-                and detail_identity is not None
-                and str(listing_identity) != str(detail_identity)
-            ):
+            if listing_identity is None:
+                raise ValueError(f"arbbitlot_catalogue_{key}_unverified")
+            if detail_identity is None:
+                raise ValueError(f"arbbitlot_detail_{key}_unverified")
+            if str(listing_identity) != str(detail_identity):
                 raise ValueError(f"arbbitlot_catalogue_detail_{key}_mismatch")
 
     listing_start = _checked_amount(lot.start_price)
