@@ -63,9 +63,13 @@ class FabrikantConnector(HtmlEtpConnector):
             metadata={
                 "source": self.source_id,
                 "page": page,
-                "count": len(lots),
+                "items_on_page": len(lots),
+                "total_items": None,
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
+                "reconcile_missing": False,
+                "maturity": self.profile.status,
+                "response_url": response.url,
             },
         )
 
