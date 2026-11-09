@@ -72,6 +72,32 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
     return False
 
 
+
+def postback_link_for_page(profile: EtpSourceProfile, soup: Tag, page: int) -> Tag | None:
+    """Return the provider postback control for a requested 1-based page."""
+    from bankrotai.connectors.etp_sources.common import _clean
+
+    link = next((
+        node for node in soup.select("a[href]")
+        if _clean(node.get_text(" ", strip=True)) == str(page)
+        and "__doPostBack" in str(node.get("href") or "")
+    ), None)
+    if isinstance(link, Tag):
+        return link
+    if (
+        profile.source_id == "arbbitlot.ru"
+        and page > 1
+        and (page - 1) % 10 == 0
+    ):
+        group_link = next((
+            node for node in soup.select("a[href]")
+            if _clean(node.get_text(" ", strip=True)) == ">>"
+            and "__doPostBack" in str(node.get("href") or "")
+        ), None)
+        return group_link if isinstance(group_link, Tag) else None
+    return None
+
+
 def page_url(profile: EtpSourceProfile, page: int) -> str:
     if page <= 1 or not profile.page_parameter:
         return profile.listing_url
