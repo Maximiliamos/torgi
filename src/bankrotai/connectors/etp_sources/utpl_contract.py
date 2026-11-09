@@ -10,6 +10,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from typing import TypedDict
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -307,3 +308,184 @@ def normalize_utpl_status(value: str | None) -> str:
         "приостановлен": "paused",
     }
     return exact.get(label, "unknown")
+
+
+SOURCE_ID = "utpl.ru"
+CATALOGUE_URL = "https://bankrupt.utpl.ru/public/purchases-all/"
+PRODUCTION_ENABLED = False
+SAFE_FOR_RECONCILIATION = False
+_DETAIL_PATH = re.compile(
+    r"/public/(?P<sale_type>auctions|contests|public-offers)/lots/view/(?P<detail_id>\d+)/?\\Z",
+    re.I,
+)
+
+
+class UtplCatalogueLot(TypedDict):
+    external_id: str
+    detail_url: str
+    detail_id: str
+    sale_type: str
+    procedure_number: str | None
+    lot_number: str | None
+    title: str
+    initial_price: float | None
+    current_price: float | None
+    source_status_text: str | None
+    property_classification_verified: bool
+
+
+def canonical_detail_identity(url: str) -> tuple[str, str, str]:
+    """Validate a first-party canonical lot URL and return sale type/id/external_id."""
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "bankrupt.utpl.ru"
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise UtplLotSchemaError("UTPL detail URL is not canonical first-party HTTPS")
+    match = _DETAIL_PATH.fullmatch(parsed.path)
+    if match is None:
+        raise UtplLotSchemaError("UTPL detail URL is not an individual lot URL")
+    sale_type = match.group("sale_type").lower()
+    detail_id = match.group("detail_id")
+    return sale_type, detail_id, f"{SOURCE_ID}:{sale_type}-{detail_id}"
+
+
+def verify_detail_identity(detail_url: str, external_id: str | None = None) -> str:
+    """Return canonical external ID and fail closed on a requested-ID mismatch."""
+    _sale_type, _detail_id, canonical = canonical_detail_identity(detail_url)
+    if external_id is not None and external_id != canonical:
+        raise UtplLotSchemaError("UTPL requested lot ID does not match individual detail URL")
+    return canonical
+
+
+def validate_sequential_page_state(*, requested_page: int, last_page: int | None) -> None:
+    """UTPL ASP.NET state after page 2 must come from the immediately prior page."""
+    if requested_page < 1:
+        raise UtplLotSchemaError("UTPL page must be positive")
+    if requested_page > 2 and last_page != requested_page - 1:
+        raise UtplLotSchemaError("UTPL pagination requires sequential provider state")
+
+
+def is_terminal_page(html: str | bytes, current_page: int) -> bool:
+    return utpl_next_postback(html, current_page) is None
+
+
+def _numeric_cell(value: str) -> float | None:
+    cleaned = _text(value)
+    cleaned = re.sub(r"(?:₽|руб(?:\\.|лей)?)$", "", cleaned, flags=re.I).strip()
+    cleaned = re.sub(r"[\\s\\u00a0\\u202f]", "", cleaned)
+    if not re.fullmatch(r"\\d{1,14}(?:[.,]\\d{1,2})?", cleaned):
+        return None
+    try:
+        amount = Decimal(cleaned.replace(",", "."))
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or not Decimal(0) < amount < Decimal("1e15"):
+        return None
+    return float(amount)
+
+
+def _table_headings(row) -> list[str]:
+    table = row.find_parent("table")
+    if table is None:
+        return []
+    for candidate in table.select("tr"):
+        headers = candidate.find_all("th", recursive=False)
+        if headers:
+            return [_text(h.get_text(" ", strip=True)).lower() for h in headers]
+    return []
+
+
+def parse_utpl_catalogue_page(html: str | bytes, *, page: int = 1) -> list[UtplCatalogueLot]:
+    """Parse only canonical individual-lot rows from a UTPL catalogue document.
+
+    Catalogue text is deliberately not used to claim property classification:
+    structured EFРСБ classification belongs to individual detail.
+    """
+    if page < 1:
+        raise UtplLotSchemaError("UTPL page must be positive")
+    soup = BeautifulSoup(html, "html.parser")
+    rows: dict[str, UtplCatalogueLot] = {}
+    for anchor in soup.select("a[href]"):
+        absolute = urljoin(CATALOGUE_URL, str(anchor.get("href") or "").strip())
+        try:
+            sale_type, detail_id, external_id = canonical_detail_identity(absolute)
+        except UtplLotSchemaError:
+            continue
+        row = anchor.find_parent("tr")
+        if row is None:
+            continue
+        cells = row.find_all("td", recursive=False)
+        headings = _table_headings(row)
+        values = [_text(cell.get_text(" ", strip=True)) for cell in cells]
+        by_heading = {
+            headings[i]: values[i]
+            for i in range(min(len(headings), len(values)))
+        }
+
+        title = _text(anchor.get_text(" ", strip=True))
+        if len(title) < 4:
+            title = max(values, key=len, default="")
+        initial = None
+        current = None
+        status = None
+        procedure = None
+        lot_number = None
+        for heading, value in by_heading.items():
+            if re.search(r"начальн\\w*\\s+цен|цена\\s+лот", heading, re.I):
+                initial = _numeric_cell(value)
+            elif re.search(r"текущ\\w*\\s+цен", heading, re.I):
+                current = _numeric_cell(value)
+            elif "статус" in heading:
+                status = value or None
+            elif re.search(r"(?:номер|№).*?(?:процедур|торг|извещ)", heading, re.I):
+                m = re.search(r"\\b0*([0-9]{4,12})\\b", value)
+                procedure = m.group(1) if m else value or None
+            elif re.search(r"(?:номер|№).*?лот|лот.*?(?:номер|№)", heading, re.I):
+                m = re.search(r"\\b(\\d{1,5})\\b", value)
+                lot_number = m.group(1) if m else None
+
+        if external_id in rows:
+            previous = rows[external_id]
+            if previous["detail_url"] != absolute:
+                raise UtplLotSchemaError("UTPL conflicting catalogue identity")
+            continue
+        rows[external_id] = {
+            "external_id": external_id,
+            "detail_url": absolute,
+            "detail_id": detail_id,
+            "sale_type": sale_type,
+            "procedure_number": procedure,
+            "lot_number": lot_number,
+            "title": title,
+            "initial_price": initial,
+            "current_price": current,
+            "source_status_text": status,
+            "property_classification_verified": False,
+        }
+    return list(rows.values())
+
+
+def parse_utpl_detail(
+    detail_url: str,
+    html: str | bytes,
+    *,
+    external_id: str | None = None,
+) -> dict[str, object]:
+    """Complete source-specific detail contract, independent of shared dispatchers."""
+    canonical = verify_detail_identity(detail_url, external_id)
+    fields = parse_utpl_detail_fields(html)
+    return {
+        "external_id": canonical,
+        **fields,
+        "status": normalize_utpl_status(fields["source_status_text"]),
+        "structured_classifier_verified": fields["classifier"] is not None,
+        "property_classification_verified": bool(fields["property_kinds"]),
+        "production_enabled": PRODUCTION_ENABLED,
+        "safe_for_reconciliation": SAFE_FOR_RECONCILIATION,
+    }
