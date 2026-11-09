@@ -81,7 +81,7 @@ jobs:
             throw "Sberbank-AST live contract remained fail-closed (probe exit $status)"
           }
           if ($report.bankruptcy_filter.returned_rows_verified -ne $true -or
-              $report.property_scope.structured_branch -ne 'Недвижимое имущество' -or
+              $report.property_scope.structured_branch_verified -ne $true -or
               $report.property_scope.free_text_fallback_used -ne $false) {
             throw 'Bankruptcy/property scope is not proven'
           }
