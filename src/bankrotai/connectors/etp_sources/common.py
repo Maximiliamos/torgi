@@ -644,7 +644,9 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(explicit_status or text_value),
+        auction_status=_status(
+            explicit_status if profile.source_id == "etpu.ru" else text_value
+        ),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
