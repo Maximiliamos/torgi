@@ -53,6 +53,34 @@ class PageProof:
     terminal_control: bool
 
 
+ALFALOT_BLOCKED_REASON = (
+    "ALFALOT active GD filter lacks a verified raw HTTP pagination and "
+    "property-only catalogue contract; production import must fail closed"
+)
+
+
+def require_verified_active_http_contract() -> None:
+    """Fail-closed integration hook; do not use the legacy SUPCOMING importer."""
+    raise AlfalotContractError(ALFALOT_BLOCKED_REASON)
+
+
+def verify_gd_filter_state(label: str, *, selected: bool) -> None:
+    """Check the official accepting-applications filter, not a generic status."""
+    if not selected or not re.search(r"при[её]м\w*\s+заяв", label, re.I):
+        raise AlfalotContractError("GD accepting-applications state not confirmed")
+
+
+def terminal_controls_confirmed(clickable: list[str], disabled: list[str]) -> bool:
+    """Explicit disabled next/end UI controls are required, but not HTTP proof."""
+    active = {value.strip() for value in clickable}
+    inactive = {value.strip() for value in disabled}
+    if active.intersection({">", ">>", "›", "»", "→"}):
+        return False
+    return bool(inactive.intersection({">", "›", "»"})) and bool(
+        inactive.intersection({">>", "»"})
+    )
+
+
 def lot_entity_from_url(value: str) -> str | None:
     """Use the opaque per-lot entity, never the parent procedure identifier."""
     url = urlsplit(urljoin(SEARCH_URL, value))
@@ -241,9 +269,9 @@ def verify_walk(pages: list[PageProof]) -> tuple[str, tuple[str, ...]]:
     for expected, page in enumerate(pages, 1):
         if page.page != expected:
             raise AlfalotContractError("page numbers are not contiguous from 1")
-        if (page.state_id != STATE_ELEMENT_ID or not page.selected
-                or not re.search(r"при[её]м\w*\s+заяв", page.state_label, re.I)):
-            raise AlfalotContractError("GD selected-application state not confirmed")
+        if page.state_id != STATE_ELEMENT_ID:
+            raise AlfalotContractError("unrecognized GD state element")
+        verify_gd_filter_state(page.state_label, selected=page.selected)
         if not page.entity_ids or len(set(page.entity_ids)) != len(page.entity_ids):
             raise AlfalotContractError("missing or duplicated lot entity on page")
         if page.terminal_control == page.next_page_control:
