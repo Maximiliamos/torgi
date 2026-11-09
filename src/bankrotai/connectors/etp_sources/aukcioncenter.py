@@ -158,6 +158,19 @@ def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
     return "unknown", None
 
 
+def _lifecycle_kind(raw_status: str | None) -> str:
+    value = (raw_status or "").lower()
+    if "отмен" in value:
+        return "cancelled"
+    if "заверш" in value or "окончен" in value:
+        return "finished"
+    if "приём заявок" in value or "прием заявок" in value or "bid_submission" in value.lower():
+        return "active"
+    if "объяв" in value:
+        return "scheduled"
+    return "unknown"
+
+
 def _dates_from_row(text: str) -> tuple[datetime | None, datetime | None]:
     observed = [_parse_datetime(value) for value in _DATETIME_RE.findall(text)]
     dates = [value for value in observed if value is not None]
@@ -219,7 +232,11 @@ def parse_listing(
             if external_id in seen:
                 continue
             seen.add(external_id)
+            cadastral_numbers = list(dict.fromkeys(_CADASTRAL_RE.findall(segment)))
             cadastral = _CADASTRAL_RE.search(segment)
+            area_values = [
+                float(value.replace(",", ".")) for value in _AREA_RE.findall(segment)
+            ]
             area_match = _AREA_RE.search(segment)
             area = float(area_match.group(1).replace(",", ".")) if area_match else None
             detail_url = (
@@ -253,7 +270,10 @@ def parse_listing(
                     "trade_number": trade_match.group("trade").upper(),
                     "lot_number": lot_number,
                     "source_status_text": raw_status,
+                    "source_lifecycle": _lifecycle_kind(raw_status),
                     "source_asset_class": asset_class,
+                    "cadastral_numbers": cadastral_numbers,
+                    "area_values": area_values,
                     "eligible_property": asset_class in {"land", "real_estate"},
                     "active_filter_verified": active_filter,
                     "individual_lot_identity_verified": True,
@@ -338,7 +358,9 @@ def parse_detail(
 
     start_price = _money(_INITIAL_PRICE_RE.search(selected))
     current_price = _money(_CURRENT_PRICE_RE.search(selected))
+    cadastral_numbers = list(dict.fromkeys(_CADASTRAL_RE.findall(selected)))
     cadastral = _CADASTRAL_RE.search(selected)
+    area_values = [float(value.replace(",", ".")) for value in _AREA_RE.findall(selected)]
     area_match = _AREA_RE.search(selected)
     address_match = _ADDRESS_RE.search(selected)
 
@@ -403,7 +425,10 @@ def parse_detail(
             "procedure_provider_id": provider_id,
             "lot_number": lot_number,
             "source_status_text": raw_status,
+            "source_lifecycle": _lifecycle_kind(raw_status),
             "source_asset_class": asset_class,
+            "cadastral_numbers": cadastral_numbers,
+            "area_values": area_values,
             "eligible_property": asset_class in {"land", "real_estate"},
             "individual_lot_identity_verified": True,
             "individual_lot_section_verified": True,
