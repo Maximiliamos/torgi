@@ -15,6 +15,11 @@ _PRICE = re.compile(r"^Начальная\s+цена\s+продажи\s+имущ
 _STATUS = re.compile(r"^Статус\s+торгов\s+по\s+лоту$", re.I)
 _VALUE = re.compile(r"^(\d[\d\s\u00a0]*,\d{2})(?:\s|$)")
 _MAX_LENGTH = 2_000_000
+_ALLOWED_STATUSES = frozenset({
+    "Торги завершены", "Торги по лоту отменены",
+    "Идет прием заявок", "Идёт приём заявок",
+    "Прием заявок завершен", "Приём заявок завершён",
+})
 
 
 class VertradesDetailContractError(ValueError):
@@ -50,7 +55,7 @@ def inspect_shared_procedure(html: str | bytes) -> list[dict[str, str | int | No
         end = positions[j + 1][0] if j + 1 < len(positions) else len(lines)
         section = lines[start + 1:end]
         statuses = [section[i + 1] for i, s in enumerate(section[:-1])
-                    if _STATUS.fullmatch(s)]
+                    if _STATUS.fullmatch(s) and section[i + 1] in _ALLOWED_STATUSES]
         prices = []
         for i, s in enumerate(section[:-1]):
             if _PRICE.fullmatch(s):
