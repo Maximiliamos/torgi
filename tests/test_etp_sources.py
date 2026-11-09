@@ -337,12 +337,25 @@ def test_price_label_keeps_price_before_following_deposit_field() -> None:
     ("zakazrf.ru", "https://bankrot.zakazrf.ru/public/auctions/lots/view/224/"),
 ])
 def test_table_start_price_without_currency_uses_verified_header(source_id: str, href: str) -> None:
-    html = f"""
-    <table><tr><th>№</th><th>Лот</th><th>Начальная цена</th>
-    <th>Задаток</th></tr><tr>
-    <td>1</td><td><a href="{href}">Земельный участок 50:05:0010203:1234</a></td>
-    <td>2 500 000,25</td><td>500 000,00</td></tr></table>
-    """
+    if source_id == "centerr.ru":
+        # CenterR identity is valid only inside its provider catalogue row schema:
+        # trade ID, trade column, lot number, lot/detail, price, organizer,
+        # application deadline, auction date, status.
+        html = f"""
+        <table><tr>
+        <td>0100200</td><td>Продажа имущества</td><td>1</td>
+        <td><a href="{href}">Земельный участок 50:05:0010203:1234</a></td>
+        <td>2 500 000,25</td><td>Организатор</td>
+        <td>09.12.2026 15:00</td><td>11.12.2026 14:00</td><td>Прием заявок</td>
+        </tr></table>
+        """
+    else:
+        html = f"""
+        <table><tr><th>№</th><th>Лот</th><th>Начальная цена</th>
+        <th>Задаток</th></tr><tr>
+        <td>1</td><td><a href="{href}">Земельный участок 50:05:0010203:1234</a></td>
+        <td>2 500 000,25</td><td>500 000,00</td></tr></table>
+        """
     lot = parse_listing_html(profile(source_id), html)[0]
     assert lot.start_price == 2500000.25
     assert lot.current_price is None
@@ -895,7 +908,12 @@ def test_centerr_news_sidebar_does_not_inject_repeated_lots_into_catalogue():
     <div class='news-body'>
       <a href='{promo}'>Рекламный лот из повторяемого блока</a>
     </div>
-    <table><tr><td><a href='{actual}'>Земельный участок 50:01:001:123</a></td></tr></table>
+    <table><tr>
+      <td>0100201</td><td>Продажа имущества</td><td>1</td>
+      <td><a href='{actual}'>Земельный участок 50:01:001:123</a></td>
+      <td>1 000 000,00</td><td>Организатор</td>
+      <td>09.12.2026 15:00</td><td>11.12.2026 14:00</td><td>Прием заявок</td>
+    </tr></table>
     """
     lots = parse_listing_html(site, html)
     assert [lot.external_id for lot in lots] == ["centerr.ru:auctions-221"]
@@ -905,11 +923,20 @@ def test_centerr_news_sidebar_does_not_inject_repeated_lots_into_catalogue():
 def test_centerr_non_sidebar_catalogue_links_still_preserved():
     site = profile("centerr.ru")
     html = """
-    <table><tr><td>
-      <a href='https://bankrupt.centerr.ru/public/auctions/lots/view/221/'>Квартира 1</a>
-    </td></tr><tr><td>
-      <a href='https://bankrupt.centerr.ru/public/contests/lots/view/222/'>Квартира 2</a>
-    </td></tr></table>
+    <table>
+    <tr>
+      <td>0100201</td><td>Аукцион</td><td>1</td>
+      <td><a href='https://bankrupt.centerr.ru/public/auctions/lots/view/221/'>Квартира 1</a></td>
+      <td>1 000 000,00</td><td>Организатор</td>
+      <td>09.12.2026 15:00</td><td>11.12.2026 14:00</td><td>Прием заявок</td>
+    </tr>
+    <tr>
+      <td>0100202</td><td>Конкурс</td><td>2</td>
+      <td><a href='https://bankrupt.centerr.ru/public/contests/lots/view/222/'>Квартира 2</a></td>
+      <td>2 000 000,00</td><td>Организатор</td>
+      <td>10.12.2026 15:00</td><td>12.12.2026 14:00</td><td>Прием заявок</td>
+    </tr>
+    </table>
     """
     lots = parse_listing_html(site, html)
     assert len(lots) == 2
