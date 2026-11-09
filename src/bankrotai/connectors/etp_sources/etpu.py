@@ -593,6 +593,52 @@ def parse_catalogue_page(html: str | bytes, *, page: int) -> tuple[NormalizedLot
     return tuple(lots)
 
 
+def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
+    """Return only public, non-secret catalogue filter names and option values."""
+    soup = parse_soup(html)
+    form = soup.find("form")
+    if not isinstance(form, Tag):
+        raise EtpuSchemaError("etpu.ru: catalogue filter form disappeared")
+
+    selects: list[dict[str, Any]] = []
+    for node in form.select("select"):
+        name = str(node.get("name") or "")
+        if not name:
+            continue
+        options = []
+        for option in node.select("option"):
+            options.append({
+                "value": str(option.get("value") or ""),
+                "text": normalize_text(option.get_text(" ", strip=True)),
+                "selected": option.has_attr("selected"),
+            })
+        selects.append({
+            "name": name,
+            "id": str(node.get("id") or ""),
+            "options": options,
+        })
+
+    controls: list[dict[str, str | bool]] = []
+    for node in form.select("input[name]"):
+        field_type = str(node.get("type") or "text").lower()
+        if field_type == "hidden":
+            continue
+        controls.append({
+            "name": str(node.get("name") or ""),
+            "id": str(node.get("id") or ""),
+            "type": field_type,
+            "value": str(node.get("value") or ""),
+            "checked": node.has_attr("checked"),
+        })
+
+    return {
+        "action": str(form.get("action") or ""),
+        "method": str(form.get("method") or "get").lower(),
+        "selects": selects,
+        "controls": controls,
+    }
+
+
 def _postback_links(soup: BeautifulSoup) -> list[Tag]:
     return [
         node
@@ -697,6 +743,15 @@ class EtpuClient:
         response_url = str(getattr(response, "url", url) or url)
         _safe_url(response_url)
         return response
+
+    def fetch_filter_contract(self) -> dict[str, Any]:
+        response = self._read(
+            "get",
+            LISTING_URL,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        return parse_filter_contract(response.content)
 
     def fetch_catalogue_page(self, page: int) -> EtpuCataloguePage:
         if page < 1:
