@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.pagination import (
-    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
+    get_form_params, has_next_page as _has_next_page, page_url as _page_url, postback_page_link,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -823,10 +823,7 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = next((
-                node for node in soup.select("a[href]")
-                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
-            ), None)
+            link = postback_page_link(self.profile, soup, page)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
