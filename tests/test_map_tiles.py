@@ -705,6 +705,101 @@ def test_dimension_coverage_guard_rejects_disappearing_source():
         assert session.get(MapDataset, new_id).is_current is False
 
 
+def test_dimension_coverage_ignores_old_lots_now_ineligible_by_status():
+    factory = _database()
+    with factory() as session:
+        old = MapDataset(version="old-r6", status="ready", is_current=True, point_count=40, tile_count=1)
+        new = MapDataset(version="new-r7", status="building", is_current=False, point_count=20, tile_count=1)
+        session.add_all([old, new])
+        session.flush()
+        ended = [
+            ProcessedLot(
+                source_system="ended-source",
+                source="test",
+                external_id=f"ended-{index}",
+                title="Ended lot",
+                description="",
+                category="land",
+                auction_status="completed",
+                region_code="76",
+                current_geo_lat=57.6,
+                current_geo_lon=39.8,
+            )
+            for index in range(20)
+        ]
+        active = [
+            ProcessedLot(
+                source_system="active-source",
+                source="test",
+                external_id=f"active-{index}",
+                title="Active lot",
+                description="",
+                category="land",
+                auction_status="active",
+                region_code="76",
+                current_geo_lat=57.6,
+                current_geo_lon=39.8,
+            )
+            for index in range(20)
+        ]
+        session.add_all(ended + active)
+        session.flush()
+        session.add_all(
+            [
+                MapTile(
+                    dataset_id=old.id,
+                    z=12,
+                    x=1,
+                    y=1,
+                    feature_count=40,
+                    etag="old-r6",
+                    payload_json={
+                        "features": [
+                            {"kind": "lot", "id": lot.id}
+                            for lot in ended + active
+                        ]
+                    },
+                ),
+                MapTile(
+                    dataset_id=new.id,
+                    z=12,
+                    x=1,
+                    y=1,
+                    feature_count=20,
+                    etag="new-r7",
+                    payload_json={
+                        "features": [
+                            {"kind": "lot", "id": lot.id}
+                            for lot in active
+                        ]
+                    },
+                ),
+            ]
+        )
+        session.commit()
+        old_id, new_id = old.id, new.id
+
+    with factory() as session:
+        baseline_ids = map_builder._coverage_baseline_lot_ids(session, old_id)
+        failures = map_builder._dimension_coverage_failures(
+            session,
+            current_dataset_id=old_id,
+            new_dataset_id=new_id,
+            minimum_ratio=0.5,
+        )
+
+    assert len(baseline_ids) == 20
+    assert failures == []
+    result = _promote_map_dataset(
+        factory,
+        dataset_id=new_id,
+        expected_current_id=old_id,
+        dimension_failures=failures,
+        coverage_baseline_count=len(baseline_ids),
+    )
+    assert result["status"] == "published"
+
+
 def test_promotion_refuses_incomplete_tile_metadata():
     factory = _database()
     old_result = build_map_dataset(factory)
