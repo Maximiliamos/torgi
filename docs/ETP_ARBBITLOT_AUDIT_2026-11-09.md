@@ -100,22 +100,31 @@ This prevents:
 - a public-offer interval amount from silently replacing the initial price;
 - an adjacent monetary value from satisfying a missing price field.
 
-### Public-offer interval tables
+### Public-offer current price and interval tables
 
-Official public-offer lot cards can also contain an interval table with columns such as interval dates, reduction, interval deposit and interval price. That is useful evidence for public-offer schedules, but this PR does not infer a full schedule into production fields merely from nearby text. The verified first-class value in this patch is the explicitly labelled current price on the individual lot card.
+The official **public-offers catalogue** has distinct `Начальная цена, руб.` and `Текущая цена, руб.` columns on the same individual lot row. That row is already tied to the provider's individual `/public/public-offers/lots/view/<lot_id>/` URL, so the catalogue current price is lot-level evidence rather than a procedure-level fallback.
+
+Official public-offer lot cards can also contain an interval table with columns such as interval dates, reduction, interval deposit and `Цена на интервале, руб.`. The detail parser deliberately does not infer a current price from an arbitrary nearby interval row. If the detail has its own explicit current-price label it is used; otherwise the independently labelled catalogue current price is preserved and marked as catalogue-derived evidence.
+
+This avoids synthesizing current price from the clock, a stale interval, the deposit column, or the reduction amount.
 
 ## Pagination
 
-The provider uses ASP.NET postback pagination. Existing source-specific connector behavior:
+The provider uses ASP.NET postback pagination. The public pager groups numeric links and visibly exposes pages 1 through 10 plus `>>`.
+
+A source-specific defect was found during this audit: the previous generic postback code looked only for a literal `page + 1` link. On page 10 the provider does not expose a visible `11` link; it exposes `>>`. Therefore page 10 could be misclassified as terminal.
+
+ARBbitLot behavior is now:
 
 1. GET page 1;
 2. preserve hidden fields such as `__VIEWSTATE`;
-3. locate the provider's page-number anchor containing `__doPostBack(...)`;
-4. POST the exact event target/argument;
-5. reject repeated page fingerprints;
-6. set `next_cursor=None` only when the returned page no longer exposes a next page.
+3. use the exact numeric `__doPostBack(...)` target while `page + 1` is visible;
+4. at a pager-group boundary, use the provider's own `>>` postback target;
+5. continue with the newly exposed numeric page group;
+6. reject repeated page fingerprints;
+7. declare terminal only when neither the next numeric page nor ARBbitLot's `>>` control exists.
 
-The public catalogue visibly exposes pages 1 through 10 plus `>>`. A direct terminal-page run cannot be truthfully claimed from search-index evidence alone.
+A direct terminal-page run still cannot be truthfully claimed from search-index evidence alone; it must come from the read-only live probe.
 
 A new read-only audit module was added:
 
@@ -124,6 +133,12 @@ A new read-only audit module was added:
 It performs two independent complete catalogue passes, stops only at the provider-derived terminal condition, compares unique IDs/digests, reports duplicate IDs and verifies up to 30 individual details. It does not write to the database.
 
 Until that direct probe completes in a network environment that can submit the provider's ASP.NET form, **terminal page remains a required live acceptance item** rather than a guessed PASS.
+
+## Additional live status evidence
+
+The current official catalogue includes the status phrase `Отменён организатором`. The generic status normalizer did not classify that exact source wording as closed and could later see unrelated `Извещение` text on a detail page.
+
+ARBbitLot now handles this provider-specific phrase as `closed` without changing status behavior for neighbouring ETPs. Regression coverage includes both catalogue and individual-detail forms.
 
 ## Code changes
 
@@ -146,7 +161,11 @@ when the individual detail does not prove an initial price. A catalogue price is
 
 ### `src/bankrotai/connectors/etp_sources/common.py`
 
-ARBbitLot detail parsing now consumes the source-specific fields and keeps initial/current/deposit/step separate. It also records procedure ID and displayed lot number in detail evidence and extracts address where the source provides the labelled field.
+ARBbitLot detail parsing now consumes the source-specific fields and keeps initial/current/deposit/step separate. It also records procedure ID and displayed lot number in detail evidence, extracts address where the source provides the labelled field, fails closed when individual start price is absent, handles the provider-specific cancelled status, and follows `>>` at ASP.NET pager-group boundaries.
+
+### `src/bankrotai/connectors/etp_sources/pagination.py`
+
+ARBbitLot `has_next_page` now treats a provider `>>` postback as proof that the visible ten-page group is not terminal.
 
 ### `src/bankrotai/services/etp_arbbitlot_readonly_audit.py`
 
