@@ -21,6 +21,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     profit_initial_money,
+    ruson_initial_money,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
@@ -596,6 +597,8 @@ def parse_detail_html(
     price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
+    if price is None and profile.source_id == "rus-on.ru":
+        price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
@@ -925,10 +928,9 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
         identity = external_id.removeprefix(self.source_id + ":")
         if self.source_id == "sistematorg.com":
-            procedure_id = identity.split(":", 1)[0]
-            if not procedure_id.isdigit():
+            identity = identity.split(":", 1)[0]
+            if not identity.isdigit():
                 raise SourceSchemaError("sistematorg.com: invalid procedure identity")
-            identity = procedure_id
         identity_path = identity
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
@@ -994,7 +996,9 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com"}:
+    if profile.source_id in {
+        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
+    }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
