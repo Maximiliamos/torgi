@@ -12,7 +12,7 @@ def profile():
 def detail(lot=1, name="Земельный участок", initial="625 560,07",
            current="500 448,07", status="Прием заявок"):
     return f"""<html><body>
-       <h1>Информация о публичном предложении</h1>
+       <h1>Информация о публичном предложении №0009410</h1>
        <p>Общая цена процедуры: 9 999 999,00 руб.</p>
        <div>Информация о лоте №{lot}</div>
        <table><tr><td>Номер:</td><td>{lot}</td><td>Дата начала первого интервала:</td><td>02.11.2026 10:00</td></tr>
@@ -31,6 +31,7 @@ def detail(lot=1, name="Земельный участок", initial="625 560,07"
 def test_individual_lot_price_and_identity_isolated():
     result = parse_utpl_detail_fields(detail())
     assert result["lot_number"] == "1"
+    assert result["procedure_number"] == "0009410"
     assert result["initial_price"] == 625560.07
     assert result["current_price"] == 500448.07
     assert result["category"] == "land"
@@ -48,6 +49,9 @@ def test_individual_lot_price_and_identity_isolated():
     assert lot.area == 232.7
     assert lot.application_deadline.isoformat() == "2026-11-20T10:00:00"
     assert lot.auction_at.isoformat() == "2026-11-25T12:00:00"
+    assert lot.procedure_number == "0009410"
+    assert lot.raw_data["utpl_trade_number"] == "0009410"
+    assert lot.raw_data["utpl_lot_number"] == "1"
     assert lot.raw_data["utpl_property_kinds"] == ["land"]
     assert lot.raw_data["utpl_lot_section_verified"] is True
 
@@ -167,3 +171,22 @@ def test_utpl_connector_advertises_detail_enrichment_but_not_reconciliation():
     connector = SOURCE_CONNECTOR_TYPES["utpl.ru"]()
     assert "detail_enrichment" in connector.capabilities
     assert connector.safe_for_reconciliation is False
+
+
+def test_rights_from_lot_description_stay_receivables_without_classifier():
+    html = detail(name="Имущество общества").replace(
+        "Классификатор ЕФРСБ: Земельные участки",
+        "",
+    ).replace(
+        "Земельный участок, кадастровый номер 61:45:0000392:433, площадь 232,7 кв. м., адрес: г. Тестовый, ул. Полевая, 1.",
+        "Право требования задолженности по договору.",
+    )
+    result = parse_utpl_detail_fields(html)
+    assert result["category"] == "receivables"
+    assert result["property_kinds"] == ("receivables",)
+
+
+def test_location_label_is_accepted_as_lot_scoped_address():
+    html = detail().replace("адрес: г. Тестовый, ул. Полевая, 1.", "местоположение: г. Тестовый, ул. Полевая, 1.")
+    result = parse_utpl_detail_fields(html)
+    assert result["address"] == "г. Тестовый, ул. Полевая, 1."
