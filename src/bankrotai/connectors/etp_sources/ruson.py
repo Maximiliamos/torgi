@@ -57,11 +57,42 @@ def _money_format(value: str | None) -> str | None:
     return "integer"
 
 
+def _money_after_label(text: str, label: str) -> str | None:
+    match = re.search(
+        label + r"\s*[:|]?\s*"
+        r"(\d{1,3}(?:[\s\u00a0]\d{3})+|\d{1,14})(?:[.,]\d{1,2})?"
+        r"\s*(?:₽|руб(?:\.|лей)?|RUB)?",
+        text,
+        re.IGNORECASE,
+    )
+    return _clean(match.group(0)[match.group(0).lower().find(match.group(1).lower()):]) if match else None
+
+
+def _datetime_after_label(text: str, label: str) -> datetime | None:
+    match = re.search(
+        label + r"\s*[:|]?\s*"
+        r"(\d{2}\.\d{2}\.(?:\d{4}|\d{2})(?:\s+\d{2}:\d{2}(?::\d{2})?)?)",
+        text,
+        re.IGNORECASE,
+    )
+    return _parse_datetime(match.group(1)) if match else None
+
+
+def _status_phrase(text: str) -> str:
+    match = re.search(
+        r"(торги\s+(?:не\s+состоялись|завершены|отменены|приостановлены|объявлены)"
+        r"|при[её]м\s+заявок|идут\s+торги|извещение\s+опубликовано)",
+        text,
+        re.IGNORECASE,
+    )
+    return _clean(match.group(1)) if match else ""
+
+
 def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     match = re.search(
-        r"(\d{2}\.\d{2}\.(?:\d{2}|\d{4}))(?:\s+(\d{2}:\d{2}(?::\d{2})?))?",
+        r"(\d{2}\.\d{2}\.(?:\d{4}|\d{2}))(?:\s+(\d{2}:\d{2}(?::\d{2})?))?",
         value,
     )
     if not match:
@@ -247,15 +278,11 @@ def parse_ruson_detail_fields(
     ) or title or ""
     location = _field(fields, "Местонахождение имущества", "Место нахождения имущества")
     categories = _field(fields, "Категории лота") or ""
-    status_text = _field(fields, "Статус торгов") or ""
+    status_text = _field(fields, "Статус торгов") or _status_phrase(text)
 
     initial_raw = _field(fields, "Начальная цена")
     if initial_raw is None:
-        initial_raw = _fallback_label(
-            text,
-            r"Начальн\w*\s+цен\w*",
-            stop=r"Шаг аукциона|Размер задатка|Категории лота|Статус торгов",
-        )
+        initial_raw = _money_after_label(text, r"Начальн\w*\s+цен\w*")
     start_price = _parse_money(initial_raw)
 
     schedule = _public_offer_schedule(soup)
@@ -300,14 +327,19 @@ def parse_ruson_detail_fields(
             "Дата начала представления заявок на участие",
             "Дата начала приема заявок",
             "Дата начала приёма заявок",
-        )),
+        )) or _datetime_after_label(
+            text, r"Дата начала (?:представления|при[её]ма) заявок(?: на участие)?",
+        ),
         "application_deadline": _parse_datetime(_field(
             fields,
             "Дата окончания представления заявок на участие",
             "Дата окончания приема заявок",
             "Дата окончания приёма заявок",
-        )),
-        "auction_at": _parse_datetime(_field(fields, "Дата проведения")),
+        )) or _datetime_after_label(
+            text, r"Дата окончания (?:представления|при[её]ма) заявок(?: на участие)?",
+        ),
+        "auction_at": _parse_datetime(_field(fields, "Дата проведения"))
+        or _datetime_after_label(text, r"Дата проведения"),
         "auction_type": auction_type,
         "public_offer_schedule": schedule or None,
         "current_price": active[0] if active else None,

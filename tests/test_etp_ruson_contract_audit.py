@@ -23,6 +23,8 @@ class FakeConnector:
         )
 
     async def fetch_lot(self, external_id):
+        if external_id not in {"rus-on.ru:100", "rus-on.ru:101", "rus-on.ru:102", "rus-on.ru:103"}:
+            raise LookupError("fixture has no such lot")
         public = external_id.endswith(("100", "102"))
         closed = external_id.endswith("103")
         schedule = (
