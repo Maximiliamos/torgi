@@ -1150,9 +1150,7 @@ def test_zakazrf_receivable_classifier_is_not_promoted_to_property() -> None:
         detail_url="https://bankrot.zakazrf.ru/public/public-offers/lots/view/18801/",
         external_id="zakazrf.ru:public-offers-18801",
     )
-    # Unknown structured classifications fail closed to "other"; they are not
-    # inferred as land/real estate from unrelated procedure prose.
-    assert lot.category == "other"
+    assert lot.category == "receivables"
     assert lot.start_price == 20_027_035.65
     assert lot.current_price == 8_347_268.43
 
