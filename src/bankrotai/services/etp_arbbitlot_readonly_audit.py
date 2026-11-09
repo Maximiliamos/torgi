@@ -87,14 +87,14 @@ async def verify_details(
             listing_raw = listing.raw_data or {}
             detail_raw = detail.raw_data or {}
             procedure_match = (
-                listing_raw.get("procedure_id") is None
-                or detail_raw.get("procedure_id") is None
-                or str(listing_raw.get("procedure_id")) == str(detail_raw.get("procedure_id"))
+                listing_raw.get("procedure_id") is not None
+                and detail_raw.get("procedure_id") is not None
+                and str(listing_raw.get("procedure_id")) == str(detail_raw.get("procedure_id"))
             )
             lot_number_match = (
-                listing_raw.get("lot_number") is None
-                or detail_raw.get("lot_number") is None
-                or str(listing_raw.get("lot_number")) == str(detail_raw.get("lot_number"))
+                listing_raw.get("lot_number") is not None
+                and detail_raw.get("lot_number") is not None
+                and str(listing_raw.get("lot_number")) == str(detail_raw.get("lot_number"))
             )
             start_match = (
                 listing.start_price is None
