@@ -215,11 +215,18 @@ def etpu_classifier_flags(value: str) -> tuple[str, ...]:
             flags.append(flag)
 
     add("lease", r"\bправ(?:о|а)\s+аренды\b")
-    add("shares", r"\bправа\s+долевой\s+собственности\b")
+    add(
+        "shares",
+        r"\bправа\s+долевой\s+собственности\b",
+        r"\bдол[яи]\s+в\s+уставн",
+        r"\bакци(?:я|и|й)\b",
+    )
     add("receivables", r"\bправа?\s+требован", r"\bдебитор")
     add(
         "vehicle",
         r"\bавтомобил",
+        r"\bсредства\s+транспортн",
+        r"\bтранспортн\w*\s+средств",
         r"\bприцеп",
         r"\bполуприцеп",
         r"\bмотоцикл",
@@ -248,16 +255,20 @@ def etpu_classifier_flags(value: str) -> tuple[str, ...]:
         r"\bнезавершенн\w*\s+строительств",
         r"\bнедвижим",
     )
-    if not flags and re.search(r"\bпрочее\b", lowered, re.IGNORECASE):
+    if not flags:
+        # The structured classifier exists, but the class is outside the
+        # source-specific mapping. Preserve source authority and fail closed
+        # to "other" instead of reclassifying from free-form lot prose.
         flags.append("other")
     return tuple(flags)
 
 
 def etpu_category(value: str) -> str | None:
     """Choose one normalized category while retaining every source flag in raw_data."""
-    flags = etpu_classifier_flags(value)
-    if not flags:
+    classifier = etpu_classifier_section(value)
+    if classifier is None:
         return None
+    flags = etpu_classifier_flags(value)
     for preferred in (
         "lease", "shares", "receivables", "real_estate", "land",
         "vehicle", "equipment", "other",
