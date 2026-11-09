@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.pagination import (
-    get_form_params, has_next_page as _has_next_page, page_url as _page_url, postback_payload,
+    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -19,7 +19,6 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
-    build_etpu_detail_lot,
     datetime_after,
     profit_initial_money,
     ruson_initial_money,
@@ -555,17 +554,6 @@ def parse_detail_html(
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
 
-    if profile.source_id == "etpu.ru":
-        return build_etpu_detail_lot(
-            text_value,
-            external_id=external_id,
-            detail_url=detail_url,
-            platform_name=profile.platform_name,
-            platform_code=profile.platform_code,
-            complete_source_inventory=profile.complete_source_inventory,
-            safe_for_archival=profile.safe_for_archival,
-        )
-
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
     title = max(title_candidates, key=len, default="")
@@ -782,7 +770,6 @@ class HtmlEtpConnector(AuctionConnector):
             return response
 
         previous = self._last_response if self._last_page == page - 1 else None
-        sequential_previous = previous is not None
         previous = previous or self._read_request(
             "get",
             _safe_provider_url(self.profile, self.profile.listing_url),
@@ -825,13 +812,20 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            try:
-                data = postback_payload(
-                    self.profile, previous.content, page,
-                    sequential_previous=sequential_previous,
-                )
-            except ValueError as exc:
-                raise SourceSchemaError(f"{self.source_id}: {exc}") from exc
+            link = next((
+                node for node in soup.select("a[href]")
+                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+            ), None)
+            if not isinstance(link, Tag):
+                raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
+            postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
+            if not postback:
+                raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
+            data = {
+                str(node.get("name")): str(node.get("value") or "")
+                for node in soup.select("input[type=hidden][name]")
+            }
+            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
             action = _safe_provider_url(
                 self.profile, previous.url or self.profile.listing_url
             )
@@ -984,7 +978,6 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
-        "etpu.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
