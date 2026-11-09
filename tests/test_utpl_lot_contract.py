@@ -131,3 +131,39 @@ def test_title_stops_before_lot_dates_from_live_layout():
     parsed = parse_utpl_detail_fields(detail(name="Имущество ООО Тест"))
     assert parsed["title"] == "Имущество ООО Тест"
     assert parsed["source_status_text"] == "Прием заявок"
+
+
+def test_utpl_pager_uses_exact_numeric_postback_before_forward_control():
+    from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
+    html = """
+    <a href="javascript:__doPostBack('grid$page2','')">2</a>
+    <a href="javascript:__doPostBack('grid$page11','')">&gt;&gt;</a>
+    """
+    assert utpl_next_postback(html, 1) == ("grid$page2", "")
+
+
+def test_utpl_pager_crosses_ten_page_block_with_provider_forward_control():
+    from bankrotai.connectors.etp_sources.pagination import has_next_page
+    from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
+    html = """
+    <a href="javascript:__doPostBack('grid$page9','')">9</a>
+    <span>10</span>
+    <a href="javascript:__doPostBack('grid$page11','')">&gt;&gt;</a>
+    """
+    assert utpl_next_postback(html, 10) == ("grid$page11", "")
+    assert has_next_page(profile(), html, 10) is True
+
+
+def test_utpl_pager_terminal_page_has_no_synthesized_next_request():
+    from bankrotai.connectors.etp_sources.pagination import has_next_page
+    from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
+    html = "<a href=\"javascript:__doPostBack('grid$page9','')\">9</a><span>10</span>"
+    assert utpl_next_postback(html, 10) is None
+    assert has_next_page(profile(), html, 10) is False
+
+
+def test_utpl_connector_advertises_detail_enrichment_but_not_reconciliation():
+    from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+    connector = SOURCE_CONNECTOR_TYPES["utpl.ru"]()
+    assert "detail_enrichment" in connector.capabilities
+    assert connector.safe_for_reconciliation is False
