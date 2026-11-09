@@ -334,6 +334,7 @@ def map_delivery_reconciliation_report(
     from bankrotai.services.map_bundle_store import normalize_map_region_code
     from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
     from bankrotai.services.map_object_store import _verify_public_manifest
+    from bankrotai.services.map_payload import ENDED_STATUSES
 
     current_rows = session.scalars(
         select(MapDataset).where(MapDataset.is_current.is_(True))
@@ -381,6 +382,7 @@ def map_delivery_reconciliation_report(
         ).where(
             ProcessedLot.duplicate_of_id.is_(None),
             ProcessedLot.is_archived.is_(False),
+            ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)),
             ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
             ProcessedLot.current_geo_lon.between(-180.0, 180.0),
         )

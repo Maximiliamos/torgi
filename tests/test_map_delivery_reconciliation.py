@@ -211,3 +211,47 @@ def test_map_delivery_reconciliation_ignores_post_dataset_removal_until_next_bui
     assert report["live_extra_in_dataset_count"] == 1
     assert report["pending_post_dataset_extra_count"] == 1
     assert report["extra_in_dataset_count"] == 0
+
+
+def test_r7_reconciliation_excludes_ended_auctions_from_db_eligibility() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        active = _mapped_lot("current")
+        closed = _mapped_lot("closed-auction")
+        closed.auction_status = "closed"
+        completed = _mapped_lot("completed-auction")
+        completed.auction_status = "completed"
+        session.add_all([active, closed, completed])
+        session.flush()
+
+        dataset = MapDataset(
+            version="20261109T000000000000Z-r7-bundle-s3",
+            status="ready",
+            is_current=True,
+            point_count=1,
+            tile_count=1,
+            published_at=utc_now().replace(tzinfo=None),
+        )
+        session.add(dataset)
+        session.flush()
+        session.add(MapTile(
+            dataset_id=dataset.id,
+            z=12,
+            x=2500,
+            y=1300,
+            feature_count=1,
+            etag="r7",
+            payload_json={"features": [{"kind": "lot", "id": active.id}]},
+        ))
+        session.commit()
+
+        report = map_delivery_reconciliation_report(session)
+
+    assert report["ok"] is True
+    assert report["db_candidate_count"] == 1
+    assert report["db_eligible_count"] == 1
+    assert report["dataset_unique_lot_count"] == 1
+    assert report["missing_from_dataset_count"] == 0
+    assert report["extra_in_dataset_count"] == 0
