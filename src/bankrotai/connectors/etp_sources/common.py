@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -20,8 +19,10 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
+    datetime_after,
     profit_initial_money,
     ruson_initial_money,
+    sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
@@ -158,14 +159,6 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
 
-def _sistematorg_lot_count(value: str) -> int | None:
-    """A listing row represents a trade, potentially containing many lots."""
-    match = re.search(r"всего\s+лотов\s*[:：]\s*(\d+)", value, re.IGNORECASE)
-    if match is None:
-        return None
-    count = int(match.group(1))
-    return count if 1 <= count <= 100_000 else None
-
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -177,19 +170,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
-def _datetime_after(value: str, label: str) -> datetime | None:
-    match = re.search(label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", value, re.I)
-    if not match:
-        return None
-    raw = match.group(1)
-    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
-        try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            pass
-    return None
-
 
 def _label_value(value: str, label: str, pattern: str) -> str | None:
     match = re.search(label + r"\s*[:№]?\s*(" + pattern + r")", value, re.I)
@@ -503,7 +483,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         # Sistematorg's table lists *trades*, not individual property lots.
         # A row with several distinct lot links is equally unsafe: row-level
         # price/status/cadastre may belong to another lot in the procedure.
-        trade_lots = _sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
+        trade_lots = sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
         if ambiguous_row or (profile.source_id == "sistematorg.com" and trade_lots != 1):
             price = None
             current_price = None
@@ -557,7 +537,7 @@ def parse_detail_html(
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
     if profile.source_id == "sistematorg.com":
-        trade_lots = _sistematorg_lot_count(text_value)
+        trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
             raise SourceSchemaError(
                 "sistematorg.com: cannot attribute a trade-level price to an individual lot"
@@ -628,11 +608,11 @@ def parse_detail_html(
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        application_deadline=_datetime_after(
+        application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
-        auction_at=_datetime_after(text_value, r"дата проведения"),
+        auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
 
@@ -703,7 +683,7 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
             procedure_number=_clean(str(raw.get("purchCode") or "")) or None,
-            application_deadline=_datetime_after(
+            application_deadline=datetime_after(
                 f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
                 r"дата окончания представления заявок",
             ),
