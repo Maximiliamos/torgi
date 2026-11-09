@@ -143,6 +143,19 @@ def test_sberbank_display_cap_is_not_terminal_source_end() -> None:
         asyncio.run(connector.search({}, cursor="477"))
 
 
+def test_sberbank_display_cap_is_not_reported_as_source_total() -> None:
+    payload = {"Total": 10000, "PurchaseList": [{"_source": _row(goods_id=402)}]}
+    connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
+        session=FakeSession(FakeResponse(200, json.dumps(payload).encode()))
+    )
+    result = asyncio.run(connector.search({}))
+    assert result.next_cursor == "2"
+    assert result.metadata["total_items"] is None
+    assert result.metadata["api_total_reported"] == 10000
+    assert result.metadata["api_total_is_source_end"] is False
+    assert result.metadata["terminal_page_proven"] is False
+
+
 def test_sberbank_sanitized_catalogue_fixture_is_verified() -> None:
     payload = json.loads(
         (FIXTURES / "catalogue_bankruptcy_real_estate.json").read_text(encoding="utf-8")
