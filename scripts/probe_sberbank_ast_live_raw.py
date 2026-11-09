@@ -94,6 +94,8 @@ def _page(session: requests.Session, page_index: int) -> tuple[int, list[dict[st
     items = data.get("PurchaseList")
     if total <= 0 or not isinstance(items, list):
         raise RuntimeError("api_schema_invalid")
+    if len(items) > PAGE_SIZE:
+        raise RuntimeError("purchase_list_exceeds_requested_page_size")
 
     accepted: list[dict[str, Any]] = []
     for item in items:
@@ -230,6 +232,10 @@ def main() -> int:
     if total >= DISPLAY_CAP:
         # Probe the first two pages only; the cap is explicitly NOT a source end.
         page2_total, page2_items, page2_property, _ = _page(session, 1)
+        if len(first_items) != PAGE_SIZE or len(page2_items) != PAGE_SIZE:
+            raise RuntimeError("capped_catalogue_returned_short_page_before_source_end")
+        if page2_total != total:
+            raise RuntimeError(f"api_total_changed_{total}_to_{page2_total}")
         result = {
             "source": "sberbank-ast.ru",
             "read_only": True,
@@ -259,6 +265,13 @@ def main() -> int:
     digest2, raw_count2, _, terminal2 = _walk_all(
         session, page_count, total, retain_rows=False
     )
+    expected_terminal_rows = total - (page_count - 1) * PAGE_SIZE
+    if raw_count1 != total or raw_count2 != total:
+        raise RuntimeError(
+            f"full_walk_raw_row_count_mismatch_expected_{total}_got_{raw_count1}_{raw_count2}"
+        )
+    if terminal1.get("raw_rows") != expected_terminal_rows or terminal2.get("raw_rows") != expected_terminal_rows:
+        raise RuntimeError("terminal_page_row_count_conflicts_with_api_total")
     stable = digest1 == digest2 and raw_count1 == raw_count2 and terminal1 == terminal2
 
     detail_rows = list(discovered.values())[:DETAIL_TARGET]
@@ -310,6 +323,7 @@ def main() -> int:
         "page_count": page_count,
         "terminal_page": terminal1["page"],
         "terminal_page_raw_rows": terminal1["raw_rows"],
+        "terminal_page_expected_raw_rows": expected_terminal_rows,
         "terminal_page_property_rows": terminal1["property_rows"],
         "first_walk_raw_rows": raw_count1,
         "second_walk_raw_rows": raw_count2,
