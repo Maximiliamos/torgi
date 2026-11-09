@@ -553,6 +553,10 @@ def parse_detail_html(
         if not match:
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
+    if profile.source_id == "utpl.ru" and (
+        match is None or external_id != _external_id(profile, detail_url, match)
+    ):
+        raise SourceSchemaError("utpl.ru: requested lot ID does not match individual detail URL")
 
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
@@ -580,13 +584,37 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
+    utpl_classifier: str | None = None
+    utpl_status: str | None = None
+    if profile.source_id == "utpl.ru":
+        from bankrotai.connectors.etp_sources.utpl_contract import (
+            UtplLotSchemaError, parse_utpl_detail_fields,
+        )
+        try:
+            fields = parse_utpl_detail_fields(html)
+        except UtplLotSchemaError as exc:
+            raise SourceSchemaError(str(exc)) from exc
+        title = str(fields["title"])
+        price = fields["initial_price"]
+        current_price = fields["current_price"]
+        utpl_status = fields["source_status_text"]
+        utpl_classifier = fields["classifier"]
+        # The procedure header may describe unrelated assets and rights.
+        category = str(fields["category"])
+        title_cadastral = _CADASTRAL_RE.search(title)
+        cadastral = title_cadastral
+        title_area = _AREA_RE.search(title)
+        area = float(title_area.group(1).replace(",", ".")) if title_area else None
+        vin = _VIN_RE.search(title)
+    else:
+        category = _category(text_value)
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=_category(text_value),
+        category=category,
         region_slug=None,
         region_name=None,
         address=None,
@@ -595,7 +623,7 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(text_value),
+        auction_status=_status(utpl_status if profile.source_id == "utpl.ru" else text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -603,6 +631,8 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
+            **({"utpl_classifier": utpl_classifier, "utpl_lot_section_verified": True}
+               if profile.source_id == "utpl.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
