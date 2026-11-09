@@ -170,26 +170,29 @@ evidence alone.
 ## Code changes
 
 - `src/bankrotai/connectors/etp_sources/utpl_contract.py`
-  - individual section isolation;
+  - canonical individual-lot URL / external-ID verification;
+  - catalogue row parser with lot-level identity and labelled price fields;
+  - individual detail section isolation;
   - initial/current price binding;
   - exact UTPL status normalization;
   - structured classifier/property kinds;
   - lot-scoped cadastral/area/VIN/address/dates;
   - separate procedure + lot number;
-  - provider-only next-postback parsing.
-- `src/bankrotai/connectors/etp_sources/common.py`
-  - UTPL identity guard;
-  - UTPL detail enrichment hook;
-  - UTPL lot-scoped fields/raw evidence;
-  - provider-supplied postback use.
-- `src/bankrotai/connectors/etp_sources/pagination.py`
-  - UTPL block-boundary terminal detection.
+  - provider-only next-postback parsing and terminal-page detection;
+  - sequential ASP.NET state guard.
 - `tests/test_utpl_lot_contract.py`
+  - direct tests of the UTPL source module only;
   - sanitized regressions for prices, status, rights, lease, mixed
     classification, identity, page-block boundary and terminal behavior.
 - `scripts/probe_utpl_readonly.py`
-  - bounded two-pass full catalogue and detail audit.
+  - direct source-module use; bounded two-pass full catalogue and detail audit.
+- `.github/workflows/utpl-oneoff-proof.yml`
+  - one-off PR-only focused tests + read-only source-end proof.
 - `docs/ETP_UTPL_AUDIT_2026-11-09.md`.
+
+The current PR intentionally carries **no UTPL-specific behaviour in shared
+`common.py` or `pagination.py`**. Production integration is deferred to the
+central integration pass.
 
 ## Quantitative gates
 
@@ -211,3 +214,50 @@ evidence alone.
 | Production accepted | **NO** |
 
 **PRODUCTION ENABLED: NO**
+
+
+## Isolation review
+
+Source-specific module:
+`src/bankrotai/connectors/etp_sources/utpl_contract.py`
+
+Shared files modified:
+NONE after fresh-main merge.
+
+Source-specific logic remaining in common.py:
+NONE in this PR.
+
+Source-specific logic remaining in pagination.py:
+NONE in this PR.
+
+Source-specific logic remaining in profiles.py:
+NONE in this PR.
+
+Source-specific logic remaining in source_specific.py:
+NONE in this PR.
+
+Source-specific logic remaining in direct_etp_catalogue.py:
+NONE in this PR.
+
+Integration hook required:
+- `common.py`: when `source_id == "utpl.ru"`, the central integrator may call
+  `utpl_contract.parse_utpl_detail(detail_url, html, external_id=...)` and map
+  the returned fields into `NormalizedLot`.
+- the central paginator may call
+  `utpl_contract.validate_sequential_page_state(...)` and
+  `utpl_contract.utpl_next_postback(...)`.
+- catalogue-only UTPL verification may call
+  `utpl_contract.parse_utpl_catalogue_page(...)`.
+- no other shared behaviour is required.
+
+Existing work preserved:
+YES
+
+Live evidence preserved:
+YES
+
+Regression tests preserved:
+YES
+
+PRODUCTION ENABLED:
+NO
