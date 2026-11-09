@@ -27,7 +27,7 @@ def profile(source_id: str):
         ("m-ets.ru", "https://m-ets.ru/243003-1", "Жилой дом 78 кв.м., кадастровый номер 50:01:001:123, 4 500 000 руб."),
         ("arbbitlot.ru", "https://torgi.arbbitlot.ru/public/auctions/lots/view/44914/", "Автомобиль LADA GRANTA, VIN XTA219110GY223704, 350 000 руб."),
         ("zakazrf.ru", "https://bankrot.zakazrf.ru/public/public-offers/lots/view/18797/", "Стояночное место 12,5 кв. м, кадастровый номер 16:50:010326:323"),
-        ("fabrikant.ru", "https://fabrikant.ru/v2/trades/procedure/lot/view/PROCtoken/LOTtoken", "Земельный участок 1 050 кв. м, 900 000 руб."),
+        ("fabrikant.ru", "https://fabrikant.ru/v2/trades/procedure/view/RoEMbNetsW8SvO2KLb7GQA", "Земельный участок 1 050 кв. м, 900 000 руб."),
     ],
 )
 def test_profile_parser_extracts_stable_identity_and_fields(source_id: str, href: str, title: str) -> None:
