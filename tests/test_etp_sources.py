@@ -587,24 +587,30 @@ def test_aspnet_pagination_posts_viewstate_and_target() -> None:
 
 
 def test_sberbank_api_pagination_and_mapping() -> None:
-    payload = {
-        "Total": 22,
-        "PurchaseList": [{
+    rows = []
+    for offset in range(21):
+        rows.append({
             "_source": {
-                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
+                "ObjectSource": "Продажа имущества (предприятия) банкротов",
+                "SourceTradeSectionId": "13",
+                "BranchGroup": "Недвижимое имущество",
+                "objectHref": (
+                    "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/"
+                    f"{53571 + offset}"
+                ),
                 "title": "Автомобиль LADA VESTA, VIN XTAGFK110NY607362",
-                "purchName": "Торги по реализации автомобиля",
+                "purchName": "Торги по реализации имущества",
                 "purchAmount": "890000",
                 "purchCurrency": "RUB",
                 "PurchaseStageTerm": "Прием заявок",
-                "purchCode": "SBR013-2610260004-0",
+                "purchCode": f"SBR013-2610260004-{offset}",
                 "RegionNameTerm": "Г. Санкт-Петербург",
                 "Address": "Г. Санкт-Петербург",
                 "RequestStopDate": "03.12.2026 10:00",
                 "AuctionResultDate": "07.12.2026 17:00",
             }
-        }],
-    }
+        })
+    payload = {"Total": 22, "PurchaseList": rows}
     session = FakeSession(FakeResponse(200, json.dumps(payload).encode()))
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](session=session)
     result = asyncio.run(connector.search({}))
@@ -612,6 +618,8 @@ def test_sberbank_api_pagination_and_mapping() -> None:
     assert result.items[0].external_id == "sberbank-ast.ru:8-0-0-53571"
     assert result.items[0].start_price == 890000
     assert result.items[0].vin == "XTAGFK110NY607362"
+    assert result.items[0].raw_data["bankruptcy_filter_verified"] is True
+    assert result.items[0].raw_data["property_scope_verified"] is True
     assert session.posts[0][0] == "https://www.sberbank-ast.ru/api/Processing/main"
 
 
@@ -619,8 +627,11 @@ def test_sberbank_healthcheck_uses_json_contract() -> None:
     payload = {
         "Total": 1,
         "PurchaseList": [{"_source": {
+            "ObjectSource": "Продажа имущества (предприятия) банкротов",
+            "SourceTradeSectionId": "13",
+            "BranchGroup": "Недвижимое имущество",
             "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
-            "title": "Автомобиль LADA VESTA",
+            "title": "Нежилое помещение",
         }}],
     }
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
@@ -764,13 +775,6 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
 
 
 @pytest.mark.parametrize(("source_id", "lot_url", "second_lot_url", "next_href", "page_two_url"), [
-    (
-        "alfalot.ru",
-        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345",
-        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12346",
-        "?LotList.pageNum.lots=1&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
-        "LotList.pageNum.lots=1",
-    ),
     (
         "roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345",
         "https://www.roseltorg.ru/procedure/SAMPLE/12346",

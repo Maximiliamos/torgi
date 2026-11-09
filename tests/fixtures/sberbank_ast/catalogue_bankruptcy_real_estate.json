@@ -1,0 +1,21 @@
+{
+  "Total": 1,
+  "PurchaseList": [
+    {
+      "_source": {
+        "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/900001",
+        "title": "Нежилое помещение 87,2 кв. м, кадастровый номер 77:05:0000000:3121",
+        "purchName": "Продажа недвижимого имущества должника",
+        "ObjectSource": "Продажа имущества (предприятия) банкротов",
+        "SourceTradeSectionId": "13",
+        "BranchGroup": "Недвижимое имущество",
+        "purchAmountRUB": "24643766",
+        "PurchaseStageTerm": "Прием заявок",
+        "purchCode": "SBR013-TEST-MULTI",
+        "RegionNameTerm": "Тестовый регион",
+        "Address": "Тестовый город, Тестовая улица, д. 1",
+        "RequestStopDate": "25.11.2026 14:00"
+      }
+    }
+  ]
+}

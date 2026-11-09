@@ -289,7 +289,7 @@ async def check_nistp_details(
         stage = "catalogue"
         try:
             result = await connector.search({}, cursor=str(page))
-            response = connector._last_response
+            response = getattr(connector, "_last_response", None)
             if response is None or not response.content:
                 raise ValueError("missing catalogue response")
             observed = parse_nistp_lot_observations(
