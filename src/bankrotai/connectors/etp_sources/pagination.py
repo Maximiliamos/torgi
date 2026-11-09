@@ -10,7 +10,7 @@ import re
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import Tag
 
 if TYPE_CHECKING:
     from bankrotai.connectors.etp_sources.common import EtpSourceProfile
@@ -33,29 +33,6 @@ def get_form_params(form: Tag, page_field: str, page: int) -> list[tuple[str, st
     return params
 
 
-
-def _is_postback_link(node: Tag) -> bool:
-    return "__doPostBack" in str(node.get("href") or "")
-
-
-def postback_page_link(profile: EtpSourceProfile, soup: BeautifulSoup | Tag, page: int) -> Tag | None:
-    """Return the exact ASP.NET page target; ZakazRF also uses 10-page group jumps."""
-    from bankrotai.connectors.etp_sources.common import _clean
-
-    exact = next((
-        node for node in soup.select("a[href]")
-        if _clean(node.get_text(" ", strip=True)) == str(page) and _is_postback_link(node)
-    ), None)
-    if isinstance(exact, Tag):
-        return exact
-    if profile.source_id == "zakazrf.ru" and page > 1 and (page - 1) % 10 == 0:
-        grouped = next((
-            node for node in soup.select("a[href]")
-            if _clean(node.get_text(" ", strip=True)) in {">>", "»"} and _is_postback_link(node)
-        ), None)
-        return grouped if isinstance(grouped, Tag) else None
-    return None
-
 def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bool:
     # Local import avoids an import cycle while retaining the project's
     # established legacy-encoding parser and text normalization.
@@ -69,7 +46,11 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        return postback_page_link(profile, soup, page + 1) is not None
+        return any(
+            _clean(node.get_text(" ", strip=True)) == str(page + 1)
+            and "__doPostBack" in str(node.get("href") or "")
+            for node in soup.select("a[href]")
+        )
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
