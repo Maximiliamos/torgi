@@ -1,0 +1,58 @@
+name: UTPL final read-only source proof
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  utpl-source-proof:
+    if: github.head_ref == 'agent7-utpl-final-20261109'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - name: Focused UTPL tests
+        run: pytest -q tests/test_utpl_lot_contract.py
+      - name: Two-pass source-end and 30-detail proof
+        run: |
+          python scripts/probe_utpl_readonly.py --catalogue --passes 2 --max-pages 3000 --details 30 --delay 0.2 > /tmp/utpl-final-audit.json
+          python - <<'PY'
+          import json
+          report = json.load(open("/tmp/utpl-final-audit.json", encoding="utf-8"))
+          sample = report["detail_sample"] or {}
+          compact = {
+              "source": report["source"],
+              "terminal_verified": report["terminal_verified"],
+              "two_pass_digest_match": report["two_pass_digest_match"],
+              "passes": [
+                  {
+                      "pages": p["pages"],
+                      "terminal_page": p["terminal_page"],
+                      "unique_ids": p["unique_ids"],
+                      "digest": p["digest"],
+                  }
+                  for p in report["passes"]
+              ],
+              "detail_requested": sample.get("requested"),
+              "detail_parsed": sample.get("parsed"),
+              "price_success": sample.get("price_success"),
+              "status_success": sample.get("status_success"),
+              "structured_classifier_success": sample.get("structured_classifier_success"),
+              "multi_lot_procedures": sample.get("multi_lot_procedures"),
+              "production_enabled": report["production_enabled"],
+              "database_writes": report["database_writes"],
+          }
+          print(json.dumps(compact, ensure_ascii=False, indent=2))
+          if report["terminal_verified"] is not True:
+              raise SystemExit("terminal page not verified")
+          if sample.get("requested") != 30 or sample.get("parsed") != 30:
+              raise SystemExit("30 individual details not verified")
+          PY
