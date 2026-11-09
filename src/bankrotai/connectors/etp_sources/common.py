@@ -493,7 +493,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             source_system=profile.source_id,
             title=title[:500],
             description=context[:5000],
-            category=_category(context),
+            category=("other" if profile.source_id == "utpl.ru" else _category(context)),
             region_slug=None,
             region_name=None,
             address=None,
@@ -515,6 +515,8 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
+                **({"utpl_property_classification_verified": False}
+                   if profile.source_id == "utpl.ru" else {}),
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
@@ -653,6 +655,8 @@ def parse_detail_html(
                 "utpl_property_kinds": list(utpl_property_kinds),
                 "utpl_trade_number": procedure_number,
                 "utpl_lot_number": str(fields["lot_number"]),
+                "utpl_structured_classifier_verified": utpl_classifier is not None,
+                "utpl_property_classification_verified": bool(utpl_property_kinds),
                 "utpl_lot_section_verified": True,
             } if profile.source_id == "utpl.ru" else {}),
         },
