@@ -25,15 +25,13 @@ from bs4 import BeautifulSoup
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from bankrotai.connectors.etp_sources import PROFILES, parse_detail_html, parse_listing_html  # noqa: E402
 from bankrotai.connectors.etp_sources.utpl_contract import (  # noqa: E402
-    normalize_utpl_status,
-    parse_utpl_detail_fields,
+    CATALOGUE_URL,
+    canonical_detail_identity,
+    parse_utpl_catalogue_page,
+    parse_utpl_detail,
     utpl_next_postback,
 )
-
-PROFILE = next(item for item in PROFILES if item.source_id == "utpl.ru")
-CATALOGUE_URL = "https://bankrupt.utpl.ru/public/purchases-all/"
 URL_PATH = re.compile(r"/public/(?:auctions|contests|public-offers)/lots/view/([0-9]+)/?\Z")
 PROCEDURE = re.compile(
     r"Информация (?:об аукционе|о конкурсе|о публичном предложении)\s*№\s*0*(\d+)",
@@ -71,7 +69,8 @@ def _check_provider_url(url: str, *, catalogue: bool = False) -> str:
 
 
 def check_url(url: str) -> str:
-    return _check_provider_url(url)
+    _sale_type, detail_id, _external_id = canonical_detail_identity(url)
+    return detail_id
 
 
 def _response_ok(response: requests.Response) -> None:
@@ -137,10 +136,10 @@ def walk_catalogue(
             raise RuntimeError(f"repeated_catalogue_document_page_{page}")
         response_digests.add(response_digest)
 
-        lots = parse_listing_html(PROFILE, response.content, page=page)
+        lots = parse_utpl_catalogue_page(response.content, page=page)
         if not lots:
             raise RuntimeError(f"no_verified_lots_page_{page}")
-        page_ids = [lot.external_id for lot in lots]
+        page_ids = [lot["external_id"] for lot in lots]
         if len(page_ids) != len(set(page_ids)):
             raise RuntimeError(f"duplicate_id_within_page_{page}")
         overlap = seen_ids.intersection(page_ids)
@@ -150,7 +149,7 @@ def walk_catalogue(
             )
         seen_ids.update(page_ids)
         ids.extend(page_ids)
-        urls.extend(lot.lot_url for lot in lots)
+        urls.extend(lot["detail_url"] for lot in lots)
         page_digests.append(
             hashlib.sha256("\n".join(page_ids).encode("utf-8")).hexdigest()
         )
@@ -215,16 +214,10 @@ def probe_urls(
             )
             continue
         try:
-            fields = parse_utpl_detail_fields(response.content)
-            integrated = parse_detail_html(
-                PROFILE,
-                response.content,
-                detail_url=url,
-            )
-            procedure = _procedure_number(response.content)
+            fields = parse_utpl_detail(url, response.content)
+            procedure = fields["procedure_number"]
             if procedure:
-                procedures.setdefault(procedure, []).append(lot_id)
-            status = normalize_utpl_status(fields["source_status_text"])
+                procedures.setdefault(str(procedure), []).append(lot_id)
             observations.append(
                 {
                     "detail_id": lot_id,
@@ -238,11 +231,11 @@ def probe_urls(
                     "classifier_present": fields["classifier"] is not None,
                     "initial_price": fields["initial_price"],
                     "current_price": fields["current_price"],
-                    "status": status,
+                    "status": fields["status"],
                     "cadastral_present": fields["cadastral_number"] is not None,
                     "area_present": fields["area"] is not None,
                     "address_present": fields["address"] is not None,
-                    "integration_identity": integrated.external_id,
+                    "source_identity": fields["external_id"],
                     "verified": True,
                 }
             )
