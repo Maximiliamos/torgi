@@ -117,9 +117,17 @@ detail for another.
 - `src/bankrotai/connectors/etp_sources/common.py`
 - `scripts/audit_centerr_contract.py`
 - `tests/test_centerr_contract.py`
+- `tests/test_etp_sources.py` (CenterR-only legacy fixtures aligned to the proven row schema)
 - `tests/fixtures/centerr_duplicate_wrong_id.html`
 - `.github/workflows/centerr-contract-audit.yml`
 - this document
+
+## Test compatibility
+
+The first full SQLite run after introducing the strict catalogue parser exposed
+three old CenterR tests that used synthetic one-cell tables. Those fixtures no
+longer represented the live provider contract. The parser was not relaxed;
+only the CenterR test rows were upgraded to the proved nine-column schema.
 
 ## Known limitations
 
