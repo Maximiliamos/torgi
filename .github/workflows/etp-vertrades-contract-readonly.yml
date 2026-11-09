@@ -1,0 +1,76 @@
+name: Vertrades read-only source contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/bankrotai/connectors/etp_sources/vertrades_detail_*.py"
+      - "src/bankrotai/connectors/registry/direct_etp_catalogue.py"
+      - "src/bankrotai/services/etp_vertrades_contract_probe.py"
+      - "tests/test_*vertrades*.py"
+      - "docs/ETP_VERTRADES_AUDIT_2026-11-09.md"
+      - ".github/workflows/etp-vertrades-contract-readonly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vertrades-readonly-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-contract:
+    name: Two-pass public catalogue proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install locked runtime
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps -e .
+      - name: Run bounded two-pass Vertrades catalogue proof
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import requests
+
+          from bankrotai.services.etp_vertrades_contract_probe import (
+              probe_vertrades_contract,
+          )
+
+          with requests.Session() as session:
+              report = probe_vertrades_contract(
+                  session,
+                  max_pages=4,
+                  passes=2,
+                  delay_seconds=1.0,
+              )
+
+          if report["terminal_page"] != 4:
+              raise SystemExit("Vertrades terminal page changed from verified page 4")
+          if not report["terminal_page_proven"] or not report["stable_between_passes"]:
+              raise SystemExit("Vertrades catalogue identity contract is not stable")
+          if report["database_writes"] != 0:
+              raise SystemExit("Read-only probe reported a database write")
+          if report["reconciliation_allowed"] or report["archival_allowed"]:
+              raise SystemExit("Read-only probe unexpectedly enabled destructive semantics")
+          if report["production_enabled"]:
+              raise SystemExit("Read-only probe unexpectedly enabled production")
+
+          # Deliberately emit no source HTML, titles, addresses or person data.
+          print(json.dumps({
+              "terminal_page": report["terminal_page"],
+              "pages_per_pass": report["pages_per_pass"],
+              "unique_property_lot_ids": report["unique_property_lot_ids"],
+              "id_digest_sha256": report["id_digest_sha256"],
+              "stable_between_passes": report["stable_between_passes"],
+              "production_enabled": report["production_enabled"],
+          }, ensure_ascii=False, sort_keys=True))
+          PY
