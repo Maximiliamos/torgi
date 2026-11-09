@@ -279,7 +279,7 @@ def test_operational_listing_routes_through_utpl_contract() -> None:
     assert lot.current_price == 2_000_000
     assert lot.auction_status == "active"
     assert lot.category == "other"
-    assert lot.procedure_number == "9410"
+    assert lot.procedure_number == "0009410"
     assert lot.raw_data["utpl_lot_number"] == "2"
     assert lot.raw_data["utpl_property_classification_verified"] is False
 
