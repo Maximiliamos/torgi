@@ -206,7 +206,7 @@ def test_mixed_lot_augments_structured_classifier_from_official_asset_descriptio
         "Топливораздаточная колонка и компрессор.",
     )
     result = parse_utpl_detail_fields(html)
-    assert result["category"] == "other"
+    assert result["category"] == "real_estate"
     assert result["property_kinds"] == ("lease", "land", "real_estate", "equipment")
 
 
