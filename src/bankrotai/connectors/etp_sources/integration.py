@@ -611,6 +611,9 @@ class SistematorgConnector(AuctionConnector):
         )
         self.client = SistematorgReadonlyClient(session=session, timeout=timeout)
 
+    def _request(self, page: int) -> requests.Response:
+        return self.client.fetch_catalogue_page(page)
+
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         from bankrotai.connectors.etp_sources.sistematorg_contract import (
             parse_sistematorg_catalogue_page,
