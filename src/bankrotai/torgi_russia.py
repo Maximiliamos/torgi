@@ -16,7 +16,11 @@ from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_status import public_auction_status
-from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
+from bankrotai.torgi_russia_title_recovery import (
+    classify_rejections,
+    recover_empty_title,
+    recovery_failure_code,
+)
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
 PUBLIC_API_SEARCH_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search"
@@ -351,7 +355,7 @@ class TorgiRussiaClient:
                         parse_price=parse_money,
                     )
                 except (RuntimeError, ValueError, requests.RequestException) as exc:
-                    recovery_failures[str(item.get("id"))] = type(exc).__name__
+                    recovery_failures[str(item.get("id"))] = recovery_failure_code(exc)
             recovered_records.append(item)
         records = recovered_records
 
