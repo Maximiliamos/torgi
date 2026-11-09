@@ -19,6 +19,7 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
+    arbbitlot_detail_fields,
     datetime_after,
     profit_initial_money,
     ruson_initial_money,
@@ -574,12 +575,30 @@ def parse_detail_html(
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    price = _money(text_value)
+    arbbitlot_fields = (
+        arbbitlot_detail_fields(text_value) if profile.source_id == "arbbitlot.ru" else {}
+    )
+    price = (
+        arbbitlot_fields.get("start_price")
+        if profile.source_id == "arbbitlot.ru"
+        else _money(text_value)
+    )
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
-    current_price = _current_money(text_value)
+    current_price = (
+        arbbitlot_fields.get("current_price")
+        if profile.source_id == "arbbitlot.ru"
+        else _current_money(text_value)
+    )
+    address = None
+    if profile.source_id == "arbbitlot.ru":
+        address = _label_value(
+            text_value,
+            r"(?:адрес(?:\s*\(местонахождение\))?|местоположение)",
+            r".{5,300}?(?=\s+(?:кадастров|площад|начальн|текущ|статус|шаг|размер\s+обеспеч)\b)",
+        )
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -589,7 +608,7 @@ def parse_detail_html(
         category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=None,
+        address=address,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
@@ -603,11 +622,34 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
+            **({
+                "procedure_id": arbbitlot_fields.get("trade_id"),
+                "lot_number": arbbitlot_fields.get("lot_number"),
+                "per_lot_detail_verified": True,
+                "price_unverified": price is None,
+                "current_price_unverified": current_price is None,
+            } if profile.source_id == "arbbitlot.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
-        procedure_number=procedure_number,
+        procedure_number=(
+            str(arbbitlot_fields.get("trade_id"))
+            if profile.source_id == "arbbitlot.ru" and arbbitlot_fields.get("trade_id")
+            else procedure_number
+        ),
         bankruptcy_case_number=case_number,
+        deposit_amount=(
+            arbbitlot_fields.get("deposit_amount") if profile.source_id == "arbbitlot.ru" else None
+        ),
+        deposit_percent=(
+            arbbitlot_fields.get("deposit_percent") if profile.source_id == "arbbitlot.ru" else None
+        ),
+        auction_step_amount=(
+            arbbitlot_fields.get("auction_step_amount") if profile.source_id == "arbbitlot.ru" else None
+        ),
+        auction_step_percent=(
+            arbbitlot_fields.get("auction_step_percent") if profile.source_id == "arbbitlot.ru" else None
+        ),
         application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
