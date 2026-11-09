@@ -19,8 +19,8 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
+    build_etpu_detail_lot,
     datetime_after,
-    etpu_detail_contract,
     profit_initial_money,
     ruson_initial_money,
     sistematorg_lot_count,
@@ -555,6 +555,17 @@ def parse_detail_html(
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
 
+    if profile.source_id == "etpu.ru":
+        return build_etpu_detail_lot(
+            text_value,
+            external_id=external_id,
+            detail_url=detail_url,
+            platform_name=profile.platform_name,
+            platform_code=profile.platform_code,
+            complete_source_inventory=profile.complete_source_inventory,
+            safe_for_archival=profile.safe_for_archival,
+        )
+
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
     title = max(title_candidates, key=len, default="")
@@ -581,33 +592,13 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
-    category = _category(text_value)
-    auction_status = _status(text_value)
-    raw_data: dict[str, Any] = {
-        "complete_source_inventory": profile.complete_source_inventory,
-        "safe_for_archival": profile.safe_for_archival,
-        "reconcile_missing": False,
-    }
-    application_deadline = datetime_after(
-        text_value,
-        r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
-    )
-    auction_at = datetime_after(text_value, r"дата проведения")
-    if profile.source_id == "etpu.ru":
-        contract = etpu_detail_contract(text_value)
-        price, current_price = contract["start_price"], contract["current_price"]
-        category, auction_status = contract["category"] or "other", contract["auction_status"]
-        title = contract["title"] or title
-        procedure_number = contract["procedure_number"] or procedure_number
-        application_deadline, auction_at = contract["application_deadline"], contract["auction_at"]
-        raw_data.update(contract["raw_data"])
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=category,
+        category=_category(text_value),
         region_slug=None,
         region_name=None,
         address=None,
@@ -616,18 +607,24 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=auction_status,
+        auction_status=_status(text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
-        raw_data=raw_data,
+        raw_data={
+            "complete_source_inventory": profile.complete_source_inventory,
+            "safe_for_archival": profile.safe_for_archival,
+            "reconcile_missing": False,
+        },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        application_deadline=application_deadline,
-        auction_at=auction_at,
-        auction_timezone="Europe/Moscow" if profile.source_id == "etpu.ru" else None,
+        application_deadline=datetime_after(
+            text_value,
+            r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+        ),
+        auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
 
