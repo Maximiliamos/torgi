@@ -647,8 +647,8 @@ def test_sberbank_healthcheck_uses_verified_bankruptcy_contract() -> None:
     )
     health = asyncio.run(connector.healthcheck())
     assert health.status == "ok"
-    assert health.details["bankruptcy_filter_verified"] is True
-    assert health.details["source_total_proven"] is True
+    assert health.metadata["bankruptcy_filter_verified"] is True
+    assert health.metadata["source_total_proven"] is True
 
 
 def test_sberbank_registry_fetch_lot_uses_goodsview_contract() -> None:
