@@ -47,6 +47,7 @@ async def scan_catalogue(connector: Any, *, max_pages: int = 1000) -> dict[str, 
         "unique_ids": len(lots_by_id),
         "duplicate_ids": duplicates,
         "id_digest_sha256": _digest(list(lots_by_id)),
+        "_ids": sorted(lots_by_id),
         "lots": list(lots_by_id.values()),
     }
 
@@ -57,18 +58,56 @@ async def verify_details(
     *,
     detail_limit: int = 30,
 ) -> dict[str, Any]:
-    """Verify individual ARBbitLot cards without converting failures into guessed data."""
+    """Verify individual cards and compare catalogue/detail fields per lot identity."""
+    # Reserve part of the sample for public offers so current-price evidence is
+    # exercised even when the all-trades catalogue is dominated by auctions.
+    public_offers = [lot for lot in lots if ":public-offers-" in lot.external_id]
+    others = [lot for lot in lots if ":public-offers-" not in lot.external_id]
+    public_offer_target = min(len(public_offers), max(1, detail_limit // 3))
+    selected = public_offers[:public_offer_target]
+    selected_ids = {lot.external_id for lot in selected}
+    for lot in others + public_offers[public_offer_target:]:
+        if len(selected) >= detail_limit:
+            break
+        if lot.external_id not in selected_ids:
+            selected.append(lot)
+            selected_ids.add(lot.external_id)
+
     samples: list[dict[str, Any]] = []
     by_procedure: dict[str, list[str]] = defaultdict(list)
-    for listing in lots[:detail_limit]:
-        item: dict[str, Any] = {"external_id": listing.external_id}
+    for listing in selected:
+        item: dict[str, Any] = {
+            "external_id": listing.external_id,
+            "catalogue_start_price": listing.start_price,
+            "catalogue_current_price": listing.current_price,
+            "catalogue_status": listing.auction_status,
+        }
         try:
             detail = await connector.fetch_lot(listing.external_id)
+            start_match = (
+                listing.start_price is None
+                or detail.start_price is None
+                or abs(float(listing.start_price) - float(detail.start_price)) <= 0.01
+            )
+            status_match = (
+                listing.auction_status == "unknown"
+                or detail.auction_status == "unknown"
+                or listing.auction_status == detail.auction_status
+            )
+            detail_current_matches_catalogue = (
+                listing.current_price is None
+                or detail.current_price is None
+                or abs(float(listing.current_price) - float(detail.current_price)) <= 0.01
+            )
             item.update({
                 "detail_ok": True,
                 "start_price_ok": detail.start_price is not None,
-                "current_price_ok": detail.current_price is not None,
+                "catalogue_detail_start_price_match": start_match,
+                "catalogue_current_price_ok": listing.current_price is not None,
+                "detail_current_price_ok": detail.current_price is not None,
+                "catalogue_detail_current_price_match": detail_current_matches_catalogue,
                 "status_ok": detail.auction_status != "unknown",
+                "catalogue_detail_status_match": status_match,
                 "procedure_id": detail.procedure_number,
                 "lot_number": (detail.raw_data or {}).get("lot_number"),
                 "cadastral_number_ok": detail.cadastral_number is not None,
@@ -82,19 +121,33 @@ async def verify_details(
                 "detail_ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "start_price_ok": False,
-                "current_price_ok": False,
+                "catalogue_detail_start_price_match": False,
+                "catalogue_current_price_ok": listing.current_price is not None,
+                "detail_current_price_ok": False,
+                "catalogue_detail_current_price_match": False,
                 "status_ok": False,
+                "catalogue_detail_status_match": False,
             })
         samples.append(item)
 
     checked = len(samples)
     detail_ok = sum(bool(item["detail_ok"]) for item in samples)
     start_ok = sum(bool(item["start_price_ok"]) for item in samples)
+    start_match = sum(bool(item["catalogue_detail_start_price_match"]) for item in samples)
     status_ok = sum(bool(item["status_ok"]) for item in samples)
+    status_match = sum(bool(item["catalogue_detail_status_match"]) for item in samples)
     public_offer_samples = [
         item for item in samples if ":public-offers-" in str(item["external_id"])
     ]
-    current_ok = sum(bool(item["current_price_ok"]) for item in public_offer_samples)
+    catalogue_current_ok = sum(
+        bool(item["catalogue_current_price_ok"]) for item in public_offer_samples
+    )
+    detail_current_ok = sum(
+        bool(item["detail_current_price_ok"]) for item in public_offer_samples
+    )
+    current_match = sum(
+        bool(item["catalogue_detail_current_price_match"]) for item in public_offer_samples
+    )
     multi_lot_procedures = {
         procedure: sorted(set(identities))
         for procedure, identities in by_procedure.items()
@@ -104,9 +157,13 @@ async def verify_details(
         "details_checked": checked,
         "detail_success": detail_ok,
         "start_price_success": start_ok,
+        "catalogue_detail_start_price_match": start_match,
         "status_success": status_ok,
+        "catalogue_detail_status_match": status_match,
         "public_offer_details_checked": len(public_offer_samples),
-        "current_price_success": current_ok,
+        "catalogue_current_price_success": catalogue_current_ok,
+        "detail_current_price_success": detail_current_ok,
+        "catalogue_detail_current_price_match": current_match,
         "multi_lot_procedures": multi_lot_procedures,
         "samples": samples,
     }
@@ -124,13 +181,26 @@ async def run_audit(
 
     second_connector = connector_factory()
     second = await scan_catalogue(second_connector, max_pages=max_pages)
+
+    first_ids = set(first["_ids"])
+    second_ids = set(second["_ids"])
+    added = sorted(second_ids - first_ids)
+    removed = sorted(first_ids - second_ids)
     same_ids = (
         first["id_digest_sha256"] == second["id_digest_sha256"]
         and first["unique_ids"] == second["unique_ids"]
     )
+    pass_comparison = {
+        "identical_ids": same_ids,
+        "added_count": len(added),
+        "removed_count": len(removed),
+        "added_ids_sample": added[:20],
+        "removed_ids_sample": removed[:20],
+    }
 
     for result in (first, second):
         result.pop("lots", None)
+        result.pop("_ids", None)
     return {
         "source": SOURCE_ID,
         "read_only": True,
@@ -138,6 +208,7 @@ async def run_audit(
         "pass_1": first,
         "pass_2": second,
         "passes_have_identical_ids": same_ids,
+        "pass_comparison": pass_comparison,
         "details": details,
     }
 
