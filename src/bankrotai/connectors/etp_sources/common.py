@@ -28,6 +28,7 @@ from bankrotai.connectors.etp_sources.source_specific import (
     etpu_moscow_datetime,
     etpu_prices,
     etpu_procedure_number,
+    etpu_status,
     profit_initial_money,
     ruson_initial_money,
     sistematorg_lot_count,
@@ -590,6 +591,7 @@ def parse_detail_html(
     current_price = _current_money(text_value)
     category = _category(text_value)
     explicit_status: str | None = None
+    auction_status = _status(text_value)
     raw_data: dict[str, Any] = {
         "complete_source_inventory": profile.complete_source_inventory,
         "safe_for_archival": profile.safe_for_archival,
@@ -606,6 +608,7 @@ def parse_detail_html(
         classifier = etpu_classifier_section(text_value)
         flags = etpu_classifier_flags(text_value)
         explicit_status = etpu_explicit_status(text_value)
+        auction_status = etpu_status(text_value)
         source_title = etpu_lot_title(text_value)
         if source_title:
             title = source_title
@@ -618,6 +621,7 @@ def parse_detail_html(
             "detail_initial_price_verified": price is not None,
             "detail_current_price_verified": current_price is not None,
             "price_contract": "etpu_labelled_rub_fields",
+            "source_status_text": explicit_status,
         })
         application_deadline = etpu_moscow_datetime(
             text_value,
@@ -644,9 +648,7 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(
-            explicit_status if profile.source_id == "etpu.ru" else text_value
-        ),
+        auction_status=auction_status,
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
