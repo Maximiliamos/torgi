@@ -7,6 +7,9 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.etp_sources.status_normalization import _status
+from bankrotai.domain import NormalizedLot
+
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 _SPACE_RE = re.compile(r"\s+")
@@ -314,3 +317,73 @@ def parse_ruson_detail_fields(
         "procedure_number": procedure_match.group(1) if procedure_match else None,
         "detail_template": detail_template,
     }
+
+
+_CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
+_VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
+_AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.IGNORECASE)
+
+
+def build_ruson_detail_lot(
+    soup: BeautifulSoup,
+    *,
+    external_id: str,
+    detail_url: str,
+    platform_name: str,
+    platform_code: str,
+    observed_at_utc: datetime | None,
+    complete_source_inventory: bool,
+    safe_for_archival: bool,
+) -> NormalizedLot:
+    """Build one verified RUSSIA OnLine lot from source-scoped structured fields."""
+    values = parse_ruson_detail_fields(soup, observed_at_utc=observed_at_utc)
+    text_value = _clean(soup.get_text(" ", strip=True))
+    title = str(values.get("title") or "Лот")
+    asset_text = str(values.get("asset_text") or title)
+    cadastral = _CADASTRAL_RE.search(asset_text)
+    vin = _VIN_RE.search(asset_text)
+    area_match = _AREA_RE.search(asset_text)
+    area = float(area_match.group(1).replace(",", ".")) if area_match else None
+    return NormalizedLot(
+        external_id=external_id,
+        source="rus-on",
+        source_system="rus-on.ru",
+        title=title[:500],
+        description=text_value[:5000],
+        category=str(values.get("category") or "other"),
+        region_slug=None,
+        region_name=None,
+        address=str(values["address"]) if values.get("address") else None,
+        cadastral_number=cadastral.group(1) if cadastral else None,
+        vin=vin.group(0).upper() if vin else None,
+        area=area,
+        start_price=values.get("start_price"),
+        current_price=values.get("current_price"),
+        auction_status=_status(str(values.get("status_text") or "")),
+        lot_url=detail_url,
+        source_url=detail_url,
+        detail_level="detail",
+        raw_data={
+            "complete_source_inventory": complete_source_inventory,
+            "safe_for_archival": safe_for_archival,
+            "reconcile_missing": False,
+            "ruson_initial_price_format": values.get("initial_price_format"),
+            "ruson_initial_price_had_currency": values.get("initial_price_had_currency"),
+            "ruson_current_price_source": values.get("current_price_source"),
+            "ruson_detail_template": values.get("detail_template"),
+            "ruson_source_categories": values.get("source_categories"),
+        },
+        platform_name=platform_name,
+        platform_code=platform_code,
+        procedure_number=values.get("procedure_number"),
+        deposit_amount=values.get("deposit_amount"),
+        application_start_at=values.get("application_start_at"),
+        application_deadline=values.get("application_deadline"),
+        auction_at=values.get("auction_at"),
+        auction_timezone="Europe/Moscow",
+        auction_step_amount=values.get("auction_step_amount"),
+        auction_type=values.get("auction_type"),
+        public_offer_schedule=values.get("public_offer_schedule"),
+        next_interval_price=values.get("next_interval_price"),
+        next_price_reduction_at=values.get("next_price_reduction_at"),
+    )
