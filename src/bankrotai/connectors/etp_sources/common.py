@@ -1044,6 +1044,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
+        "utpl.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
