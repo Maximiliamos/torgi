@@ -138,6 +138,19 @@ class LotOnlineClient:
                 pass
         return value
 
+    @staticmethod
+    def _compact_property_address(value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = re.sub(r"\\s+", " ", value).strip(" ,.;")
+        cleaned = re.split(
+            r"[,;]?\\s+(?=(?:с\\s+земельным\\s+участком|в\\s+составе)\\b)",
+            cleaned,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,.;")
+        return cleaned or None
+
     def fetch_detail_fields(self, url: str) -> dict[str, Any]:
         """Fetch structured address/cadastre fields absent from listing cards."""
         try:
@@ -196,7 +209,9 @@ class LotOnlineClient:
         page_text = " ".join((description, self._detail_text(soup.title)))
         # A generic detail-page "Адрес" may belong to the seller or
         # auction venue. The full lot description identifies the property.
-        address = extract_address(description) or labelled.get("адрес") or extract_address(page_text)
+        address = self._compact_property_address(
+            extract_address(description) or labelled.get("адрес") or extract_address(page_text)
+        )
         cadastral_numbers = extract_cadastral_numbers(page_text)
         if not cadastral_numbers:
             for group in soup.select(".ty-control-group"):
