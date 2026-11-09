@@ -150,52 +150,115 @@ ARBbitLot now handles this provider-specific phrase as `closed` without changing
 
 ## Code changes
 
-### `src/bankrotai/connectors/etp_sources/source_specific.py`
+### `src/bankrotai/connectors/etp_sources/arbbitlot.py`
 
-Added an ARBbitLot-specific labelled-field parser for:
+All ARBbitLot-specific parsing and validation now lives in one isolated module:
 
+- official catalogue profile/constants;
+- catalogue row parsing and displayed procedure/lot identity;
+- individual detail parsing;
 - initial price;
 - current price;
-- deposit/security amount;
-- deposit percent;
-- auction step amount;
-- auction step percent;
-- trade/procedure number;
-- displayed lot number.
+- deposit/security;
+- auction step in RUB and percent;
+- structured EFRSB property classifier;
+- source-specific cancelled status;
+- catalogue/detail identity checks;
+- catalogue/detail price checks;
+- ASP.NET numeric pagination;
+- grouped `>>` pagination;
+- terminal-page decision;
+- postback request construction;
+- standalone `ArbbitlotConnector`;
+- source-specific fail-closed errors.
 
-ARBbitLot detail enrichment now fails closed with
-`arbbitlot_detail_start_price_unverified`
-when the individual detail does not prove an initial price. A catalogue price is not promoted to verified detail price in that case.
-
-### `src/bankrotai/connectors/etp_sources/common.py`
-
-ARBbitLot detail parsing now consumes the source-specific fields and keeps initial/current/deposit/step separate. It also records procedure ID and displayed lot number in detail evidence, extracts address where the source provides the labelled field, fails closed when individual start price is absent, handles the provider-specific cancelled status, and follows `>>` at ASP.NET pager-group boundaries.
-
-### `src/bankrotai/connectors/etp_sources/pagination.py`
-
-ARBbitLot `has_next_page` now treats a provider `>>` postback as proof that the visible ten-page group is not terminal.
+The module reuses generic ETP primitives only where their semantics are source-independent. No ARBbitLot branches remain in the shared parser.
 
 ### `src/bankrotai/services/etp_arbbitlot_readonly_audit.py`
 
-Added a source-specific non-persistent two-pass catalogue/detail audit.
+The audit imports `ArbbitlotConnector` directly from the isolated module. It does not depend on registration in the shared dispatcher.
 
-### Tests
+### `tests/test_arbbitlot_contract.py`
 
-Added regression coverage for:
+Regression tests exercise the isolated module directly, including the original price root cause, multi-lot identity, current-price separation, cancelled status, classifier handling and grouped ASP.NET pagination.
 
-- ARBbitLot currency-before-number price format;
-- initial/current/deposit/step isolation;
-- missing start price not inferred from deposit or step;
-- fail-closed detail enrichment;
-- stable distinct identities for a multi-lot procedure;
-- ASP.NET page-2 postback and terminal condition;
-- two-pass read-only audit digest and detail statistics.
+### `tests/test_etp_arbbitlot_readonly_audit.py`
+
+Covers the two-pass audit report, terminal proof, duplicate detection, per-lot identity comparison and price/status counters.
+
+### `.github/workflows/etp-arbbitlot-readonly-audit.yml`
+
+Source-specific workflow runs exact-head focused tests and the live read-only two-pass/30-detail audit. It does not mutate the database or production configuration.
+
+## Integration hook required
+
+The isolated module is intentionally not registered from this source PR.
+
+A future integration PR only needs to wire ARBbitLot's dispatcher entry to:
+
+`bankrotai.connectors.etp_sources.arbbitlot.ArbbitlotConnector`
+
+The appropriate integration point is the shared ETP connector registration in
+`src/bankrotai/connectors/etp_sources/__init__.py` (or its future centralized replacement).
+
+No ARBbitLot-specific parsing, price, status, identity or pagination behavior needs to be added to `common.py`, `pagination.py`, `profiles.py`, `source_specific.py` or `direct_etp_catalogue.py`.
+
+## Isolation review
+
+Source-specific module:
+
+`src/bankrotai/connectors/etp_sources/arbbitlot.py`
+
+Shared files modified:
+
+NONE
+
+Source-specific logic remaining in `common.py`:
+
+NONE
+
+Source-specific logic remaining in `pagination.py`:
+
+NONE
+
+Source-specific logic remaining in `profiles.py`:
+
+NONE
+
+Source-specific logic remaining in `source_specific.py`:
+
+NONE
+
+Source-specific logic remaining in `direct_etp_catalogue.py`:
+
+NONE
+
+Integration hook required:
+
+Register `ArbbitlotConnector` for source ID `arbbitlot.ru` in the centralized integration-owned dispatcher.
+
+Existing work preserved:
+
+YES
+
+Live evidence preserved:
+
+YES
+
+Regression tests preserved:
+
+YES
+
+PRODUCTION ENABLED:
+
+NO
 
 ## Not changed
 
 This PR does not change:
 
-- any other ETP profile or parser contract;
+- any neighbouring ETP parser;
+- shared ETP parser behavior;
 - production scheduler;
 - source allowlists;
 - reconciliation;
