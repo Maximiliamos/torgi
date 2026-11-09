@@ -118,21 +118,31 @@ def _asset_class(value: str) -> str:
     non_property_match = bool(_NON_PROPERTY_RE.search(value))
     # A property object can legitimately carry an ancillary land-lease right
     # (e.g. building + lease of the underlying parcel). Pure lease rights are
-    # not ownership real estate and remain excluded.
+    # not ownership real estate and remain a separate class.
     pure_lease = bool(_PURE_LEASE_RE.search(value)) and not bool(
-        re.search(r"здани|помещен|квартир|жилой\s+дом|гараж|сооружен", value, re.I)
+        re.search(r"здани|помещен|квартир|жилой\\s+дом|гараж|сооружен", value, re.I)
     )
     if pure_lease:
         return "lease_right"
     if property_match and non_property_match:
         return "mixed"
-    if not property_match:
-        return "non_property"
-    if re.search(r"земельн|участок|кадастров", value, re.I) and not re.search(
-        r"здани|помещен|квартир|жилой\s+дом|гараж|сооружен", value, re.I
-    ):
-        return "land"
-    return "real_estate"
+    if property_match:
+        if re.search(r"земельн|участок|кадастров", value, re.I) and not re.search(
+            r"здани|помещен|квартир|жилой\\s+дом|гараж|сооружен", value, re.I
+        ):
+            return "land"
+        return "real_estate"
+    if re.search(r"автомоб|транспорт|vin\\b|прицеп|тепловоз", value, re.I):
+        return "vehicle"
+    if re.search(r"право\\s+требован|дебитор", value, re.I):
+        return "receivables"
+    if re.search(r"дол[яи]\\s+в\\s+уставн|акци[яи]|ценн\\w*\\s+бумаг", value, re.I):
+        return "equity"
+    if re.search(r"оборудован|станок|линия\\s+для|мебел|техник", value, re.I):
+        return "equipment"
+    if re.search(r"товарн\\w*\\s+знак|интеллектуальн", value, re.I):
+        return "intangible"
+    return "other"
 
 
 def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
@@ -205,8 +215,6 @@ def parse_listing(
         application_start, application_deadline = _dates_from_row(row_text)
         for lot_number, segment in segments:
             asset_class = _asset_class(segment)
-            if asset_class not in {"land", "real_estate"}:
-                continue
             external_id = f"{profile.source_id}:{provider_id}:{lot_number}"
             if external_id in seen:
                 continue
@@ -246,6 +254,7 @@ def parse_listing(
                     "lot_number": lot_number,
                     "source_status_text": raw_status,
                     "source_asset_class": asset_class,
+                    "eligible_property": asset_class in {"land", "real_estate"},
                     "active_filter_verified": active_filter,
                     "individual_lot_identity_verified": True,
                     "listing_price_unverified": True,
@@ -324,8 +333,8 @@ def parse_detail(
         raise ValueError("aukcioncenter_individual_lot_section_not_proven")
 
     asset_class = _asset_class(selected)
-    if asset_class not in {"land", "real_estate"}:
-        raise ValueError("aukcioncenter_detail_not_verified_property")
+    if asset_class == "mixed":
+        raise ValueError("aukcioncenter_detail_mixed_asset_class")
 
     start_price = _money(_INITIAL_PRICE_RE.search(selected))
     current_price = _money(_CURRENT_PRICE_RE.search(selected))
@@ -394,6 +403,8 @@ def parse_detail(
             "procedure_provider_id": provider_id,
             "lot_number": lot_number,
             "source_status_text": raw_status,
+            "source_asset_class": asset_class,
+            "eligible_property": asset_class in {"land", "real_estate"},
             "individual_lot_identity_verified": True,
             "individual_lot_section_verified": True,
             "detail_start_price_verified": start_price is not None,
