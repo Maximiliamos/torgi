@@ -6,6 +6,23 @@ import re
 from bankrotai.domain import NormalizedLot
 
 
+def ruson_initial_money(value: str) -> float | None:
+    """RUSSIA OnLine renders a labelled initial price that may omit a RUB suffix."""
+    match = re.search(
+        r"начальн\w*\s+цен\w*\s*[:\-]?\s*(\d[\d\s\u00a0]{0,20}(?:[.,]\d{1,2})?)",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    raw = re.sub(r"[\s\u00a0]", "", match.group(1)).replace(",", ".")
+    try:
+        amount = float(raw)
+    except ValueError:
+        return None
+    return amount if 0 < amount < 1e15 else None
+
+
 def profit_initial_money(value: str) -> float | None:
     """Profit renders a labelled decimal without a RUB suffix."""
     match = re.search(
