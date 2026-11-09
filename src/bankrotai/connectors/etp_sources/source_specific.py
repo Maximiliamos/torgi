@@ -159,7 +159,7 @@ def zakazrf_structured_category(classifier: str | None) -> str | None:
         return "real_estate"
     if any(token in lowered for token in ("автомоб", "транспорт", "прицеп", "снегоход")):
         return "vehicle"
-    if any(token in lowered for token in ("право требования", "дебитор")):
+    if any(token in lowered for token in ("право требования", "права требования", "уступка требован", "дебитор")):
         return "receivables"
     if any(token in lowered for token in ("оборудован", "машины и оборудование", "станк")):
         return "equipment"
