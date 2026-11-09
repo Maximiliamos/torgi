@@ -134,6 +134,11 @@ def zakazrf_normalized_status(value: str | None) -> str:
     if not value:
         return "unknown"
     lowered = re.sub(r"\s+", " ", value).strip().lower()
+    if re.search(
+        r"(?:при[её]м\s+заявок\s+заверш|заверш[её]н\s+при[её]м\s+заявок)",
+        lowered,
+    ):
+        return "unknown"
     if lowered in {"прием заявок", "приём заявок", "идут торги"}:
         return "active"
     if any(token in lowered for token in (
