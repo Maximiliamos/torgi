@@ -63,6 +63,121 @@ def profit_initial_money(value: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
+
+def _zakazrf_lot_section(value: str) -> str:
+    """Return the isolated public lot section, excluding procedure boilerplate."""
+    markers = list(re.finditer(r"информация\s+о\s+лоте\s*№?\s*\d+", value, re.IGNORECASE))
+    if not markers:
+        return value
+    return value[markers[-1].start():]
+
+
+def zakazrf_lot_number(value: str) -> str | None:
+    section = _zakazrf_lot_section(value)
+    match = re.search(r"\bномер\s*:\s*(\d{1,8})\b", section, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def zakazrf_title(value: str) -> str | None:
+    """Extract the lot's own labelled name, not the procedure-level name."""
+    section = _zakazrf_lot_section(value)
+    match = re.search(
+        r"\bнаименование\s*:\s*(.{4,1200}?)(?=\s+(?:дата\s+(?:начала|окончания|проведения|подведения)|статус)\s*:)",
+        section,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
+
+
+def _zakazrf_labelled_money(value: str, label: str) -> float | None:
+    section = _zakazrf_lot_section(value)
+    match = re.search(
+        label
+        + r"\s*,?\s*(?:руб(?:\.|лей)?)?\s*:\s*"
+        + r"(\d[\d\s\u00a0]{0,30}(?:[.,]\d{1,2})?)",
+        section,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    raw = re.sub(r"[\s\u00a0]", "", match.group(1)).replace(",", ".")
+    try:
+        amount = float(raw)
+    except ValueError:
+        return None
+    return amount if 0 < amount < 1e15 else None
+
+
+def zakazrf_initial_money(value: str) -> float | None:
+    """ZakazRF prints the RUB marker in the label, before the number."""
+    return _zakazrf_labelled_money(value, r"начальн\w*\s+цен\w*")
+
+
+def zakazrf_current_money(value: str) -> float | None:
+    """Public offers expose a separate explicitly-labelled current price."""
+    return _zakazrf_labelled_money(value, r"текущ\w*\s+цен\w*")
+
+
+def zakazrf_status_text(value: str) -> str | None:
+    """Read only the explicit lot Status field; ignore conditional boilerplate."""
+    section = _zakazrf_lot_section(value)
+    match = re.search(
+        r"\bстатус\s*:\s*(.{2,100}?)(?=\s+(?:дата|начальн\w*\s+цен|текущ\w*\s+цен|шаг|порядок|сведения|обеспечение)\b)",
+        section,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
+
+
+def zakazrf_classifier(value: str) -> str | None:
+    """Extract the provider's structured EFRSB classifier for the individual lot."""
+    section = _zakazrf_lot_section(value)
+    match = re.search(
+        r"классификатор\s+ефрсб\s*:\s*(.{2,300}?)"
+        r"(?=\s+(?:интервалы\s+снижения\s+цены|обеспечение\s+заявки|"
+        r"порядок\s+внесения|документы|всего\s+подано|$))",
+        section,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    classifier = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
+    return classifier or None
+
+
+def zakazrf_structured_category(classifier: str | None) -> str | None:
+    """Map only the structured EFRSB classifier; never infer from free prose."""
+    if not classifier:
+        return None
+    lowered = classifier.lower()
+    if "земельн" in lowered or "земли " in lowered:
+        return "land"
+    if any(token in lowered for token in (
+        "жилые здания", "жилые помещения", "здания (кроме жилых)",
+        "нежил", "сооружен", "гараж", "машино-мест", "недвижим",
+    )):
+        return "real_estate"
+    if any(token in lowered for token in ("автомоб", "транспорт", "прицеп", "снегоход")):
+        return "vehicle"
+    if any(token in lowered for token in ("право требования", "дебитор")):
+        return "receivables"
+    if any(token in lowered for token in ("оборудован", "машины и оборудование", "станк")):
+        return "equipment"
+    if "аренд" in lowered or "право пользования" in lowered:
+        return "lease"
+    return None
+
+
+def zakazrf_address(title: str | None) -> str | None:
+    if not title:
+        return None
+    match = re.search(
+        r"\bадрес\s*:\s*(.+?)(?=,\s*(?:кадастров(?:ый)?\s+номер|кад\.?\s*№)|$)",
+        title,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip(" ,") if match else None
+
 def _checked_amount(value: object) -> Decimal | None:
     if value is None:
         return None
