@@ -84,6 +84,18 @@ async def verify_details(
         }
         try:
             detail = await connector.fetch_lot(listing.external_id)
+            listing_raw = listing.raw_data or {}
+            detail_raw = detail.raw_data or {}
+            procedure_match = (
+                listing_raw.get("procedure_id") is None
+                or detail_raw.get("procedure_id") is None
+                or str(listing_raw.get("procedure_id")) == str(detail_raw.get("procedure_id"))
+            )
+            lot_number_match = (
+                listing_raw.get("lot_number") is None
+                or detail_raw.get("lot_number") is None
+                or str(listing_raw.get("lot_number")) == str(detail_raw.get("lot_number"))
+            )
             start_match = (
                 listing.start_price is None
                 or detail.start_price is None
@@ -102,6 +114,8 @@ async def verify_details(
             item.update({
                 "detail_ok": True,
                 "start_price_ok": detail.start_price is not None,
+                "catalogue_detail_procedure_match": procedure_match,
+                "catalogue_detail_lot_number_match": lot_number_match,
                 "catalogue_detail_start_price_match": start_match,
                 "catalogue_current_price_ok": listing.current_price is not None,
                 "detail_current_price_ok": detail.current_price is not None,
@@ -121,6 +135,8 @@ async def verify_details(
                 "detail_ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "start_price_ok": False,
+                "catalogue_detail_procedure_match": False,
+                "catalogue_detail_lot_number_match": False,
                 "catalogue_detail_start_price_match": False,
                 "catalogue_current_price_ok": listing.current_price is not None,
                 "detail_current_price_ok": False,
@@ -133,6 +149,8 @@ async def verify_details(
     checked = len(samples)
     detail_ok = sum(bool(item["detail_ok"]) for item in samples)
     start_ok = sum(bool(item["start_price_ok"]) for item in samples)
+    procedure_match = sum(bool(item["catalogue_detail_procedure_match"]) for item in samples)
+    lot_number_match = sum(bool(item["catalogue_detail_lot_number_match"]) for item in samples)
     start_match = sum(bool(item["catalogue_detail_start_price_match"]) for item in samples)
     status_ok = sum(bool(item["status_ok"]) for item in samples)
     status_match = sum(bool(item["catalogue_detail_status_match"]) for item in samples)
@@ -157,6 +175,8 @@ async def verify_details(
         "details_checked": checked,
         "detail_success": detail_ok,
         "start_price_success": start_ok,
+        "catalogue_detail_procedure_match": procedure_match,
+        "catalogue_detail_lot_number_match": lot_number_match,
         "catalogue_detail_start_price_match": start_match,
         "status_success": status_ok,
         "catalogue_detail_status_match": status_match,
