@@ -143,6 +143,35 @@ def test_etpu_official_other_classifier_is_not_overridden_by_free_text() -> None
     assert parsed.raw_data["efrsb_classifier_flags"] == ["other"]
 
 
+def test_etpu_status_ignores_status_like_prose_and_unknown_intermediate_phase() -> None:
+    missing_label = _detail(
+        classifier="Земельные участки",
+        status="Нераспознанная стадия",
+    ).replace(
+        "Статус: Нераспознанная стадия",
+        "Порядок участия: прием заявок производится ежедневно",
+    )
+    parsed_missing = parse_detail_html(
+        _profile(),
+        missing_label,
+        detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/143420/",
+    )
+    assert parsed_missing.auction_status == "unknown"
+
+    parsed_interval = parse_detail_html(
+        _profile(),
+        _detail(
+            classifier="Автомобили",
+            status="Прием заявок на интервале не активен",
+        ),
+        detail_url="https://bankrupt.etpu.ru/public/public-offers/lots/view/143395/",
+    )
+    assert parsed_interval.auction_status == "unknown"
+    assert parsed_interval.raw_data["source_status_text"] == (
+        "Прием заявок на интервале не активен"
+    )
+
+
 def test_etpu_multi_lot_catalogue_keeps_individual_lot_ids_and_prices() -> None:
     html = """
     <table>
