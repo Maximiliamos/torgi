@@ -30,6 +30,11 @@ _DEBUG_RAW_KEYS = (
     "detail_status_verified",
     "detail_dates_verified",
     "listing_price_used_as_fallback",
+    "detail_source_url",
+    "image_url",
+    "image_urls",
+    "photo_url",
+    "photo_urls",
 )
 
 
