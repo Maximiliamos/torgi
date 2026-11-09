@@ -4,6 +4,15 @@ on:
   push:
     branches:
       - agent3-arbbitlot-price-contract-20261109
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/bankrotai/connectors/etp_sources/arbbitlot.py"
+      - "src/bankrotai/services/etp_arbbitlot_readonly_audit.py"
+      - "tests/test_arbbitlot_contract.py"
+      - "tests/test_etp_arbbitlot_readonly_audit.py"
+      - ".github/workflows/etp-arbbitlot-readonly-audit.yml"
   workflow_dispatch:
 
 permissions:
