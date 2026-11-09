@@ -6,6 +6,7 @@ import pytest
 from bankrotai.services.etp_vertrades_contract_probe import (
     VertradesProbeError,
     probe_vertrades_contract,
+    probe_vertrades_detail_sample,
 )
 
 
@@ -123,4 +124,76 @@ def test_probe_bounds(max_pages, passes, delay):
         probe_vertrades_contract(
             Session([]), max_pages=max_pages, passes=passes,
             delay_seconds=delay, sleep=lambda _: None,
+        )
+
+
+
+DETAIL_NUMBERS = (
+    1, 2, 3, 4, 5, 6, 7, 9, 10, 11,
+    12, 13, 14, 15, 16, 17, 18, 19, 21, 22,
+    23, 24, 25, 26, 27, 28, 29, 33, 34, 35,
+)
+
+
+def _detail_html(numbers=DETAIL_NUMBERS) -> str:
+    sections = []
+    for number in numbers:
+        status = "Торги по лоту отменены" if number == 27 else "Торги завершены"
+        price = 100_000 + number * 1_000
+        sections.append(f"""
+        <h3>Сведения по лоту №{number}</h3>
+        <table>
+          <tr><td>Статус торгов по лоту</td><td>{status}</td></tr>
+          <tr><td>Краткие сведения об имуществе (наименование лота)</td>
+              <td>земельный участок {500 + number} кв.м. кадастровый номер 34:34:000001:{1000 + number}</td></tr>
+          <tr><td>Cведения об арестованном имуществе, реализуемом на торгах</td>
+              <td>земельный участок {500 + number} кв.м. кадастровый номер 34:34:000001:{1000 + number}.
+              Адрес: г. Тест, д.{number}. Начальная цена: {price} руб.
+              Задаток: 10 000 руб. Ограничения: запрет регистрации.</td></tr>
+          <tr><td>Начальная цена продажи имущества</td><td>{price},00 НДС не облагается</td></tr>
+          <tr><td>Размер задатка</td><td>10 000,00</td></tr>
+        </table>
+        """)
+    return """
+    <html><body>
+    <h3>идентификационный номер: 150-АП</h3>
+    <table>
+      <tr><td>Начало предоставления заявок на участие</td><td>24.08.2022 08:00</td></tr>
+      <tr><td>Окончание предоставления заявок на участие</td><td>19.09.2022 23:59</td></tr>
+      <tr><td>Начало подачи предложений о цене имущества</td><td>23.09.2022 10:00</td></tr>
+    </table>
+    """ + "".join(sections) + "</body></html>"
+
+
+def test_live_detail_probe_contract_checks_thirty_sections_from_one_response():
+    session = Session([_detail_html()])
+    report = probe_vertrades_detail_sample(session)
+    assert len(session.calls) == 1
+    assert report["details_checked"] == 30
+    assert report["unique_lot_numbers"] == 30
+    assert report["price_verified"] == 30
+    assert report["status_verified"] == 30
+    assert report["cadastre_present"] == 30
+    assert report["address_present"] == 30
+    assert report["area_present"] == 30
+    assert report["dates_verified"] == 30
+    assert len(report["detail_digest_sha256"]) == 64
+    assert report["database_writes"] == 0
+    assert report["reconciliation_allowed"] is False
+    assert report["archival_allowed"] is False
+    assert report["production_enabled"] is False
+    assert "земельный" not in str(report)
+    assert "Тест" not in str(report)
+
+
+def test_live_detail_probe_missing_requested_section_fails_closed():
+    with pytest.raises(VertradesProbeError, match="detail_lot_35_failed"):
+        probe_vertrades_detail_sample(Session([_detail_html(DETAIL_NUMBERS[:-1])]))
+
+
+def test_live_detail_probe_requires_at_least_thirty_unique_numbers():
+    with pytest.raises(ValueError, match="at least 30"):
+        probe_vertrades_detail_sample(
+            Session([]),
+            lot_numbers=tuple(range(1, 30)),
         )
