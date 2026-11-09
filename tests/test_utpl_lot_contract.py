@@ -215,3 +215,26 @@ def test_utpl_rejects_nonsequential_postback_state_jump_before_network():
     connector = SOURCE_CONNECTOR_TYPES["utpl.ru"](session=requests.Session())
     with pytest.raises(SourceSchemaError, match="requires sequential provider state"):
         asyncio.run(connector.search({}, cursor="12"))
+
+
+def test_utpl_catalogue_does_not_claim_free_text_property_classification():
+    from bankrotai.connectors.etp_sources import parse_listing_html
+    html = """
+    <table><tr><th>Лот</th><th>Начальная цена</th></tr>
+    <tr><td><a href="https://bankrupt.utpl.ru/public/auctions/lots/view/128999/">
+    Земельный участок 50:05:0010203:1234</a></td><td>2 500 000,00</td></tr></table>
+    """
+    lot = parse_listing_html(profile(), html)[0]
+    assert lot.category == "other"
+    assert lot.raw_data["utpl_property_classification_verified"] is False
+
+
+def test_utpl_detail_promotes_structured_property_classification():
+    lot = parse_detail_html(
+        profile(),
+        detail(),
+        detail_url="https://bankrupt.utpl.ru/public/public-offers/lots/view/127814/",
+    )
+    assert lot.category == "land"
+    assert lot.raw_data["utpl_structured_classifier_verified"] is True
+    assert lot.raw_data["utpl_property_classification_verified"] is True
