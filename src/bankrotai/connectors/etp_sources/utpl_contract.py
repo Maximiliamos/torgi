@@ -90,3 +90,19 @@ def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
         "current_price": current,
         "source_status_text": status_match.group(1).strip() if status_match else None,
     }
+
+def normalize_utpl_status(value: str | None) -> str:
+    """Only official UTPL lot-state labels; never infer end from dates."""
+    if value is None:
+        return "unknown"
+    label = re.sub(r"\\s+", " ", value).strip().lower().replace("ё", "е")
+    exact = {
+        "прием заявок": "active",
+        "извещение опубликовано": "scheduled",
+        "не состоялся": "closed",
+        "не состоялись": "closed",
+        "окончен": "closed",
+        "отменен": "closed",
+        "приостановлен": "paused",
+    }
+    return exact.get(label, "unknown")
