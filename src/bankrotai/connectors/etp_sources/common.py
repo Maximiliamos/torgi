@@ -10,10 +10,8 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-import bankrotai.connectors.etp_sources.arbbitlot as arbbitlot_contract
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
-    postback_link_for_page,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -489,7 +487,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         if ambiguous_row or (profile.source_id == "sistematorg.com" and trade_lots != 1):
             price = None
             current_price = None
-        lot = NormalizedLot(
+        lots.append(NormalizedLot(
             external_id=external_id,
             source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
             source_system=profile.source_id,
@@ -523,10 +521,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
-        )
-        if profile.source_id == "arbbitlot.ru":
-            arbbitlot_contract.apply_listing_contract(lot, container, context)
-        lots.append(lot)
+        ))
     return lots
 
 
@@ -579,15 +574,13 @@ def parse_detail_html(
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    price = None if profile.source_id == "arbbitlot.ru" else _money(text_value)
+    price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
-    current_price = (
-        None if profile.source_id == "arbbitlot.ru" else _current_money(text_value)
-    )
-    lot = NormalizedLot(
+    current_price = _current_money(text_value)
+    return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
@@ -621,12 +614,6 @@ def parse_detail_html(
         ),
         auction_at=datetime_after(text_value, r"дата проведения"),
     )
-    if profile.source_id == "arbbitlot.ru":
-        try:
-            arbbitlot_contract.apply_detail_contract(lot, text_value)
-        except arbbitlot_contract.ArbbitlotContractError as exc:
-            raise SourceSchemaError(str(exc)) from exc
-    return lot
 
 
 def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, page: int) -> list[NormalizedLot]:
@@ -825,7 +812,10 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = postback_link_for_page(self.profile, soup, page)
+            link = next((
+                node for node in soup.select("a[href]")
+                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+            ), None)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
