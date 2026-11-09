@@ -84,6 +84,9 @@ def test_centerr_detail_isolated_lot_fields_and_identity():
     assert facts.address == "г. Москва, ул. Тестовая, дом 6, квартира 690"
     assert facts.efrsb_classifier == "Жилые здания (помещения)"
     assert facts.category == "real_estate"
+    assert facts.application_start_at.isoformat() == "2026-11-03T11:00:00"
+    assert facts.application_deadline.isoformat() == "2026-12-09T15:00:00"
+    assert facts.auction_at.isoformat() == "2026-12-11T14:00:00"
 
     lot = parse_detail(html, detail_url=url, external_id=facts.external_id)
     assert lot.start_price == 15232320.0
@@ -91,6 +94,8 @@ def test_centerr_detail_isolated_lot_fields_and_identity():
     assert lot.auction_status == "active"
     assert lot.raw_data["detail_identity_verified"] is True
     assert lot.raw_data["efrsb_classifier"] == "Жилые здания (помещения)"
+    assert lot.property_type == "Жилые здания (помещения)"
+    assert lot.application_deadline.isoformat() == "2026-12-09T15:00:00"
 
 
 def test_centerr_detail_rejects_wrong_external_id_substitution():
