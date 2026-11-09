@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
+from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
@@ -42,28 +43,6 @@ TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
-
-
-def extract_catalogue_address(value: str) -> str | None:
-    """Keep an explicit street/building address and drop apartment/unit tails."""
-    match = re.search(r"(?:^|[,.;]\s*)адрес\s*:\s*(.+)", value or "", re.IGNORECASE)
-    if not match:
-        return None
-    address = match.group(1)
-    address = re.split(
-        r"(?=,\s*(?:кв(?:артира)?|пом(?:ещение)?|офис|комн(?:ата)?)\.?\s*\d+\b)",
-        address,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    address = re.split(
-        r"(?=\s+(?:собств|взыск|цена)\s*:)",
-        address,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    cleaned = re.sub(r"\s+", " ", address).strip(" ,.;")
-    return cleaned or None
 
 
 def public_auction_status(source_status: object, *, history_only: bool = False) -> str:
