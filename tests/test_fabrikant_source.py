@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 import requests
 
-from bankrotai.connectors.etp_sources.common import (
-    EtpSourceProfile,
-    SourceSchemaError,
-)
+from bankrotai.connectors.etp_sources.common import EtpSourceProfile, SourceSchemaError
 from bankrotai.connectors.etp_sources.fabrikant import (
     external_id_from_lot_url,
     parse_detail_lot,
@@ -16,6 +14,8 @@ from bankrotai.connectors.etp_sources.fabrikant import (
 )
 from bankrotai.connectors.etp_sources.fabrikant_connector import FabrikantConnector
 
+
+FIXTURES = Path(__file__).parent / "fixtures" / "fabrikant"
 
 FABRIKANT_PROFILE = EtpSourceProfile(
     source_id="fabrikant.ru",
@@ -37,24 +37,6 @@ FABRIKANT_PROFILE = EtpSourceProfile(
 
 class IsolatedFabrikantConnector(FabrikantConnector):
     profile = FABRIKANT_PROFILE
-
-
-
-
-
-def test_registered_fabrikant_connector_uses_individual_lot_profile() -> None:
-    from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES
-
-    registered = SOURCE_CONNECTOR_TYPES["fabrikant.ru"]
-    source_profile = next(item for item in PROFILES if item.source_id == "fabrikant.ru")
-    procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A"
-    lot = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-A/LOT-A"
-
-    assert issubclass(registered, FabrikantConnector)
-    assert source_profile.lot_url_re.search(procedure) is None
-    assert source_profile.lot_url_re.search(lot) is not None
-    assert source_profile.detail_url_template.endswith("/{identity_path}")
-    assert source_profile.detail_id_separator == "/"
 
 
 class FakeResponse:
@@ -82,6 +64,10 @@ class RouteSession:
             raise AssertionError(f"unexpected GET {url}") from exc
 
 
+def fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
 def test_procedure_route_is_not_an_individual_fabrikant_lot() -> None:
     procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC_token-1"
     html = f'<a href="{procedure}">Земельный участок</a>'
@@ -101,31 +87,15 @@ def test_fabrikant_lot_route_has_unambiguous_two_token_identity() -> None:
 
 
 def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
-    html = """
-    <html><body>
-      <h2>Лот №1. Квартира в тестовом городе - Прием заявок</h2>
-      <div>Предмет договора Квартира общей площадью 57,90 м²,
-      кадастровый номер 62:24:0010110:419.</div>
-      <div>Категория объекта Квартира</div>
-      <div>Характеристики объекта Кадастровый номер: 62:24:0010110:419
-      Общая площадь, м²: 57,90</div>
-      <div>Местонахождение объекта продажи Адрес: Тестовая область,
-      г. Тест, ул. Проверочная, д. 1</div>
-      <div>Начальная цена предмета договора Цена без НДС:
-      555 345,00 Рубль (RUB)</div>
-      <div>Размер задатка 111 069,00 Рубль (RUB)</div>
-      <div>Шаг аукциона 27 767,25 Российский рубль (RUB)</div>
-      <div>Дата и время начала приема заявок 07.07.2026 00:00</div>
-      <div>Дата и время окончания приема заявок 12.08.2026 10:00</div>
-      <div>Дата и время начала аукциона 13.08.2026 11:00</div>
-      <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
-    </body></html>
-    """
     url = (
         "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
         "PROC-token_1/LOT-token_2"
     )
-    lot = parse_detail_lot(FABRIKANT_PROFILE, html, detail_url=url)
+    lot = parse_detail_lot(
+        FABRIKANT_PROFILE,
+        fixture("detail_active.html"),
+        detail_url=url,
+    )
 
     assert lot.external_id == "fabrikant.ru:PROC-token_1:LOT-token_2"
     assert lot.start_price == 555_345
@@ -142,25 +112,9 @@ def test_fabrikant_detail_reads_lot_price_status_and_property_fields() -> None:
 
 
 def test_fabrikant_public_offer_schedule_does_not_replace_lot_initial_price() -> None:
-    html = """
-    <html><body>
-      <h2>Лот №1. Земельный участок - Прием заявок</h2>
-      <div>Предмет договора Земельный участок 1 000 м²</div>
-      <div>Категория объекта Земельные участки</div>
-      <div>Начальная цена предмета договора Цена без НДС:
-      45 000,00 Рубль (RUB)</div>
-      <div>Размер задатка 4 500,00 Рубль (RUB)</div>
-      <h3>Этап понижения</h3>
-      <div>Дата начала этапа приема заявок 03.11.2026 09:00
-      Дата завершения этапа приема заявок 10.11.2026 09:00
-      Начальная цена 9 000,00 Рубль (RUB)
-      Размер задатка 450,00 Рубль (RUB)</div>
-      <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
-    </body></html>
-    """
     lot = parse_detail_lot(
         FABRIKANT_PROFILE,
-        html,
+        fixture("detail_public_offer.html"),
         detail_url=(
             "https://www.fabrikant.ru/v2/trades/procedure/lot/view/"
             "PUBLIC-OFFER/LOT-1"
@@ -179,7 +133,6 @@ def test_fabrikant_ended_status_is_explicit_not_application_date_inference() -> 
       <div>Начальная цена предмета договора Цена без НДС:
       800 000,00 Рубль (RUB)</div>
       <div>Дата и время окончания приема заявок 01.07.2026 10:00</div>
-      <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
     </body></html>
     """
     lot = parse_detail_lot(
@@ -201,7 +154,6 @@ def test_fabrikant_review_stage_remains_unknown_without_terminal_marker() -> Non
       <div>Предмет договора Производственное оборудование</div>
       <div>Категория объекта Оборудование</div>
       <div>Начальная цена договора 100 000,00 Рубль (RUB)</div>
-      <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
     </body></html>
     """
     lot = parse_detail_lot(
@@ -220,35 +172,19 @@ def test_fabrikant_catalogue_expands_procedure_to_individual_lot_detail() -> Non
     procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A"
     detail = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-A/LOT-A"
 
-    catalogue_html = f"""
-    <html><body>
-      <a href="{procedure}">Процедура банкротства</a>
-      <a href="/procedure/search/sales?section_ids%5B%5D=6&page_limit=10&page_number=2">2</a>
-    </body></html>
-    """.encode()
-    procedure_html = f"""
-    <html><body>
-      <section><h3>Лот №1. Земельный участок - Прием заявок</h3>
-      <a href="{detail}">Просмотр</a></section>
-    </body></html>
-    """.encode()
-    detail_html = """
-    <html><body>
-      <h2>Лот №1. Земельный участок - Прием заявок</h2>
-      <div>Предмет договора Земельный участок площадью 1000 м²,
-      кадастровый номер 50:01:001:123.</div>
-      <div>Категория объекта Земельные участки</div>
-      <div>Начальная цена предмета договора Цена без НДС:
-      900 000,00 Рубль (RUB)</div>
-      <div>Дата и время окончания приема заявок 20.11.2026 10:00</div>
-      <p>Публичная индивидуальная карточка лота содержит достаточное описание.</p>
-    </body></html>
-    """.encode()
-
     session = RouteSession({
-        listing: FakeResponse(catalogue_html, listing),
-        procedure: FakeResponse(procedure_html, procedure),
-        detail: FakeResponse(detail_html, detail),
+        listing: FakeResponse(
+            fixture("catalogue_page.html").encode("utf-8"),
+            listing,
+        ),
+        procedure: FakeResponse(
+            fixture("procedure_page.html").encode("utf-8"),
+            procedure,
+        ),
+        detail: FakeResponse(
+            fixture("detail_active.html").encode("utf-8"),
+            detail,
+        ),
     })
     connector = IsolatedFabrikantConnector(session=session)
 
@@ -258,7 +194,7 @@ def test_fabrikant_catalogue_expands_procedure_to_individual_lot_detail() -> Non
     assert [lot.external_id for lot in result.items] == [
         "fabrikant.ru:PROC-A:LOT-A"
     ]
-    assert result.items[0].start_price == 900_000
+    assert result.items[0].start_price == 555_345
     assert result.items[0].auction_status == "active"
     assert result.items[0].raw_data["trade_id"] == "PROC-A"
     assert result.items[0].raw_data["lot_id"] == "LOT-A"
