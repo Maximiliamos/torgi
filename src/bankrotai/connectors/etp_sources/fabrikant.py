@@ -99,6 +99,8 @@ class FabrikantCataloguePage:
     procedure_urls: tuple[str, ...]
     visible_page_numbers: tuple[int, ...]
     selected_controls: tuple[tuple[str, str, str], ...]
+    available_filter_options: tuple[tuple[str, str, str, str], ...]
+    form_contracts: tuple[tuple[str, str], ...]
     has_next_page: bool
     next_url: str | None
     total_hints: tuple[str, ...]
@@ -128,6 +130,58 @@ def _catalogue_selected_controls(
                 (name[:80], str(selected.get("value") or "")[:120], "select")
             )
     return tuple(rows[:30])
+
+
+def _catalogue_filter_options(
+    soup: BeautifulSoup,
+) -> tuple[tuple[str, str, str, str], ...]:
+    rows: list[tuple[str, str, str, str]] = []
+    interesting = re.compile(
+        r"(?:section|status|state|stage|type|kind|sale|bankrupt|page|limit)",
+        re.I,
+    )
+    for node in soup.select("input[name], select[name]"):
+        name = str(node.get("name") or "")
+        if not interesting.search(name):
+            continue
+        if node.name == "input":
+            kind = str(node.get("type") or "text").lower()
+            if kind not in {"checkbox", "radio"}:
+                continue
+            rows.append((
+                name[:80],
+                str(node.get("value") or "")[:120],
+                _clean(str(node.get("title") or ""))[:160],
+                kind,
+            ))
+            continue
+        for option in node.select("option"):
+            rows.append((
+                name[:80],
+                str(option.get("value") or "")[:120],
+                _clean(option.get_text(" ", strip=True))[:160],
+                "select_option",
+            ))
+            if len(rows) >= 120:
+                return tuple(rows)
+    return tuple(rows[:120])
+
+
+def _catalogue_form_contracts(
+    soup: BeautifulSoup, *, base_url: str
+) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    for form in soup.select("form"):
+        method = str(form.get("method") or "get").strip().lower()
+        action = _safe_public_url(base_url, str(form.get("action") or ""))
+        if action is None:
+            continue
+        item = (method[:16], urlparse(action).path[:200])
+        if item not in rows:
+            rows.append(item)
+        if len(rows) >= 20:
+            break
+    return tuple(rows)
 
 
 def build_catalogue_url(page: int) -> str:
@@ -183,6 +237,8 @@ def parse_catalogue_page(
         procedure_urls=procedures,
         visible_page_numbers=tuple(sorted(visible)),
         selected_controls=_catalogue_selected_controls(soup),
+        available_filter_options=_catalogue_filter_options(soup),
+        form_contracts=_catalogue_form_contracts(soup, base_url=base_url),
         has_next_page=(page + 1 in visible) or next_url is not None,
         next_url=next_url,
         total_hints=tuple(hints),
