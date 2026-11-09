@@ -209,6 +209,7 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
         lot.deposit_percent = detail.deposit_percent
         lot.auction_step_amount = detail.auction_step_amount
         lot.auction_step_percent = detail.auction_step_percent
+        lot.property_type = detail.property_type or lot.property_type
     lot.detail_level = "detail"
     raw = dict(lot.raw_data or {})
     raw.update({
