@@ -86,25 +86,10 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     if getattr(detail, "detail_level", None) != "detail":
         raise ValueError("etp_detail_not_verified")
 
-    if lot.source_system == "arbbitlot.ru":
-        listing_raw = lot.raw_data or {}
-        detail_raw = detail.raw_data or {}
-        for key in ("procedure_id", "lot_number"):
-            listing_identity = listing_raw.get(key)
-            detail_identity = detail_raw.get(key)
-            if listing_identity is None:
-                raise ValueError(f"arbbitlot_catalogue_{key}_unverified")
-            if detail_identity is None:
-                raise ValueError(f"arbbitlot_detail_{key}_unverified")
-            if str(listing_identity) != str(detail_identity):
-                raise ValueError(f"arbbitlot_catalogue_detail_{key}_mismatch")
-
     listing_start = _checked_amount(lot.start_price)
     detail_start = _checked_amount(detail.start_price)
     _checked_amount(lot.current_price)
     _checked_amount(detail.current_price)
-    if lot.source_system == "arbbitlot.ru" and detail_start is None:
-        raise ValueError("arbbitlot_detail_start_price_unverified")
     if (
         listing_start is not None
         and detail_start is not None
@@ -129,12 +114,6 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     lot.application_deadline = detail.application_deadline or lot.application_deadline
     lot.auction_at = detail.auction_at or lot.auction_at
     lot.procedure_number = detail.procedure_number or lot.procedure_number
-    if lot.source_system == "arbbitlot.ru":
-        lot.deposit_amount = detail.deposit_amount
-        lot.deposit_percent = detail.deposit_percent
-        lot.auction_step_amount = detail.auction_step_amount
-        lot.auction_step_percent = detail.auction_step_percent
-        lot.property_type = detail.property_type or lot.property_type
     lot.detail_level = "detail"
     raw = dict(lot.raw_data or {})
     raw.update({
@@ -147,11 +126,6 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
         "listing_price_used_as_fallback": (
             detail.start_price is None and lot.start_price is not None
         ),
-        **({
-            "listing_current_price_used_as_fallback": (
-                detail.current_price is None and lot.current_price is not None
-            ),
-        } if lot.source_system == "arbbitlot.ru" else {}),
     })
     lot.raw_data = raw
     return lot
