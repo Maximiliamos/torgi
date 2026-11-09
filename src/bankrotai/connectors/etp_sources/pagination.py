@@ -55,7 +55,7 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
         # ARBbitLot groups numeric page links by tens and exposes ">>" to
         # advance beyond the visible group. Treating page 10 as terminal when
         # ">>" exists would be a false source-end proof.
-        if profile.source_id == "arbbitlot.ru":
+        if profile.source_id == "arbbitlot.ru" and page % 10 == 0:
             return any(
                 _clean(node.get_text(" ", strip=True)) == ">>"
                 and "__doPostBack" in str(node.get("href") or "")
