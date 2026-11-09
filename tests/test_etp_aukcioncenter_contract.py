@@ -242,3 +242,30 @@ def test_connector_preserves_active_filter_and_lot_number_in_detail_url():
     assert enriched.start_price == 3_000_000
     assert session.urls[1].endswith("id=103550008&lotNumber=1")
     assert "detail_enrichment" in connector.capabilities
+
+
+def test_area_uses_declared_area_not_measurement_uncertainty():
+    html = """
+    <table><tr onclick="go('/trade/view/purchase/general.html?id=103550009')">
+      <td>7604-ОАОФ</td>
+      <td>Лот №1: Земельный участок, площадь 1000 +/- 22,1 кв. м,
+      кадастровый номер 76:01:000001:444.</td>
+      <td>05.11.2026 09:00</td><td>05.12.2026 18:00</td>
+    </tr></table>
+    """
+    lot = parse_listing_html(_profile(), html)[0]
+    assert lot.area == 1000
+
+
+def test_announced_status_is_scheduled_even_if_profile_is_active_filter():
+    html = """
+    <table><tr onclick="go('/trade/view/purchase/general.html?id=103550010')">
+      <td>7605-ОАОФ</td>
+      <td>Лот №1: Квартира, площадь 42 кв. м, кадастровый номер 77:01:000001:99.</td>
+      <td>объявлены</td>
+      <td>06.11.2026 09:00</td><td>06.12.2026 18:00</td>
+    </tr></table>
+    """
+    lot = parse_listing_html(_profile(), html)[0]
+    assert lot.auction_status == "scheduled"
+    assert lot.raw_data["source_lifecycle"] == "scheduled"
