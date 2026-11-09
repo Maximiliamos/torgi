@@ -334,7 +334,11 @@ jobs:
           assert details["details_checked"] >= 30
           assert details["detail_success"] >= 30
           assert details["start_price_success"] >= 30
+          assert details["catalogue_detail_procedure_match"] >= 30
+          assert details["catalogue_detail_lot_number_match"] >= 30
+          assert details["catalogue_detail_start_price_match"] >= 30
           assert details["status_success"] >= 30
+          assert details["catalogue_detail_status_match"] >= 30
           print(json.dumps({
               "pages": [p1["page_count"], p2["page_count"]],
               "unique_ids": [p1["unique_ids"], p2["unique_ids"]],
@@ -347,6 +351,8 @@ jobs:
               "catalogue_current_price_success": details["catalogue_current_price_success"],
               "detail_current_price_success": details["detail_current_price_success"],
               "catalogue_detail_current_price_match": details["catalogue_detail_current_price_match"],
+              "catalogue_detail_procedure_match": details["catalogue_detail_procedure_match"],
+              "catalogue_detail_lot_number_match": details["catalogue_detail_lot_number_match"],
               "catalogue_detail_start_price_match": details["catalogue_detail_start_price_match"],
               "catalogue_detail_status_match": details["catalogue_detail_status_match"],
               "multi_lot_procedure_count": len(details["multi_lot_procedures"]),
