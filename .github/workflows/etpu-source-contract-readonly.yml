@@ -1,0 +1,96 @@
+name: ETPU source contract read-only proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/etpu-source-contract-readonly.yml"
+      - "scripts/etpu_readonly_audit.py"
+      - "src/bankrotai/connectors/etp_sources/common.py"
+      - "src/bankrotai/connectors/etp_sources/source_specific.py"
+      - "tests/test_etpu_contract.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etpu-source-contract-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  live-proof:
+    name: ETPU live terminal + 30 detail proof
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Require trusted Home worker image
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted Home ingestion worker is unavailable'
+          }
+          $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $image) {
+            throw 'Unable to resolve trusted Home worker image'
+          }
+          "ETPU_AUDIT_IMAGE=$image" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run branch code in disposable read-only audit container
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = $PWD.Path
+          $artifact = Join-Path $env:RUNNER_TEMP 'etpu-readonly-audit.json'
+          $stderr = Join-Path $env:RUNNER_TEMP 'etpu-readonly-audit.stderr.log'
+          $output = @(
+            docker run --rm `
+              --mount "type=bind,source=$workspace,target=/workspace,readonly" `
+              --env PYTHONPATH=/workspace/src `
+              --workdir /workspace `
+              $env:ETPU_AUDIT_IMAGE `
+              python scripts/etpu_readonly_audit.py --details 30 --delay-seconds 0.25 2>$stderr
+          )
+          $status = $LASTEXITCODE
+          $output | Set-Content -LiteralPath $artifact -Encoding utf8
+          if ($status -ne 0) {
+            if (Test-Path $stderr) { Get-Content $stderr }
+            if (Test-Path $artifact) { Get-Content $artifact }
+            throw "ETPU live source-contract proof failed with exit code $status"
+          }
+          $report = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+          if ($report.production_enabled -ne $false -or
+              $report.safe_for_archival -ne $false -or
+              $report.reconcile_missing -ne $false -or
+              $report.two_pass_contract_match -ne $true -or
+              $report.pass_1.terminal_page_proven -ne $true -or
+              $report.pass_2.terminal_page_proven -ne $true -or
+              $report.pass_1.duplicate_ids -ne 0 -or
+              $report.pass_2.duplicate_ids -ne 0 -or
+              $report.details.checked -lt 30 -or
+              $report.details.identity_success_rate -ne 1.0 -or
+              $report.details.price_success_rate -ne 1.0 -or
+              $report.details.status_field_success_rate -ne 1.0 -or
+              $report.details.deadline_success_rate -ne 1.0 -or
+              $report.details.classifier_success_rate -ne 1.0) {
+            throw 'ETPU proof JSON did not satisfy strict acceptance'
+          }
+          Write-Output (
+            "ETPU PASS: pages={0}, lots={1}, terminal={2}, digest={3}" -f `
+              $report.pass_1.pages, $report.pass_1.unique_ids, `
+              $report.pass_1.terminal_page, $report.pass_1.sorted_id_digest
+          )
+
+      - name: Upload sanitized read-only evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etpu-source-contract-readonly-proof
+          path: |
+            ${{ runner.temp }}/etpu-readonly-audit.json
+            ${{ runner.temp }}/etpu-readonly-audit.stderr.log
+          if-no-files-found: warn
+          retention-days: 30
