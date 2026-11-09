@@ -46,11 +46,22 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        return any(
+        if any(
             _clean(node.get_text(" ", strip=True)) == str(page + 1)
             and "__doPostBack" in str(node.get("href") or "")
             for node in soup.select("a[href]")
-        )
+        ):
+            return True
+        # ARBbitLot groups numeric page links by tens and exposes ">>" to
+        # advance beyond the visible group. Treating page 10 as terminal when
+        # ">>" exists would be a false source-end proof.
+        if profile.source_id == "arbbitlot.ru":
+            return any(
+                _clean(node.get_text(" ", strip=True)) == ">>"
+                and "__doPostBack" in str(node.get("href") or "")
+                for node in soup.select("a[href]")
+            )
+        return False
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
