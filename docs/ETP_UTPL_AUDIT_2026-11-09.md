@@ -82,14 +82,14 @@ Unknown labels remain `unknown`.
 
 ## Detail evidence sample
 
-During this audit, **41 distinct official individual detail URLs** were inspected
+During this audit, **42 distinct official individual detail URLs** were inspected
 through provider-page retrieval. Detail IDs:
 
 `128933, 128941, 128964, 127873, 128936, 127518, 127755, 127880, 127683,
 127513, 127686, 127730, 127862, 127419, 127869, 127610, 127661, 127606,
 126754, 125909, 126500, 127830, 127664, 127832, 126917, 126728, 126553,
 126782, 127677, 127676, 127448, 126719, 126017, 126552, 113828, 113829,
-127345, 117690, 125859, 124600, 127525`.
+127345, 117690, 125859, 124600, 127525, 127527`.
 
 This exceeds the requested 30-card manual sample. It is **not** a substitute for
 the automated two-pass catalogue walk described below.
@@ -198,7 +198,7 @@ evidence alone.
 | Official catalogue route | **PROVEN** |
 | Catalogue rows are lot-level | **PROVEN** |
 | Multi-lot per-lot price/identity | **PROVEN on multiple procedures** |
-| Distinct manual individual detail URLs inspected | **41** |
+| Distinct manual individual detail URLs inspected | **42** |
 | Structured property-kind distinctions | **PROVEN on representative land/real-estate/vehicle/equipment/receivable/lease/IP cases** |
 | Fresh page 1/page 2 via automated probe | **PENDING RUN** |
 | Fresh terminal page via automated probe | **PENDING RUN** |
