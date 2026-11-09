@@ -146,6 +146,19 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     if getattr(detail, "detail_level", None) != "detail":
         raise ValueError("etp_detail_not_verified")
 
+    if lot.source_system == "arbbitlot.ru":
+        listing_raw = lot.raw_data or {}
+        detail_raw = detail.raw_data or {}
+        for key in ("procedure_id", "lot_number"):
+            listing_identity = listing_raw.get(key)
+            detail_identity = detail_raw.get(key)
+            if (
+                listing_identity is not None
+                and detail_identity is not None
+                and str(listing_identity) != str(detail_identity)
+            ):
+                raise ValueError(f"arbbitlot_catalogue_detail_{key}_mismatch")
+
     listing_start = _checked_amount(lot.start_price)
     detail_start = _checked_amount(detail.start_price)
     _checked_amount(lot.current_price)
