@@ -44,6 +44,28 @@ def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
 
+def extract_catalogue_address(value: str) -> str | None:
+    """Keep an explicit street/building address and drop apartment/unit tails."""
+    match = re.search(r"(?:^|[,.;]\s*)адрес\s*:\s*(.+)", value or "", re.IGNORECASE)
+    if not match:
+        return None
+    address = match.group(1)
+    address = re.split(
+        r"(?=,\s*(?:кв(?:артира)?|пом(?:ещение)?|офис|комн(?:ата)?)\.?\s*\d+\b)",
+        address,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    address = re.split(
+        r"(?=\s+(?:собств|взыск|цена)\s*:)",
+        address,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    cleaned = re.sub(r"\s+", " ", address).strip(" ,.;")
+    return cleaned or None
+
+
 def public_auction_status(source_status: object, *, history_only: bool = False) -> str:
     """Keep an unknown/upstream-closed procedure off the public active map.
 
@@ -681,6 +703,7 @@ class TorgiRussiaClient:
                 and (picture.get("url") or picture.get("link") or picture.get("thumb_link"))
             ]
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(title)]
+            address = extract_catalogue_address(title)
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
             start_price = parse_money(str(item.get("start_price") or ""))
             current_price = parse_money(str(item.get("current_price") or ""))
@@ -704,7 +727,7 @@ class TorgiRussiaClient:
                     category="real_estate",
                     region_slug=normalize_region_code(region_name),
                     region_name=region_name,
-                    address=None,
+                    address=address,
                     cadastral_number=cadastres[0] if cadastres else None,
                     vin=None,
                     area=None,
@@ -735,6 +758,7 @@ class TorgiRussiaClient:
                             json.dumps(
                                 {
                                     "title": title,
+                                    "address": address,
                                     "start_price": start_price,
                                     "current_price": current_price,
                                     "photos": photos,
@@ -797,6 +821,7 @@ class TorgiRussiaClient:
                 normalize_cadastral_number(item)
                 for item in CADASTRAL_RE.findall(f"{title} {description}")
             ]
+            address = extract_catalogue_address(f"{title} {description}")
             gallery = card.select_one(".card-gallery")
             photos: list[str] = []
             if gallery:
@@ -819,7 +844,7 @@ class TorgiRussiaClient:
                     category="real_estate",
                     region_slug=region_code,
                     region_name=region_name,
-                    address=None,
+                    address=address,
                     cadastral_number=cadastres[0] if cadastres else None,
                     vin=None,
                     area=None,
@@ -840,6 +865,7 @@ class TorgiRussiaClient:
                                 {
                                     "title": title,
                                     "description": description,
+                                    "address": address,
                                     "start_price": start_price,
                                     "current_price": current_price,
                                     "photos": photos,
