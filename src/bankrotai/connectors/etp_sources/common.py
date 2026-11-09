@@ -23,7 +23,6 @@ from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     datetime_after,
     profit_initial_money,
-    ruson_initial_money,
     sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
