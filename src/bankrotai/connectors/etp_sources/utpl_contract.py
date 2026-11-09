@@ -95,7 +95,7 @@ def normalize_utpl_status(value: str | None) -> str:
     """Only official UTPL lot-state labels; never infer end from dates."""
     if value is None:
         return "unknown"
-    label = re.sub(r"\\s+", " ", value).strip().lower().replace("ё", "е")
+    label = re.sub(r"\s+", " ", value).strip().lower().replace("ё", "е")
     exact = {
         "прием заявок": "active",
         "извещение опубликовано": "scheduled",
