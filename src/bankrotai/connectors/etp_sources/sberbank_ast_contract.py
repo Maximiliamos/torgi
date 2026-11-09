@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from bankrotai.connectors.etp_sources.source_specific import datetime_after
@@ -9,6 +10,17 @@ from bankrotai.domain import NormalizedLot
 BANKRUPTCY_SOURCE = "Продажа имущества (предприятия) банкротов"
 BANKRUPTCY_SECTION_ID = "13"
 REAL_ESTATE_BRANCH = "Недвижимое имущество"
+_SBER_CODE_RE = re.compile(r"^(SBR\\d+-[A-ZА-Я0-9-]+?)(?:\\.(\\d+))?$", re.IGNORECASE)
+
+
+def split_sberbank_lot_code(value: object) -> tuple[str | None, str | None, str | None]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, None, None
+    match = _SBER_CODE_RE.fullmatch(raw)
+    if not match:
+        return raw, raw, None
+    return raw, match.group(1), match.group(2)
 
 
 def parse_sberbank_json(profile: Any, payload: dict[str, Any], *, page: int) -> list[NormalizedLot]:
@@ -84,6 +96,7 @@ def parse_sberbank_json(profile: Any, payload: dict[str, Any], *, page: int) -> 
         cadastral = _CADASTRAL_RE.search(str(raw.get("cadastralNumber") or text_value))
         vin = _VIN_RE.search(text_value)
         identity_path = "/".join(match.groups())
+        raw_lot_code, procedure_code, lot_number = split_sberbank_lot_code(raw.get("purchCode"))
         lots.append(NormalizedLot(
             external_id=external_id,
             source="sberbank-ast",
@@ -116,10 +129,13 @@ def parse_sberbank_json(profile: Any, payload: dict[str, Any], *, page: int) -> 
                 "goods_view_identity": identity_path,
                 "individual_lot_identity_verified": True,
                 "detail_contract": "GoodsView",
+                "source_lot_code": raw_lot_code,
+                "source_procedure_code": procedure_code,
+                "source_lot_number": lot_number,
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
-            procedure_number=_clean(str(raw.get("purchCode") or "")) or None,
+            procedure_number=procedure_code,
             application_deadline=datetime_after(
                 f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
                 r"дата окончания представления заявок",
