@@ -15,8 +15,9 @@ def _row(trade: str, lot: int, title: str, price: str, provider: int, status: st
     filler = "".join("<td>-</td>" for _ in range(4))
     return (
         "<tr>"
-        f"<td>{trade}</td><td>{lot}</td><td>synthetic debtor</td>"
-        f"<td><a href='/showTrades?id={provider}'>{title}</a></td>"
+        f"<td>{trade}</td><td><a href='/showTrades?id={provider}'>{lot}</a></td>"
+        "<td>synthetic debtor</td>"
+        f"<td>{title}</td>"
         f"<td>{price}</td>{filler}<td>{status}</td>"
         "</tr>"
     )
