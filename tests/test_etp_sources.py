@@ -1191,6 +1191,8 @@ def test_zakazrf_detail_does_not_treat_deposit_or_interval_price_as_initial_pric
         ("Состоялся", "closed"),
         ("Отменен", "closed"),
         ("Приостановлен", "paused"),
+        ("Прием заявок завершен", "unknown"),
+        ("Завершён прием заявок", "unknown"),
     ],
 )
 def test_zakazrf_explicit_status_contract(raw: str, expected: str) -> None:
