@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pinned
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # pinned
         with:
           python-version: "3.11"
       - name: Install project and focused-test dependencies
@@ -32,7 +32,7 @@ jobs:
         run: |
           python scripts/etp_aukcioncenter_audit.py --details 30 --pause 0.35 --output aukcioncenter-audit.json
       - name: Upload sanitized audit evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # pinned
         with:
           name: aukcioncenter-readonly-audit
           path: aukcioncenter-audit.json
