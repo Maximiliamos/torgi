@@ -1,5 +1,9 @@
+import asyncio
 from datetime import datetime
 
+from bankrotai.connectors.registry.tbankrot import TBankrotConnector
+from bankrotai.domain import NormalizedLot
+from bankrotai.extractors import extract_address
 from bankrotai.scrapers import ParsedLotData, TBankrotClient, TBankrotSearchFilters
 import json
 
@@ -252,6 +256,72 @@ def test_tbankrot_detail_does_not_publish_paid_blurred_placeholder_as_photo():
     fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=7991236")
 
     assert fields["image_urls"] == []
+
+
+def test_tbankrot_detail_extracts_deadline_and_auction_date() -> None:
+    html = """
+    <div>Дата окончания заявок: 18.03.2021 23:59</div>
+    <div>Дата проведения: 22.03.2021 10:00</div>
+    <div>Торги завершены</div>
+    """
+
+    fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=7896849")
+
+    assert fields["application_deadline"] == datetime(2021, 3, 18, 23, 59)
+    assert fields["auction_at"] == datetime(2021, 3, 22, 10, 0)
+    assert fields["auction_status"] == "closed"
+
+
+def test_tbankrot_enrichment_repairs_missing_detail_fields(monkeypatch) -> None:
+    connector = TBankrotConnector()
+    monkeypatch.setattr(connector.client, "fetch_detail_fields", lambda _url: {
+        "start_price": 3_500_000,
+        "current_price": 3_342_780,
+        "application_deadline": datetime(2026, 10, 20, 18, 0),
+        "auction_at": datetime(2026, 10, 23, 10, 0),
+        "auction_status": "closed",
+        "image_urls": [],
+        "detail_url": "https://tbankrot.ru/item?id=7896849",
+    })
+    lot = NormalizedLot(
+        external_id="tbankrot:7896849",
+        source="tbankrot",
+        source_system="tbankrot.ru",
+        title="Квартира",
+        description="",
+        category="real_estate",
+        region_slug="50",
+        region_name="Московская область",
+        address="Московская область, г. Электросталь, ул. Мира, д. 2",
+        cadastral_number="50:46:0020401:120",
+        vin=None,
+        area=45.6,
+        start_price=None,
+        current_price=3_342_780,
+        auction_status="unknown",
+        lot_url="https://tbankrot.ru/item?id=7896849",
+        source_url="https://tbankrot.ru/item?id=7896849",
+        detail_level="search",
+        raw_data={},
+    )
+
+    enriched = asyncio.run(connector.enrich_lot(lot))
+
+    assert enriched.start_price == 3_500_000
+    assert enriched.application_deadline == datetime(2026, 10, 20, 18, 0)
+    assert enriched.auction_at == datetime(2026, 10, 23, 10, 0)
+    assert enriched.auction_status == "closed"
+    assert enriched.detail_level == "detail"
+    assert enriched.raw_data["detail_dates_verified"] is True
+
+
+def test_tbankrot_address_stops_before_encumbrance_metadata() -> None:
+    text = (
+        'Адрес: Московская область, г. Электросталь, ул. Мира, д. 2, кв. 17 '
+        'Обременение: Находится в залоге ПАО "Сбербанк"'
+    )
+
+    assert extract_address(text) == "Московская область, г. Электросталь, ул. Мира, д. 2, кв. 17"
 
 
 def test_tbankrot_detail_recognizes_explicit_completed_status():
