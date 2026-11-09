@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -11,6 +12,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
+from bankrotai.connectors.etp_sources.source_specific import apply_detail
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 
@@ -742,3 +745,73 @@ class EtpuClient:
         url = detail_url_for_external_id(external_id)
         response = self._read("get", url, timeout=self.timeout, allow_redirects=False)
         return parse_detail(response.content, detail_url=url, external_id=external_id)
+
+
+
+class EtpuConnector(AuctionConnector):
+    """Registry-facing adapter backed only by the verified ETPU contract."""
+
+    source_id = SOURCE_ID
+    safe_for_reconciliation = False
+    capabilities = frozenset({"search", "fetch_lot", "healthcheck", "detail_enrichment"})
+
+    def __init__(self, *, session: requests.Session | Any | None = None, timeout: float = 30.0) -> None:
+        self.client = EtpuClient(session=session, timeout=timeout)
+
+    async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
+        requested_page = getattr(filters, "page", None)
+        if isinstance(filters, dict):
+            requested_page = filters.get("page", requested_page)
+        page = max(1, int(cursor or requested_page or 1))
+        result = await asyncio.to_thread(self.client.fetch_catalogue_page, page)
+        return ConnectorPage(
+            items=list(result.items),
+            next_cursor=str(result.next_page) if result.next_page is not None else None,
+            metadata={
+                "source": SOURCE_ID,
+                "page": page,
+                "items_on_page": len(result.items),
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+                "reconcile_missing": False,
+                "maturity": "pilot",
+                "isolated_source_contract": True,
+            },
+        )
+
+    async def fetch_lot(self, external_id: str) -> NormalizedLot:
+        return await asyncio.to_thread(self.client.fetch_detail, external_id)
+
+    async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:
+        detail = await self.fetch_lot(lot.external_id)
+        enriched = apply_detail(lot, detail, version=self.detail_enrichment_version)
+        enriched.deposit_amount = detail.deposit_amount
+        enriched.application_start_at = detail.application_start_at
+        enriched.auction_timezone = detail.auction_timezone
+        enriched.auction_step_amount = detail.auction_step_amount
+        enriched.auction_type = detail.auction_type
+        enriched.public_offer_schedule = detail.public_offer_schedule
+        raw = dict(detail.raw_data or {})
+        raw.update(enriched.raw_data or {})
+        enriched.raw_data = raw
+        return enriched
+
+    async def healthcheck(self) -> ConnectorHealth:
+        try:
+            result = await asyncio.to_thread(self.client.fetch_catalogue_page, 1)
+        except Exception as exc:
+            return ConnectorHealth(
+                status="degraded",
+                message=str(exc),
+                metadata={"source": SOURCE_ID, "isolated_source_contract": True},
+            )
+        return ConnectorHealth(
+            status="ok" if result.items else "degraded",
+            message=f"matched {len(result.items)} ETPU lot links",
+            metadata={
+                "source": SOURCE_ID,
+                "isolated_source_contract": True,
+                "complete_source_inventory": False,
+                "safe_for_archival": False,
+            },
+        )
