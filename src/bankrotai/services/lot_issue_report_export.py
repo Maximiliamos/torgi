@@ -117,13 +117,16 @@ def export_lot_issue_reports(*, limit: int = 200) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=200)
-    parser.add_argument("--output", required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output")
+    destination.add_argument("--stdout", action="store_true")
     args = parser.parse_args()
     payload = export_lot_issue_reports(limit=args.limit)
-    Path(args.output).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.stdout:
+        print(serialized)
+        return
+    Path(args.output).write_text(serialized, encoding="utf-8")
 
 
 if __name__ == "__main__":
