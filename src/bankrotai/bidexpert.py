@@ -110,8 +110,8 @@ class BidExpertClient:
             price = parse_money(price_node.get_text(" ", strip=True) if price_node else None)
             if price is None:
                 money = re.search(
-                    r"(?<!\\d)(\\d{1,3}(?:[\\s\\u00a0]\\d{3})+(?:[.,]\\d{1,2})?|"
-                    r"\\d{4,14}(?:[.,]\\d{1,2})?)\\s*(?:₽|руб(?:\\.|лей)?)",
+                    r"(?<!\d)(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d{1,2})?|"
+                    r"\d{4,14}(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:\.|лей)?)",
                     text,
                     re.IGNORECASE,
                 )
