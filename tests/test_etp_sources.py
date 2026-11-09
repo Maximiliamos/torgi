@@ -1463,3 +1463,40 @@ def test_arbbitlot_does_not_use_group_arrow_for_missing_normal_next_page() -> No
 
     with pytest.raises(SourceSchemaError, match="page 4 postback target disappeared"):
         asyncio.run(connector.search({}, cursor="4"))
+
+
+@pytest.mark.parametrize(
+    ("classifier", "expected_category"),
+    [
+        ("Земельные участки", "land"),
+        ("Автомобили", "vehicle"),
+        ("Права требования на краткосрочные долговые обязательства (дебиторская задолженность)", "receivables"),
+        ("Измерительное оборудование, инструмент и комплектующие", "other"),
+    ],
+)
+def test_arbbitlot_detail_retains_structured_efrsb_classifier(
+    classifier: str,
+    expected_category: str,
+) -> None:
+    html = f"""
+    <html><body>
+      <h1>Лот с официальным классификатором</h1>
+      Информация об аукционе №0037400
+      Информация о лоте №1
+      Статус: Прием заявок
+      Начальная цена, руб.: 100 000,00
+      Классификатор ЕФРСБ:
+      {classifier}
+      Обеспечение заявки
+      Размер обеспечения, руб.: 10 000,00
+      Подробные сведения об имуществе и порядке проведения торгов.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"),
+        html,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/52001/",
+    )
+    assert lot.property_type == classifier
+    assert lot.raw_data["efrsb_classifier"] == classifier
+    assert lot.category == expected_category
