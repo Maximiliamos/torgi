@@ -15,6 +15,7 @@ from typing import Callable
 
 import requests
 from bankrotai.connectors.etp_sources.vertrades import (
+    CATALOGUE_URL,
     _vertrades_status,
     catalogue_structure_summary,
     catalogue_page_url,
@@ -43,6 +44,40 @@ def _filter_form_contract(html: str | bytes) -> dict:
         return parse_filter_form_contract(html)
     except ValueError as exc:
         raise VertradesProbeError(str(exc)) from exc
+
+
+def _diagnose_page_one_variants(
+    session: requests.Session, *, sleep: Callable[[float], None], delay_seconds: float,
+) -> dict[str, dict[str, int] | str]:
+    """Probe documented first-party GET variants without treating them as ingestion fallback."""
+    variants = {
+        "explicit_page_1": f"{CATALOGUE_URL}?page=1",
+        "bidding_type_1": f"{CATALOGUE_URL}?bidding_type=1",
+        "bidding_type_2": f"{CATALOGUE_URL}?bidding_type=2",
+    }
+    result: dict[str, dict[str, int] | str] = {}
+    for label, url in variants.items():
+        sleep(delay_seconds)
+        response = session.get(
+            url,
+            timeout=_TIMEOUT,
+            allow_redirects=False,
+            headers={
+                "User-Agent": "TORGI-Vertrades-readonly-contract-probe/1",
+                "Accept": "text/html",
+            },
+        )
+        if response.status_code != 200:
+            result[label] = f"http_{response.status_code}"
+            continue
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            result[label] = "response_too_large"
+            continue
+        if "text/html" not in response.headers.get("Content-Type", "").lower():
+            result[label] = "not_html"
+            continue
+        result[label] = catalogue_structure_summary(response.content)
+    return result
 
 
 def _scan_pass(
@@ -82,7 +117,13 @@ def _scan_pass(
         lots = parse_catalogue_page(response.content, page=page)
         ids = {lot.external_id for lot in lots}
         if not ids:
-            structure = catalogue_structure_summary(response.content)
+            structure: dict[str, object] = {
+                "canonical": catalogue_structure_summary(response.content),
+            }
+            if page == 1:
+                structure["documented_variants"] = _diagnose_page_one_variants(
+                    session, sleep=sleep, delay_seconds=delay_seconds,
+                )
             raise VertradesProbeError(
                 f"no_property_lot_ids_on_page:{page}:"
                 + json.dumps(structure, sort_keys=True, separators=(",", ":"))
