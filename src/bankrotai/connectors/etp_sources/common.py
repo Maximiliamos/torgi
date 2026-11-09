@@ -863,10 +863,21 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = next((
+            postback_links = [
                 node for node in soup.select("a[href]")
-                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+                if "__doPostBack" in str(node.get("href") or "")
+            ]
+            link = next((
+                node for node in postback_links
+                if _clean(node.get_text(" ", strip=True)) == str(page)
             ), None)
+            if not isinstance(link, Tag) and self.source_id == "etpu.ru":
+                # ETPU renders pages in ten-page blocks. Crossing 10 -> 11,
+                # 20 -> 21, ... is done by the provider's own ">>" postback.
+                link = next((
+                    node for node in postback_links
+                    if _clean(node.get_text(" ", strip=True)) in {">>", "»"}
+                ), None)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
