@@ -621,8 +621,8 @@ def parse_detail_html(
         })
         application_deadline = etpu_moscow_datetime(
             text_value,
-            r"Дата\s+окончания\s+представления\s+заявок",
-            r"Дата\s+окончания\s+при[её]ма\s+заявок",
+            r"Дата\s+окончания\s+представления\s+заявок(?:\s+на\s+участие)?",
+            r"Дата\s+окончания\s+при[её]ма\s+заявок(?:\s+на\s+участие)?",
         )
         auction_at = etpu_moscow_datetime(
             text_value,
