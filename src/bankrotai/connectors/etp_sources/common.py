@@ -827,6 +827,14 @@ class HtmlEtpConnector(AuctionConnector):
             self._last_response, self._last_page = response, page
             return response
 
+        if (
+            self.profile.source_id == "utpl.ru"
+            and page > 2
+            and self._last_page != page - 1
+        ):
+            raise SourceSchemaError(
+                "utpl.ru: ASP.NET pagination after page 2 requires sequential provider state"
+            )
         previous = self._last_response if self._last_page == page - 1 else None
         previous = previous or self._read_request(
             "get",
