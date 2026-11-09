@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.fabrikant import (
+    fabrikant_status,
     lot_identity as fabrikant_lot_identity,
     lot_urls as fabrikant_lot_urls,
     parse_detail_fields as parse_fabrikant_detail_fields,
@@ -595,13 +596,7 @@ def parse_detail_html(
                 "fabrikant_source_status_text": fields.source_status_text,
                 "detail_start_price_verified": fields.start_price is not None,
                 "detail_current_price_verified": fields.current_price is not None,
-                "detail_status_verified": (
-                    __import__(
-                        "bankrotai.connectors.etp_sources.fabrikant",
-                        fromlist=["fabrikant_status"],
-                    ).fabrikant_status(text_value)[0]
-                    != "unknown"
-                ),
+                "detail_status_verified": fabrikant_status(text_value)[0] != "unknown",
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
