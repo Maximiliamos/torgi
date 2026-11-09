@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import pytest
 
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
 from bankrotai.connectors.etp_sources.etpu import (
     EtpuClient,
+    EtpuConnector,
     EtpuSchemaError,
     classify_property,
     classifier_flags,
     parse_catalogue_page,
     parse_detail,
 )
+from bankrotai.connectors.registry import connector_registry
 
 
 def _detail(
@@ -400,3 +403,12 @@ def test_etpu_fetch_lot_reconstructs_exact_individual_detail_url() -> None:
         "https://bankrupt.etpu.ru/public/auctions/lots/view/143436/"
     ]
     assert parsed.external_id == "etpu.ru:auctions-143436"
+
+
+
+def test_etpu_registry_uses_dedicated_verified_connector() -> None:
+    assert SOURCE_CONNECTOR_TYPES["etpu.ru"] is EtpuConnector
+    assert isinstance(connector_registry.create("etpu.ru"), EtpuConnector)
+    connector = connector_registry.create("etpu.ru")
+    assert connector.safe_for_reconciliation is False
+    assert "detail_enrichment" in connector.capabilities
