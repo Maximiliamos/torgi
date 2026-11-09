@@ -68,6 +68,8 @@ def test_centerr_detail_isolated_lot_fields_and_identity():
     Дата начала представления заявок на участие: 03.11.2026 11:00
     Статус: Прием заявок Дата окончания представления заявок на участие: 09.12.2026 15:00
     Начальная цена, руб.: 15 232 320,00
+    Классификатор ЕФРСБ: Жилые здания (помещения)
+    Обеспечение заявки
     Размер обеспечения, руб.: 1 523 232,00
     </body></html>
     """
@@ -80,12 +82,15 @@ def test_centerr_detail_isolated_lot_fields_and_identity():
     assert facts.cadastral_number == "77:17:0120316:21039"
     assert facts.area == 51.6
     assert facts.address == "г. Москва, ул. Тестовая, дом 6, квартира 690"
+    assert facts.efrsb_classifier == "Жилые здания (помещения)"
+    assert facts.category == "real_estate"
 
     lot = parse_detail(html, detail_url=url, external_id=facts.external_id)
     assert lot.start_price == 15232320.0
     assert lot.current_price is None
     assert lot.auction_status == "active"
     assert lot.raw_data["detail_identity_verified"] is True
+    assert lot.raw_data["efrsb_classifier"] == "Жилые здания (помещения)"
 
 
 def test_centerr_detail_rejects_wrong_external_id_substitution():
