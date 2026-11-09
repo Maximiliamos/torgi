@@ -331,10 +331,6 @@ def _parse_sistematorg_procedure_lots(
 def _parse_multi_lot_catalogue(
     profile: EtpSourceProfile, html: str | bytes, *, page: int
 ) -> list[NormalizedLot] | None:
-    if profile.source_id == "aukcioncenter.ru":
-        from bankrotai.connectors.etp_sources.aukcioncenter import parse_listing
-
-        return parse_listing(profile, html, page=page)
     if profile.source_id == "sistematorg.com":
         return _parse_sistematorg_procedure_lots(profile, html, page=page)
     if profile.source_id not in {"nistp.ru", "vertrades.ru"}:
@@ -536,18 +532,6 @@ def parse_detail_html(
     detail_url: str,
     external_id: str | None = None,
 ) -> NormalizedLot:
-    if profile.source_id == "aukcioncenter.ru":
-        if external_id is None:
-            raise SourceSchemaError("aukcioncenter.ru: individual lot identity is required")
-        from bankrotai.connectors.etp_sources.aukcioncenter import parse_detail
-
-        try:
-            return parse_detail(
-                profile, html, detail_url_value=detail_url, external_id=external_id
-            )
-        except ValueError as exc:
-            raise SourceSchemaError(str(exc)) from exc
-
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
@@ -919,24 +903,6 @@ class HtmlEtpConnector(AuctionConnector):
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
-        if self.source_id == "aukcioncenter.ru":
-            from bankrotai.connectors.etp_sources.aukcioncenter import (
-                detail_request_url as aukcioncenter_detail_request_url,
-            )
-
-            detail_url = _safe_provider_url(
-                self.profile, aukcioncenter_detail_request_url(external_id)
-            )
-            response = await asyncio.to_thread(
-                self._read_request, "get", detail_url,
-                timeout=self.timeout, allow_redirects=False,
-            )
-            return parse_detail_html(
-                self.profile,
-                response.content,
-                detail_url=detail_url,
-                external_id=external_id,
-            )
         template = self.profile.detail_url_template
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
@@ -1012,7 +978,6 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
-        "aukcioncenter.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
