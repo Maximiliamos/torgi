@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bankrotai.connectors.base import AuctionConnector
 from bankrotai.connectors.etp_sources.common import (
     EtpSearchFilters,
     EtpSourceProfile,
@@ -11,10 +12,14 @@ from bankrotai.connectors.etp_sources.common import (
     parse_listing_html,
     parse_sberbank_json,
 )
+from bankrotai.connectors.etp_sources.integration import build_source_overrides
 from bankrotai.connectors.etp_sources.profiles import PROFILES
 
 
-SOURCE_CONNECTOR_TYPES = {profile.source_id: connector_type(profile) for profile in PROFILES}
+SOURCE_CONNECTOR_TYPES: dict[str, type[AuctionConnector]] = {
+    profile.source_id: connector_type(profile) for profile in PROFILES
+}
+SOURCE_CONNECTOR_TYPES.update(build_source_overrides(PROFILES))
 
 __all__ = [
     "EtpSearchFilters",
