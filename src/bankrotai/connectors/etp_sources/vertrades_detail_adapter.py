@@ -13,12 +13,22 @@ if TYPE_CHECKING:
     from bankrotai.connectors.etp_sources.common import HtmlEtpConnector
 
 
+def _vertrades_status(value: str) -> str:
+    """Normalize only statuses proven on the Vertrades per-lot card."""
+    from bankrotai.connectors.etp_sources.status_normalization import _status
+
+    normalized = _status(value)
+    if normalized != "unknown":
+        return normalized
+    if re.search(r"торги\s+по\s+лоту\s+отмен[её]н", value, re.IGNORECASE):
+        return "closed"
+    return "unknown"
+
+
 async def fetch_vertrades_lot(connector: HtmlEtpConnector, external_id: str) -> NormalizedLot:
     from bankrotai.connectors.etp_sources.common import (
         SourceSchemaError, _category, _safe_provider_url,
     )
-    from bankrotai.connectors.etp_sources.status_normalization import _status
-
     match = re.fullmatch(r"vertrades\.ru:([1-9]\d{0,11}):([1-9]\d{0,5})", external_id)
     if not match:
         raise SourceSchemaError("vertrades.ru: invalid per-lot external_id")
@@ -38,7 +48,7 @@ async def fetch_vertrades_lot(connector: HtmlEtpConnector, external_id: str) -> 
         raise SourceSchemaError(f"vertrades.ru: {exc}") from exc
     if section.external_id != external_id:
         raise SourceSchemaError("vertrades.ru: fetched individual lot identity mismatch")
-    normalized_status = _status(section.status_text)
+    normalized_status = _vertrades_status(section.status_text)
     if normalized_status == "unknown":
         raise SourceSchemaError("vertrades.ru: unrecognized explicit lot status")
     return NormalizedLot(
