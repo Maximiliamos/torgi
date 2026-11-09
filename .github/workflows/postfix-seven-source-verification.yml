@@ -44,7 +44,7 @@ jobs:
             echo "Waiting for exact-SHA deployment: $workflow"
             succeeded=false
             for attempt in $(seq 1 400); do
-              state="$(TARGET_WORKFLOW="$workflow" gh api                 "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=100"                 --jq '[.workflow_runs[] | select(.name == env.TARGET_WORKFLOW and .head_sha == env.EXPECTED_SHA)] | sort_by(.id) | last // {} | (.status // "missing") + ":" + (.conclusion // "")')"
+              state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=100" | TARGET_WORKFLOW="$workflow" python -c 'import json,os,sys; rows=[r for r in json.load(sys.stdin).get("workflow_runs",[]) if r.get("name")==os.environ["TARGET_WORKFLOW"] and r.get("head_sha")==os.environ["EXPECTED_SHA"]]; rows.sort(key=lambda r:int(r.get("id") or 0),reverse=True); row=rows[0] if rows else {}; print("{}:{}".format(row.get("status") or "missing",row.get("conclusion") or ""))')"
               if [ "$state" = "completed:success" ]; then
                 succeeded=true
                 break
@@ -78,12 +78,12 @@ jobs:
 
           latest_manual() {
             local workflow="$1"
-            gh run list --repo "$repo" --workflow "$workflow"               --event workflow_dispatch --commit "$sha" --limit 100               --json databaseId,headSha,status,conclusion               --jq '[.[] | select(.headSha == env.EXPECTED_SHA)] | sort_by(.databaseId) | last // {} | (.databaseId // 0)'
+            gh run list --repo "$repo" --workflow "$workflow" --event workflow_dispatch --commit "$sha" --limit 100 --json databaseId,headSha,status,conclusion | python -c 'import json,os,sys; rows=[r for r in json.load(sys.stdin) if r.get("headSha")==os.environ["EXPECTED_SHA"]]; print(max((int(r.get("databaseId") or 0) for r in rows),default=0))'
           }
 
           successful_manual() {
             local workflow="$1"
-            gh run list --repo "$repo" --workflow "$workflow"               --event workflow_dispatch --commit "$sha" --limit 100               --json databaseId,headSha,status,conclusion               --jq '[.[] | select(.headSha == env.EXPECTED_SHA and .status == "completed" and .conclusion == "success")] | sort_by(.databaseId) | last // {} | (.databaseId // 0)'
+            gh run list --repo "$repo" --workflow "$workflow" --event workflow_dispatch --commit "$sha" --limit 100 --json databaseId,headSha,status,conclusion | python -c 'import json,os,sys; rows=[r for r in json.load(sys.stdin) if r.get("headSha")==os.environ["EXPECTED_SHA"] and r.get("status")=="completed" and r.get("conclusion")=="success"]; print(max((int(r.get("databaseId") or 0) for r in rows),default=0))'
           }
 
           dispatch_and_verify() {
