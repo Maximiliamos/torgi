@@ -174,6 +174,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
     current = None
+    minimum = None
     for item in summary_nodes:
         classes = item.get("class", [])
         label = item.select_one(".title")
@@ -188,6 +189,8 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             initial = parsed_price
         elif label_text == "Текущая цена":
             current = parsed_price
+        elif label_text == "Минимальная цена":
+            minimum = parsed_price
     deposit_node = scope.select_one(".lot-cost-item.zadat")
     deposit = None
     if deposit_node is not None:
@@ -203,6 +206,8 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         initial = _price_before_label(text[:5000], "Начальная цена")
     if current is None:
         current = _price_before_label(text[:5000], "Текущая цена")
+    if minimum is None:
+        minimum = _price_before_label(text[:5000], "Минимальная цена")
     status_node = scope.select_one(".lot-cost-item.status .lot-status-name")
     source_status = (
         status_node.get_text(" ", strip=True) if status_node
@@ -314,6 +319,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "source_initial_price_observed": initial is not None,
             "source_status_text": source_status[:160] if status_node else None,
             "deposit_rub": deposit,
+            "minimum_price": minimum,
             "image_url": image_urls[0] if image_urls else None,
             "image_urls": image_urls,
             "mentions_pledge": ("залоге" in description.lower() or "залог" in description.lower()),
