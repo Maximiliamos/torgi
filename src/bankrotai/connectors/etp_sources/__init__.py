@@ -11,17 +11,10 @@ from bankrotai.connectors.etp_sources.common import (
     parse_listing_html,
     parse_sberbank_json,
 )
-from bankrotai.connectors.etp_sources.fabrikant_connector import FabrikantConnector
 from bankrotai.connectors.etp_sources.profiles import PROFILES
 
 
 SOURCE_CONNECTOR_TYPES = {profile.source_id: connector_type(profile) for profile in PROFILES}
-_fabrikant_profile = next(profile for profile in PROFILES if profile.source_id == "fabrikant.ru")
-SOURCE_CONNECTOR_TYPES["fabrikant.ru"] = type(
-    "FabrikantSourceConnector",
-    (FabrikantConnector,),
-    {"profile": _fabrikant_profile},
-)
 
 __all__ = [
     "EtpSearchFilters",
