@@ -388,6 +388,16 @@ def _url_for_lot(base_url: str, lot: int) -> str:
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
+def _inner_lots_url(provider_id: str, *, page: int = 1, lot_number: int | None = None) -> str:
+    params: dict[str, str] = {
+        "perspective": "inline",
+        "id": provider_id,
+        "page": str(page),
+        "lotNumber": "" if lot_number is None else str(lot_number),
+    }
+    return BASE + "/etp/trade/inner-view-lots.html?" + urlencode(params)
+
+
 def run(*, pause: float, details: int) -> dict[str, object]:
     if pause < 0.2 or not 1 <= details <= 50:
         raise ValueError("unsafe audit limits")
@@ -483,11 +493,20 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             for script_path in base_features["structure"]["script_sources"]:
                 script_paths.add(str(script_path))
 
-        lot_response = _get(session, _url_for_lot(base_url, lot))
-        lot_features = _text_features(lot_response.text)
-        if lot_features["text_sha256"] != base_features["text_sha256"]:
+        # First verify the legacy general.html lotNumber parameter remains
+        # procedure-level. Then call the actual lot-loader endpoint discovered
+        # from /etp/scripts/viewLots.js.
+        general_variant = _get(session, _url_for_lot(base_url, lot))
+        general_features = _text_features(general_variant.text)
+        if general_features["text_sha256"] != base_features["text_sha256"]:
             isolated_payloads += 1
-        for route in lot_features["purchase_routes"]:
+
+        time.sleep(pause)
+        inner_response = _get(
+            session, _inner_lots_url(row.provider_id, page=1, lot_number=lot)
+        )
+        inner_features = _text_features(inner_response.text)
+        for route in inner_features["purchase_routes"]:
             route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
         detail_results.append({
             "provider_id": row.provider_id,
@@ -495,7 +514,29 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             "lot_number": lot,
             "property_hint": lot in row.property_lots,
             "base_text_sha256": base_features["text_sha256"],
-            "lot_variant": lot_features,
+            "general_lot_variant": general_features,
+            "inner_lot": inner_features,
+        })
+
+    unresolved_inner_samples: list[dict[str, object]] = []
+    unresolved_seen: set[str] = set()
+    for row in first_pass_rows:
+        if not row.provider_id or row.lots or row.provider_id in unresolved_seen:
+            continue
+        unresolved_seen.add(row.provider_id)
+        if len(unresolved_inner_samples) >= 12:
+            break
+        time.sleep(pause)
+        response = _get(session, _inner_lots_url(row.provider_id, page=1, lot_number=None))
+        features = _text_features(response.text)
+        unresolved_inner_samples.append({
+            "provider_id": row.provider_id,
+            "trade": row.trade,
+            "lot_numbers_in_text": features["lot_numbers_in_text"],
+            "price_labels": features["price_labels"],
+            "cadastral_count": features["cadastral_count"],
+            "text_sha256": features["text_sha256"],
+            "structure": features["structure"],
         })
 
     return {
@@ -519,9 +560,20 @@ def run(*, pause: float, details: int) -> dict[str, object]:
         "rows_without_provider_id": sum(row.provider_id is None for row in first_pass_rows),
         "individual_detail_variants_checked": len(detail_results),
         "property_detail_variants_checked": sum(bool(item["property_hint"]) for item in detail_results),
-        "detail_variants_with_price_labels": sum(bool(item["lot_variant"]["price_labels"]) for item in detail_results),
-        "detail_variants_with_status_labels": sum(bool(item["lot_variant"]["status_hits"]) for item in detail_results),
-        "lot_number_variants_with_changed_payload": isolated_payloads,
+        "inner_detail_variants_with_price_labels": sum(
+            bool(item["inner_lot"]["price_labels"]) for item in detail_results
+        ),
+        "inner_detail_variants_with_status_labels": sum(
+            bool(item["inner_lot"]["status_hits"]) for item in detail_results
+        ),
+        "inner_detail_variants_with_requested_lot_number": sum(
+            int(item["lot_number"]) in item["inner_lot"]["lot_numbers_in_text"]
+            for item in detail_results
+        ),
+        "inner_detail_variants_with_cadastral": sum(
+            int(item["inner_lot"]["cadastral_count"]) > 0 for item in detail_results
+        ),
+        "general_lotNumber_variants_with_changed_payload": isolated_payloads,
         "purchase_route_shapes": {
             route: [list(keys) for keys in sorted(shapes)]
             for route, shapes in sorted(route_shapes.items())
@@ -529,6 +581,7 @@ def run(*, pause: float, details: int) -> dict[str, object]:
         "first_party_script_endpoint_hints": _script_endpoint_hints(
             session, sorted(script_paths)
         ),
+        "unresolved_procedure_inner_samples": unresolved_inner_samples,
         "details": detail_results,
     }
 
