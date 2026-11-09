@@ -657,13 +657,13 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
     assert lot.start_price == 900_000
 
 def test_sistematorg_single_lot_connector_fetches_verified_trade_detail() -> None:
-    detail = b"""
+    detail = """
     <html><body><h1>Торги по продаже квартиры</h1>
     Всего лотов: 1. Лот № 1: квартира 50:16:0302009:4559.
     Начальная цена 4 609 800.00 руб. Размер задатка 460 980 руб.
     Официальная карточка процедуры с подробным описанием имущества.
     </body></html>
-    """
+    """.encode("utf-8")
     session = FakeSession(FakeResponse(
         200, detail, "https://sistematorg.com/trade_view.php?trade_nid=36750"
     ))
