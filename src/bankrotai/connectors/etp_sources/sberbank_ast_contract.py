@@ -158,7 +158,7 @@ def verify_goodsview_url(url: str) -> tuple[str, tuple[str, str, str, str]]:
     match = _GOODS_RE.fullmatch(url)
     if not match:
         raise SberbankAstContractError("GoodsView URL does not match the verified four-part identity")
-    groups = match.groups()
+    groups = (match.group(1), match.group(2), match.group(3), match.group(4))
     return f"{SOURCE_ID}:{'-'.join(groups)}", groups
 
 
@@ -293,8 +293,11 @@ def parse_catalogue_row(raw: dict[str, Any], *, page: int) -> NormalizedLot | No
 def parse_catalogue_page(payload: dict[str, Any], *, page: int) -> CataloguePage:
     if page < 1:
         raise SberbankAstContractError("page must be one-based and positive")
+    raw_total = payload.get("Total")
+    if raw_total is None:
+        raise SberbankAstContractError("invalid API Total")
     try:
-        total = int(payload.get("Total"))
+        total = int(raw_total)
     except (TypeError, ValueError) as exc:
         raise SberbankAstContractError("invalid API Total") from exc
     if total <= 0:
