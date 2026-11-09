@@ -493,7 +493,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             source_system=profile.source_id,
             title=title[:500],
             description=context[:5000],
-            category=("other" if profile.source_id == "utpl.ru" else _category(context)),
+            category=_category(context),
             region_slug=None,
             region_name=None,
             address=None,
@@ -515,8 +515,6 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
-                **({"utpl_property_classification_verified": False}
-                   if profile.source_id == "utpl.ru" else {}),
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
@@ -555,10 +553,6 @@ def parse_detail_html(
         if not match:
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
         external_id = _external_id(profile, detail_url, match)
-    if profile.source_id == "utpl.ru" and (
-        match is None or external_id != _external_id(profile, detail_url, match)
-    ):
-        raise SourceSchemaError("utpl.ru: requested lot ID does not match individual detail URL")
 
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
@@ -586,63 +580,22 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
-    utpl_classifier: str | None = None
-    utpl_status: str | None = None
-    utpl_property_kinds: tuple[str, ...] = ()
-    utpl_cadastral: str | None = None
-    utpl_vin: str | None = None
-    utpl_address: str | None = None
-    utpl_application_deadline = None
-    utpl_auction_at = None
-    if profile.source_id == "utpl.ru":
-        from bankrotai.connectors.etp_sources.utpl_contract import (
-            UtplLotSchemaError, parse_utpl_detail_fields, normalize_utpl_status,
-        )
-        try:
-            fields = parse_utpl_detail_fields(html)
-        except UtplLotSchemaError as exc:
-            raise SourceSchemaError(str(exc)) from exc
-        title = str(fields["title"])
-        price = fields["initial_price"]
-        current_price = fields["current_price"]
-        utpl_status = fields["source_status_text"]
-        utpl_classifier = fields["classifier"]
-        utpl_property_kinds = tuple(str(value) for value in fields["property_kinds"])
-        procedure_number = (
-            str(fields["procedure_number"]) if fields["procedure_number"] else procedure_number
-        )
-        # The procedure header may describe unrelated assets and rights.
-        category = str(fields["category"])
-        utpl_cadastral = fields["cadastral_number"]
-        utpl_vin = fields["vin"]
-        utpl_address = fields["address"]
-        area = fields["area"]
-        utpl_application_deadline = fields["application_deadline"]
-        utpl_auction_at = fields["auction_at"]
-    else:
-        category = _category(text_value)
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=category,
+        category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=(utpl_address if profile.source_id == "utpl.ru" else None),
-        cadastral_number=(
-            utpl_cadastral if profile.source_id == "utpl.ru"
-            else (cadastral.group(1) if cadastral else None)
-        ),
-        vin=(
-            utpl_vin if profile.source_id == "utpl.ru"
-            else (vin.group(0).upper() if vin else None)
-        ),
+        address=None,
+        cadastral_number=cadastral.group(1) if cadastral else None,
+        vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=(normalize_utpl_status(utpl_status) if profile.source_id == "utpl.ru" else _status(text_value)),
+        auction_status=_status(text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -650,31 +603,16 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
-            **({
-                "utpl_classifier": utpl_classifier,
-                "utpl_property_kinds": list(utpl_property_kinds),
-                "utpl_trade_number": procedure_number,
-                "utpl_lot_number": str(fields["lot_number"]),
-                "utpl_structured_classifier_verified": utpl_classifier is not None,
-                "utpl_property_classification_verified": bool(utpl_property_kinds),
-                "utpl_lot_section_verified": True,
-            } if profile.source_id == "utpl.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        application_deadline=(
-            utpl_application_deadline if profile.source_id == "utpl.ru"
-            else datetime_after(
-                text_value,
-                r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
-            )
+        application_deadline=datetime_after(
+            text_value,
+            r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
-        auction_at=(
-            utpl_auction_at if profile.source_id == "utpl.ru"
-            else datetime_after(text_value, r"дата проведения")
-        ),
+        auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
 
@@ -831,14 +769,6 @@ class HtmlEtpConnector(AuctionConnector):
             self._last_response, self._last_page = response, page
             return response
 
-        if (
-            self.profile.source_id == "utpl.ru"
-            and page > 2
-            and self._last_page != page - 1
-        ):
-            raise SourceSchemaError(
-                "utpl.ru: ASP.NET pagination after page 2 requires sequential provider state"
-            )
         previous = self._last_response if self._last_page == page - 1 else None
         previous = previous or self._read_request(
             "get",
@@ -882,33 +812,20 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            if self.profile.source_id == "utpl.ru":
-                from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
-                postback_values = utpl_next_postback(previous.content, page - 1)
-                if postback_values is None:
-                    raise SourceSchemaError(
-                        f"{self.source_id}: page {page} provider postback target disappeared"
-                    )
-            else:
-                link = next((
-                    node for node in soup.select("a[href]")
-                    if _clean(node.get_text(" ", strip=True)) == str(page)
-                    and "__doPostBack" in str(node.get("href") or "")
-                ), None)
-                if not isinstance(link, Tag):
-                    raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
-                postback = re.search(
-                    r"__doPostBack\('([^']*)','([^']*)'\)",
-                    str(link.get("href") or ""),
-                )
-                if not postback:
-                    raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
-                postback_values = postback.groups()
+            link = next((
+                node for node in soup.select("a[href]")
+                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+            ), None)
+            if not isinstance(link, Tag):
+                raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
+            postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
+            if not postback:
+                raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
             data = {
                 str(node.get("name")): str(node.get("value") or "")
                 for node in soup.select("input[type=hidden][name]")
             }
-            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback_values
+            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
             action = _safe_provider_url(
                 self.profile, previous.url or self.profile.listing_url
             )
@@ -1061,7 +978,6 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
-        "utpl.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",

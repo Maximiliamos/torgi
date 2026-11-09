@@ -46,9 +46,6 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        if profile.source_id == "utpl.ru":
-            from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
-            return utpl_next_postback(html, page) is not None
         return any(
             _clean(node.get_text(" ", strip=True)) == str(page + 1)
             and "__doPostBack" in str(node.get("href") or "")
