@@ -189,18 +189,21 @@ def normalize_status(value: object) -> str:
     text = normalize_text(value).lower()
     if not text:
         return "unknown"
-    if any(marker in text for marker in ("прием заявок", "приём заявок", "торги объявлены")):
-        return "active"
-    if "идут торги" in text or "проведение торгов" in text:
-        return "active"
-    if "приостанов" in text:
-        return "suspended"
+
+    # Terminal/exception states must win over historic application-date labels
+    # that can remain visible on a completed GoodsView page.
     if "отмен" in text or "аннулир" in text:
         return "cancelled"
-    if any(marker in text for marker in ("торги завершены", "завершен", "завершён", "состоялись")):
-        return "finished"
+    if "приостанов" in text:
+        return "suspended"
     if "не состоял" in text:
         return "failed"
+    if any(marker in text for marker in ("торги завершены", "завершен", "завершён", "состоялись")):
+        return "finished"
+    if "идут торги" in text or "проведение торгов" in text:
+        return "active"
+    if any(marker in text for marker in ("прием заявок", "приём заявок", "торги объявлены")):
+        return "active"
     return "unknown"
 
 
