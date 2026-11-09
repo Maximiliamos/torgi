@@ -7,7 +7,6 @@ from bankrotai.connectors.etp_sources.sistematorg_contract import (
 )
 
 
-PROFILE = next(p for p in PROFILES if p.source_id == "sistematorg.com")
 
 
 def test_sistematorg_catalogue_keeps_trade_and_each_lot_identity() -> None:
