@@ -324,12 +324,26 @@ def _script_endpoint_hints(session: requests.Session, script_paths: list[str]) -
             if parsed.hostname != "aukcioncenter.ru":
                 continue
             endpoint_shapes.add((parsed.path, tuple(sorted(parse_qs(parsed.query).keys()))))
+        endpoint_contexts: list[dict[str, str]] = []
+        for needle in ("/etp/trade/inner-view-lots.html", "inner-view-lots.html"):
+            index = body.find(needle)
+            if index < 0:
+                continue
+            start = max(0, index - 900)
+            end = min(len(body), index + len(needle) + 1200)
+            context = re.sub(r"\\s+", " ", body[start:end]).strip()
+            endpoint_contexts.append({
+                "needle": needle,
+                "context": context[:2200],
+            })
+            break
         results.append({
             "script": path,
             "endpoint_shapes": [
                 {"path": endpoint, "query_keys": list(keys)}
                 for endpoint, keys in sorted(endpoint_shapes)
             ][:80],
+            "endpoint_contexts": endpoint_contexts,
         })
     return results
 
