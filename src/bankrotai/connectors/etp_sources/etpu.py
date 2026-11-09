@@ -583,7 +583,8 @@ def parse_catalogue_page(
         ):
             raise EtpuSchemaError(
                 "etpu.ru: filtered catalogue row status does not match requested "
-                f"status {expected_status.value}:{expected_status.text}"
+                f"status {expected_status.value}:{expected_status.text}; "
+                f"external_id={external_id}; observed_status={source_status!r}"
             )
         cadastre = _CADASTRAL_RE.search(context)
         vin = _VIN_RE.search(context)
@@ -635,7 +636,7 @@ def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
     selects: list[dict[str, Any]] = []
     for node in form.select("select"):
         name = str(node.get("name") or "")
-        if not name:
+        if not name or SEARCH_CRITERIA_MARKER not in name:
             continue
         options = []
         for option in node.select("option"):
@@ -653,7 +654,10 @@ def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
     controls: list[dict[str, str | bool]] = []
     for node in form.select("input[name]"):
         field_type = str(node.get("type") or "text").lower()
-        if field_type == "hidden":
+        name = str(node.get("name") or "")
+        if field_type == "hidden" or (
+            SEARCH_CRITERIA_MARKER not in name and name != SEARCH_BUTTON_FIELD
+        ):
             continue
         controls.append({
             "name": str(node.get("name") or ""),
