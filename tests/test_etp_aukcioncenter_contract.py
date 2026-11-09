@@ -17,7 +17,7 @@ def _profile():
     return next(profile for profile in PROFILES if profile.source_id == "aukcioncenter.ru")
 
 
-def test_active_catalogue_splits_procedure_into_individual_property_lots_and_excludes_vehicle():
+def test_active_catalogue_splits_procedure_and_classifies_property_vs_vehicle():
     html = """
     <table>
       <tr>
@@ -161,7 +161,7 @@ def test_application_end_date_does_not_become_closed_status():
 
 
 @pytest.mark.parametrize(
-    ("source_text", "expected"),
+    ("source_text", "expected", "lifecycle"),
     [
         ("торги завершены", "closed", "finished"),
         ("торги отменены", "closed", "cancelled"),
