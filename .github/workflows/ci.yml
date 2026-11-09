@@ -301,3 +301,58 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: bash scripts/docker-smoke-operator.sh
+
+
+  arbbitlot-live-readonly-audit:
+    name: ARBbitLot live read-only source contract
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1180
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11" }
+      - name: Install read-only HTTP parser dependencies
+        run: python -m pip install "requests>=2.32,<3" "beautifulsoup4>=4.12,<5" "lxml>=5.2,<7"
+      - name: Run two complete catalogue passes and 30 individual details
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python -m bankrotai.services.etp_arbbitlot_readonly_audit --detail-limit 30 --max-pages 1000 > /tmp/arbbitlot.json
+          python - <<'PY'
+          import json
+          report = json.load(open("/tmp/arbbitlot.json", encoding="utf-8"))
+          p1, p2, details = report["pass_1"], report["pass_2"], report["details"]
+          assert report["read_only"] is True
+          assert report["production_enabled"] is False
+          assert p1["terminal_page_proven"] is True
+          assert p2["terminal_page_proven"] is True
+          assert p1["duplicate_ids"] == []
+          assert p2["duplicate_ids"] == []
+          assert report["passes_have_identical_ids"] is True
+          assert details["details_checked"] >= 30
+          assert details["detail_success"] >= 30
+          assert details["start_price_success"] >= 30
+          assert details["status_success"] >= 30
+          print(json.dumps({
+              "pages": [p1["page_count"], p2["page_count"]],
+              "unique_ids": [p1["unique_ids"], p2["unique_ids"]],
+              "digests": [p1["id_digest_sha256"], p2["id_digest_sha256"]],
+              "details_checked": details["details_checked"],
+              "detail_success": details["detail_success"],
+              "start_price_success": details["start_price_success"],
+              "status_success": details["status_success"],
+              "public_offer_details_checked": details["public_offer_details_checked"],
+              "current_price_success": details["current_price_success"],
+              "multi_lot_procedure_count": len(details["multi_lot_procedures"]),
+          }, ensure_ascii=False, indent=2))
+          PY
+      - name: Upload sanitized ARBbitLot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arbbitlot-live-readonly-audit
+          path: /tmp/arbbitlot.json
+          if-no-files-found: warn
+          retention-days: 30
