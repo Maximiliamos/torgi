@@ -93,6 +93,9 @@ def test_phase3_health_exposes_latest_scheduled_preflight_skip() -> None:
             )
         )
         _healthy_source(session, now)
+        healthy_run = session.get(LotSyncRun, "full-healthy")
+        assert healthy_run is not None
+        healthy_run.created_at = (now - timedelta(hours=1)).replace(tzinfo=None)
         session.add(
             LotSyncRun(
                 id="scheduled-preflight-skip",
