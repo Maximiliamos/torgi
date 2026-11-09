@@ -2,6 +2,16 @@ name: Lot issue reports read-only export
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/lot-issue-reports-export.yml"
+      - "src/bankrotai/services/lot_issue_report_export.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/lot-issue-reports-export.yml"
+      - "src/bankrotai/services/lot_issue_report_export.py"
   schedule:
     - cron: "*/5 * * * *"
 
