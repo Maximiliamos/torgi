@@ -4,6 +4,7 @@ import pytest
 
 from bankrotai.connectors.etp_sources.zakazrf import (
     CATALOGUE_URL,
+    ZakazRfConnector,
     ZakazRfReadonlyClient,
     ZakazRfSchemaError,
     classify_property,
@@ -338,3 +339,13 @@ def test_postback_pager_crosses_ten_page_group() -> None:
     assert session.posts[0][1]["__EVENTTARGET"] == "grid$page10"
     assert session.posts[1][1]["__EVENTTARGET"] == "grid$nextGroup"
     assert session.posts[1][1]["__VIEWSTATE"] == "state10"
+
+
+
+def test_drop_in_connector_is_source_specific_and_non_archiving() -> None:
+    connector = ZakazRfConnector(session=FakeSession([]))
+    assert connector.source_id == "zakazrf.ru"
+    assert connector.safe_for_reconciliation is False
+    assert connector.capabilities == frozenset(
+        {"search", "fetch_lot", "healthcheck", "detail_enrichment"}
+    )
