@@ -10,21 +10,16 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from bankrotai.connectors.etp_sources.pagination import (
-    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
-)
+from bankrotai.connectors.etp_sources.pagination import get_form_params, has_next_page as _has_next_page, page_url as _page_url
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
-    apply_detail,
-    datetime_after,
-    profit_initial_money,
-    ruson_initial_money,
-    sistematorg_lot_count,
+    apply_detail, datetime_after, profit_initial_money, ruson_initial_money, sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
+from bankrotai.connectors.etp_sources import utpl_operational
 
 
 class SourceAccessError(RuntimeError):
@@ -398,8 +393,7 @@ def _parse_multi_lot_catalogue(
 
 def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: int = 1) -> list[NormalizedLot]:
     if profile.source_id == "utpl.ru":
-        from bankrotai.connectors.etp_sources.utpl_operational import parse_listing
-        return parse_listing(profile, html, page=page)
+        return utpl_operational.parse_listing(profile, html, page=page)
     multi_lot = _parse_multi_lot_catalogue(profile, html, page=page)
     if multi_lot is not None:
         return multi_lot
@@ -536,12 +530,8 @@ def parse_detail_html(
     external_id: str | None = None,
 ) -> NormalizedLot:
     if profile.source_id == "utpl.ru":
-        from bankrotai.connectors.etp_sources.utpl_operational import parse_detail
-        return parse_detail(
-            profile,
-            html,
-            detail_url=detail_url,
-            external_id=external_id,
+        return utpl_operational.parse_detail(
+            profile, html, detail_url=detail_url, external_id=external_id,
         )
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
