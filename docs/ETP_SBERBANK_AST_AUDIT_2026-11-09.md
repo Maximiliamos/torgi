@@ -196,6 +196,8 @@ Added/updated tests cover:
 - `src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
 - `tests/test_etp_sources.py`
 - `tests/test_sberbank_ast_contract.py`
+- `tests/fixtures/sberbank_ast/catalogue_bankruptcy_real_estate.json`
+- `tests/fixtures/sberbank_ast/goodsview_detail.html`
 - `scripts/audit_sberbank_ast_bankruptcy_readonly.py`
 - `docs/ETP_SBERBANK_AST_AUDIT_2026-11-09.md`
 
