@@ -143,7 +143,8 @@ Known detail status forms explicitly covered include `Торги заверше�
 
 ## Changed code
 
-- `src/bankrotai/connectors/etp_sources/vertrades.py` — the single source-specific contract module: mixed catalogue rows, property gate, `NNN-АП/NNN-АЗ` procedure identity, provider procedure ID, lot ID, GET pagination/terminal signal, filter-form structure, per-lot detail section isolation, initial price, status, dates, address, cadastre, area, deposit, detail fetch and enrichment cross-checks.
+- `src/bankrotai/connectors/etp_sources/vertrades.py` — the single source-specific contract module: mixed catalogue rows, property gate, `NNN-АП/NNN-АЗ` procedure identity, provider procedure ID, lot ID, GET pagination/terminal signal, filter-form structure, per-lot detail section isolation, initial price, status, dates, address, cadastre, area, deposit, detail fetch/enrichment cross-checks and the source-specific connector class.
+- `src/bankrotai/connectors/etp_sources/__init__.py` — minimal registry wiring only: replaces the generic Vertrades connector class with `vertrades.connector_type(profile)`; no parser rules live here.
 - `src/bankrotai/connectors/etp_sources/vertrades_detail_sections.py` — compatibility re-exports only; no parser logic remains here.
 - `src/bankrotai/connectors/etp_sources/vertrades_detail_adapter.py` — compatibility re-exports only; no parser logic remains here.
 - `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded read-only orchestration using only the isolated Vertrades module for catalogue/detail parsing.
@@ -154,21 +155,16 @@ Known detail status forms explicitly covered include `Торги заверше�
 - `.github/workflows/etp-vertrades-contract-readonly.yml` — focused source tests plus bounded live two-pass catalogue and 30-lot detail proof.
 - this audit document.
 
-The earlier changes in `common.py`, `direct_etp_catalogue.py` and `tests/test_direct_etp_catalogue_batch.py` were preserved conceptually by moving their Vertrades-specific behavior into `vertrades.py`, then those integration-owned files were restored to current `main`. No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, scheduler, reconciliation or archival logic is changed.
+The earlier changes in `common.py`, `direct_etp_catalogue.py` and `tests/test_direct_etp_catalogue_batch.py` were preserved conceptually by moving their Vertrades-specific behavior into `vertrades.py`, then those integration-owned files were restored to current `main`. The only shared wiring retained is the small `SOURCE_CONNECTOR_TYPES["vertrades.ru"]` registration in `etp_sources/__init__.py`. No neighboring ETP parser, `docs/ROADMAP.md`, centralized stage checklist, scheduler, reconciliation or archival logic is changed.
 
 ## Integration hook required
 
-A later centralized integration PR should make only minimal wiring changes:
+The primary `SOURCE_CONNECTOR_TYPES` path is already connected through one minimal registration in `etp_sources/__init__.py`; no `common.py` dispatcher patch is required.
 
-1. `src/bankrotai/connectors/etp_sources/common.py`
-   - for `source_id == "vertrades.ru"`, use `vertrades.parse_catalogue_page(...)` instead of the generic/direct registry parser;
-   - `fetch_lot()` delegates to `vertrades.fetch_vertrades_lot(...)`;
-   - `enrich_lot()` delegates to `vertrades.enrich_vertrades_lot(...)`;
-   - advertise `fetch_lot` / `detail_enrichment` only after that wiring is reviewed.
-2. `src/bankrotai/connectors/registry/direct_etp_catalogue.py`
-   - if the legacy direct-ETP inventory must continue to expose Vertrades, make its Vertrades branch a thin adapter to `vertrades.parse_catalogue_page(...)`; do not duplicate trade-code or price parsing.
+Optional centralized integration only:
+- if the legacy `registry/direct_etp_catalogue.py` inventory must continue to expose Vertrades, replace its old Vertrades parser branch with a thin adapter to `vertrades.parse_catalogue_page(...)` rather than duplicating the verified trade-code/price rules.
 
-No other shared behavior is required.
+No other shared behaviour is required.
 
 ## Isolation review
 
@@ -176,10 +172,10 @@ Source-specific module:
 `src/bankrotai/connectors/etp_sources/vertrades.py`
 
 Shared files modified:
-NONE
+`src/bankrotai/connectors/etp_sources/__init__.py` — minimal connector registration only
 
 Source-specific logic remaining in common.py:
-NONE in this PR; integration hook documented above.
+NONE.
 
 Source-specific logic remaining in pagination.py:
 NONE
@@ -191,7 +187,7 @@ Source-specific logic remaining in source_specific.py:
 NONE
 
 Source-specific logic remaining in direct_etp_catalogue.py:
-NONE in this PR; integration hook documented above.
+NONE in this PR; optional legacy inventory delegation documented above.
 
 Compatibility wrappers:
 `vertrades_detail_sections.py` and `vertrades_detail_adapter.py` contain re-exports only.
