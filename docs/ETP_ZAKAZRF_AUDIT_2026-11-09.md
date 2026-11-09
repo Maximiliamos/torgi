@@ -110,7 +110,7 @@ The audit script imports the isolated module directly. No ZakazRF-specific
 logic remains in `common.py`, `pagination.py`, `profiles.py`,
 `source_specific.py` or `direct_etp_catalogue.py`.
 
-Production wiring is intentionally deferred to the integration PR.
+`SOURCE_CONNECTOR_TYPES["zakazrf.ru"]` is wired to the isolated `ZakazRfConnector` for the existing pilot/QA registry. This does **not** add ZakazRF to `default_source_specs()`, scheduled ingestion, reconciliation, archival, GEO or map publication.
 
 ## Contract implemented
 
@@ -161,13 +161,7 @@ not allowed to promote it to real estate.
 
 ## Regression coverage
 
-Added focused tests for:
-
-1. real-estate public offer with initial/current prices, status, cadastre,
-   area, address and structured classifier;
-2. vehicle card containing unrelated real-estate boilerplate;
-3. receivables classification;
-4. refusal to infer initial/current price from deposit or interval-price rows.
+Focused source-contract coverage includes real-estate public offers, initial/current prices, status, cadastre/area/address, structured classifiers, vehicles, receivables, deposit/interval-price separation, explicit identity mismatch guards, application-end fail-closed status, ASP.NET hidden state, the `10 -> >> -> 11` pager transition, the drop-in connector safety contract, and the production-off scheduling guard. The latest isolated exact-head run before live acceptance completed 21 tests successfully.
 
 ## Read-only source probe
 
