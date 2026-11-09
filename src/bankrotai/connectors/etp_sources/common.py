@@ -598,6 +598,11 @@ def parse_detail_html(
         current_price = zakazrf_current_money(text_value)
         structured_classifier = zakazrf_classifier(text_value)
         title = zakazrf_title(text_value) or title
+        # Property identifiers must come from the isolated lot name/section,
+        # not from procedure boilerplate or neighbouring document text.
+        cadastral = _CADASTRAL_RE.search(title)
+        area_match = _AREA_RE.search(title)
+        area = float(area_match.group(1).replace(",", ".")) if area_match else None
     explicit_status = zakazrf_status_text(text_value) if profile.source_id == "zakazrf.ru" else None
     return NormalizedLot(
         external_id=external_id,
@@ -1008,7 +1013,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
 
     ProfiledConnector.profile = profile
     if profile.source_id in {
-        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
+        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru", "zakazrf.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
