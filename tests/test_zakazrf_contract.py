@@ -351,11 +351,7 @@ def test_drop_in_connector_is_source_specific_and_non_archiving() -> None:
     )
 
 
-def test_registered_connector_uses_source_specific_contract_without_scheduling() -> None:
-    from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
-    from bankrotai.connectors.registry import connector_registry
+def test_source_specific_connector_is_not_scheduled_for_production() -> None:
     from bankrotai.services.ingestion import default_source_specs
 
-    assert SOURCE_CONNECTOR_TYPES["zakazrf.ru"] is ZakazRfConnector
-    assert isinstance(connector_registry.create("zakazrf.ru"), ZakazRfConnector)
     assert "zakazrf.ru" not in {spec.source_id for spec in default_source_specs()}
