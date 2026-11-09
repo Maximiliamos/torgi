@@ -336,15 +336,11 @@ def _parse_verdict_lots(profile: EtpProfile, soup: BeautifulSoup, limit: int) ->
         cells = tr.find_all("td", recursive=False)
         if len(cells) < 10:
             continue
-        trade_text = _clean(cells[0].get_text(" ", strip=True))
+        trade = _clean(cells[0].get_text(" ", strip=True))
         lot = _clean(cells[1].get_text(" ", strip=True))
         title = _clean(cells[3].get_text(" ", strip=True))
-        trade_match = re.fullmatch(
-            r"(\d{1,9})\s*[-–—]\s*(АП|АЗ)", trade_text, re.IGNORECASE,
-        )
-        if not trade_match or not re.fullmatch(r"\d{1,5}", lot):
+        if not re.fullmatch(r"\d{3,14}", trade) or not re.fullmatch(r"\d{1,5}", lot):
             continue
-        trade = f"{trade_match.group(1)}-{trade_match.group(2).upper()}"
         try:
             link = _first_provider_link(profile, cells[3:4] + cells[:2])
             items.append(_candidate(
