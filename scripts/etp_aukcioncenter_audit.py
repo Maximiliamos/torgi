@@ -21,6 +21,7 @@ from bankrotai.connectors.etp_sources.aukcioncenter import (
     parse_detail,
     parse_listing,
     parse_procedure_observations,
+    status_filter_options,
     terminal_page_contract,
 )
 
@@ -67,7 +68,7 @@ def _scan_pass(
     *,
     pause: float,
     pass_no: int,
-) -> tuple[dict[str, Any], list[Any], list[Any], bytes]:
+) -> tuple[dict[str, Any], list[Any], list[Any], bytes, bytes]:
     first = _get(session, LISTING_URL, params=catalogue_params(1))
     first_pages = declared_pages(_body(first))
     declared_last = max(first_pages or (1,))
@@ -117,7 +118,59 @@ def _scan_pass(
             "\n".join(sorted(set(ids))).encode("utf-8")
         ).hexdigest(),
     }
-    return pass_result, observations, lots, last_body
+    return pass_result, observations, lots, last_body, _body(first)
+
+
+def _status_filter_evidence(
+    session: requests.Session,
+    html: bytes,
+    *,
+    pause: float,
+) -> dict[str, Any]:
+    options = status_filter_options(html)
+    evidence: dict[str, Any] = {
+        "provider_options": options,
+        "probes": {},
+    }
+    targets = {
+        "active": ("приём заявок", "прием заявок"),
+        "finished": ("заверш", "окончен"),
+        "cancelled": ("отмен"),
+    }
+    for kind, needles in targets.items():
+        match = next(
+            (
+                (label, value)
+                for label, value in options.items()
+                if any(needle in label for needle in needles)
+            ),
+            None,
+        )
+        if match is None:
+            evidence["probes"][kind] = {
+                "verified": False,
+                "reason": "provider_filter_option_not_found",
+            }
+            continue
+        label, value = match
+        params = catalogue_params(1)
+        params["processStatus"] = value
+        time.sleep(pause)
+        response = _get(session, LISTING_URL, params=params)
+        observations = parse_procedure_observations(
+            _body(response), active_filter=False
+        )
+        markers = Counter(
+            item.source_status for item in observations if item.source_status
+        )
+        evidence["probes"][kind] = {
+            "verified": bool(observations),
+            "provider_label": label,
+            "provider_value": value,
+            "rows": len(observations),
+            "explicit_status_markers": dict(markers),
+        }
+    return evidence
 
 
 def _discover_unresolved_lots(
@@ -328,11 +381,11 @@ def run(*, pause: float, details: int) -> dict[str, Any]:
         raise ValueError("unsafe_audit_limits")
 
     session = requests.Session()
-    first, observations, lots, last_body = _scan_pass(
+    first, observations, lots, last_body, first_body = _scan_pass(
         session, pause=pause, pass_no=1
     )
     time.sleep(pause)
-    second, observations2, lots2, _ = _scan_pass(
+    second, observations2, lots2, _, _ = _scan_pass(
         session, pause=pause, pass_no=2
     )
 
@@ -341,6 +394,9 @@ def run(*, pause: float, details: int) -> dict[str, Any]:
     overflow = _get(session, LISTING_URL, params=catalogue_params(last_page + 1))
     terminal_ok, terminal_reason = terminal_page_contract(
         last_body, _body(overflow), last_page=last_page
+    )
+    status_evidence = _status_filter_evidence(
+        session, first_body, pause=pause
     )
 
     discovered, discovery_evidence = _discover_unresolved_lots(
@@ -364,6 +420,7 @@ def run(*, pause: float, details: int) -> dict[str, Any]:
         "two_pass_identity_set_equal": ids1 == ids2,
         "two_pass_identity_added": sorted(ids2 - ids1)[:50],
         "two_pass_identity_removed": sorted(ids1 - ids2)[:50],
+        "status_filter_evidence": status_evidence,
         "terminal_probe": {
             "requested_page": last_page + 1,
             "proven": terminal_ok,
