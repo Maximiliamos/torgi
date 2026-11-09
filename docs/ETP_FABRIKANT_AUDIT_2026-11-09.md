@@ -185,22 +185,26 @@ Added `tests/test_fabrikant_source.py` covering:
 - catalogue procedure -> canonical lot -> detail resolution;
 - fail-closed behaviour when no individual lot route exists.
 
-The pre-existing generic Fabrikant fixture was changed from a procedure route to an individual-lot route.
+Dedicated sanitized fixtures were added under `tests/fixtures/fabrikant/`.
+The shared `tests/test_etp_sources.py` fixture remains unchanged; source-specific
+regressions are exercised only by `tests/test_fabrikant_source.py`.
 
 ### Test evidence
 
-Focused Fabrikant workflow on head `6af87cc07cf8a98435c14b1ab268ee4ee596e586`:
+Pre-isolation verification on head `6af87cc07cf8a98435c14b1ab268ee4ee596e586`:
 
-- dedicated Fabrikant tests + existing ETP source tests: PASS.
+- focused Fabrikant + existing ETP tests: **90 passed**;
+- applicable full SQLite CI: **1,497 passed, 11 deselected, 0 failed**.
 
-Applicable full SQLite CI on the same head:
+An earlier full-CI run found five failures in the new Fabrikant tests caused by
+an incorrectly grouped RUB regular-expression alternative. The cause was fixed
+rather than weakening a guard.
 
-- 1,497 passed;
-- 11 deselected;
-- 13 warnings;
-- 0 failed.
-
-An earlier full-CI run found five failures in the new Fabrikant tests caused by an incorrectly grouped RUB regular-expression alternative. The cause was fixed; the subsequent full SQLite run is green. No guard was weakened.
+After source isolation, the shared-registry assertions were removed from the
+Fabrikant test file and replaced with a local Fabrikant profile plus sanitized
+fixtures. Exact-head focused tests and applicable full CI must be green again
+before this PR is ready for review; historical green runs are not substituted
+for that final-head requirement.
 
 ## 2026-11-09 live read-only retest
 
@@ -229,15 +233,19 @@ It is designed to prove:
 
 ### Transport evidence
 
-A GitHub-hosted live attempt on 2026-11-09 timed out reaching `www.fabrikant.ru` before the first catalogue response. This is treated as runner/network limitation, not as proof that the source is unavailable.
+A GitHub-hosted live attempt on 2026-11-09 timed out reaching
+`www.fabrikant.ru` before the first catalogue response. This is treated as a
+runner/network limitation, not as proof that the source is unavailable.
 
-A trusted Home run was therefore queued:
+Trusted Home workflow run `42548839977` passed its unit job (**90 tests**) but
+its Home audit job `128939946463` was cancelled by a newer branch push before
+any Fabrikant request executed. It therefore provides **no live catalogue
+evidence**.
 
-- workflow run: `42548839977`;
-- job: `128939946463`;
-- requested runner labels: `self-hosted, Windows, X64, bankrotai-home`.
-
-At the time this document was written the Home audit job was still `queued` and no self-hosted Fabrikant request had executed.
+The final isolated workflow runs the GET-only probe directly from the trusted
+Home network, without entering the production worker/container and without DB,
+scheduler, reconciliation, archival or map access. A completed exact-head Home
+run is still required before live completeness can be claimed.
 
 ## What is NOT yet proven
 
@@ -258,20 +266,86 @@ Accordingly this PR must remain draft/not production-accepted until that evidenc
 
 ## Changed files
 
-- `src/bankrotai/connectors/etp_sources/profiles.py`
-- `src/bankrotai/connectors/etp_sources/fabrikant.py`
-- `src/bankrotai/connectors/etp_sources/common.py`
-- `tests/test_fabrikant_source.py`
-- `tests/test_etp_sources.py`
-- `scripts/audit_fabrikant_readonly.py`
-- `.github/workflows/etp-fabrikant-readonly.yml`
-- `docs/ETP_FABRIKANT_AUDIT_2026-11-09.md`
+Source-specific files only:
 
-Not changed:
+- `src/bankrotai/connectors/etp_sources/fabrikant.py`;
+- `tests/test_fabrikant_source.py`;
+- `tests/fixtures/fabrikant/catalogue_page.html`;
+- `tests/fixtures/fabrikant/procedure_page.html`;
+- `tests/fixtures/fabrikant/detail_active.html`;
+- `tests/fixtures/fabrikant/detail_public_offer.html`;
+- `scripts/audit_fabrikant_readonly.py`;
+- `.github/workflows/etp-fabrikant-readonly.yml`;
+- `docs/ETP_FABRIKANT_AUDIT_2026-11-09.md`.
 
+Shared/integration-owned files have **zero diff** relative to current `main`:
+
+- `src/bankrotai/connectors/etp_sources/common.py`;
+- `src/bankrotai/connectors/etp_sources/pagination.py`;
+- `src/bankrotai/connectors/etp_sources/profiles.py`;
+- `src/bankrotai/connectors/etp_sources/source_specific.py`;
+- `src/bankrotai/connectors/registry/direct_etp_catalogue.py`;
+- `src/bankrotai/connectors/etp_sources/__init__.py`;
+- `tests/test_etp_sources.py`;
 - `docs/ROADMAP.md`;
 - `docs/ETP_PARSER_STAGE_CHECKLIST.md`;
 - scheduler / allowlist / reconciliation / archival configuration.
+
+## Integration hook required
+
+The isolated module is intentionally not registered by this PR.
+
+A later integration PR should make only the minimal shared wiring:
+
+1. In `profiles.py`, change only the Fabrikant profile from the one-token
+   procedure route to the proven two-token lot route
+   `/v2/trades/procedure/lot/view/{procedure_token}/{lot_token}`, preserving
+   `page_number`, allowed hosts and production-disabled state.
+2. In the ETP source registry/dispatcher, bind `fabrikant.ru` to
+   `fabrikant.FabrikantConnector` with that profile.
+3. No changes to generic money/status/category semantics are required.
+
+Until that integration is reviewed centrally, current production behavior is
+unchanged.
+
+## Isolation review
+
+Source-specific module:
+`src/bankrotai/connectors/etp_sources/fabrikant.py`
+
+Shared files modified:
+**NONE**
+
+Source-specific logic remaining in `common.py`:
+**NONE**
+
+Source-specific logic remaining in `pagination.py`:
+**NONE**
+
+Source-specific logic remaining in `profiles.py`:
+**NONE**
+
+Source-specific logic remaining in `source_specific.py`:
+**NONE**
+
+Source-specific logic remaining in `direct_etp_catalogue.py`:
+**NONE**
+
+Integration hook required:
+minimal Fabrikant profile + registry binding described above.
+
+Existing work preserved:
+**YES**
+
+Live evidence preserved:
+**YES** — failed/timed-out/cancelled attempts are retained and are not promoted
+to successful evidence.
+
+Regression tests preserved:
+**YES**
+
+PRODUCTION ENABLED:
+**NO**
 
 ## Acceptance state
 
