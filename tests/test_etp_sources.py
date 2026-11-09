@@ -1262,3 +1262,33 @@ def test_zakazrf_active_status_stops_before_current_price_label() -> None:
     assert lot.auction_status == "active"
     assert lot.current_price == 1_900_548.00
     assert lot.start_price == 1_900_548.00
+
+
+def test_zakazrf_title_stops_before_extended_application_date_label() -> None:
+    html = """
+    <html><body>
+    Наименование: Электронные торги имуществом банка посредством аукциона
+    Информация о лоте №1
+    Номер: 1
+    Наименование: Нежилое помещение - 80 кв. м, адрес: г. Москва,
+    ул. Тестовая, д. 1, кадастровый номер 77:01:0001001:55
+    Дата начала представления заявок на участие: 14.10.2026 00:00
+    Статус: Прием заявок
+    Дата окончания представления заявок на участие: 19.11.2026 14:00
+    Начальная цена, руб.: 5 500 000,00
+    Классификатор ЕФРСБ:
+    Здания (кроме жилых) и сооружения, не включенные в другие группировки
+    Обеспечение заявки
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/auctions/lots/view/18805/",
+        external_id="zakazrf.ru:auctions-18805",
+    )
+    assert lot.title.startswith("Нежилое помещение - 80 кв. м")
+    assert "Электронные торги имуществом банка" not in lot.title
+    assert lot.cadastral_number == "77:01:0001001:55"
+    assert lot.area == 80.0
+    assert lot.address == "г. Москва, ул. Тестовая, д. 1"
