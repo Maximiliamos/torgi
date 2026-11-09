@@ -69,6 +69,38 @@ The public catalogue exposes filters for lot/trade number, lot/trade name,
 property text, initial price, trade type, status, organizer and debtor. It is a
 mixed catalogue, not a property-only endpoint.
 
+A sanitized live form probe on GitHub Actions run `42554531491`, job
+`128957188829`, proved the official status field:
+
+`ctl00$ctl00$MainExpandableArea$phExpandCollapse$PurchasesSearchCriteria$vPurchaseLot_purchaseStatusID_Статус`
+
+and the following provider values:
+
+| Provider value | Official status |
+| --- | --- |
+| `5` | Извещение опубликовано |
+| `7` | Прием заявок |
+| `14` | Прием заявок на интервале не активен |
+| `8` | Определение участников торгов |
+| `1` | Идут торги |
+| `15` | Подведение результатов |
+| `2` | Окончен |
+| `3` | Не состоялся |
+| `4` | Отменён организатором |
+| `13` | Приостановлен |
+
+The same live probe proved the POST search button field
+`ctl00$ctl00$MainExpandableArea$phExpandCollapse$SearchButton` with value
+`Искать торги`. Hidden ASP.NET state is retained for submission but never
+written to the public evidence artifact.
+
+For the current/non-terminal inventory this audit uses only provider statuses
+`5,7,14,8,1,15,13`; terminal `2,3,4` remain outside that current inventory.
+The provider statistics page observed during this audit showed 48,639 trades in
+the historical all-status population versus 914 active trades. That exposed a
+critical audit bug: the first attempted full traversal was correctly superseded
+because it was walking `Все торги`, not the official non-terminal scope.
+
 Individual detail identity:
 
 `/public/{auctions|contests|public-offers}/lots/view/{lot_id}/`
@@ -136,31 +168,44 @@ the explicit current-price label is present.
 
 ## Pagination status
 
-**Terminal page is not claimed as proved by this document yet.**
+**Terminal page and two-pass digest are still pending the final filtered live proof.**
 
-The browser-readable catalogue evidence available during this audit exposed the
-official numbered pagination and existing repository evidence proved page 2,
-but the audit environment could not execute the provider's live ASP.NET
-postback chain to its end: direct container DNS access to
-`bankrupt.etpu.ru` was unavailable, while the read-only web renderer exposes a
-cached HTML representation rather than a stateful ASP.NET form session.
+The source-specific ASP.NET contract now covers both parts that were missing
+from the original two-page evidence:
 
-To prevent a false PASS, this PR adds:
+1. ten-page pager blocks use the provider's own `>>` postback for sequential
+   `10 -> 11`, `20 -> 21`, and equivalent transitions;
+2. the current inventory is first scoped with the proved official status POST,
+   then every subsequent page preserves that selected status.
+
+The parser fails closed if:
+
+- the requested official status option disappears or changes value/text;
+- the provider response does not retain the selected status;
+- a catalogue row's explicit status differs from the requested status;
+- a page repeats an earlier response fingerprint;
+- a required numeric/block postback target disappears.
+
+The final read-only command is:
 
 `python scripts/etpu_readonly_audit.py --details 30`
 
-The probe is source-specific and read-only. It:
+It now:
 
-1. walks pages sequentially through the existing provider postback contract;
-2. requires a real terminal page rather than a fixed maximum;
-3. rejects duplicate IDs / repeated page bodies;
-4. performs two complete passes;
-5. compares ID and catalogue-record digests;
-6. fetches up to 30 individual details;
-7. reports identity, initial-price, status and classifier success rates;
-8. returns a non-zero exit code if the full contract is not proved.
+1. verifies the live official filter contract;
+2. traverses each non-terminal status `5,7,14,8,1,15,13` to its real terminal page;
+3. rejects duplicates both inside one status catalogue and across status catalogues;
+4. performs two complete filtered passes;
+5. compares union ID and catalogue-record digests;
+6. samples up to 30 individual details round-robin across the official statuses;
+7. reports identity, initial-price, explicit-status, deadline and classifier rates;
+8. returns non-zero unless every required live gate succeeds.
 
-Until that probe completes on a network that can reach the provider,
+The earlier unfiltered full-run attempts are retained in Actions history as
+diagnostic evidence; they are not counted as terminal-page proof because the
+scope was the historical all-status catalogue.
+
+Until the final filtered probe completes successfully,
 `complete_source_inventory`, reconciliation, archival and production
 acceptance remain false.
 
@@ -170,6 +215,7 @@ acceptance remain false.
   - isolated ETPU catalogue row/page parser;
   - stable `sale_type + lot_id` identity;
   - ASP.NET postback pagination, including the provider's ten-page `>>` block transition;
+  - official status-filter POST construction and response/row verification;
   - explicit initial/current price parsing;
   - deposit and auction-step parsing kept separate from lot price;
   - public-offer interval schedule extraction;
@@ -186,7 +232,10 @@ acceptance remain false.
     multi-lot identity, block pagination and exact detail URL reconstruction.
 - `scripts/etpu_readonly_audit.py`
   - imports the isolated ETPU module directly;
-  - two-pass terminal-pagination/detail audit with fail-closed exit status.
+  - two-pass terminal-pagination/detail audit across all official non-terminal statuses.
+- `scripts/etpu_filter_probe.py`
+  - sanitized read-only discovery of public filter field names/options;
+  - excludes hidden state, cookies, tokens and participant data from its report.
 - `.github/workflows/etpu-source-contract-hosted.yml`
   - GitHub-hosted public read-only proof.
 - `.github/workflows/etpu-source-contract-readonly.yml`
@@ -265,11 +314,11 @@ NO
 
 ## Explicitly not proved / not changed
 
-Not proved by the current environment:
+Not proved yet:
 
-- current provider terminal page and current total;
-- two complete live catalogue digests;
-- complete property-only inventory, because the official catalogue is mixed;
+- terminal page for every official non-terminal status on the final head;
+- two complete filtered live catalogue digests on the final head;
+- complete property-only inventory, because the official catalogue itself is mixed;
 - universal address/cadastre/area completeness across every class.
 
 Not changed:
