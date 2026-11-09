@@ -18,7 +18,7 @@ LOT_PATH_RE = re.compile(
 _SPACE_RE = re.compile(r"\s+")
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _NUMBER_RE = r"(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)"
-_RUBLE_RE = r"(?:российск\w*\s+)?рубл\w*\s*\(RUB\)|₽|руб(?:\.|лей)?"
+_RUBLE_RE = r"(?:(?:российск\w*\s+)?рубл\w*\s*\(RUB\)|₽|руб(?:\.|лей)?)"
 
 _STATUS_RE = re.compile(
     r"лот\s*№\s*\d+\s*\.?.{0,1200}?\s+-\s+"
