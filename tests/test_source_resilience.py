@@ -45,8 +45,9 @@ def _sessions():
         ("access_limited by upstream", "access_limited", False, False),
         ("source coverage guard rejected reconciliation", "coverage_guard", False, True),
         ("JSONDecodeError: unexpected payload", "parser_contract", False, True),
-        ("source completed with 1 quarantined malformed record(s)", "parser_contract", False, True),
+        ("source completed with 1 quarantined malformed record(s); archival forbidden", "parser_contract", False, True),
         ("test-source page has systemic malformed normalized records; quarantined=4", "parser_contract", False, True),
+        ("M-ETS systemic detail verification failure: zero verified property lots in a selected catalogue page", "parser_contract", False, False),
         ("validation failed for payload", "validation", False, True),
         ("TypeError: connector contract bug", "internal_error", False, False),
     ],
@@ -241,6 +242,24 @@ def test_retry_decision_separates_network_and_operator_action_errors():
     assert auth["schedule"] is False
     assert auth["reason"] == "non_retryable"
     assert auth["last_error_category"] == "authentication"
+
+
+def test_deterministic_mets_detail_contract_failure_is_not_retried():
+    factory = _sessions()
+    with factory() as session:
+        decision = source_retry_decision(
+            session,
+            "m-ets.ru",
+            error=(
+                "M-ETS systemic detail verification failure: zero verified "
+                "property lots in a selected catalogue page"
+            ),
+        )
+
+    assert decision["schedule"] is False
+    assert decision["reason"] == "non_retryable"
+    assert decision["last_error_category"] == "parser_contract"
+
 
 def test_catalogue_consistency_failures_are_parser_contract_not_network_outage():
     for message in (
