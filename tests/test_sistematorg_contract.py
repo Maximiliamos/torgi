@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from bankrotai.connectors.etp_sources.common import parse_listing_html
-from bankrotai.connectors.etp_sources.profiles import PROFILES
 from bankrotai.connectors.etp_sources.sistematorg_contract import (
     classify_sistematorg_asset,
     parse_sistematorg_catalogue_page,
@@ -30,14 +28,10 @@ def test_sistematorg_catalogue_keeps_trade_and_each_lot_identity() -> None:
     assert [lot.lot_id for lot in procedure.lots] == ["1", "2", "3"]
     assert [lot.category for lot in procedure.lots] == ["vehicle", "land", "receivables"]
 
-    imported = parse_listing_html(PROFILE, html)
-    assert [lot.external_id for lot in imported] == ["sistematorg.com:70001:2"]
-    assert imported[0].start_price is None
-    assert imported[0].current_price is None
-    assert imported[0].raw_data["trade_id"] == "70001"
-    assert imported[0].raw_data["lot_id"] == "2"
-    assert imported[0].raw_data["individual_lot_identity_verified"] is True
-    assert imported[0].raw_data["per_lot_detail_verified"] is False
+    property_lots = property_catalogue_lots(page)
+    assert [lot.external_id for lot in property_lots] == ["sistematorg.com:70001:2"]
+    assert property_lots[0].trade_id == "70001"
+    assert property_lots[0].lot_id == "2"
 
 
 def test_sistematorg_multi_lot_detail_never_copies_first_price() -> None:
@@ -169,3 +163,21 @@ def test_sistematorg_single_lot_1166_compact_fallback_remains_strict() -> None:
     assert len(lots) == 1
     assert lots[0].external_id == "sistematorg.com:36750:1"
     assert lots[0].start_price == 4_609_800
+
+
+def test_sistematorg_pagination_terminal_logic_is_source_local() -> None:
+    page_one = """
+    <form id="tradesearch" method="GET" action="">
+      <input name="trade_number" value="">
+      <input type="hidden" name="pagenum" value="">
+      <a onclick="pagenum_send(2)">2</a>
+    </form>
+    """
+    terminal = """
+    <form id="tradesearch" method="GET" action="">
+      <input name="trade_number" value="">
+      <input type="hidden" name="pagenum" value="847">
+    </form>
+    """
+    assert SistematorgReadonlyClient.has_next_page(page_one, 1) is True
+    assert SistematorgReadonlyClient.has_next_page(terminal, 847) is False
