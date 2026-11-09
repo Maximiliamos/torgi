@@ -555,6 +555,25 @@ def parse_detail_html(
                 "ausib.ru: procedure detail does not prove exactly one independently identified lot"
             )
     match = profile.lot_url_re.search(detail_url)
+    if profile.source_id == "sberbank-ast.ru":
+        if not match:
+            raise SourceSchemaError(
+                "sberbank-ast.ru: GoodsView URL does not match the verified lot schema"
+            )
+        derived_external_id = _external_id(profile, detail_url, match)
+        if external_id is not None and external_id != derived_external_id:
+            raise SourceSchemaError(
+                "sberbank-ast.ru: GoodsView identity does not match catalogue identity"
+            )
+        if len(text_value) < 250 or not re.search(
+            r"(?:лот\s*№|начальн\w*\s+цен|текущ\w*\s+цен|кадастров|площад|"
+            r"местонахожд|адрес|земельн|квартир|помещени|здани|гараж)",
+            text_value,
+            re.IGNORECASE,
+        ):
+            raise SourceSchemaError(
+                "sberbank-ast.ru: GoodsView page does not prove an individual property card"
+            )
     if external_id is None:
         if not match:
             raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
@@ -578,6 +597,11 @@ def parse_detail_html(
         r"(?:идентификационный номер|номер процедуры|информация о (?:публичном предложении|торгах))",
         r"[A-ZА-Я0-9._-]{3,40}",
     )
+    if procedure_number is None and profile.source_id == "sberbank-ast.ru":
+        sber_procedure = re.search(
+            r"\bSBR\d{2,4}-[A-ZА-Я0-9.-]{6,60}\b", text_value, re.IGNORECASE
+        )
+        procedure_number = sber_procedure.group(0) if sber_procedure else None
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
     price = _money(text_value)
@@ -586,6 +610,13 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
+    address = None
+    if profile.source_id == "sberbank-ast.ru":
+        address = _label_value(
+            text_value,
+            r"(?:адрес(?: объекта)?|местонахождение(?: имущества)?)",
+            r".{5,300}?(?=\s+(?:кадастров|площад|начальн|текущ|статус|дата|лот\b|$))",
+        )
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
@@ -595,7 +626,7 @@ def parse_detail_html(
         category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=None,
+        address=address,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
@@ -609,6 +640,12 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
+            **({
+                "bankruptcy_filter_verified": True,
+                "property_scope_verified": True,
+                "individual_lot_identity_verified": True,
+                "detail_contract": "GoodsView",
+            } if profile.source_id == "sberbank-ast.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
