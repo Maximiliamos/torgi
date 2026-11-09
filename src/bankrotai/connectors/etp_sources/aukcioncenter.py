@@ -6,18 +6,48 @@ id as a lot id and never accepts procedure-level money as a per-lot price.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+import hashlib
+import json
 import re
-from typing import TYPE_CHECKING
+from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.domain import NormalizedLot
-from bankrotai.connectors.etp_sources.status_normalization import _status
 
-if TYPE_CHECKING:
-    from bankrotai.connectors.etp_sources.common import EtpSourceProfile
+
+BASE_URL = "https://aukcioncenter.ru"
+LISTING_URL = BASE_URL + "/etp/trade/list.html"
+ACTIVE_FILTERS: dict[str, str] = {
+    "arbitrationManagerTitle": "",
+    "debtorTitle": "",
+    "eventSubmit_doList": "",
+    "number": "",
+    "organizerTitle": "",
+    "processStatus": "BID_SUBMISSION",
+    "subject": "",
+}
+
+
+class ProfileLike(Protocol):
+    source_id: str
+    platform_name: str
+    platform_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureObservation:
+    trade_number: str
+    provider_id: str | None
+    lot_numbers: tuple[int, ...]
+    property_lot_numbers: tuple[int, ...]
+    source_status: str | None
+    application_start_at: datetime | None
+    application_deadline: datetime | None
+    mixed_property_classes: bool
 
 
 _TRADE_RE = re.compile(r"\b(?P<trade>\d{3,9}-(?:ОАОФ|ОТПП|ЗТПП|ОКОФ|ОКЗФ|ОАЗФ))\b", re.I)
@@ -109,7 +139,7 @@ def _money(match: re.Match[str] | None) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
-def _row_urls(row: Tag, listing_url: str) -> list[str]:
+def _row_urls(row: Tag, listing_url: str = LISTING_URL) -> list[str]:
     urls = [urljoin(listing_url, str(node.get("href") or "")) for node in row.select("a[href]")]
     for node in [row, *row.select("[onclick]")]:
         for candidate in re.findall(r"['\"]([^'\"]+)['\"]", str(node.get("onclick") or "")):
@@ -171,7 +201,9 @@ def _source_status(text: str, *, active_filter: bool) -> tuple[str, str | None]:
     if explicit:
         if explicit == "объявлены":
             return "scheduled", explicit
-        return _status(explicit), explicit
+        if explicit in {"торги завершены", "торги отменены"}:
+            return "closed", explicit
+        return "active", explicit
     if active_filter:
         # The official processStatus=BID_SUBMISSION filter itself is source
         # evidence that the procedure is accepting applications. A deadline
@@ -203,8 +235,125 @@ def _dates_from_row(text: str) -> tuple[datetime | None, datetime | None]:
     return dates[-2], dates[-1]
 
 
+def catalogue_params(page: int) -> dict[str, str]:
+    """Verified active-register query; never reuse the mixed show=current view."""
+    if page < 1:
+        raise ValueError("aukcioncenter_invalid_page")
+    result = dict(ACTIVE_FILTERS)
+    result["page"] = str(page)
+    return result
+
+
+def catalogue_url(page: int) -> str:
+    return LISTING_URL + "?" + urlencode(catalogue_params(page))
+
+
+def declared_pages(html: str | bytes) -> tuple[int, ...]:
+    soup = BeautifulSoup(
+        html.decode("utf-8", errors="replace") if isinstance(html, bytes) else html,
+        "html.parser",
+    )
+    pages: set[int] = set()
+    for anchor in soup.select("a[href]"):
+        query = parse_qs(urlparse(urljoin(LISTING_URL, str(anchor.get("href") or ""))).query)
+        for raw in query.get("page", []):
+            if raw.isdigit() and int(raw) >= 1:
+                pages.add(int(raw))
+    return tuple(sorted(pages))
+
+
+def has_next_page(html: str | bytes, page: int) -> bool:
+    return page + 1 in declared_pages(html)
+
+
+def parse_procedure_observations(
+    html: str | bytes, *, active_filter: bool = True,
+) -> list[ProcedureObservation]:
+    if isinstance(html, bytes):
+        try:
+            html = html.decode("utf-8")
+        except UnicodeDecodeError:
+            html = html.decode("windows-1251", errors="replace")
+    soup = BeautifulSoup(html, "html.parser")
+    result: list[ProcedureObservation] = []
+    for row in soup.select("tr"):
+        row_text = _clean(row.get_text(" ", strip=True))
+        trade = _TRADE_RE.search(row_text)
+        if trade is None:
+            continue
+        urls = _row_urls(row)
+        identities = [item for url in urls if (item := _provider_identity(url)) is not None]
+        provider_ids = {provider_id for provider_id, _ in identities}
+        provider_id = next(iter(provider_ids)) if len(provider_ids) == 1 else None
+        markers = list(_LOT_RE.finditer(row_text))
+        segments: list[tuple[int, str]] = []
+        if markers:
+            for index, item in enumerate(markers):
+                end = markers[index + 1].start() if index + 1 < len(markers) else len(row_text)
+                segments.append((int(item.group("lot")), _clean(row_text[item.end():end])))
+        else:
+            url_lots = {lot for _, lot in identities if lot is not None}
+            if len(url_lots) == 1:
+                segments.append((next(iter(url_lots)), row_text))
+        classes = {_asset_class(segment) for _, segment in segments}
+        _, raw_status = _source_status(row_text, active_filter=active_filter)
+        start_at, deadline = _dates_from_row(row_text)
+        result.append(ProcedureObservation(
+            trade_number=trade.group("trade").upper(),
+            provider_id=provider_id,
+            lot_numbers=tuple(lot for lot, _ in segments),
+            property_lot_numbers=tuple(
+                lot for lot, segment in segments
+                if _asset_class(segment) in {"land", "real_estate"}
+            ),
+            source_status=raw_status,
+            application_start_at=start_at,
+            application_deadline=deadline,
+            mixed_property_classes=(
+                any(item in {"land", "real_estate"} for item in classes)
+                and any(item not in {"land", "real_estate"} for item in classes)
+            ),
+        ))
+    return result
+
+
+def observation_digest(observations: list[ProcedureObservation]) -> str:
+    stable = [
+        {
+            "trade": item.trade_number,
+            "provider_id": item.provider_id,
+            "lots": item.lot_numbers,
+            "property_lots": item.property_lot_numbers,
+            "status": item.source_status,
+            "start": item.application_start_at.isoformat() if item.application_start_at else None,
+            "deadline": item.application_deadline.isoformat() if item.application_deadline else None,
+        }
+        for item in observations
+    ]
+    return hashlib.sha256(
+        json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def terminal_page_contract(
+    last_html: str | bytes, overflow_html: str | bytes, *, last_page: int,
+) -> tuple[bool, str]:
+    """Prove terminal boundary without assuming that an out-of-range request is empty."""
+    if last_page < 1:
+        return False, "invalid_last_page"
+    if any(page > last_page for page in declared_pages(last_html)):
+        return False, "higher_page_advertised"
+    last_rows = parse_procedure_observations(last_html)
+    overflow_rows = parse_procedure_observations(overflow_html)
+    if not overflow_rows:
+        return True, "empty_after_declared_last"
+    if last_rows and observation_digest(last_rows) == observation_digest(overflow_rows):
+        return True, "overflow_clamped_to_declared_last"
+    return False, "new_rows_after_declared_last"
+
+
 def parse_listing(
-    profile: "EtpSourceProfile", html: str | bytes, *, page: int,
+    profile: ProfileLike, html: str | bytes, *, page: int = 1, active_filter: bool = True,
 ) -> list[NormalizedLot]:
     if isinstance(html, bytes):
         try:
@@ -212,7 +361,6 @@ def parse_listing(
         except UnicodeDecodeError:
             html = html.decode("windows-1251", errors="replace")
     soup = BeautifulSoup(html, "html.parser")
-    active_filter = "processStatus=BID_SUBMISSION" in profile.listing_url
     output: list[NormalizedLot] = []
     seen: set[str] = set()
 
@@ -223,7 +371,7 @@ def parse_listing(
             continue
         identities = [
             identity
-            for url in _row_urls(row, profile.listing_url)
+            for url in _row_urls(row)
             if (identity := _provider_identity(url)) is not None
         ]
         provider_ids = {provider_id for provider_id, _ in identities}
@@ -326,6 +474,42 @@ def browser_url(external_id: str) -> str:
     )
 
 
+
+
+def lot_index_url(provider_id: str, *, page: int = 1) -> str:
+    """Public first-party lot loader without selecting one lot."""
+    if not re.fullmatch(r"[1-9]\\d{5,12}", provider_id) or page < 1:
+        raise ValueError("aukcioncenter_invalid_lot_index_identity")
+    return (
+        BASE_URL + _INNER_LOTS_PATH + "?"
+        + urlencode({
+            "perspective": "inline",
+            "id": provider_id,
+            "page": str(page),
+            "lotNumber": "",
+        })
+    )
+
+
+def discover_lot_numbers(html: str | bytes) -> tuple[int, ...]:
+    if isinstance(html, bytes):
+        try:
+            html = html.decode("utf-8")
+        except UnicodeDecodeError:
+            html = html.decode("windows-1251", errors="replace")
+    soup = BeautifulSoup(html, "html.parser")
+    text = _clean(soup.get_text(" ", strip=True))
+    numbers = {int(match.group("lot")) for match in _LOT_RE.finditer(text)}
+    for node in soup.select("[name*=lot i][value]"):
+        raw = str(node.get("value") or "")
+        if re.fullmatch(r"[1-9]\\d{0,4}", raw):
+            numbers.add(int(raw))
+    for node in soup.select("a[href]"):
+        query = parse_qs(urlparse(urljoin(BASE_URL, str(node.get("href") or ""))).query)
+        for raw in query.get("lotNumber", []):
+            if re.fullmatch(r"[1-9]\\d{0,4}", raw):
+                numbers.add(int(raw))
+    return tuple(sorted(numbers))
 def detail_request_url(external_id: str, *, page: int = 1) -> str:
     """First-party AJAX lot-loader contract from /etp/scripts/viewLots.js."""
     provider_id, lot_number = _external_parts(external_id)
@@ -351,7 +535,7 @@ def _lot_segment(text: str, lot_number: int) -> str | None:
 
 
 def parse_detail(
-    profile: "EtpSourceProfile",
+    profile: ProfileLike,
     html: str | bytes,
     *,
     detail_url_value: str,
