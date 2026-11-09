@@ -112,11 +112,15 @@ def _scan(session: requests.Session) -> dict:
 
 def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
     property_rows = [row for row in rows if PROPERTY_RE.search(row.title)]
-    sample = property_rows[:limit]
     failures = []
+    verified_ids = []
+    attempted_ids = []
     price_ok = status_ok = title_ok = identity_ok_count = 0
     address_present = cadastre_ok = area_ok = 0
-    for row in sample:
+    for row in property_rows:
+        if len(verified_ids) >= limit:
+            break
+        attempted_ids.append(row.external_id)
         response = session.get(row.detail_url, timeout=TIMEOUT, allow_redirects=False)
         if response.status_code != 200:
             failures.append({"id": row.external_id, "reason": f"http_{response.status_code}"})
@@ -140,6 +144,7 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
             })
             continue
         identity_ok_count += 1
+        verified_ids.append(row.external_id)
         if row.listing_price is not None and row.listing_price in {detail.start_price, detail.current_price}:
             price_ok += 1
         else:
@@ -160,12 +165,15 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
             area_ok += 1
 
     return {
-        "available_property_rows": len(property_rows), "checked": len(sample),
+        "available_property_rows": len(property_rows),
+        "attempted": len(attempted_ids),
+        "verified": len(verified_ids),
         "identity_success": identity_ok_count, "price_success": price_ok,
         "status_success": status_ok, "title_success": title_ok,
         "address_present": address_present, "cadastre_success": cadastre_ok,
         "area_success": area_ok, "failures": failures,
-        "sample_ids": [row.external_id for row in sample],
+        "attempted_ids": attempted_ids,
+        "verified_ids": verified_ids,
     }
 
 
@@ -177,12 +185,15 @@ def main() -> int:
     if not 1 <= args.detail_limit <= 100:
         raise SystemExit("--detail-limit must be in 1..100")
 
-    session = requests.Session()
-    session.headers["User-Agent"] = USER_AGENT
-    first = _scan(session)
-    second = _scan(session)
+    def fresh_session() -> requests.Session:
+        session = requests.Session()
+        session.headers["User-Agent"] = USER_AGENT
+        return session
+
+    first = _scan(fresh_session())
+    second = _scan(fresh_session())
     stable = first["ids"] == second["ids"] and first["id_digest"] == second["id_digest"]
-    details = _detail_sample(session, first["rows"], args.detail_limit)
+    details = _detail_sample(fresh_session(), first["rows"], args.detail_limit)
     report = {
         "source": "centerr.ru", "catalogue_url": BASE_URL,
         "scan_1": {k: v for k, v in first.items() if k != "rows"},
@@ -206,12 +217,12 @@ def main() -> int:
         stable and first["terminal_page"] >= 2
         and second["terminal_page"] == first["terminal_page"]
         and not report["id_collisions"]
-        and details["checked"] >= required_details
-        and details["identity_success"] == details["checked"]
+        and details["verified"] >= required_details
+        and details["identity_success"] == details["verified"]
         and not report["wrong_detail_substitutions"]
-        and details["price_success"] == details["checked"]
-        and details["status_success"] == details["checked"]
-        and details["title_success"] == details["checked"]
+        and details["price_success"] == details["verified"]
+        and details["status_success"] == details["verified"]
+        and details["title_success"] == details["verified"]
     )
     return 0 if ready else 2
 
