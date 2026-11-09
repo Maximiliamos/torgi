@@ -166,22 +166,102 @@ acceptance remain false.
 
 ## Code changes
 
-- `src/bankrotai/connectors/etp_sources/source_specific.py`
-  - ETPU labelled start/current price parser;
-  - explicit ETPU status and Moscow-time dates;
+- `src/bankrotai/connectors/etp_sources/etpu.py`
+  - isolated ETPU catalogue row/page parser;
+  - stable `sale_type + lot_id` identity;
+  - ASP.NET postback pagination, including the provider's ten-page `>>` block transition;
+  - explicit initial/current price parsing;
+  - deposit and auction-step parsing kept separate from lot price;
+  - public-offer interval schedule extraction;
+  - explicit lifecycle/status normalization;
+  - Moscow-time dates;
   - structured EFRSB classifier extraction and conservative mapping;
-  - lot title and procedure-number extraction.
-- `src/bankrotai/connectors/etp_sources/common.py`
-  - ETPU detail path now delegates to the source-specific contract;
-  - raw classifier evidence is retained;
-  - ETPU exposes detail-enrichment capability.
+  - address/cadastre/area/VIN property extraction;
+  - source-specific fail-closed exceptions and repeated-page fingerprints;
+  - direct read-only client for catalogue/detail proof.
 - `tests/test_etpu_contract.py`
-  - source-only regression coverage for price isolation, current price,
-    identity, multi-lot rows and all required category classes.
+  - imports the isolated ETPU module directly;
+  - regression coverage for price isolation, current price, deposit/step separation,
+    public-offer intervals, seven required classifier groups, property fields,
+    multi-lot identity, block pagination and exact detail URL reconstruction.
 - `scripts/etpu_readonly_audit.py`
+  - imports the isolated ETPU module directly;
   - two-pass terminal-pagination/detail audit with fail-closed exit status.
+- `.github/workflows/etpu-source-contract-hosted.yml`
+  - GitHub-hosted public read-only proof.
+- `.github/workflows/etpu-source-contract-readonly.yml`
+  - Home-runner read-only proof using branch code in a disposable container.
 - `docs/ETP_ETPU_AUDIT_2026-11-09.md`
   - this evidence record.
+
+The integration-owned shared files are intentionally not modified by the final
+source-isolation diff.
+
+## Integration hook required
+
+A later integration PR must connect the isolated module to the shared
+dispatcher. The minimum required wiring is:
+
+- shared ETP registry/dispatcher recognizes `source_id == "etpu.ru"`;
+- catalogue search calls `etpu.EtpuClient.fetch_catalogue_page(...)` or an
+  equivalent adapter around `etpu.parse_catalogue_page(...)`;
+- individual detail calls `etpu.EtpuClient.fetch_detail(...)` or
+  `etpu.parse_detail(...)`;
+- no generic money/status/category fallback is required or desired for ETPU.
+
+No production scheduler, reconciliation, archival or allowlist change belongs
+to this source PR.
+
+## Isolation review
+
+Source-specific module:
+
+`src/bankrotai/connectors/etp_sources/etpu.py`
+
+Shared files modified:
+
+NONE
+
+Source-specific logic remaining in `common.py`:
+
+NONE
+
+Source-specific logic remaining in `pagination.py`:
+
+NONE
+
+Source-specific logic remaining in `profiles.py`:
+
+NONE
+
+Source-specific logic remaining in `source_specific.py`:
+
+NONE
+
+Source-specific logic remaining in `direct_etp_catalogue.py`:
+
+NONE
+
+Integration hook required:
+
+The shared dispatcher must later register `etpu.py` for `etpu.ru` and route
+catalogue/detail calls to that module. No other shared behaviour is required.
+
+Existing work preserved:
+
+YES
+
+Live evidence preserved:
+
+YES
+
+Regression tests preserved:
+
+YES
+
+PRODUCTION ENABLED:
+
+NO
 
 ## Explicitly not proved / not changed
 
