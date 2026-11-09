@@ -117,9 +117,21 @@ def etpu_lot_title(value: str) -> str | None:
 
 
 def etpu_explicit_status(value: str) -> str | None:
+    """Read only the provider's labelled status, never status-like prose."""
     section = etpu_lot_section(value)
     match = re.search(
-        r"Статус\s*:\s*(.{2,120}?)(?=\s+Дата\s+(?:начала|окончания|проведения)\b)",
+        r"Статус\s*:\s*("
+        r"Извещение\s+опубликовано|"
+        r"При[её]м\s+заявок\s+на\s+интервале\s+не\s+активен|"
+        r"При[её]м\s+заявок|"
+        r"Определение\s+участников\s+торгов|"
+        r"Идут\s+торги|"
+        r"Подведение\s+результатов|"
+        r"Окончен|"
+        r"Не\s+состоялся|"
+        r"Отмен[её]н\s+организатором|"
+        r"Приостановлен"
+        r")\b",
         section,
         re.IGNORECASE,
     )
