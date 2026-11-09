@@ -577,10 +577,11 @@ class TorgiRussiaClient:
 
     @staticmethod
     def _property_address_from_description(description: str) -> str | None:
+        normalized = re.sub(r"\s+", " ", description or "").strip()
         match = re.search(
             r"(?:по адресу|адрес(?: местонахождения)?)\s*:\s*(.+?)"
-            r"(?=\s+(?:К[\\/]?н|Кадастров)|\n|$)",
-            description or "",
+            r"(?=\s*[,;]?\s*(?:К[\\/]?н|Кадастров)|$)",
+            normalized,
             flags=re.IGNORECASE,
         )
         return match.group(1).strip(" ,.;") if match else None
