@@ -1,46 +1,91 @@
 # TORGI / Sterdez.online — единый ROADMAP разработки и внедрения ЭТП
 
-**ТЕСТЫ обновлённой интеграции:** [Production reliability run 42532420382](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) на кодовом SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3` завершился успешно: **9/9 проверок, SQLite 1 472 passed / 11 deselected**, PostgreSQL, WEB, lint/types, миграции, Windows и оба Docker smoke. REG.RU S3 diagnostics 42532420330 тоже success, но это проверка CI, не proof публичного manifest 8 ноября. Последний документационный commit проверяется отдельно.
+> **Текущий roadmap-срез: 09.11.2026 04:15 МСК.**
+> Всё ниже разделителя после этого блока — историческая хронология. Для
+> определения «что делать сейчас» используется только этот верхний блок.
 
-**Фоновый GEO-статус Home:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) от 8 Nov показал `geo_percent=61.3`, `geo_actionable_remaining=9`, `geo_deferred_no_match=45408`, `geo_deferred_validation=1836`, `geo_network_wait=3`, `geo_external_network_degraded=false` и одну текущую MapDataset; статистика по всей системе, **не доказательство GEO 87 новых лотов**.
+## Где проект находится сейчас
 
+Текущий `main` — `f40eabb39d92b8afd9bc8faefe725d6fcdc87f99`.
+PR **#1162, #1163, #1164, #1165, #1166 и #1167 уже merged**.
+Единственный открытый PR — [#1168](https://github.com/Maximiliamos/torgi/pull/1168),
+который устраняет stale PostgreSQL GEO `running` state после замены worker,
+не ослабляя map-publication blocker.
 
-## 09.11.2026 — завершающий аудит 8 ноября и единая интеграция PR #1162
+Nationwide run 8 ноября 21:00
+`f572bdff-3db1-41bf-94a4-1f75ab690232` имеет **7/7 принятых terminal
+source outcomes по действующему операторскому контракту**: шесть `success` +
+разрешённый quarantine-only `partial` Torgi Russia; M-ETS/CDTRF/NISTP
+считаются завершёнными по non-reconciling source-end semantics.
+Общий DB status остаётся `partial` — это ожидаемое следствие статуса
+Torgi Russia, а не «6/7».
 
-**RUN:** `f572bdff-3db1-41bf-94a4-1f75ab690232`, 8 ноября 21:00 МСК.
-Подтверждено непосредственно операторским SQL: `partial`, **6 success /
-1 Torgi Russia partial**, 87 новых, 6 235 обновлённых, 1 383
-архивированных. Архивы: BidExpert 1 332, ГИС 49, Lot-online 2;
-причины **НЕ ПОДТВЕРЖДЕНЫ**. M-ETS 153 страницы / 1 seen, тогда как
-7 ноября было 155 / 1 191; это критичная аномалия приёмки, не
-полный success. CDTRF 32 / 1 595 (17 inserts, 1 578 updates), NISTP
-143 / 202 (3 inserts, 3 updates). Все три новые ЭТП имеют
-`complete_source_run=false` и не имеют архивирования отсутствующих лотов.
+При этом **7/7 source-completion ≠ закрытая data-quality acceptance**.
+Остаются предупреждения: BidExpert 1 332 archives, M-ETS funnel 153 pages /
+1 item, CDTRF 1 578 updates, NISTP #1115/#1116. Их нельзя скрывать,
+но они не должны смешиваться с terminal source-completion gate.
 
-Карта: в PostgreSQL `20261108T215500614188Z-r6-bundle-s3`,
-73 488 точек; public S3 manifest, новые GEO-координаты и WEB-маркеры
-**ещё не проверены независимо**.
+## P0 — закончить уже начатый релиз
 
-- [x] **КОД (PR #1162):** консолидирована ветка #1161, восстановлена
-  прежняя восьмикатегорийная область M-ETS и CDTRF land, не
-  менялся BidExpert `all`, запрещён кэш деталей по `last_seen_at`.
-- [x] **ДИАГНОСТИКА:** добавлен SELECT-only операторский отчёт
-  `scripts/audit_20261108_nationwide_readonly.py` с причинными
-  группировками архивов по временному окну и историей полных прогонов.
-- [ ] **ТЕСТ:** дождаться полного зелёного CI на финальном SHA #1162.
-- [ ] **АУДИТ HOME:** выполнить exporter, исследовать 1 332/49/2
-  архивирований, несоответствие M-ETS 1 против 1 191, CDTRF
-  повторные UPDATE и НИСТП спорные статусы.
-- [ ] **GEO/S3/WEB:** отдельно подтвердить источник каждой новой метки.
-- [ ] **MERGE:** #1162, только при зелёном CI + безопасном source
-  audit. #1160/#1161 не объединять поверх друг друга.
-- [ ] **DEPLOY/HOME:** exact-SHA Home/WEB/Cloudflare после проверки
-  отсутствия активного sync lease и backup/restore evidence.
-- [ ] **SOURCE ACCEPTED:** 7/7 не подтверждено.
+1. **#1168: CI → review → merge.**
+   На текущем срезе S3 diagnostics green, Production reliability ещё running.
+2. **Повторить exact-SHA Home rollout после merge #1168.**
+   Текущий `f40eabb...` Home workflow 42543772788 не принят: build,
+   backup/migrations и API/worker replacement прошли, но map publication gate
+   завершился failure.
+3. **Получить r7 MapDataset и подтвердить public REG.RU S3 manifest.**
+   PR #1167 уже сменил обязательную map revision с r6 на r7.
+4. **После зелёного Home — REG.RU + Cloudflare/public WEB на том же release SHA.**
+   Текущий REG.RU run 42543772815 остановился до staging, ожидая Home.
+5. **Post-deploy read-only acceptance:** exact runtime SHA, отсутствие stale
+   GEO `running`, отсутствие stuck nationwide lease, source circuits healthy,
+   API/WEB smoke, current r7 dataset/manifest.
+6. **Не запускать дополнительный full nationwide только ради зелёного deploy.**
+   Следующий штатный 09:00/21:00 цикл используется как post-release source
+   evidence; там снова фиксируются pages/items/checkpoints для всех семи.
 
-Подробный handoff:
-`docs/ETP_SEVEN_SOURCE_RUN_2026-11-08_FINAL_AUDIT.md`.
+**P0 считается DONE только когда все шесть шагов выше закрыты.**
 
+## P1 — качество семи production-источников после rollout
+
+- **BidExpert:** reason/sample review для 1 332 архивов; `category="all"`
+  не сужать до `realty` без before/after ID и archive-semantics доказательства.
+- **M-ETS:** разобрать funnel 153 pages → 1 persisted/seen item по новым
+  checkpoint counters; не ослаблять identity/price/detail guards.
+- **CDTRF:** разделить реальные изменения и no-op churn для 1 578 updates;
+  оставить land и текущие strict detail/price checks.
+- **NISTP:** #1115 high-lot catalogue-only и #1116 terminal-status leakage
+  остаются отдельными quality blockers; не превращать catalogue row в ложный
+  verified detail.
+- **GEO:** отдельно доказать обработку новых лотов текущего релиза; aggregate
+  geo_percent не заменяет run-specific evidence.
+
+P1 не должен блокировать фиксацию честного **7/7 source-completion**, но до его
+закрытия нельзя заявлять «качество данных полностью принято».
+
+## P2 — дальнейшее развитие после стабилизации семи источников
+
+- Вернуться к 22-source programme только после закрытого P0.
+- Следующие source workstreams: CenterR → Sistematorg → остальные ETP по
+  evidence-scoped checklist.
+- Продолжить единый `NormalizedLot` / provenance / Decimal / timezone /
+  idempotency контракт без выдумывания цен и без source-specific обходов guard.
+- Исторические acceptance-таблицы ниже сохраняются как evidence, но не как
+  текущий список задач.
+
+## Критерий «проект стабилен на текущем этапе»
+
+- [x] 7/7 terminal source-completion на run 08.11 по разрешённым semantics.
+- [x] #1162–#1167 merged.
+- [ ] #1168 merged с зелёным CI.
+- [ ] exact-SHA Home deployment green through r7 map publication.
+- [ ] REG.RU + Cloudflare/public WEB green на том же release SHA.
+- [ ] post-deploy read-only evidence clean.
+- [ ] следующий scheduled 7-source cycle завершён без непринятой source error.
+- [ ] P1 data-quality warnings либо закрыты, либо имеют явно утверждённый
+      quarantine/monitoring contract.
+
+---
 
 ## 07.11.2026 — итог первого full-selected production run после PR #1130
 
