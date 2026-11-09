@@ -10,8 +10,14 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.etp_sources.arbbitlot import (
+    ArbbitlotContractError,
+    apply_detail_contract as apply_arbbitlot_detail_contract,
+    apply_listing_contract as apply_arbbitlot_listing_contract,
+)
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
+    postback_link_for_page,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -19,8 +25,6 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
-    arbbitlot_detail_fields,
-    arbbitlot_efrsb_classifier,
     datetime_after,
     profit_initial_money,
     ruson_initial_money,
@@ -125,48 +129,6 @@ def _current_money(value: str) -> float | None:
         return None
 
 
-def _arbbitlot_row_identity(row: Tag) -> tuple[str | None, str | None]:
-    """Read displayed procedure and lot numbers from one ARBbitLot catalogue row."""
-    if row.name != "tr":
-        return None, None
-    table = row.find_parent("table")
-    cells = row.find_all("td", recursive=False)
-    if table is None or not cells:
-        return None, None
-
-    headings: list[str] = []
-    for heading_row in table.select("tr"):
-        headers = heading_row.find_all("th", recursive=False)
-        if headers:
-            headings = [_clean(h.get_text(" ", strip=True)).lower() for h in headers]
-            break
-
-    procedure_id: str | None = None
-    lot_number: str | None = None
-    if len(headings) == len(cells):
-        for index, heading in enumerate(headings):
-            value = _clean(cells[index].get_text(" ", strip=True))
-            if re.search(r"№\s*лота", heading):
-                match = re.fullmatch(r"\d{1,6}", value)
-                if match:
-                    lot_number = match.group(0)
-            elif procedure_id is None and (
-                heading == "№"
-                or re.search(r"№\s*(?:торг|аукцион|конкурс|публичн)", heading)
-            ):
-                match = re.fullmatch(r"\d{4,12}", value)
-                if match:
-                    procedure_id = match.group(0)
-
-    # Current FogSoft tables use a bare "№" first column. Retain a bounded
-    # fallback only for that documented layout, never by scanning the whole row.
-    if procedure_id is None and cells:
-        value = _clean(cells[0].get_text(" ", strip=True))
-        if re.fullmatch(r"\d{4,12}", value):
-            procedure_id = value
-    return procedure_id, lot_number
-
-
 def _table_prices(row: Tag) -> tuple[float | None, float | None]:
     """Table amounts are reliable only when tied to a named price column."""
     if row.name != "tr":
@@ -202,16 +164,6 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
         elif re.search(r"текущ\w*\s+цен\w*", title):
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
-
-def _source_status(profile: EtpSourceProfile, value: str) -> str:
-    """Apply only provider-proven status wording before generic normalization."""
-    lowered = _clean(value).lower()
-    if profile.source_id == "arbbitlot.ru" and (
-        "отменён организатором" in lowered or "отменен организатором" in lowered
-    ):
-        return "closed"
-    return _status(value)
-
 
 def _category(value: str) -> str:
     lowered = value.lower()
