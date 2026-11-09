@@ -587,6 +587,10 @@ def parse_detail_html(
         price = profit_initial_money(text_value)
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
+    if profile.source_id == "arbbitlot.ru" and price is None:
+        raise SourceSchemaError(
+            "arbbitlot.ru: individual detail does not prove an explicit start price"
+        )
     current_price = (
         arbbitlot_fields.get("current_price")
         if profile.source_id == "arbbitlot.ru"
