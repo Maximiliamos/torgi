@@ -33,7 +33,6 @@ def get_form_params(form: Tag, page_field: str, page: int) -> list[tuple[str, st
     return params
 
 
-
 def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bool:
     # Local import avoids an import cycle while retaining the project's
     # established legacy-encoding parser and text normalization.
@@ -47,24 +46,11 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        links = [
-            node for node in soup.select("a[href]")
-            if "__doPostBack" in str(node.get("href") or "")
-        ]
-        if any(
+        return any(
             _clean(node.get_text(" ", strip=True)) == str(page + 1)
-            for node in links
-        ):
-            return True
-        # ETPU groups its ASP.NET pager in ten-page blocks. At the block
-        # boundary the next page is represented by the provider's own ">>"
-        # postback control instead of a visible numeric page link.
-        if profile.source_id == "etpu.ru":
-            return any(
-                _clean(node.get_text(" ", strip=True)) in {">>", "»"}
-                for node in links
-            )
-        return False
+            and "__doPostBack" in str(node.get("href") or "")
+            for node in soup.select("a[href]")
+        )
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
@@ -74,49 +60,6 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             return True
     return False
 
-
-
-def postback_payload(
-    profile: EtpSourceProfile,
-    html: str | bytes,
-    page: int,
-    *,
-    sequential_previous: bool,
-) -> dict[str, str]:
-    """Build the provider's ASP.NET postback payload for one sequential page."""
-    from bankrotai.connectors.etp_sources.common import _clean, _parse_soup
-
-    soup = _parse_soup(html)
-    links = [
-        node for node in soup.select("a[href]")
-        if "__doPostBack" in str(node.get("href") or "")
-    ]
-    link = next(
-        (node for node in links if _clean(node.get_text(" ", strip=True)) == str(page)),
-        None,
-    )
-    if link is None and profile.source_id == "etpu.ru" and sequential_previous:
-        link = next(
-            (
-                node for node in links
-                if _clean(node.get_text(" ", strip=True)) in {">>", "»"}
-            ),
-            None,
-        )
-    if link is None:
-        raise ValueError(f"page {page} postback target disappeared")
-    postback = re.search(
-        r"__doPostBack\('([^']*)','([^']*)'\)",
-        str(link.get("href") or ""),
-    )
-    if not postback:
-        raise ValueError(f"invalid page {page} postback")
-    data = {
-        str(node.get("name")): str(node.get("value") or "")
-        for node in soup.select("input[type=hidden][name]")
-    }
-    data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
-    return data
 
 def page_url(profile: EtpSourceProfile, page: int) -> str:
     if page <= 1 or not profile.page_parameter:
