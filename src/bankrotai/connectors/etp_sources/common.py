@@ -920,10 +920,12 @@ class HtmlEtpConnector(AuctionConnector):
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
         if self.source_id == "aukcioncenter.ru":
-            from bankrotai.connectors.etp_sources.aukcioncenter import detail_url as aukcioncenter_detail_url
+            from bankrotai.connectors.etp_sources.aukcioncenter import (
+                detail_request_url as aukcioncenter_detail_request_url,
+            )
 
             detail_url = _safe_provider_url(
-                self.profile, aukcioncenter_detail_url(external_id)
+                self.profile, aukcioncenter_detail_request_url(external_id)
             )
             response = await asyncio.to_thread(
                 self._read_request, "get", detail_url,
