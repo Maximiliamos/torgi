@@ -8,6 +8,7 @@ import pytest
 from bankrotai.connectors.etp_sources.ruson import (
     RusonSchemaError,
     build_next_request,
+    build_page_request,
     is_terminal_page,
     parse_catalogue_page,
     parse_detail_html,
@@ -148,6 +149,8 @@ def test_ruson_catalogue_identity_deduplicates_same_lot_and_proves_next_page() -
     assert ("pagenum", "2") in request.fields
     assert ("trade_state[]", "Прием заявок") in request.fields
     assert ("trade_state[]", "Торги завершены") not in request.fields
+    direct = build_page_request(html, target_page=128)
+    assert ("pagenum", "128") in direct.fields
 
 
 def test_ruson_terminal_page_and_identity_mismatch_fail_closed() -> None:

@@ -59,7 +59,7 @@ jobs:
           python scripts/ruson_readonly_audit.py \
             --details 35 \
             --max-attempts 50 \
-            --max-pages 500 \
+            --max-pages 10000 \
             --delay-seconds 0.35 > ruson-contract-readonly.json
       - name: Enforce source-contract evidence
         run: |

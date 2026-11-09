@@ -652,12 +652,9 @@ def _form_fields(form: Tag, target_page: int) -> tuple[tuple[str, str], ...]:
     return tuple(fields)
 
 
-def build_next_request(html: str | bytes, *, page: int) -> RusonNextRequest:
-    target_page = parse_next_page(html, page=page)
-    if target_page is None:
-        raise RusonSchemaError(f"rus-on.ru: page {page} is terminal")
-    if target_page != page + 1:
-        raise RusonSchemaError("rus-on.ru: pagination skipped a sequential page")
+def build_page_request(html: str | bytes, *, target_page: int) -> RusonNextRequest:
+    if target_page < 2:
+        raise ValueError("target_page must be >= 2")
     soup = _parse_soup(html)
     form = soup.find("form", id=FORM_ID)
     if not isinstance(form, Tag):
@@ -675,6 +672,15 @@ def build_next_request(html: str | bytes, *, page: int) -> RusonNextRequest:
         fields=_form_fields(form, target_page),
         target_page=target_page,
     )
+
+
+def build_next_request(html: str | bytes, *, page: int) -> RusonNextRequest:
+    target_page = parse_next_page(html, page=page)
+    if target_page is None:
+        raise RusonSchemaError(f"rus-on.ru: page {page} is terminal")
+    if target_page != page + 1:
+        raise RusonSchemaError("rus-on.ru: pagination skipped a sequential page")
+    return build_page_request(html, target_page=target_page)
 
 
 def pagination_shape(html: str | bytes) -> dict[str, Any]:
@@ -752,28 +758,25 @@ class RusonReadonlyConnector:
             raise ValueError("page must be >= 1")
         if page == 1:
             return self._first_page()
-        if self._last_response is None or self._last_page < 1 or self._last_page >= page:
-            self._first_page()
-        while self._last_page < page:
-            if self._last_response is None:
-                raise RusonSchemaError("rus-on.ru: missing prior catalogue response")
+
+        if self._last_response is not None and self._last_page == page - 1:
             request = build_next_request(self._last_response.content, page=self._last_page)
-            if request.target_page != self._last_page + 1:
-                raise RusonSchemaError("rus-on.ru: pagination target is not sequential")
-            kwargs: dict[str, Any] = {
-                "timeout": self.timeout,
-                "allow_redirects": False,
-            }
-            if request.method == "get":
-                kwargs["params"] = list(request.fields)
-            else:
-                kwargs["data"] = list(request.fields)
-            response = self._read(request.method, request.url, **kwargs)
-            self._last_response = response
-            self._last_page = request.target_page
-        if self._last_response is None:
-            raise RusonSchemaError("rus-on.ru: catalogue request produced no response")
-        return self._last_response
+        else:
+            template = self._first_page()
+            request = build_page_request(template.content, target_page=page)
+
+        kwargs: dict[str, Any] = {
+            "timeout": self.timeout,
+            "allow_redirects": False,
+        }
+        if request.method == "get":
+            kwargs["params"] = list(request.fields)
+        else:
+            kwargs["data"] = list(request.fields)
+        response = self._read(request.method, request.url, **kwargs)
+        self._last_response = response
+        self._last_page = page
+        return response
 
     async def search(self, filters: Any = None, cursor: str | None = None) -> RusonCatalogueResult:
         page = 1

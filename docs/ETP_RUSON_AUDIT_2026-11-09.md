@@ -33,7 +33,7 @@ Fixtures cover ordinary auction, active public offer, ended public offer, prices
 
 ## Read-only live audit
 
-scripts/ruson_readonly_audit.py and src/bankrotai/services/etp_ruson_contract_audit.py perform two complete catalogue passes, terminal pagination proof, cross-page duplicate rejection, ordered-ID digest comparison, at least 30 verified details when the gate passes, and coverage for active/ended, ordinary/public-offer, price/status/dates and public-offer current prices.
+scripts/ruson_readonly_audit.py and src/bankrotai/services/etp_ruson_contract_audit.py first bound and prove the terminal page with direct page-number probes, then repeat a deterministic sample of catalogue pages twice, rejecting duplicate or unstable IDs. The same audit verifies at least 30 detail pages when the gate passes and covers active/ended, ordinary/public-offer, price/status/dates and public-offer current prices. It does not claim two full catalogue passes.
 
 The audit performs no database writes, no archival, no reconciliation, and no map publication.
 
