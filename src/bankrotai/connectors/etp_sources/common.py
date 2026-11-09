@@ -586,6 +586,12 @@ def parse_detail_html(
     current_price = _current_money(text_value)
     utpl_classifier: str | None = None
     utpl_status: str | None = None
+    utpl_property_kinds: tuple[str, ...] = ()
+    utpl_cadastral: str | None = None
+    utpl_vin: str | None = None
+    utpl_address: str | None = None
+    utpl_application_deadline = None
+    utpl_auction_at = None
     if profile.source_id == "utpl.ru":
         from bankrotai.connectors.etp_sources.utpl_contract import (
             UtplLotSchemaError, parse_utpl_detail_fields, normalize_utpl_status,
@@ -599,13 +605,15 @@ def parse_detail_html(
         current_price = fields["current_price"]
         utpl_status = fields["source_status_text"]
         utpl_classifier = fields["classifier"]
+        utpl_property_kinds = tuple(str(value) for value in fields["property_kinds"])
         # The procedure header may describe unrelated assets and rights.
         category = str(fields["category"])
-        title_cadastral = _CADASTRAL_RE.search(title)
-        cadastral = title_cadastral
-        title_area = _AREA_RE.search(title)
-        area = float(title_area.group(1).replace(",", ".")) if title_area else None
-        vin = _VIN_RE.search(title)
+        utpl_cadastral = fields["cadastral_number"]
+        utpl_vin = fields["vin"]
+        utpl_address = fields["address"]
+        area = fields["area"]
+        utpl_application_deadline = fields["application_deadline"]
+        utpl_auction_at = fields["auction_at"]
     else:
         category = _category(text_value)
     return NormalizedLot(
@@ -617,9 +625,15 @@ def parse_detail_html(
         category=category,
         region_slug=None,
         region_name=None,
-        address=None,
-        cadastral_number=cadastral.group(1) if cadastral else None,
-        vin=vin.group(0).upper() if vin else None,
+        address=(utpl_address if profile.source_id == "utpl.ru" else None),
+        cadastral_number=(
+            utpl_cadastral if profile.source_id == "utpl.ru"
+            else (cadastral.group(1) if cadastral else None)
+        ),
+        vin=(
+            utpl_vin if profile.source_id == "utpl.ru"
+            else (vin.group(0).upper() if vin else None)
+        ),
         area=area,
         start_price=price,
         current_price=current_price,
@@ -631,18 +645,27 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
-            **({"utpl_classifier": utpl_classifier, "utpl_lot_section_verified": True}
-               if profile.source_id == "utpl.ru" else {}),
+            **({
+                "utpl_classifier": utpl_classifier,
+                "utpl_property_kinds": list(utpl_property_kinds),
+                "utpl_lot_section_verified": True,
+            } if profile.source_id == "utpl.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        application_deadline=datetime_after(
-            text_value,
-            r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+        application_deadline=(
+            utpl_application_deadline if profile.source_id == "utpl.ru"
+            else datetime_after(
+                text_value,
+                r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+            )
         ),
-        auction_at=datetime_after(text_value, r"дата проведения"),
+        auction_at=(
+            utpl_auction_at if profile.source_id == "utpl.ru"
+            else datetime_after(text_value, r"дата проведения")
+        ),
     )
 
 
