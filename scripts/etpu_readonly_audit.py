@@ -23,7 +23,7 @@ def _digest(rows: list[str]) -> str:
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
-async def _catalogue_pass(max_pages: int) -> dict[str, Any]:
+async def _catalogue_pass(max_pages: int, delay_seconds: float) -> dict[str, Any]:
     connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
     cursor: str | None = None
     page = 1
@@ -53,6 +53,9 @@ async def _catalogue_pass(max_pages: int) -> dict[str, Any]:
             break
         cursor = result.next_cursor
         page += 1
+        if delay_seconds:
+            import asyncio
+            await asyncio.sleep(delay_seconds)
 
     unique_ids = set(ordered_ids)
     duplicate_ids = len(ordered_ids) - len(unique_ids)
@@ -71,7 +74,7 @@ async def _catalogue_pass(max_pages: int) -> dict[str, Any]:
     }
 
 
-async def _details(ids: list[str], limit: int) -> dict[str, Any]:
+async def _details(ids: list[str], limit: int, delay_seconds: float) -> dict[str, Any]:
     connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
     selected = ids[: min(limit, len(ids))]
     results: list[dict[str, Any]] = []
@@ -83,12 +86,17 @@ async def _details(ids: list[str], limit: int) -> dict[str, Any]:
                 "external_id": external_id,
                 "identity_ok": detail.external_id == external_id,
                 "start_price_ok": detail.start_price is not None,
-                "status_ok": detail.auction_status != "unknown",
+                "status_field_ok": bool(raw.get("source_status_text")),
+                "normalized_status": detail.auction_status,
+                "deadline_ok": detail.application_deadline is not None,
                 "classifier_ok": bool(raw.get("efrsb_classifier")),
                 "category": detail.category,
                 "classifier_flags": raw.get("efrsb_classifier_flags") or [],
             }
         )
+        if delay_seconds:
+            import asyncio
+            await asyncio.sleep(delay_seconds)
 
     count = len(results)
     def rate(field: str) -> float:
@@ -98,16 +106,18 @@ async def _details(ids: list[str], limit: int) -> dict[str, Any]:
         "checked": count,
         "identity_success_rate": rate("identity_ok"),
         "price_success_rate": rate("start_price_ok"),
-        "status_success_rate": rate("status_ok"),
+        "status_field_success_rate": rate("status_field_ok"),
+        "deadline_success_rate": rate("deadline_ok"),
         "classifier_success_rate": rate("classifier_ok"),
+        "normalized_statuses": dict(Counter(str(row["normalized_status"]) for row in results)),
         "categories": dict(Counter(str(row["category"]) for row in results)),
         "results": results,
     }
 
 
-async def run(max_pages: int, detail_limit: int) -> dict[str, Any]:
-    first = await _catalogue_pass(max_pages)
-    second = await _catalogue_pass(max_pages)
+async def run(max_pages: int, detail_limit: int, delay_seconds: float) -> dict[str, Any]:
+    first = await _catalogue_pass(max_pages, delay_seconds)
+    second = await _catalogue_pass(max_pages, delay_seconds)
 
     passes_match = (
         first["terminal_page_proven"]
@@ -115,7 +125,7 @@ async def run(max_pages: int, detail_limit: int) -> dict[str, Any]:
         and first["sorted_id_digest"] == second["sorted_id_digest"]
         and first["record_digest"] == second["record_digest"]
     )
-    details = await _details(first["ids"], detail_limit)
+    details = await _details(first["ids"], detail_limit, delay_seconds)
 
     return {
         "source": SOURCE_ID,
@@ -139,15 +149,18 @@ def main() -> int:
         help="Fail closed if the provider terminal page is not reached before this bound.",
     )
     parser.add_argument("--details", type=int, default=30)
+    parser.add_argument("--delay-seconds", type=float, default=0.25)
     args = parser.parse_args()
     if args.max_pages < 2:
         parser.error("--max-pages must be >= 2")
     if args.details < 1:
         parser.error("--details must be >= 1")
+    if args.delay_seconds < 0:
+        parser.error("--delay-seconds must be >= 0")
 
     import asyncio
 
-    report = asyncio.run(run(args.max_pages, args.details))
+    report = asyncio.run(run(args.max_pages, args.details, args.delay_seconds))
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
 
     pass1 = report["pass_1"]
@@ -162,7 +175,8 @@ def main() -> int:
         and details["checked"] >= min(30, pass1["unique_ids"])
         and details["identity_success_rate"] == 1.0
         and details["price_success_rate"] == 1.0
-        and details["status_success_rate"] == 1.0
+        and details["status_field_success_rate"] == 1.0
+        and details["deadline_success_rate"] == 1.0
         and details["classifier_success_rate"] == 1.0
     )
     return 0 if ok else 2
