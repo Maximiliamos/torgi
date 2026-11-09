@@ -105,3 +105,22 @@ def test_ambiguous_target_price_fails_closed():
     )
     with pytest.raises(VertradesCardError, match="ambiguous_individual_lot_field"):
         get_vertrades_lot(_doc(lot), provider_id="102259678", lot_number=1)
+
+
+def test_explicit_price_label_wins_over_conflicting_free_text_amount():
+    lot = _lot(1, title=PROPERTY_1, price="1 060 000,00").replace(
+        "Начальная цена: 1 060 000,00 руб.",
+        "Начальная цена: 138 000,00 руб.",
+    )
+    parsed = get_vertrades_lot(_doc(lot), provider_id="102259678", lot_number=1)
+    assert parsed.initial_price_rub == Decimal("1060000.00")
+
+
+def test_procedure_status_never_substitutes_missing_per_lot_status():
+    lot = _lot(1, title=PROPERTY_1, price="1 060 000,00").replace(
+        "<tr><td>Статус торгов по лоту</td><td>Торги завершены</td></tr>",
+        "",
+    )
+    html = _doc(lot).replace("<html><body>", "<html><body><div>Статус: Завершенные торги</div>")
+    with pytest.raises(VertradesCardError, match="missing_individual_lot_field"):
+        get_vertrades_lot(html, provider_id="102259678", lot_number=1)
