@@ -192,17 +192,58 @@ Added/updated tests cover:
 
 ## Files changed by this agent
 
-- `src/bankrotai/connectors/etp_sources/common.py`
+Final diff against current `main` after source isolation:
+
 - `src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
-- `tests/test_etp_sources.py`
 - `tests/test_sberbank_ast_contract.py`
 - `tests/fixtures/sberbank_ast/catalogue_bankruptcy_real_estate.json`
 - `tests/fixtures/sberbank_ast/goodsview_detail.html`
 - `scripts/audit_sberbank_ast_bankruptcy_readonly.py`
+- `scripts/probe_sberbank_ast_live_raw.py`
+- `.github/workflows/etp-sberbank-ast-readonly-contract.yml`
 - `docs/ETP_SBERBANK_AST_AUDIT_2026-11-09.md`
+
+Integration-owned shared-file diff: **NONE**.
 
 No scheduler, production allowlist, reconciliation, archival, `docs/ROADMAP.md`, or
 `ETP_PARSER_STAGE_CHECKLIST.md` change is included.
+
+## Isolation review
+
+Source-specific module:
+`src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
+
+The module now owns the Sberbank-AST-specific request builder, bankruptcy-filter verification,
+structured real-estate classification, pagination/display-cap rules, GoodsView identity,
+procedure/lot-code split, initial/current price rules, status normalization, dates, address,
+cadastre, area, deposit/step labels, detail validation and source-specific digests.
+
+Shared files modified by final PR diff: **NONE**.
+
+- `common.py`: no changes in this PR. The legacy Sberbank-AST dispatcher code already present
+  in `main` is intentionally left for the centralized integration PR; this PR adds no
+  source-specific behaviour there.
+- `pagination.py`: NONE.
+- `profiles.py`: NONE.
+- `source_specific.py`: NONE.
+- `direct_etp_catalogue.py`: NONE.
+
+### Integration hook required
+
+A later centralized integration PR should replace the legacy Sberbank-AST branches in
+`common.py` with calls to the isolated contract:
+
+1. catalogue request: `sberbank_ast_contract.build_catalogue_request(page)`;
+2. catalogue response: `sberbank_ast_contract.parse_catalogue_page(payload, page=page)`;
+3. detail URL: `sberbank_ast_contract.detail_url_from_external_id(external_id)`;
+4. detail parsing: `sberbank_ast_contract.parse_detail(html, detail_url=..., external_id=...)`.
+
+No other shared behaviour is required by this source module.
+
+Existing work preserved: **YES**  
+Live evidence/probes preserved: **YES**  
+Regression tests preserved: **YES**  
+PRODUCTION ENABLED: **NO**
 
 ## Remaining limitations
 
