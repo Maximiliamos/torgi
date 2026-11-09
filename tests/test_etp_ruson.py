@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
 from bankrotai.connectors.etp_sources.ruson import (
+    RusonReadonlyConnector,
     RusonSchemaError,
     build_next_request,
     build_page_request,
@@ -172,3 +175,18 @@ def test_ruson_terminal_page_and_identity_mismatch_fail_closed() -> None:
             "rus-on.ru:115011",
             "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115012",
         )
+
+
+def test_ruson_production_connector_dispatches_detail_to_source_contract(monkeypatch) -> None:
+    expected = _parse("ordinary_active.html", "900001")
+    calls: list[str] = []
+
+    async def fake_fetch(self, external_id: str):
+        calls.append(external_id)
+        return expected
+
+    monkeypatch.setattr(RusonReadonlyConnector, "fetch_lot", fake_fetch)
+    connector = SOURCE_CONNECTOR_TYPES["rus-on.ru"]()
+    actual = asyncio.run(connector.fetch_lot("rus-on.ru:900001"))
+    assert actual is expected
+    assert calls == ["rus-on.ru:900001"]

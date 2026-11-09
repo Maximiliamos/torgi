@@ -61,6 +61,13 @@ jobs:
             --max-attempts 50 \
             --max-pages 10000 \
             --delay-seconds 0.35 > ruson-contract-readonly.json
+      - name: Print sanitized source-contract evidence
+        run: |
+          python - <<'PY'
+          import json
+          report = json.load(open("ruson-contract-readonly.json", encoding="utf-8"))
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
       - name: Enforce source-contract evidence
         run: |
           python - <<'PY'

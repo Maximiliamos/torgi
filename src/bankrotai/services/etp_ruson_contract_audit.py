@@ -1,7 +1,7 @@
 """Read-only RUSSIA OnLine source-contract audit.
 
-The probe traverses the official catalogue twice, proves terminal pagination and
-stable lot IDs, then checks a diverse detail sample. It never imports database
+The probe proves terminal pagination with bounded direct page requests, compares
+two read-only passes over representative pages, then checks a diverse detail sample. It never imports database
 modules, writes PostgreSQL, reconciles missing lots, archives records, or
 publishes map data.
 """
@@ -14,7 +14,7 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector, RusonSchemaError
+from bankrotai.connectors.etp_sources.ruson import RusonPageRangeError, RusonReadonlyConnector
 
 
 SOURCE = "rus-on.ru"
@@ -56,7 +56,7 @@ async def _probe_catalogue_page(
 ) -> dict[str, Any]:
     try:
         result = await connector.search({}, cursor=str(page))
-    except RusonSchemaError as exc:
+    except RusonPageRangeError as exc:
         return {
             "page": page,
             "ids": [],

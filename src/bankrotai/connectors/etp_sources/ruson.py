@@ -463,6 +463,10 @@ class RusonSchemaError(RuntimeError):
     """The observed RUSSIA OnLine page no longer matches the verified contract."""
 
 
+class RusonPageRangeError(RusonSchemaError):
+    """A direct pagenum request is outside the provider's represented page range."""
+
+
 @dataclass(frozen=True, slots=True)
 class RusonCatalogueItem:
     external_id: str
@@ -607,7 +611,7 @@ def parse_catalogue_page(html: str | bytes, *, page: int = 1) -> RusonCatalogueR
     )
 
 
-def parse_next_page(html: str | bytes, *, page: int) -> int | None:
+def pagination_targets(html: str | bytes) -> set[int]:
     soup = _parse_soup(html)
     targets: set[int] = set()
     for node in soup.select("[onclick]"):
@@ -615,6 +619,11 @@ def parse_next_page(html: str | bytes, *, page: int) -> int | None:
         match = re.search(r"pagenum_send\(\s*(\d+)\s*\)", onclick)
         if match:
             targets.add(int(match.group(1)))
+    return targets
+
+
+def parse_next_page(html: str | bytes, *, page: int) -> int | None:
+    targets = pagination_targets(html)
     higher = sorted(target for target in targets if target > page)
     return higher[0] if higher else None
 
@@ -791,8 +800,13 @@ class RusonReadonlyConnector:
             for number, old in self._page_fingerprints.items()
             if number < page
         ):
-            raise RusonSchemaError(
+            raise RusonPageRangeError(
                 f"rus-on.ru: repeated catalogue page content at page {page}"
+            )
+        targets = pagination_targets(response.content)
+        if page > 1 and targets and page not in targets:
+            raise RusonPageRangeError(
+                f"rus-on.ru: requested page {page} is absent from provider pagination controls"
             )
         self._page_fingerprints[page] = fingerprint
         parsed = parse_catalogue_page(response.content, page=page)
