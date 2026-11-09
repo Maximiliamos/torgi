@@ -583,7 +583,7 @@ class TorgiRussiaClient:
             description or "",
             flags=re.IGNORECASE,
         )
-        return match.group(1).strip(" .;") if match else None
+        return match.group(1).strip(" ,.;") if match else None
 
     @classmethod
     def parse_detail_payload(cls, data: dict) -> dict:
