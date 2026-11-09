@@ -1,0 +1,143 @@
+name: Operator post-fix seven-source verification
+
+# The initial merge intentionally triggers this one operator-approved verification.
+# Later ordinary pushes cannot retrigger it; operators may dispatch it explicitly.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/postfix-seven-source-verification.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: operator-postfix-seven-source-verification
+  cancel-in-progress: false
+
+jobs:
+  verify-and-launch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Require exact current main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')"
+          test "$EXPECTED_SHA" = "$actual" || {
+            echo "Main changed: expected=$EXPECTED_SHA current=$actual" >&2
+            exit 1
+          }
+
+      - name: Wait for exact-SHA Home and public WEB deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workflow in 'Deploy home secondary origin' 'Deploy WEB and API to REG.RU'; do
+            echo "Waiting for exact-SHA deployment: $workflow"
+            succeeded=false
+            for attempt in $(seq 1 400); do
+              state="$(TARGET_WORKFLOW="$workflow" gh api                 "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$EXPECTED_SHA&event=push&per_page=100"                 --jq '[.workflow_runs[] | select(.name == env.TARGET_WORKFLOW and .head_sha == env.EXPECTED_SHA)] | sort_by(.id) | last // {} | (.status // "missing") + ":" + (.conclusion // "")')"
+              if [ "$state" = "completed:success" ]; then
+                succeeded=true
+                break
+              fi
+              case "$state" in
+                completed:*) echo "Deployment did not succeed: $workflow ($state)" >&2; exit 1 ;;
+              esac
+              sleep 15
+            done
+            test "$succeeded" = true || {
+              echo "Timed out waiting for $workflow" >&2
+              exit 1
+            }
+          done
+
+      - name: Dispatch verified backup, P1, P11 and full reconciliation
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          sha="$EXPECTED_SHA"
+
+          assert_current_main() {
+            local actual
+            actual="$(gh api "repos/$repo/branches/main" --jq '.commit.sha')"
+            test "$sha" = "$actual" || {
+              echo "Main moved during the acceptance chain; refusing to continue" >&2
+              exit 1
+            }
+          }
+
+          latest_manual() {
+            local workflow="$1"
+            gh run list --repo "$repo" --workflow "$workflow"               --event workflow_dispatch --commit "$sha" --limit 100               --json databaseId,headSha,status,conclusion               --jq '[.[] | select(.headSha == env.EXPECTED_SHA)] | sort_by(.databaseId) | last // {} | (.databaseId // 0)'
+          }
+
+          successful_manual() {
+            local workflow="$1"
+            gh run list --repo "$repo" --workflow "$workflow"               --event workflow_dispatch --commit "$sha" --limit 100               --json databaseId,headSha,status,conclusion               --jq '[.[] | select(.headSha == env.EXPECTED_SHA and .status == "completed" and .conclusion == "success")] | sort_by(.databaseId) | last // {} | (.databaseId // 0)'
+          }
+
+          dispatch_and_verify() {
+            local workflow="$1"
+            shift
+            assert_current_main
+
+            local existing previous id
+            existing="$(successful_manual "$workflow")"
+            if [ "$existing" != 0 ]; then
+              echo "Reusing successful exact-SHA $workflow run $existing"
+              return
+            fi
+
+            previous="$(latest_manual "$workflow")"
+            echo "Dispatching $workflow at $sha"
+            gh workflow run "$workflow" --repo "$repo" --ref main "$@"
+            id=0
+            for attempt in $(seq 1 80); do
+              sleep 5
+              id="$(latest_manual "$workflow")"
+              if [ "$id" != 0 ] && [ "$id" != "$previous" ]; then break; fi
+            done
+            if [ "$id" = 0 ] || [ "$id" = "$previous" ]; then
+              echo "Could not locate newly dispatched $workflow" >&2
+              exit 1
+            fi
+            echo "$workflow run ID=$id"
+            gh run watch "$id" --repo "$repo" --exit-status --interval 15
+            assert_current_main
+          }
+
+          # Health currently reports backup and restore evidence older than 60h.
+          # Run the existing isolated restore drill before production acceptance.
+          dispatch_and_verify phase3-lite-backup.yml
+          dispatch_and_verify p1-data-quality.yml
+          dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=30 -f restart_drill=false
+
+          assert_current_main
+          workflow=phase3-lite-full-reconcile.yml
+          previous="$(latest_manual "$workflow")"
+          echo "Dispatching guarded seven-source full reconciliation at $sha"
+          gh workflow run "$workflow" --repo "$repo" --ref main
+          id=0
+          for attempt in $(seq 1 80); do
+            sleep 5
+            id="$(latest_manual "$workflow")"
+            if [ "$id" != 0 ] && [ "$id" != "$previous" ]; then break; fi
+          done
+          if [ "$id" = 0 ] || [ "$id" = "$previous" ]; then
+            echo "Could not locate newly dispatched Phase 3" >&2
+            exit 1
+          fi
+          echo "PHASE3_RUN_ID=$id"
+          echo "PHASE3_RUN_URL=https://github.com/$repo/actions/runs/$id"
+          # The existing Phase 3 workflow independently checks exact SHA,
+          # backup/restore, capacity, source circuits, leases, and full coverage.
