@@ -21,6 +21,12 @@ from bankrotai.connectors.etp_sources.pagination import has_next_page, page_url
 _PROFILE = next(profile for profile in PROFILES if profile.source_id == "vertrades.ru")
 _MAX_RESPONSE_BYTES = 2_000_000
 _TIMEOUT = (5, 25)
+_DETAIL_PROVIDER_ID = "102288306"
+_DETAIL_LOT_NUMBERS = (
+    1, 2, 3, 4, 5, 6, 7, 9, 10, 11,
+    12, 13, 14, 15, 16, 17, 18, 19, 21, 22,
+    23, 24, 25, 26, 27, 28, 29, 33, 34, 35,
+)
 
 
 class VertradesProbeError(RuntimeError):
@@ -85,6 +91,100 @@ def _scan_pass(
     }
 
 
+def probe_vertrades_detail_sample(
+    session: requests.Session, *, provider_id: str = _DETAIL_PROVIDER_ID,
+    lot_numbers: tuple[int, ...] = _DETAIL_LOT_NUMBERS,
+) -> dict:
+    """Verify >=30 exact lots from one shared public procedure response."""
+    from bankrotai.connectors.etp_sources.vertrades_detail_adapter import _vertrades_status
+    from bankrotai.connectors.etp_sources.vertrades_detail_sections import get_vertrades_lot
+
+    if len(lot_numbers) < 30 or len(set(lot_numbers)) != len(lot_numbers):
+        raise ValueError("Vertrades live detail proof requires at least 30 unique lot numbers")
+    if not provider_id.isdigit():
+        raise ValueError("Vertrades provider detail identity must be numeric")
+
+    url = f"https://arest.vertrades.ru/showTrades?id={provider_id}"
+    response = session.get(
+        url,
+        timeout=_TIMEOUT,
+        allow_redirects=False,
+        headers={
+            "User-Agent": "TORGI-Vertrades-readonly-contract-probe/1",
+            "Accept": "text/html",
+        },
+    )
+    if response.status_code in {301, 302, 303, 307, 308, 401, 403, 429}:
+        raise VertradesProbeError(f"detail_provider_refused_or_redirected:{response.status_code}")
+    if response.status_code != 200:
+        raise VertradesProbeError(f"detail_unexpected_status:{response.status_code}")
+    if len(response.content) > _MAX_RESPONSE_BYTES:
+        raise VertradesProbeError("detail_response_too_large")
+    if "text/html" not in response.headers.get("Content-Type", "").lower():
+        raise VertradesProbeError("detail_response_not_html")
+
+    fingerprints: list[str] = []
+    price_verified = 0
+    status_verified = 0
+    cadastre_present = 0
+    address_present = 0
+    area_present = 0
+    dates_verified = 0
+    procedure_numbers: set[str] = set()
+
+    for lot_number in lot_numbers:
+        try:
+            section = get_vertrades_lot(
+                response.content,
+                provider_id=provider_id,
+                lot_number=lot_number,
+            )
+        except ValueError as exc:
+            raise VertradesProbeError(
+                f"detail_lot_{lot_number}_failed:{exc}"
+            ) from exc
+        normalized_status = _vertrades_status(section.status_text)
+        if normalized_status == "unknown":
+            raise VertradesProbeError(f"detail_lot_{lot_number}_status_unrecognized")
+        if section.initial_price_rub <= 0:
+            raise VertradesProbeError(f"detail_lot_{lot_number}_price_invalid")
+
+        price_verified += 1
+        status_verified += 1
+        cadastre_present += int(section.cadastral_number is not None)
+        address_present += int(section.address is not None)
+        area_present += int(section.area_sqm is not None)
+        dates_verified += int(
+            section.application_deadline is not None and section.auction_at is not None
+        )
+        procedure_numbers.add(section.procedure_number)
+        fingerprints.append(
+            f"{section.external_id}|{section.initial_price_rub:.2f}|{normalized_status}"
+        )
+
+    if len(procedure_numbers) != 1:
+        raise VertradesProbeError("detail_sample_procedure_identity_changed")
+
+    digest = hashlib.sha256("\n".join(fingerprints).encode("utf-8")).hexdigest()
+    return {
+        "probe": "vertrades_public_shared_card_30_lot_contract",
+        "provider_id": provider_id,
+        "details_checked": len(lot_numbers),
+        "unique_lot_numbers": len(set(lot_numbers)),
+        "price_verified": price_verified,
+        "status_verified": status_verified,
+        "cadastre_present": cadastre_present,
+        "address_present": address_present,
+        "area_present": area_present,
+        "dates_verified": dates_verified,
+        "detail_digest_sha256": digest,
+        "database_writes": 0,
+        "reconciliation_allowed": False,
+        "archival_allowed": False,
+        "production_enabled": False,
+    }
+
+
 def probe_vertrades_contract(
     session: requests.Session, *, max_pages: int = 4,
     passes: int = 2, delay_seconds: float = 1.0,
@@ -146,7 +246,12 @@ def main() -> None:
             passes=args.passes,
             delay_seconds=args.delay_seconds,
         )
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        detail = probe_vertrades_detail_sample(session)
+    print(json.dumps(
+        {"catalogue": report, "detail_sample": detail},
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
 
 
 if __name__ == "__main__":
