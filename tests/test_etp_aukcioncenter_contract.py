@@ -249,17 +249,42 @@ def test_announced_status_is_scheduled_even_in_active_filtered_register():
     assert lot.raw_data["source_lifecycle"] == "scheduled"
 
 
-def test_inner_endpoint_rejects_response_containing_multiple_lots():
+def test_inner_endpoint_isolates_requested_lot_inside_multi_lot_payload():
     external_id = "aukcioncenter.ru:103550011:1"
+    html = """
+    <div class="lot-list">
+      <div id="lotNumber1">
+        Лот №1: Земельный участок, кадастровый номер 76:01:000001:1.
+        Начальная цена 1 000 000 руб.
+      </div>
+      <div id="lotNumber2">
+        Лот №2: Земельный участок, кадастровый номер 76:01:000001:2.
+        Начальная цена 2 000 000 руб.
+      </div>
+    </div>
+    """
+    detail = parse_detail(
+        PROFILE, html, detail_url_value=detail_request_url(external_id),
+        external_id=external_id,
+    )
+    assert detail.start_price == 1_000_000
+    assert detail.cadastral_number == "76:01:000001:1"
+    assert "2 000 000" not in detail.description
+    assert "76:01:000001:2" not in detail.description
+
+
+def test_flat_multi_lot_payload_without_safe_right_boundary_fails_closed():
+    external_id = "aukcioncenter.ru:103550011:2"
     html = """
     <div>
       Лот №1: Земельный участок, кадастровый номер 76:01:000001:1.
       Начальная цена 1 000 000 руб.
       Лот №2: Земельный участок, кадастровый номер 76:01:000001:2.
       Начальная цена 2 000 000 руб.
+      Общие условия процедуры: начальная цена 99 000 000 руб.
     </div>
     """
-    with pytest.raises(ValueError, match="returned_multiple_lots"):
+    with pytest.raises(ValueError, match="individual_lot_section_not_proven"):
         parse_detail(
             PROFILE, html, detail_url_value=detail_request_url(external_id),
             external_id=external_id,
