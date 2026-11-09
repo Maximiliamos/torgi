@@ -1206,6 +1206,8 @@ def test_arbbitlot_multi_lot_catalogue_keeps_per_lot_ids_and_prices() -> None:
     ]
     assert len({lot.external_id for lot in lots}) == 3
     assert [lot.start_price for lot in lots] == [450000, 900000, 1500000]
+    assert [lot.procedure_number for lot in lots] == ["0032715"] * 3
+    assert [lot.raw_data["lot_number"] for lot in lots] == ["1", "2", "3"]
 
 
 def test_arbbitlot_aspnet_page_two_posts_state_and_reaches_terminal_page() -> None:
@@ -1392,3 +1394,52 @@ def test_arbbitlot_organizer_cancelled_status_is_closed_only_for_arbbitlot() -> 
         detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/51012/",
     )
     assert lot.auction_status == "closed"
+
+
+@pytest.mark.parametrize(
+    ("detail_procedure", "detail_lot_number", "expected_error"),
+    [
+        ("0039999", "2", "arbbitlot_catalogue_detail_procedure_id_mismatch"),
+        ("0032715", "9", "arbbitlot_catalogue_detail_lot_number_mismatch"),
+    ],
+)
+def test_arbbitlot_enrichment_rejects_catalogue_detail_identity_mismatch(
+    detail_procedure: str,
+    detail_lot_number: str,
+    expected_error: str,
+) -> None:
+    from bankrotai.connectors.etp_sources.source_specific import apply_detail
+
+    listing_html = """
+    <table>
+      <tr>
+        <th>№</th><th>Торги</th><th>№ лота</th><th>Лот</th>
+        <th>Начальная цена</th><th>Статус</th>
+      </tr>
+      <tr>
+        <td>0032715</td><td>Аукцион</td><td>2</td>
+        <td><a href="/public/auctions/lots/view/41002/">
+          Гараж 76:01:000000:200
+        </a></td>
+        <td>900 000,00</td><td>Прием заявок</td>
+      </tr>
+    </table>
+    """
+    listing = parse_listing_html(profile("arbbitlot.ru"), listing_html)[0]
+    detail_html = f"""
+    <html><body>
+      <h1>Гараж 76:01:000000:200</h1>
+      Информация об аукционе №{detail_procedure}
+      Информация о лоте №{detail_lot_number}
+      Статус: Прием заявок
+      Начальная цена, руб.: 900 000,00
+      Подробные сведения об имуществе и порядке проведения торгов.
+    </body></html>
+    """
+    detail = parse_detail_html(
+        profile("arbbitlot.ru"),
+        detail_html,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/41002/",
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        apply_detail(listing, detail, version=1)
