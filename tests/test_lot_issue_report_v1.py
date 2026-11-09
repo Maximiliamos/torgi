@@ -195,3 +195,23 @@ def test_readonly_report_export_uses_source_lot_for_dates(monkeypatch) -> None:
     assert item["source_status"] == "Торги завершены"
     assert item["current_geo_lat"] == 55.78
     assert item["raw_debug"]["detail_dates_verified"] is True
+
+
+
+def test_readonly_report_export_cli_can_write_stdout(monkeypatch, capsys) -> None:
+    from bankrotai.services import lot_issue_report_export as report_export
+
+    monkeypatch.setattr(
+        report_export,
+        "export_lot_issue_reports",
+        lambda *, limit: {"count": 1, "items": [{"report_id": limit}]},
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["lot_issue_report_export.py", "--limit", "7", "--stdout"],
+    )
+
+    report_export.main()
+
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload == {"count": 1, "items": [{"report_id": 7}]}
