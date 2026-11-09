@@ -5,6 +5,7 @@ import asyncio
 import pytest
 import requests
 
+from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
 from bankrotai.connectors.etp_sources.common import (
     HtmlEtpConnector,
     SourceAccessError,
@@ -154,3 +155,42 @@ def test_redirect_is_refused_by_direct_source_adapter():
     )
     with pytest.raises(SourceAccessError, match="provider redirect was refused"):
         asyncio.run(fetch_vertrades_lot(connector, "vertrades.ru:102259678:2"))
+
+
+
+def _catalogue_html() -> bytes:
+    filler = "".join("<td>-</td>" for _ in range(4))
+    return (
+        "<html><body><table><tr>"
+        "<td>55-АП</td><td>2</td><td>synthetic debtor</td>"
+        "<td><a href='/showTrades?id=102259678'>"
+        "нежилое здание 9 кв.м. кадастровый номер 34:34:080147:2677"
+        "</a></td><td>246800.00</td>"
+        + filler +
+        "<td>Завершенные торги</td>"
+        "</tr></table></body></html>"
+    ).encode("utf-8")
+
+
+def test_registered_connector_uses_verified_source_specific_contract():
+    connector_cls = SOURCE_CONNECTOR_TYPES["vertrades.ru"]
+    assert {"search", "fetch_lot", "healthcheck", "detail_enrichment"}.issubset(
+        connector_cls.capabilities
+    )
+
+    catalogue_session = FakeSession(FakeResponse(_catalogue_html()))
+    catalogue_connector = connector_cls(session=catalogue_session)
+    page = asyncio.run(catalogue_connector.search({}))
+    assert page.next_cursor is None
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.external_id == "vertrades.ru:102259678:2"
+    assert item.raw_data["trade_id"] == "55-АП"
+    assert item.raw_data["lot_number"] == "2"
+    assert item.start_price == 246_800.0
+
+    detail_connector = connector_cls(session=FakeSession(FakeResponse(html())))
+    detail = asyncio.run(detail_connector.fetch_lot(item.external_id))
+    assert detail.external_id == item.external_id
+    assert detail.start_price == 246_800.0
+    assert detail.auction_status == "closed"
