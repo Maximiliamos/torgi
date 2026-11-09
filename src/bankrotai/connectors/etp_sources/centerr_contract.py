@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+from bankrotai.connectors.etp_sources.source_specific import datetime_after
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.domain import NormalizedLot
 
@@ -73,6 +75,9 @@ class CenterRDetailFacts:
     address: str | None
     category: str
     efrsb_classifier: str | None
+    application_start_at: datetime | None
+    application_deadline: datetime | None
+    auction_at: datetime | None
 
 
 def _clean(value: str) -> str:
@@ -278,6 +283,13 @@ def parse_detail_facts(html: str | bytes, *, detail_url: str) -> CenterRDetailFa
         address=_address(title),
         category=_category(classifier or title),
         efrsb_classifier=classifier,
+        application_start_at=datetime_after(
+            segment, r"Дата\s+начала\s+представления\s+заявок(?:\s+на\s+участие)?"
+        ),
+        application_deadline=datetime_after(
+            segment, r"Дата\s+окончания\s+представления\s+заявок(?:\s+на\s+участие)?"
+        ),
+        auction_at=datetime_after(segment, r"Дата\s+проведения"),
     )
 
 
@@ -365,4 +377,8 @@ def parse_detail(
         platform_name="Центр реализации",
         platform_code="centerr",
         procedure_number=facts.trade_id,
+        application_start_at=facts.application_start_at,
+        application_deadline=facts.application_deadline,
+        auction_at=facts.auction_at,
+        property_type=facts.efrsb_classifier,
     )
