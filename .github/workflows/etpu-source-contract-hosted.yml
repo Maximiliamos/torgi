@@ -1,0 +1,41 @@
+name: ETPU hosted read-only proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/etpu-source-contract-hosted.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etpu-hosted-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hosted-proof:
+    name: ETPU hosted terminal + 30 detail proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install minimal pinned parser dependencies
+        run: python -m pip install requests==2.34.2 beautifulsoup4==4.15.0 lxml==6.1.1
+      - name: Run public read-only source proof
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python scripts/etpu_readonly_audit.py --details 30 --delay-seconds 0.25 | tee "$RUNNER_TEMP/etpu-hosted-audit.json"
+      - name: Upload sanitized proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etpu-hosted-readonly-proof
+          path: ${{ runner.temp }}/etpu-hosted-audit.json
+          if-no-files-found: warn
+          retention-days: 30
