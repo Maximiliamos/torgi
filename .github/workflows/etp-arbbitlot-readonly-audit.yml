@@ -1,9 +1,6 @@
 name: ARBbitLot read-only source contract
 
 on:
-  push:
-    branches:
-      - agent3-arbbitlot-price-contract-20261109
   pull_request:
     branches:
       - main
