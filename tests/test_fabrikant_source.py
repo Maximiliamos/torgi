@@ -10,6 +10,7 @@ from bankrotai.connectors.etp_sources.common import EtpSourceProfile, SourceSche
 from bankrotai.connectors.etp_sources.fabrikant import (
     FabrikantConnector,
     external_id_from_lot_url,
+    parse_catalogue_page,
     parse_detail_lot,
     procedure_urls,
 )
@@ -74,6 +75,22 @@ def test_procedure_route_is_not_an_individual_fabrikant_lot() -> None:
 
     assert external_id_from_lot_url(procedure) is None
     assert procedure_urls(html, base_url=FABRIKANT_PROFILE.listing_url) == [procedure]
+
+
+def test_fabrikant_catalogue_census_preserves_filter_and_form_contract() -> None:
+    page = parse_catalogue_page(
+        fixture("catalogue_page.html"),
+        base_url=FABRIKANT_PROFILE.listing_url,
+        page=1,
+    )
+
+    assert page.has_next_page is True
+    assert page.visible_page_numbers == (2,)
+    assert ("status", "active", "select") in page.selected_controls
+    assert ("status", "", "Все состояния", "select_option") in page.available_filter_options
+    assert ("status", "active", "Активные", "select_option") in page.available_filter_options
+    assert ("status", "closed", "Завершенные", "select_option") in page.available_filter_options
+    assert page.form_contracts == (("get", "/procedure/search/sales"),)
 
 
 def test_fabrikant_lot_route_has_unambiguous_two_token_identity() -> None:
