@@ -650,6 +650,8 @@ def test_dimension_coverage_guard_rejects_disappearing_source():
                 category="land",
                 auction_status="active",
                 region_code="76",
+                current_geo_lat=57.6,
+                current_geo_lon=39.8,
             )
             for index in range(40)
         ]
