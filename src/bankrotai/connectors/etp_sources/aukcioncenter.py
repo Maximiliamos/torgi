@@ -260,6 +260,22 @@ def catalogue_url(page: int) -> str:
     return LISTING_URL + "?" + urlencode(catalogue_params(page))
 
 
+def status_filter_options(html: str | bytes) -> dict[str, str]:
+    """Return provider-declared processStatus option labels and safe values."""
+    soup = BeautifulSoup(_decode_html(html), "html.parser")
+    result: dict[str, str] = {}
+    for option in soup.select("select[name=processStatus] option[value]"):
+        label = _clean(option.get_text(" ", strip=True)).lower()
+        value = str(option.get("value") or "").strip()
+        if (
+            label
+            and value
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value)
+        ):
+            result[label] = value
+    return result
+
+
 def declared_pages(html: str | bytes) -> tuple[int, ...]:
     soup = BeautifulSoup(_decode_html(html), "html.parser")
     pages: set[int] = set()
