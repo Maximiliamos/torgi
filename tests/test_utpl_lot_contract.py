@@ -190,3 +190,18 @@ def test_location_label_is_accepted_as_lot_scoped_address():
     html = detail().replace("адрес: г. Тестовый, ул. Полевая, 1.", "местоположение: г. Тестовый, ул. Полевая, 1.")
     result = parse_utpl_detail_fields(html)
     assert result["address"] == "г. Тестовый, ул. Полевая, 1."
+
+
+def test_mixed_lot_augments_structured_classifier_from_official_asset_description():
+    html = detail(name="Имущественный комплекс").replace(
+        "Классификатор ЕФРСБ: Земельные участки",
+        "Классификатор ЕФРСБ: Здания (кроме жилых) и сооружения",
+    ).replace(
+        "Земельный участок, кадастровый номер 61:45:0000392:433, площадь 232,7 кв. м., адрес: г. Тестовый, ул. Полевая, 1.",
+        "Земельный участок кадастровый номер 23:43:0414003:38; "
+        "Здание площадью 37,4 кв. м.; Право аренды земельного участка 23:43:0414003:54; "
+        "Топливораздаточная колонка и компрессор.",
+    )
+    result = parse_utpl_detail_fields(html)
+    assert result["category"] == "other"
+    assert result["property_kinds"] == ("lease", "land", "real_estate", "equipment")
