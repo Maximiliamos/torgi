@@ -125,7 +125,13 @@ def test_duplicate_goods_identity_fails_closed() -> None:
 
 
 def test_display_cap_is_not_terminal_source_end() -> None:
-    payload = {"Total": DISPLAY_LIMIT, "PurchaseList": [{"_source": _row(goods_id=401)}]}
+    payload = {
+        "Total": DISPLAY_LIMIT,
+        "PurchaseList": [
+            {"_source": _row(goods_id=401 + index)}
+            for index in range(21)
+        ],
+    }
     page = parse_catalogue_page(payload, page=1)
     assert page.source_total_proven is False
     assert page.terminal_page is None
@@ -134,6 +140,12 @@ def test_display_cap_is_not_terminal_source_end() -> None:
 
     with pytest.raises(SberbankAstContractError, match="display cap, not a proven source end"):
         parse_catalogue_page(payload, page=477)
+
+
+def test_catalogue_row_count_must_match_api_total_page_contract() -> None:
+    payload = {"Total": 22, "PurchaseList": [{"_source": _row(goods_id=450)}]}
+    with pytest.raises(SberbankAstContractError, match="row count conflicts"):
+        parse_catalogue_page(payload, page=1)
 
 
 def test_terminal_page_is_proven_only_below_display_cap() -> None:
