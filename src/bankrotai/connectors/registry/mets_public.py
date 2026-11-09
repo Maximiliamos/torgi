@@ -221,6 +221,11 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     period_deadline = _date_after_label(
         date_source, "Окончание приема заявок на периоде"
     )
+    auction_at = (
+        _date_after_label(date_source, "Дата торгов")
+        or _date_after_label(date_source, "Дата проведения торгов")
+        or _date_after_label(date_source, "Подведение итогов")
+    )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
     address = extract_address(description) or extract_address((title + " " + description)[:5000])
 
@@ -252,6 +257,27 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             image_url = urljoin(DETAIL_MIRROR + "/", raw_image)
             if image_url not in image_urls:
                 image_urls.append(image_url)
+    if not image_urls and scope is not soup and len(sku_nodes) == 1:
+        # The official page may render its gallery outside .lot-container,
+        # just like its primary description.  With one independently verified
+        # SKU it is safe to inspect only gallery/photo-shaped nodes outside
+        # recommendation cards.
+        for node in soup.select(
+            ".gallery img, [class*='gallery'] img, [class*='photo'] img, "
+            "a[href$='.jpg'], a[href$='.jpeg'], a[href$='.png'], a[href$='.webp']"
+        ):
+            if node.find_parent(class_="card-item") is not None:
+                continue
+            raw_image = str(
+                node.get("data-src") or node.get("data-original")
+                or node.get("src") or node.get("href") or ""
+            ).strip()
+            if not raw_image:
+                continue
+            image_url = urljoin(DETAIL_MIRROR + "/", raw_image)
+            if image_url not in image_urls:
+                image_urls.append(image_url)
+
     # Keep the platform/external identifier stable while exposing the
     # provider's actual working public link to end users (the old root
     # detail path returns HTTP 403).
@@ -294,7 +320,9 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "complete_search_pagination": False,
         },
         application_deadline=deadline,
+        auction_at=auction_at,
         auction_timezone="Europe/Moscow",
+        next_price_reduction_at=period_deadline,
         procedure_number=f"{trade}-МЭТС",
         platform_name="МЭТС",
     )
