@@ -432,3 +432,34 @@ def test_torgi_gov_search_all_lots_reports_page_error(monkeypatch) -> None:
     assert meta["pages_loaded"] == 2
     assert meta["stop_reason"] == "page_2_error"
     assert any("Страница 2 вернула ошибку" in warning for warning in meta["warnings"])
+
+
+def test_torgi_gov_preserves_nested_image_objects_from_official_payload(monkeypatch) -> None:
+    client = TorgiGovClient()
+    payload = {
+        "content": [{
+            "id": "22000149210000003921_1",
+            "lotName": "Нежилое помещение",
+            "lotDescription": "Ярославская область",
+            "categoryCode": "10",
+            "subjectRFName": "Ярославская область",
+            "lotStatus": "COMPLETED",
+            "media": {
+                "lotImages": [
+                    {"imageId": "photo-guid-1"},
+                    {"previewUrl": "/new/image-preview/v1/photo-guid-2"},
+                ]
+            },
+        }],
+        "totalElements": 1,
+        "last": True,
+    }
+    monkeypatch.setattr(client, "_request_json", lambda _params: payload)
+
+    lots, _meta = client.search_lots(TorgiGovSearchFilters())
+
+    assert lots[0].auction_status == "closed"
+    assert lots[0].raw_data["image_urls"] == [
+        "https://torgi.gov.ru/new/image-preview/v1/photo-guid-1?disposition=inline&resize=600x600!",
+        "https://torgi.gov.ru/new/image-preview/v1/photo-guid-2",
+    ]
