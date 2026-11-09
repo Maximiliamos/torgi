@@ -162,8 +162,11 @@ def test_terminal_page_is_proven_only_below_display_cap() -> None:
 
 def test_terminal_status_wins_over_historic_application_text() -> None:
     text = "Дата окончания приема заявок 01.11.2026. Торги завершены."
-    assert normalize_status(text) == "finished"
-    assert normalize_status("Торги не состоялись") == "failed"
+    assert normalize_status(text) == "closed"
+    assert normalize_status("Торги не состоялись") == "closed"
+    assert normalize_status("Торги приостановлены") == "paused"
+    assert normalize_status("Торги объявлены") == "scheduled"
+    assert normalize_status("Прием заявок") == "active"
 
 
 def test_explicit_ruble_price_rules_do_not_invent_price() -> None:
