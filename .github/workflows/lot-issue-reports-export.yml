@@ -22,7 +22,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $inside = 'C:\\tmp\\lot-issue-reports.json'
+          $inside = '/tmp/lot-issue-reports.json'
           $outside = Join-Path $env:RUNNER_TEMP 'lot-issue-reports.json'
           docker exec bankrotai-home-ingestion-worker python -m bankrotai.services.lot_issue_report_export --limit 200 --output $inside
           if ($LASTEXITCODE -ne 0) { throw 'Read-only report export failed' }
@@ -30,7 +30,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
             throw 'Could not copy report export from worker'
           }
-          docker exec bankrotai-home-ingestion-worker python -c "import os; os.remove(r'C:\\tmp\\lot-issue-reports.json')"
+          docker exec bankrotai-home-ingestion-worker python -c "import os; os.remove(r'/tmp/lot-issue-reports.json')"
       - name: Upload triage artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
