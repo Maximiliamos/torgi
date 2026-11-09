@@ -4,10 +4,14 @@ import pytest
 
 from bankrotai.connectors.etp_sources.centerr_contract import (
     CenterRContractError,
+    page_fingerprint,
     parse_catalogue_lots,
     parse_detail,
     parse_detail_facts,
     parse_listing,
+    parse_next_page_postback,
+    summarize_catalogue_identities,
+    verify_identity,
 )
 
 
@@ -114,3 +118,68 @@ def test_centerr_detail_rejects_wrong_external_id_substitution():
             detail_url="https://bankrupt.centerr.ru/public/auctions/lots/view/1171674/",
             external_id="centerr.ru:auctions-999999",
         )
+
+
+def _catalogue_row(*, trade: str, lot: str, provider_id: str, title: str) -> str:
+    return f"""
+    <table><tr><td>{trade}</td><td>Торг</td><td>{lot}</td>
+    <td><a href='/public/auctions/lots/view/{provider_id}/'>{title}</a></td>
+    <td>1 000 000,00</td><td>Организатор</td>
+    <td>09.12.2026</td><td>11.12.2026</td><td>Прием заявок</td></tr></table>
+    """
+
+
+def test_centerr_pagination_postback_and_terminal_detection_are_source_local():
+    html = b"""
+    <input type='hidden' name='__VIEWSTATE' value='state'>
+    <input type='hidden' name='__EVENTVALIDATION' value='valid'>
+    <a href="javascript:__doPostBack('ctl00$grid','Page$2')">2</a>
+    """
+    postback = parse_next_page_postback(html, next_page=2)
+    assert postback is not None
+    target, argument, hidden = postback
+    assert target == "ctl00$grid"
+    assert argument == "Page$2"
+    assert hidden["__VIEWSTATE"] == "state"
+    assert hidden["__EVENTVALIDATION"] == "valid"
+    assert parse_next_page_postback(html, next_page=3) is None
+
+
+def test_centerr_cross_page_identity_summary_detects_collision_and_fingerprints():
+    first = parse_catalogue_lots(_catalogue_row(
+        trade="0101001", lot="1", provider_id="900001",
+        title="Квартира 50:01:0000001:1",
+    ))[0]
+    second = parse_catalogue_lots(_catalogue_row(
+        trade="0101002", lot="2", provider_id="900001",
+        title="Квартира 50:01:0000001:2",
+    ))[0]
+    summary = summarize_catalogue_identities([first, second])
+    assert summary["unique_count"] == 1
+    assert summary["duplicate_same_identity_count"] == 1
+    assert summary["collisions"] == ["centerr.ru:auctions-900001"]
+    assert page_fingerprint(b"page-1") == page_fingerprint(b"page-1")
+    assert page_fingerprint(b"page-1") != page_fingerprint(b"page-2")
+
+
+def test_centerr_verify_identity_rejects_trade_or_lot_substitution():
+    catalogue = parse_catalogue_lots(_catalogue_row(
+        trade="0101489", lot="3", provider_id="1171636",
+        title="Квартира 77:17:0120316:21039",
+    ))[0]
+    detail_html = """
+    <html><body>
+    Информация об аукционе №0101490
+    Информация о лоте №3
+    Наименование: Квартира 77:17:0120316:21039
+    Дата проведения: 11.12.2026 14:00
+    Статус: Прием заявок
+    Начальная цена, руб.: 1 000 000,00
+    </body></html>
+    """
+    detail = parse_detail_facts(
+        detail_html,
+        detail_url="https://bankrupt.centerr.ru/public/auctions/lots/view/1171636/",
+    )
+    with pytest.raises(CenterRContractError, match="catalogue/detail identity mismatch"):
+        verify_identity(catalogue, detail)
