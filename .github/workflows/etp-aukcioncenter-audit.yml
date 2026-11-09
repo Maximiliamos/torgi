@@ -16,6 +16,10 @@ on:
       - "src/bankrotai/connectors/etp_sources/**"
       - "tests/test_etp_aukcioncenter_contract.py"
 
+concurrency:
+  group: etp-aukcioncenter-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
