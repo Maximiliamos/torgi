@@ -10,12 +10,6 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from bankrotai.connectors.etp_sources.fabrikant import (
-    FabrikantContractError,
-    external_id_from_lot_url as fabrikant_external_id,
-    parse_detail_lot as parse_fabrikant_detail_lot,
-    resolve_catalogue_page_lots as resolve_fabrikant_catalogue_page_lots,
-)
 from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
@@ -183,10 +177,6 @@ def _label_value(value: str, label: str, pattern: str) -> str | None:
 
 
 def _external_id(profile: EtpSourceProfile, href: str, match: re.Match[str]) -> str:
-    if profile.source_id == "fabrikant.ru":
-        identity = fabrikant_external_id(href)
-        if identity:
-            return identity
     groups = [part for part in match.groups() if part]
     if groups:
         identity = "-".join(groups)
@@ -546,14 +536,6 @@ def parse_detail_html(
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
-    if profile.source_id == "fabrikant.ru":
-        try:
-            return parse_fabrikant_detail_lot(
-                profile, html, detail_url=detail_url, external_id=external_id
-            )
-        except FabrikantContractError as exc:
-            raise SourceSchemaError(f"fabrikant.ru: {exc}") from exc
-
     if profile.source_id == "sistematorg.com":
         trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
@@ -853,21 +835,6 @@ class HtmlEtpConnector(AuctionConnector):
         self._last_response, self._last_page = response, page
         return response
 
-    def _fabrikant_page_lots(
-        self, response: requests.Response, *, page: int
-    ) -> list[NormalizedLot]:
-        def read_get(url: str) -> requests.Response:
-            return self._read_request(
-                "get", _safe_provider_url(self.profile, url),
-                timeout=self.timeout, allow_redirects=False,
-            )
-        try:
-            return resolve_fabrikant_catalogue_page_lots(
-                self.profile, response, page=page, read_get=read_get
-            )
-        except FabrikantContractError as exc:
-            raise SourceSchemaError(f"fabrikant.ru: {exc}") from exc
-
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         normalized = filters if isinstance(filters, EtpSearchFilters) else EtpSearchFilters(**(filters or {}))
         page = max(1, int(cursor or normalized.page))
@@ -886,11 +853,7 @@ class HtmlEtpConnector(AuctionConnector):
             total = int(payload.get("Total") or 0)
             next_cursor = str(page + 1) if page * 21 < total else None
         else:
-            lots = (
-                await asyncio.to_thread(self._fabrikant_page_lots, response, page=page)
-                if self.source_id == "fabrikant.ru"
-                else parse_listing_html(self.profile, response.content, page=page)
-            )
+            lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
         structurally_valid_empty_nistp_page = False
@@ -959,11 +922,6 @@ class HtmlEtpConnector(AuctionConnector):
             or not all(part.isdigit() for part in profit_parts[1:])
         ):
             raise SourceSchemaError("etp-profit.ru: invalid kind/trade/lot identity")
-        fabrikant_parts = identity.split(":", 1) if self.source_id == "fabrikant.ru" else []
-        if self.source_id == "fabrikant.ru" and (
-            len(fabrikant_parts) != 2 or not all(fabrikant_parts)
-        ):
-            raise SourceSchemaError("fabrikant.ru: invalid procedure/lot identity")
         detail_url = template.format(
             identity=identity,
             identity_path=identity_path,
@@ -972,8 +930,6 @@ class HtmlEtpConnector(AuctionConnector):
             profit_kind=profit_parts[0] if profit_parts else "",
             profit_trade_id=profit_parts[1] if profit_parts else "",
             profit_lot_id=profit_parts[2] if profit_parts else "",
-            fabrikant_procedure_id=fabrikant_parts[0] if fabrikant_parts else "",
-            fabrikant_lot_id=fabrikant_parts[1] if fabrikant_parts else "",
         )
         detail_url = _safe_provider_url(self.profile, detail_url)
         response = await asyncio.to_thread(
