@@ -72,6 +72,7 @@ class CenterRDetailFacts:
     area: float | None
     address: str | None
     category: str
+    efrsb_classifier: str | None
 
 
 def _clean(value: str) -> str:
@@ -79,13 +80,34 @@ def _clean(value: str) -> str:
 
 
 def _category(value: str) -> str:
+    lowered = value.lower()
+    if "земельные участки" in lowered or re.search(r"земельн|участок", lowered):
+        return "land"
     if PROPERTY_RE.search(value):
         return "real_estate"
     if VEHICLE_RE.search(value):
         return "vehicle"
     if RECEIVABLE_RE.search(value):
         return "receivables"
+    if re.search(r"аренд|право пользован", lowered):
+        return "lease_right"
+    if re.search(r"оборудован|станк|машины и оборудование", lowered):
+        return "equipment"
     return "other"
+
+
+def _efrsb_classifier(value: str) -> str | None:
+    match = re.search(
+        r"Классификатор\s+ЕФРСБ:\s*(.+?)"
+        r"(?=\s+(?:Интервалы\s+снижения\s+цены|Обеспечение\s+заявки|"
+        r"Документы\b|№\s+Дата\s+поступления|$))",
+        value,
+        re.I,
+    )
+    if not match:
+        return None
+    classifier = _clean(match.group(1))
+    return classifier[:1000] if classifier else None
 
 
 def _money(value: str) -> float | None:
@@ -240,6 +262,7 @@ def parse_detail_facts(html: str | bytes, *, detail_url: str) -> CenterRDetailFa
     )
     status = _clean(status_match.group(1)) if status_match else ""
     cadastral = CADASTRE_RE.search(title)
+    classifier = _efrsb_classifier(segment)
     return CenterRDetailFacts(
         external_id=external_id,
         provider_lot_id=provider_lot_id,
@@ -253,7 +276,8 @@ def parse_detail_facts(html: str | bytes, *, detail_url: str) -> CenterRDetailFa
         cadastral_number=cadastral.group(1) if cadastral else None,
         area=_area(title),
         address=_address(title),
-        category=_category(title),
+        category=_category(classifier or title),
+        efrsb_classifier=classifier,
     )
 
 
@@ -332,6 +356,7 @@ def parse_detail(
             "lot_number": facts.lot_number,
             "provider_lot_id": facts.provider_lot_id,
             "sale_type": facts.sale_type,
+            "efrsb_classifier": facts.efrsb_classifier,
             "detail_identity_verified": True,
             "complete_source_inventory": False,
             "safe_for_archival": False,
