@@ -1180,3 +1180,20 @@ def test_zakazrf_detail_does_not_treat_deposit_or_interval_price_as_initial_pric
     assert lot.start_price is None
     assert lot.current_price is None
     assert lot.category == "real_estate"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Прием заявок", "active"),
+        ("Окончен", "closed"),
+        ("Не состоялся", "closed"),
+        ("Состоялся", "closed"),
+        ("Отменен", "closed"),
+        ("Приостановлен", "paused"),
+    ],
+)
+def test_zakazrf_explicit_status_contract(raw: str, expected: str) -> None:
+    from bankrotai.connectors.etp_sources.source_specific import zakazrf_normalized_status
+
+    assert zakazrf_normalized_status(raw) == expected
