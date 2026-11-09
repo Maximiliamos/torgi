@@ -25,6 +25,11 @@ from bankrotai.connectors.etp_sources.source_specific import (
     sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
+from bankrotai.connectors.etp_sources.sberbank_ast_contract import (
+    BANKRUPTCY_SOURCE as _SBER_BANKRUPTCY_SOURCE,
+    REAL_ESTATE_BRANCH as _SBER_REAL_ESTATE_BRANCH,
+    parse_sberbank_json,
+)
 
 
 class SourceAccessError(RuntimeError):
@@ -75,9 +80,6 @@ _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.IGNORECASE)
 
-_SBER_BANKRUPTCY_SOURCE = "Продажа имущества (предприятия) банкротов"
-_SBER_BANKRUPTCY_SECTION_ID = "13"
-_SBER_REAL_ESTATE_BRANCH = "Недвижимое имущество"
 _SBER_PAGE_SIZE = 21
 _SBER_DISPLAY_LIMIT = 10_000
 
@@ -658,113 +660,6 @@ def parse_detail_html(
         auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
-
-def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, page: int) -> list[NormalizedLot]:
-    items = payload.get("PurchaseList")
-    if not isinstance(items, list):
-        raise SourceSchemaError(f"{profile.source_id}: PurchaseList is missing from API response")
-    if not items:
-        raise SourceSchemaError(
-            f"{profile.source_id}: empty PurchaseList cannot prove that the bankruptcy filter was applied"
-        )
-
-    lots: list[NormalizedLot] = []
-    seen: set[str] = set()
-    for item in items:
-        raw = item.get("_source") if isinstance(item, dict) else None
-        if not isinstance(raw, dict):
-            raise SourceSchemaError(f"{profile.source_id}: malformed PurchaseList row")
-
-        object_source = _clean(str(raw.get("ObjectSource") or ""))
-        section_id = _clean(str(raw.get("SourceTradeSectionId") or ""))
-        if object_source != _SBER_BANKRUPTCY_SOURCE or section_id != _SBER_BANKRUPTCY_SECTION_ID:
-            raise SourceSchemaError(
-                f"{profile.source_id}: bankruptcy filter is not confirmed by the returned row"
-            )
-
-        # Structured provider category only. Non-real-estate bankruptcy rows are
-        # walked for pagination but are not accepted as TORGI property lots.
-        if _clean(str(raw.get("BranchGroup") or "")) != _SBER_REAL_ESTATE_BRANCH:
-            continue
-
-        href = str(raw.get("objectHref") or "")
-        match = profile.lot_url_re.search(href)
-        if not match:
-            raise SourceSchemaError(
-                f"{profile.source_id}: real-estate bankruptcy row has no verified GoodsView identity"
-            )
-        _safe_provider_url(profile, href)
-        external_id = _external_id(profile, href, match)
-        if external_id in seen:
-            raise SourceSchemaError(f"{profile.source_id}: duplicate GoodsView identity on page {page}")
-        seen.add(external_id)
-
-        title = _clean(str(raw.get("title") or raw.get("BidName") or raw.get("purchName") or ""))
-        if not title:
-            raise SourceSchemaError(f"{profile.source_id}: verified GoodsView row has no title")
-
-        price: float | None = None
-        amount = raw.get("purchAmountRUB")
-        currency = str(raw.get("purchCurrency") or raw.get("CurrencyCode") or "").strip().upper()
-        if amount is None and currency in {"RUB", "643"}:
-            amount = raw.get("purchAmount")
-        try:
-            if isinstance(amount, (str, int, float)) and not isinstance(amount, bool) and amount != "":
-                candidate = float(str(amount).replace(" ", "").replace(",", "."))
-                if 0 < candidate < 1e15:
-                    price = candidate
-        except (TypeError, ValueError, OverflowError):
-            pass
-
-        text_value = _clean(" ".join(
-            str(raw.get(key) or "") for key in ("title", "purchName", "Address")
-        ))
-        cadastral = _CADASTRAL_RE.search(str(raw.get("cadastralNumber") or text_value))
-        vin = _VIN_RE.search(text_value)
-        identity_path = "/".join(match.groups())
-        lots.append(NormalizedLot(
-            external_id=external_id,
-            source="sberbank-ast",
-            source_system=profile.source_id,
-            title=title[:500],
-            description=text_value[:5000],
-            category=_category(text_value),
-            region_slug=None,
-            region_name=_clean(str(raw.get("RegionNameTerm") or "")) or None,
-            address=_clean(str(raw.get("Address") or "")) or None,
-            cadastral_number=cadastral.group(1) if cadastral else None,
-            vin=vin.group(0).upper() if vin else None,
-            area=None,
-            start_price=price,
-            current_price=None,
-            auction_status=_status(str(raw.get("PurchaseStageTerm") or raw.get("purchStateNameTerm") or "")),
-            lot_url=href,
-            source_url=href,
-            detail_level="search",
-            raw_data={
-                "listing_page": page,
-                "complete_source_inventory": False,
-                "safe_for_archival": False,
-                "reconcile_missing": False,
-                "bankruptcy_filter_verified": True,
-                "bankruptcy_source_term": object_source,
-                "source_trade_section_id": section_id,
-                "property_scope_verified": True,
-                "property_branch_group": _SBER_REAL_ESTATE_BRANCH,
-                "goods_view_identity": identity_path,
-                "individual_lot_identity_verified": True,
-                "detail_contract": "GoodsView",
-            },
-            platform_name=profile.platform_name,
-            platform_code=profile.platform_code,
-            procedure_number=_clean(str(raw.get("purchCode") or "")) or None,
-            application_deadline=datetime_after(
-                f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
-                r"дата окончания представления заявок",
-            ),
-            auction_at=None,
-        ))
-    return lots
 
 
 
