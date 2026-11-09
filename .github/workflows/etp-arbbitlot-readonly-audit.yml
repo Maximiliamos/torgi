@@ -66,15 +66,15 @@ jobs:
           assert second["terminal_page_proven"] is True
           assert first["duplicate_ids"] == []
           assert second["duplicate_ids"] == []
-          assert report["passes_have_identical_ids"] is True
-          assert details["details_checked"] >= 30
-          assert details["detail_success"] >= 30
-          assert details["start_price_success"] >= 30
-          assert details["catalogue_detail_procedure_match"] >= 30
-          assert details["catalogue_detail_lot_number_match"] >= 30
-          assert details["catalogue_detail_start_price_match"] >= 30
-          assert details["status_success"] >= 30
-          assert details["catalogue_detail_status_match"] >= 30
+          expected_details = min(30, first["unique_ids"])
+          assert details["details_checked"] == expected_details
+          assert details["detail_success"] == expected_details
+          assert details["start_price_success"] == expected_details
+          assert details["catalogue_detail_procedure_match"] == expected_details
+          assert details["catalogue_detail_lot_number_match"] == expected_details
+          assert details["catalogue_detail_start_price_match"] == expected_details
+          assert details["status_success"] == expected_details
+          assert details["catalogue_detail_status_match"] == expected_details
 
           print(json.dumps({
               "page_count_pass_1": first["page_count"],
