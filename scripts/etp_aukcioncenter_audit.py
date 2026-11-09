@@ -109,6 +109,9 @@ def _scan_pass(
         "rows_without_provider_id": sum(item.provider_id is None for item in observations),
         "rows_without_explicit_lot_identity": sum(not item.lot_numbers for item in observations),
         "mixed_property_procedure_rows": sum(item.mixed_property_classes for item in observations),
+        "listing_initial_price_verified": sum(lot.start_price is not None for lot in lots),
+        "listing_explicit_status_verified": sum(lot.auction_status != "unknown" for lot in lots),
+        "listing_property_candidates": sum(bool(lot.raw_data.get("eligible_property")) for lot in lots),
         "digest": observation_digest(observations),
         "identity_digest": hashlib.sha256(
             "\n".join(sorted(set(ids))).encode("utf-8")
@@ -173,6 +176,9 @@ def _detail_candidates(
             "trade_number": lot.procedure_number,
             "property_hint": bool(lot.raw_data.get("eligible_property")),
             "category_hint": lot.category,
+            "listing_initial_price": lot.start_price,
+            "listing_status": lot.auction_status,
+            "listing_lifecycle": lot.raw_data.get("source_lifecycle"),
             "origin": "catalogue_lot",
         }
     for obs in observations:
@@ -185,18 +191,45 @@ def _detail_candidates(
                 "trade_number": obs.trade_number,
                 "property_hint": lot_number in obs.property_lot_numbers,
                 "category_hint": None,
+                "listing_initial_price": None,
+                "listing_status": "unknown",
+                "listing_lifecycle": "unknown",
                 "origin": "inner_lot_index",
             })
 
-    def rank(item: dict[str, Any]) -> tuple[int, int, str]:
-        trade = str(item.get("trade_number") or "")
-        return (
-            0 if item["property_hint"] else 1,
-            0 if "ОТПП" in trade else 1,
-            str(item["external_id"]),
-        )
+    # Preserve catalogue order. Sampling below round-robins public offers and
+    # ordinary auctions instead of sorting by provider id, which biased older
+    # public-offer procedures in the first audit.
+    return list(candidates.values())
 
-    return sorted(candidates.values(), key=rank)
+
+def _select_detail_candidates(
+    candidates: list[dict[str, Any]], details: int,
+) -> list[dict[str, Any]]:
+    property_candidates = [item for item in candidates if item.get("property_hint")]
+    fallback = [item for item in candidates if not item.get("property_hint")]
+    ordered = property_candidates + fallback
+    public_offer = [
+        item for item in ordered if "ОТПП" in str(item.get("trade_number") or "")
+    ]
+    ordinary = [
+        item for item in ordered if "ОТПП" not in str(item.get("trade_number") or "")
+    ]
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index in range(max(len(public_offer), len(ordinary))):
+        for bucket in (public_offer, ordinary):
+            if index >= len(bucket):
+                continue
+            item = bucket[index]
+            identity = str(item["external_id"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            selected.append(item)
+            if len(selected) >= details:
+                return selected
+    return selected[:details]
 
 
 def _probe_details(
@@ -206,7 +239,7 @@ def _probe_details(
     details: int,
     pause: float,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    selected = candidates[:details]
+    selected = _select_detail_candidates(candidates, details)
     results: list[dict[str, Any]] = []
     counts = Counter()
     for index, item in enumerate(selected):
@@ -219,6 +252,9 @@ def _probe_details(
             "trade_number": item.get("trade_number"),
             "property_hint": item.get("property_hint"),
             "category_hint": item.get("category_hint"),
+            "listing_initial_price_verified": item.get("listing_initial_price") is not None,
+            "listing_status": item.get("listing_status"),
+            "listing_lifecycle": item.get("listing_lifecycle"),
             "origin": item.get("origin"),
             "detail_endpoint": "/etp/trade/inner-view-lots.html",
         }
@@ -240,6 +276,10 @@ def _probe_details(
             continue
 
         counts["verified"] += 1
+        if item.get("listing_initial_price") is not None:
+            counts["listing_initial_price"] += 1
+        if item.get("listing_status") not in {None, "unknown"}:
+            counts["listing_status"] += 1
         fields = {
             "initial_price": detail.start_price is not None,
             "current_price": detail.current_price is not None,
@@ -271,6 +311,7 @@ def _probe_details(
             "source_lifecycle": detail.raw_data.get("source_lifecycle"),
             "has_initial_price": fields["initial_price"],
             "has_current_price": fields["current_price"],
+            "has_listing_initial_price": item.get("listing_initial_price") is not None,
             "has_address": fields["address"],
             "has_cadastre": fields["cadastre"],
             "has_area": fields["area"],
