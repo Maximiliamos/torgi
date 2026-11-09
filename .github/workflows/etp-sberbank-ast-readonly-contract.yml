@@ -10,6 +10,7 @@ on:
       - "src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py"
       - "tests/test_sberbank_ast_contract.py"
       - "tests/fixtures/sberbank_ast/**"
+      - "docs/ETP_SBERBANK_AST_AUDIT_2026-11-09.md"
       - ".github/workflows/etp-sberbank-ast-readonly-contract.yml"
 
 permissions:
