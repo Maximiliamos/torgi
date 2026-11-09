@@ -7,9 +7,7 @@ on:
       - ".github/workflows/etp-fabrikant-readonly.yml"
       - "scripts/audit_fabrikant_readonly.py"
       - "src/bankrotai/connectors/etp_sources/fabrikant.py"
-      - "src/bankrotai/connectors/etp_sources/fabrikant_connector.py"
       - "tests/test_fabrikant_source.py"
-      - "docs/ETP_FABRIKANT_AUDIT_2026-11-09.md"
   workflow_dispatch:
 
 permissions:
