@@ -56,13 +56,6 @@ def test_procedure_route_is_not_an_individual_fabrikant_lot() -> None:
 
 
 def test_fabrikant_lot_route_has_unambiguous_two_token_identity() -> None:
-    html = """
-    <article>
-      <a href="https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-token_1/LOT-token_2">
-        Земельный участок 50:01:001:123
-      </a>
-    </article>
-    """
     href = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-token_1/LOT-token_2"
     assert external_id_from_lot_url(href) == (
         "fabrikant.ru:PROC-token_1:LOT-token_2"
