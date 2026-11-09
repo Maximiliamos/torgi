@@ -52,7 +52,13 @@ def _profile():
     return next(item for item in PROFILES if item.source_id == "sberbank-ast.ru")
 
 
-def _row(*, goods_id: int, price: str = "1000000", branch: str = "Недвижимое имущество") -> dict:
+def _row(
+    *,
+    goods_id: int,
+    price: str = "1000000",
+    branch: str = "Недвижимое имущество",
+    purch_code: str = "SBR013-TEST-MULTI.1",
+) -> dict:
     return {
         "objectHref": f"https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/{goods_id}",
         "title": f"Нежилое помещение, лот {goods_id}",
@@ -62,7 +68,7 @@ def _row(*, goods_id: int, price: str = "1000000", branch: str = "Недвижи
         "BranchGroup": branch,
         "purchAmountRUB": price,
         "PurchaseStageTerm": "Прием заявок",
-        "purchCode": "SBR013-TEST-MULTI",
+        "purchCode": purch_code,
         "Address": "Тестовый адрес",
     }
 
@@ -98,8 +104,8 @@ def test_sberbank_uses_structured_property_branch_not_free_text() -> None:
 
 
 def test_sberbank_multi_lot_procedure_keeps_distinct_goods_ids_and_prices() -> None:
-    first = _row(goods_id=201, price="1250000")
-    second = _row(goods_id=202, price="2750000")
+    first = _row(goods_id=201, price="1250000", purch_code="SBR013-2607300003-0.1")
+    second = _row(goods_id=202, price="2750000", purch_code="SBR013-2607300003-0.2")
     lots = parse_sberbank_json(
         _profile(),
         {"PurchaseList": [{"_source": first}, {"_source": second}]},
@@ -110,7 +116,12 @@ def test_sberbank_multi_lot_procedure_keeps_distinct_goods_ids_and_prices() -> N
         "sberbank-ast.ru:11-0-0-202",
     ]
     assert [lot.start_price for lot in lots] == [1250000, 2750000]
-    assert {lot.procedure_number for lot in lots} == {"SBR013-TEST-MULTI"}
+    assert {lot.procedure_number for lot in lots} == {"SBR013-2607300003-0"}
+    assert [lot.raw_data["source_lot_number"] for lot in lots] == ["1", "2"]
+    assert [lot.raw_data["source_lot_code"] for lot in lots] == [
+        "SBR013-2607300003-0.1",
+        "SBR013-2607300003-0.2",
+    ]
 
 
 def test_sberbank_duplicate_goods_identity_fails_closed() -> None:
