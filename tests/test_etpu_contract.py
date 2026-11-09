@@ -5,6 +5,9 @@ import pytest
 from bankrotai.connectors.etp_sources.etpu import (
     EtpuClient,
     EtpuSchemaError,
+    EtpuStatusFilter,
+    SEARCH_BUTTON_FIELD,
+    STATUS_FILTER_FIELD,
     classify_property,
     classifier_flags,
     parse_catalogue_page,
@@ -275,6 +278,134 @@ def test_etpu_multi_lot_catalogue_keeps_individual_lot_ids_and_prices() -> None:
         "etpu.ru:auctions-143435",
     ]
     assert [lot.start_price for lot in lots] == [2_500_000, 900_000]
+
+
+def _filter_form(*, selected: str = "", rows: str = "", next_page: int | None = None) -> str:
+    options = [
+        ("", "Все"),
+        ("5", "Извещение опубликовано"),
+        ("7", "Прием заявок"),
+        ("14", "Прием заявок на интервале не активен"),
+        ("8", "Определение участников торгов"),
+        ("1", "Идут торги"),
+        ("15", "Подведение результатов"),
+        ("2", "Окончен"),
+        ("3", "Не состоялся"),
+        ("4", "Отменён организатором"),
+        ("13", "Приостановлен"),
+    ]
+    rendered = "".join(
+        f'<option value="{value}"{" selected" if value == selected else ""}>{text}</option>'
+        for value, text in options
+    )
+    pager = (
+        f"<a href=\"javascript:__doPostBack('pager','Page$" + str(next_page) + "')\">"
+        + str(next_page)
+        + "</a>"
+        if next_page is not None
+        else ""
+    )
+    return f"""
+    <html><body><form method="post" action="./">
+      <input type="hidden" name="__VIEWSTATE" value="state-{selected or 'all'}">
+      <input type="text"
+        name="ctl00$ctl00$LeftContentLogin$ctl00$Login1$UserName" value="do-not-send">
+      <input type="password"
+        name="ctl00$ctl00$LeftContentLogin$ctl00$Login1$Password" value="do-not-send">
+      <input type="text"
+        name="ctl00$ctl00$MainExpandableArea$phExpandCollapse$PurchasesSearchCriteria$vPurchaseLot_lotTitle_Наименованиелота"
+        value="">
+      <select name="{STATUS_FILTER_FIELD}">{rendered}</select>
+      <input type="submit" name="{SEARCH_BUTTON_FIELD}" value="Искать торги">
+      {pager}
+      <table>
+        <tr><th>Лот</th><th>Начальная цена</th><th>Статус</th></tr>
+        {rows}
+      </table>
+    </form></body></html>
+    """
+
+
+def _catalogue_row(lot_id: int, status: str, price: str = "1 000 000,00") -> str:
+    return (
+        "<tr>"
+        f'<td><a href="/public/auctions/lots/view/{lot_id}/">Лот {lot_id}</a></td>'
+        f"<td>{price}</td><td>{status}</td>"
+        "</tr>"
+    )
+
+
+def test_etpu_official_status_filter_post_excludes_login_and_verifies_rows() -> None:
+    initial = _filter_form()
+    filtered = _filter_form(
+        selected="7",
+        rows=_catalogue_row(150001, "Прием заявок"),
+    )
+    session = _PostbackSession([
+        _PagedResponse(initial),
+        _PagedResponse(filtered),
+    ])
+    client = EtpuClient(
+        session=session,
+        status_filter=EtpuStatusFilter("7", "Прием заявок"),
+    )
+
+    page = client.fetch_catalogue_page(1)
+
+    assert [lot.external_id for lot in page.items] == ["etpu.ru:auctions-150001"]
+    assert page.items[0].raw_data["source_status_text"] == "Прием заявок"
+    assert session.posts[0][STATUS_FILTER_FIELD] == "7"
+    assert session.posts[0][SEARCH_BUTTON_FIELD] == "Искать торги"
+    assert not any("LeftContentLogin" in name for name in session.posts[0])
+
+
+def test_etpu_status_filter_persists_through_postback_pagination() -> None:
+    initial = _filter_form()
+    page_one = _filter_form(
+        selected="7",
+        rows=_catalogue_row(150001, "Прием заявок"),
+        next_page=2,
+    )
+    page_two = _filter_form(
+        selected="7",
+        rows=_catalogue_row(150002, "Прием заявок"),
+    )
+    session = _PostbackSession([
+        _PagedResponse(initial),
+        _PagedResponse(page_one),
+        _PagedResponse(page_two),
+    ])
+    client = EtpuClient(
+        session=session,
+        status_filter=EtpuStatusFilter("7", "Прием заявок"),
+    )
+
+    first = client.fetch_catalogue_page(1)
+    second = client.fetch_catalogue_page(first.next_page)
+
+    assert first.next_page == 2
+    assert second.next_page is None
+    assert session.posts[1][STATUS_FILTER_FIELD] == "7"
+    assert session.posts[1]["__EVENTARGUMENT"] == "Page$2"
+
+
+def test_etpu_filtered_catalogue_rejects_row_with_different_status() -> None:
+    initial = _filter_form()
+    filtered = _filter_form(
+        selected="7",
+        rows=_catalogue_row(150003, "Окончен"),
+    )
+    session = _PostbackSession([
+        _PagedResponse(initial),
+        _PagedResponse(filtered),
+    ])
+    client = EtpuClient(
+        session=session,
+        status_filter=EtpuStatusFilter("7", "Прием заявок"),
+    )
+
+    with pytest.raises(EtpuSchemaError, match="row status does not match requested"):
+        client.fetch_catalogue_page(1)
 
 
 class _PagedResponse:
