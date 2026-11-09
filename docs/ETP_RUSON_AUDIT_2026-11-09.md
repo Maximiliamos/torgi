@@ -41,11 +41,9 @@ The audit performs no database writes, no archival, no reconciliation, and no ma
 
 Pending the exact-head source-specific GitHub workflow after source isolation and update from current main. Synthetic fixtures are not treated as acceptance evidence.
 
-## Integration hook required
+## Integration hook
 
-No shared wiring is introduced by this PR.
-
-A later integration PR should minimally route rus-on.ru detail enrichment from src/bankrotai/connectors/etp_sources/common.py to ruson.parse_detail_html(...) or the equivalent source adapter entry point while preserving the existing generic identity/merge guards. No other shared behaviour is required by this source module.
+The existing generic connector now contains only a minimal rus-on.ru dispatcher: detail fetch is routed to the verified source module, then the existing generic identity/price merge guard runs before source-specific lifecycle fields are copied. No scheduler, allowlist, reconciliation, archival or neighboring source behavior is changed.
 
 ## Isolation review
 
@@ -53,10 +51,10 @@ Source-specific module:
 src/bankrotai/connectors/etp_sources/ruson.py
 
 Shared files modified by final PR diff:
-NONE
+src/bankrotai/connectors/etp_sources/common.py — minimal rus-on.ru dispatcher only
 
 Source-specific logic introduced by this PR remaining in common.py:
-NONE. Existing rus-on baseline logic already present in main from #1166 is integration-owned and intentionally not modified here.
+Only the minimal dispatcher to ruson.RusonReadonlyConnector and ruson.enrich_ruson_lot.
 
 Source-specific logic introduced by this PR remaining in pagination.py:
 NONE
@@ -71,7 +69,7 @@ Source-specific logic introduced by this PR remaining in direct_etp_catalogue.py
 NONE
 
 Integration hook required:
-YES — minimal dispatcher wiring in a later integration PR as described above.
+NO — the minimal dispatcher is included and covered by regression.
 
 Existing work preserved:
 YES

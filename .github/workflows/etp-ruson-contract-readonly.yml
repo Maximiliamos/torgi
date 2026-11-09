@@ -2,7 +2,7 @@ name: RUSSIA OnLine source-contract read-only audit
 
 on:
   push:
-    branches: [fix/ruson-contract-20261109]
+    branches: [fix/ruson-contract-agent4-20261109]
     paths:
       - '.github/workflows/etp-ruson-contract-readonly.yml'
       - 'src/bankrotai/connectors/etp_sources/ruson.py'
