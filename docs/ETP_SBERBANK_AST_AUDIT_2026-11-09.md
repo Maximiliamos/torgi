@@ -193,6 +193,7 @@ Added/updated tests cover:
 ## Files changed by this agent
 
 - `src/bankrotai/connectors/etp_sources/common.py`
+- `src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
 - `tests/test_etp_sources.py`
 - `tests/test_sberbank_ast_contract.py`
 - `scripts/audit_sberbank_ast_bankruptcy_readonly.py`
