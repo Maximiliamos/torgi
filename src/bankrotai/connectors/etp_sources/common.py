@@ -20,6 +20,14 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     datetime_after,
+    etpu_category,
+    etpu_classifier_flags,
+    etpu_classifier_section,
+    etpu_explicit_status,
+    etpu_lot_title,
+    etpu_moscow_datetime,
+    etpu_prices,
+    etpu_procedure_number,
     profit_initial_money,
     ruson_initial_money,
     sistematorg_lot_count,
@@ -580,13 +588,54 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
+    category = _category(text_value)
+    explicit_status: str | None = None
+    raw_data: dict[str, Any] = {
+        "complete_source_inventory": profile.complete_source_inventory,
+        "safe_for_archival": profile.safe_for_archival,
+        "reconcile_missing": False,
+    }
+    application_deadline = datetime_after(
+        text_value,
+        r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+    )
+    auction_at = datetime_after(text_value, r"дата проведения")
+    if profile.source_id == "etpu.ru":
+        price, current_price = etpu_prices(text_value)
+        structured_category = etpu_category(text_value)
+        classifier = etpu_classifier_section(text_value)
+        flags = etpu_classifier_flags(text_value)
+        explicit_status = etpu_explicit_status(text_value)
+        source_title = etpu_lot_title(text_value)
+        if source_title:
+            title = source_title
+        if structured_category:
+            category = structured_category
+        raw_data.update({
+            "efrsb_classifier": classifier,
+            "efrsb_classifier_flags": list(flags),
+            "structured_property_classification": classifier is not None,
+            "detail_initial_price_verified": price is not None,
+            "detail_current_price_verified": current_price is not None,
+            "price_contract": "etpu_labelled_rub_fields",
+        })
+        application_deadline = etpu_moscow_datetime(
+            text_value,
+            r"Дата\s+окончания\s+представления\s+заявок",
+            r"Дата\s+окончания\s+при[её]ма\s+заявок",
+        )
+        auction_at = etpu_moscow_datetime(
+            text_value,
+            r"Дата\s+проведения",
+            r"Дата\s+начала\s+первого\s+интервала",
+        )
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=_category(text_value),
+        category=category,
         region_slug=None,
         region_name=None,
         address=None,
@@ -595,24 +644,22 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(text_value),
+        auction_status=_status(explicit_status or text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
-        raw_data={
-            "complete_source_inventory": profile.complete_source_inventory,
-            "safe_for_archival": profile.safe_for_archival,
-            "reconcile_missing": False,
-        },
+        raw_data=raw_data,
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
-        procedure_number=procedure_number,
-        bankruptcy_case_number=case_number,
-        application_deadline=datetime_after(
-            text_value,
-            r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+        procedure_number=(
+            etpu_procedure_number(text_value)
+            if profile.source_id == "etpu.ru"
+            else procedure_number
         ),
-        auction_at=datetime_after(text_value, r"дата проведения"),
+        bankruptcy_case_number=case_number,
+        application_deadline=application_deadline,
+        auction_at=auction_at,
+        auction_timezone="Europe/Moscow" if profile.source_id == "etpu.ru" else None,
     )
 
 
