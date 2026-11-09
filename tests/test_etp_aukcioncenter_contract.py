@@ -88,7 +88,7 @@ def test_mixed_property_and_nonproperty_inside_one_lot_is_not_property_eligible(
     assert lots[0].raw_data["eligible_property"] is False
 
 
-def test_general_procedure_price_is_never_accepted_without_selected_lot_section():
+def test_general_procedure_url_is_rejected_as_individual_detail_contract():
     html = """
     <html><body>
       <h1>Информация о торгах</h1>
@@ -97,10 +97,11 @@ def test_general_procedure_price_is_never_accepted_without_selected_lot_section(
       <p>Дата окончания приема заявок 01.12.2026 18:00.</p>
     </body></html>
     """
-    url = "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550004&lotNumber=2"
-    with pytest.raises(SourceSchemaError, match="individual_lot_section_not_proven"):
+    url = "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550004&page=1&lotNumber=2"
+    bad_url = "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550004&lotNumber=2"
+    with pytest.raises(SourceSchemaError, match="detail_identity_mismatch"):
         parse_detail_html(
-            _profile(), html, detail_url=url,
+            _profile(), html, detail_url=bad_url,
             external_id="aukcioncenter.ru:103550004:2",
         )
 
@@ -124,7 +125,7 @@ def test_detail_price_and_property_fields_are_bound_only_to_selected_lot():
       </div>
     </body></html>
     """
-    url = "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550005&lotNumber=1"
+    url = "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550005&page=1&lotNumber=1"
     detail = parse_detail_html(
         _profile(), html, detail_url=url,
         external_id="aukcioncenter.ru:103550005:1",
@@ -151,7 +152,7 @@ def test_application_end_date_does_not_become_closed_status():
       кадастровый номер 77:01:000001:12. Начальная цена 2 000 000 руб.</div>
     </body></html>
     """
-    url = "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550006&lotNumber=1"
+    url = "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550006&page=1&lotNumber=1"
     detail = parse_detail_html(
         _profile(), html, detail_url=url,
         external_id="aukcioncenter.ru:103550006:1",
@@ -175,7 +176,7 @@ def test_only_explicit_source_lifecycle_marker_sets_status(source_text, expected
       кадастровый номер 77:01:000001:12. Начальная цена 2 000 000 руб.</div>
     </body></html>
     """
-    url = "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550007&lotNumber=1"
+    url = "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550007&page=1&lotNumber=1"
     detail = parse_detail_html(
         _profile(), html, detail_url=url,
         external_id="aukcioncenter.ru:103550007:1",
@@ -229,7 +230,7 @@ def test_connector_preserves_active_filter_and_lot_number_in_detail_url():
         _Response(listing, p.listing_url),
         _Response(
             detail,
-            "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550008&lotNumber=1",
+            "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?perspective=inline&id=103550008&page=1&lotNumber=1",
         ),
     ])
     connector = SOURCE_CONNECTOR_TYPES["aukcioncenter.ru"](session=session)
@@ -240,7 +241,11 @@ def test_connector_preserves_active_filter_and_lot_number_in_detail_url():
 
     enriched = asyncio.run(connector.fetch_lot(page.items[0].external_id))
     assert enriched.start_price == 3_000_000
-    assert session.urls[1].endswith("id=103550008&lotNumber=1")
+    assert "/etp/trade/inner-view-lots.html?" in session.urls[1]
+    assert "perspective=inline" in session.urls[1]
+    assert "id=103550008" in session.urls[1]
+    assert "page=1" in session.urls[1]
+    assert "lotNumber=1" in session.urls[1]
     assert "detail_enrichment" in connector.capabilities
 
 
@@ -269,3 +274,23 @@ def test_announced_status_is_scheduled_even_if_profile_is_active_filter():
     lot = parse_listing_html(_profile(), html)[0]
     assert lot.auction_status == "scheduled"
     assert lot.raw_data["source_lifecycle"] == "scheduled"
+
+
+def test_inner_endpoint_rejects_response_containing_multiple_lots():
+    html = """
+    <div>
+      Лот №1: Земельный участок, кадастровый номер 76:01:000001:1.
+      Начальная цена 1 000 000 руб.
+      Лот №2: Земельный участок, кадастровый номер 76:01:000001:2.
+      Начальная цена 2 000 000 руб.
+    </div>
+    """
+    url = (
+        "https://aukcioncenter.ru/etp/trade/inner-view-lots.html?"
+        "perspective=inline&id=103550011&page=1&lotNumber=1"
+    )
+    with pytest.raises(SourceSchemaError, match="returned_multiple_lots"):
+        parse_detail_html(
+            _profile(), html, detail_url=url,
+            external_id="aukcioncenter.ru:103550011:1",
+        )
