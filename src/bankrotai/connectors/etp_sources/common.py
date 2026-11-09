@@ -595,14 +595,11 @@ def parse_detail_html(
     auction_at = datetime_after(text_value, r"дата проведения")
     if profile.source_id == "etpu.ru":
         contract = etpu_detail_contract(text_value)
-        price = contract["start_price"]
-        current_price = contract["current_price"]
-        category = contract["category"] or "other"
-        auction_status = contract["auction_status"]
+        price, current_price = contract["start_price"], contract["current_price"]
+        category, auction_status = contract["category"] or "other", contract["auction_status"]
         title = contract["title"] or title
         procedure_number = contract["procedure_number"] or procedure_number
-        application_deadline = contract["application_deadline"]
-        auction_at = contract["auction_at"]
+        application_deadline, auction_at = contract["application_deadline"], contract["auction_at"]
         raw_data.update(contract["raw_data"])
     return NormalizedLot(
         external_id=external_id,
