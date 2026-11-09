@@ -196,6 +196,70 @@ def zakazrf_address(title: str | None) -> str | None:
     )
     return re.sub(r"\s+", " ", match.group(1)).strip(" ,") if match else None
 
+
+def build_zakazrf_detail_lot(
+    value: str,
+    *,
+    external_id: str,
+    detail_url: str,
+    platform_name: str,
+    platform_code: str,
+    complete_source_inventory: bool,
+    safe_for_archival: bool,
+    procedure_number: str | None,
+    bankruptcy_case_number: str | None,
+) -> NormalizedLot:
+    """Build a ZakazRF lot only from the isolated individual-lot contract."""
+    title = zakazrf_title(value) or "Лот"
+    classifier = zakazrf_classifier(value)
+    cadastral = re.search(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)", title)
+    area_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", title, re.IGNORECASE)
+    vin = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", title, re.IGNORECASE)
+    start_price = zakazrf_initial_money(value)
+    current_price = zakazrf_current_money(value)
+    status_text = zakazrf_status_text(value)
+    category = zakazrf_structured_category(classifier) or "other"
+    return NormalizedLot(
+        external_id=external_id,
+        source="zakazrf",
+        source_system="zakazrf.ru",
+        title=title[:500],
+        description=value[:5000],
+        category=category,
+        region_slug=None,
+        region_name=None,
+        address=zakazrf_address(title),
+        cadastral_number=cadastral.group(1) if cadastral else None,
+        vin=vin.group(0).upper() if vin else None,
+        area=float(area_match.group(1).replace(",", ".")) if area_match else None,
+        start_price=start_price,
+        current_price=current_price,
+        auction_status=zakazrf_normalized_status(status_text),
+        lot_url=detail_url,
+        source_url=detail_url,
+        detail_level="detail",
+        raw_data={
+            "complete_source_inventory": complete_source_inventory,
+            "safe_for_archival": safe_for_archival,
+            "reconcile_missing": False,
+            "structured_property_classifier": classifier,
+            "structured_property_classifier_verified": bool(classifier),
+            "lot_number": zakazrf_lot_number(value),
+            "detail_start_price_verified": start_price is not None,
+            "detail_current_price_verified": current_price is not None,
+            "detail_status_verified": status_text is not None,
+        },
+        platform_name=platform_name,
+        platform_code=platform_code,
+        procedure_number=procedure_number,
+        bankruptcy_case_number=bankruptcy_case_number,
+        application_deadline=datetime_after(
+            value,
+            r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
+        ),
+        auction_at=datetime_after(value, r"дата проведения"),
+    )
+
 def _checked_amount(value: object) -> Decimal | None:
     if value is None:
         return None
