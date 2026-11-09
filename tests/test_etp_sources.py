@@ -1046,3 +1046,139 @@ def test_nistp_trade_only_markup_never_yields_phantom_single_asset():
     </td><td>Всего лотов: 10. Машино-место</td></tr></table>
     """
     assert parse_listing_html(profile("nistp.ru"), html) == []
+
+
+def test_zakazrf_public_offer_detail_uses_labelled_per_lot_prices_and_structured_classifier() -> None:
+    html = """
+    <html><body>
+    <h2>Информация о лоте №1</h2>
+    Номер: 1
+    Наименование: Стояночное место - 12,5 кв. м, адрес: Республика Татарстан,
+    г. Казань, ул. Япеева, д. 19, № 13, подземный этаж,
+    кадастровый номер 16:50:010326:323
+    Дата начала представления заявок на участие: 14.10.2026 00:00
+    Статус: Прием заявок
+    Дата окончания представления заявок на участие: 20.11.2026 14:00
+    Дата проведения: 24.11.2026 00:00
+    Текущая цена, руб.: 1 900 548,00
+    Начальная цена, руб.: 1 900 548,00
+    Сведения об имуществе должника, его составе, характеристиках, описание:
+    Недвижимое имущество
+    Классификатор ЕФРСБ:
+    Здания (кроме жилых) и сооружения, не включенные в другие группировки
+    Интервалы снижения цены
+    Дата начала интервала Цена на интервале, руб.
+    14.10.2026 00:00 1 900 548,00
+    Обеспечение заявки
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/public-offers/lots/view/18804/",
+        external_id="zakazrf.ru:public-offers-18804",
+    )
+    assert lot.external_id == "zakazrf.ru:public-offers-18804"
+    assert lot.start_price == 1_900_548.00
+    assert lot.current_price == 1_900_548.00
+    assert lot.auction_status == "active"
+    assert lot.category == "real_estate"
+    assert lot.cadastral_number == "16:50:010326:323"
+    assert lot.area == 12.5
+    assert lot.address == "Республика Татарстан, г. Казань, ул. Япеева, д. 19, № 13, подземный этаж"
+    assert lot.application_deadline.isoformat() == "2026-11-20T14:00:00"
+    assert lot.auction_at.isoformat() == "2026-11-24T00:00:00"
+    assert lot.raw_data["lot_number"] == "1"
+    assert lot.raw_data["structured_property_classifier_verified"] is True
+    assert lot.raw_data["detail_start_price_verified"] is True
+    assert lot.raw_data["detail_current_price_verified"] is True
+    assert lot.raw_data["detail_status_verified"] is True
+    assert "detail_enrichment" in SOURCE_CONNECTOR_TYPES["zakazrf.ru"].capabilities
+
+
+def test_zakazrf_classifier_prevents_vehicle_from_becoming_real_estate_by_free_text() -> None:
+    html = """
+    <html><body>
+    <h2>Информация о лоте №2</h2>
+    Номер: 2
+    Наименование: Автомобиль легковой, VIN XTA219110GY223704
+    Дата начала представления заявок на участие: 01.02.2026 00:00
+    Статус: Не состоялся
+    Дата окончания представления заявок на участие: 10.02.2026 14:00
+    Начальная цена, руб.: 684 000,00
+    Порядок оформления содержит общее упоминание недвижимого имущества.
+    Сведения об имуществе должника, его составе, характеристиках, описание: Транспортные средства
+    Классификатор ЕФРСБ:
+    Автомобили
+    Обеспечение заявки
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/auctions/lots/view/18784/",
+        external_id="zakazrf.ru:auctions-18784",
+    )
+    assert lot.category == "vehicle"
+    assert lot.start_price == 684_000.00
+    assert lot.current_price is None
+    assert lot.auction_status == "closed"
+    assert lot.vin == "XTA219110GY223704"
+
+
+def test_zakazrf_receivable_classifier_is_not_promoted_to_property() -> None:
+    html = """
+    <html><body>
+    <h2>Информация о лоте №1</h2>
+    Номер: 1
+    Наименование: Права требования по кредитным обязательствам
+    Дата начала представления заявок на участие: 17.06.2026 00:00
+    Статус: Не состоялся
+    Дата окончания представления заявок на участие: 23.07.2026 14:00
+    Текущая цена, руб.: 8 347 268,43
+    Начальная цена, руб.: 20 027 035,65
+    Сведения об имуществе должника, его составе, характеристиках, описание:
+    Права требования к юридическим лицам и индивидуальным предпринимателям
+    Классификатор ЕФРСБ:
+    Уступка требований по кредитным обязательствам
+    Интервалы снижения цены
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/public-offers/lots/view/18801/",
+        external_id="zakazrf.ru:public-offers-18801",
+    )
+    # Unknown structured classifications fail closed to "other"; they are not
+    # inferred as land/real estate from unrelated procedure prose.
+    assert lot.category == "other"
+    assert lot.start_price == 20_027_035.65
+    assert lot.current_price == 8_347_268.43
+
+
+def test_zakazrf_detail_does_not_treat_deposit_or_interval_price_as_initial_price() -> None:
+    html = """
+    <html><body>
+    <h2>Информация о лоте №1</h2>
+    Номер: 1
+    Наименование: Нежилое помещение, 80 кв. м, кадастровый номер 77:01:0001001:55
+    Дата начала представления заявок на участие: 01.01.2026 00:00
+    Статус: Прием заявок
+    Дата окончания представления заявок на участие: 10.01.2026 14:00
+    Задаток на интервале, руб.: 150 000,00
+    Цена на интервале, руб.: 900 000,00
+    Классификатор ЕФРСБ:
+    Здания (кроме жилых) и сооружения, не включенные в другие группировки
+    Интервалы снижения цены
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/public-offers/lots/view/99999/",
+        external_id="zakazrf.ru:public-offers-99999",
+    )
+    assert lot.start_price is None
+    assert lot.current_price is None
+    assert lot.category == "real_estate"
