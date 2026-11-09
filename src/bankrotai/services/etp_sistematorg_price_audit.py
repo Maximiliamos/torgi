@@ -98,18 +98,18 @@ async def audit_sistematorg(
             if len(matched) != 1:
                 details["reject_detail_identity_mismatch"] += 1
                 continue
-            lot = matched[0]
-            detail_ids.add(lot.external_id)
+            verified_detail = matched[0]
+            detail_ids.add(verified_detail.external_id)
             details["details_verified"] += 1
-            if lot.start_price is not None:
+            if verified_detail.start_price is not None:
                 details["prices_verified"] += 1
             else:
                 details["reject_missing_initial_price"] += 1
-            if lot.auction_status != "unknown":
+            if verified_detail.auction_status != "unknown":
                 details["status_verified"] += 1
             else:
                 details["reject_unknown_status"] += 1
-            if lot.public_offer_schedule:
+            if verified_detail.public_offer_schedule:
                 details["public_offer_schedules_verified"] += 1
         except Exception as exc:
             details["reject_detail_" + type(exc).__name__] += 1
@@ -136,11 +136,50 @@ async def audit_sistematorg(
 async def audit_price_evidence(
     *, max_details: int = 10, delay_seconds: float = 1.0, connector=None,
 ) -> dict:
-    """Compatibility wrapper retained for older operator commands."""
-    return await audit_sistematorg(
-        max_details=max_details, max_pages=1000, delay_seconds=delay_seconds,
-        passes=1, connector=connector,
-    )
+    """Preserve the original bounded single-lot probe API for operators/tests.
+
+    This legacy probe does not expand multi-lot access; the new full auditor
+    is available separately as audit_sistematorg.
+    """
+    from bankrotai.connectors.etp_sources import EtpSearchFilters
+
+    if type(max_details) is not int or not 1 <= max_details <= 20:
+        raise ValueError("max_details must be in 1..20")
+    if not 0.5 <= delay_seconds <= 10:
+        raise ValueError("delay_seconds must be in 0.5..10")
+    source = connector or SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
+    page = await source.search(EtpSearchFilters(page=1))
+    counts: Counter[str] = Counter()
+    for candidate in page.items:
+        counts["catalogue_trade_rows"] += 1
+        if candidate.raw_data.get("reported_trade_lots") != 1:
+            counts["multiple_or_unknown_lots"] += 1
+            continue
+        counts["single_lot_trade_rows"] += 1
+        if counts["detail_attempts"] >= max_details:
+            continue
+        if counts["detail_attempts"]:
+            await asyncio.sleep(delay_seconds)
+        counts["detail_attempts"] += 1
+        try:
+            detail = await source.fetch_lot(candidate.external_id)
+        except Exception as exc:
+            counts["detail_failure_" + type(exc).__name__] += 1
+            continue
+        if detail.start_price is not None or detail.current_price is not None:
+            counts["single_lot_detail_with_labelled_price"] += 1
+        else:
+            counts["single_lot_detail_missing_labelled_price"] += 1
+    return {
+        "source": "sistematorg.com",
+        "mode": "read_only_first_page_trade_price_evidence",
+        **dict(counts),
+        "coverage_complete": False,
+        "multi_lot_prices_attributed": False,
+        "production_database_writes": 0,
+        "archival_allowed": False,
+        "map_publication": False,
+    }
 
 
 def main() -> None:
