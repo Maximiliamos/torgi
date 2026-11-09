@@ -15,6 +15,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 from bankrotai.torgi_russia_address import extract_catalogue_address
+from bankrotai.torgi_russia_status import public_auction_status
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
@@ -43,39 +44,6 @@ TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
-
-
-def public_auction_status(source_status: object, *, history_only: bool = False) -> str:
-    """Keep an unknown/upstream-closed procedure off the public active map.
-
-    Upstream status strings and dictionaries are not normalized sale eligibility.
-    An unfamiliar status must remain unknown rather than silently becoming active.
-    """
-    if history_only:
-        return "archived"
-    if isinstance(source_status, dict):
-        source_status = (
-            source_status.get("title")
-            or source_status.get("name")
-            or source_status.get("status")
-            or ""
-        )
-    value = str(source_status or "").strip().casefold().replace("ё", "е")
-    if not value:
-        return "unknown"
-    if any(marker in value for marker in (
-        "заверш", "окончен", "закрыт", "отмен", "прекращ", "не состоял",
-        "архив", "снят с торгов", "completed", "finished", "closed",
-        "cancelled", "canceled", "expired", "failed",
-    )):
-        return "closed"
-    if any(marker in value for marker in (
-        "прием заяв", "идет прием", "идут торги", "торги идут",
-        "объявлен", "проводятся торги", "опубликован", "scheduled",
-        "active", "published", "open", "applications_submission",
-    )):
-        return "active"
-    return "unknown"
 
 
 @dataclass(slots=True)
