@@ -10,7 +10,7 @@ import re
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
-from bs4 import Tag
+from bs4 import BeautifulSoup, Tag
 
 if TYPE_CHECKING:
     from bankrotai.connectors.etp_sources.common import EtpSourceProfile
@@ -38,7 +38,7 @@ def _is_postback_link(node: Tag) -> bool:
     return "__doPostBack" in str(node.get("href") or "")
 
 
-def postback_page_link(profile: EtpSourceProfile, soup: Tag, page: int) -> Tag | None:
+def postback_page_link(profile: EtpSourceProfile, soup: BeautifulSoup | Tag, page: int) -> Tag | None:
     """Return the exact ASP.NET page target; ZakazRF also uses 10-page group jumps."""
     from bankrotai.connectors.etp_sources.common import _clean
 
@@ -69,14 +69,7 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        if postback_page_link(profile, soup, page + 1) is not None:
-            return True
-        if profile.source_id == "zakazrf.ru" and page % 10 == 0:
-            return any(
-                _clean(node.get_text(" ", strip=True)) in {">>", "»"} and _is_postback_link(node)
-                for node in soup.select("a[href]")
-            )
-        return False
+        return postback_page_link(profile, soup, page + 1) is not None
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
