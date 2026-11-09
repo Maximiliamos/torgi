@@ -65,12 +65,46 @@ def test_active_catalogue_splits_procedure_and_classifies_property_vs_vehicle():
     assert vehicle.category == "vehicle"
     assert vehicle.raw_data["eligible_property"] is False
     assert all(lot.start_price is None and lot.current_price is None for lot in lots)
-    assert all(lot.auction_status == "active" for lot in lots)
+    assert all(lot.auction_status == "unknown" for lot in lots)
     assert land.application_start_at.isoformat() == "2026-11-01T09:00:00"
     assert land.application_deadline.isoformat() == "2026-12-01T18:00:00"
     assert land.raw_data["lot_number"] == 1
     assert land.raw_data["individual_lot_identity_verified"] is True
-    assert land.raw_data["listing_price_unverified"] is True
+    assert land.raw_data["listing_initial_price_verified"] is False
+    assert land.raw_data["listing_current_price_verified"] is False
+
+
+def test_explicit_per_lot_listing_initial_price_is_safe_but_deposit_is_not_price():
+    html = """
+    <table><tr onclick="go('/trade/view/purchase/general.html?id=103550101')">
+      <td>7606-ОАОФ</td>
+      <td>
+        Лот №1: Земельный участок, кадастровый номер 76:01:000001:501.
+        Начальная цена продажи – 1 234 567,89 руб. Размер задатка 123 456,78 руб.
+        Лот №2: Автомобиль. Размер задатка 500 000 руб.
+      </td>
+      <td>идёт приём заявок</td>
+      <td>07.11.2026 09:00</td><td>07.12.2026 18:00</td>
+    </tr></table>
+    """
+    lots = parse_listing(PROFILE, html)
+    assert [lot.start_price for lot in lots] == [1_234_567.89, None]
+    assert lots[0].raw_data["listing_initial_price_verified"] is True
+    assert lots[1].raw_data["listing_initial_price_verified"] is False
+    assert all(lot.current_price is None for lot in lots)
+
+
+def test_bid_submission_filter_without_explicit_status_stays_unknown():
+    html = """
+    <table><tr onclick="go('/trade/view/purchase/general.html?id=103550102')">
+      <td>7607-ОАОФ</td>
+      <td>Лот №1: Квартира, кадастровый номер 77:01:000001:501.</td>
+      <td>08.11.2026 09:00</td><td>08.12.2026 18:00</td>
+    </tr></table>
+    """
+    lot = parse_listing(PROFILE, html, active_filter=True)[0]
+    assert lot.auction_status == "unknown"
+    assert lot.raw_data["source_status_text"] is None
 
 
 def test_single_lot_requires_source_lot_number_in_url_instead_of_inventing_lot_one():
