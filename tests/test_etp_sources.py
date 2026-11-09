@@ -1443,3 +1443,23 @@ def test_arbbitlot_enrichment_rejects_catalogue_detail_identity_mismatch(
     )
     with pytest.raises(ValueError, match=expected_error):
         apply_detail(listing, detail, version=1)
+
+
+def test_arbbitlot_does_not_use_group_arrow_for_missing_normal_next_page() -> None:
+    page_three = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='state-page-3'>
+      <span>3</span>
+      <a href="javascript:__doPostBack('pager$nextGroup','')">&gt;&gt;</a>
+    </form>
+    """
+    connector = SOURCE_CONNECTOR_TYPES["arbbitlot.ru"](session=FakeSession([]))
+    connector._last_response = FakeResponse(
+        200,
+        page_three,
+        "https://torgi.arbbitlot.ru/public/purchases-all/",
+    )
+    connector._last_page = 3
+
+    with pytest.raises(SourceSchemaError, match="page 4 postback target disappeared"):
+        asyncio.run(connector.search({}, cursor="4"))
