@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
-
 from bankrotai.connectors.etp_sources.centerr_contract import (
     BASE_URL,
     PROPERTY_RE,
     CenterRContractError,
+    page_fingerprint,
     parse_catalogue_lots,
     parse_detail_facts,
+    parse_next_page_postback,
+    summarize_catalogue_identities,
+    verify_identity,
 )
 
 
@@ -29,28 +30,6 @@ def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
-def _postback_for_next(html: bytes, next_page: int) -> tuple[str, str, dict[str, str]] | None:
-    soup = BeautifulSoup(html, "html.parser")
-    candidates = []
-    for anchor in soup.select("a[href]"):
-        href = str(anchor.get("href") or "")
-        if "__doPostBack" not in href:
-            continue
-        parsed = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", href)
-        if parsed:
-            candidates.append((_clean(anchor.get_text(" ", strip=True)), parsed.group(1), parsed.group(2)))
-    selected = next((item for item in candidates if item[0] == str(next_page)), None)
-    if selected is None:
-        selected = next((item for item in candidates if item[0] in {">>", "››", "»"}), None)
-    if selected is None:
-        return None
-    hidden = {
-        str(node.get("name")): str(node.get("value") or "")
-        for node in soup.select("input[type=hidden][name]")
-    }
-    return selected[1], selected[2], hidden
-
-
 def _scan(session: requests.Session) -> dict:
     response = session.get(BASE_URL, timeout=TIMEOUT, allow_redirects=False)
     if response.status_code != 200:
@@ -61,7 +40,7 @@ def _scan(session: requests.Session) -> dict:
     all_rows = []
     content_hashes: set[str] = set()
     while True:
-        digest = hashlib.sha256(response.content).hexdigest()
+        digest = page_fingerprint(response.content)
         if digest in content_hashes:
             raise RuntimeError(f"CenterR repeated page content at logical page {page}")
         content_hashes.add(digest)
@@ -76,7 +55,7 @@ def _scan(session: requests.Session) -> dict:
         all_rows.extend(rows)
         if page >= MAX_PAGES:
             raise RuntimeError(f"CenterR exceeded safety bound of {MAX_PAGES} pages")
-        postback = _postback_for_next(response.content, page + 1)
+        postback = parse_next_page_postback(response.content, next_page=page + 1)
         if postback is None:
             break
         target, argument, data = postback
@@ -87,26 +66,17 @@ def _scan(session: requests.Session) -> dict:
             raise RuntimeError(f"CenterR page {page + 1} HTTP {response.status_code}")
         page += 1
 
-    identities = {}
-    collisions = []
-    for row in all_rows:
-        previous = identities.get(row.external_id)
-        current = (row.trade_id, row.lot_number, row.detail_url, row.title)
-        if previous is not None and previous != current:
-            collisions.append(row.external_id)
-        identities[row.external_id] = current
-    ordered_ids = [row.external_id for row in all_rows]
-    unique_ids = sorted(set(ordered_ids))
+    identity_summary = summarize_catalogue_identities(all_rows)
     return {
         "pages": pages,
         "terminal_page": page,
         "row_count": len(all_rows),
-        "unique_count": len(unique_ids),
-        "duplicate_same_identity_count": len(ordered_ids) - len(unique_ids),
-        "collisions": sorted(set(collisions)),
-        "ids": unique_ids,
+        "unique_count": identity_summary["unique_count"],
+        "duplicate_same_identity_count": identity_summary["duplicate_same_identity_count"],
+        "collisions": identity_summary["collisions"],
+        "ids": identity_summary["unique_ids"],
         "rows": all_rows,
-        "id_digest": hashlib.sha256("\n".join(unique_ids).encode()).hexdigest(),
+        "id_digest": identity_summary["id_digest"],
     }
 
 
@@ -130,13 +100,9 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
         except CenterRContractError as exc:
             failures.append({"id": row.external_id, "reason": str(exc)})
             continue
-        identity_ok = (
-            detail.external_id == row.external_id
-            and detail.trade_id == row.trade_id
-            and detail.lot_number == row.lot_number
-            and detail.provider_lot_id == row.provider_lot_id
-        )
-        if not identity_ok:
+        try:
+            verify_identity(row, detail)
+        except CenterRContractError:
             failures.append({
                 "id": row.external_id, "reason": "catalogue_detail_identity_mismatch",
                 "catalogue": [row.trade_id, row.lot_number, row.provider_lot_id],
