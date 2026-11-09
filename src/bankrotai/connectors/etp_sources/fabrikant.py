@@ -491,7 +491,7 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
     return FabrikantDetailFields(
         title=title[:500] if title else None,
         source_status_text=status_text,
-        auction_status=fields.auction_status,
+        auction_status=status,
         start_price=fabrikant_initial_money(text),
         current_price=fabrikant_current_money(text),
         category_text=category_text,
