@@ -362,6 +362,11 @@ def _parse_multi_lot_catalogue(
         provider_id = next(iter(query.get("trade_nid", []) or query.get("id", [])), None)
         if not provider_id or not item.get("lot"):
             raise SourceSchemaError(f"{profile.source_id}: per-lot provider identity is missing")
+        source_status_text = str(item.get("source_status_text") or "")
+        normalized_status = _status(source_status_text)
+        if profile.source_id == "vertrades.ru":
+            from bankrotai.connectors.etp_sources.vertrades_detail_adapter import _vertrades_status
+            normalized_status = _vertrades_status(source_status_text)
         lots.append(NormalizedLot(
             external_id=f"{profile.source_id}:{provider_id}:{item['lot']}",
             source=profile.source_id.removesuffix(".ru"),
@@ -377,7 +382,7 @@ def _parse_multi_lot_catalogue(
             area=None,
             start_price=price,
             current_price=None,
-            auction_status=_status(str(item.get("source_status_text") or "")),
+            auction_status=normalized_status,
             lot_url=detail_url,
             source_url=detail_url,
             detail_level="search",
