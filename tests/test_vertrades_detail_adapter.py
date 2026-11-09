@@ -17,6 +17,7 @@ from bankrotai.connectors.etp_sources.vertrades import (
     fetch_vertrades_lot,
 )
 from bankrotai.domain import NormalizedLot
+from bankrotai.connectors.registry import connector_registry
 
 PROFILE = next(p for p in PROFILES if p.source_id == "vertrades.ru")
 
@@ -177,6 +178,9 @@ def test_registered_connector_uses_verified_source_specific_contract():
     assert {"search", "fetch_lot", "healthcheck", "detail_enrichment"}.issubset(
         connector_cls.capabilities
     )
+    registered = connector_registry.create("vertrades.ru")
+    assert type(registered).__name__ == "VertradesConnector"
+    assert registered.capabilities == connector_cls.capabilities
 
     catalogue_session = FakeSession(FakeResponse(_catalogue_html()))
     catalogue_connector = connector_cls(session=catalogue_session)
