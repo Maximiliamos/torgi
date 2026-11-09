@@ -89,9 +89,36 @@ def _safe_public_url(base_url: str, href: str) -> str | None:
 class FabrikantCataloguePage:
     procedure_urls: tuple[str, ...]
     visible_page_numbers: tuple[int, ...]
+    selected_controls: tuple[tuple[str, str, str], ...]
     has_next_page: bool
     next_url: str | None
     total_hints: tuple[str, ...]
+
+
+def _catalogue_selected_controls(
+    soup: BeautifulSoup,
+) -> tuple[tuple[str, str, str], ...]:
+    rows: list[tuple[str, str, str]] = []
+    interesting = re.compile(
+        r"(?:section|status|state|stage|type|kind|sale|bankrupt|page|limit)",
+        re.I,
+    )
+    for node in soup.select("input[name], select[name]"):
+        name = str(node.get("name") or "")
+        if not interesting.search(name):
+            continue
+        if node.name == "input":
+            kind = str(node.get("type") or "text").lower()
+            if kind in {"checkbox", "radio"} and not node.has_attr("checked"):
+                continue
+            rows.append((name[:80], str(node.get("value") or "")[:120], kind))
+            continue
+        selected = node.select_one("option[selected]")
+        if selected is not None:
+            rows.append(
+                (name[:80], str(selected.get("value") or "")[:120], "select")
+            )
+    return tuple(rows[:30])
 
 
 def build_catalogue_url(page: int) -> str:
@@ -146,6 +173,7 @@ def parse_catalogue_page(
     return FabrikantCataloguePage(
         procedure_urls=procedures,
         visible_page_numbers=tuple(sorted(visible)),
+        selected_controls=_catalogue_selected_controls(soup),
         has_next_page=(page + 1 in visible) or next_url is not None,
         next_url=next_url,
         total_hints=tuple(hints),
