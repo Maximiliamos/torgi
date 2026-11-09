@@ -453,7 +453,7 @@ def parse_utpl_catalogue_page(html: str | bytes, *, page: int = 1) -> list[UtplC
             elif "статус" in heading:
                 status = value or None
             elif re.search(r"(?:номер|№).*?(?:процедур|торг|извещ)", heading, re.I):
-                m = re.search(r"\b0*([0-9]{4,12})\b", value)
+                m = re.search(r"\b([0-9]{4,12})\b", value)
                 procedure = m.group(1) if m else value or None
             elif re.search(r"(?:номер|№).*?лот|лот.*?(?:номер|№)", heading, re.I):
                 m = re.search(r"\b(\d{1,5})\b", value)
