@@ -64,6 +64,30 @@ def test_sberbank_json_rejects_untrusted_lot_link() -> None:
         )
 
 
+def test_ruson_detail_enrichment_reads_labelled_price_and_dates_without_rub_suffix() -> None:
+    html = """
+    <html><body><h1>Нежилое помещение 50:46:0060406:241</h1>
+    Начальная цена 5205000.00
+    Дата окончания приема заявок 19.08.2022 18:00
+    Дата проведения 22.08.2022 10:00
+    Торги не состоялись
+    Официальная карточка содержит подробное описание продаваемого имущества.
+    </body></html>
+    """
+    parsed = parse_detail_html(
+        profile("rus-on.ru"),
+        html,
+        detail_url="https://rus-on.ru/bankrot/lot_view.php?lot_nid=27424",
+        external_id="rus-on.ru:27424",
+    )
+
+    assert parsed.start_price == 5_205_000
+    assert parsed.application_deadline.isoformat() == "2022-08-19T18:00:00"
+    assert parsed.auction_at.isoformat() == "2022-08-22T10:00:00"
+    assert parsed.auction_status == "closed"
+    assert "detail_enrichment" in SOURCE_CONNECTOR_TYPES["rus-on.ru"].capabilities
+
+
 def test_duplicate_links_do_not_duplicate_lots() -> None:
     href = "https://rus-on.ru/bankrot/lot_view.php?lot_nid=115011"
     html = f"<div><a href='{href}'>Лот 1</a><a href='{href}'>Земельный участок площадью 792 кв. м.</a></div>"
@@ -655,6 +679,29 @@ def test_sistematorg_single_lot_trade_price_remains_source_evidence() -> None:
         detail_url="https://sistematorg.com/trade_view.php?trade_nid=19433",
     )
     assert lot.start_price == 900_000
+
+def test_sistematorg_single_lot_connector_fetches_verified_trade_detail() -> None:
+    detail = """
+    <html><body><h1>Торги по продаже квартиры</h1>
+    Всего лотов: 1. Лот № 1: квартира 50:16:0302009:4559.
+    Начальная цена 4 609 800.00 руб. Размер задатка 460 980 руб.
+    Официальная карточка процедуры с подробным описанием имущества.
+    </body></html>
+    """.encode("utf-8")
+    session = FakeSession(FakeResponse(
+        200, detail, "https://sistematorg.com/trade_view.php?trade_nid=36750"
+    ))
+    connector = SOURCE_CONNECTOR_TYPES["sistematorg.com"](session=session)
+
+    parsed = asyncio.run(connector.fetch_lot("sistematorg.com:36750:1"))
+
+    assert parsed.external_id == "sistematorg.com:36750:1"
+    assert parsed.start_price == 4_609_800
+    assert "fetch_lot" in connector.capabilities
+    assert session.requested_urls == [
+        "https://sistematorg.com/trade_view.php?trade_nid=36750"
+    ]
+
 def test_repeated_catalogue_response_on_second_page_fails_closed() -> None:
     page = b"<a href='https://m-ets.ru/243003-1'>Zemelniy uchastok v prodazhe</a>"
     session = FakeSession([
@@ -713,9 +760,7 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
     """
     assert parse_listing_html(profile("sistematorg.com"), html) == []
     connector = SOURCE_CONNECTOR_TYPES["sistematorg.com"]()
-    assert "fetch_lot" not in connector.capabilities
-    with pytest.raises(SourceAccessError, match="per-lot detail isolation"):
-        asyncio.run(connector.fetch_lot("sistematorg.com:12345:1"))
+    assert "fetch_lot" in connector.capabilities
 
 
 @pytest.mark.parametrize(("source_id", "lot_url", "second_lot_url", "next_href", "page_two_url"), [

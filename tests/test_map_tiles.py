@@ -125,8 +125,8 @@ def test_builder_dataset_membership_business_matrix():
     factory = _database()
     now = datetime(2026, 9, 6, 12, 0, 0)
     cases = [
-        ("closed-visible", {"auction_status": "closed"}, True, "low", True),
-        ("completed-visible", {"auction_status": "completed"}, True, "unknown", True),
+        ("closed-hidden", {"auction_status": "closed"}, True, "low", False),
+        ("completed-hidden", {"auction_status": "completed"}, True, "unknown", False),
         ("manual-review-visible", {"needs_human_review": True}, True, "medium", True),
         ("approved-visible", {"review_status": "approved"}, True, "high", True),
         ("rejected-visible", {"review_status": "rejected"}, True, "none", True),
@@ -215,6 +215,8 @@ def test_builder_dataset_membership_business_matrix():
     expected_included = {ids[name] for name, _overrides, _geo, _confidence, included in cases if included}
     expected_included.add(primary.id)
     assert expected_included <= included_ids
+    assert ids["closed-hidden"] not in included_ids
+    assert ids["completed-hidden"] not in included_ids
     assert ids["archived-hidden"] not in included_ids
     assert ids["no-geo-hidden"] not in included_ids
     assert ids["invalid-geo-hidden"] not in included_ids

@@ -17,6 +17,7 @@ from bankrotai.region_sanity import coordinate_region_sanity_rejection_reason
 from bankrotai.regions import normalize_region_code as normalize_canonical_region_code
 from bankrotai.db import BackgroundTaskState, LotSyncRun, MapDataset, MapTile, ProcessedLot
 from bankrotai.services.map_payload import (
+    ENDED_STATUSES,
     yandex_cluster_feature,
     yandex_feature_collection,
     yandex_lot_feature,
@@ -605,6 +606,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 .where(
                     ProcessedLot.duplicate_of_id.is_(None),
                     ProcessedLot.is_archived.is_(False),
+                    ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)),
                     ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
                     ProcessedLot.current_geo_lon.between(-180.0, 180.0),
                 )

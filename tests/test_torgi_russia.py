@@ -180,6 +180,30 @@ def test_torgi_russia_parse_new_search_payload() -> None:
     assert lots[0].raw_data["source_status"] == "Идёт приём заявок"
 
 
+
+def test_torgi_russia_extracts_full_building_address_from_catalogue_title() -> None:
+    item = _new_site_lot()
+    item["title"] = (
+        "Квартира, общ.пл. 63,9 кв.м., к/н: 50:16:0302009:1849, "
+        "адрес: МО, г. Ногинск, ул. Леснова, д. 3 к. 1, кв. 10. "
+        "П.1495-ТАИ. Собств: Сёмина Е.Е. Цена: 8 012 000,00 р."
+    )
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.address == "МО, г. Ногинск, ул. Леснова, д. 3 к. 1"
+    assert lot.raw_data["listing_fingerprint"]
+
+
+def test_torgi_russia_catalogue_address_requires_explicit_address_label() -> None:
+    item = _new_site_lot()
+    item["title"] = "Квартира в Ногинске рядом с улицей Леснова, кадастр 50:16:0302009:1849"
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.address is None
+
+
 def test_torgi_russia_accepts_canonical_decimal_string_identifier() -> None:
     item = _new_site_lot()
     item["id"] = str(item["id"])

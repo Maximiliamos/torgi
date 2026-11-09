@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
+from bankrotai.torgi_russia_address import extract_catalogue_address
+from bankrotai.torgi_russia_status import public_auction_status
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
@@ -42,39 +44,6 @@ TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
-
-
-def public_auction_status(source_status: object, *, history_only: bool = False) -> str:
-    """Keep an unknown/upstream-closed procedure off the public active map.
-
-    Upstream status strings and dictionaries are not normalized sale eligibility.
-    An unfamiliar status must remain unknown rather than silently becoming active.
-    """
-    if history_only:
-        return "archived"
-    if isinstance(source_status, dict):
-        source_status = (
-            source_status.get("title")
-            or source_status.get("name")
-            or source_status.get("status")
-            or ""
-        )
-    value = str(source_status or "").strip().casefold().replace("ё", "е")
-    if not value:
-        return "unknown"
-    if any(marker in value for marker in (
-        "заверш", "окончен", "закрыт", "отмен", "прекращ", "не состоял",
-        "архив", "снят с торгов", "completed", "finished", "closed",
-        "cancelled", "canceled", "expired", "failed",
-    )):
-        return "closed"
-    if any(marker in value for marker in (
-        "прием заяв", "идет прием", "идут торги", "торги идут",
-        "объявлен", "проводятся торги", "опубликован", "scheduled",
-        "active", "published", "open", "applications_submission",
-    )):
-        return "active"
-    return "unknown"
 
 
 @dataclass(slots=True)
@@ -681,6 +650,7 @@ class TorgiRussiaClient:
                 and (picture.get("url") or picture.get("link") or picture.get("thumb_link"))
             ]
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(title)]
+            address = extract_catalogue_address(title)
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
             start_price = parse_money(str(item.get("start_price") or ""))
             current_price = parse_money(str(item.get("current_price") or ""))
@@ -704,7 +674,7 @@ class TorgiRussiaClient:
                     category="real_estate",
                     region_slug=normalize_region_code(region_name),
                     region_name=region_name,
-                    address=None,
+                    address=address,
                     cadastral_number=cadastres[0] if cadastres else None,
                     vin=None,
                     area=None,
@@ -735,6 +705,7 @@ class TorgiRussiaClient:
                             json.dumps(
                                 {
                                     "title": title,
+                                    "address": address,
                                     "start_price": start_price,
                                     "current_price": current_price,
                                     "photos": photos,
@@ -797,6 +768,7 @@ class TorgiRussiaClient:
                 normalize_cadastral_number(item)
                 for item in CADASTRAL_RE.findall(f"{title} {description}")
             ]
+            address = extract_catalogue_address(f"{title} {description}")
             gallery = card.select_one(".card-gallery")
             photos: list[str] = []
             if gallery:
@@ -819,7 +791,7 @@ class TorgiRussiaClient:
                     category="real_estate",
                     region_slug=region_code,
                     region_name=region_name,
-                    address=None,
+                    address=address,
                     cadastral_number=cadastres[0] if cadastres else None,
                     vin=None,
                     area=None,
@@ -840,6 +812,7 @@ class TorgiRussiaClient:
                                 {
                                     "title": title,
                                     "description": description,
+                                    "address": address,
                                     "start_price": start_price,
                                     "current_price": current_price,
                                     "photos": photos,

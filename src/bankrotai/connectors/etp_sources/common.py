@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -20,7 +19,10 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
+    datetime_after,
     profit_initial_money,
+    ruson_initial_money,
+    sistematorg_lot_count,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
@@ -157,14 +159,6 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
 
-def _sistematorg_lot_count(value: str) -> int | None:
-    """A listing row represents a trade, potentially containing many lots."""
-    match = re.search(r"всего\s+лотов\s*[:：]\s*(\d+)", value, re.IGNORECASE)
-    if match is None:
-        return None
-    count = int(match.group(1))
-    return count if 1 <= count <= 100_000 else None
-
 def _category(value: str) -> str:
     lowered = value.lower()
     if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен")):
@@ -176,19 +170,6 @@ def _category(value: str) -> str:
     if any(word in lowered for word in ("право требован", "дебитор")):
         return "receivables"
     return "other"
-
-def _datetime_after(value: str, label: str) -> datetime | None:
-    match = re.search(label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)", value, re.I)
-    if not match:
-        return None
-    raw = match.group(1)
-    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
-        try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            pass
-    return None
-
 
 def _label_value(value: str, label: str, pattern: str) -> str | None:
     match = re.search(label + r"\s*[:№]?\s*(" + pattern + r")", value, re.I)
@@ -502,7 +483,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         # Sistematorg's table lists *trades*, not individual property lots.
         # A row with several distinct lot links is equally unsafe: row-level
         # price/status/cadastre may belong to another lot in the procedure.
-        trade_lots = _sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
+        trade_lots = sistematorg_lot_count(context) if profile.source_id == "sistematorg.com" else None
         if ambiguous_row or (profile.source_id == "sistematorg.com" and trade_lots != 1):
             price = None
             current_price = None
@@ -556,7 +537,7 @@ def parse_detail_html(
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
     if profile.source_id == "sistematorg.com":
-        trade_lots = _sistematorg_lot_count(text_value)
+        trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
             raise SourceSchemaError(
                 "sistematorg.com: cannot attribute a trade-level price to an individual lot"
@@ -596,6 +577,8 @@ def parse_detail_html(
     price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
+    if price is None and profile.source_id == "rus-on.ru":
+        price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
@@ -625,11 +608,11 @@ def parse_detail_html(
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        application_deadline=_datetime_after(
+        application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
-        auction_at=_datetime_after(text_value, r"дата проведения"),
+        auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
 
@@ -700,7 +683,7 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
             procedure_number=_clean(str(raw.get("purchCode") or "")) or None,
-            application_deadline=_datetime_after(
+            application_deadline=datetime_after(
                 f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
                 r"дата окончания представления заявок",
             ),
@@ -916,7 +899,7 @@ class HtmlEtpConnector(AuctionConnector):
         if self.source_id == "nistp.ru":
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
             return await fetch_nistp_lot(self, external_id)
-        if self.source_id in {"vertrades.ru", "sistematorg.com"}:
+        if self.source_id == "vertrades.ru":
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -924,6 +907,10 @@ class HtmlEtpConnector(AuctionConnector):
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
         identity = external_id.removeprefix(self.source_id + ":")
+        if self.source_id == "sistematorg.com":
+            identity = identity.split(":", 1)[0]
+            if not identity.isdigit():
+                raise SourceSchemaError("sistematorg.com: invalid procedure identity")
         identity_path = identity
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
@@ -989,11 +976,13 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"etp-profit.ru", "ausib.ru", "nistp.ru"}:
+    if profile.source_id in {
+        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
+    }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
-    if profile.source_id in {"vertrades.ru", "sistematorg.com"}:
+    if profile.source_id == "vertrades.ru":
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
