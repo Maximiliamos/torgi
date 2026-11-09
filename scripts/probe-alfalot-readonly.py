@@ -24,6 +24,8 @@ from bankrotai.connectors.etp_sources.alfalot_audit import (
     PageProof,
     extract_detail_fields,
     extract_lot_references,
+    terminal_controls_confirmed,
+    verify_gd_filter_state,
     verify_two_walks,
 )
 
@@ -168,20 +170,11 @@ def _select_pager(page, expected: int, selector: str):
 
 
 def _terminal_evidence(pager) -> bool:
-    """Only explicit disabled next/end buttons permit a terminal claim.
-
-    Merely failing to click a numeric link is NOT terminal evidence.
-    """
     clickable = pager.locator("a, button:not([disabled])").all_inner_texts()
-    if any(value.strip() in {">", ">>", "›", "»", "→"} for value in clickable):
-        return False
     disabled = pager.locator(
         ".disabled, [disabled], [aria-disabled='true']"
     ).all_inner_texts()
-    # The 2026-11-06 screenshot recorded disabled > and >>; if a new
-    # template lacks these controls the audit must refuse to infer terminal.
-    values = {value.strip() for value in disabled}
-    return bool(values & {">", "›", "»"}) and bool(values & {">>", "»"})
+    return terminal_controls_confirmed(clickable, disabled)
 
 
 def _advance(page, pager, expected: int, previous_ids: tuple[str, ...], selector: str) -> bool:
@@ -220,16 +213,16 @@ def _walk(page, *, max_pages: int, pager_selector: str, stage: dict[str, str], w
         node.click(timeout=10000)  # public read-only catalogue filtering
         page.wait_for_timeout(1500)
     label, selected = _filter_selected(page)
-    if not selected:
-        raise AlfalotContractError("GD filter did not become selected")
+    verify_gd_filter_state(label, selected=selected)
     proofs: list[PageProof] = []
     observations: dict[str, object] = {}
     records: list[str] = []
     for page_num in range(1, max_pages + 1):
         pager = _select_pager(page, page_num, pager_selector)
         now_label, now_selected = _filter_selected(page)
-        if not now_selected or now_label != label:
-            raise AlfalotContractError("GD selected state was lost during pagination")
+        verify_gd_filter_state(now_label, selected=now_selected)
+        if now_label != label:
+            raise AlfalotContractError("GD state label changed during pagination")
         references = extract_lot_references(page.content())
         if not references:
             raise AlfalotContractError(f"page {page_num}: no individual lot links")
@@ -295,8 +288,7 @@ def run(output: Path, max_pages: int, max_details: int, pager_selector: str | No
                     summary["paginator_control_shapes"] = _discover_paginator_controls(page)
                     summary["first_page_lot_link_count"] = len(extract_lot_references(page.content()))
                     summary["status"] = "DIAGNOSTIC_ONLY_NOT_VERIFIED"
-                    if not selected:
-                        raise AlfalotContractError("GD filter did not become selected")
+                    verify_gd_filter_state(label, selected=selected)
                 else:
                     if not pager_selector:
                         raise AlfalotContractError("source-verified --pager-selector required")
