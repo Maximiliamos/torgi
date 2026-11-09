@@ -70,6 +70,14 @@ Individual detail URL identity is the provider's per-lot URL identity:
 
 The procedure/trade number and the displayed lot number are separate fields. A procedure may contain multiple lots. Live/recent official evidence includes procedures with two or more rows whose lot numbers, descriptions and prices differ. The parser must therefore never use the procedure number alone as the sellable-lot identity.
 
+The catalogue adapter now records all three relevant identities:
+
+- provider procedure/trade number;
+- displayed lot number within that procedure;
+- individual lot URL identity used in `external_id`.
+
+During enrichment, catalogue procedure number and displayed lot number are compared against the individual detail card. A mismatch is fail-closed rather than silently attaching another lot's price or status.
+
 ### Individual detail
 
 Official individual detail examples observed in the 2026-11-09 read-only audit included these provider lot IDs:
