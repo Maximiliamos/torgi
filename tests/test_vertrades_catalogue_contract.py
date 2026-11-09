@@ -5,6 +5,7 @@ import pytest
 
 from bankrotai.connectors.etp_sources.vertrades import (
     VertradesCardError,
+    catalogue_structure_summary,
     catalogue_page_url,
     has_next_catalogue_page,
     parse_catalogue_page,
@@ -111,3 +112,16 @@ def test_utf8_catalogue_bytes_ignore_stale_legacy_meta_charset():
         "vertrades.ru:102259678:2",
         "vertrades.ru:102259682:4",
     ]
+
+
+
+def test_structure_summary_is_non_sensitive_counts_only():
+    summary = catalogue_structure_summary(_catalogue())
+    assert summary == {
+        "table_rows": 6,
+        "rows_with_10_cells": 6,
+        "trade_code_rows": 6,
+        "numeric_lot_rows": 6,
+        "property_text_rows": 3,
+        "show_trades_id_rows": 6,
+    }
