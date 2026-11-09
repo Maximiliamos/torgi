@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 import re
+from typing import Any
 
 from bankrotai.domain import NormalizedLot
 
@@ -276,6 +277,41 @@ def etpu_category(value: str) -> str | None:
         if preferred in flags:
             return preferred
     return None
+
+
+def etpu_detail_contract(value: str) -> dict[str, Any]:
+    """Return the source-specific ETPU detail fields as one isolated contract."""
+    start_price, current_price = etpu_prices(value)
+    classifier = etpu_classifier_section(value)
+    flags = etpu_classifier_flags(value)
+    return {
+        "start_price": start_price,
+        "current_price": current_price,
+        "category": etpu_category(value),
+        "title": etpu_lot_title(value),
+        "auction_status": etpu_status(value),
+        "procedure_number": etpu_procedure_number(value),
+        "application_deadline": etpu_moscow_datetime(
+            value,
+            r"Дата\s+окончания\s+представления\s+заявок(?:\s+на\s+участие)?",
+            r"Дата\s+окончания\s+при[её]ма\s+заявок(?:\s+на\s+участие)?",
+            r"Дата\s+окончания\s+последнего\s+интервала",
+        ),
+        "auction_at": etpu_moscow_datetime(
+            value,
+            r"Дата\s+проведения",
+            r"Дата\s+начала\s+первого\s+интервала",
+        ),
+        "raw_data": {
+            "efrsb_classifier": classifier,
+            "efrsb_classifier_flags": list(flags),
+            "structured_property_classification": classifier is not None,
+            "detail_initial_price_verified": start_price is not None,
+            "detail_current_price_verified": current_price is not None,
+            "price_contract": "etpu_labelled_rub_fields",
+            "source_status_text": etpu_explicit_status(value),
+        },
+    }
 
 
 def _checked_amount(value: object) -> Decimal | None:
