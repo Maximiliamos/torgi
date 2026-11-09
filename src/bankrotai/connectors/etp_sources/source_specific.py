@@ -122,7 +122,7 @@ def zakazrf_status_text(value: str) -> str | None:
     """Read only the explicit lot Status field; ignore conditional boilerplate."""
     section = _zakazrf_lot_section(value)
     match = re.search(
-        r"\bстатус\s*:\s*(.{2,100}?)(?=\s+(?:дата|начальн\w*\s+цен|текущ\w*\s+цен|шаг|порядок|сведения|обеспечение)\b)",
+        r"\bстатус\s*:\s*(.{2,100}?)(?=\s+(?:дата|начальн\w*\s+цен\w*|текущ\w*\s+цен\w*|шаг|порядок|сведения|обеспечение)\b)",
         section,
         re.IGNORECASE,
     )
