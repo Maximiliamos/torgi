@@ -4,7 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 import pytest
 
-from bankrotai.connectors.etp_sources.vertrades_detail_sections import (
+from bankrotai.connectors.etp_sources.vertrades import (
     VertradesCardError,
     get_vertrades_lot,
 )
