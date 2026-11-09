@@ -112,6 +112,17 @@ def test_home_deploy_skips_heavy_backup_only_when_schema_is_proven_current() -> 
     assert workflow.index(precheck) < workflow.index(backup) < workflow.index(migrate)
 
 
+def test_home_schema_cleanup_is_idempotent_under_stop_preference() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "function Remove-DockerContainerIfPresent" in workflow
+    assert "$ErrorActionPreference = 'SilentlyContinue'" in workflow
+    assert "Remove-DockerContainerIfPresent -Name $schemaCheckContainer" in workflow
+    assert "Remove-DockerContainerIfPresent -Name $migrationContainer" in workflow
+    assert "Remove-DockerContainerIfPresent -Name $verifyContainer" in workflow
+    assert "Remove-DockerContainerIfPresent -Name $EphemeralContainerName" in workflow
+
+
 def test_home_schema_backup_and_migration_commands_are_bounded() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
