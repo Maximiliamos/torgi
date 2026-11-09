@@ -75,6 +75,12 @@ _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}(?::\d{1,7}){2,4})(?!\d)")
 _VIN_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.IGNORECASE)
 
+_SBER_BANKRUPTCY_SOURCE = "Продажа имущества (предприятия) банкротов"
+_SBER_BANKRUPTCY_SECTION_ID = "13"
+_SBER_REAL_ESTATE_BRANCH = "Недвижимое имущество"
+_SBER_PAGE_SIZE = 21
+_SBER_DISPLAY_LIMIT = 10_000
+
 
 def _clean(value: str) -> str:
     return _SPACE_RE.sub(" ", value.replace("\xa0", " ")).strip()
@@ -620,27 +626,47 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
     items = payload.get("PurchaseList")
     if not isinstance(items, list):
         raise SourceSchemaError(f"{profile.source_id}: PurchaseList is missing from API response")
+    if not items:
+        raise SourceSchemaError(
+            f"{profile.source_id}: empty PurchaseList cannot prove that the bankruptcy filter was applied"
+        )
+
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
     for item in items:
         raw = item.get("_source") if isinstance(item, dict) else None
         if not isinstance(raw, dict):
+            raise SourceSchemaError(f"{profile.source_id}: malformed PurchaseList row")
+
+        object_source = _clean(str(raw.get("ObjectSource") or ""))
+        section_id = _clean(str(raw.get("SourceTradeSectionId") or ""))
+        if object_source != _SBER_BANKRUPTCY_SOURCE or section_id != _SBER_BANKRUPTCY_SECTION_ID:
+            raise SourceSchemaError(
+                f"{profile.source_id}: bankruptcy filter is not confirmed by the returned row"
+            )
+
+        # Structured provider category only. Non-real-estate bankruptcy rows are
+        # walked for pagination but are not accepted as TORGI property lots.
+        if _clean(str(raw.get("BranchGroup") or "")) != _SBER_REAL_ESTATE_BRANCH:
             continue
+
         href = str(raw.get("objectHref") or "")
         match = profile.lot_url_re.search(href)
         if not match:
-            continue
+            raise SourceSchemaError(
+                f"{profile.source_id}: real-estate bankruptcy row has no verified GoodsView identity"
+            )
         _safe_provider_url(profile, href)
         external_id = _external_id(profile, href, match)
         if external_id in seen:
-            continue
+            raise SourceSchemaError(f"{profile.source_id}: duplicate GoodsView identity on page {page}")
         seen.add(external_id)
+
         title = _clean(str(raw.get("title") or raw.get("BidName") or raw.get("purchName") or ""))
         if not title:
-            continue
+            raise SourceSchemaError(f"{profile.source_id}: verified GoodsView row has no title")
+
         price: float | None = None
-        # The API provides an explicitly RUB-denominated price. A generic
-        # amount is accepted only with an explicit ruble currency marker.
         amount = raw.get("purchAmountRUB")
         currency = str(raw.get("purchCurrency") or raw.get("CurrencyCode") or "").strip().upper()
         if amount is None and currency in {"RUB", "643"}:
@@ -652,9 +678,13 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
                     price = candidate
         except (TypeError, ValueError, OverflowError):
             pass
-        text_value = _clean(" ".join(str(raw.get(key) or "") for key in ("title", "purchName", "Address")))
+
+        text_value = _clean(" ".join(
+            str(raw.get(key) or "") for key in ("title", "purchName", "Address")
+        ))
         cadastral = _CADASTRAL_RE.search(str(raw.get("cadastralNumber") or text_value))
         vin = _VIN_RE.search(text_value)
+        identity_path = "/".join(match.groups())
         lots.append(NormalizedLot(
             external_id=external_id,
             source="sberbank-ast",
@@ -679,6 +709,14 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,
+                "bankruptcy_filter_verified": True,
+                "bankruptcy_source_term": object_source,
+                "source_trade_section_id": section_id,
+                "property_scope_verified": True,
+                "property_branch_group": _SBER_REAL_ESTATE_BRANCH,
+                "goods_view_identity": identity_path,
+                "individual_lot_identity_verified": True,
+                "detail_contract": "GoodsView",
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
@@ -687,11 +725,10 @@ def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, p
                 f"Дата окончания представления заявок {raw.get('RequestStopDate') or ''}",
                 r"дата окончания представления заявок",
             ),
-            # AuctionResultDate describes the result, not the start of bidding.
-            # Never publish it as auction_at without source-specific evidence.
             auction_at=None,
         ))
     return lots
+
 
 
 class HtmlEtpConnector(AuctionConnector):
@@ -733,8 +770,8 @@ class HtmlEtpConnector(AuctionConnector):
         if self.profile.api_kind == "sberbank_ast":
             filter_body = (
                 "<query><targetPageCode>UtpESGoodsList</targetPageCode><searchbyorg></searchbyorg>"
-                f"<pagesize>21</pagesize><pagenum>{page - 1}</pagenum><sortType></sortType>"
-                "<sortOrder>desc</sortOrder><sourceTerm>Продажа имущества (предприятия) банкротов</sourceTerm>"
+                f"<pagesize>{_SBER_PAGE_SIZE}</pagesize><pagenum>{page - 1}</pagenum><sortType></sortType>"
+                f"<sortOrder>desc</sortOrder><sourceTerm>{_SBER_BANKRUPTCY_SOURCE}</sourceTerm>"
                 "<searchBarType>anyWord</searchBarType><saleType></saleType><org></org>"
                 "<cadastralNumber></cadastralNumber><isOnMapTerm></isOnMapTerm><hasRequest></hasRequest>"
                 "<hasDeposit></hasDeposit><orgInnKpp></orgInnKpp></query>"
@@ -850,12 +887,26 @@ class HtmlEtpConnector(AuctionConnector):
         if self.profile.api_kind == "sberbank_ast":
             payload = response.json()
             lots = parse_sberbank_json(self.profile, payload, page=page)
-            total = int(payload.get("Total") or 0)
-            next_cursor = str(page + 1) if page * 21 < total else None
+            try:
+                total = int(payload.get("Total"))
+            except (TypeError, ValueError) as exc:
+                raise SourceSchemaError(f"{self.source_id}: invalid Total in API response") from exc
+            if total <= 0:
+                raise SourceSchemaError(f"{self.source_id}: non-positive Total cannot prove the catalogue")
+            if total >= _SBER_DISPLAY_LIMIT and page * _SBER_PAGE_SIZE >= _SBER_DISPLAY_LIMIT:
+                raise SourceSchemaError(
+                    f"{self.source_id}: {_SBER_DISPLAY_LIMIT} is a public display cap, not a proven source end"
+                )
+            next_cursor = str(page + 1) if page * _SBER_PAGE_SIZE < total else None
         else:
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
+        structurally_valid_empty_sber_page = bool(
+            self.profile.api_kind == "sberbank_ast"
+            and isinstance(payload.get("PurchaseList"), list)
+            and payload.get("PurchaseList")
+        ) if self.profile.api_kind == "sberbank_ast" else False
         structurally_valid_empty_nistp_page = False
         if not lots and self.source_id == "nistp.ru":
             from bankrotai.connectors.registry.direct_etp_catalogue import (
@@ -870,7 +921,7 @@ class HtmlEtpConnector(AuctionConnector):
                     str(page + 1)
                     if _has_next_page(self.profile, response.content, page) else None
                 )
-        if not lots and not structurally_valid_empty_nistp_page:
+        if not lots and not structurally_valid_empty_nistp_page and not structurally_valid_empty_sber_page:
             raise SourceSchemaError(
                 f"{self.source_id}: no lot links matched the verified listing schema on page {page}"
             )
@@ -891,6 +942,13 @@ class HtmlEtpConnector(AuctionConnector):
             "reconcile_missing": False,
             "maturity": self.profile.status,
             "response_url": response.url,
+            **({
+                "bankruptcy_filter_verified": True,
+                "property_scope": _SBER_REAL_ESTATE_BRANCH,
+                "api_total": total,
+                "display_cap": _SBER_DISPLAY_LIMIT,
+                "terminal_page_proven": bool(next_cursor is None and total < _SBER_DISPLAY_LIMIT),
+            } if self.profile.api_kind == "sberbank_ast" else {}),
         })
 
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
@@ -978,6 +1036,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
+        "sberbank-ast.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
