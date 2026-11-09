@@ -124,6 +124,48 @@ def _current_money(value: str) -> float | None:
         return None
 
 
+def _arbbitlot_row_identity(row: Tag) -> tuple[str | None, str | None]:
+    """Read displayed procedure and lot numbers from one ARBbitLot catalogue row."""
+    if row.name != "tr":
+        return None, None
+    table = row.find_parent("table")
+    cells = row.find_all("td", recursive=False)
+    if table is None or not cells:
+        return None, None
+
+    headings: list[str] = []
+    for heading_row in table.select("tr"):
+        headers = heading_row.find_all("th", recursive=False)
+        if headers:
+            headings = [_clean(h.get_text(" ", strip=True)).lower() for h in headers]
+            break
+
+    procedure_id: str | None = None
+    lot_number: str | None = None
+    if len(headings) == len(cells):
+        for index, heading in enumerate(headings):
+            value = _clean(cells[index].get_text(" ", strip=True))
+            if re.search(r"№\s*лота", heading):
+                match = re.fullmatch(r"\d{1,6}", value)
+                if match:
+                    lot_number = match.group(0)
+            elif procedure_id is None and (
+                heading == "№"
+                or re.search(r"№\s*(?:торг|аукцион|конкурс|публичн)", heading)
+            ):
+                match = re.fullmatch(r"\d{4,12}", value)
+                if match:
+                    procedure_id = match.group(0)
+
+    # Current FogSoft tables use a bare "№" first column. Retain a bounded
+    # fallback only for that documented layout, never by scanning the whole row.
+    if procedure_id is None and cells:
+        value = _clean(cells[0].get_text(" ", strip=True))
+        if re.fullmatch(r"\d{4,12}", value):
+            procedure_id = value
+    return procedure_id, lot_number
+
+
 def _table_prices(row: Tag) -> tuple[float | None, float | None]:
     """Table amounts are reliable only when tied to a named price column."""
     if row.name != "tr":
@@ -403,6 +445,7 @@ def _parse_multi_lot_catalogue(
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
+            procedure_number=arbbitlot_procedure_id,
         ))
     return lots
 
@@ -485,6 +528,11 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         area_match = _AREA_RE.search(context)
         area = float(area_match.group(1).replace(",", ".")) if area_match else None
         table_initial, table_current = _table_prices(container)
+        arbbitlot_procedure_id, arbbitlot_lot_number = (
+            _arbbitlot_row_identity(container)
+            if profile.source_id == "arbbitlot.ru"
+            else (None, None)
+        )
         price = _money(context)
         if price is None:
             price = table_initial
@@ -526,6 +574,10 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
+                **({
+                    "procedure_id": arbbitlot_procedure_id,
+                    "lot_number": arbbitlot_lot_number,
+                } if profile.source_id == "arbbitlot.ru" else {}),
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
