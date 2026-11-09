@@ -14,7 +14,7 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector
+from bankrotai.connectors.etp_sources.ruson import RusonReadonlyConnector, RusonSchemaError
 
 
 SOURCE = "rus-on.ru"
@@ -54,7 +54,18 @@ async def _probe_catalogue_page(
     *,
     delay_seconds: float,
 ) -> dict[str, Any]:
-    result = await connector.search({}, cursor=str(page))
+    try:
+        result = await connector.search({}, cursor=str(page))
+    except RusonSchemaError as exc:
+        return {
+            "page": page,
+            "ids": [],
+            "count": 0,
+            "next_cursor": None,
+            "valid": False,
+            "digest": _digest([]),
+            "reject_reason": type(exc).__name__,
+        }
     ids = [str(item.external_id) for item in result.items]
     if len(ids) != len(set(ids)):
         raise RuntimeError(f"rus-on page {page} repeats a lot ID inside the page")

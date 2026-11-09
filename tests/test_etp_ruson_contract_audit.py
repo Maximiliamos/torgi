@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
+from bankrotai.connectors.etp_sources.ruson import RusonSchemaError
 from bankrotai.services.etp_ruson_contract_audit import audit_ruson_contract
 
 
@@ -73,3 +74,35 @@ def test_ruson_audit_proves_two_pass_terminal_identity_and_read_only_detail_samp
     assert report["production_database_writes"] == 0
     assert report["production_enabled"] is False
     assert report["archival_allowed"] is False
+
+
+
+class ThreePageConnector(FakeConnector):
+    async def search(self, _filters, cursor=None):
+        number = int(cursor or 1)
+        rows = {
+            1: (["rus-on.ru:100"], "2"),
+            2: (["rus-on.ru:101"], "3"),
+            3: (["rus-on.ru:102", "rus-on.ru:103"], None),
+        }
+        if number not in rows:
+            raise RusonSchemaError("fixture terminal boundary")
+        ids, next_cursor = rows[number]
+        return SimpleNamespace(
+            items=[SimpleNamespace(external_id=value) for value in ids],
+            next_cursor=next_cursor,
+        )
+
+
+def test_terminal_discovery_handles_non_power_of_two_source_end_fail_closed() -> None:
+    report = asyncio.run(audit_ruson_contract(
+        target_details=4,
+        max_attempts=12,
+        max_pages=8,
+        delay_seconds=0,
+        connector_factory=ThreePageConnector,
+    ))
+    assert report["terminal_page"] == 3
+    assert report["terminal_page_proven"] is True
+    assert report["catalogue_pages_sampled"] == [1, 2, 3]
+    assert 4 in report["terminal_discovery_probe_pages"]
