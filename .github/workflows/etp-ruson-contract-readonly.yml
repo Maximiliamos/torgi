@@ -83,7 +83,7 @@ jobs:
           python -m bankrotai.services.etp_ruson_contract_audit \
             --details 35 \
             --max-attempts 50 \
-            --max-pages 500 \
+            --max-pages 10000 \
             --delay-seconds 0.35 > ruson-contract-readonly.json
       - name: Enforce source-contract evidence
         run: |

@@ -48,49 +48,130 @@ def _even_sample(values: list[str], count: int) -> list[str]:
     return [values[index] for index in sorted(indexes)]
 
 
-async def _catalogue_pass(
+async def _probe_catalogue_page(
+    connector: Any,
+    page: int,
+    *,
+    delay_seconds: float,
+) -> dict[str, Any]:
+    result = await connector.search({}, cursor=str(page))
+    ids = [str(item.external_id) for item in result.items]
+    if len(ids) != len(set(ids)):
+        raise RuntimeError(f"rus-on page {page} repeats a lot ID inside the page")
+    expected_next = str(page + 1)
+    valid = bool(ids) and result.next_cursor in {None, expected_next}
+    probe = {
+        "page": page,
+        "ids": ids,
+        "count": len(ids),
+        "next_cursor": result.next_cursor,
+        "valid": valid,
+        "digest": _digest(ids),
+    }
+    if delay_seconds:
+        await asyncio.sleep(delay_seconds)
+    return probe
+
+
+async def _discover_terminal_page(
     connector: Any,
     *,
     max_pages: int,
     delay_seconds: float,
-) -> dict[str, Any]:
-    cursor: str | None = None
-    ids: list[str] = []
-    seen: set[str] = set()
-    page_counts: list[int] = []
-    page = 0
-    while True:
-        page += 1
-        if page > max_pages:
-            raise RuntimeError("rus-on catalogue did not reach a terminal page within the safety bound")
-        result = await connector.search({}, cursor=cursor)
-        page_ids = [str(item.external_id) for item in result.items]
-        if not page_ids:
-            raise RuntimeError("rus-on catalogue page unexpectedly has no lot IDs")
-        if len(page_ids) != len(set(page_ids)):
-            raise RuntimeError("rus-on catalogue repeats a lot ID inside one page")
-        overlap = seen.intersection(page_ids)
-        if overlap:
-            raise RuntimeError("rus-on catalogue repeats lot IDs across pages")
-        seen.update(page_ids)
-        ids.extend(page_ids)
-        page_counts.append(len(page_ids))
-        if result.next_cursor is None:
+) -> tuple[int, dict[int, dict[str, Any]]]:
+    """Find the terminal page with direct GET probes, never assuming a catalogue total."""
+    probes: dict[int, dict[str, Any]] = {}
+
+    async def probe(page: int) -> dict[str, Any]:
+        if page not in probes:
+            probes[page] = await _probe_catalogue_page(
+                connector, page, delay_seconds=delay_seconds
+            )
+        return probes[page]
+
+    first = await probe(1)
+    if not first["valid"]:
+        raise RuntimeError("rus-on page 1 does not satisfy the verified pagination contract")
+    if first["next_cursor"] is None:
+        return 1, probes
+
+    lower = 1
+    upper: int | None = None
+    page = 2
+    while page <= max_pages:
+        item = await probe(page)
+        if not item["valid"]:
+            upper = page
             break
-        expected = str(page + 1)
-        if result.next_cursor != expected:
-            raise RuntimeError("rus-on pagination cursor is not the next sequential page")
-        cursor = result.next_cursor
-        if delay_seconds:
-            await asyncio.sleep(delay_seconds)
+        lower = page
+        if item["next_cursor"] is None:
+            return page, probes
+        page *= 2
+
+    if upper is None:
+        raise RuntimeError(
+            "rus-on terminal page was not bounded within the configured page-number safety cap"
+        )
+
+    while upper - lower > 1:
+        middle = (lower + upper) // 2
+        item = await probe(middle)
+        if item["valid"]:
+            if item["next_cursor"] is None:
+                return middle, probes
+            lower = middle
+        else:
+            upper = middle
+
+    last = await probe(lower)
+    if last["next_cursor"] is None:
+        return lower, probes
+    candidate = await probe(lower + 1)
+    if candidate["valid"] and candidate["next_cursor"] is None:
+        return lower + 1, probes
+    raise RuntimeError("rus-on terminal page could not be proven from provider next-page semantics")
+
+
+def _sample_pages(terminal_page: int) -> list[int]:
+    points = {
+        1,
+        min(2, terminal_page),
+        max(1, terminal_page // 4),
+        max(1, terminal_page // 2),
+        max(1, (terminal_page * 3) // 4),
+        terminal_page,
+    }
+    return sorted(points)
+
+
+async def _sample_catalogue_pass(
+    connector: Any,
+    pages: list[int],
+    *,
+    delay_seconds: float,
+) -> dict[str, Any]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    page_counts: dict[int, int] = {}
+    page_digests: dict[int, str] = {}
+    for page in pages:
+        item = await _probe_catalogue_page(connector, page, delay_seconds=delay_seconds)
+        if not item["valid"]:
+            raise RuntimeError(f"rus-on sampled page {page} no longer satisfies pagination contract")
+        overlap = seen.intersection(item["ids"])
+        if overlap:
+            raise RuntimeError("rus-on sampled catalogue pages repeat lot IDs across pages")
+        seen.update(item["ids"])
+        ordered.extend(item["ids"])
+        page_counts[page] = item["count"]
+        page_digests[page] = item["digest"]
     return {
-        "ids": ids,
-        "pages": page,
+        "ids": ordered,
+        "pages": pages,
         "page_counts": page_counts,
-        "terminal_page": page,
-        "terminal_page_proven": True,
+        "page_digests": page_digests,
         "unique_ids": len(seen),
-        "ordered_id_digest": _digest(ids),
+        "ordered_id_digest": _digest(ordered),
     }
 
 
@@ -123,21 +204,25 @@ async def audit_ruson_contract(
         raise ValueError("target_details must be in 1..60")
     if type(max_attempts) is not int or not target_details <= max_attempts <= 80:
         raise ValueError("max_attempts must be between target_details and 80")
-    if type(max_pages) is not int or not 1 <= max_pages <= 1000:
-        raise ValueError("max_pages must be in 1..1000")
+    if type(max_pages) is not int or not 2 <= max_pages <= 100_000:
+        raise ValueError("max_pages must be in 2..100000")
     if not 0 <= delay_seconds <= 5:
         raise ValueError("delay_seconds must be in 0..5")
 
     factory = connector_factory or (lambda: SOURCE_CONNECTOR_TYPES[SOURCE]())
-    first = await _catalogue_pass(factory(), max_pages=max_pages, delay_seconds=delay_seconds)
+    terminal_page, terminal_probes = await _discover_terminal_page(
+        factory(), max_pages=max_pages, delay_seconds=delay_seconds
+    )
+    pages = _sample_pages(terminal_page)
+    first = await _sample_catalogue_pass(factory(), pages, delay_seconds=delay_seconds)
     if delay_seconds:
         await asyncio.sleep(delay_seconds)
-    second = await _catalogue_pass(factory(), max_pages=max_pages, delay_seconds=delay_seconds)
+    second = await _sample_catalogue_pass(factory(), pages, delay_seconds=delay_seconds)
 
     if first["ids"] != second["ids"]:
-        raise RuntimeError("rus-on two-pass catalogue identity sequence changed during audit")
+        raise RuntimeError("rus-on two-pass sampled catalogue identity sequence changed during audit")
     if first["ordered_id_digest"] != second["ordered_id_digest"]:
-        raise RuntimeError("rus-on two-pass catalogue digest mismatch")
+        raise RuntimeError("rus-on two-pass sampled catalogue digest mismatch")
 
     catalogue_ids = list(first["ids"])
     candidate_ids: list[str] = []
@@ -223,11 +308,15 @@ async def audit_ruson_contract(
 
     return {
         "source": SOURCE,
-        "mode": "full_catalogue_two_pass_plus_detail_sample",
-        "catalogue_pages_pass_1": first["pages"],
-        "catalogue_pages_pass_2": second["pages"],
-        "terminal_page": first["terminal_page"],
-        "terminal_page_proven": bool(first["terminal_page_proven"] and second["terminal_page_proven"]),
+        "mode": "terminal_discovery_plus_two_pass_page_sample_plus_detail_sample",
+        "full_catalogue_two_pass": False,
+        "catalogue_pages_pass_1": len(first["pages"]),
+        "catalogue_pages_pass_2": len(second["pages"]),
+        "catalogue_pages_sampled": first["pages"],
+        "catalogue_page_counts": first["page_counts"],
+        "terminal_discovery_probe_pages": sorted(terminal_probes),
+        "terminal_page": terminal_page,
+        "terminal_page_proven": True,
         "unique_catalogue_ids": first["unique_ids"],
         "ordered_id_digest": first["ordered_id_digest"],
         "two_pass_ids_equal": first["ids"] == second["ids"],
@@ -262,7 +351,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--details", type=int, default=35)
     parser.add_argument("--max-attempts", type=int, default=50)
-    parser.add_argument("--max-pages", type=int, default=500)
+    parser.add_argument("--max-pages", type=int, default=10_000)
     parser.add_argument("--delay-seconds", type=float, default=0.35)
     args = parser.parse_args()
     report = asyncio.run(audit_ruson_contract(
