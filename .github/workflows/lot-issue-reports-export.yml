@@ -38,14 +38,16 @@ jobs:
           $outside = Join-Path $env:RUNNER_TEMP 'lot-issue-reports.json'
           $source = Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\lot_issue_report_export.py'
           if (-not (Test-Path -LiteralPath $source)) { throw 'Exporter source is missing from checkout' }
-          Get-Content -LiteralPath $source -Raw -Encoding UTF8 |
-            docker exec -i bankrotai-home-ingestion-worker python - --limit 200 --output $inside
+          $insideScript = '/tmp/lot-issue-report-export.py'
+          docker cp $source "bankrotai-home-ingestion-worker:$insideScript"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not stage exporter source in worker tmpfs' }
+          docker exec bankrotai-home-ingestion-worker python $insideScript --limit 200 --output $inside
           if ($LASTEXITCODE -ne 0) { throw 'Read-only report export failed' }
           docker cp "bankrotai-home-ingestion-worker:$inside" $outside
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outside)) {
             throw 'Could not copy report export from worker'
           }
-          docker exec bankrotai-home-ingestion-worker python -c "import os; os.remove(r'/tmp/lot-issue-reports.json')"
+          docker exec bankrotai-home-ingestion-worker python -c "import os; [os.remove(p) for p in (r'/tmp/lot-issue-reports.json', r'/tmp/lot-issue-report-export.py') if os.path.exists(p)]"
       - name: Upload triage artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
