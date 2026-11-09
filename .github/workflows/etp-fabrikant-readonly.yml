@@ -98,9 +98,15 @@ jobs:
             $controls = @($page.selected_controls | ForEach-Object {
               "$($_.name)=$($_.value)"
             }) -join ','
-            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}; controls={5}" -f
+            $filters = @($page.available_filter_options | ForEach-Object {
+              "$($_.name)=$($_.value):$($_.label)"
+            }) -join ','
+            $forms = @($page.form_contracts | ForEach-Object {
+              "$($_.method):$($_.path)"
+            }) -join ','
+            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}; controls={5}; filters={6}; forms={7}" -f
               $page.page,$page.http_status,$page.procedure_count,$page.has_next_link,
-              (@($page.visible_page_numbers) -join ','),$controls)
+              (@($page.visible_page_numbers) -join ','),$controls,$filters,$forms)
           }
           foreach ($detail in $parsed.details) {
             Write-Output ("FABRIKANT_DETAIL id={0}; http={1}; initial={2}; current={3}; status={4}; title={5}; category={6}; cadastre={7}; area={8}" -f
