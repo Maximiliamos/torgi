@@ -95,11 +95,11 @@ async def _catalogue_pass(
 
 
 def _safe_float(value: object) -> float | None:
-    if value is None:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
     return number if 0 < number < 1e15 else None
 
