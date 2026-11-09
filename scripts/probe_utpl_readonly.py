@@ -281,7 +281,7 @@ def probe_urls(
 def probe_catalogue(
     *,
     passes: int = 2,
-    max_pages: int = 500,
+    max_pages: int = 1000,
     details: int = 30,
     delay: float = 0.5,
 ) -> dict:
@@ -339,7 +339,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalogue", action="store_true")
     parser.add_argument("--passes", type=int, default=2)
-    parser.add_argument("--max-pages", type=int, default=500)
+    parser.add_argument("--max-pages", type=int, default=1000)
     parser.add_argument("--details", type=int, default=30)
     parser.add_argument("--delay", type=float, default=0.5)
     parser.add_argument("--url", action="append", default=[])
