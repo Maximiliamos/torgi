@@ -122,11 +122,158 @@ jobs:
           $json | Set-Content -LiteralPath "$env:RUNNER_TEMP/partial-run-diagnostic.json" -Encoding UTF8
           $json
 
+
+      - name: Inspect exact M-ETS detail failures and Torgi Russia quarantine
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $code = @'
+          import json
+          from decimal import Decimal
+          import requests
+
+          from bankrotai.connectors.registry.etp_incremental import _property_ready
+          from bankrotai.connectors.registry.mets_public import BASE as METS_BASE, MetsPublicPilot, parse_mets_lot
+          from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
+          from bankrotai.services.etp_mets_full_catalogue import _parse_page, _request_page
+          from bankrotai.scraper_contracts import parse_money
+          from bankrotai.torgi_russia import BASE_URL, TorgiRussiaClient
+          from bankrotai.torgi_russia_title_recovery import recover_empty_title
+
+          def safe_error(exc):
+              return {
+                  "type": type(exc).__name__,
+                  "message": str(exc)[:500],
+              }
+
+          mets_session = requests.Session()
+          pilot = MetsPublicPilot(session=mets_session)
+          mets_pages = []
+          try:
+              for page_number in (1, 31):
+                  page_response = _request_page(mets_session, page_number, sleep=lambda _s: None)
+                  parsed = _parse_page(page_response.text, page_number)
+                  rows = []
+                  for external_id, catalogue_price, catalogue_status, title in parsed["observations"]:
+                      row = {
+                          "external_id": external_id,
+                          "catalogue_price": catalogue_price,
+                          "catalogue_status": catalogue_status,
+                          "catalogue_title": title[:180],
+                      }
+                      expected_status = MetsSourceCrawler._expected_status(catalogue_status)
+                      try:
+                          html = pilot._get(f"{METS_BASE}/{external_id}")
+                          lot = parse_mets_lot(html, f"{METS_BASE}/{external_id}")
+                          prices = {
+                              Decimal(str(value))
+                              for value in (lot.start_price, lot.current_price)
+                              if value is not None
+                          }
+                          if lot.external_id != external_id:
+                              verdict = "identity_mismatch"
+                          elif lot.auction_status != expected_status:
+                              verdict = "status_mismatch"
+                          elif Decimal(str(catalogue_price)) not in prices:
+                              verdict = "price_mismatch"
+                          elif not _property_ready(lot):
+                              verdict = "property_evidence_missing"
+                          else:
+                              verdict = "accepted"
+                          row.update({
+                              "verdict": verdict,
+                              "detail_status": lot.auction_status,
+                              "detail_start_price": lot.start_price,
+                              "detail_current_price": lot.current_price,
+                              "detail_category": lot.category,
+                              "has_address": bool(lot.address),
+                              "has_cadastre": bool(lot.cadastral_number),
+                              "detail_url": lot.lot_url,
+                          })
+                      except Exception as exc:
+                          row.update({"verdict": "exception", "error": safe_error(exc)})
+                      rows.append(row)
+                  mets_pages.append({
+                      "page": page_number,
+                      "reported_total": parsed["total"],
+                      "next_page": parsed.get("next_page"),
+                      "rows": rows,
+                  })
+          finally:
+              mets_session.close()
+
+          tr = TorgiRussiaClient(timeout=20)
+          target = "7266197"
+          torgi = {"external_id": target}
+          try:
+              detail_response = tr._get_with_retry(f"{BASE_URL}/lot/{target}")
+              torgi["detail_http_status"] = detail_response.status_code
+              torgi["detail_url"] = detail_response.url
+              detail_records = [
+                  record for record in tr._extract_public_lot_records(
+                      detail_response.text, require_linked=False
+                  )
+                  if str(record.get("id")) == target
+              ]
+              torgi["matching_detail_records"] = len(detail_records)
+              if detail_records:
+                  record = detail_records[0]
+                  torgi["detail_title"] = str(record.get("title") or "")[:300]
+                  torgi["detail_keys"] = sorted(str(k) for k in record.keys())[:80]
+                  links = record.get("source_links")
+                  if isinstance(links, list):
+                      torgi["source_links"] = [
+                          {
+                              "title": str(x.get("title") or "")[:120],
+                              "link": str(x.get("link") or "")[:500],
+                          }
+                          for x in links[:10] if isinstance(x, dict)
+                      ]
+              # Recreate only the fields needed by the exact recovery function.
+              listing_item = dict(detail_records[0]) if detail_records else {"id": int(target), "title": ""}
+              listing_item["id"] = int(target)
+              listing_item["title"] = ""
+              try:
+                  recovered = recover_empty_title(
+                      listing_item,
+                      base_url=BASE_URL,
+                      get_with_retry=tr._get_with_retry,
+                      extract_records=tr._extract_public_lot_records,
+                      parse_price=parse_money,
+                  )
+                  torgi["recovery"] = {
+                      "status": "success",
+                      "title": str(recovered.get("title") or "")[:300],
+                      "title_evidence": recovered.get("title_evidence"),
+                      "title_evidence_url": recovered.get("title_evidence_url"),
+                  }
+              except Exception as exc:
+                  torgi["recovery"] = {"status": "failed", "error": safe_error(exc)}
+          except Exception as exc:
+              torgi["detail_fetch"] = {"status": "failed", "error": safe_error(exc)}
+
+          report = {
+              "read_only": True,
+              "database_writes": 0,
+              "mets": {"pages": mets_pages},
+              "torgi_russia": torgi,
+          }
+          print(json.dumps(report, ensure_ascii=False, default=str))
+          '@
+          $output = @($code | docker exec -i $worker python -)
+          if ($LASTEXITCODE -ne 0 -or $output.Count -lt 1) { throw 'Source page diagnostic failed' }
+          $json = $output[-1]
+          $json | Set-Content -LiteralPath "$env:RUNNER_TEMP/source-page-diagnostic.json" -Encoding UTF8
+          $json
+
       - name: Upload diagnostic artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: partial-run-diagnostic
-          path: ${{ runner.temp }}/partial-run-diagnostic.json
+          path: |
+            ${{ runner.temp }}/partial-run-diagnostic.json
+            ${{ runner.temp }}/source-page-diagnostic.json
           if-no-files-found: warn
           retention-days: 3
