@@ -71,6 +71,7 @@ def test_ruson_public_offer_derives_current_price_only_from_active_period() -> N
     ]
     assert lot.raw_data["ruson_current_price_source"] == "public_offer_schedule"
     assert lot.raw_data["ruson_initial_price_format"] == "decimal_dot"
+    assert lot.raw_data["ruson_public_offer_currency"] == "RUB"
 
 
 def test_ruson_ended_detail_accepts_currency_suffix_comma_decimal_without_inventing_current_price() -> None:
