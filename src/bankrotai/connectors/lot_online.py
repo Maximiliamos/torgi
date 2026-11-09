@@ -142,9 +142,9 @@ class LotOnlineClient:
     def _compact_property_address(value: str | None) -> str | None:
         if not value:
             return None
-        cleaned = re.sub(r"\\s+", " ", value).strip(" ,.;")
+        cleaned = re.sub(r"\s+", " ", value).strip(" ,.;")
         cleaned = re.split(
-            r"[,;]?\\s+(?=(?:с\\s+земельным\\s+участком|в\\s+составе)\\b)",
+            r"[,;]?\s+(?=(?:с\s+земельным\s+участком|в\s+составе)\b)",
             cleaned,
             maxsplit=1,
             flags=re.IGNORECASE,
