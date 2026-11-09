@@ -6,22 +6,11 @@
 
 ## Текущий релизный статус
 
-- **main:** `f40eabb39d92b8afd9bc8faefe725d6fcdc87f99` — merged PR #1167.
-- **PR #1162–#1167:** merged. Старые формулировки «#1162 IN PROGRESS / MERGED=NO»
-  считаются устаревшими.
-- **Единственный открытый PR:** [#1168](https://github.com/Maximiliamos/torgi/pull/1168)
-  `6c2ee49b44c7ba075694528d76782b9c57dd6232` — исправление lifecycle race
-  между остановленным GEO worker и оставшимся `BackgroundTaskState(status=running)`.
-  На момент этого среза REG.RU S3 diagnostics — **success**, Production reliability —
-  **running**.
-- **Home deploy main `f40eabb...`: НЕ принят как завершённый deploy.**
-  Workflow [42543772788](https://github.com/Maximiliamos/torgi/actions/runs/42543772788)
-  успешно собрал образ, сделал backup/migrations и заменил API/ingestion worker,
-  но упал на шаге **Ensure REG.RU S3 map dataset is published**. Это частично
-  применённый deploy, а не зелёный exact-SHA rollout.
-- **REG.RU deploy `f40eabb...`: failure before staging**, потому что
-  [42543772815](https://github.com/Maximiliamos/torgi/actions/runs/42543772815)
-  остановился на ожидании успешного exact Home deployment.
+- **main:** `cfbe9d7012c08fa965754287aace3a4d241e2225` — merged PR #1168.
+- **PR #1162–#1168:** merged. Старые формулировки «#1162 IN PROGRESS / MERGED=NO» считаются устаревшими.
+- **Открытых release-код PR на момент среза нет.** PR #1168 уже merged; его Production reliability завершился **success**.
+- **Home deploy нового main `cfbe9d7...`: RUNNING.** Workflow [42544887673](https://github.com/Maximiliamos/torgi/actions/runs/42544887673) запущен после merge #1168; терминальный результат ещё не зафиксирован. Предыдущий `f40eabb...` deploy был частично применён и упал на map-publication gate.
+- **REG.RU deploy `cfbe9d7...`: RUNNING** — workflow [42544887614](https://github.com/Maximiliamos/torgi/actions/runs/42544887614). Cloudflare deploy [42544887613](https://github.com/Maximiliamos/torgi/actions/runs/42544887613) также running.
 - Последний подтверждённый **Home + REG.RU** exact-SHA deploy перед этим:
   `1a717638cf70ceddcf3e17647ec9601edc565359`
   (Home 42543378764, REG.RU 42543378789 — success).
@@ -68,8 +57,8 @@ partial. **По принятому операторскому контракту
 | #1165 obsolete Cloudflare cancellation | ✅ DONE | merged |
 | #1166 five reported data-quality root causes | ✅ DONE | merged |
 | #1167 force r7 map rebuild | ✅ DONE | merged |
-| #1168 stale GEO-running reconciliation | ⏳ OPEN | CI green → review → merge |
-| Exact-SHA Home deploy after #1168 | ⬜ TODO | Home workflow success through map publication |
+| #1168 stale GEO-running reconciliation | ✅ DONE | merged; Production reliability success |
+| Exact-SHA Home deploy after #1168 | ⏳ RUNNING | Home workflow success through map publication |
 | Exact-SHA REG.RU deploy | ⬜ TODO | REG.RU workflow success after verified Home |
 | Cloudflare/public WEB exact-SHA | ⬜ TODO | edge + WEB smoke green on same release |
 | r7 MapDataset + public S3 manifest | ⬜ TODO | current dataset carries r7 and public manifest resolves |
