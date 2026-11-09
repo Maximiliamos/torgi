@@ -865,20 +865,33 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = next((
-                node for node in soup.select("a[href]")
-                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
-            ), None)
-            if not isinstance(link, Tag):
-                raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
-            postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
-            if not postback:
-                raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
+            if self.profile.source_id == "utpl.ru":
+                from bankrotai.connectors.etp_sources.utpl_contract import utpl_next_postback
+                postback_values = utpl_next_postback(previous.content, page - 1)
+                if postback_values is None:
+                    raise SourceSchemaError(
+                        f"{self.source_id}: page {page} provider postback target disappeared"
+                    )
+            else:
+                link = next((
+                    node for node in soup.select("a[href]")
+                    if _clean(node.get_text(" ", strip=True)) == str(page)
+                    and "__doPostBack" in str(node.get("href") or "")
+                ), None)
+                if not isinstance(link, Tag):
+                    raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
+                postback = re.search(
+                    r"__doPostBack\('([^']*)','([^']*)'\)",
+                    str(link.get("href") or ""),
+                )
+                if not postback:
+                    raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
+                postback_values = postback.groups()
             data = {
                 str(node.get("name")): str(node.get("value") or "")
                 for node in soup.select("input[type=hidden][name]")
             }
-            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
+            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback_values
             action = _safe_provider_url(
                 self.profile, previous.url or self.profile.listing_url
             )
