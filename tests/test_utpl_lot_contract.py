@@ -3,6 +3,13 @@ from __future__ import annotations
 
 import pytest
 
+from bankrotai.connectors.etp_sources import (
+    PROFILES,
+    SOURCE_CONNECTOR_TYPES,
+    parse_detail_html,
+    parse_listing_html,
+)
+from bankrotai.connectors.etp_sources.pagination import has_next_page
 from bankrotai.connectors.etp_sources.utpl_contract import (
     PRODUCTION_ENABLED,
     SAFE_FOR_RECONCILIATION,
@@ -241,3 +248,74 @@ def test_detail_promotes_only_structured_property_classification() -> None:
     assert parsed["category"] == "land"
     assert parsed["structured_classifier_verified"] is True
     assert parsed["property_classification_verified"] is True
+
+
+def operational_profile():
+    return next(item for item in PROFILES if item.source_id == "utpl.ru")
+
+
+def catalogue_row_fixture() -> str:
+    return """
+    <table>
+      <tr>
+        <th>Номер процедуры</th><th>№ лота</th><th>Лот</th>
+        <th>Начальная цена</th><th>Текущая цена</th><th>Статус</th>
+      </tr>
+      <tr>
+        <td>0009410</td><td>2</td>
+        <td><a href="/public/public-offers/lots/view/128999/">
+          Земельный участок 50:05:0010203:1234
+        </a></td>
+        <td>2 500 000,00</td><td>2 000 000,00</td><td>Прием заявок</td>
+      </tr>
+    </table>
+    """
+
+
+def test_operational_listing_routes_through_utpl_contract() -> None:
+    lot = parse_listing_html(operational_profile(), catalogue_row_fixture(), page=7)[0]
+    assert lot.external_id == "utpl.ru:public-offers-128999"
+    assert lot.start_price == 2_500_000
+    assert lot.current_price == 2_000_000
+    assert lot.auction_status == "active"
+    assert lot.category == "other"
+    assert lot.procedure_number == "9410"
+    assert lot.raw_data["utpl_lot_number"] == "2"
+    assert lot.raw_data["utpl_property_classification_verified"] is False
+
+
+def test_operational_detail_routes_through_isolated_lot_section() -> None:
+    lot = parse_detail_html(
+        operational_profile(),
+        detail(),
+        detail_url="https://bankrupt.utpl.ru/public/public-offers/lots/view/127814/",
+        external_id="utpl.ru:public-offers-127814",
+    )
+    assert lot.external_id == "utpl.ru:public-offers-127814"
+    assert lot.start_price == 625560.07
+    assert lot.current_price == 500448.07
+    assert lot.auction_status == "active"
+    assert lot.category == "land"
+    assert lot.cadastral_number == "61:45:0000392:433"
+    assert lot.area == 232.7
+    assert lot.procedure_number == "0009410"
+    assert lot.raw_data["utpl_lot_number"] == "1"
+    assert lot.raw_data["utpl_property_kinds"] == ["land"]
+    assert lot.raw_data["utpl_property_classification_verified"] is True
+
+
+def test_operational_pagination_uses_utpl_forward_control_and_terminal() -> None:
+    profile = operational_profile()
+    page_ten = """
+      <span>10</span>
+      <a href="javascript:__doPostBack('grid$forward','')">&gt;&gt;</a>
+    """
+    terminal = "<span>517</span>"
+    assert has_next_page(profile, page_ten, 10) is True
+    assert has_next_page(profile, terminal, 517) is False
+
+
+def test_operational_connector_exposes_detail_enrichment_without_reconciliation() -> None:
+    connector = SOURCE_CONNECTOR_TYPES["utpl.ru"]()
+    assert "detail_enrichment" in connector.capabilities
+    assert connector.safe_for_reconciliation is False
