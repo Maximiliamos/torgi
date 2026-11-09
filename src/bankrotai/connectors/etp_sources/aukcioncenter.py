@@ -105,6 +105,15 @@ def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
 
 
+def _decode_html(value: str | bytes) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value.decode("windows-1251", errors="replace")
+
+
 def _area_values(value: str) -> list[float]:
     matches = _AREA_EXPLICIT_RE.findall(value)
     if not matches:
@@ -249,10 +258,7 @@ def catalogue_url(page: int) -> str:
 
 
 def declared_pages(html: str | bytes) -> tuple[int, ...]:
-    soup = BeautifulSoup(
-        html.decode("utf-8", errors="replace") if isinstance(html, bytes) else html,
-        "html.parser",
-    )
+    soup = BeautifulSoup(_decode_html(html), "html.parser")
     pages: set[int] = set()
     for anchor in soup.select("a[href]"):
         query = parse_qs(urlparse(urljoin(LISTING_URL, str(anchor.get("href") or ""))).query)
@@ -288,9 +294,9 @@ def parse_procedure_observations(
         markers = list(_LOT_RE.finditer(row_text))
         segments: list[tuple[int, str]] = []
         if markers:
-            for index, item in enumerate(markers):
+            for index, marker in enumerate(markers):
                 end = markers[index + 1].start() if index + 1 < len(markers) else len(row_text)
-                segments.append((int(item.group("lot")), _clean(row_text[item.end():end])))
+                segments.append((int(marker.group("lot")), _clean(row_text[marker.end():end])))
         else:
             url_lots = {lot for _, lot in identities if lot is not None}
             if len(url_lots) == 1:
