@@ -65,3 +65,21 @@ def test_wrong_external_identity_fails_closed():
         parse_detail_html(profile(), detail(),
             detail_url="https://bankrupt.utpl.ru/public/auctions/lots/view/99/",
             external_id="utpl.ru:auctions-98")
+
+
+@pytest.mark.parametrize(("label", "expected"), [
+    ("Окончен", "closed"),
+    ("Не состоялся", "closed"),
+    ("Извещение опубликовано", "scheduled"),
+    ("Прием заявок", "active"),
+    ("Приостановлен", "paused"),
+    ("Неизвестный статус", "unknown"),
+])
+def test_official_utpl_status_labels(label, expected):
+    from bankrotai.connectors.etp_sources.utpl_contract import normalize_utpl_status
+    assert normalize_utpl_status(label) == expected
+    parsed = parse_detail_html(
+        profile(), detail(status=label),
+        detail_url="https://bankrupt.utpl.ru/public/public-offers/lots/view/127814/",
+    )
+    assert parsed.auction_status == expected
