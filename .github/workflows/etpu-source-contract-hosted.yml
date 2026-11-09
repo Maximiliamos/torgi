@@ -6,8 +6,7 @@ on:
     paths:
       - ".github/workflows/etpu-source-contract-hosted.yml"
       - "scripts/etpu_readonly_audit.py"
-      - "src/bankrotai/connectors/etp_sources/common.py"
-      - "src/bankrotai/connectors/etp_sources/source_specific.py"
+      - "src/bankrotai/connectors/etp_sources/etpu.py"
       - "tests/test_etpu_contract.py"
 
 permissions:
