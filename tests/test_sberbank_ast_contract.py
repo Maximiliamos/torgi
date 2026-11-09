@@ -185,7 +185,7 @@ def test_sberbank_goodsview_detail_identity_and_fields() -> None:
     assert detail.cadastral_number == "77:05:0000000:3121"
     assert detail.area == 87.2
     assert detail.procedure_number == "SBR013-TEST-MULTI"
-    assert detail.application_deadline.isoformat() == "2026-11-25T14:00:00"
+    assert detail.application_start_at.isoformat() == "2026-11-10T09:00:00"\n    assert detail.application_deadline.isoformat() == "2026-11-25T14:00:00"
     assert detail.auction_at.isoformat() == "2026-12-03T14:00:00"
     assert detail.raw_data["individual_lot_identity_verified"] is True
 
