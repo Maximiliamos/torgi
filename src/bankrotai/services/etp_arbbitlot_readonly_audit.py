@@ -7,7 +7,7 @@ import json
 from collections import Counter, defaultdict
 from typing import Any, Callable
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources.arbbitlot import ArbbitlotConnector
 
 
 SOURCE_ID = "arbbitlot.ru"
@@ -243,10 +243,9 @@ def main() -> None:
     if not 2 <= args.max_pages <= 5000:
         raise SystemExit("--max-pages must be in 2..5000")
 
-    connector_type = SOURCE_CONNECTOR_TYPES[SOURCE_ID]
     report = asyncio.run(
         run_audit(
-            connector_type,
+            ArbbitlotConnector,
             detail_limit=args.detail_limit,
             max_pages=args.max_pages,
         )
