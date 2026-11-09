@@ -1,0 +1,65 @@
+name: ALFALOT source-only read-only contract evidence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/bankrotai/connectors/etp_sources/alfalot_audit.py"
+      - "src/bankrotai/connectors/etp_sources/profiles.py"
+      - "scripts/probe-alfalot-readonly.py"
+      - "tests/test_alfalot_audit.py"
+      - "tests/test_etp_sources.py"
+      - "docs/ETP_ALFALOT_AUDIT_2026-11-09.md"
+      - ".github/workflows/etp-alfalot-live-readonly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etp-alfalot-readonly-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-alfalot-regression:
+    name: ALFALOT offline focused regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - run: python -m compileall -q src/bankrotai/connectors/etp_sources/alfalot_audit.py scripts/probe-alfalot-readonly.py
+      - run: ruff check src/bankrotai/connectors/etp_sources/alfalot_audit.py tests/test_alfalot_audit.py
+      - run: pytest -q tests/test_alfalot_audit.py tests/test_etp_sources.py
+
+  live-browser-discovery:
+    name: ALFALOT official public GD discovery (NOT acceptance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - run: python -m playwright install --with-deps chromium
+      - name: Collect sanitized ALFALOT filter and paginator shapes
+        env:
+          PYTHONPATH: src
+        run: >-
+          python scripts/probe-alfalot-readonly.py
+          --discover-only
+          --output "${{ runner.temp }}/alfalot-public-ui-readonly.json"
+      - name: Retain source-specific public read-only evidence, even when blocked
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alfalot-public-ui-readonly
+          path: ${{ runner.temp }}/alfalot-public-ui-readonly.json
+          if-no-files-found: warn
+          retention-days: 14

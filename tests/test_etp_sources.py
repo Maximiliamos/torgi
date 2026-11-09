@@ -765,13 +765,6 @@ def test_sistematorg_never_imports_procedure_as_unnumbered_lot():
 
 @pytest.mark.parametrize(("source_id", "lot_url", "second_lot_url", "next_href", "page_two_url"), [
     (
-        "alfalot.ru",
-        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12345",
-        "https://etp.alfalot.ru/app/LotCard/page?LotCard.lotEntity=LT%3A12346",
-        "?LotList.pageNum.lots=1&lotFilterState.activeFilter=SUPCOMING&lotFilterType.activeFilter=SSALE",
-        "LotList.pageNum.lots=1",
-    ),
-    (
         "roseltorg.ru", "https://www.roseltorg.ru/procedure/SAMPLE/12345",
         "https://www.roseltorg.ru/procedure/SAMPLE/12346",
         "?sale=2&status%5B0%5D=1&page=1", "page=1",
