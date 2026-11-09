@@ -236,7 +236,7 @@ def main() -> int:
             "database_writes": 0,
             "production_changes": 0,
             "bankruptcy_filter": {"requested": BANKRUPTCY, "returned_rows_verified": True, "source_trade_section_id": SECTION_ID},
-            "property_scope": {"structured_branch": REAL_ESTATE, "free_text_fallback_used": False},
+            "property_scope": {"structured_branch": REAL_ESTATE, "structured_branch_verified": True, "free_text_fallback_used": False},
             "api_total": total,
             "display_cap": DISPLAY_CAP,
             "completeness": "NOT_PROVEN_AT_DISPLAY_CAP",
@@ -301,6 +301,7 @@ def main() -> int:
         },
         "property_scope": {
             "structured_branch": REAL_ESTATE,
+            "structured_branch_verified": True,
             "free_text_fallback_used": False,
             "branch_group_aggregation_present": branch_group is not None,
         },
