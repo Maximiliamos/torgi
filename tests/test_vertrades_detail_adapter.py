@@ -163,10 +163,10 @@ def _catalogue_html() -> bytes:
     filler = "".join("<td>-</td>" for _ in range(4))
     return (
         "<html><body><table><tr>"
-        "<td>55-АП</td><td>2</td><td>synthetic debtor</td>"
-        "<td><a href='/showTrades?id=102259678'>"
-        "нежилое здание 9 кв.м. кадастровый номер 34:34:080147:2677"
-        "</a></td><td>246800.00</td>"
+        "<td>55-АП</td><td><a href='/showTrades?id=102259678'>2</a></td>"
+        "<td>synthetic debtor</td>"
+        "<td>нежилое здание 9 кв.м. кадастровый номер 34:34:080147:2677</td>"
+        "<td>246800.00</td>"
         + filler +
         "<td>Завершенные торги</td>"
         "</tr></table></body></html>"
