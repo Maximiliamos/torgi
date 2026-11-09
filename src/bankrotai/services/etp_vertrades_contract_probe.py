@@ -16,6 +16,7 @@ from typing import Callable
 import requests
 from bankrotai.connectors.etp_sources.vertrades import (
     _vertrades_status,
+    catalogue_structure_summary,
     catalogue_page_url,
     get_vertrades_lot,
     has_next_catalogue_page,
@@ -81,7 +82,11 @@ def _scan_pass(
         lots = parse_catalogue_page(response.content, page=page)
         ids = {lot.external_id for lot in lots}
         if not ids:
-            raise VertradesProbeError(f"no_property_lot_ids_on_page:{page}")
+            structure = catalogue_structure_summary(response.content)
+            raise VertradesProbeError(
+                f"no_property_lot_ids_on_page:{page}:"
+                + json.dumps(structure, sort_keys=True, separators=(",", ":"))
+            )
         overlap = seen.intersection(ids)
         if overlap:
             raise VertradesProbeError(f"duplicate_lot_ids_across_pages:{page}")
