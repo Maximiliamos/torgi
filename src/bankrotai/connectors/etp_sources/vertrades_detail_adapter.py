@@ -22,6 +22,8 @@ def _vertrades_status(value: str) -> str:
         return normalized
     if re.search(r"торги\s+по\s+лоту\s+отмен[её]н", value, re.IGNORECASE):
         return "closed"
+    if re.search(r"заверш[её]нн?ые\s+торги", value, re.IGNORECASE):
+        return "closed"
     return "unknown"
 
 
