@@ -79,18 +79,36 @@ def _structured_property_kinds(classifier: str, lot_text: str) -> tuple[str, ...
         r"право\s+аренды|право\s+пользования", lot_lower, re.I
     ):
         kinds.append("lease")
-    if re.search(r"земельн|земл[ия]|участк", source, re.I):
+    if re.search(r"земельн|земл[ия]|участк", source, re.I) or re.search(
+        r"земельн\w*\s+участ", lot_lower, re.I
+    ):
         kinds.append("land")
-    if re.search(
+    real_estate_pattern = (
         r"недвижим|жил\w*\s+(?:здани|помещ)|нежил\w*|квартир|помещен|"
-        r"здани|сооружен|незавершенн\w*\s+строительств|гараж",
-        source,
+        r"здани|сооружен|незавершенн\w*\s+строительств|гараж"
+    )
+    if re.search(real_estate_pattern, source, re.I) or re.search(
+        r"\b(?:здание|сооружение|нежилое помещение|жилой дом|квартира)\b",
+        lot_lower,
         re.I,
     ):
         kinds.append("real_estate")
-    if re.search(r"автомоб|транспорт|воздушн\w*\s+суд|самолет|прицеп", source, re.I):
+    if re.search(r"автомоб|транспорт|воздушн\w*\s+суд|самолет|прицеп", source, re.I) or re.search(
+        r"\b(?:автомобиль|транспортное средство|прицеп)\b|\bVIN\s*[:№]",
+        lot_text,
+        re.I,
+    ):
         kinds.append("vehicle")
-    if re.search(r"машин|оборудован|специализированн\w*\s+техник|станок|подъемн", source, re.I):
+    if re.search(
+        r"машин|оборудован|специализированн\w*\s+техник|станок|подъемн",
+        source,
+        re.I,
+    ) or re.search(
+        r"\b(?:оборудование|станок|подъемник|топливораздаточн\w*\s+колонк|"
+        r"резервуар|компрессор)\b",
+        lot_lower,
+        re.I,
+    ):
         kinds.append("equipment")
     if re.search(r"товарн\w*\s+знак|интеллектуальн|патент", source, re.I):
         kinds.append("intellectual_property")
