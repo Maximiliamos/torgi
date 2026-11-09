@@ -280,8 +280,8 @@ def probe_catalogue(
 ) -> dict:
     if not 1 <= passes <= 3:
         raise ValueError("passes must be 1..3")
-    if not 1 <= max_pages <= 1000:
-        raise ValueError("max_pages must be 1..1000")
+    if not 1 <= max_pages <= 5000:
+        raise ValueError("max_pages must be 1..5000")
     if not 0 <= details <= 100:
         raise ValueError("details must be 0..100")
     if not 0.1 <= delay <= 3.0:
