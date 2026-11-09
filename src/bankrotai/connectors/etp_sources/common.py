@@ -870,8 +870,18 @@ class HtmlEtpConnector(AuctionConnector):
         else:
             link = next((
                 node for node in soup.select("a[href]")
-                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+                if _clean(node.get_text(" ", strip=True)) == str(page)
+                and "__doPostBack" in str(node.get("href") or "")
             ), None)
+            if not isinstance(link, Tag) and self.source_id == "arbbitlot.ru":
+                # FogSoft's ARBbitLot pager exposes numeric links in groups of
+                # ten and uses ">>" to advance to the next group. On page 10,
+                # 20, ... there is no visible numeric link for page+1.
+                link = next((
+                    node for node in soup.select("a[href]")
+                    if _clean(node.get_text(" ", strip=True)) == ">>"
+                    and "__doPostBack" in str(node.get("href") or "")
+                ), None)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
