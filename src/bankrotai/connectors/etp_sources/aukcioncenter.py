@@ -46,11 +46,6 @@ _NON_PROPERTY_RE = re.compile(
     re.I,
 )
 _PURE_LEASE_RE = re.compile(r"\bправо\s+аренды\b", re.I)
-_OWNED_REALTY_RE = re.compile(
-    r"\b(?:здани|помещен|квартир|жилой\s+дом|гараж|сооружен|"
-    r"земельн\w*\s+участок)\b",
-    re.I,
-)
 _STATUS_MARKERS = (
     "идёт приём заявок",
     "идет прием заявок",
@@ -145,7 +140,7 @@ def _asset_class(value: str) -> str:
     # (e.g. building + lease of the underlying parcel). Pure lease rights are
     # not ownership real estate and remain a separate class.
     pure_lease = bool(_PURE_LEASE_RE.search(value)) and not bool(
-        re.search(r"здани|помещен|квартир|жилой\\s+дом|гараж|сооружен", value, re.I)
+        re.search(r"здани|помещен|квартир|жилой\s+дом|гараж|сооружен", value, re.I)
     )
     if pure_lease:
         return "lease_right"
@@ -153,19 +148,19 @@ def _asset_class(value: str) -> str:
         return "mixed"
     if property_match:
         if re.search(r"земельн|участок|кадастров", value, re.I) and not re.search(
-            r"здани|помещен|квартир|жилой\\s+дом|гараж|сооружен", value, re.I
+            r"здани|помещен|квартир|жилой\s+дом|гараж|сооружен", value, re.I
         ):
             return "land"
         return "real_estate"
-    if re.search(r"автомоб|транспорт|vin\\b|прицеп|тепловоз", value, re.I):
+    if re.search(r"автомоб|транспорт|vin\b|прицеп|тепловоз", value, re.I):
         return "vehicle"
-    if re.search(r"право\\s+требован|дебитор", value, re.I):
+    if re.search(r"право\s+требован|дебитор", value, re.I):
         return "receivables"
-    if re.search(r"дол[яи]\\s+в\\s+уставн|акци[яи]|ценн\\w*\\s+бумаг", value, re.I):
+    if re.search(r"дол[яи]\s+в\s+уставн|акци[яи]|ценн\w*\s+бумаг", value, re.I):
         return "equity"
-    if re.search(r"оборудован|станок|линия\\s+для|мебел|техник", value, re.I):
+    if re.search(r"оборудован|станок|линия\s+для|мебел|техник", value, re.I):
         return "equipment"
-    if re.search(r"товарн\\w*\\s+знак|интеллектуальн", value, re.I):
+    if re.search(r"товарн\w*\s+знак|интеллектуальн", value, re.I):
         return "intangible"
     return "other"
 
