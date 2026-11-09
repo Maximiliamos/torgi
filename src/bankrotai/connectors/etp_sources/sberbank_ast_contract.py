@@ -311,14 +311,27 @@ def parse_catalogue_page(payload: dict[str, Any], *, page: int) -> CataloguePage
 
     source_total_proven = total < DISPLAY_LIMIT
     terminal = terminal_page_for_total(total)
+    if len(items) > PAGE_SIZE:
+        raise SberbankAstContractError("PurchaseList exceeds requested page size")
     if not source_total_proven and page * PAGE_SIZE >= DISPLAY_LIMIT:
         raise SberbankAstContractError(
             f"{DISPLAY_LIMIT} is a public display cap, not a proven source end"
         )
 
     if source_total_proven:
-        next_page = page + 1 if page * PAGE_SIZE < total else None
+        if terminal is None or page > terminal:
+            raise SberbankAstContractError("catalogue page is beyond the proven terminal page")
+        expected_rows = PAGE_SIZE if page < terminal else total - (terminal - 1) * PAGE_SIZE
+        if len(items) != expected_rows:
+            raise SberbankAstContractError(
+                "PurchaseList row count conflicts with API Total/page contract"
+            )
+        next_page = page + 1 if page < terminal else None
     else:
+        if len(items) != PAGE_SIZE:
+            raise SberbankAstContractError(
+                "capped catalogue returned a short page before a proven source end"
+            )
         next_page = page + 1
 
     return CataloguePage(
