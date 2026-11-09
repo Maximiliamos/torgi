@@ -23,6 +23,14 @@ from bankrotai.connectors.etp_sources.source_specific import (
     profit_initial_money,
     ruson_initial_money,
     sistematorg_lot_count,
+    zakazrf_address,
+    zakazrf_classifier,
+    zakazrf_current_money,
+    zakazrf_initial_money,
+    zakazrf_lot_number,
+    zakazrf_status_text,
+    zakazrf_structured_category,
+    zakazrf_title,
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
@@ -580,22 +588,37 @@ def parse_detail_html(
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
     current_price = _current_money(text_value)
+    structured_classifier: str | None = None
+    if profile.source_id == "zakazrf.ru":
+        # ZakazRF places the currency in the label ("Начальная цена, руб.:")
+        # rather than after the number, and exposes a structured EFRSB
+        # classifier. Keep this source-specific so generic parsers for other
+        # ETPs do not broaden their price/category acceptance contracts.
+        price = zakazrf_initial_money(text_value)
+        current_price = zakazrf_current_money(text_value)
+        structured_classifier = zakazrf_classifier(text_value)
+        title = zakazrf_title(text_value) or title
+    explicit_status = zakazrf_status_text(text_value) if profile.source_id == "zakazrf.ru" else None
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=_category(text_value),
+        category=(
+            zakazrf_structured_category(structured_classifier)
+            if profile.source_id == "zakazrf.ru"
+            else _category(text_value)
+        ) or "other",
         region_slug=None,
         region_name=None,
-        address=None,
+        address=zakazrf_address(title) if profile.source_id == "zakazrf.ru" else None,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(text_value),
+        auction_status=_status(explicit_status or text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -603,6 +626,14 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
+            **({
+                "structured_property_classifier": structured_classifier,
+                "structured_property_classifier_verified": bool(structured_classifier),
+                "lot_number": zakazrf_lot_number(text_value),
+                "detail_start_price_verified": price is not None,
+                "detail_current_price_verified": current_price is not None,
+                "detail_status_verified": explicit_status is not None,
+            } if profile.source_id == "zakazrf.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
