@@ -24,8 +24,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install probe and focused-test dependencies
-        run: python -m pip install --disable-pip-version-check requests beautifulsoup4 pytest
+      - name: Install project and focused-test dependencies
+        run: python -m pip install --disable-pip-version-check -e . pytest
       - name: Run focused AukcionCenter contract tests
         run: PYTHONPATH=src pytest -q tests/test_etp_aukcioncenter_contract.py
       - name: Run two-pass AukcionCenter source-contract probe
