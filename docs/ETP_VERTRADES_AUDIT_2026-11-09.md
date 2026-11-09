@@ -150,7 +150,7 @@ Known detail status forms explicitly covered include `Торги заверше�
 - `src/bankrotai/services/etp_vertrades_contract_probe.py` — bounded read-only orchestration using only the isolated Vertrades module for catalogue/detail parsing.
 - `tests/test_vertrades_catalogue_contract.py` — source-module catalogue, mixed-asset, identity and pagination regressions.
 - `tests/test_vertrades_detail_sections.py` — exact-section price/status, dates, address/cadastre/area and fail-closed regressions imported directly from `vertrades.py`.
-- `tests/test_vertrades_detail_adapter.py` — fetch/enrichment tests call `vertrades.py` directly without shared dispatcher wiring.
+- `tests/test_vertrades_detail_adapter.py` — direct fetch/enrichment regressions plus an integration assertion that `SOURCE_CONNECTOR_TYPES` and the global connector registry select the source-specific `VertradesConnector` with search/fetch/detail-enrichment capabilities.
 - `tests/test_etp_vertrades_contract_probe.py` — bounded two-pass/terminal/digest/safety regressions and 30-lot detail-sample contract.
 - `.github/workflows/etp-vertrades-contract-readonly.yml` — focused source tests plus bounded live two-pass catalogue and 30-lot detail proof.
 - this audit document.
@@ -224,16 +224,17 @@ NO
 | Dates | PASS at procedure level |
 | Title/address/cadastre/area | Proven where explicitly present in requested section; optional fields remain null when absent |
 | Two browser-layer catalogue passes | PASS for page/leading-procedure stability |
-| Full raw-ID SHA-256 two-pass run | Source-specific network CI check included; exact run output is recorded in PR checks |
+| Full raw-ID SHA-256 two-pass run | PASS on network runner — 68 unique property lot IDs, stable digest `912f42f73325373939a3378236a0f83736b4c632fe6e3ba43f4e5a0ed4a15219` |
 | CAPTCHA/auth bypass | None attempted |
+| Registered connector integration | PASS by regression — global registry must resolve `vertrades.ru` to the source-specific connector |
 | Production enablement | NO |
 
 ## Remaining limitations
 
 1. The source's public register is stale/historical; no active 2026 auction sample was observed.
 2. The live probe records the public search form's method/action/field names but intentionally does not submit arbitrary user search values; the canonical unfiltered catalogue is sufficient for source inventory proof.
-3. The exact two-pass SHA-256 result from `etp_vertrades_contract_probe.py` still requires a network-capable repository runtime; the current agent container cannot resolve external DNS.
-4. Source-specific focused tests and live proof plus the repository-wide CI must be green before this PR is treated as review-ready.
+3. The network-capable source-specific runner has executed the two-pass catalogue proof and 30-lot detail sample successfully; any later connector-wiring commit must repeat that check on its exact head.
+4. Source-specific focused/live checks and the repository-wide applicable CI must be green on the final unchanged head before this PR is treated as review-ready.
 
 ## Acceptance boundary
 
