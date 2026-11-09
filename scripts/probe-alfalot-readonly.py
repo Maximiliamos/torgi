@@ -104,6 +104,20 @@ def _safe_response(resp, stage: str) -> dict | None:
     }
 
 
+def _await_gd_filter(page, *, timeout_ms: int = 30000) -> None:
+    """The GWT/JS catalogue renders after DOMContentLoaded, not with it."""
+    try:
+        page.wait_for_selector("#stateFilter_GD", state="attached", timeout=timeout_ms)
+    except Exception as exc:
+        try:
+            text = page.locator("body").inner_text(timeout=1500).lower()
+        except Exception:
+            text = ""
+        if "версия вашего браузера не поддерживается" in text:
+            raise AlfalotContractError("provider returned unsupported-browser UI") from exc
+        raise AlfalotContractError("GD filter absent after bounded GWT render wait") from exc
+
+
 def _filter_selected(page) -> tuple[str, bool]:
     node = page.locator("#stateFilter_GD")
     if node.count() != 1:
@@ -196,6 +210,7 @@ def _advance(page, pager, expected: int, previous_ids: tuple[str, ...], selector
 def _walk(page, *, max_pages: int, pager_selector: str, stage: dict[str, str], walk_number: int):
     stage["value"] = f"walk_{walk_number}_landing"
     page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+    _await_gd_filter(page)
     node = page.locator("#stateFilter_GD")
     if node.count() != 1:
         raise AlfalotContractError("GD filter unavailable")
@@ -265,6 +280,7 @@ def run(output: Path, max_pages: int, max_details: int, pager_selector: str | No
                 if discover_only:
                     stage["value"] = "discover_landing"
                     page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+                    _await_gd_filter(page)
                     node = page.locator("#stateFilter_GD")
                     if node.count() != 1:
                         raise AlfalotContractError("GD filter unavailable for discovery")
