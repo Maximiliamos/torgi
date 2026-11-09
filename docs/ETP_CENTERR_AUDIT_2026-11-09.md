@@ -111,23 +111,31 @@ that incorrectly point at the same provider lot ID. The strict parser must
 raise on the collision instead of silently deduplicating or substituting one
 detail for another.
 
-## Changed files
+## Isolated files
 
 - `src/bankrotai/connectors/etp_sources/centerr_contract.py`
-- `src/bankrotai/connectors/etp_sources/common.py`
 - `scripts/audit_centerr_contract.py`
 - `tests/test_centerr_contract.py`
-- `tests/test_etp_sources.py` (CenterR-only legacy fixtures aligned to the proven row schema)
 - `tests/fixtures/centerr_duplicate_wrong_id.html`
 - `.github/workflows/centerr-contract-audit.yml`
 - this document
 
-## Test compatibility
+No shared parser, pagination, profile, source-specific registry or
+`direct_etp_catalogue.py` change remains in this PR.
 
-The first full SQLite run after introducing the strict catalogue parser exposed
-three old CenterR tests that used synthetic one-cell tables. Those fixtures no
-longer represented the live provider contract. The parser was not relaxed;
-only the CenterR test rows were upgraded to the proved nine-column schema.
+## Integration note
+
+An earlier integrated attempt exposed three legacy CenterR tests that used
+synthetic one-cell tables. That finding is preserved, but the shared test edits
+were removed from this source-isolation PR. The future integration PR should
+wire `centerr_contract.parse_listing(...)` and `centerr_contract.parse_detail(...)`
+from the shared dispatcher, then centrally update any legacy shared fixtures to
+the proved nine-column CenterR row schema.
+
+CenterR-specific ASP.NET postback parsing, terminal-page detection, page
+fingerprints, cross-page identity digest/collision checks, catalogue/detail
+identity verification, price/status/title/property parsing and lifecycle dates
+now live in `centerr_contract.py`.
 
 ## Known limitations
 
