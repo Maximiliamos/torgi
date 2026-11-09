@@ -93,3 +93,32 @@ def test_bidexpert_address_keeps_common_abbreviations_and_house_number() -> None
     assert {lot.external_id: lot.address for lot in lots} == {
         f"bidexpert:{lot_id}": expected for lot_id, (_title, expected) in samples.items()
     }
+
+
+def test_bidexpert_isolates_adjacent_cards_and_builds_working_absolute_url() -> None:
+    html = """
+    <div class="lots-wrapper">
+      <div class="bid-item">
+        <a href="/bids/lot/?n=1120320">
+          <div class="title">Чужой земельный участок</div>
+          <div>315 957 ₽</div>
+        </a>
+      </div>
+      <div class="bid-item">
+        <a href="/bids/lot/?n=1121014">
+          <div class="title">Нежилое помещение, кадастровый номер 50:46:0010101:10</div>
+          <div>4 250 000 ₽</div>
+        </a>
+      </div>
+    </div>
+    """
+    lots = BidExpertClient().parse_listing_html(
+        html, filters=BidExpertSearchFilters(category="realty")
+    )
+
+    reported = next(lot for lot in lots if lot.external_id == "bidexpert:1121014")
+    assert reported.title.startswith("Нежилое помещение")
+    assert "Чужой земельный" not in reported.description
+    assert reported.start_price == 4_250_000
+    assert reported.lot_url == "https://bidexpert.ru/bids/lot/?n=1121014"
+    assert reported.source_url == reported.lot_url
