@@ -28,6 +28,7 @@ from bankrotai.db import (
     WorkflowTask,
 )
 from bankrotai.geo import enrich_lot_geo
+from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values, utc_now # Assuming utc_now exists or I should use datetime.now(timezone.utc)
 from bankrotai.services.dedupe_scan import iter_primary_processed_lots
 
@@ -975,6 +976,10 @@ def build_lots_response(
     query = select(ProcessedLot).where(
         ProcessedLot.region_slug.in_(region_values),
         ProcessedLot.is_archived.is_(False),
+        or_(
+            ProcessedLot.auction_status.is_(None),
+            func.lower(ProcessedLot.auction_status).notin_(ENDED_STATUSES),
+        ),
     )
 
     # Поиск по названию 
