@@ -57,10 +57,13 @@ def test_sberbank_json_rejects_untrusted_lot_link() -> None:
     raw = {
         "objectHref": "http://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
         "title": "Земельный участок",
+        "ObjectSource": "Продажа имущества (предприятия) банкротов",
+        "SourceTradeSectionId": "13",
+        "BranchGroup": "Недвижимое имущество",
     }
-    with pytest.raises(SourceAccessError, match="unsafe provider URL"):
+    with pytest.raises(SourceSchemaError, match="trusted HTTPS host"):
         parse_sberbank_json(
-            profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": raw}]}, page=1
+            profile("sberbank-ast.ru"), {"Total": 1, "PurchaseList": [{"_source": raw}]}, page=1
         )
 
 
@@ -423,10 +426,13 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
     base = {
         "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/12/0/0/101",
         "title": "Земельный участок, кадастровый номер 47:16:0420001:37",
+        "ObjectSource": "Продажа имущества (предприятия) банкротов",
+        "SourceTradeSectionId": "13",
+        "BranchGroup": "Недвижимое имущество",
         "purchAmountRUB": "722100",
         "purchAmount": "900000",
     }
-    lots = parse_sberbank_json(profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": base}]}, page=1)
+    lots = parse_sberbank_json(profile("sberbank-ast.ru"), {"Total": 1, "PurchaseList": [{"_source": base}]}, page=1)
     assert len(lots) == 1
     assert lots[0].start_price == 722100
     assert lots[0].current_price is None
@@ -434,12 +440,12 @@ def test_sberbank_prefers_explicit_ruble_amount_and_does_not_invent_current() ->
 
     unknown_currency = dict(base, purchAmountRUB=None)
     assert parse_sberbank_json(
-        profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": unknown_currency}]}, page=1
+        profile("sberbank-ast.ru"), {"Total": 1, "PurchaseList": [{"_source": unknown_currency}]}, page=1
     )[0].start_price is None
 
     rubles = dict(unknown_currency, purchCurrency="RUB")
     assert parse_sberbank_json(
-        profile("sberbank-ast.ru"), {"PurchaseList": [{"_source": rubles}]}, page=1
+        profile("sberbank-ast.ru"), {"Total": 1, "PurchaseList": [{"_source": rubles}]}, page=1
     )[0].start_price == 900000
 
 
@@ -591,13 +597,16 @@ def test_sberbank_api_pagination_and_mapping() -> None:
         "Total": 22,
         "PurchaseList": [{
             "_source": {
-                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
-                "title": "Автомобиль LADA VESTA, VIN XTAGFK110NY607362",
-                "purchName": "Торги по реализации автомобиля",
+                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571",
+                "title": "Нежилое помещение, кадастровый номер 78:12:0007135:1054",
+                "purchName": "Торги по реализации недвижимого имущества",
+                "ObjectSource": "Продажа имущества (предприятия) банкротов",
+                "SourceTradeSectionId": "13",
+                "BranchGroup": "Недвижимое имущество",
                 "purchAmount": "890000",
                 "purchCurrency": "RUB",
                 "PurchaseStageTerm": "Прием заявок",
-                "purchCode": "SBR013-2610260004-0",
+                "purchCode": "SBR013-2610260004-0.1",
                 "RegionNameTerm": "Г. Санкт-Петербург",
                 "Address": "Г. Санкт-Петербург",
                 "RequestStopDate": "03.12.2026 10:00",
@@ -609,18 +618,28 @@ def test_sberbank_api_pagination_and_mapping() -> None:
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](session=session)
     result = asyncio.run(connector.search({}))
     assert result.next_cursor == "2"
-    assert result.items[0].external_id == "sberbank-ast.ru:8-0-0-53571"
+    assert result.items[0].external_id == "sberbank-ast.ru:11-0-0-53571"
     assert result.items[0].start_price == 890000
-    assert result.items[0].vin == "XTAGFK110NY607362"
+    assert result.items[0].category == "real_estate"
+    assert result.items[0].procedure_number == "SBR013-2610260004-0"
+    assert result.items[0].raw_data["source_lot_number"] == "1"
+    assert result.metadata["api_total_reported"] == 22
+    assert result.metadata["api_total_is_source_end"] is True
+    assert result.metadata["terminal_page"] == 2
+    assert result.metadata["terminal_page_proven"] is False
     assert session.posts[0][0] == "https://www.sberbank-ast.ru/api/Processing/main"
+    assert "Продажа имущества (предприятия) банкротов" in session.posts[0][1]["filterBody"]
 
 
-def test_sberbank_healthcheck_uses_json_contract() -> None:
+def test_sberbank_healthcheck_uses_verified_bankruptcy_contract() -> None:
     payload = {
         "Total": 1,
         "PurchaseList": [{"_source": {
-            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/8/0/0/53571",
-            "title": "Автомобиль LADA VESTA",
+            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571",
+            "title": "Нежилое помещение",
+            "ObjectSource": "Продажа имущества (предприятия) банкротов",
+            "SourceTradeSectionId": "13",
+            "BranchGroup": "Недвижимое имущество",
         }}],
     }
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
@@ -628,6 +647,41 @@ def test_sberbank_healthcheck_uses_json_contract() -> None:
     )
     health = asyncio.run(connector.healthcheck())
     assert health.status == "ok"
+    assert health.details["bankruptcy_filter_verified"] is True
+    assert health.details["source_total_proven"] is True
+
+
+def test_sberbank_registry_fetch_lot_uses_goodsview_contract() -> None:
+    html = b"""
+    <html><body><h1>Лот № 1 — нежилое помещение</h1>
+    Номер процедуры SBR013-2610260004-0.1
+    Адрес: Санкт-Петербург, тестовая улица, д. 1
+    Кадастровый номер 78:12:0007135:1054
+    Площадь 87,2 кв. м
+    Начальная цена 890 000 руб.
+    Текущая цена 800 000 руб.
+    Дата начала приема заявок 10.11.2026 09:00
+    Дата окончания приема заявок 03.12.2026 10:00
+    Дата торгов 07.12.2026 17:00
+    Прием заявок. Подробное описание индивидуального имущества для проверки GoodsView.
+    </body></html>
+    """
+    external_id = "sberbank-ast.ru:11-0-0-53571"
+    detail_url = "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571"
+    connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
+        session=FakeSession(FakeResponse(200, html, detail_url))
+    )
+    detail = asyncio.run(connector.fetch_lot(external_id))
+    assert detail.external_id == external_id
+    assert detail.start_price == 890000
+    assert detail.current_price == 800000
+    assert detail.cadastral_number == "78:12:0007135:1054"
+    assert detail.area == 87.2
+    assert detail.procedure_number == "SBR013-2610260004-0"
+    assert detail.application_start_at.isoformat() == "2026-11-10T09:00:00"
+    assert detail.application_deadline.isoformat() == "2026-12-03T10:00:00"
+    assert detail.auction_at.isoformat() == "2026-12-07T17:00:00"
+    assert "detail_enrichment" in SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"].capabilities
 
 
 def test_sistematorg_trade_level_listing_does_not_assign_multi_lot_price() -> None:
