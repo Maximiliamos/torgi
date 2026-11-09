@@ -25,7 +25,7 @@ def _catalogue() -> str:
         _row(
             "55-АП", 1,
             "жилое здание 29,6 кв.м., кадастровый номер 34:02:010003:2648",
-            "1060000.00", 102259678, "Торги завершены",
+            "1060000.00", 102259678, "Завершенные торги",
         ),
         _row(
             "55-АП", 2,
@@ -74,6 +74,8 @@ def test_profiled_catalogue_identity_is_provider_procedure_plus_lot_number():
     assert all(x.raw_data["listing_page"] == 2 for x in lots)
     assert lots[0].start_price == 1060000.0
     assert lots[1].start_price == 246800.0
+    assert lots[0].auction_status == "closed"
+    assert lots[1].auction_status == "closed"
 
 
 def test_unicode_dash_trade_code_is_canonicalized():
