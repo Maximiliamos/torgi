@@ -176,11 +176,30 @@ class MetsSourceCrawler:
         raise MetsCatalogueScanError("M-ETS page budget exhausted during catalogue discovery")
 
     def _parsed_page(self, page_number: int) -> dict:
+        # prepare_catalogue() proves bounded pagination/coverage, but its price,
+        # status and title observations can become stale while a live catalogue
+        # keeps changing. Re-read the page immediately before detail validation
+        # and use that fresh observation set for all exact comparisons.
         prepared = self._prepared_pages.get(page_number)
-        if prepared is not None:
-            return prepared
         response = _request_page(self.pilot.session, page_number, sleep=time.sleep)
-        return _parse_page(response.text, page_number)
+        parsed = _parse_page(response.text, page_number)
+        if prepared is None:
+            return parsed
+
+        prepared_by_id = {item[0]: item for item in prepared["observations"]}
+        fresh_by_id = {item[0]: item for item in parsed["observations"]}
+        prepared_ids = set(prepared_by_id)
+        fresh_ids = set(fresh_by_id)
+        common_ids = prepared_ids.intersection(fresh_ids)
+        return {
+            **parsed,
+            "_prepared_page_lots": len(prepared_by_id),
+            "_catalogue_identity_drift": len(prepared_ids.symmetric_difference(fresh_ids)),
+            "_catalogue_observation_drift": sum(
+                prepared_by_id[external_id] != fresh_by_id[external_id]
+                for external_id in common_ids
+            ),
+        }
 
     def restore_checkpoint(self, checkpoint: dict) -> str | None:
         if checkpoint.get("version") != 1 or checkpoint.get("source") != "m-ets.ru":
@@ -408,9 +427,16 @@ class MetsSourceCrawler:
         # Do not certify an apparently empty property catalogue when every
         # independent detail failed its evidence checks.
         if len(detail_candidates) >= 5 and not accepted and not reused_ids:
+            rejection_summary = ",".join(
+                f"{code}={count}" for code, count in sorted(rejected.items())
+            ) or "none"
             raise MetsCatalogueScanError(
                 "M-ETS systemic detail verification failure: zero verified "
-                "property lots in a selected catalogue page"
+                "property lots in a selected catalogue page; "
+                f"page={page_number}; detail_attempts={len(detail_candidates)}; "
+                f"rejection_codes={rejection_summary}; "
+                f"catalogue_identity_drift={int(parsed.get('_catalogue_identity_drift') or 0)}; "
+                f"catalogue_observation_drift={int(parsed.get('_catalogue_observation_drift') or 0)}"
             )
 
         digest = hashlib.sha256("\n".join(sorted(identities)).encode("ascii")).hexdigest()
@@ -428,6 +454,9 @@ class MetsSourceCrawler:
                 "progress_total": pages_total,
                 "catalogue_lots": len(novel_observations),
                 "catalogue_page_lots": len(identities),
+                "prepared_catalogue_page_lots": int(parsed.get("_prepared_page_lots") or 0),
+                "catalogue_identity_drift": int(parsed.get("_catalogue_identity_drift") or 0),
+                "catalogue_observation_drift": int(parsed.get("_catalogue_observation_drift") or 0),
                 "live_total_initial": self._total,
                 "live_total_minimum": self._minimum_total,
                 "live_total_maximum": self._maximum_total,
