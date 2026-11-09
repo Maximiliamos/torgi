@@ -641,6 +641,47 @@ def test_sberbank_api_pagination_and_mapping() -> None:
     assert "Продажа имущества (предприятия) банкротов" in session.posts[0][1]["filterBody"]
 
 
+def test_sberbank_registry_fails_closed_on_privatisation_response() -> None:
+    payload = {
+        "Total": 1,
+        "PurchaseList": [{"_source": {
+            "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/60001",
+            "title": "Нежилое помещение",
+            "ObjectSource": "Приватизация, аренда и продажа прав",
+            "SourceTradeSectionId": "13",
+            "BranchGroup": "Недвижимое имущество",
+        }}],
+    }
+    connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
+        session=FakeSession(FakeResponse(200, json.dumps(payload).encode()))
+    )
+    with pytest.raises(SourceSchemaError, match="bankruptcy filter is not confirmed"):
+        asyncio.run(connector.search({}))
+
+
+def test_sberbank_registry_does_not_expose_display_cap_as_source_total() -> None:
+    rows = [
+        {"_source": {
+            "objectHref": f"https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/{61000 + index}",
+            "title": f"Нежилое помещение {index}",
+            "ObjectSource": "Продажа имущества (предприятия) банкротов",
+            "SourceTradeSectionId": "13",
+            "BranchGroup": "Недвижимое имущество",
+        }}
+        for index in range(21)
+    ]
+    connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
+        session=FakeSession(FakeResponse(200, json.dumps({"Total": 10000, "PurchaseList": rows}).encode()))
+    )
+    result = asyncio.run(connector.search({}))
+    assert result.next_cursor == "2"
+    assert result.metadata["total_items"] is None
+    assert result.metadata["api_total_reported"] == 10000
+    assert result.metadata["api_total_is_source_end"] is False
+    assert result.metadata["terminal_page"] is None
+    assert result.metadata["terminal_page_proven"] is False
+
+
 def test_sberbank_healthcheck_uses_verified_bankruptcy_contract() -> None:
     payload = {
         "Total": 1,
@@ -662,7 +703,7 @@ def test_sberbank_healthcheck_uses_verified_bankruptcy_contract() -> None:
 
 
 def test_sberbank_registry_fetch_lot_uses_goodsview_contract() -> None:
-    html = b"""
+    html = """
     <html><body><h1>Лот № 1 — нежилое помещение</h1>
     Номер процедуры SBR013-2610260004-0.1
     Адрес: Санкт-Петербург, тестовая улица, д. 1
@@ -675,7 +716,7 @@ def test_sberbank_registry_fetch_lot_uses_goodsview_contract() -> None:
     Дата торгов 07.12.2026 17:00
     Прием заявок. Подробное описание индивидуального имущества для проверки GoodsView.
     </body></html>
-    """
+    """.encode("utf-8")
     external_id = "sberbank-ast.ru:11-0-0-53571"
     detail_url = "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571"
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](
