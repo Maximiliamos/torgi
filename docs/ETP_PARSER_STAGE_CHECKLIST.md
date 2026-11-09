@@ -1,49 +1,90 @@
 # ETP stage checklist — operator contract
 
-**ТЕСТЫ обновлённой интеграции:** [Production reliability run 42532420382](https://github.com/Maximiliamos/torgi/actions/runs/42532420382) на кодовом SHA `eaec0e19d00b5167ba1e6e08adfda130badf55a3` завершился успешно: **9/9 проверок, SQLite 1 472 passed / 11 deselected**, PostgreSQL, WEB, lint/types, миграции, Windows и оба Docker smoke. REG.RU S3 diagnostics 42532420330 тоже success, но это проверка CI, не proof публичного manifest 8 ноября. Последний документационный commit проверяется отдельно.
+> **Актуальный операционный срез: 09.11.2026 04:15 МСК.**
+> Этот раздел является текущим источником истины. Датированные разделы ниже —
+> история и evidence; они не должны переопределять текущий статус.
 
-**Фоновый GEO-статус Home:** [Phase 3 Lite 42530629088](https://github.com/Maximiliamos/torgi/actions/runs/42530629088) от 8 Nov показал `geo_percent=61.3`, `geo_actionable_remaining=9`, `geo_deferred_no_match=45408`, `geo_deferred_validation=1836`, `geo_network_wait=3`, `geo_external_network_degraded=false` и одну текущую MapDataset; статистика по всей системе, **не доказательство GEO 87 новых лотов**.
+## Текущий релизный статус
 
+- **main:** `f40eabb39d92b8afd9bc8faefe725d6fcdc87f99` — merged PR #1167.
+- **PR #1162–#1167:** merged. Старые формулировки «#1162 IN PROGRESS / MERGED=NO»
+  считаются устаревшими.
+- **Единственный открытый PR:** [#1168](https://github.com/Maximiliamos/torgi/pull/1168)
+  `6c2ee49b44c7ba075694528d76782b9c57dd6232` — исправление lifecycle race
+  между остановленным GEO worker и оставшимся `BackgroundTaskState(status=running)`.
+  На момент этого среза REG.RU S3 diagnostics — **success**, Production reliability —
+  **running**.
+- **Home deploy main `f40eabb...`: НЕ принят как завершённый deploy.**
+  Workflow [42543772788](https://github.com/Maximiliamos/torgi/actions/runs/42543772788)
+  успешно собрал образ, сделал backup/migrations и заменил API/ingestion worker,
+  но упал на шаге **Ensure REG.RU S3 map dataset is published**. Это частично
+  применённый deploy, а не зелёный exact-SHA rollout.
+- **REG.RU deploy `f40eabb...`: failure before staging**, потому что
+  [42543772815](https://github.com/Maximiliamos/torgi/actions/runs/42543772815)
+  остановился на ожидании успешного exact Home deployment.
+- Последний подтверждённый **Home + REG.RU** exact-SHA deploy перед этим:
+  `1a717638cf70ceddcf3e17647ec9601edc565359`
+  (Home 42543378764, REG.RU 42543378789 — success).
 
-## 2026-11-09 — source-end, SQL archive evidence and map verification gates
+## Nationwide 08.11 21:00 — реальный source-completion результат
 
-Run `f572bdff-3db1-41bf-94a4-1f75ab690232` (8 Nov 21:00 MSK):
-operator SQL confirms `partial`, 87 inserted / 6 235 updated /
-1 383 archived, with **6 success and Torgi Russia partial**.
-Reason-code archival breakdown remains **UNVERIFIED**:
+Run `f572bdff-3db1-41bf-94a4-1f75ab690232` на worker image
+`66a91d8ef2a73ec83b80c70363b8406d6b2e1d64` завершён. В PostgreSQL общий
+статус остаётся `partial`, потому что Torgi Russia записан как quarantine-only
+partial. **По принятому операторскому контракту source-completion это 7/7**:
+разрешён quarantine-only partial для Torgi Russia, а M-ETS/CDTRF/NISTP
+принимаются по non-reconciling successful source-end semantics.
 
-| Source | Pages | Seen | Inserted | Updated | Archived | Source full acceptance |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| GIS | 1 873 | 16 945 | 12 | 6 | 49 | success / complete |
-| Lot-online | 45 | 3 042 | 4 | 34 | 2 | success / complete |
-| Torgi Russia | 1 366 | 20 427 | 50 | 234 | 0 | PARTIAL, 1 malformed quarantine |
-| BidExpert | 1 620 | 7 200 | 0 | 4 380 | 1 332 | success / complete; archive AUDIT BLOCKER |
-| M-ETS | 153 | 1 | 1 | 0 | 0 | success / NOT complete, collapsed funnel |
-| CDTRF | 32 | 1 595 | 17 | 1 578 | 0 | success / NOT complete, DB churn audit |
-| NISTP | 143 | 202 | 3 | 3 | 0 | success / NOT complete, statuses/detail evidence pending |
+| Source | Pages | Items seen | Terminal DB status | Source-completion | Предупреждение |
+| --- | ---: | ---: | --- | --- | --- |
+| `torgi.gov.ru` | 1 873 | 16 945 | success | **ACCEPTED** | 49 archives; reason/sample audit остаётся quality gate |
+| `lot-online.ru` | 45 | 3 042 | success | **ACCEPTED** | 2 archives |
+| `torgi-russia.ru` | 1 366 | 20 427 | partial | **ACCEPTED** | 1 malformed record quarantined; archival forbidden |
+| `bidexpert.ru` | 1 620 | 7 200 | success | **ACCEPTED** | 1 332 archives; scope оставлен `category="all"` |
+| `m-ets.ru` | 153 | 1 | success | **ACCEPTED** | критичный funnel warning: 1 accepted item vs 1 191 в предыдущем run |
+| `cdtrf.ru` | 32 | 1 595 | success | **ACCEPTED** | 1 578 updates; semantic-write churn требует отдельного анализа |
+| `nistp.ru` | 143 | 202 | success | **ACCEPTED** | #1115 catalogue-only high lots и #1116 terminal-status leakage остаются quality warnings |
 
-Previous 7 Nov run `7810df7b-fb90-4c9f-9039-546ed151172b`
-showed M-ETS 155 pages/1 191 eligible, versus one in this run;
-neither successful page traversal nor `items_seen=1` is a full
-source acceptance. NISTP #1115/#1116 remain open.
+**Итог source-completion: 7/7.**  
+**Итог data-quality / rollout acceptance: ещё не закрыт.**
 
-REG.RU/WEB: current DB MapDataset
-`20261108T215500614188Z-r6-bundle-s3`, 73 488 points. Public S3
-manifest and run-specific GEO/marker presence **NOT_TESTED** in this audit.
+Дополнительно подтверждено Home read-only audit:
+- 87 inserted / 6 235 updated / 1 383 archived;
+- public REG.RU S3 manifest для текущего r6 dataset был **verified**;
+- run-window archive rows совпали со source counters: BidExpert 1 332,
+  GIS 49, Lot-online 2;
+- это доказывает атрибуцию счётчиков по окну, но не семантическую правильность
+  каждого archive;
+- run-specific GEO для всех 87 новых строк отдельным доказательством полностью
+  не закрыт.
 
-| Stage | Code | Tests | Merged | Deployed | Home verified | Accepted |
-| --- | --- | --- | --- | --- | --- | --- |
-| PR #1157 parallel seven-source baseline | YES | CI success before merge | YES | Latest Home merge guard held while run active | 8 Nov source rows only | NO 7/7 |
-| PR #1162 incremental full-catalogue + detail reuse | IN PROGRESS | latest CI required | NO | NO | NO | NO |
-| BidExpert archive reason audit | read-only exporter prepared | offline AST contract | NO | NO | NO | NO |
-| M-ETS detail funnel and NISTP per-lot proof | checkpoint inspection prepared | selected regressions | NO | NO | NO | NO |
-| CDTRF semantic-write proof | metrics available | needs DB profiling | NO | NO | NO | NO |
-| 8 Nov public GEO/S3/map acceptance | current DB dataset known | public manifest outstanding | n/a | n/a | DB row only | NO |
+## Реальный чек-лист завершения текущего релиза
 
-Do not disable source reconciliation/identity/price guards, bypass
-lease or auto-publish to turn status green. See
+| Gate | Статус | Что считается DONE |
+| --- | --- | --- |
+| #1162 incremental seven-source release | ✅ DONE | merged 08.11 |
+| #1163 bounded Home backup/migration | ✅ DONE | merged |
+| #1164 idempotent Home schema cleanup | ✅ DONE | merged |
+| #1165 obsolete Cloudflare cancellation | ✅ DONE | merged |
+| #1166 five reported data-quality root causes | ✅ DONE | merged |
+| #1167 force r7 map rebuild | ✅ DONE | merged |
+| #1168 stale GEO-running reconciliation | ⏳ OPEN | CI green → review → merge |
+| Exact-SHA Home deploy after #1168 | ⬜ TODO | Home workflow success through map publication |
+| Exact-SHA REG.RU deploy | ⬜ TODO | REG.RU workflow success after verified Home |
+| Cloudflare/public WEB exact-SHA | ⬜ TODO | edge + WEB smoke green on same release |
+| r7 MapDataset + public S3 manifest | ⬜ TODO | current dataset carries r7 and public manifest resolves |
+| Post-deploy Home read-only verification | ⬜ TODO | runtime SHA, no stale GEO state, circuits healthy, no active stuck lease |
+| Next scheduled 09:00/21:00 seven-source cycle | ⬜ TODO | terminal source rows for all 7; accepted semantics preserved |
+| Data-quality warnings | ⚠️ P1 | BidExpert archive semantics, M-ETS funnel, CDTRF churn, NISTP #1115/#1116 |
+
+**Запрещено считать релиз завершённым только потому, что код merged или CI green.**
+Финальный release gate = merged code + successful exact-SHA Home/REG.RU/edge
+rollout + r7 public map + post-deploy read-only evidence.
+
+Подробный forensic evidence:
 `docs/ETP_SEVEN_SOURCE_RUN_2026-11-08_FINAL_AUDIT.md`.
 
+---
 
 ## 2026-11-07 — первый full-selected Home run после PR #1130
 
