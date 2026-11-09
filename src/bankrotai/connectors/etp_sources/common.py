@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.pagination import (
-    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
+    get_form_params, has_next_page as _has_next_page, page_url as _page_url, postback_payload,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -593,7 +593,6 @@ def parse_detail_html(
         r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
     )
     auction_at = datetime_after(text_value, r"дата проведения")
-    auction_timezone: str | None = None
     if profile.source_id == "etpu.ru":
         contract = etpu_detail_contract(text_value)
         price = contract["start_price"]
@@ -604,7 +603,6 @@ def parse_detail_html(
         procedure_number = contract["procedure_number"] or procedure_number
         application_deadline = contract["application_deadline"]
         auction_at = contract["auction_at"]
-        auction_timezone = "Europe/Moscow"
         raw_data.update(contract["raw_data"])
     return NormalizedLot(
         external_id=external_id,
@@ -632,7 +630,7 @@ def parse_detail_html(
         bankruptcy_case_number=case_number,
         application_deadline=application_deadline,
         auction_at=auction_at,
-        auction_timezone=auction_timezone,
+        auction_timezone="Europe/Moscow" if profile.source_id == "etpu.ru" else None,
     )
 
 
@@ -833,37 +831,13 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            postback_links = [
-                node for node in soup.select("a[href]")
-                if "__doPostBack" in str(node.get("href") or "")
-            ]
-            link = next((
-                node for node in postback_links
-                if _clean(node.get_text(" ", strip=True)) == str(page)
-            ), None)
-            if (
-                not isinstance(link, Tag)
-                and self.source_id == "etpu.ru"
-                and sequential_previous
-            ):
-                # ETPU renders pages in ten-page blocks. Crossing 10 -> 11,
-                # 20 -> 21, ... is done by the provider's own ">>" postback.
-                # This control is valid only from the immediately preceding
-                # page; it must never stand in for arbitrary random access.
-                link = next((
-                    node for node in postback_links
-                    if _clean(node.get_text(" ", strip=True)) in {">>", "»"}
-                ), None)
-            if not isinstance(link, Tag):
-                raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
-            postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
-            if not postback:
-                raise SourceSchemaError(f"{self.source_id}: invalid page {page} postback")
-            data = {
-                str(node.get("name")): str(node.get("value") or "")
-                for node in soup.select("input[type=hidden][name]")
-            }
-            data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
+            try:
+                data = postback_payload(
+                    self.profile, previous.content, page,
+                    sequential_previous=sequential_previous,
+                )
+            except ValueError as exc:
+                raise SourceSchemaError(f"{self.source_id}: {exc}") from exc
             action = _safe_provider_url(
                 self.profile, previous.url or self.profile.listing_url
             )
