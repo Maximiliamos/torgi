@@ -593,26 +593,36 @@ def test_aspnet_pagination_posts_viewstate_and_target() -> None:
 
 
 def test_sberbank_api_pagination_and_mapping() -> None:
-    payload = {
-        "Total": 22,
-        "PurchaseList": [{
+    realty = {
+        "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571",
+        "title": "Нежилое помещение, кадастровый номер 78:12:0007135:1054",
+        "purchName": "Торги по реализации недвижимого имущества",
+        "ObjectSource": "Продажа имущества (предприятия) банкротов",
+        "SourceTradeSectionId": "13",
+        "BranchGroup": "Недвижимое имущество",
+        "purchAmount": "890000",
+        "purchCurrency": "RUB",
+        "PurchaseStageTerm": "Прием заявок",
+        "purchCode": "SBR013-2610260004-0.1",
+        "RegionNameTerm": "Г. Санкт-Петербург",
+        "Address": "Г. Санкт-Петербург",
+        "RequestStopDate": "03.12.2026 10:00",
+        "AuctionResultDate": "07.12.2026 17:00",
+    }
+    non_property = [
+        {
             "_source": {
-                "objectHref": "https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/53571",
-                "title": "Нежилое помещение, кадастровый номер 78:12:0007135:1054",
-                "purchName": "Торги по реализации недвижимого имущества",
+                "title": f"Движимое имущество {index}",
                 "ObjectSource": "Продажа имущества (предприятия) банкротов",
                 "SourceTradeSectionId": "13",
-                "BranchGroup": "Недвижимое имущество",
-                "purchAmount": "890000",
-                "purchCurrency": "RUB",
-                "PurchaseStageTerm": "Прием заявок",
-                "purchCode": "SBR013-2610260004-0.1",
-                "RegionNameTerm": "Г. Санкт-Петербург",
-                "Address": "Г. Санкт-Петербург",
-                "RequestStopDate": "03.12.2026 10:00",
-                "AuctionResultDate": "07.12.2026 17:00",
+                "BranchGroup": "Транспорт",
             }
-        }],
+        }
+        for index in range(20)
+    ]
+    payload = {
+        "Total": 22,
+        "PurchaseList": [{"_source": realty}, *non_property],
     }
     session = FakeSession(FakeResponse(200, json.dumps(payload).encode()))
     connector = SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"](session=session)
