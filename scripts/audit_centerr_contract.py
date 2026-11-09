@@ -116,7 +116,7 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
     verified_ids = []
     attempted_ids = []
     price_ok = status_ok = title_ok = identity_ok_count = 0
-    address_present = cadastre_ok = area_ok = 0
+    address_present = cadastre_ok = area_ok = classifier_present = 0
     for row in property_rows:
         if len(verified_ids) >= limit:
             break
@@ -159,6 +159,8 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
             failures.append({"id": row.external_id, "reason": "title_mismatch"})
         if detail.address:
             address_present += 1
+        if detail.efrsb_classifier:
+            classifier_present += 1
         if not row.cadastral_number or detail.cadastral_number == row.cadastral_number:
             cadastre_ok += 1
         if row.area is None or detail.area == row.area:
@@ -170,8 +172,8 @@ def _detail_sample(session: requests.Session, rows: list, limit: int) -> dict:
         "verified": len(verified_ids),
         "identity_success": identity_ok_count, "price_success": price_ok,
         "status_success": status_ok, "title_success": title_ok,
-        "address_present": address_present, "cadastre_success": cadastre_ok,
-        "area_success": area_ok, "failures": failures,
+        "address_present": address_present, "classifier_present": classifier_present,
+        "cadastre_success": cadastre_ok, "area_success": area_ok, "failures": failures,
         "attempted_ids": attempted_ids,
         "verified_ids": verified_ids,
     }
