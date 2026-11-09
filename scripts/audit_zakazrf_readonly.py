@@ -66,6 +66,7 @@ async def _detail_sample(ids: list[str], *, limit: int, delay_seconds: float) ->
     current_price_ok = 0
     status_ok = 0
     classifier_ok = 0
+    identity_mismatches: list[dict[str, str]] = []
     category_counts: Counter[str] = Counter()
     samples: list[dict[str, Any]] = []
 
@@ -76,6 +77,12 @@ async def _detail_sample(ids: list[str], *, limit: int, delay_seconds: float) ->
             failures.append({
                 "external_id": external_id,
                 "error_type": type(exc).__name__,
+            })
+            continue
+        if lot.external_id != external_id:
+            identity_mismatches.append({
+                "requested_external_id": external_id,
+                "returned_external_id": lot.external_id,
             })
             continue
         checked += 1
@@ -104,6 +111,7 @@ async def _detail_sample(ids: list[str], *, limit: int, delay_seconds: float) ->
         "requested": min(limit, len(ids)),
         "checked": checked,
         "failures": failures,
+        "identity_mismatches": identity_mismatches,
         "start_price_success": price_ok,
         "current_price_present": current_price_ok,
         "status_success": status_ok,
@@ -179,6 +187,7 @@ def main() -> int:
         and payload["pass_1"]["duplicate_ids"] == 0
         and payload["pass_2"]["duplicate_ids"] == 0
         and payload["detail"]["checked"] == expected_details
+        and not payload["detail"]["identity_mismatches"]
     ) else 2
 
 
