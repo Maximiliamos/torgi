@@ -490,6 +490,51 @@ def _external_parts(external_id: str) -> tuple[str, int]:
     return match.group(1), int(match.group(2))
 
 
+def discover_trade_subroutes(
+    html: str | bytes,
+    *,
+    base_url: str,
+) -> list[dict[str, object]]:
+    """Return only sanitized first-party trade-route structure.
+
+    Values are deliberately omitted: this helper is for read-only contract
+    discovery and cannot leak query ids, prices or participant data.
+    """
+    decoded = _decode_html(html)
+    soup = BeautifulSoup(decoded, "html.parser")
+    observed: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+
+    def add(candidate: str, label: str = "") -> None:
+        absolute = urljoin(base_url, candidate)
+        parsed = urlparse(absolute)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "aukcioncenter.ru"
+            or "/trade/" not in parsed.path
+        ):
+            return
+        query_keys = tuple(sorted(parse_qs(parsed.query).keys()))
+        key = (parsed.path, query_keys)
+        observed.setdefault(key, {
+            "path": parsed.path,
+            "query_keys": list(query_keys),
+            "label": _clean(label)[:80],
+        })
+
+    for node in soup.select("a[href], script[src]"):
+        attr = "href" if node.has_attr("href") else "src"
+        add(str(node.get(attr) or ""), node.get_text(" ", strip=True))
+
+    route_literal = re.compile(
+        r"""['\"]((?:https://aukcioncenter\.ru)?/(?:etp/)?trade/[^'\"\s<>]+)['\"]""",
+        re.I,
+    )
+    for match in route_literal.finditer(decoded):
+        add(match.group(1))
+
+    return list(observed.values())
+
+
 def browser_url(external_id: str) -> str:
     """Human-readable procedure page; never a source of per-lot price."""
     provider_id, lot_number = _external_parts(external_id)
