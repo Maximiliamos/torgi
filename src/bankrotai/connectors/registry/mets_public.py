@@ -244,7 +244,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             str(node.get("href") or ""),
         ]
         candidates.extend(re.findall(
-            r"url\\(['\"]?([^)'\"]+)", str(node.get("style") or ""), re.I
+            r"url\(['\"]?([^)'\"]+)", str(node.get("style") or ""), re.I
         ))
         for raw_image in candidates:
             raw_image = raw_image.strip()
@@ -255,7 +255,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
                 continue
             path = urlsplit(raw_image).path.casefold()
             if not (
-                re.search(r"\\.(?:jpe?g|png|webp)(?:$|\\?)", lowered)
+                re.search(r"\.(?:jpe?g|png|webp)(?:$|\?)", lowered)
                 or any(token in path for token in ("/upload", "/photo", "/image", "/file"))
             ):
                 continue
