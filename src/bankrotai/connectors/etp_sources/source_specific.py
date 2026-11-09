@@ -1,9 +1,36 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 import re
 
 from bankrotai.domain import NormalizedLot
+
+
+def sistematorg_lot_count(value: str) -> int | None:
+    """A Sistematorg listing row represents a trade, potentially containing many lots."""
+    match = re.search(r"всего\s+лотов\s*[:：]\s*(\d+)", value, re.IGNORECASE)
+    if match is None:
+        return None
+    count = int(match.group(1))
+    return count if 1 <= count <= 100_000 else None
+
+
+def datetime_after(value: str, label: str) -> datetime | None:
+    match = re.search(
+        label + r"[^\d]{0,40}(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    raw = match.group(1)
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    return None
 
 
 def ruson_initial_money(value: str) -> float | None:
