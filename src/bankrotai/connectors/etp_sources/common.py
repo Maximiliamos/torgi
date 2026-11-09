@@ -27,10 +27,8 @@ from bankrotai.connectors.etp_sources.source_specific import (
 )
 from bankrotai.connectors.etp_sources.status_normalization import _status
 
-
 class SourceAccessError(RuntimeError):
     """The provider explicitly refused public read-only access."""
-
 
 class SourceSchemaError(RuntimeError):
     """The listing no longer matches the evidence-backed source profile."""
