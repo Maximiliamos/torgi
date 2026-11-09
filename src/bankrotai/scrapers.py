@@ -2516,10 +2516,40 @@ class TBankrotClient:
                 if url not in image_urls:
                     image_urls.append(url)
 
+        def labelled_datetime(*labels: str) -> datetime | None:
+            text = soup.get_text(" ", strip=True)
+            joined = "|".join(re.escape(label) for label in labels)
+            match = re.search(
+                rf"(?:{joined})\\s*[:\\-]?\\s*(\\d{{1,2}}\\.\\d{{1,2}}\\.\\d{{2,4}})"
+                r"(?:\\s+(?:в\\s*)?(\\d{1,2}:\\d{2}))?",
+                text,
+                re.IGNORECASE,
+            )
+            if not match:
+                return None
+            raw_date = match.group(1)
+            raw_time = match.group(2) or "00:00"
+            for fmt in ("%d.%m.%y %H:%M", "%d.%m.%Y %H:%M"):
+                try:
+                    return datetime.strptime(f"{raw_date} {raw_time}", fmt)
+                except ValueError:
+                    pass
+            return None
+
         return {
             "start_price": labelled_price(".price_info .start_price .sum", "начальная цена", "стартовая цена"),
             "current_price": labelled_price(".price_info .cur_price .green, .price_info .cur_price .semibold", "текущая цена"),
             "minimum_price": labelled_price(".price_info .min_price .semibold", "минимальная цена"),
+            "application_deadline": labelled_datetime(
+                "дата окончания заявок",
+                "дата окончания приема заявок",
+                "дата окончания приёма заявок",
+                "окончание приема заявок",
+                "окончание приёма заявок",
+                "прием заявок до",
+                "приём заявок до",
+            ),
+            "auction_at": labelled_datetime("дата проведения", "дата торгов", "начало торгов"),
             "image_urls": image_urls,
             "auction_status": auction_status,
             "detail_url": page_url,
