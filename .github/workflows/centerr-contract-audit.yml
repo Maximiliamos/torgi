@@ -1,0 +1,31 @@
+name: CenterR read-only source contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/bankrotai/connectors/etp_sources/centerr_contract.py"
+      - "src/bankrotai/connectors/etp_sources/common.py"
+      - "scripts/audit_centerr_contract.py"
+      - "tests/test_centerr_contract.py"
+      - "tests/fixtures/centerr_duplicate_wrong_id.html"
+      - ".github/workflows/centerr-contract-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-centerr-contract:
+    name: CenterR two-pass live audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - name: Focused regression tests
+        run: pytest -q tests/test_centerr_contract.py
+      - name: Two full read-only scans plus 30 property details
+        run: python scripts/audit_centerr_contract.py --detail-limit 30
