@@ -24,7 +24,7 @@ jobs:
         run: pytest -q tests/test_utpl_lot_contract.py
       - name: Two-pass UTPL public catalogue and 30-detail read-only audit
         run: |
-          python scripts/probe_utpl_readonly.py --catalogue --passes 2 --details 30 --delay 0.2 > /tmp/utpl-audit.json
+          python scripts/probe_utpl_readonly.py --catalogue --passes 2 --details 30 --delay 0.5 > /tmp/utpl-audit.json
           python - <<'PY'
           import json
           report = json.load(open("/tmp/utpl-audit.json", encoding="utf-8"))
