@@ -46,22 +46,11 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        if any(
+        return any(
             _clean(node.get_text(" ", strip=True)) == str(page + 1)
             and "__doPostBack" in str(node.get("href") or "")
             for node in soup.select("a[href]")
-        ):
-            return True
-        # ARBbitLot groups numeric page links by tens and exposes ">>" to
-        # advance beyond the visible group. Treating page 10 as terminal when
-        # ">>" exists would be a false source-end proof.
-        if profile.source_id == "arbbitlot.ru" and page % 10 == 0:
-            return any(
-                _clean(node.get_text(" ", strip=True)) == ">>"
-                and "__doPostBack" in str(node.get("href") or "")
-                for node in soup.select("a[href]")
-            )
-        return False
+        )
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
@@ -70,32 +59,6 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
         if expected in query.get(profile.page_parameter, []):
             return True
     return False
-
-
-
-def postback_link_for_page(profile: EtpSourceProfile, soup: Tag, page: int) -> Tag | None:
-    """Return the provider postback control for a requested 1-based page."""
-    from bankrotai.connectors.etp_sources.common import _clean
-
-    link = next((
-        node for node in soup.select("a[href]")
-        if _clean(node.get_text(" ", strip=True)) == str(page)
-        and "__doPostBack" in str(node.get("href") or "")
-    ), None)
-    if isinstance(link, Tag):
-        return link
-    if (
-        profile.source_id == "arbbitlot.ru"
-        and page > 1
-        and (page - 1) % 10 == 0
-    ):
-        group_link = next((
-            node for node in soup.select("a[href]")
-            if _clean(node.get_text(" ", strip=True)) == ">>"
-            and "__doPostBack" in str(node.get("href") or "")
-        ), None)
-        return group_link if isinstance(group_link, Tag) else None
-    return None
 
 
 def page_url(profile: EtpSourceProfile, page: int) -> str:
