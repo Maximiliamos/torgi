@@ -513,12 +513,12 @@ def _parse_table_amount(raw: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
-def _table_prices(row: Tag) -> tuple[float | None, float | None]:
+def _table_cells_by_heading(row: Tag) -> dict[str, Tag]:
     if row.name != "tr":
-        return None, None
+        return {}
     table = row.find_parent("table")
     if not isinstance(table, Tag):
-        return None, None
+        return {}
     cells = row.find_all("td", recursive=False)
     headings: list[str] = []
     for heading_row in table.select("tr"):
@@ -527,9 +527,14 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
             headings = [normalize_text(item.get_text(" ", strip=True)).lower() for item in headers]
             break
     if len(headings) != len(cells):
-        return None, None
+        return {}
+    return dict(zip(headings, cells))
+
+
+def _table_prices(row: Tag) -> tuple[float | None, float | None]:
+    cells = _table_cells_by_heading(row)
     initial = current = None
-    for heading, cell in zip(headings, cells):
+    for heading, cell in cells.items():
         if re.search(r"начальн\w*\s+цен\w*|цена\s+лот\w*", heading):
             initial = _parse_table_amount(cell.get_text(" ", strip=True))
         elif re.search(r"текущ\w*\s+цен\w*", heading):
@@ -537,18 +542,48 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
     return initial, current
 
 
-def _catalogue_status(value: str) -> str:
-    lowered = value.lower().replace("ё", "е")
-    if "прием заявок" in lowered or "идут торги" in lowered:
+def _status_key(value: str) -> str:
+    return normalize_text(value).lower().replace("ё", "е")
+
+
+def _catalogue_source_status(row: Tag, context: str) -> str | None:
+    for heading, cell in _table_cells_by_heading(row).items():
+        if heading == "статус" or heading.startswith("статус "):
+            value = normalize_text(cell.get_text(" ", strip=True))
+            return value or None
+    for status_filter in (
+        *NON_TERMINAL_STATUS_FILTERS,
+        EtpuStatusFilter("2", "Окончен"),
+        EtpuStatusFilter("3", "Не состоялся"),
+        EtpuStatusFilter("4", "Отменён организатором"),
+    ):
+        if _status_key(status_filter.text) in _status_key(context):
+            return status_filter.text
+    return None
+
+
+def _catalogue_status(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    lowered = _status_key(value)
+    if lowered in {"прием заявок", "идут торги"}:
         return "active"
-    if "извещение опубликовано" in lowered:
+    if lowered == "извещение опубликовано":
         return "scheduled"
-    if any(item in lowered for item in ("окончен", "не состоялся", "отменен организатором")):
+    if lowered == "приостановлен":
+        return "paused"
+    if lowered in {"окончен", "не состоялся", "отменен организатором"}:
         return "closed"
     return "unknown"
 
 
-def parse_catalogue_page(html: str | bytes, *, page: int) -> tuple[NormalizedLot, ...]:
+def parse_catalogue_page(
+    html: str | bytes,
+    *,
+    page: int,
+    expected_status: EtpuStatusFilter | None = None,
+    allow_empty: bool = False,
+) -> tuple[NormalizedLot, ...]:
     soup = parse_soup(html)
     candidates: dict[str, tuple[Tag, re.Match[str]]] = {}
     for anchor in soup.select("a[href]"):
@@ -580,6 +615,15 @@ def parse_catalogue_page(html: str | bytes, *, page: int) -> tuple[NormalizedLot
         if len(title) < 4 or title.isdigit():
             title = f"ETPU lot {external_id.rsplit('-', 1)[-1]}"
         initial, current = _table_prices(container)
+        source_status = _catalogue_source_status(container, context)
+        if expected_status is not None and (
+            source_status is None
+            or _status_key(source_status) != _status_key(expected_status.text)
+        ):
+            raise EtpuSchemaError(
+                "etpu.ru: filtered catalogue row status does not match requested "
+                f"status {expected_status.value}:{expected_status.text}"
+            )
         cadastre = _CADASTRAL_RE.search(context)
         vin = _VIN_RE.search(context)
         area_match = _AREA_RE.search(context)
@@ -599,7 +643,7 @@ def parse_catalogue_page(html: str | bytes, *, page: int) -> tuple[NormalizedLot
                 area=float(area_match.group(1).replace(",", ".")) if area_match else None,
                 start_price=initial,
                 current_price=current,
-                auction_status=_catalogue_status(context),
+                auction_status=_catalogue_status(source_status),
                 lot_url=href,
                 source_url=href,
                 detail_level="search",
@@ -609,12 +653,14 @@ def parse_catalogue_page(html: str | bytes, *, page: int) -> tuple[NormalizedLot
                     "safe_for_archival": False,
                     "reconcile_missing": False,
                     "individual_lot_identity_verified": True,
+                    "source_status_text": source_status,
+                    "status_filter_value": expected_status.value if expected_status else None,
                 },
                 platform_name=PLATFORM_NAME,
                 platform_code=PLATFORM_CODE,
             )
         )
-    if not lots:
+    if not lots and not allow_empty:
         raise EtpuSchemaError(f"etpu.ru: no lot links on catalogue page {page}")
     return tuple(lots)
 
