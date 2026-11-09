@@ -275,12 +275,8 @@ def has_next_page(html: str | bytes, page: int) -> bool:
 def parse_procedure_observations(
     html: str | bytes, *, active_filter: bool = True,
 ) -> list[ProcedureObservation]:
-    if isinstance(html, bytes):
-        try:
-            html = html.decode("utf-8")
-        except UnicodeDecodeError:
-            html = html.decode("windows-1251", errors="replace")
-    soup = BeautifulSoup(html, "html.parser")
+    decoded = _decode_html(html)
+    soup = BeautifulSoup(decoded, "html.parser")
     result: list[ProcedureObservation] = []
     for row in soup.select("tr"):
         row_text = _clean(row.get_text(" ", strip=True))
@@ -361,12 +357,8 @@ def terminal_page_contract(
 def parse_listing(
     profile: ProfileLike, html: str | bytes, *, page: int = 1, active_filter: bool = True,
 ) -> list[NormalizedLot]:
-    if isinstance(html, bytes):
-        try:
-            html = html.decode("utf-8")
-        except UnicodeDecodeError:
-            html = html.decode("windows-1251", errors="replace")
-    soup = BeautifulSoup(html, "html.parser")
+    decoded = _decode_html(html)
+    soup = BeautifulSoup(decoded, "html.parser")
     output: list[NormalizedLot] = []
     seen: set[str] = set()
 
@@ -498,12 +490,8 @@ def lot_index_url(provider_id: str, *, page: int = 1) -> str:
 
 
 def discover_lot_numbers(html: str | bytes) -> tuple[int, ...]:
-    if isinstance(html, bytes):
-        try:
-            html = html.decode("utf-8")
-        except UnicodeDecodeError:
-            html = html.decode("windows-1251", errors="replace")
-    soup = BeautifulSoup(html, "html.parser")
+    decoded = _decode_html(html)
+    soup = BeautifulSoup(decoded, "html.parser")
     text = _clean(soup.get_text(" ", strip=True))
     numbers = {int(match.group("lot")) for match in _LOT_RE.finditer(text)}
     for node in soup.select("[name*=lot i][value]"):
@@ -595,12 +583,8 @@ def parse_detail(
     ):
         raise ValueError("aukcioncenter_detail_identity_mismatch")
 
-    if isinstance(html, bytes):
-        try:
-            html = html.decode("utf-8")
-        except UnicodeDecodeError:
-            html = html.decode("windows-1251", errors="replace")
-    soup = BeautifulSoup(html, "html.parser")
+    decoded = _decode_html(html)
+    soup = BeautifulSoup(decoded, "html.parser")
     whole = _clean(soup.get_text(" ", strip=True))
     if len(whole) < 80:
         raise ValueError("aukcioncenter_detail_too_short")
