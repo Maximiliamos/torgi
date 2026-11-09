@@ -13,6 +13,7 @@ from bankrotai.connectors.etp_sources.aukcioncenter import (
     declared_pages,
     detail_request_url,
     discover_lot_numbers,
+    discover_trade_subroutes,
     has_next_page,
     lot_index_url,
     observation_digest,
@@ -177,6 +178,27 @@ def test_pagination_and_terminal_contract_are_source_specific():
     assert terminal_page_contract(last, last, last_page=6) == (
         True, "overflow_clamped_to_declared_last",
     )
+
+
+def test_route_discovery_redacts_query_values_and_external_hosts():
+    html = """
+    <a href="/etp/trade/inner-view-lots.html?id=103550004&lotNumber=2">Лоты</a>
+    <a href="https://example.com/trade/secret.html?id=1">external</a>
+    <script>var endpoint='/etp/trade/inner-view-price.html?id=103550004&page=1';</script>
+    """
+    routes = discover_trade_subroutes(
+        html,
+        base_url="https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550004",
+    )
+    assert {item["path"] for item in routes} == {
+        "/etp/trade/inner-view-lots.html",
+        "/etp/trade/inner-view-price.html",
+    }
+    assert {tuple(item["query_keys"]) for item in routes} == {
+        ("id", "lotNumber"),
+        ("id", "page"),
+    }
+    assert all("103550004" not in str(item) for item in routes)
 
 
 def test_real_detail_contract_is_inner_lot_loader_not_general_procedure_page():
