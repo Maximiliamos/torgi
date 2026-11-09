@@ -1,0 +1,74 @@
+name: RUSSIA OnLine source-contract read-only audit
+
+on:
+  push:
+    branches: [fix/ruson-contract-20261109]
+    paths:
+      - '.github/workflows/etp-ruson-contract-readonly.yml'
+      - 'src/bankrotai/connectors/etp_sources/common.py'
+      - 'src/bankrotai/connectors/etp_sources/ruson.py'
+      - 'src/bankrotai/services/etp_ruson_contract_audit.py'
+      - 'tests/test_etp_ruson.py'
+      - 'tests/test_etp_ruson_contract_audit.py'
+      - 'tests/fixtures/etp/ruson/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruson-contract-readonly
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.lock && pip install --no-deps -e .
+      - name: Run two-pass catalogue and detail audit
+        run: |
+          python -m bankrotai.services.etp_ruson_contract_audit \
+            --details 35 \
+            --max-attempts 50 \
+            --max-pages 500 \
+            --delay-seconds 0.35 > ruson-contract-readonly.json
+      - name: Enforce source-contract evidence
+        run: |
+          python - <<'PY'
+          import json
+          report = json.load(open("ruson-contract-readonly.json", encoding="utf-8"))
+          checks = {
+              "two_pass_ids_equal": report["two_pass_ids_equal"] is True,
+              "terminal_page_proven": report["terminal_page_proven"] is True,
+              "details_ge_30": report["details_verified"] >= 30,
+              "initial_price_rate": report["initial_price_success_rate"] >= 0.90,
+              "status_rate": report["status_success_rate"] >= 0.90,
+              "ordinary_auction": report["ordinary_auction_details"] >= 1,
+              "public_offer": report["public_offer_details"] >= 1,
+              "ended": report["ended_details"] >= 1,
+              "active_or_scheduled": report["active_or_scheduled_details"] >= 1,
+              "public_offer_schedule": report["public_offer_schedule_ok"] >= 1,
+              "public_offer_current_price": report["public_offer_current_price_ok"] >= 1,
+              "bare_initial_price": report["initial_price_without_currency"] >= 1,
+              "fractional_period_price": report["schedule_price_with_kopecks"] >= 1,
+              "no_db_writes": report["production_database_writes"] == 0,
+              "production_disabled": report["production_enabled"] is False,
+              "archival_disabled": report["archival_allowed"] is False,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          print(json.dumps({"checks": checks, "failed": failed}, indent=2))
+          if failed:
+              raise SystemExit("RUSSIA OnLine source-contract audit failed: " + ", ".join(failed))
+          PY
+      - name: Preserve sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ruson-contract-readonly
+          path: ruson-contract-readonly.json
+          if-no-files-found: warn
+          retention-days: 30
