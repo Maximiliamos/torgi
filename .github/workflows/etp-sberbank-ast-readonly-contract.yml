@@ -126,16 +126,7 @@ jobs:
           json_line=$(grep '^{' "$RUNNER_TEMP/sberbank-ast-hosted-probe.log" | tail -n 1)
           if [ -n "$json_line" ]; then
             printf '%s\n' "$json_line" > "$RUNNER_TEMP/sberbank-ast-hosted-evidence.json"
-            python - "$RUNNER_TEMP/sberbank-ast-hosted-evidence.json" <<'PY'
-import json, sys
-p=sys.argv[1]
-d=json.load(open(p, encoding="utf-8"))
-print("source=", d.get("source"))
-print("api_total=", d.get("api_total"))
-print("completeness=", d.get("completeness"))
-print("two_full_walks_stable=", d.get("two_full_walks_stable"))
-print("details_verified=", d.get("details_verified"))
-PY
+            python -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print("source=",d.get("source")); print("api_total=",d.get("api_total")); print("completeness=",d.get("completeness")); print("two_full_walks_stable=",d.get("two_full_walks_stable")); print("details_verified=",d.get("details_verified"))' "$RUNNER_TEMP/sberbank-ast-hosted-evidence.json"
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
