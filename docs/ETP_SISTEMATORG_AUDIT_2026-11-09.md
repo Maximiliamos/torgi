@@ -80,15 +80,68 @@ It performs no database writes, reconciliation, archival or map publication.
 - full read-only source auditor replaces the old first-page/single-lot-only probe;
 - regression tests cover mixed procedures, independent prices, public-offer schedules, negative receivables classification and the #1166 fallback.
 
-## Still not proven in this PR
+## Preserved live evidence
 
-The connected execution environment used for this change cannot run outbound repository code against Sistematorg, so the newly added two-pass full-catalogue auditor was not executed here. Accordingly this PR does **not** claim:
-- a fresh exact procedure/individual-lot total;
-- a fresh terminal-page number;
-- 30/30 live detail success;
-- production acceptance;
-- reconciliation/archive safety.
+GitHub Actions run `42549043000` on pre-isolation head
+`c2835fabc9617fbf0474f00a844ef20456053c41` completed the public two-pass
+audit successfully. The source contract/evidence collected there is preserved:
 
-Those values must come from the included read-only auditor on an environment with direct provider network access. Parser guards remain fail-closed until then.
+- catalogue pages: **847 + 847**;
+- terminal page: **847** in both passes;
+- procedures: **16,506** per pass;
+- individual lots: **20,190** per pass;
+- unique individual IDs: **20,190** per pass;
+- property lots: **10,648** per pass;
+- non-property lots: **9,542** per pass;
+- single-lot procedures: **14,423**;
+- multi-lot procedures: **2,083**;
+- two-pass identity digest: identical
+  (`eb3776731ec2af2235ffbd8920986725e0c411f46bc7b3e262a95e1be11aa73a`);
+- individual details verified: **30/30**;
+- initial prices verified: **30/30**;
+- statuses verified: **30/30**;
+- public-offer schedules verified in the sample: **6**.
+
+Fail-closed catalogue rejects were counted rather than guessed through:
+**419** declared-lot-count mismatches, **10** empty lot titles and **1**
+duplicate lot ID per pass. They are not included in the 20,190 accepted
+individual identities.
+
+The isolation refactor does not replace this evidence with fixtures. Exact-head
+CI/live audit must be repeated after the refactor before the PR is called ready.
+
+## Isolation
+
+Source-specific module:
+`src/bankrotai/connectors/etp_sources/sistematorg_contract.py`.
+
+The module now owns the SISTEMATORG catalogue parser, procedure/lot identity,
+property classification, detail isolation, prices, deposit, auction step,
+status/dates, public-offer periods, pagination detection, terminal-page
+navigation and the provider-owned read-only HTTP client.
+
+The full auditor calls this module directly. It no longer needs the generic
+`common.py` dispatcher or shared `pagination.py`.
+
+Integration-owned files modified by this PR after isolation: **NONE**.
+
+Pre-existing SISTEMATORG compatibility guards still exist in current `main`
+(`common.py`, `source_specific.py`, and the source profile). They are not
+changed or removed here because doing so would be a shared integration change
+and could regress #1166 before the central integration PR.
+
+## Integration hook required
+
+A later integration PR should make the existing SISTEMATORG branch in
+`common.py` delegate to:
+
+- `parse_sistematorg_catalogue_page(...)` for catalogue procedure/lot parsing;
+- `property_catalogue_lots(...)` for property candidates;
+- `parse_sistematorg_detail_lots(...)` plus
+  `parse_sistematorg_external_id(...)` for exact requested-lot isolation.
+
+The existing fetch URL should continue to use the procedure `trade_nid`.
+No other source behaviour is required and no production activation belongs in
+this PR.
 
 PRODUCTION ENABLED: NO
