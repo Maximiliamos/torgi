@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
-from bankrotai.connectors.etp_sources.ruson import RusonSchemaError
+from bankrotai.connectors.etp_sources.ruson import RusonPageRangeError
 from bankrotai.services.etp_ruson_contract_audit import audit_ruson_contract
 
 
@@ -86,7 +86,7 @@ class ThreePageConnector(FakeConnector):
             3: (["rus-on.ru:102", "rus-on.ru:103"], None),
         }
         if number not in rows:
-            raise RusonSchemaError("fixture terminal boundary")
+            raise RusonPageRangeError("fixture terminal boundary")
         ids, next_cursor = rows[number]
         return SimpleNamespace(
             items=[SimpleNamespace(external_id=value) for value in ids],

@@ -803,15 +803,11 @@ class RusonReadonlyConnector:
             raise RusonPageRangeError(
                 f"rus-on.ru: repeated catalogue page content at page {page}"
             )
-        targets = pagination_targets(response.content)
-        if page > 1 and targets and page not in targets:
-            raise RusonPageRangeError(
-                f"rus-on.ru: requested page {page} is absent from provider pagination controls"
-            )
         self._page_fingerprints[page] = fingerprint
         parsed = parse_catalogue_page(response.content, page=page)
         if not parsed.items:
-            raise RusonSchemaError(
+            error_type = RusonPageRangeError if page > 1 else RusonSchemaError
+            raise error_type(
                 f"rus-on.ru: no lot_nid links matched the catalogue on page {page}"
             )
         parsed.metadata["response_url"] = str(getattr(response, "url", "") or LISTING_URL)
