@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.pagination import (
-    get_form_params, has_next_page as _has_next_page, page_url as _page_url, postback_page_link,
+    get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -19,7 +19,6 @@ from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
-    build_zakazrf_detail_lot,
     datetime_after,
     profit_initial_money,
     ruson_initial_money,
@@ -494,7 +493,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             source_system=profile.source_id,
             title=title[:500],
             description=context[:5000],
-            category=("other" if profile.source_id == "zakazrf.ru" else _category(context)),
+            category=_category(context),
             region_slug=None,
             region_name=None,
             address=None,
@@ -516,7 +515,6 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
-                "classification_requires_detail": profile.source_id == "zakazrf.ru",
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
@@ -576,15 +574,6 @@ def parse_detail_html(
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    if profile.source_id == "zakazrf.ru":
-        return build_zakazrf_detail_lot(
-            text_value,
-            external_id=external_id, detail_url=detail_url,
-            platform_name=profile.platform_name, platform_code=profile.platform_code,
-            complete_source_inventory=profile.complete_source_inventory, safe_for_archival=profile.safe_for_archival,
-            procedure_number=procedure_number, bankruptcy_case_number=case_number,
-        )
-
     price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
@@ -823,7 +812,10 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = postback_page_link(self.profile, soup, page)
+            link = next((
+                node for node in soup.select("a[href]")
+                if _clean(node.get_text(" ", strip=True)) == str(page) and "__doPostBack" in str(node.get("href") or "")
+            ), None)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
@@ -985,7 +977,7 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
 
     ProfiledConnector.profile = profile
     if profile.source_id in {
-        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru", "zakazrf.ru",
+        "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
