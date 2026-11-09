@@ -203,6 +203,42 @@ def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
     }
 
 
+
+
+def utpl_next_postback(html: str | bytes, current_page: int) -> tuple[str, str] | None:
+    """Return only a provider-supplied postback for the next catalogue page.
+
+    UTPL pagers show numeric links in blocks of ten. At a block boundary the
+    next page can be exposed only through a forward control. The function never
+    synthesizes an ASP.NET target; it accepts a literal postback present in HTML.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    anchors = list(soup.select("a[href]"))
+
+    def parsed(anchor) -> tuple[str, str] | None:
+        href = str(anchor.get("href") or "")
+        match = re.search(
+            r"__doPostBack\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]\s*\)",
+            href,
+        )
+        return match.groups() if match else None
+
+    wanted = str(current_page + 1)
+    for anchor in anchors:
+        if _text(anchor.get_text(" ", strip=True)) == wanted:
+            value = parsed(anchor)
+            if value is not None:
+                return value
+
+    for anchor in anchors:
+        if _text(anchor.get_text(" ", strip=True)).lower() in {
+            ">>", "»", "›", "далее", "следующая"
+        }:
+            value = parsed(anchor)
+            if value is not None:
+                return value
+    return None
+
 def normalize_utpl_status(value: str | None) -> str:
     """Map only explicit official UTPL lot-state labels; never infer from dates."""
     if value is None:
