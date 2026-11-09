@@ -246,3 +246,34 @@ def test_property_description_address_wins_over_unrelated_labelled_address() -> 
     assert "Ногинск" in fields["address"]
     assert "Ярославль" not in fields["address"]
     assert fields["cadastral_numbers"] == ["50:16:0102015:1318"]
+
+
+def test_lot_online_detail_trims_asset_composition_after_building_address() -> None:
+    class Response:
+        content = """
+        <html><body>
+          <div class="ty-product__full-description">
+            Объект расположен по адресу: город Переславль-Залесский,
+            улица Урицкого, дом 2в, с земельным участком, в составе:
+            Нежилое здание, 1-этажное. Кадастровый номер 76:18:010101:12
+          </div>
+        </body></html>
+        """.encode("utf-8")
+        url = "https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=1779676"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
+
+    assert fields["address"] == (
+        "город Переславль-Залесский, улица Урицкого, дом 2в"
+    )
