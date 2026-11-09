@@ -6,13 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime
 import asyncio
 import re
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.connectors.base import ConnectorPage
+if TYPE_CHECKING:
+    from bankrotai.domain import NormalizedLot
+
 from bankrotai.connectors.etp_sources.common import (
     EtpSearchFilters,
     HtmlEtpConnector,
