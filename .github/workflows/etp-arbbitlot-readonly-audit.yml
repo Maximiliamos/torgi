@@ -1,0 +1,83 @@
+name: ARBbitLot read-only source contract
+
+on:
+  push:
+    branches:
+      - agent3-arbbitlot-price-contract-20261109
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arbbitlot-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install read-only probe dependencies
+        run: python -m pip install "requests>=2.32,<3" "beautifulsoup4>=4.12,<5" "lxml>=5.2,<7"
+
+      - name: Run two-pass ARBbitLot catalogue and 30-detail audit
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python -m bankrotai.services.etp_arbbitlot_readonly_audit             --detail-limit 30             --max-pages 1000             > "$RUNNER_TEMP/arbbitlot-readonly-audit.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "arbbitlot-readonly-audit.json"
+          report = json.loads(path.read_text(encoding="utf-8"))
+          first = report["pass_1"]
+          second = report["pass_2"]
+          details = report["details"]
+
+          assert report["read_only"] is True
+          assert report["production_enabled"] is False
+          assert first["terminal_page_proven"] is True
+          assert second["terminal_page_proven"] is True
+          assert first["duplicate_ids"] == []
+          assert second["duplicate_ids"] == []
+          assert report["passes_have_identical_ids"] is True
+          assert details["details_checked"] >= 30
+          assert details["detail_success"] >= 30
+          assert details["start_price_success"] >= 30
+          assert details["status_success"] >= 30
+
+          print(json.dumps({
+              "page_count_pass_1": first["page_count"],
+              "page_count_pass_2": second["page_count"],
+              "unique_ids_pass_1": first["unique_ids"],
+              "unique_ids_pass_2": second["unique_ids"],
+              "digest_pass_1": first["id_digest_sha256"],
+              "digest_pass_2": second["id_digest_sha256"],
+              "details_checked": details["details_checked"],
+              "detail_success": details["detail_success"],
+              "start_price_success": details["start_price_success"],
+              "status_success": details["status_success"],
+              "public_offer_details_checked": details["public_offer_details_checked"],
+              "current_price_success": details["current_price_success"],
+              "multi_lot_procedure_count": len(details["multi_lot_procedures"]),
+          }, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload sanitized source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arbbitlot-readonly-source-contract
+          path: ${{ runner.temp }}/arbbitlot-readonly-audit.json
+          if-no-files-found: warn
+          retention-days: 30
