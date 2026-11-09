@@ -606,6 +606,9 @@ def parse_detail_html(
         utpl_status = fields["source_status_text"]
         utpl_classifier = fields["classifier"]
         utpl_property_kinds = tuple(str(value) for value in fields["property_kinds"])
+        procedure_number = (
+            str(fields["procedure_number"]) if fields["procedure_number"] else procedure_number
+        )
         # The procedure header may describe unrelated assets and rights.
         category = str(fields["category"])
         utpl_cadastral = fields["cadastral_number"]
@@ -648,6 +651,8 @@ def parse_detail_html(
             **({
                 "utpl_classifier": utpl_classifier,
                 "utpl_property_kinds": list(utpl_property_kinds),
+                "utpl_trade_number": procedure_number,
+                "utpl_lot_number": str(fields["lot_number"]),
                 "utpl_lot_section_verified": True,
             } if profile.source_id == "utpl.ru" else {}),
         },
