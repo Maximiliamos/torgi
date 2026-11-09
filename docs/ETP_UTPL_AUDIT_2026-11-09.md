@@ -28,7 +28,7 @@ New `etp_sources/utpl_contract.py`: a single numbered individual-lot section mus
 
 | Gate | Result |
 | --- | --- |
-| Fresh read-only provider snapshots examined | 6 detail URLs and one public-offer listing URL |
+| Fresh read-only provider snapshots examined | 5 detail URLs and one public-offer listing URL |
 | Full HTTP live catalogue walk | **NOT TESTED** |
 | Confirmed page 1/page 2/terminal request | **NOT TESTED** |
 | Two passes and matching ID digest | **NOT TESTED** |
@@ -46,6 +46,7 @@ No 100% price or status claim should be made. The source is **not accepted**. Th
 - `src/bankrotai/connectors/etp_sources/utpl_contract.py`
 - `src/bankrotai/connectors/etp_sources/common.py`
 - `tests/test_utpl_lot_contract.py`
+- `scripts/probe_utpl_readonly.py` (bounded, explicit detail URLs; no catalogue terminal claim)
 - `docs/ETP_UTPL_AUDIT_2026-11-09.md`
 
 **PRODUCTION ENABLED: NO**
