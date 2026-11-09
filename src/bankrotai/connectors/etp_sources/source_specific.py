@@ -193,6 +193,11 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
         "listing_price_used_as_fallback": (
             detail.start_price is None and lot.start_price is not None
         ),
+        **({
+            "listing_current_price_used_as_fallback": (
+                detail.current_price is None and lot.current_price is not None
+            ),
+        } if lot.source_system == "arbbitlot.ru" else {}),
     })
     lot.raw_data = raw
     return lot
