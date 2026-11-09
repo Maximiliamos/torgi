@@ -183,7 +183,7 @@ def etpu_classifier_flags(value: str) -> tuple[str, ...]:
         if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in patterns):
             flags.append(flag)
 
-    add("lease", r"\bправо\s+аренды\b")
+    add("lease", r"\bправ(?:о|а)\s+аренды\b")
     add("shares", r"\bправа\s+долевой\s+собственности\b")
     add("receivables", r"\bправа?\s+требован", r"\bдебитор")
     add(
@@ -209,7 +209,11 @@ def etpu_classifier_flags(value: str) -> tuple[str, ...]:
         "real_estate",
         r"\bжилые\s+здания",
         r"\bздания\s*\(помещения\)",
+        r"\bздания\s*\(кроме\s+жилых\)",
         r"\bздания\s+и\s+сооружения",
+        r"\bздания\s+для\b",
+        r"\bсооружен",
+        r"\bпомещен",
         r"\bнезавершенн\w*\s+строительств",
         r"\bнедвижим",
     )
