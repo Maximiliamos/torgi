@@ -396,7 +396,117 @@ def _parse_multi_lot_catalogue(
     return lots
 
 
+def _parse_utpl_listing(
+    profile: EtpSourceProfile, html: str | bytes, *, page: int
+) -> list[NormalizedLot]:
+    from bankrotai.connectors.etp_sources.utpl_contract import (
+        normalize_utpl_status,
+        parse_utpl_catalogue_page,
+    )
+
+    rows = parse_utpl_catalogue_page(html, page=page)
+    return [
+        NormalizedLot(
+            external_id=row["external_id"],
+            source="utpl",
+            source_system=profile.source_id,
+            title=row["title"][:500],
+            description=row["title"][:5000],
+            category="other",
+            region_slug=None,
+            region_name=None,
+            address=None,
+            cadastral_number=None,
+            vin=None,
+            area=None,
+            start_price=row["initial_price"],
+            current_price=row["current_price"],
+            auction_status=normalize_utpl_status(row["source_status_text"]),
+            lot_url=row["detail_url"],
+            source_url=row["detail_url"],
+            detail_level="list",
+            raw_data={
+                "listing_url": profile.listing_url,
+                "listing_page": page,
+                "utpl_trade_number": row["procedure_number"],
+                "utpl_lot_number": row["lot_number"],
+                "individual_lot_identity_verified": True,
+                "utpl_property_classification_verified": False,
+                "complete_source_inventory": profile.complete_source_inventory,
+                "safe_for_archival": profile.safe_for_archival,
+                "reconcile_missing": False,
+            },
+            platform_name=profile.platform_name,
+            platform_code=profile.platform_code,
+            procedure_number=row["procedure_number"],
+        )
+        for row in rows
+    ]
+
+
+def _parse_utpl_detail(
+    profile: EtpSourceProfile,
+    html: str | bytes,
+    *,
+    detail_url: str,
+    external_id: str | None,
+) -> NormalizedLot:
+    from bankrotai.connectors.etp_sources.utpl_contract import (
+        UtplLotSchemaError,
+        parse_utpl_detail,
+    )
+
+    try:
+        fields = parse_utpl_detail(detail_url, html, external_id=external_id)
+    except UtplLotSchemaError as exc:
+        raise SourceSchemaError(str(exc)) from exc
+
+    application_start = fields["application_start"]
+    return NormalizedLot(
+        external_id=str(fields["external_id"]),
+        source="utpl",
+        source_system=profile.source_id,
+        title=str(fields["title"])[:500],
+        description=str(fields["title"])[:5000],
+        category=str(fields["category"]),
+        region_slug=None,
+        region_name=None,
+        address=fields["address"],
+        cadastral_number=fields["cadastral_number"],
+        vin=fields["vin"],
+        area=fields["area"],
+        start_price=fields["initial_price"],
+        current_price=fields["current_price"],
+        auction_status=str(fields["status"]),
+        lot_url=detail_url,
+        source_url=detail_url,
+        detail_level="detail",
+        raw_data={
+            "utpl_trade_number": fields["procedure_number"],
+            "utpl_lot_number": fields["lot_number"],
+            "utpl_classifier": fields["classifier"],
+            "utpl_property_kinds": list(fields["property_kinds"]),
+            "utpl_structured_classifier_verified": fields["structured_classifier_verified"],
+            "utpl_property_classification_verified": fields["property_classification_verified"],
+            "utpl_lot_section_verified": True,
+            "utpl_application_start": (
+                application_start.isoformat() if application_start is not None else None
+            ),
+            "complete_source_inventory": profile.complete_source_inventory,
+            "safe_for_archival": profile.safe_for_archival,
+            "reconcile_missing": False,
+        },
+        platform_name=profile.platform_name,
+        platform_code=profile.platform_code,
+        procedure_number=fields["procedure_number"],
+        application_deadline=fields["application_deadline"],
+        auction_at=fields["auction_at"],
+    )
+
+
 def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: int = 1) -> list[NormalizedLot]:
+    if profile.source_id == "utpl.ru":
+        return _parse_utpl_listing(profile, html, page=page)
     multi_lot = _parse_multi_lot_catalogue(profile, html, page=page)
     if multi_lot is not None:
         return multi_lot
@@ -532,6 +642,10 @@ def parse_detail_html(
     detail_url: str,
     external_id: str | None = None,
 ) -> NormalizedLot:
+    if profile.source_id == "utpl.ru":
+        return _parse_utpl_detail(
+            profile, html, detail_url=detail_url, external_id=external_id
+        )
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
