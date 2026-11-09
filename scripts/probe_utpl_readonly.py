@@ -189,7 +189,7 @@ def probe_urls(
     urls: list[str],
     *,
     session: requests.Session | None = None,
-    delay: float = 0.2,
+    delay: float = 0.5,
 ) -> dict:
     if not 1 <= len(urls) <= 100 or len(set(urls)) != len(urls):
         raise ValueError("Provide 1..100 distinct explicit detail URLs")
@@ -283,7 +283,7 @@ def probe_catalogue(
     passes: int = 2,
     max_pages: int = 500,
     details: int = 30,
-    delay: float = 0.2,
+    delay: float = 0.5,
 ) -> dict:
     if not 1 <= passes <= 3:
         raise ValueError("passes must be 1..3")
@@ -341,7 +341,7 @@ def main() -> None:
     parser.add_argument("--passes", type=int, default=2)
     parser.add_argument("--max-pages", type=int, default=500)
     parser.add_argument("--details", type=int, default=30)
-    parser.add_argument("--delay", type=float, default=0.2)
+    parser.add_argument("--delay", type=float, default=0.5)
     parser.add_argument("--url", action="append", default=[])
     args = parser.parse_args()
 
