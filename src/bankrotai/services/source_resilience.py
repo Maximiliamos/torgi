@@ -97,6 +97,19 @@ def classify_source_error(error: BaseException | str | None) -> SourceFailureCla
         return SourceFailureClassification("coverage_guard", False, True, raw[:1000], status)
     if "access_limited" in message or "access limited" in message:
         return SourceFailureClassification("access_limited", False, False, raw[:1000], status)
+    # These are deterministic parser/data-contract failures. Classify them
+    # before the generic word "forbidden" can be mistaken for HTTP auth.
+    if "systemic detail verification failure" in message:
+        return SourceFailureClassification("parser_contract", False, False, raw[:1000], status)
+    if any(
+        marker in message
+        for marker in (
+            "quarantined malformed record",
+            "systemic malformed",
+            "archival forbidden",
+        )
+    ):
+        return SourceFailureClassification("parser_contract", False, True, raw[:1000], status)
     if status == 429 or "rate limit" in message or "too many requests" in message:
         return SourceFailureClassification(
             "http_429",

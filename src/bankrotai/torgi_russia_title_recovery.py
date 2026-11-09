@@ -50,6 +50,31 @@ def classify_rejections(
     return counts, samples
 
 
+def recovery_failure_code(error: BaseException) -> str:
+    """Return a stable, non-sensitive recovery failure code for diagnostics."""
+    message = str(error).casefold()
+    markers = (
+        ("no canonical id", "invalid_id"),
+        ("detail identity is absent or ambiguous", "torgi_detail_identity"),
+        ("no unique canonical m-ets lot link", "mets_link_ambiguous"),
+        ("expected an https m-ets lot url", "mets_link_invalid"),
+        ("redirected public detail url", "mets_redirect"),
+        ("redirect from public m-ets", "mets_redirect"),
+        ("provider access explicitly refused", "mets_access_refused"),
+        ("transient http failure", "mets_http_failure"),
+        ("fallback price does not match", "mets_price_mismatch"),
+        ("page sku contradicts url or is ambiguous", "mets_detail_contract"),
+        ("no matching m-ets trade/lot identifier", "mets_detail_contract"),
+        ("no trustworthy m-ets lot title", "mets_detail_contract"),
+        ("html page exceeds safety limit", "mets_detail_contract"),
+        ("expected html from m-ets", "mets_detail_contract"),
+    )
+    for marker, code in markers:
+        if marker in message:
+            return f"{type(error).__name__}:{code}"
+    return type(error).__name__
+
+
 def _canonical_mets_lot_url(detail_record: dict) -> str:
     """Return the one exact official M-ETS lot link asserted by the aggregator."""
     from bankrotai.connectors.registry.mets_public import _host_lot_url
@@ -109,14 +134,19 @@ def recover_empty_title(
         return recovered
 
     mets_url = _canonical_mets_lot_url(detail_record)
-    mets_response = get_with_retry(mets_url)
+    from bankrotai.connectors.registry.mets_public import (
+        detail_request_url,
+        parse_mets_lot,
+    )
+
+    mets_request_url = detail_request_url(mets_url)
+    mets_response = get_with_retry(mets_request_url)
     if getattr(mets_response, "history", []) or str(
         getattr(mets_response, "url", "")
-    ) != mets_url:
-        raise RuntimeError("Torgi Russia M-ETS fallback redirected canonical URL")
-    from bankrotai.connectors.registry.mets_public import parse_mets_lot
+    ) != mets_request_url:
+        raise RuntimeError("Torgi Russia M-ETS fallback redirected public detail URL")
 
-    mets_lot = parse_mets_lot(mets_response.text, mets_url)
+    mets_lot = parse_mets_lot(mets_response.text, mets_request_url)
     source_prices = [
         value
         for value in (mets_lot.start_price, mets_lot.current_price)
@@ -145,6 +175,7 @@ def recover_empty_title(
     recovered = dict(item)
     recovered["title"] = mets_lot.title
     recovered["title_evidence"] = "official_mets_detail"
-    recovered["title_evidence_url"] = mets_url
+    recovered["title_evidence_url"] = mets_request_url
+    recovered["title_evidence_canonical_url"] = mets_url
     recovered["title_evidence_external_id"] = mets_lot.external_id
     return recovered
