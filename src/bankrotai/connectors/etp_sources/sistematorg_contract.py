@@ -97,9 +97,14 @@ def _float_money(value: str) -> float | None:
 
 
 def _parse_datetime(value: str) -> datetime | None:
+    cleaned = value.strip()
+    try:
+        return datetime.fromisoformat(cleaned)
+    except ValueError:
+        pass
     for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S"):
         try:
-            return datetime.strptime(value.strip(), fmt)
+            return datetime.strptime(cleaned, fmt)
         except ValueError:
             continue
     return None
@@ -482,8 +487,8 @@ def parse_sistematorg_detail_lots(
         application_start = _parse_datetime(global_start or "")
         application_deadline = _parse_datetime(global_end or "")
         if schedule:
-            application_start = _parse_datetime(schedule[0]["application_start_at"].replace("T", " "))
-            application_deadline = _parse_datetime(schedule[-1]["application_deadline"].replace("T", " "))
+            application_start = _parse_datetime(schedule[0]["application_start_at"])
+            application_deadline = _parse_datetime(schedule[-1]["application_deadline"])
 
         lots.append(NormalizedLot(
             external_id=f"sistematorg.com:{trade_id}:{lot_id}",
