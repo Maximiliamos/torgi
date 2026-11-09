@@ -258,6 +258,23 @@ class _PostbackSession:
         return self._next()
 
 
+def test_etpu_pager_does_not_use_block_jump_for_random_access() -> None:
+    page_one = """
+    <html><body><form>
+      <input type="hidden" name="__VIEWSTATE" value="one">
+      <a href="javascript:__doPostBack('pager','Page$10')">10</a>
+      <a href="javascript:__doPostBack('pager','Page$Next')">&gt;&gt;</a>
+    </form></body></html>
+    """
+    session = _PostbackSession([_PagedResponse(page_one)])
+    connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
+
+    with pytest.raises(Exception, match="page 15 postback target disappeared"):
+        asyncio.run(connector.search({}, cursor="15"))
+
+    assert session.posts == []
+
+
 def test_etpu_pager_crosses_ten_page_block_and_finds_real_terminal() -> None:
     page_one = """
     <html><body><form>
