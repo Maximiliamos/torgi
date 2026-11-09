@@ -27,9 +27,11 @@ The previous stage evidence was catalogue PASS, 40 candidates, page 2 PASS,
 detail PASS and status PASS, while individual price and property
 classification were not accepted.
 
-The shared parser derived external identity from `sale_type + lot_id`, but
+The original shared parser derived external identity from `sale_type + lot_id`, but
 used generic free-text price/category extraction. That was insufficient for
-ZakazRF.
+ZakazRF. The accepted implementation in this PR is now isolated in
+`src/bankrotai/connectors/etp_sources/zakazrf.py`; integration-owned shared
+parsers are no longer modified.
 
 ## Root cause
 
@@ -88,6 +90,27 @@ The current external audit environment could search current provider pages but
 a direct open of the catalogue returned an upstream `UnexpectedStatusCode`.
 Therefore this PR does **not** claim that the terminal page or a 30-card direct
 live sample was proved from this environment.
+
+## Source isolation
+
+All ZakazRF-only parsing and request logic now lives in:
+
+`src/bankrotai/connectors/etp_sources/zakazrf.py`
+
+The module owns catalogue parsing, stable identity, individual detail parsing,
+price/status/classifier extraction, property fields, public-offer interval
+schedule parsing, ASP.NET postback pagination including 10-page group jumps,
+read-only HTTP requests and a drop-in `ZakazRfConnector`.
+
+Source-specific regression tests live in:
+
+`tests/test_zakazrf_contract.py`
+
+The audit script imports the isolated module directly. No ZakazRF-specific
+logic remains in `common.py`, `pagination.py`, `profiles.py`,
+`source_specific.py` or `direct_etp_catalogue.py`.
+
+Production wiring is intentionally deferred to the integration PR.
 
 ## Contract implemented
 
@@ -183,11 +206,12 @@ These are intentionally not converted into acceptance claims.
 
 ## Files changed
 
-- `src/bankrotai/connectors/etp_sources/source_specific.py`
-- `src/bankrotai/connectors/etp_sources/common.py`
-- `tests/test_etp_sources.py`
+- `src/bankrotai/connectors/etp_sources/zakazrf.py`
+- `tests/test_zakazrf_contract.py`
 - `scripts/audit_zakazrf_readonly.py`
 - `docs/ETP_ZAKAZRF_AUDIT_2026-11-09.md`
+- `.github/workflows/zakazrf-agent6-readonly-audit.yml`
 
+Shared parser files are intentionally unchanged relative to current `main`.
 No changes to `docs/ROADMAP.md`, `docs/ETP_PARSER_STAGE_CHECKLIST.md`,
 production source specs, reconciliation or archival configuration.
