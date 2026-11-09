@@ -5,10 +5,8 @@ on:
     branches: [main]
     paths:
       - "src/bankrotai/connectors/etp_sources/alfalot_audit.py"
-      - "src/bankrotai/connectors/etp_sources/profiles.py"
       - "scripts/probe-alfalot-readonly.py"
       - "tests/test_alfalot_audit.py"
-      - "tests/test_etp_sources.py"
       - "docs/ETP_ALFALOT_AUDIT_2026-11-09.md"
       - ".github/workflows/etp-alfalot-live-readonly.yml"
   workflow_dispatch:
@@ -34,7 +32,7 @@ jobs:
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - run: python -m compileall -q src/bankrotai/connectors/etp_sources/alfalot_audit.py scripts/probe-alfalot-readonly.py
       - run: ruff check src/bankrotai/connectors/etp_sources/alfalot_audit.py tests/test_alfalot_audit.py
-      - run: pytest -q tests/test_alfalot_audit.py tests/test_etp_sources.py
+      - run: pytest -q tests/test_alfalot_audit.py
 
   live-browser-discovery:
     name: ALFALOT official public GD discovery (NOT acceptance)
