@@ -107,3 +107,92 @@ jobs:
           path: ${{ runner.temp }}/arbbitlot-readonly-audit.json
           if-no-files-found: warn
           retention-days: 30
+
+
+  arbbitlot-home-contract:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Create isolated Python environment
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'arbbitlot-contract-venv'
+          if (Test-Path $venv) { Remove-Item -Recurse -Force $venv }
+          py -3.11 -m venv $venv
+          $python = Join-Path $venv 'Scripts\python.exe'
+          & $python -m pip install --disable-pip-version-check "pytest>=9,<10" "requests>=2.32,<3" "beautifulsoup4>=4.12,<5" "lxml>=5.2,<7"
+
+      - name: Run exact-head focused tests and live audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'arbbitlot-contract-venv'
+          $python = Join-Path $venv 'Scripts\python.exe'
+          $env:PYTHONPATH = 'src'
+          & $python -m pytest -q tests/test_arbbitlot_contract.py tests/test_etp_arbbitlot_readonly_audit.py
+          if ($LASTEXITCODE -ne 0) { throw 'ARBbitLot focused tests failed' }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'arbbitlot-readonly-audit-home.json'
+          & $python -m bankrotai.services.etp_arbbitlot_readonly_audit --detail-limit 30 --max-pages 1000 |
+            Set-Content -Encoding utf8 $evidence
+          if ($LASTEXITCODE -ne 0) { throw 'ARBbitLot live audit failed' }
+
+          $report = Get-Content -Raw -Encoding utf8 $evidence | ConvertFrom-Json
+          if (-not $report.read_only -or $report.production_enabled) { throw 'read-only guard failed' }
+          if (-not $report.pass_1.terminal_page_proven -or -not $report.pass_2.terminal_page_proven) {
+            throw 'terminal page was not proven on both passes'
+          }
+          if ($report.pass_1.duplicate_ids.Count -ne 0 -or $report.pass_2.duplicate_ids.Count -ne 0) {
+            throw 'duplicate lot IDs observed'
+          }
+          $expected = [Math]::Min(30, [int]$report.pass_1.unique_ids)
+          if ([int]$report.details.details_checked -ne $expected) { throw 'unexpected detail sample size' }
+          foreach ($name in @(
+            'detail_success',
+            'start_price_success',
+            'catalogue_detail_procedure_match',
+            'catalogue_detail_lot_number_match',
+            'catalogue_detail_start_price_match',
+            'status_success',
+            'catalogue_detail_status_match'
+          )) {
+            if ([int]$report.details.$name -ne $expected) {
+              throw "$name failed"
+            }
+          }
+
+          [ordered]@{
+            page_count_pass_1 = $report.pass_1.page_count
+            page_count_pass_2 = $report.pass_2.page_count
+            unique_ids_pass_1 = $report.pass_1.unique_ids
+            unique_ids_pass_2 = $report.pass_2.unique_ids
+            digest_pass_1 = $report.pass_1.id_digest_sha256
+            digest_pass_2 = $report.pass_2.id_digest_sha256
+            passes_identical = $report.passes_have_identical_ids
+            added_count = $report.pass_comparison.added_count
+            removed_count = $report.pass_comparison.removed_count
+            details_checked = $report.details.details_checked
+            detail_success = $report.details.detail_success
+            start_price_success = $report.details.start_price_success
+            status_success = $report.details.status_success
+            public_offer_details_checked = $report.details.public_offer_details_checked
+            catalogue_current_price_success = $report.details.catalogue_current_price_success
+            detail_current_price_success = $report.details.detail_current_price_success
+            catalogue_detail_current_price_match = $report.details.catalogue_detail_current_price_match
+            multi_lot_procedure_count = $report.details.multi_lot_procedures.PSObject.Properties.Count
+          } | ConvertTo-Json
+
+      - name: Upload sanitized home evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arbbitlot-readonly-source-contract-home
+          path: ${{ runner.temp }}\arbbitlot-readonly-audit-home.json
+          if-no-files-found: warn
+          retention-days: 30
