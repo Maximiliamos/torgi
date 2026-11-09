@@ -1,0 +1,104 @@
+name: Sberbank-AST bankruptcy read-only contract
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/probe_sberbank_ast_live_raw.py"
+      - "scripts/audit_sberbank_ast_bankruptcy_readonly.py"
+      - "src/bankrotai/connectors/etp_sources/common.py"
+      - "src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py"
+      - "tests/test_sberbank_ast_contract.py"
+      - "tests/fixtures/sberbank_ast/**"
+      - ".github/workflows/etp-sberbank-ast-readonly-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etp-sberbank-ast-readonly-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-contract:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Require trusted Home worker
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = (docker inspect --format '{{.State.Status}}' bankrotai-home-ingestion-worker).Trim()
+          if ($LASTEXITCODE -ne 0 -or $state -ne 'running') {
+            throw 'Trusted Home ingestion worker is unavailable'
+          }
+
+      - name: Probe Sberbank-AST bankruptcy catalogue and GoodsView read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Get-Content -LiteralPath 'scripts/probe_sberbank_ast_live_raw.py' -Raw
+          $ErrorActionPreference = 'Continue'
+          $output = @($script | docker.exe exec -i bankrotai-home-ingestion-worker python - 2>&1)
+          $status = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+
+          $log = Join-Path $env:RUNNER_TEMP 'sberbank-ast-live-probe.log'
+          $output | Set-Content -LiteralPath $log -Encoding utf8
+          $jsonLine = $output | Where-Object { $_ -match '^\{' } | Select-Object -Last 1
+          if (-not $jsonLine) {
+            throw 'Sberbank-AST probe produced no JSON evidence'
+          }
+          $report = $jsonLine | ConvertFrom-Json
+          $dest = Join-Path $env:RUNNER_TEMP 'sberbank-ast-live-evidence.json'
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dest -Encoding utf8
+
+          if ($report.source -ne 'sberbank-ast.ru' -or
+              $report.read_only -ne $true -or
+              $report.database_writes -ne 0 -or
+              $report.production_changes -ne 0) {
+            throw 'Sberbank-AST probe isolation contract failed'
+          }
+          if ($status -ne 0) {
+            throw "Sberbank-AST live contract remained fail-closed (probe exit $status)"
+          }
+          if ($report.bankruptcy_filter.returned_rows_verified -ne $true -or
+              $report.property_scope.structured_branch -ne 'Недвижимое имущество' -or
+              $report.property_scope.free_text_fallback_used -ne $false) {
+            throw 'Bankruptcy/property scope is not proven'
+          }
+          if ($report.completeness -ne 'PROVEN_BELOW_CAP' -or
+              $report.two_pass_ids_stable -ne $true -or
+              -not $report.terminal_page) {
+            throw 'Pagination/source end is not proven'
+          }
+          if ($report.unique_property_goodsview_ids -ge 30 -and
+              ($report.details_requested -lt 30 -or $report.details_verified -lt 30)) {
+            throw 'At least 30 available GoodsView details were not verified'
+          }
+          if ($report.unique_property_goodsview_ids -lt 30 -and
+              $report.details_verified -ne $report.unique_property_goodsview_ids) {
+            throw 'All available property GoodsView details were not verified'
+          }
+
+          "### Sberbank-AST bankruptcy live contract" | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- API total: {0}" -f $report.api_total) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- Terminal page: {0}" -f $report.terminal_page) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- Property GoodsView IDs observed: {0}" -f $report.unique_property_goodsview_ids) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- GoodsView details verified: {0}" -f $report.details_verified) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- Two-pass IDs stable: {0}" -f $report.two_pass_ids_stable) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- Multi-lot procedure examples: {0}" -f $report.multi_lot_procedure_examples.Count) | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Retain sanitized live evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sberbank-ast-bankruptcy-live-evidence
+          path: |
+            ${{ runner.temp }}/sberbank-ast-live-evidence.json
+            ${{ runner.temp }}/sberbank-ast-live-probe.log
+          if-no-files-found: warn
+          retention-days: 30
