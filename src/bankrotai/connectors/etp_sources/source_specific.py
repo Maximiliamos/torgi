@@ -59,10 +59,11 @@ def _arbbitlot_decimal(raw: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
-def _arbbitlot_labeled_amount(value: str, label: str) -> float | None:
+def _arbbitlot_labeled_rub_amount(value: str, label: str) -> float | None:
+    """Require ARBbitLot's explicit RUB-labelled money field."""
     match = re.search(
         label
-        + r"\s*(?:,?\s*руб\.?)?\s*[:\-]?\s*"
+        + r"\s*,?\s*руб\.?\s*[:\-]?\s*"
         + r"(\d[\d\s\u00a0\u202f]{0,30}(?:[.,]\d{1,2})?)",
         value,
         re.IGNORECASE,
@@ -79,7 +80,7 @@ def arbbitlot_detail_fields(value: str) -> dict[str, float | str | None]:
         re.IGNORECASE,
     )
     deposit_percent = re.search(
-        r"(?:размер|способ\s+расч[её]та)\s+обеспечен\w*"
+        r"(?:размер|способ\s+расч[её]та)\s+(?:обеспечен\w*|задатк\w*)"
         r"[^\d%]{0,80}(\d{1,3}(?:[.,]\d{1,4})?)\s*%",
         value,
         re.IGNORECASE,
@@ -92,13 +93,15 @@ def arbbitlot_detail_fields(value: str) -> dict[str, float | str | None]:
     )
     lot_number = re.search(r"информация\s+о\s+лоте\s*№\s*(\d{1,6})", value, re.IGNORECASE)
     return {
-        "start_price": _arbbitlot_labeled_amount(value, r"начальн\w*\s+цен\w*"),
-        "current_price": _arbbitlot_labeled_amount(value, r"текущ\w*\s+цен\w*"),
-        "deposit_amount": _arbbitlot_labeled_amount(value, r"размер\s+обеспечен\w*"),
+        "start_price": _arbbitlot_labeled_rub_amount(value, r"начальн\w*\s+цен\w*"),
+        "current_price": _arbbitlot_labeled_rub_amount(value, r"текущ\w*\s+цен\w*"),
+        "deposit_amount": _arbbitlot_labeled_rub_amount(
+            value, r"размер\s+(?:обеспечен\w*|задатк\w*)"
+        ),
         "deposit_percent": (
             float(deposit_percent.group(1).replace(",", ".")) if deposit_percent else None
         ),
-        "auction_step_amount": _arbbitlot_labeled_amount(value, r"шаг"),
+        "auction_step_amount": _arbbitlot_labeled_rub_amount(value, r"шаг"),
         "auction_step_percent": (
             float(step_percent.group(1).replace(",", ".")) if step_percent else None
         ),
