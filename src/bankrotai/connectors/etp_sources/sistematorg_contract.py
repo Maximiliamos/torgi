@@ -102,9 +102,13 @@ def _parse_datetime(value: str) -> datetime | None:
         return datetime.fromisoformat(cleaned)
     except ValueError:
         pass
-    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S"):
+    match = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", cleaned)
+    if match is None:
+        return None
+    raw = match.group(0)
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
         try:
-            return datetime.strptime(cleaned, fmt)
+            return datetime.strptime(raw, fmt)
         except ValueError:
             continue
     return None
@@ -466,6 +470,7 @@ def parse_sistematorg_detail_lots(
         start_price = _labelled_money(segment, r"начальная\s+цена")
         current_price = _labelled_money(segment, r"текущая\s+цена")
         deposit = _labelled_money(segment, r"размер\s+задатка")
+        auction_step = _labelled_money(segment, r"шаг\s+аукциона")
         status_text = _field(
             segment,
             r"статус\s+торгов",
@@ -535,6 +540,7 @@ def parse_sistematorg_detail_lots(
             application_start_at=application_start,
             application_deadline=application_deadline,
             auction_at=_parse_datetime(global_auction or ""),
+            auction_step_amount=auction_step,
             auction_type=auction_type,
             public_offer_schedule=schedule or None,
             property_type=category,
