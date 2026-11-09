@@ -8,11 +8,11 @@ import requests
 
 from bankrotai.connectors.etp_sources.common import EtpSourceProfile, SourceSchemaError
 from bankrotai.connectors.etp_sources.fabrikant import (
+    FabrikantConnector,
     external_id_from_lot_url,
     parse_detail_lot,
     procedure_urls,
 )
-from bankrotai.connectors.etp_sources.fabrikant_connector import FabrikantConnector
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fabrikant"
