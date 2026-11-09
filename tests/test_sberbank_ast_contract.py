@@ -95,12 +95,15 @@ def test_sberbank_uses_structured_property_branch_not_free_text() -> None:
     vehicle = _row(goods_id=101, branch="Транспорт")
     vehicle["title"] = "Земельный участок написан в свободном тексте"
     realty = _row(goods_id=102)
+    realty["title"] = "Автомобиль написан в свободном тексте"
     lots = parse_sberbank_json(
         _profile(),
         {"PurchaseList": [{"_source": vehicle}, {"_source": realty}]},
         page=1,
     )
     assert [lot.external_id for lot in lots] == ["sberbank-ast.ru:11-0-0-102"]
+    assert lots[0].category == "real_estate"
+    assert lots[0].raw_data["structured_category_verified"] is True
 
 
 def test_sberbank_multi_lot_procedure_keeps_distinct_goods_ids_and_prices() -> None:
