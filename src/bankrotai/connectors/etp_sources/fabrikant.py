@@ -19,8 +19,6 @@ from bankrotai.connectors.etp_sources.common import (
     SourceSchemaError,
     _safe_provider_url,
 )
-from bankrotai.connectors.etp_sources.pagination import has_next_page
-
 
 
 CATALOGUE_URL = (
@@ -52,6 +50,7 @@ _STATUS_RE = re.compile(
 class FabrikantDetailFields:
     title: str | None
     source_status_text: str | None
+    auction_status: str
     start_price: float | None
     current_price: float | None
     category_text: str | None
@@ -492,6 +491,7 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
     return FabrikantDetailFields(
         title=title[:500] if title else None,
         source_status_text=status_text,
+        auction_status=fields.auction_status,
         start_price=fabrikant_initial_money(text),
         current_price=fabrikant_current_money(text),
         category_text=category_text,
@@ -530,8 +530,6 @@ def parse_detail_lot(
     fields = parse_detail_fields(html)
     if not fields.title:
         raise FabrikantContractError("individual detail title is not proven")
-    text = _clean(_soup(html).get_text(" ", strip=True))
-    status = fabrikant_status(text)[0]
     return NormalizedLot(
         external_id=external_id or expected_id,
         source="fabrikant",
@@ -667,9 +665,14 @@ class FabrikantConnector(HtmlEtpConnector):
         page = max(1, int(cursor or normalized.page))
         response = await asyncio.to_thread(self._request, page)
         lots = await asyncio.to_thread(self._resolve_page, response, page=page)
+        page_contract = parse_catalogue_page(
+            response.content,
+            base_url=response.url or self.profile.listing_url,
+            page=page,
+        )
         next_cursor = (
             str(page + 1)
-            if lots and has_next_page(self.profile, response.content, page)
+            if lots and page_contract.has_next_page
             else None
         )
         return ConnectorPage(
