@@ -1242,3 +1242,75 @@ def test_arbbitlot_aspnet_page_two_posts_state_and_reaches_terminal_page() -> No
     ]
     assert session.posts[0][1]["__VIEWSTATE"] == "arb-state"
     assert session.posts[0][1]["__EVENTTARGET"] == "ctl00$ContentPlaceHolder1$Pager$2"
+
+
+def test_arbbitlot_public_offer_catalogue_keeps_per_lot_start_and_current_price() -> None:
+    html = """
+    <table>
+      <tr>
+        <th>№ Публичное предложение</th><th>№ лота</th><th>Лот</th>
+        <th>Начальная цена, руб.</th><th>Текущая цена, руб.</th><th>Статус</th>
+      </tr>
+      <tr>
+        <td>0037071</td><td>1</td>
+        <td><a href="/public/public-offers/lots/view/40663/">
+          Земельный участок 01:06:2800003:164
+        </a></td>
+        <td>242 100,00</td><td>169 470,00</td><td>Прием заявок</td>
+      </tr>
+    </table>
+    """
+    lots = parse_listing_html(profile("arbbitlot.ru"), html)
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.external_id == "arbbitlot.ru:public-offers-40663"
+    assert lot.start_price == 242100
+    assert lot.current_price == 169470
+    assert lot.auction_status == "active"
+
+
+def test_arbbitlot_enrichment_preserves_explicit_catalogue_current_price_when_detail_has_no_current_label() -> None:
+    from bankrotai.connectors.etp_sources.source_specific import apply_detail
+
+    listing_html = """
+    <table>
+      <tr>
+        <th>№ Публичное предложение</th><th>№ лота</th><th>Лот</th>
+        <th>Начальная цена, руб.</th><th>Текущая цена, руб.</th><th>Статус</th>
+      </tr>
+      <tr>
+        <td>0037071</td><td>1</td>
+        <td><a href="/public/public-offers/lots/view/40663/">
+          Земельный участок 01:06:2800003:164
+        </a></td>
+        <td>242 100,00</td><td>169 470,00</td><td>Прием заявок</td>
+      </tr>
+    </table>
+    """
+    detail_html = """
+    <html><body>
+      <h1>Земельный участок 01:06:2800003:164</h1>
+      Информация о публичном предложении №0037071
+      Информация о лоте №1
+      Статус: Прием заявок
+      Начальная цена, руб.: 242 100,00
+      Интервалы снижения цены:
+      01.11.2026 10:00 05.11.2026 10:00 24 210,00 193 680,00
+      05.11.2026 10:00 10.11.2026 10:00 24 210,00 169 470,00
+      Размер обеспечения, руб.: 24 210,00
+      Подробные сведения об имуществе и порядке публичного предложения.
+    </body></html>
+    """
+    listing = parse_listing_html(profile("arbbitlot.ru"), listing_html)[0]
+    detail = parse_detail_html(
+        profile("arbbitlot.ru"),
+        detail_html,
+        detail_url="https://torgi.arbbitlot.ru/public/public-offers/lots/view/40663/",
+    )
+    assert detail.current_price is None
+    enriched = apply_detail(listing, detail, version=1)
+    assert enriched.start_price == 242100
+    assert enriched.current_price == 169470
+    assert enriched.raw_data["detail_start_price_verified"] is True
+    assert enriched.raw_data["detail_current_price_verified"] is False
+    assert enriched.raw_data["listing_current_price_used_as_fallback"] is True
