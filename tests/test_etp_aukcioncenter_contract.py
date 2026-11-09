@@ -27,21 +27,25 @@ def test_active_catalogue_splits_procedure_into_individual_property_lots_and_exc
     </table>
     """
     lots = parse_listing_html(_profile(), html, page=1)
-    assert len(lots) == 1
-    lot = lots[0]
-    assert lot.external_id == "aukcioncenter.ru:103550001:1"
-    assert lot.procedure_number == "7600-ОАОФ"
-    assert lot.category == "land"
-    assert lot.cadastral_number == "76:01:000001:101"
-    assert lot.area == 1000
-    assert lot.start_price is None
-    assert lot.current_price is None
-    assert lot.auction_status == "active"
-    assert lot.application_start_at.isoformat() == "2026-11-01T09:00:00"
-    assert lot.application_deadline.isoformat() == "2026-12-01T18:00:00"
-    assert lot.raw_data["lot_number"] == 1
-    assert lot.raw_data["individual_lot_identity_verified"] is True
-    assert lot.raw_data["listing_price_unverified"] is True
+    assert [lot.external_id for lot in lots] == [
+        "aukcioncenter.ru:103550001:1",
+        "aukcioncenter.ru:103550001:2",
+    ]
+    land, vehicle = lots
+    assert land.procedure_number == "7600-ОАОФ"
+    assert land.category == "land"
+    assert land.raw_data["eligible_property"] is True
+    assert land.cadastral_number == "76:01:000001:101"
+    assert land.area == 1000
+    assert vehicle.category == "vehicle"
+    assert vehicle.raw_data["eligible_property"] is False
+    assert all(lot.start_price is None and lot.current_price is None for lot in lots)
+    assert all(lot.auction_status == "active" for lot in lots)
+    assert land.application_start_at.isoformat() == "2026-11-01T09:00:00"
+    assert land.application_deadline.isoformat() == "2026-12-01T18:00:00"
+    assert land.raw_data["lot_number"] == 1
+    assert land.raw_data["individual_lot_identity_verified"] is True
+    assert land.raw_data["listing_price_unverified"] is True
 
 
 def test_single_lot_requires_source_lot_number_in_url_instead_of_inventing_lot_one():
@@ -61,7 +65,7 @@ def test_single_lot_requires_source_lot_number_in_url_instead_of_inventing_lot_o
     assert parse_listing_html(_profile(), without_lot) == []
 
 
-def test_mixed_property_and_nonproperty_inside_one_lot_is_fail_closed():
+def test_mixed_property_and_nonproperty_inside_one_lot_is_not_property_eligible():
     html = """
     <table><tr onclick="go('/trade/view/purchase/general.html?id=103550003')">
       <td>7602-ОАОФ</td>
@@ -69,7 +73,10 @@ def test_mixed_property_and_nonproperty_inside_one_lot_is_fail_closed():
       <td>03.11.2026 09:00</td><td>03.12.2026 18:00</td>
     </tr></table>
     """
-    assert parse_listing_html(_profile(), html) == []
+    lots = parse_listing_html(_profile(), html)
+    assert len(lots) == 1
+    assert lots[0].category == "mixed"
+    assert lots[0].raw_data["eligible_property"] is False
 
 
 def test_general_procedure_price_is_never_accepted_without_selected_lot_section():
