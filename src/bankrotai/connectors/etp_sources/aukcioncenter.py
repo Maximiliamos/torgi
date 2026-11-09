@@ -526,13 +526,45 @@ def detail_request_url(external_id: str, *, page: int = 1) -> str:
     )
 
 
-def _lot_segment(text: str, lot_number: int) -> str | None:
+def _lot_segment(text: str, lot_number: int, *, require_right_boundary: bool = False) -> str | None:
     matches = list(_LOT_RE.finditer(text))
     for index, marker in enumerate(matches):
         if int(marker.group("lot")) != lot_number:
             continue
+        if require_right_boundary and index + 1 >= len(matches):
+            return None
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         return _clean(text[marker.end():end])
+    return None
+
+
+def _isolated_lot_text(soup: BeautifulSoup, whole: str, lot_number: int) -> str | None:
+    """Return only evidence structurally attributable to one explicit lot.
+
+    The AJAX endpoint can render a page containing multiple lot blocks even
+    when lotNumber is supplied.  Prefer a DOM container that contains exactly
+    the requested lot marker and no sibling marker.  If the source provides
+    one flat text stream, a segment is safe only when its right boundary is the
+    next explicit lot marker; the final unbounded sibling fails closed.
+    """
+    wanted = re.compile(rf"Лот\s*№\s*{lot_number}\b", re.I)
+    for node in soup.find_all(string=wanted):
+        parent = node.parent if isinstance(node.parent, Tag) else None
+        depth = 0
+        while isinstance(parent, Tag) and depth < 7:
+            if parent.name in {"tr", "li", "article", "section", "div", "tbody", "table"}:
+                text = _clean(parent.get_text(" ", strip=True))
+                numbers = {int(item.group("lot")) for item in _LOT_RE.finditer(text)}
+                if numbers == {lot_number} and len(text) >= 40:
+                    return _lot_segment(text, lot_number) or text
+            parent = parent.parent if isinstance(parent.parent, Tag) else None
+            depth += 1
+
+    all_numbers = [int(item.group("lot")) for item in _LOT_RE.finditer(whole)]
+    if all_numbers == [lot_number]:
+        return _lot_segment(whole, lot_number)
+    if lot_number in all_numbers:
+        return _lot_segment(whole, lot_number, require_right_boundary=True)
     return None
 
 
@@ -572,13 +604,15 @@ def parse_detail(
     ]
     if explicit_lot_numbers and lot_number not in explicit_lot_numbers:
         raise ValueError("aukcioncenter_inner_lot_identity_mismatch")
-    if len(set(explicit_lot_numbers)) > 1:
-        raise ValueError("aukcioncenter_inner_endpoint_returned_multiple_lots")
 
-    # The first-party AJAX request itself carries the exact provider id and
-    # lotNumber and renders the lot container. If the fragment labels the lot,
-    # isolate that section; otherwise the whole fragment is the isolated payload.
-    selected = _lot_segment(whole, lot_number) if explicit_lot_numbers else whole
+    if explicit_lot_numbers:
+        selected = _isolated_lot_text(soup, whole, lot_number)
+        if selected is None:
+            raise ValueError("aukcioncenter_individual_lot_section_not_proven")
+    else:
+        # A response with no lot marker is accepted only because the first-party
+        # endpoint request itself is bound to the exact provider id + lotNumber.
+        selected = whole
     if not selected or len(selected) < 40:
         raise ValueError("aukcioncenter_inner_lot_payload_too_short")
 
