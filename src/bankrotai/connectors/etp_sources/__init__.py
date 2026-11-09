@@ -11,17 +11,14 @@ from bankrotai.connectors.etp_sources.common import (
     parse_listing_html,
     parse_sberbank_json,
 )
-from bankrotai.connectors.etp_sources.etpu import EtpuConnector
 from bankrotai.connectors.etp_sources.profiles import PROFILES
 
 
 SOURCE_CONNECTOR_TYPES = {profile.source_id: connector_type(profile) for profile in PROFILES}
-SOURCE_CONNECTOR_TYPES["etpu.ru"] = EtpuConnector
 
 __all__ = [
     "EtpSearchFilters",
     "EtpSourceProfile",
-    "EtpuConnector",
     "HtmlEtpConnector",
     "PROFILES",
     "SOURCE_CONNECTOR_TYPES",
