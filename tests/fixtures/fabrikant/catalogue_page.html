@@ -1,4 +1,13 @@
 <html><body>
+<form method="get" action="/procedure/search/sales">
+  <select name="status">
+    <option value="">Все состояния</option>
+    <option value="active" selected>Активные</option>
+    <option value="closed">Завершенные</option>
+  </select>
+  <input type="hidden" name="section_ids[]" value="6">
+  <input type="hidden" name="page_limit" value="10">
+</form>
 <a href="https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A">Процедура банкротства</a>
 <a href="/procedure/search/sales?section_ids%5B%5D=6&amp;page_limit=10&amp;page_number=2">2</a>
 </body></html>
