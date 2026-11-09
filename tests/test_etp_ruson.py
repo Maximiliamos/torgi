@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
 from bankrotai.connectors.etp_sources.ruson import (
     RusonReadonlyConnector,
     RusonSchemaError,
@@ -177,7 +176,7 @@ def test_ruson_terminal_page_and_identity_mismatch_fail_closed() -> None:
         )
 
 
-def test_ruson_production_connector_dispatches_detail_to_source_contract(monkeypatch) -> None:
+def test_ruson_source_connector_fetches_detail_without_shared_dispatcher(monkeypatch) -> None:
     expected = _parse("ordinary_active.html", "900001")
     calls: list[str] = []
 
@@ -186,7 +185,7 @@ def test_ruson_production_connector_dispatches_detail_to_source_contract(monkeyp
         return expected
 
     monkeypatch.setattr(RusonReadonlyConnector, "fetch_lot", fake_fetch)
-    connector = SOURCE_CONNECTOR_TYPES["rus-on.ru"]()
+    connector = RusonReadonlyConnector()
     actual = asyncio.run(connector.fetch_lot("rus-on.ru:900001"))
     assert actual is expected
     assert calls == ["rus-on.ru:900001"]

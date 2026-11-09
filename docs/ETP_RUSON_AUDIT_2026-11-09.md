@@ -39,11 +39,11 @@ The audit performs no database writes, no archival, no reconciliation, and no ma
 
 ## Live evidence status
 
-Pending the exact-head source-specific GitHub workflow after source isolation and update from current main. Synthetic fixtures are not treated as acceptance evidence.
+Pending the exact-head source-specific GitHub workflow after isolation; no synthetic evidence is accepted as live proof. Synthetic fixtures are not treated as acceptance evidence.
 
 ## Integration hook
 
-The existing generic connector now contains only a minimal rus-on.ru dispatcher: detail fetch is routed to the verified source module, then the existing generic identity/price merge guard runs before source-specific lifecycle fields are copied. No scheduler, allowlist, reconciliation, archival or neighboring source behavior is changed.
+The rus-on parser and read-only connector are independently testable. The shared production dispatcher is intentionally unchanged in this PR. The integration-owned common.py must route rus-on.ru detail fetch to ruson.RusonReadonlyConnector(session=self.session, timeout=self.timeout).fetch_lot(external_id), then call existing apply_detail(lot, detail, version=self.detail_enrichment_version) and ruson.enrich_ruson_lot(enriched, detail) for source lifecycle fields. These minimal hooks must be implemented and tested by the future integration PR. No production source activation is authorized.
 
 ## Isolation review
 
@@ -51,10 +51,10 @@ Source-specific module:
 src/bankrotai/connectors/etp_sources/ruson.py
 
 Shared files modified by final PR diff:
-src/bankrotai/connectors/etp_sources/common.py — minimal rus-on.ru dispatcher only
+NONE
 
 Source-specific logic introduced by this PR remaining in common.py:
-Only the minimal dispatcher to ruson.RusonReadonlyConnector and ruson.enrich_ruson_lot.
+NONE
 
 Source-specific logic introduced by this PR remaining in pagination.py:
 NONE
@@ -69,7 +69,7 @@ Source-specific logic introduced by this PR remaining in direct_etp_catalogue.py
 NONE
 
 Integration hook required:
-NO — the minimal dispatcher is included and covered by regression.
+YES — common.py: inside HtmlEtpConnector.fetch_lot, for source_id == 'rus-on.ru', call ruson.RusonReadonlyConnector(session=self.session, timeout=self.timeout).fetch_lot(external_id). Inside HtmlEtpConnector.enrich_lot, after existing apply_detail, call ruson.enrich_ruson_lot(enriched, detail) for rus-on.ru. The integration PR must add E2E dispatch tests.
 
 Existing work preserved:
 YES
