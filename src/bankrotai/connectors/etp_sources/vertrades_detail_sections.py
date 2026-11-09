@@ -39,6 +39,12 @@ _DESCRIPTION_LABEL = re.compile(
 _PRICE_LABEL = re.compile(r"^Начальная\s+цена\s+продажи\s+имущества\b", re.I)
 _DEPOSIT_LABEL = re.compile(r"^Размер\s+задатка\b", re.I)
 _DATE = r"(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)"
+_FIELD_BOUNDARY = re.compile(
+    r"^(?:Валюта|Обременения|Начальная\s+цена\s+продажи\s+имущества|"
+    r"Величина\s+повышения\s+начальной\s+цены|Размер\s+задатка|"
+    r"Сведения\s+по\s+лоту\s*№)",
+    re.I,
+)
 
 
 class VertradesCardError(ValueError):
@@ -77,7 +83,10 @@ def _lines(html: str | bytes) -> list[str]:
     return [_clean(x) for x in soup.get_text("\n").splitlines() if _clean(x)]
 
 
-def _one_labeled(lines: list[str], label: re.Pattern[str], *, required: bool) -> str | None:
+def _one_labeled(
+    lines: list[str], label: re.Pattern[str], *, required: bool,
+    multiline: bool = False,
+) -> str | None:
     values: list[str] = []
     for index, line in enumerate(lines):
         match = label.match(line)
@@ -85,8 +94,16 @@ def _one_labeled(lines: list[str], label: re.Pattern[str], *, required: bool) ->
             continue
         inline = _clean(line[match.end():].lstrip(" :-–—"))
         value = inline
-        if not value and index + 1 < len(lines):
-            value = lines[index + 1]
+        cursor = index + 1
+        if not value and cursor < len(lines):
+            value = lines[cursor]
+            cursor += 1
+        if value and multiline:
+            parts = [value]
+            while cursor < len(lines) and not _FIELD_BOUNDARY.match(lines[cursor]):
+                parts.append(lines[cursor])
+                cursor += 1
+            value = _clean(" ".join(parts))
         if value:
             values.append(_clean(value))
     unique = list(dict.fromkeys(values))
@@ -175,7 +192,9 @@ def get_vertrades_lot(
 
     status = _one_labeled(section, _STATUS_LABEL, required=True)
     title = _one_labeled(section, _TITLE_LABEL, required=True)
-    description = _one_labeled(section, _DESCRIPTION_LABEL, required=False) or title
+    description = _one_labeled(
+        section, _DESCRIPTION_LABEL, required=False, multiline=True,
+    ) or title
     price = _money(_one_labeled(section, _PRICE_LABEL, required=True), required=True)
     deposit = _money(_one_labeled(section, _DEPOSIT_LABEL, required=False), required=False)
     assert status is not None and title is not None and price is not None
