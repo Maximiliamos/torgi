@@ -1234,3 +1234,31 @@ def test_zakazrf_address_supports_provider_po_adresu_wording() -> None:
         external_id="zakazrf.ru:auctions-18783",
     )
     assert lot.address == "Республика Татарстан, г. Казань, ул. Япеева, д. 19, № 13, подземный этаж"
+
+
+def test_zakazrf_active_status_stops_before_current_price_label() -> None:
+    html = """
+    <html><body>
+    <h2>Информация о лоте №1</h2>
+    Номер: 1
+    Наименование: Стояночное место - 12,5 кв. м, адрес: Республика Татарстан,
+    г. Казань, ул. Япеева, д. 19, № 13, подземный этаж,
+    кадастровый номер 16:50:010326:323
+    Статус: Прием заявок Текущая цена, руб.: 1 900 548,00
+    Начальная цена, руб.: 1 900 548,00
+    Сведения об имуществе должника, его составе, характеристиках, описание:
+    Недвижимое имущество
+    Классификатор ЕФРСБ:
+    Здания (кроме жилых) и сооружения, не включенные в другие группировки
+    Интервалы снижения цены
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("zakazrf.ru"),
+        html,
+        detail_url="https://bankrot.zakazrf.ru/public/public-offers/lots/view/18804/",
+        external_id="zakazrf.ru:public-offers-18804",
+    )
+    assert lot.auction_status == "active"
+    assert lot.current_price == 1_900_548.00
+    assert lot.start_price == 1_900_548.00
