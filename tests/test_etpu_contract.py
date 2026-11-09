@@ -1,24 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from bankrotai.connectors.etp_sources import (
-    PROFILES,
-    SOURCE_CONNECTOR_TYPES,
-    SourceSchemaError,
-    parse_detail_html,
-    parse_listing_html,
+from bankrotai.connectors.etp_sources.etpu import (
+    EtpuClient,
+    EtpuSchemaError,
+    classify_property,
+    classifier_flags,
+    parse_catalogue_page,
+    parse_detail,
 )
-from bankrotai.connectors.etp_sources.source_specific import (
-    etpu_category,
-    etpu_classifier_flags,
-)
-
-
-def _profile():
-    return next(item for item in PROFILES if item.source_id == "etpu.ru")
 
 
 def _detail(
@@ -52,8 +43,7 @@ def _detail(
 
 
 def test_etpu_detail_uses_individual_labelled_price_status_and_classifier() -> None:
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         _detail(classifier="Земельные участки; Здания (помещения) жилые, не входящие в жилищный фонд"),
         detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/143436/",
     )
@@ -61,20 +51,41 @@ def test_etpu_detail_uses_individual_labelled_price_status_and_classifier() -> N
     assert parsed.external_id == "etpu.ru:auctions-143436"
     assert parsed.start_price == 1_234_567.89
     assert parsed.current_price is None
+    assert parsed.deposit_amount == 246_913.58
+    assert parsed.auction_step_amount == 61_728.39
     assert parsed.auction_status == "active"
     assert parsed.procedure_number == "0055237"
     assert parsed.category == "real_estate"
     assert parsed.raw_data["efrsb_classifier_flags"] == ["land", "real_estate"]
     assert parsed.raw_data["structured_property_classification"] is True
     assert parsed.raw_data["detail_initial_price_verified"] is True
+    assert parsed.application_start_at.isoformat() == "2026-11-09T10:00:00"
     assert parsed.application_deadline.isoformat() == "2026-11-30T10:00:00"
     assert parsed.auction_at.isoformat() == "2026-12-04T12:00:00"
     assert parsed.auction_timezone == "Europe/Moscow"
 
 
+def test_etpu_property_fields_are_bound_to_the_individual_detail() -> None:
+    html = _detail(
+        classifier="Здания (кроме жилых) и сооружения, не включенные в другие группировки",
+        title=(
+            "Нежилое помещение площадью 48,6 кв.м., кадастровый № "
+            "78:12:0007203:5171, расположенное по адресу: "
+            "Санкт-Петербург, Рыбацкий пр., д. 18, литера А;"
+        ),
+    )
+    parsed = parse_detail(
+        html,
+        detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/141915/",
+    )
+
+    assert parsed.cadastral_number == "78:12:0007203:5171"
+    assert parsed.area == 48.6
+    assert parsed.address == "Санкт-Петербург, Рыбацкий пр., д. 18, литера А"
+
+
 def test_etpu_public_offer_keeps_initial_and_current_prices_distinct() -> None:
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         _detail(
             classifier="Права требования к физическим лицам",
             title="Право требования по договору займа",
@@ -88,6 +99,7 @@ def test_etpu_public_offer_keeps_initial_and_current_prices_distinct() -> None:
     assert parsed.start_price == 900_000
     assert parsed.current_price == 540_000
     assert parsed.category == "receivables"
+    assert parsed.auction_type == "public_offer"
 
 
 def test_etpu_public_offer_uses_last_interval_as_application_deadline() -> None:
@@ -103,14 +115,52 @@ def test_etpu_public_offer_uses_last_interval_as_application_deadline() -> None:
         "Дата проведения (Московское время): 04.12.2026 12:00:00",
         "Дата начала первого интервала (Московское время): 09.11.2026 14:00:00",
     )
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         html,
         detail_url="https://bankrupt.etpu.ru/public/public-offers/lots/view/143362/",
     )
 
     assert parsed.application_deadline.isoformat() == "2026-11-30T14:00:00"
     assert parsed.auction_at.isoformat() == "2026-11-09T14:00:00"
+
+
+def test_etpu_public_offer_interval_schedule_stays_separate_from_prices() -> None:
+    html = _detail(
+        classifier="Права требования к физическим лицам",
+        start_price="663 187,00",
+        current_price="66 318,70",
+    ).replace(
+        "</section>",
+        """
+        <table>
+          <tr>
+            <th>Дата начала интервала</th>
+            <th>Дата окончания интервала</th>
+            <th>Задаток на интервале, руб.</th>
+            <th>Цена на интервале, руб.</th>
+          </tr>
+          <tr>
+            <td>24.08.2026 11:00</td><td>31.08.2026 11:00</td>
+            <td>66 318,70</td><td>663 187,00</td>
+          </tr>
+          <tr>
+            <td>26.10.2026 11:00</td><td>30.10.2026 17:00</td>
+            <td>6 631,87</td><td>66 318,70</td>
+          </tr>
+        </table>
+        </section>
+        """,
+    )
+    parsed = parse_detail(
+        html,
+        detail_url="https://bankrupt.etpu.ru/public/public-offers/lots/view/138121/",
+    )
+
+    assert parsed.start_price == 663_187
+    assert parsed.current_price == 66_318.70
+    assert parsed.public_offer_schedule is not None
+    assert len(parsed.public_offer_schedule) == 2
+    assert parsed.public_offer_schedule[-1]["Цена на интервале, руб."] == "66 318,70"
 
 
 def test_etpu_does_not_invent_price_from_deposit_or_interval_amount() -> None:
@@ -127,14 +177,14 @@ def test_etpu_does_not_invent_price_from_deposit_or_interval_amount() -> None:
       Интервалы снижения цены
     </body></html>
     """
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         html,
         detail_url="https://bankrupt.etpu.ru/public/public-offers/lots/view/143422/",
     )
 
     assert parsed.start_price is None
     assert parsed.current_price is None
+    assert parsed.deposit_amount == 100_000
 
 
 @pytest.mark.parametrize(
@@ -151,13 +201,12 @@ def test_etpu_does_not_invent_price_from_deposit_or_interval_amount() -> None:
 )
 def test_etpu_structured_efrsb_categories(classifier: str, expected: str) -> None:
     text = f"Информация о лоте № 1 Классификатор ЕФРСБ: {classifier} Документы"
-    assert etpu_category(text) == expected
-    assert expected in etpu_classifier_flags(text)
+    assert classify_property(text) == expected
+    assert expected in classifier_flags(text)
 
 
 def test_etpu_unknown_structured_classifier_fails_closed_to_other() -> None:
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         _detail(
             classifier="Ценные бумаги и иные финансовые инструменты",
             title="Автомобиль указан только в свободном описании",
@@ -170,8 +219,7 @@ def test_etpu_unknown_structured_classifier_fails_closed_to_other() -> None:
 
 
 def test_etpu_official_other_classifier_is_not_overridden_by_free_text() -> None:
-    parsed = parse_detail_html(
-        _profile(),
+    parsed = parse_detail(
         _detail(classifier="Прочее", title="Автомобиль легковой, VIN XTA00000000000000"),
         detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/143411/",
     )
@@ -189,15 +237,13 @@ def test_etpu_status_ignores_status_like_prose_and_unknown_intermediate_phase() 
         "Статус: Нераспознанная стадия",
         "Порядок участия: прием заявок производится ежедневно",
     )
-    parsed_missing = parse_detail_html(
-        _profile(),
+    parsed_missing = parse_detail(
         missing_label,
         detail_url="https://bankrupt.etpu.ru/public/auctions/lots/view/143420/",
     )
     assert parsed_missing.auction_status == "unknown"
 
-    parsed_interval = parse_detail_html(
-        _profile(),
+    parsed_interval = parse_detail(
         _detail(
             classifier="Автомобили",
             status="Прием заявок на интервале не активен",
@@ -222,7 +268,7 @@ def test_etpu_multi_lot_catalogue_keeps_individual_lot_ids_and_prices() -> None:
         <td>900 000,00</td><td>Прием заявок</td></tr>
     </table>
     """
-    lots = parse_listing_html(_profile(), html)
+    lots = parse_catalogue_page(html, page=1)
 
     assert [lot.external_id for lot in lots] == [
         "etpu.ru:auctions-143434",
@@ -268,10 +314,10 @@ def test_etpu_pager_does_not_use_block_jump_for_random_access() -> None:
     </form></body></html>
     """
     session = _PostbackSession([_PagedResponse(page_one)])
-    connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
+    client = EtpuClient(session=session)
 
-    with pytest.raises(SourceSchemaError, match="page 15 postback target disappeared"):
-        asyncio.run(connector.search({}, cursor="15"))
+    with pytest.raises(EtpuSchemaError, match="page 15 postback target disappeared"):
+        client.fetch_catalogue_page(15)
 
     assert session.posts == []
 
@@ -309,14 +355,14 @@ def test_etpu_pager_crosses_ten_page_block_and_finds_real_terminal() -> None:
         _PagedResponse(page_ten),
         _PagedResponse(page_eleven_terminal),
     ])
-    connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
+    client = EtpuClient(session=session)
 
-    page10 = asyncio.run(connector.search({}, cursor="10"))
-    assert page10.next_cursor == "11"
+    page10 = client.fetch_catalogue_page(10)
+    assert page10.next_page == 11
     assert [item.external_id for item in page10.items] == ["etpu.ru:auctions-150010"]
 
-    page11 = asyncio.run(connector.search({}, cursor=page10.next_cursor))
-    assert page11.next_cursor is None
+    page11 = client.fetch_catalogue_page(page10.next_page)
+    assert page11.next_page is None
     assert [item.external_id for item in page11.items] == ["etpu.ru:auctions-150011"]
 
     assert session.posts[0]["__EVENTARGUMENT"] == "Page$10"
@@ -325,10 +371,10 @@ def test_etpu_pager_crosses_ten_page_block_and_finds_real_terminal() -> None:
 
 class _Response:
     status_code = 200
-    url = "https://bankrupt.etpu.ru/public/auctions/lots/view/143436/"
 
-    def __init__(self, body: str) -> None:
+    def __init__(self, body: str, url: str) -> None:
         self.content = body.encode()
+        self.url = url
 
     def raise_for_status(self) -> None:
         return None
@@ -342,16 +388,15 @@ class _Session:
 
     def get(self, url, *_args, **_kwargs):
         self.requested.append(url)
-        return _Response(self.body)
+        return _Response(self.body, url)
 
 
 def test_etpu_fetch_lot_reconstructs_exact_individual_detail_url() -> None:
     session = _Session(_detail(classifier="Земельные участки"))
-    connector = SOURCE_CONNECTOR_TYPES["etpu.ru"](session=session)
-    parsed = asyncio.run(connector.fetch_lot("etpu.ru:auctions-143436"))
+    client = EtpuClient(session=session)
+    parsed = client.fetch_detail("etpu.ru:auctions-143436")
 
     assert session.requested == [
         "https://bankrupt.etpu.ru/public/auctions/lots/view/143436/"
     ]
     assert parsed.external_id == "etpu.ru:auctions-143436"
-    assert "detail_enrichment" in connector.capabilities
