@@ -369,6 +369,25 @@ def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
     return lot_ids
 
 
+def _coverage_baseline_lot_ids(session: Session, dataset_id: int) -> set[int]:
+    """Return old map members still eligible under current base membership rules."""
+    dataset_ids = _dataset_lot_ids(session, dataset_id)
+    if not dataset_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(ProcessedLot.id).where(
+                ProcessedLot.id.in_(dataset_ids),
+                ProcessedLot.duplicate_of_id.is_(None),
+                ProcessedLot.is_archived.is_(False),
+                ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)),
+                ProcessedLot.current_geo_lat.between(-MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT),
+                ProcessedLot.current_geo_lon.between(-180.0, 180.0),
+            )
+        ).all()
+    )
+
+
 def _dimension_coverage_failures(
     session: Session,
     *,
@@ -376,7 +395,7 @@ def _dimension_coverage_failures(
     new_dataset_id: int,
     minimum_ratio: float,
 ) -> list[dict[str, object]]:
-    old_ids = _dataset_lot_ids(session, current_dataset_id)
+    old_ids = _coverage_baseline_lot_ids(session, current_dataset_id)
     new_ids = _dataset_lot_ids(session, new_dataset_id)
     if not old_ids:
         return []
@@ -418,6 +437,7 @@ def _promote_map_dataset(
     expected_current_id: int | None,
     dimension_failures: list[dict[str, object]] | None = None,
     expected_source_fingerprint: str | None = None,
+    coverage_baseline_count: int | None = None,
 ) -> dict:
     """Serialize and atomically promote one completely built dataset."""
     with session_factory() as session:
@@ -490,12 +510,17 @@ def _promote_map_dataset(
             )
         settings = get_settings()
         minimum_points = 0
-        if current is not None and current.point_count > 0:
+        baseline_points = (
+            int(current.point_count or 0)
+            if current is not None and coverage_baseline_count is None
+            else int(coverage_baseline_count or 0)
+        )
+        if current is not None and baseline_points > 0:
             minimum_points = max(
                 settings.min_map_points,
-                math.ceil(current.point_count * settings.min_map_coverage_ratio),
+                math.ceil(baseline_points * settings.min_map_coverage_ratio),
             )
-        if current is not None and current.point_count > 0 and dataset.point_count < minimum_points:
+        if current is not None and baseline_points > 0 and dataset.point_count < minimum_points:
             dataset.status = "rejected"
             session.commit()
             logger.warning(
@@ -516,6 +541,7 @@ def _promote_map_dataset(
                 ),
                 "current_dataset_id": current.id,
                 "previous_point_count": current.point_count,
+                "coverage_baseline_count": baseline_points,
                 "new_point_count": dataset.point_count,
                 "minimum_point_count": minimum_points,
             }
@@ -762,8 +788,12 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
         )
         build_completed = True
         dimension_failures: list[dict[str, object]] = []
+        coverage_baseline_count: int | None = None
         if expected_current_id is not None:
             with session_factory() as session:
+                coverage_baseline_count = len(
+                    _coverage_baseline_lot_ids(session, expected_current_id)
+                )
                 dimension_failures = _dimension_coverage_failures(
                     session,
                     current_dataset_id=expected_current_id,
@@ -802,6 +832,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             expected_current_id=expected_current_id,
             dimension_failures=dimension_failures,
             expected_source_fingerprint=expected_source_fingerprint,
+            coverage_baseline_count=coverage_baseline_count,
         )
         promotion_duration_ms = round((time.monotonic() - promotion_started_at) * 1000)
         promotion_completed = True
