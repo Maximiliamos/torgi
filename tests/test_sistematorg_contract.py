@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from bankrotai.connectors.etp_sources.sistematorg_contract import (
+    SistematorgReadonlyClient,
     classify_sistematorg_asset,
     parse_sistematorg_catalogue_page,
     parse_sistematorg_detail_lots,
+    property_catalogue_lots,
 )
 
 
