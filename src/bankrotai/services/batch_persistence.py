@@ -34,6 +34,9 @@ class BatchPersistenceStats:
 
 def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) -> dict[str, Any]:
     auction_status = lot.auction_status
+    normalized_status = normalize_status(auction_status)
+    now = utc_now()
+    terminal = normalized_status == "closed"
     return {
         "external_id": lot.external_id,
         "source": lot.source,
@@ -57,6 +60,18 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         "start_price": _to_decimal(lot.start_price),
         "current_price": _to_decimal(lot.current_price),
         "auction_status": auction_status,
+        # Keep the public projection consistent with explicit terminal source
+        # truth.  Before this, SourceLot was archived while ProcessedLot stayed
+        # non-archived indefinitely on the batch persistence path.
+        "is_archived": True if terminal else (existing.is_archived if existing is not None else False),
+        "archived_at": (
+            (existing.archived_at if existing is not None else None) or now
+            if terminal else (existing.archived_at if existing is not None else None)
+        ),
+        "closed_at": (
+            (existing.closed_at if existing is not None else None) or now
+            if terminal else (existing.closed_at if existing is not None else None)
+        ),
         "lot_url": lot.lot_url,
         "source_url": lot.source_url,
         "area": lot.area,
