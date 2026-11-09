@@ -129,6 +129,23 @@ def zakazrf_status_text(value: str) -> str | None:
     return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
 
 
+
+def zakazrf_normalized_status(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    lowered = re.sub(r"\s+", " ", value).strip().lower()
+    if lowered in {"прием заявок", "приём заявок", "идут торги"}:
+        return "active"
+    if any(token in lowered for token in (
+        "окончен", "завершен", "завершён", "не состоялся", "состоялся", "отменен", "отменён",
+    )):
+        return "closed"
+    if "приостанов" in lowered:
+        return "paused"
+    if any(token in lowered for token in ("объявлен", "ожидается")):
+        return "scheduled"
+    return "unknown"
+
 def zakazrf_classifier(value: str) -> str | None:
     """Extract the provider's structured EFRSB classifier for the individual lot."""
     section = _zakazrf_lot_section(value)
