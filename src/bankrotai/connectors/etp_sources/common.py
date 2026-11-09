@@ -480,11 +480,6 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         area_match = _AREA_RE.search(context)
         area = float(area_match.group(1).replace(",", ".")) if area_match else None
         table_initial, table_current = _table_prices(container)
-        arbbitlot_procedure_id, arbbitlot_lot_number = (
-            _arbbitlot_row_identity(container)
-            if profile.source_id == "arbbitlot.ru"
-            else (None, None)
-        )
         price = _money(context)
         if price is None:
             price = table_initial
@@ -498,7 +493,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
         if ambiguous_row or (profile.source_id == "sistematorg.com" and trade_lots != 1):
             price = None
             current_price = None
-        lots.append(NormalizedLot(
+        lot = NormalizedLot(
             external_id=external_id,
             source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
             source_system=profile.source_id,
@@ -513,7 +508,7 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
             area=area,
             start_price=price,
             current_price=current_price,
-            auction_status=_source_status(profile, context),
+            auction_status=_status(context),
             lot_url=href,
             source_url=href,
             detail_level="list",
@@ -526,18 +521,16 @@ def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: in
                 "individual_lot_identity_verified": (
                     profile.source_id != "sistematorg.com" and not ambiguous_row
                 ),
-                **({
-                    "procedure_id": arbbitlot_procedure_id,
-                    "lot_number": arbbitlot_lot_number,
-                } if profile.source_id == "arbbitlot.ru" else {}),
                 "complete_source_inventory": profile.complete_source_inventory,
                 "safe_for_archival": profile.safe_for_archival,
                 "reconcile_missing": False,
             },
             platform_name=profile.platform_name,
             platform_code=profile.platform_code,
-            procedure_number=arbbitlot_procedure_id,
-        ))
+        )
+        if profile.source_id == "arbbitlot.ru":
+            apply_arbbitlot_listing_contract(lot, container, context)
+        lots.append(lot)
     return lots
 
 
