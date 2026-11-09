@@ -34,41 +34,6 @@ def get_form_params(form: Tag, page_field: str, page: int) -> list[tuple[str, st
 
 
 
-def select_postback_link(
-    profile: EtpSourceProfile,
-    soup: Tag,
-    page: int,
-    *,
-    sequential_previous: bool,
-) -> Tag | None:
-    """Select the provider postback that advances to the requested page.
-
-    ETPU groups numeric pager links in ten-page blocks. Only a sequential
-    request may use the provider ">>" control to cross a block boundary;
-    random access must fail closed.
-    """
-    links = [
-        node for node in soup.select("a[href]")
-        if "__doPostBack" in str(node.get("href") or "")
-    ]
-    numeric = next(
-        (
-            node for node in links
-            if node.get_text(" ", strip=True).strip() == str(page)
-        ),
-        None,
-    )
-    if isinstance(numeric, Tag):
-        return numeric
-    if profile.source_id != "etpu.ru" or not sequential_previous:
-        return None
-    return next(
-        (
-            node for node in links
-            if node.get_text(" ", strip=True).strip() in {">>", "»"}
-        ),
-        None,
-    )
 def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bool:
     # Local import avoids an import cycle while retaining the project's
     # established legacy-encoding parser and text normalization.
