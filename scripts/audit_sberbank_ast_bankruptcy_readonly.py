@@ -41,7 +41,7 @@ def _lot_evidence(lot: Any) -> dict[str, Any]:
 async def _walk(*, full: bool, detail_limit: int) -> dict[str, Any]:
     connector = SOURCE_CONNECTOR_TYPES[SOURCE]()
     first = await connector.search({})
-    total = int(first.metadata.get("api_total") or 0)
+    total = int(first.metadata.get("api_total_reported") or 0)
     if total <= 0:
         raise SourceSchemaError(f"{SOURCE}: API total is not positive")
 
