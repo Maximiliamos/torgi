@@ -28,7 +28,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
-      - run: pip install -r requirements.lock && pip install --no-deps -e .
+      - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
+      - name: Run focused RUSSIA OnLine regressions
+        run: |
+          pytest -q \
+            tests/test_etp_ruson.py \
+            tests/test_etp_ruson_contract_audit.py \
+            tests/test_etp_sources.py::test_ruson_detail_enrichment_reads_labelled_price_and_dates_without_rub_suffix \
+            tests/test_etp_sources.py::test_duplicate_links_do_not_duplicate_lots
       - name: Run two-pass catalogue and detail audit
         run: |
           python -m bankrotai.services.etp_ruson_contract_audit \
