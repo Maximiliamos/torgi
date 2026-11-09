@@ -119,6 +119,15 @@ def parse_rows(html: str) -> list[Row]:
         provider_id = next(iter(ids)) if len(ids) == 1 else None
         pieces = list(LOT_RE.finditer(text))
         lot_numbers = tuple(int(match.group("lot")) for match in pieces)
+        if not lot_numbers:
+            url_lots: set[int] = set()
+            for value in urls:
+                query = parse_qs(urlparse(value).query)
+                for raw_lot in query.get("lotNumber", []):
+                    if re.fullmatch(r"[1-9]\\d{0,4}", raw_lot):
+                        url_lots.add(int(raw_lot))
+            if len(url_lots) == 1:
+                lot_numbers = (next(iter(url_lots)),)
         property_lots: list[int] = []
         classes: set[str] = set()
         if pieces:
@@ -215,11 +224,25 @@ def _text_features(html: str) -> dict[str, object]:
     price_labels = sorted({_clean(m.group(0)).lower() for m in PRICE_LABEL_RE.finditer(text)})
     lots = sorted({int(x) for x in re.findall(r"Лот\s*№\s*(\d{1,5})", text, re.I)})
     cads = sorted(set(re.findall(r"(?<!\d)\d{2}:\d{1,3}(?::\d{1,9}){2,4}(?!\d)", text)))
+    selected_lot_values = sorted({
+        str(node.get("value") or "")
+        for node in soup.select(
+            "select[name*=lot i] option[selected], input[name*=lot i][checked]"
+        )
+        if str(node.get("value") or "").isdigit()
+    })
+    semantic_labels = sorted({
+        _clean(node.get_text(" ", strip=True)).lower()
+        for node in soup.select("th, dt, label")
+        if re.search(r"цен|лот|статус|состояни|заяв|аукцион|торг", node.get_text(" ", strip=True), re.I)
+    })
     return {
         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "text_len": len(text),
         "lot_numbers_in_text": lots[:50],
+        "selected_lot_values": selected_lot_values[:20],
         "price_labels": price_labels[:20],
+        "semantic_labels": semantic_labels[:30],
         "status_hits": status_hits,
         "cadastral_count": len(cads),
         "purchase_routes": _purchase_routes(html),
@@ -287,45 +310,54 @@ def run(*, pause: float, details: int) -> dict[str, object]:
     known_trades = {row.trade for row in first_pass_rows}
     new_after_terminal = sorted({row.trade for row in terminal_rows} - known_trades)
 
-    # Pick procedure-level detail URLs only to discover the site's own tab/routes.
-    # No amount/status is accepted as per-lot evidence unless lotNumber changes
-    # the rendered payload or a lot-specific source route is found.
-    selected: list[Row] = []
+    # Select 30 distinct lot identities, prioritising property lots, then fill
+    # with other classes. The general procedure page is fetched once per
+    # provider id; lotNumber variants are fetched independently.
+    property_candidates: list[tuple[Row, int]] = []
+    other_candidates: list[tuple[Row, int]] = []
+    candidate_seen: set[tuple[str, int]] = set()
     for row in first_pass_rows:
-        if row.provider_id and (row.lots or row.property_lots):
-            selected.append(row)
-        if len(selected) >= details:
-            break
+        if not row.provider_id:
+            continue
+        for lot in row.lots:
+            key = (row.provider_id, lot)
+            if key in candidate_seen:
+                continue
+            candidate_seen.add(key)
+            target = property_candidates if lot in row.property_lots else other_candidates
+            target.append((row, lot))
+    selected = (property_candidates + other_candidates)[:details]
 
     detail_results: list[dict[str, object]] = []
     route_shapes: dict[str, set[tuple[str, ...]]] = {}
     isolated_payloads = 0
-    for index, row in enumerate(selected):
+    base_cache: dict[str, dict[str, object]] = {}
+    for index, (row, lot) in enumerate(selected):
         if index:
             time.sleep(pause)
-        lots = row.lots or (1,)
+        assert row.provider_id is not None
         base_url = f"{BASE}/trade/view/purchase/general.html?id={row.provider_id}"
-        base = _get(session, base_url)
-        base_features = _text_features(base.text)
-        for route in base_features["purchase_routes"]:
-            route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
-
-        lot_features: dict[str, dict[str, object]] = {}
-        for lot in lots[:3]:
-            time.sleep(pause)
-            lot_response = _get(session, _url_for_lot(base_url, lot))
-            features = _text_features(lot_response.text)
-            lot_features[str(lot)] = features
-            if features["text_sha256"] != base_features["text_sha256"]:
-                isolated_payloads += 1
-            for route in features["purchase_routes"]:
+        base_features = base_cache.get(row.provider_id)
+        if base_features is None:
+            base = _get(session, base_url)
+            base_features = _text_features(base.text)
+            base_cache[row.provider_id] = base_features
+            for route in base_features["purchase_routes"]:
                 route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
+
+        lot_response = _get(session, _url_for_lot(base_url, lot))
+        lot_features = _text_features(lot_response.text)
+        if lot_features["text_sha256"] != base_features["text_sha256"]:
+            isolated_payloads += 1
+        for route in lot_features["purchase_routes"]:
+            route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
         detail_results.append({
             "provider_id": row.provider_id,
             "trade": row.trade,
-            "lot_numbers": list(lots),
-            "base": base_features,
-            "lot_variants": lot_features,
+            "lot_number": lot,
+            "property_hint": lot in row.property_lots,
+            "base_text_sha256": base_features["text_sha256"],
+            "lot_variant": lot_features,
         })
 
     return {
@@ -339,12 +371,18 @@ def run(*, pause: float, details: int) -> dict[str, object]:
         "terminal_probe": {
             "requested_page": page_count + 1,
             "rows": len(terminal_rows),
+            "declared_pages": _declared_pages(terminal_response.text),
             "new_trade_ids_after_declared_last": new_after_terminal,
-            "proven": not new_after_terminal,
+            # A clamp to page 1/last page is not terminal proof. The out-of-range
+            # page must contain no catalogue procedure rows.
+            "proven": len(terminal_rows) == 0,
         },
         "mixed_property_procedure_rows": sum(row.mixed_property_classes for row in first_pass_rows),
         "rows_without_provider_id": sum(row.provider_id is None for row in first_pass_rows),
-        "detail_procedures_checked": len(detail_results),
+        "individual_detail_variants_checked": len(detail_results),
+        "property_detail_variants_checked": sum(bool(item["property_hint"]) for item in detail_results),
+        "detail_variants_with_price_labels": sum(bool(item["lot_variant"]["price_labels"]) for item in detail_results),
+        "detail_variants_with_status_labels": sum(bool(item["lot_variant"]["status_hits"]) for item in detail_results),
         "lot_number_variants_with_changed_payload": isolated_payloads,
         "purchase_route_shapes": {
             route: [list(keys) for keys in sorted(shapes)]
