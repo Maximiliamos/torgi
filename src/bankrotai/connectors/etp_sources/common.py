@@ -588,7 +588,7 @@ def parse_detail_html(
     utpl_status: str | None = None
     if profile.source_id == "utpl.ru":
         from bankrotai.connectors.etp_sources.utpl_contract import (
-            UtplLotSchemaError, parse_utpl_detail_fields,
+            UtplLotSchemaError, parse_utpl_detail_fields, normalize_utpl_status,
         )
         try:
             fields = parse_utpl_detail_fields(html)
@@ -623,7 +623,7 @@ def parse_detail_html(
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(utpl_status if profile.source_id == "utpl.ru" else text_value),
+        auction_status=(normalize_utpl_status(utpl_status) if profile.source_id == "utpl.ru" else _status(text_value)),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
