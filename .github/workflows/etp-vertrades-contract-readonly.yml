@@ -37,6 +37,7 @@ jobs:
       - name: Run focused Vertrades regression tests
         run: |
           pytest -q \
+            tests/test_direct_etp_catalogue_batch.py \
             tests/test_vertrades_catalogue_contract.py \
             tests/test_vertrades_detail_sections.py \
             tests/test_vertrades_detail_adapter.py \
