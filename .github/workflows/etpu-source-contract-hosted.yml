@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/etpu-source-contract-hosted.yml"
       - "scripts/etpu_readonly_audit.py"
+      - "scripts/etpu_filter_probe.py"
       - "src/bankrotai/connectors/etp_sources/etpu.py"
       - "tests/test_etpu_contract.py"
 
@@ -17,7 +18,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  filter-contract:
+    name: ETPU sanitized filter contract probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install locked runtime dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+      - name: Probe public catalogue filter controls
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python scripts/etpu_filter_probe.py | tee "$RUNNER_TEMP/etpu-filter-contract.json"
+      - name: Upload sanitized filter evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: etpu-filter-contract
+          path: ${{ runner.temp }}/etpu-filter-contract.json
+          if-no-files-found: warn
+          retention-days: 30
+
   hosted-proof:
+    needs: filter-contract
     name: ETPU hosted terminal + 30 detail proof
     runs-on: ubuntu-latest
     timeout-minutes: 45
