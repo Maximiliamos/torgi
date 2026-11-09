@@ -916,7 +916,7 @@ class HtmlEtpConnector(AuctionConnector):
         if self.source_id == "nistp.ru":
             from bankrotai.connectors.etp_sources.nistp_detail_adapter import fetch_nistp_lot
             return await fetch_nistp_lot(self, external_id)
-        if self.source_id in {"vertrades.ru", "sistematorg.com"}:
+        if self.source_id == "vertrades.ru":
             raise SourceAccessError(
                 f"{self.source_id}: per-lot detail isolation inside a shared trade card is not proven"
             )
@@ -924,6 +924,11 @@ class HtmlEtpConnector(AuctionConnector):
         if not template:
             raise SourceAccessError(f"{self.source_id}: detail URL template is not proven")
         identity = external_id.removeprefix(self.source_id + ":")
+        if self.source_id == "sistematorg.com":
+            procedure_id = identity.split(":", 1)[0]
+            if not procedure_id.isdigit():
+                raise SourceSchemaError("sistematorg.com: invalid procedure identity")
+            identity = procedure_id
         identity_path = identity
         if self.profile.detail_id_separator:
             identity_path = identity.replace("-", self.profile.detail_id_separator)
@@ -989,11 +994,11 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
         pass
 
     ProfiledConnector.profile = profile
-    if profile.source_id in {"etp-profit.ru", "ausib.ru", "nistp.ru"}:
+    if profile.source_id in {"etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com"}:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })
-    if profile.source_id in {"vertrades.ru", "sistematorg.com"}:
+    if profile.source_id == "vertrades.ru":
         ProfiledConnector.capabilities = frozenset({"search", "healthcheck"})
     ProfiledConnector.__name__ = "".join(part.title() for part in re.split(r"[^a-z0-9]+", profile.source_id)) + "Connector"
     ProfiledConnector.__qualname__ = ProfiledConnector.__name__
