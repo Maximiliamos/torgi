@@ -218,26 +218,7 @@ def _detail_record(
         "title_present": fields.title is not None,
         "initial_price_present": fields.start_price is not None,
         "current_price_present": fields.current_price is not None,
-        "auction_status": (
-            "unknown"
-            if fields.source_status_text is None
-            else (
-                "active"
-                if "при" in fields.source_status_text.lower()
-                else (
-                    "paused"
-                    if "приостанов" in fields.source_status_text.lower()
-                    else (
-                        "closed"
-                        if any(
-                            token in fields.source_status_text.lower()
-                            for token in ("закончено", "отказ организатора")
-                        )
-                        else "unknown"
-                    )
-                )
-            )
-        ),
+        "auction_status": fields.auction_status,
         "category": fields.category,
         "address_present": fields.address is not None,
         "cadastre_present": fields.cadastral_number is not None,
