@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 import requests
@@ -44,6 +45,7 @@ class FakeSession:
 
 
 BANKRUPTCY = "Продажа имущества (предприятия) банкротов"
+FIXTURES = Path(__file__).parent / "fixtures" / "sberbank_ast"
 
 
 def _profile():
@@ -130,27 +132,24 @@ def test_sberbank_display_cap_is_not_terminal_source_end() -> None:
         asyncio.run(connector.search({}, cursor="477"))
 
 
+def test_sberbank_sanitized_catalogue_fixture_is_verified() -> None:
+    payload = json.loads(
+        (FIXTURES / "catalogue_bankruptcy_real_estate.json").read_text(encoding="utf-8")
+    )
+    lots = parse_sberbank_json(_profile(), payload, page=1)
+    assert len(lots) == 1
+    assert lots[0].external_id == "sberbank-ast.ru:11-0-0-900001"
+    assert lots[0].start_price == 24643766
+    assert lots[0].raw_data["bankruptcy_filter_verified"] is True
+
+
 def test_sberbank_goodsview_detail_identity_and_fields() -> None:
-    html = """
-    <html><body>
-      <h1>Лот № 2 — нежилое помещение</h1>
-      <p>Номер процедуры SBR013-TEST-MULTI</p>
-      <p>Адрес: Тестовый город, Тестовая улица, д. 1</p>
-      <p>Кадастровый номер 77:05:0000000:3121</p>
-      <p>Площадь 87,2 кв. м</p>
-      <p>Начальная цена 24 643 766 руб.</p>
-      <p>Текущая цена 23 000 000 руб.</p>
-      <p>Прием заявок</p>
-      <p>Дата окончания приема заявок 25.11.2026 14:00</p>
-      <p>Дата проведения 03.12.2026 14:00</p>
-      <p>Дополнительное описание индивидуального имущества для проверки lot-level detail contract.</p>
-    </body></html>
-    """
-    external_id = "sberbank-ast.ru:11-0-0-51583"
+    html = (FIXTURES / "goodsview_detail.html").read_text(encoding="utf-8")
+    external_id = "sberbank-ast.ru:11-0-0-900001"
     detail = parse_detail_html(
         _profile(),
         html,
-        detail_url="https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/51583",
+        detail_url="https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/11/0/0/900001",
         external_id=external_id,
     )
     assert detail.external_id == external_id
