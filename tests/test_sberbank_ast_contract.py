@@ -208,6 +208,7 @@ def test_goodsview_detail_identity_and_fields() -> None:
     assert detail.external_id == external_id
     assert detail.start_price == 24643766
     assert detail.current_price == 23000000
+    assert detail.address == "Тестовый город, Тестовая улица, д. 1"
     assert detail.cadastral_number == "77:05:0000000:3121"
     assert detail.area == 87.2
     assert detail.procedure_number == "SBR013-TEST-MULTI"
