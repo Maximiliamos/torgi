@@ -396,6 +396,7 @@ def _dimension_coverage_failures(
         and dataset_pipeline_revision(candidate.version) == "r7"
     )
     old_counts: dict[tuple[str, str], int] = defaultdict(int)
+    raw_old_counts: dict[tuple[str, str], int] = defaultdict(int)
     new_counts: dict[tuple[str, str], int] = defaultdict(int)
     for lot_id, source_system, region_code, auction_status in session.execute(
         select(
@@ -406,18 +407,22 @@ def _dimension_coverage_failures(
         )
     ):
         dimensions = (("source", source_system or "unknown"), ("region", region_code or "unknown"))
-        if lot_id in old_ids and not (
-            ended_membership_migration and auction_status in ENDED_STATUSES
-        ):
+        if lot_id in old_ids:
             for dimension in dimensions:
-                old_counts[dimension] += 1
+                raw_old_counts[dimension] += 1
+                if not (ended_membership_migration and auction_status in ENDED_STATUSES):
+                    old_counts[dimension] += 1
         if lot_id in new_ids:
             for dimension in dimensions:
                 new_counts[dimension] += 1
     failures = []
-    for (kind, value), previous in sorted(old_counts.items()):
-        if previous < MIN_DIMENSION_COVERAGE_BASELINE:
+    for (kind, value), raw_previous in sorted(raw_old_counts.items()):
+        # Keep the original minimum baseline eligibility. Even if only a
+        # handful of active lots remain after r6-ended rows are discounted,
+        # losing those active lots must still trigger the dimensional guard.
+        if raw_previous < MIN_DIMENSION_COVERAGE_BASELINE:
             continue
+        previous = old_counts.get((kind, value), 0)
         current_count = new_counts.get((kind, value), 0)
         required = math.ceil(previous * minimum_ratio)
         if current_count < required:
