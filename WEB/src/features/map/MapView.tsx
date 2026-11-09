@@ -1111,6 +1111,12 @@ function LotPreview({
               </dd>
             </>
           )}
+          {lot.next_interval_price === null && lot.next_price_reduction_at && (
+            <>
+              <dt>Текущий ценовой период до:</dt>
+              <dd>{formatMoscowDate(lot.next_price_reduction_at)} МСК</dd>
+            </>
+          )}
           {lot.address && (
             <>
               <dt>Адрес:</dt>
