@@ -6,6 +6,7 @@ import pytest
 from bankrotai.connectors.etp_sources import (
     PROFILES,
     SOURCE_CONNECTOR_TYPES,
+    SourceSchemaError,
     parse_detail_html,
     parse_listing_html,
 )
@@ -323,3 +324,9 @@ def test_operational_connector_exposes_detail_enrichment_without_reconciliation(
     connector = SOURCE_CONNECTOR_TYPES["utpl.ru"]()
     assert "detail_enrichment" in connector.capabilities
     assert connector.safe_for_reconciliation is False
+
+
+def test_operational_connector_rejects_nonsequential_utpl_state_before_network() -> None:
+    connector = SOURCE_CONNECTOR_TYPES["utpl.ru"]()
+    with pytest.raises(SourceSchemaError, match="sequential provider state"):
+        connector._request(12)
