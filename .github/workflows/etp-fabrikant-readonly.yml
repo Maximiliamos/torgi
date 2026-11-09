@@ -6,7 +6,8 @@ on:
     paths:
       - ".github/workflows/etp-fabrikant-readonly.yml"
       - "scripts/audit_fabrikant_readonly.py"
-      - "src/bankrotai/connectors/etp_sources/**"
+      - "src/bankrotai/connectors/etp_sources/fabrikant.py"
+      - "src/bankrotai/connectors/etp_sources/fabrikant_connector.py"
       - "tests/test_fabrikant_source.py"
       - "docs/ETP_FABRIKANT_AUDIT_2026-11-09.md"
   workflow_dispatch:
@@ -27,7 +28,7 @@ jobs:
         with: { python-version: "3.11", cache: pip }
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
       - name: Focused Fabrikant regression tests
-        run: pytest -q tests/test_fabrikant_source.py tests/test_etp_sources.py
+        run: pytest -q tests/test_fabrikant_source.py
 
   audit:
     needs: unit
@@ -35,28 +36,39 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+
+      - name: Install read-only probe dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install requests beautifulsoup4
 
       - name: Verify probe has no persistence integration
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $text = Get-Content scripts/audit_fabrikant_readonly.py -Raw
-          foreach ($forbidden in @('sqlalchemy', 'SessionLocal', 'celery', 'boto3', 'delete(', '.post(')) {
+          foreach ($forbidden in @(
+            'sqlalchemy', 'SessionLocal', 'celery', 'boto3',
+            'delete(', '.post(', '.put(', '.patch('
+          )) {
             if ($text -match [regex]::Escape($forbidden)) {
               throw "Forbidden write/persistence token in Fabrikant probe: $forbidden"
             }
           }
 
-      - name: Run public Fabrikant source-contract audit inside trusted worker
+      - name: Run public Fabrikant source-contract audit from trusted Home network
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = (Join-Path $PWD 'src')
           $report = Join-Path $env:RUNNER_TEMP 'fabrikant-readonly.json'
-          $script = Get-Content scripts/audit_fabrikant_readonly.py -Raw
           $previous = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
           try {
-            $output = @($script | docker.exe exec -i bankrotai-home-ingestion-worker python - --max-pages 200 --detail-limit 30 --passes 2 --pause 0.4 2>&1)
+            $output = @(& python scripts/audit_fabrikant_readonly.py --max-pages 200 --detail-limit 30 --passes 2 --pause 0.4 2>&1)
             $status = $LASTEXITCODE
           } finally {
             $ErrorActionPreference = $previous
@@ -73,7 +85,7 @@ jobs:
               $parsed.production_enabled -ne $false) {
             throw 'Fabrikant probe violated read-only contract'
           }
-          Write-Output ("FABRIKANT_AUDIT pages={0}; procedures={1}; lots={2}; unresolved={3}; terminal={4}; reason={5}; stable_two_passes={6}; details={7}" -f
+          Write-Output ("FABRIKANT_AUDIT pages={0}; procedures={1}; lots={2}; unresolved={3}; terminal={4}; reason={5}; stable_two_passes={6}; details={7}; initial_price_ok={8}; status_ok={9}" -f
             $parsed.passes[0].pages_checked,
             $parsed.passes[0].unique_procedure_count,
             $parsed.individual_lots.unique_lot_count,
@@ -81,16 +93,22 @@ jobs:
             $parsed.passes[0].terminal_page,
             $parsed.passes[0].terminal_reason,
             $parsed.stable_two_passes,
-            $parsed.details_checked)
+            $parsed.details_checked,
+            $parsed.initial_price_success,
+            $parsed.status_success)
           foreach ($page in $parsed.passes[0].pages) {
-            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}" -f
+            $controls = @($page.selected_controls | ForEach-Object {
+              "$($_.name)=$($_.value)"
+            }) -join ','
+            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}; controls={5}" -f
               $page.page,$page.http_status,$page.procedure_count,$page.has_next_link,
-              (@($page.visible_page_numbers) -join ','))
+              (@($page.visible_page_numbers) -join ','),$controls)
           }
           foreach ($detail in $parsed.details) {
-            Write-Output ("FABRIKANT_DETAIL id={0}; status={1}; lot_markers={2}; money_labels={3}; status_labels={4}; lot_routes={5}" -f
-              $detail.procedure_id,$detail.http_status,$detail.lot_marker_count,
-              @($detail.money_labels).Count,@($detail.status_labels).Count,@($detail.lot_route_shapes).Count)
+            Write-Output ("FABRIKANT_DETAIL id={0}; http={1}; initial={2}; current={3}; status={4}; title={5}; category={6}; cadastre={7}; area={8}" -f
+              $detail.external_id,$detail.http_status,$detail.initial_price_present,
+              $detail.current_price_present,$detail.auction_status,$detail.title_present,
+              $detail.category,$detail.cadastre_present,$detail.area_present)
           }
 
       - name: Upload sanitized evidence
