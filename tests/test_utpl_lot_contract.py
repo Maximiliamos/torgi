@@ -1,5 +1,8 @@
 """UTPL individual-lot regression fixtures, sanitized: no personal data."""
+import asyncio
+
 import pytest
+import requests
 
 from bankrotai.connectors.etp_sources import PROFILES, SourceSchemaError, parse_detail_html
 from bankrotai.connectors.etp_sources.utpl_contract import parse_utpl_detail_fields, UtplLotSchemaError
@@ -205,3 +208,10 @@ def test_mixed_lot_augments_structured_classifier_from_official_asset_descriptio
     result = parse_utpl_detail_fields(html)
     assert result["category"] == "other"
     assert result["property_kinds"] == ("lease", "land", "real_estate", "equipment")
+
+
+def test_utpl_rejects_nonsequential_postback_state_jump_before_network():
+    from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+    connector = SOURCE_CONNECTOR_TYPES["utpl.ru"](session=requests.Session())
+    with pytest.raises(SourceSchemaError, match="requires sequential provider state"):
+        asyncio.run(connector.search({}, cursor="12"))
