@@ -97,14 +97,14 @@ async def verify_details(
                 and str(listing_raw.get("lot_number")) == str(detail_raw.get("lot_number"))
             )
             start_match = (
-                listing.start_price is None
-                or detail.start_price is None
-                or abs(float(listing.start_price) - float(detail.start_price)) <= 0.01
+                listing.start_price is not None
+                and detail.start_price is not None
+                and abs(float(listing.start_price) - float(detail.start_price)) <= 0.01
             )
             status_match = (
-                listing.auction_status == "unknown"
-                or detail.auction_status == "unknown"
-                or listing.auction_status == detail.auction_status
+                listing.auction_status != "unknown"
+                and detail.auction_status != "unknown"
+                and listing.auction_status == detail.auction_status
             )
             detail_current_matches_catalogue = (
                 listing.current_price is None
