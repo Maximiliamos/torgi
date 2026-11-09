@@ -23,7 +23,17 @@ def _row(trade: int, provider: int, lot: int = 1) -> str:
 
 def _page(page: int, trade: int, provider: int, *, last: bool = False) -> str:
     next_link = "" if last else f"<a href='/bidding?page={page + 1}'>{page + 1}</a>"
-    return "<html><body><table>" + _row(trade, provider) + "</table>" + next_link + "</body></html>"
+    search_form = """
+    <form method="get" action="/bidding">
+      <label>№ торгов:</label><input name="trade_number">
+      <label>Наименование лота:</label><input name="lot_name">
+      <select name="status"></select>
+    </form>
+    """
+    return (
+        "<html><body>" + search_form + "<table>" + _row(trade, provider) +
+        "</table>" + next_link + "</body></html>"
+    )
 
 
 class Response:
@@ -75,6 +85,11 @@ def test_two_pass_probe_proves_terminal_and_stable_digest_without_raw_data():
     assert report["unique_property_lot_ids"] == 4
     assert report["stable_between_passes"] is True
     assert len(report["id_digest_sha256"]) == 64
+    assert report["filter_form"] == {
+        "method": "get",
+        "action_path": "/bidding",
+        "field_names": ["lot_name", "status", "trade_number"],
+    }
     assert report["database_writes"] == 0
     assert report["reconciliation_allowed"] is False
     assert report["archival_allowed"] is False
