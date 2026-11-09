@@ -29,6 +29,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -117,6 +118,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Create isolated Python environment
         shell: powershell
@@ -126,7 +128,7 @@ jobs:
           if (Test-Path $venv) { Remove-Item -Recurse -Force $venv }
           py -3.11 -m venv $venv
           $python = Join-Path $venv 'Scripts\python.exe'
-          & $python -m pip install --disable-pip-version-check "pytest>=9,<10" "requests>=2.32,<3" "beautifulsoup4>=4.12,<5" "lxml>=5.2,<7"
+          & $python -m pip install --disable-pip-version-check "pytest>=9,<10" "requests>=2.32,<3" "beautifulsoup4>=4.12,<5" "lxml>=5.2,<7" "python-dotenv>=1,<2"
 
       - name: Run exact-head focused tests and live audit
         shell: powershell
