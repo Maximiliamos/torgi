@@ -1046,3 +1046,199 @@ def test_nistp_trade_only_markup_never_yields_phantom_single_asset():
     </td><td>Всего лотов: 10. Машино-место</td></tr></table>
     """
     assert parse_listing_html(profile("nistp.ru"), html) == []
+
+
+def test_arbbitlot_detail_parses_explicit_rub_fields_without_cross_field_leakage() -> None:
+    html = """
+    <html><body>
+      <h1>Доля 1/5 в квартире</h1>
+      Информация об аукционе №0037314
+      Информация о лоте №1
+      Наименование: Доля 1/5 в квартире.
+      Адрес (местонахождение): Ярославская область, г. Рыбинск, ул. Тестовая, д. 1
+      Кадастровый номер: 76:20:010101:123
+      Площадь: 52,4 кв. м
+      Статус: Извещение опубликовано
+      Начальная цена, руб.: 452 906,10
+      Размер задатка, руб.: 45 290,61
+      Шаг, % от начальной цены: 5,00
+      Дата проведения: 20.12.2026 10:00
+      Дополнительные сведения о порядке участия и имуществе.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"),
+        html,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/44914/",
+    )
+    assert lot.external_id == "arbbitlot.ru:auctions-44914"
+    assert lot.start_price == 452906.10
+    assert lot.current_price is None
+    assert lot.deposit_amount == 45290.61
+    assert lot.auction_step_amount is None
+    assert lot.auction_step_percent == 5.0
+    assert lot.procedure_number == "0037314"
+    assert lot.raw_data["lot_number"] == "1"
+    assert lot.raw_data["per_lot_detail_verified"] is True
+    assert lot.raw_data["price_unverified"] is False
+    assert lot.cadastral_number == "76:20:010101:123"
+    assert lot.area == 52.4
+    assert lot.auction_status == "scheduled"
+
+
+def test_arbbitlot_public_offer_keeps_initial_current_deposit_and_step_distinct() -> None:
+    html = """
+    <html><body>
+      <h1>Земельный участок</h1>
+      Информация о публичном предложении №0037071
+      Информация о лоте №1
+      Наименование: Земельный участок, кадастровый номер 76:01:000000:123.
+      Статус: Прием заявок
+      Начальная цена, руб.: 540 000,00
+      Текущая цена, руб.: 486 000,00
+      Размер обеспечения, руб.: 48 600,00
+      Шаг, руб.: 27 000,00
+      Шаг, % от начальной цены: 5,00
+      Окончание приема заявок: 18.12.2026 12:00
+      Подробные сведения об имуществе и порядке публичного предложения.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"),
+        html,
+        detail_url="https://torgi.arbbitlot.ru/public/public-offers/lots/view/50001/",
+    )
+    assert lot.start_price == 540000
+    assert lot.current_price == 486000
+    assert lot.deposit_amount == 48600
+    assert lot.auction_step_amount == 27000
+    assert lot.auction_step_percent == 5
+    assert lot.auction_status == "active"
+    assert lot.raw_data["current_price_unverified"] is False
+
+
+def test_arbbitlot_does_not_infer_start_price_from_deposit_or_step() -> None:
+    html = """
+    <html><body>
+      <h1>Земельный участок</h1>
+      Информация об аукционе №0037314 Информация о лоте №2
+      Статус: Прием заявок
+      Размер задатка, руб.: 90 000,00
+      Шаг, руб.: 45 000,00
+      Шаг, % от начальной цены: 5,00
+      Кадастровый номер: 76:01:000000:124
+      Подробные сведения об имуществе и порядке участия в торгах.
+    </body></html>
+    """
+    lot = parse_detail_html(
+        profile("arbbitlot.ru"),
+        html,
+        detail_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
+    )
+    assert lot.start_price is None
+    assert lot.current_price is None
+    assert lot.deposit_amount == 90000
+    assert lot.auction_step_amount == 45000
+
+
+def test_arbbitlot_enrichment_fails_closed_without_individual_start_price() -> None:
+    from bankrotai.connectors.etp_sources.source_specific import apply_detail
+    from bankrotai.domain import NormalizedLot
+
+    def make_lot(*, detail_level: str, start_price):
+        return NormalizedLot(
+            external_id="arbbitlot.ru:auctions-50002",
+            source="arbbitlot",
+            source_system="arbbitlot.ru",
+            title="Земельный участок",
+            description="Земельный участок",
+            category="land",
+            region_slug=None,
+            region_name=None,
+            address=None,
+            cadastral_number="76:01:000000:124",
+            vin=None,
+            area=None,
+            start_price=start_price,
+            current_price=None,
+            auction_status="active",
+            lot_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
+            source_url="https://torgi.arbbitlot.ru/public/auctions/lots/view/50002/",
+            detail_level=detail_level,
+            raw_data={},
+        )
+
+    listing = make_lot(detail_level="list", start_price=900000)
+    detail = make_lot(detail_level="detail", start_price=None)
+    with pytest.raises(ValueError, match="arbbitlot_detail_start_price_unverified"):
+        apply_detail(listing, detail, version=1)
+
+
+def test_arbbitlot_multi_lot_catalogue_keeps_per_lot_ids_and_prices() -> None:
+    html = """
+    <table>
+      <tr>
+        <th>№</th><th>Торги</th><th>№ лота</th><th>Лот</th>
+        <th>Начальная цена</th><th>Статус</th>
+      </tr>
+      <tr>
+        <td>0032715</td><td>Аукцион</td><td>1</td>
+        <td><a href="/public/auctions/lots/view/41001/">Автомобиль</a></td>
+        <td>450 000,00</td><td>Прием заявок</td>
+      </tr>
+      <tr>
+        <td>0032715</td><td>Аукцион</td><td>2</td>
+        <td><a href="/public/auctions/lots/view/41002/">Гараж 76:01:000000:200</a></td>
+        <td>900 000,00</td><td>Прием заявок</td>
+      </tr>
+      <tr>
+        <td>0032715</td><td>Аукцион</td><td>3</td>
+        <td><a href="/public/auctions/lots/view/41003/">Склад 76:01:000000:201</a></td>
+        <td>1 500 000,00</td><td>Прием заявок</td>
+      </tr>
+    </table>
+    """
+    lots = parse_listing_html(profile("arbbitlot.ru"), html)
+    assert [lot.external_id for lot in lots] == [
+        "arbbitlot.ru:auctions-41001",
+        "arbbitlot.ru:auctions-41002",
+        "arbbitlot.ru:auctions-41003",
+    ]
+    assert len({lot.external_id for lot in lots}) == 3
+    assert [lot.start_price for lot in lots] == [450000, 900000, 1500000]
+
+
+def test_arbbitlot_aspnet_page_two_posts_state_and_reaches_terminal_page() -> None:
+    first = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='arb-state'>
+      <a href="javascript:__doPostBack('ctl00$ContentPlaceHolder1$Pager$2','')">2</a>
+    </form>
+    <table><tr><td>
+      <a href='/public/auctions/lots/view/41000/'>Zemelniy uchastok 76:01:000000:199</a>
+    </td></tr></table>
+    """
+    second = b"""
+    <form action='/public/purchases-all/'>
+      <input type='hidden' name='__VIEWSTATE' value='arb-state-2'>
+    </form>
+    <table>
+      <tr><td><a href='/public/auctions/lots/view/41002/'>Garazh 76:01:000000:200</a></td></tr>
+      <tr><td><a href='/public/auctions/lots/view/41003/'>Sklad 76:01:000000:201</a></td></tr>
+    </table>
+    """
+    session = FakeSession([
+        FakeResponse(200, first, "https://torgi.arbbitlot.ru/public/purchases-all/"),
+        FakeResponse(200, second, "https://torgi.arbbitlot.ru/public/purchases-all/"),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["arbbitlot.ru"](session=session)
+    page1 = asyncio.run(connector.search({}))
+    assert page1.next_cursor == "2"
+    page2 = asyncio.run(connector.search({}, cursor="2"))
+    assert page2.next_cursor is None
+    assert [lot.external_id for lot in page2.items] == [
+        "arbbitlot.ru:auctions-41002",
+        "arbbitlot.ru:auctions-41003",
+    ]
+    assert session.posts[0][1]["__VIEWSTATE"] == "arb-state"
+    assert session.posts[0][1]["__EVENTTARGET"] == "ctl00$ContentPlaceHolder1$Pager$2"
