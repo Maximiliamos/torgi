@@ -712,6 +712,17 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          function Remove-DockerContainerIfPresent {
+            param([string]$Name)
+            $previousPreference = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'SilentlyContinue'
+              & docker.exe rm --force $Name *> $null
+            } finally {
+              $ErrorActionPreference = $previousPreference
+            }
+          }
+
           function Invoke-BoundedDockerCommand {
             param(
               [string[]]$Arguments,
@@ -726,7 +737,7 @@ jobs:
               & taskkill.exe /PID $process.Id /T /F *> $null
               try { $process.WaitForExit(10000) | Out-Null } catch {}
               if ($EphemeralContainerName) {
-                & docker.exe rm --force $EphemeralContainerName *> $null
+                Remove-DockerContainerIfPresent -Name $EphemeralContainerName
               }
               return -1
             }
@@ -752,7 +763,7 @@ jobs:
 
           $schemaAtHead = $false
           $schemaCheckContainer = "bankrotai-schema-check-$($env:GITHUB_SHA.Substring(0,12))"
-          & docker.exe rm --force $schemaCheckContainer *> $null
+          Remove-DockerContainerIfPresent -Name $schemaCheckContainer
           $schemaCheckArgs = @(
             'run','--rm','--name',$schemaCheckContainer,
             '--network',$env:DOCKER_NETWORK,
@@ -809,7 +820,7 @@ jobs:
               Remove-Item -Force
 
             $migrationContainer = "bankrotai-schema-upgrade-$($env:GITHUB_SHA.Substring(0,12))"
-            & docker.exe rm --force $migrationContainer *> $null
+            Remove-DockerContainerIfPresent -Name $migrationContainer
             $migrationArgs = @(
               'run','--rm','--name',$migrationContainer,
               '--network',$env:DOCKER_NETWORK,
@@ -826,7 +837,7 @@ jobs:
             }
 
             $verifyContainer = "bankrotai-schema-verify-$($env:GITHUB_SHA.Substring(0,12))"
-            & docker.exe rm --force $verifyContainer *> $null
+            Remove-DockerContainerIfPresent -Name $verifyContainer
             $verifyArgs = @(
               'run','--rm','--name',$verifyContainer,
               '--network',$env:DOCKER_NETWORK,
