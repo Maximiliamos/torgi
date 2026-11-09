@@ -1,70 +1,46 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import re
-import time
 from collections import Counter
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+import hashlib
+import json
+import time
+from typing import Any
 
 import requests
-from bs4 import BeautifulSoup, Tag
 
-BASE = "https://aukcioncenter.ru"
-LISTING = BASE + "/etp/trade/list.html"
-ACTIVE_PARAMS = {
-    "arbitrationManagerTitle": "",
-    "debtorTitle": "",
-    "number": "",
-    "organizerTitle": "",
-    "processStatus": "BID_SUBMISSION",
-    "subject": "",
-}
-TRADE_RE = re.compile(r"\b(?P<trade>\d{3,9}-(?:ОАОФ|ОТПП|ЗТПП|ОКОФ|ОКЗФ|ОАЗФ))\b", re.I)
-LOT_RE = re.compile(r"Лот\s*№\s*(?P<lot>\d{1,5})\s*[:.\-]?\s*", re.I)
-PURCHASE_RE = re.compile(
-    r"/(?:etp/)?trade/view/purchase/(?P<route>[A-Za-z0-9_.-]+\.html)(?:\?[^\"'<>\s]*)?",
-    re.I,
-)
-PRICE_LABEL_RE = re.compile(
-    r"(?:начальн\w*\s+(?:цен\w*|стоимост\w*)|текущ\w*\s+цен\w*|"
-    r"цена\s+на\s+(?:этап|период)|минимальн\w*\s+цен\w*|цена\s+отсеч)",
-    re.I,
-)
-STATUS_WORDS = (
-    "идёт приём заявок", "идет прием заявок", "объявлены",
-    "торги завершены", "торги отменены",
-)
-PROPERTY_RE = re.compile(
-    r"недвижим|земельн|участок|квартир|помещен|здани|сооружен|"
-    r"гараж|машино.?мест|жилой\s+дом|склад|кадастров",
-    re.I,
-)
-NON_PROPERTY_RE = re.compile(
-    r"автомоб|транспорт|оборудован|право\s+требован|дебитор|"
-    r"дол[яи]\s+в\s+уставн|акци[яи]|ценн\w*\s+бумаг",
-    re.I,
+from bankrotai.connectors.etp_sources.aukcioncenter import (
+    LISTING_URL,
+    catalogue_params,
+    declared_pages,
+    detail_request_url,
+    discover_lot_numbers,
+    lot_index_url,
+    observation_digest,
+    parse_detail,
+    parse_listing,
+    parse_procedure_observations,
+    terminal_page_contract,
 )
 
 
 @dataclass(frozen=True)
-class Row:
-    trade: str
-    provider_id: str | None
-    lots: tuple[int, ...]
-    status: str | None
-    property_lots: tuple[int, ...]
-    mixed_property_classes: bool
-    route_names: tuple[str, ...]
+class Profile:
+    source_id: str = "aukcioncenter.ru"
+    platform_name: str = "Аукцион-центр"
+    platform_code: str = "auctioncenter"
 
 
-def _clean(value: str) -> str:
-    return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+PROFILE = Profile()
 
 
-def _get(session: requests.Session, url: str, *, params: dict[str, str] | None = None) -> requests.Response:
+def _get(
+    session: requests.Session,
+    url: str,
+    *,
+    params: dict[str, str] | None = None,
+) -> requests.Response:
     response = session.get(
         url,
         params=params,
@@ -79,510 +55,287 @@ def _get(session: requests.Session, url: str, *, params: dict[str, str] | None =
         raise RuntimeError(f"HTTP_{response.status_code}")
     if len(response.content) > 4_000_000:
         raise RuntimeError("response_too_large")
-    # The legacy site can send an incorrect encoding header/meta.
-    response.encoding = response.apparent_encoding or "windows-1251"
     return response
 
 
-def _row_urls(row: Tag) -> list[str]:
-    values: list[str] = []
-    for node in row.select("a[href]"):
-        values.append(urljoin(BASE, str(node.get("href") or "")))
-    for node in [row, *row.select("[onclick]")]:
-        onclick = str(node.get("onclick") or "")
-        for candidate in re.findall(r"['\"]([^'\"]+)['\"]", onclick):
-            if candidate.startswith(("/", "https://")):
-                values.append(urljoin(BASE, candidate))
-    return values
+def _body(response: requests.Response) -> bytes:
+    return response.content
 
 
-def _provider_id(url: str) -> str | None:
-    parsed = urlparse(url)
-    if parsed.hostname != "aukcioncenter.ru":
-        return None
-    if not re.fullmatch(r"/(?:etp/)?trade/view/purchase/[A-Za-z0-9_.-]+\.html", parsed.path, re.I):
-        return None
-    ids = parse_qs(parsed.query).get("id", [])
-    return ids[0] if len(ids) == 1 and re.fullmatch(r"[1-9]\d{5,12}", ids[0]) else None
+def _scan_pass(
+    session: requests.Session,
+    *,
+    pause: float,
+    pass_no: int,
+) -> tuple[dict[str, Any], list[Any], list[Any], bytes]:
+    first = _get(session, LISTING_URL, params=catalogue_params(1))
+    first_pages = declared_pages(_body(first))
+    declared_last = max(first_pages or (1,))
+    pages: list[dict[str, Any]] = []
+    observations: list[Any] = []
+    lots: list[Any] = []
+    last_body = _body(first)
 
-
-def parse_rows(html: str) -> list[Row]:
-    soup = BeautifulSoup(html, "html.parser")
-    output: list[Row] = []
-    for tr in soup.select("tr"):
-        text = _clean(tr.get_text(" ", strip=True))
-        trade_match = TRADE_RE.search(text)
-        if not trade_match:
-            continue
-        urls = _row_urls(tr)
-        ids = {pid for url in urls if (pid := _provider_id(url))}
-        provider_id = next(iter(ids)) if len(ids) == 1 else None
-        pieces = list(LOT_RE.finditer(text))
-        lot_numbers = tuple(int(match.group("lot")) for match in pieces)
-        if not lot_numbers:
-            url_lots: set[int] = set()
-            for value in urls:
-                query = parse_qs(urlparse(value).query)
-                for raw_lot in query.get("lotNumber", []):
-                    if re.fullmatch(r"[1-9]\\d{0,4}", raw_lot):
-                        url_lots.add(int(raw_lot))
-            if len(url_lots) == 1:
-                lot_numbers = (next(iter(url_lots)),)
-        property_lots: list[int] = []
-        classes: set[str] = set()
-        if pieces:
-            for index, match in enumerate(pieces):
-                end = pieces[index + 1].start() if index + 1 < len(pieces) else len(text)
-                segment = text[match.end():end]
-                if PROPERTY_RE.search(segment):
-                    property_lots.append(int(match.group("lot")))
-                    classes.add("property")
-                if NON_PROPERTY_RE.search(segment):
-                    classes.add("non_property")
-        else:
-            if PROPERTY_RE.search(text):
-                classes.add("property")
-                if lot_numbers:
-                    property_lots.extend(lot_numbers)
-            if NON_PROPERTY_RE.search(text):
-                classes.add("non_property")
-        status = next((marker for marker in STATUS_WORDS if marker in text.lower()), None)
-        route_names = tuple(sorted({
-            match.group("route").lower()
-            for value in urls
-            for match in [PURCHASE_RE.search(urlparse(value).path + ("?" + urlparse(value).query if urlparse(value).query else ""))]
-            if match
-        }))
-        output.append(Row(
-            trade=trade_match.group("trade").upper(),
-            provider_id=provider_id,
-            lots=lot_numbers,
-            status=status,
-            property_lots=tuple(property_lots),
-            mixed_property_classes=len(classes) > 1,
-            route_names=route_names,
-        ))
-    return output
-
-
-def _page_params(page: int) -> dict[str, str]:
-    result = dict(ACTIVE_PARAMS)
-    result["page"] = str(page)
-    return result
-
-
-def _declared_pages(html: str) -> list[int]:
-    soup = BeautifulSoup(html, "html.parser")
-    pages: set[int] = set()
-    for anchor in soup.select("a[href]"):
-        query = parse_qs(urlparse(urljoin(LISTING, str(anchor.get("href") or ""))).query)
-        for value in query.get("page", []):
-            if value.isdigit():
-                pages.add(int(value))
-    return sorted(pages)
-
-
-def _digest(rows: list[Row]) -> str:
-    stable = [
-        {
-            "trade": row.trade,
-            "provider_id": row.provider_id,
-            "lots": row.lots,
-            "property_lots": row.property_lots,
-            "status": row.status,
-        }
-        for row in rows
-    ]
-    return hashlib.sha256(
-        json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-
-
-def _purchase_routes(html: str) -> list[dict[str, object]]:
-    soup = BeautifulSoup(html, "html.parser")
-    found: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
-    candidates = [str(node.get("href") or "") for node in soup.select("a[href]")]
-    candidates += re.findall(r"['\"]([^'\"]*/trade/view/purchase/[^'\"]+)['\"]", html)
-    for raw in candidates:
-        url = urljoin(BASE, raw.replace("&amp;", "&"))
-        parsed = urlparse(url)
-        if parsed.hostname != "aukcioncenter.ru":
-            continue
-        match = re.fullmatch(r"/(?:etp/)?trade/view/purchase/([A-Za-z0-9_.-]+\.html)", parsed.path, re.I)
-        if not match:
-            continue
-        keys = tuple(sorted(parse_qs(parsed.query).keys()))
-        found[(match.group(1).lower(), keys)] = {
-            "route": match.group(1).lower(),
-            "query_keys": list(keys),
-        }
-    return sorted(found.values(), key=lambda item: (str(item["route"]), item["query_keys"]))
-
-
-def _safe_structural_hints(html: str) -> dict[str, object]:
-    """Return endpoint/DOM structure only; never persist page text or field values."""
-    soup = BeautifulSoup(html, "html.parser")
-    forms: list[dict[str, object]] = []
-    for form in soup.select("form"):
-        action = urljoin(BASE, str(form.get("action") or ""))
-        parsed = urlparse(action)
-        if parsed.hostname not in {None, "aukcioncenter.ru"}:
-            continue
-        field_names = sorted({
-            str(node.get("name") or "")
-            for node in form.select("[name]")
-            if str(node.get("name") or "")
-        })
-        forms.append({
-            "action_path": parsed.path,
-            "query_keys": sorted(parse_qs(parsed.query).keys()),
-            "method": str(form.get("method") or "get").lower(),
-            "field_names": field_names[:80],
-        })
-
-    endpoint_shapes: set[tuple[str, tuple[str, ...]]] = set()
-    raw_candidates: list[str] = []
-    raw_candidates.extend(str(node.get("href") or "") for node in soup.select("a[href]"))
-    raw_candidates.extend(str(node.get("action") or "") for node in soup.select("form[action]"))
-    for script in soup.select("script"):
-        source = str(script.get("src") or "")
-        if source:
-            raw_candidates.append(source)
-        inline = script.string or script.get_text(" ", strip=False)
-        raw_candidates.extend(
-            match.group(1)
-            for match in re.finditer(
-                r"['\"]([^'\"<>]{1,300}(?:lot|purchase|trade|price|offer)[^'\"<>]{0,300})['\"]",
-                inline,
-                re.I,
-            )
+    for page in range(1, declared_last + 1):
+        response = first if page == 1 else _get(
+            session, LISTING_URL, params=catalogue_params(page)
         )
-
-    script_sources: set[str] = set()
-    for script in soup.select("script[src]"):
-        absolute = urljoin(BASE, str(script.get("src") or ""))
-        parsed = urlparse(absolute)
-        if parsed.hostname == "aukcioncenter.ru":
-            script_sources.add(parsed.path)
-
-    for raw in raw_candidates:
-        absolute = urljoin(BASE, raw.replace("&amp;", "&"))
-        parsed = urlparse(absolute)
-        if parsed.hostname != "aukcioncenter.ru":
-            continue
-        query_keys = tuple(sorted(parse_qs(parsed.query).keys()))
-        lower = parsed.path.lower()
-        if (
-            any(token in lower for token in ("lot", "purchase", "trade", "price", "offer"))
-            or "lotNumber" in query_keys
-            or "id" in query_keys
-        ):
-            endpoint_shapes.add((parsed.path, query_keys))
-
-    dom_tokens: set[str] = set()
-    for node in soup.find_all(True):
-        node_id = str(node.get("id") or "")
-        classes = node.get("class") or []
-        for token in [node_id, *map(str, classes)]:
-            if token and re.search(r"lot|price|trade|purchase|offer|bid|auction", token, re.I):
-                dom_tokens.add(token)
-
-    return {
-        "forms": forms[:30],
-        "endpoint_shapes": [
-            {"path": path, "query_keys": list(keys)}
-            for path, keys in sorted(endpoint_shapes)
-        ][:80],
-        "script_sources": sorted(script_sources)[:40],
-        "dom_tokens": sorted(dom_tokens)[:80],
-    }
-
-
-def _script_endpoint_hints(session: requests.Session, script_paths: list[str]) -> list[dict[str, object]]:
-    """Inspect first-party public JS for endpoint literals, without recording JS bodies."""
-    results: list[dict[str, object]] = []
-    for path in script_paths[:10]:
-        if not path.lower().endswith(".js"):
-            continue
-        try:
-            response = _get(session, urljoin(BASE, path))
-        except Exception as exc:
-            results.append({"script": path, "error": type(exc).__name__})
-            continue
-        body = response.text
-        endpoint_shapes: set[tuple[str, tuple[str, ...]]] = set()
-        for match in re.finditer(
-            r"['\"]([^'\"<>]{1,300}(?:lot|purchase|trade|price|offer)[^'\"<>]{0,300})['\"]",
-            body,
-            re.I,
-        ):
-            candidate = match.group(1)
-            if not candidate.startswith(("/", "http")):
-                continue
-            absolute = urljoin(BASE, candidate)
-            parsed = urlparse(absolute)
-            if parsed.hostname != "aukcioncenter.ru":
-                continue
-            endpoint_shapes.add((parsed.path, tuple(sorted(parse_qs(parsed.query).keys()))))
-        endpoint_contexts: list[dict[str, str]] = []
-        for needle in ("/etp/trade/inner-view-lots.html", "inner-view-lots.html"):
-            index = body.find(needle)
-            if index < 0:
-                continue
-            start = max(0, index - 900)
-            end = min(len(body), index + len(needle) + 1200)
-            context = re.sub(r"\\s+", " ", body[start:end]).strip()
-            endpoint_contexts.append({
-                "needle": needle,
-                "context": context[:2200],
-            })
-            break
-        results.append({
-            "script": path,
-            "endpoint_shapes": [
-                {"path": endpoint, "query_keys": list(keys)}
-                for endpoint, keys in sorted(endpoint_shapes)
-            ][:80],
-            "endpoint_contexts": endpoint_contexts,
+        body = _body(response)
+        page_observations = parse_procedure_observations(body, active_filter=True)
+        page_lots = parse_listing(PROFILE, body, page=page, active_filter=True)
+        pages.append({
+            "page": page,
+            "procedure_rows": len(page_observations),
+            "individual_lots": len(page_lots),
+            "digest": observation_digest(page_observations),
+            "declared_pages": list(declared_pages(body)),
         })
-    return results
+        observations.extend(page_observations)
+        lots.extend(page_lots)
+        last_body = body
+        if page != declared_last:
+            time.sleep(pause)
 
-
-def _text_features(html: str) -> dict[str, object]:
-    soup = BeautifulSoup(html, "html.parser")
-    text = _clean(soup.get_text(" ", strip=True))
-    status_hits = [marker for marker in STATUS_WORDS if marker in text.lower()]
-    price_labels = sorted({_clean(m.group(0)).lower() for m in PRICE_LABEL_RE.finditer(text)})
-    lots = sorted({int(x) for x in re.findall(r"Лот\s*№\s*(\d{1,5})", text, re.I)})
-    cads = sorted(set(re.findall(r"(?<!\d)\d{2}:\d{1,3}(?::\d{1,9}){2,4}(?!\d)", text)))
-    selected_lot_values = sorted({
-        str(node.get("value") or "")
-        for node in soup.select(
-            "select[name*=lot i] option[selected], input[name*=lot i][checked]"
-        )
-        if str(node.get("value") or "").isdigit()
-    })
-    semantic_labels = sorted({
-        _clean(node.get_text(" ", strip=True)).lower()
-        for node in soup.select("th, dt, label")
-        if re.search(r"цен|лот|статус|состояни|заяв|аукцион|торг", node.get_text(" ", strip=True), re.I)
-    })
-    return {
-        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "text_len": len(text),
-        "lot_numbers_in_text": lots[:50],
-        "selected_lot_values": selected_lot_values[:20],
-        "price_labels": price_labels[:20],
-        "semantic_labels": semantic_labels[:30],
-        "status_hits": status_hits,
-        "cadastral_count": len(cads),
-        "purchase_routes": _purchase_routes(html),
-        "structure": _safe_structural_hints(html),
+    ids = [lot.external_id for lot in lots]
+    duplicate_ids = sorted(value for value, count in Counter(ids).items() if count > 1)
+    pass_result = {
+        "pass": pass_no,
+        "pages_scanned": declared_last,
+        "declared_last_page": declared_last,
+        "procedure_rows": len(observations),
+        "individual_lot_candidates": len(ids),
+        "unique_individual_lot_candidates": len(set(ids)),
+        "duplicate_individual_lot_ids": duplicate_ids[:50],
+        "rows_without_provider_id": sum(item.provider_id is None for item in observations),
+        "rows_without_explicit_lot_identity": sum(not item.lot_numbers for item in observations),
+        "mixed_property_procedure_rows": sum(item.mixed_property_classes for item in observations),
+        "digest": observation_digest(observations),
+        "identity_digest": hashlib.sha256(
+            "\n".join(sorted(set(ids))).encode("utf-8")
+        ).hexdigest(),
     }
+    return pass_result, observations, lots, last_body
 
 
-def _url_for_lot(base_url: str, lot: int) -> str:
-    parsed = urlparse(base_url)
-    query = parse_qs(parsed.query, keep_blank_values=True)
-    query["lotNumber"] = [str(lot)]
-    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
-
-
-def _inner_lots_url(provider_id: str, *, page: int = 1, lot_number: int | None = None) -> str:
-    params: dict[str, str] = {
-        "perspective": "inline",
-        "id": provider_id,
-        "page": str(page),
-        "lotNumber": "" if lot_number is None else str(lot_number),
-    }
-    return BASE + "/etp/trade/inner-view-lots.html?" + urlencode(params)
-
-
-def run(*, pause: float, details: int) -> dict[str, object]:
-    if pause < 0.2 or not 1 <= details <= 50:
-        raise ValueError("unsafe audit limits")
-    session = requests.Session()
-    passes: list[dict[str, object]] = []
-    first_pass_rows: list[Row] = []
-    page_count = 0
-
-    for pass_no in (1, 2):
-        response = _get(session, LISTING, params=_page_params(1))
-        page_numbers = _declared_pages(response.text)
-        maximum = max(page_numbers or [1])
-        all_rows: list[Row] = []
-        pages: list[dict[str, object]] = []
-        for page in range(1, maximum + 1):
-            if page > 1:
+def _discover_unresolved_lots(
+    session: requests.Session,
+    observations: list[Any],
+    *,
+    pause: float,
+    max_pages_per_procedure: int = 10,
+) -> tuple[dict[str, tuple[int, ...]], list[dict[str, Any]]]:
+    discovered: dict[str, tuple[int, ...]] = {}
+    evidence: list[dict[str, Any]] = []
+    for item in observations:
+        provider_id = item.provider_id
+        if provider_id is None or item.lot_numbers or provider_id in discovered:
+            continue
+        numbers: set[int] = set()
+        seen_payloads: set[str] = set()
+        pages_checked = 0
+        for page in range(1, max_pages_per_procedure + 1):
+            if pages_checked:
                 time.sleep(pause)
-                response = _get(session, LISTING, params=_page_params(page))
-            rows = parse_rows(response.text)
-            pages.append({
-                "page": page,
-                "rows": len(rows),
-                "digest": _digest(rows),
-                "declared_pages": _declared_pages(response.text),
-            })
-            all_rows.extend(rows)
-        ids = [
-            f"{row.provider_id}:{lot}"
-            for row in all_rows
-            if row.provider_id
-            for lot in row.lots
-        ]
-        duplicate_ids = sorted([value for value, count in Counter(ids).items() if count > 1])
-        passes.append({
-            "pass": pass_no,
-            "pages": pages,
-            "declared_last_page": maximum,
-            "procedure_rows": len(all_rows),
-            "individual_identity_candidates": len(ids),
-            "unique_identity_candidates": len(set(ids)),
-            "duplicate_identity_candidates": duplicate_ids[:20],
-            "rows_without_provider_id": sum(row.provider_id is None for row in all_rows),
-            "rows_without_lot_identity": sum(not row.lots for row in all_rows),
-            "digest": _digest(all_rows),
+            response = _get(session, lot_index_url(provider_id, page=page))
+            body = _body(response)
+            digest = hashlib.sha256(body).hexdigest()
+            if digest in seen_payloads:
+                break
+            seen_payloads.add(digest)
+            pages_checked += 1
+            page_numbers = set(discover_lot_numbers(body))
+            if not page_numbers:
+                break
+            before = len(numbers)
+            numbers.update(page_numbers)
+            if len(numbers) == before:
+                break
+        discovered[provider_id] = tuple(sorted(numbers))
+        evidence.append({
+            "provider_id": provider_id,
+            "trade_number": item.trade_number,
+            "pages_checked": pages_checked,
+            "discovered_lot_numbers": list(sorted(numbers)),
         })
-        if pass_no == 1:
-            first_pass_rows = all_rows
-            page_count = maximum
         time.sleep(pause)
+    return discovered, evidence
 
-    # Terminal proof: the declared last page must not advertise a higher page,
-    # and page last+1 must not contain a new active procedure identity.
-    terminal_response = _get(session, LISTING, params=_page_params(page_count + 1))
-    terminal_rows = parse_rows(terminal_response.text)
-    known_trades = {row.trade for row in first_pass_rows}
-    new_after_terminal = sorted({row.trade for row in terminal_rows} - known_trades)
 
-    # Select 30 distinct lot identities, prioritising property lots, then fill
-    # with other classes. The general procedure page is fetched once per
-    # provider id; lotNumber variants are fetched independently.
-    property_candidates: list[tuple[Row, int]] = []
-    other_candidates: list[tuple[Row, int]] = []
-    candidate_seen: set[tuple[str, int]] = set()
-    for row in first_pass_rows:
-        if not row.provider_id:
+def _detail_candidates(
+    lots: list[Any],
+    observations: list[Any],
+    discovered: dict[str, tuple[int, ...]],
+) -> list[dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    for lot in lots:
+        candidates[lot.external_id] = {
+            "external_id": lot.external_id,
+            "trade_number": lot.procedure_number,
+            "property_hint": bool(lot.raw_data.get("eligible_property")),
+            "category_hint": lot.category,
+            "origin": "catalogue_lot",
+        }
+    for obs in observations:
+        if not obs.provider_id:
             continue
-        for lot in row.lots:
-            key = (row.provider_id, lot)
-            if key in candidate_seen:
-                continue
-            candidate_seen.add(key)
-            target = property_candidates if lot in row.property_lots else other_candidates
-            target.append((row, lot))
-    selected = (property_candidates + other_candidates)[:details]
+        for lot_number in discovered.get(obs.provider_id, ()):
+            external_id = f"aukcioncenter.ru:{obs.provider_id}:{lot_number}"
+            candidates.setdefault(external_id, {
+                "external_id": external_id,
+                "trade_number": obs.trade_number,
+                "property_hint": lot_number in obs.property_lot_numbers,
+                "category_hint": None,
+                "origin": "inner_lot_index",
+            })
 
-    detail_results: list[dict[str, object]] = []
-    route_shapes: dict[str, set[tuple[str, ...]]] = {}
-    isolated_payloads = 0
-    base_cache: dict[str, dict[str, object]] = {}
-    script_paths: set[str] = set()
-    for index, (row, lot) in enumerate(selected):
+    def rank(item: dict[str, Any]) -> tuple[int, int, str]:
+        trade = str(item.get("trade_number") or "")
+        return (
+            0 if item["property_hint"] else 1,
+            0 if "ОТПП" in trade else 1,
+            str(item["external_id"]),
+        )
+
+    return sorted(candidates.values(), key=rank)
+
+
+def _probe_details(
+    session: requests.Session,
+    candidates: list[dict[str, Any]],
+    *,
+    details: int,
+    pause: float,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    selected = candidates[:details]
+    results: list[dict[str, Any]] = []
+    counts = Counter()
+    for index, item in enumerate(selected):
         if index:
             time.sleep(pause)
-        assert row.provider_id is not None
-        base_url = f"{BASE}/trade/view/purchase/general.html?id={row.provider_id}"
-        base_features = base_cache.get(row.provider_id)
-        if base_features is None:
-            base = _get(session, base_url)
-            base_features = _text_features(base.text)
-            base_cache[row.provider_id] = base_features
-            for route in base_features["purchase_routes"]:
-                route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
-            for script_path in base_features["structure"]["script_sources"]:
-                script_paths.add(str(script_path))
-
-        # First verify the legacy general.html lotNumber parameter remains
-        # procedure-level. Then call the actual lot-loader endpoint discovered
-        # from /etp/scripts/viewLots.js.
-        general_variant = _get(session, _url_for_lot(base_url, lot))
-        general_features = _text_features(general_variant.text)
-        if general_features["text_sha256"] != base_features["text_sha256"]:
-            isolated_payloads += 1
-
-        time.sleep(pause)
-        inner_response = _get(
-            session, _inner_lots_url(row.provider_id, page=1, lot_number=lot)
-        )
-        inner_features = _text_features(inner_response.text)
-        for route in inner_features["purchase_routes"]:
-            route_shapes.setdefault(str(route["route"]), set()).add(tuple(route["query_keys"]))
-        detail_results.append({
-            "provider_id": row.provider_id,
-            "trade": row.trade,
-            "lot_number": lot,
-            "property_hint": lot in row.property_lots,
-            "base_text_sha256": base_features["text_sha256"],
-            "general_lot_variant": general_features,
-            "inner_lot": inner_features,
-        })
-
-    unresolved_inner_samples: list[dict[str, object]] = []
-    unresolved_seen: set[str] = set()
-    for row in first_pass_rows:
-        if not row.provider_id or row.lots or row.provider_id in unresolved_seen:
+        external_id = str(item["external_id"])
+        url = detail_request_url(external_id)
+        record: dict[str, Any] = {
+            "external_id": external_id,
+            "trade_number": item.get("trade_number"),
+            "property_hint": item.get("property_hint"),
+            "category_hint": item.get("category_hint"),
+            "origin": item.get("origin"),
+            "detail_endpoint": "/etp/trade/inner-view-lots.html",
+        }
+        try:
+            response = _get(session, url)
+            detail = parse_detail(
+                PROFILE, _body(response),
+                detail_url_value=url,
+                external_id=external_id,
+            )
+        except Exception as exc:
+            record.update({
+                "verified": False,
+                "error_type": type(exc).__name__,
+                "error_code": str(exc)[:100] if isinstance(exc, ValueError) else None,
+            })
+            counts["failed"] += 1
+            results.append(record)
             continue
-        unresolved_seen.add(row.provider_id)
-        if len(unresolved_inner_samples) >= 12:
-            break
-        time.sleep(pause)
-        response = _get(session, _inner_lots_url(row.provider_id, page=1, lot_number=None))
-        features = _text_features(response.text)
-        unresolved_inner_samples.append({
-            "provider_id": row.provider_id,
-            "trade": row.trade,
-            "lot_numbers_in_text": features["lot_numbers_in_text"],
-            "price_labels": features["price_labels"],
-            "cadastral_count": features["cadastral_count"],
-            "text_sha256": features["text_sha256"],
-            "structure": features["structure"],
-        })
 
+        counts["verified"] += 1
+        fields = {
+            "initial_price": detail.start_price is not None,
+            "current_price": detail.current_price is not None,
+            "status": detail.auction_status != "unknown",
+            "address": detail.address is not None,
+            "cadastre": detail.cadastral_number is not None,
+            "area": detail.area is not None,
+            "classification": detail.category != "other",
+            "application_start": detail.application_start_at is not None,
+            "application_deadline": detail.application_deadline is not None,
+            "auction_at": detail.auction_at is not None,
+        }
+        for key, present in fields.items():
+            if present:
+                counts[key] += 1
+        if detail.raw_data.get("source_lifecycle") == "cancelled":
+            counts["cancelled"] += 1
+        elif detail.raw_data.get("source_lifecycle") == "finished":
+            counts["finished"] += 1
+        elif detail.raw_data.get("source_lifecycle") == "active":
+            counts["active"] += 1
+        if "ОТПП" in str(item.get("trade_number") or ""):
+            counts["public_offer"] += 1
+
+        record.update({
+            "verified": True,
+            "category": detail.category,
+            "auction_status": detail.auction_status,
+            "source_lifecycle": detail.raw_data.get("source_lifecycle"),
+            "has_initial_price": fields["initial_price"],
+            "has_current_price": fields["current_price"],
+            "has_address": fields["address"],
+            "has_cadastre": fields["cadastre"],
+            "has_area": fields["area"],
+            "has_application_start": fields["application_start"],
+            "has_application_deadline": fields["application_deadline"],
+            "has_auction_at": fields["auction_at"],
+        })
+        results.append(record)
+    return results, dict(counts)
+
+
+def run(*, pause: float, details: int) -> dict[str, Any]:
+    if pause < 0.2 or not 1 <= details <= 50:
+        raise ValueError("unsafe_audit_limits")
+
+    session = requests.Session()
+    first, observations, lots, last_body = _scan_pass(
+        session, pause=pause, pass_no=1
+    )
+    time.sleep(pause)
+    second, observations2, lots2, _ = _scan_pass(
+        session, pause=pause, pass_no=2
+    )
+
+    last_page = int(first["declared_last_page"])
+    time.sleep(pause)
+    overflow = _get(session, LISTING_URL, params=catalogue_params(last_page + 1))
+    terminal_ok, terminal_reason = terminal_page_contract(
+        last_body, _body(overflow), last_page=last_page
+    )
+
+    discovered, discovery_evidence = _discover_unresolved_lots(
+        session, observations, pause=pause
+    )
+    candidates = _detail_candidates(lots, observations, discovered)
+    detail_results, detail_counts = _probe_details(
+        session, candidates, details=details, pause=pause
+    )
+
+    ids1 = {lot.external_id for lot in lots}
+    ids2 = {lot.external_id for lot in lots2}
     return {
         "mode": "readonly_aukcioncenter_source_contract",
-        "listing_url": LISTING,
-        "active_filter": ACTIVE_PARAMS,
+        "catalogue_url": LISTING_URL,
+        "active_filter": catalogue_params(1),
         "production_database_writes": 0,
         "archival_allowed": False,
-        "passes": passes,
-        "two_pass_digest_equal": passes[0]["digest"] == passes[1]["digest"],
+        "passes": [first, second],
+        "two_pass_digest_equal": first["digest"] == second["digest"],
+        "two_pass_identity_set_equal": ids1 == ids2,
+        "two_pass_identity_added": sorted(ids2 - ids1)[:50],
+        "two_pass_identity_removed": sorted(ids1 - ids2)[:50],
         "terminal_probe": {
-            "requested_page": page_count + 1,
-            "rows": len(terminal_rows),
-            "declared_pages": _declared_pages(terminal_response.text),
-            "new_trade_ids_after_declared_last": new_after_terminal,
-            # A clamp to page 1/last page is not terminal proof. The out-of-range
-            # page must contain no catalogue procedure rows.
-            "proven": len(terminal_rows) == 0,
+            "requested_page": last_page + 1,
+            "proven": terminal_ok,
+            "reason": terminal_reason,
+            "overflow_declared_pages": list(declared_pages(_body(overflow))),
         },
-        "mixed_property_procedure_rows": sum(row.mixed_property_classes for row in first_pass_rows),
-        "rows_without_provider_id": sum(row.provider_id is None for row in first_pass_rows),
-        "individual_detail_variants_checked": len(detail_results),
-        "property_detail_variants_checked": sum(bool(item["property_hint"]) for item in detail_results),
-        "inner_detail_variants_with_price_labels": sum(
-            bool(item["inner_lot"]["price_labels"]) for item in detail_results
-        ),
-        "inner_detail_variants_with_status_labels": sum(
-            bool(item["inner_lot"]["status_hits"]) for item in detail_results
-        ),
-        "inner_detail_variants_with_requested_lot_number": sum(
-            int(item["lot_number"]) in item["inner_lot"]["lot_numbers_in_text"]
-            for item in detail_results
-        ),
-        "inner_detail_variants_with_cadastral": sum(
-            int(item["inner_lot"]["cadastral_count"]) > 0 for item in detail_results
-        ),
-        "general_lotNumber_variants_with_changed_payload": isolated_payloads,
-        "purchase_route_shapes": {
-            route: [list(keys) for keys in sorted(shapes)]
-            for route, shapes in sorted(route_shapes.items())
-        },
-        "first_party_script_endpoint_hints": _script_endpoint_hints(
-            session, sorted(script_paths)
-        ),
-        "unresolved_procedure_inner_samples": unresolved_inner_samples,
+        "unresolved_lot_index_evidence": discovery_evidence,
+        "detail_candidate_count": len(candidates),
+        "individual_details_requested": min(details, len(candidates)),
+        "individual_details_checked": len(detail_results),
+        "detail_counts": detail_counts,
         "details": detail_results,
+        "production_enabled": False,
     }
 
 
