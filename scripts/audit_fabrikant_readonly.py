@@ -77,6 +77,14 @@ def _page_record(
             {"name": name, "value": value, "kind": kind}
             for name, value, kind in parsed.selected_controls
         ],
+        "available_filter_options": [
+            {"name": name, "value": value, "label": label, "kind": kind}
+            for name, value, label, kind in parsed.available_filter_options
+        ],
+        "form_contracts": [
+            {"method": method, "path": path}
+            for method, path in parsed.form_contracts
+        ],
         "total_hints": list(parsed.total_hints),
     }
 
