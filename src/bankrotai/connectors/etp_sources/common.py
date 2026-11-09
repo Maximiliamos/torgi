@@ -583,40 +583,15 @@ def parse_detail_html(
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    arbbitlot_fields = (
-        arbbitlot_detail_fields(text_value) if profile.source_id == "arbbitlot.ru" else {}
-    )
-    arbbitlot_classifier = (
-        arbbitlot_efrsb_classifier(text_value)
-        if profile.source_id == "arbbitlot.ru"
-        else None
-    )
-    price = (
-        arbbitlot_fields.get("start_price")
-        if profile.source_id == "arbbitlot.ru"
-        else _money(text_value)
-    )
+    price = None if profile.source_id == "arbbitlot.ru" else _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
     if price is None and profile.source_id == "rus-on.ru":
         price = ruson_initial_money(text_value)
-    if profile.source_id == "arbbitlot.ru" and price is None:
-        raise SourceSchemaError(
-            "arbbitlot.ru: individual detail does not prove an explicit start price"
-        )
     current_price = (
-        arbbitlot_fields.get("current_price")
-        if profile.source_id == "arbbitlot.ru"
-        else _current_money(text_value)
+        None if profile.source_id == "arbbitlot.ru" else _current_money(text_value)
     )
-    address = None
-    if profile.source_id == "arbbitlot.ru":
-        address = _label_value(
-            text_value,
-            r"(?:адрес(?:\s*\(местонахождение\))?|местоположение)",
-            r".{5,300}?(?=\s+(?:кадастров|площад|начальн|текущ|статус|шаг|размер\s+обеспеч)\b)",
-        )
-    return NormalizedLot(
+    lot = NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
@@ -625,13 +600,13 @@ def parse_detail_html(
         category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=address,
+        address=None,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_source_status(profile, text_value),
+        auction_status=_status(text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -639,42 +614,23 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
-            **({
-                "procedure_id": arbbitlot_fields.get("trade_id"),
-                "lot_number": arbbitlot_fields.get("lot_number"),
-                "per_lot_detail_verified": True,
-                "price_unverified": price is None,
-                "current_price_unverified": current_price is None,
-                "efrsb_classifier": arbbitlot_classifier,
-            } if profile.source_id == "arbbitlot.ru" else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
-        procedure_number=(
-            str(arbbitlot_fields.get("trade_id"))
-            if profile.source_id == "arbbitlot.ru" and arbbitlot_fields.get("trade_id")
-            else procedure_number
-        ),
+        procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        deposit_amount=(
-            arbbitlot_fields.get("deposit_amount") if profile.source_id == "arbbitlot.ru" else None
-        ),
-        deposit_percent=(
-            arbbitlot_fields.get("deposit_percent") if profile.source_id == "arbbitlot.ru" else None
-        ),
-        auction_step_amount=(
-            arbbitlot_fields.get("auction_step_amount") if profile.source_id == "arbbitlot.ru" else None
-        ),
-        auction_step_percent=(
-            arbbitlot_fields.get("auction_step_percent") if profile.source_id == "arbbitlot.ru" else None
-        ),
-        property_type=arbbitlot_classifier,
         application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
         auction_at=datetime_after(text_value, r"дата проведения"),
     )
+    if profile.source_id == "arbbitlot.ru":
+        try:
+            apply_arbbitlot_detail_contract(lot, text_value)
+        except ArbbitlotContractError as exc:
+            raise SourceSchemaError(str(exc)) from exc
+    return lot
 
 
 def parse_sberbank_json(profile: EtpSourceProfile, payload: dict[str, Any], *, page: int) -> list[NormalizedLot]:
