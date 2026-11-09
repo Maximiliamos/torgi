@@ -71,6 +71,7 @@ def test_ruson_public_offer_derives_current_price_only_from_active_period() -> N
     ]
     assert lot.raw_data["ruson_current_price_source"] == "public_offer_schedule"
     assert lot.raw_data["ruson_initial_price_format"] == "decimal_dot"
+    assert lot.raw_data["ruson_public_offer_currency"] == "RUB"
 
 
 def test_ruson_ended_detail_accepts_currency_suffix_comma_decimal_without_inventing_current_price() -> None:
@@ -215,3 +216,19 @@ def test_ruson_reported_pereslavl_location_uses_property_location_field() -> Non
     assert lot.cadastral_number == "76:11:043902:114"
     assert lot.start_price == 1_000_000
     assert lot.auction_status == "closed"
+
+
+def test_ruson_unproven_detail_shell_fails_closed_instead_of_counting_as_verified() -> None:
+    html = """
+    <html><body>
+      <h1>РОССИЯ ОнЛайн</h1>
+      <nav>Торги в банкротстве Контакты Тарифы Инструкции Центр поддержки пользователей</nav>
+      <p>Запрошенная карточка не содержит доказанных сведений конкретного лота.</p>
+    </body></html>
+    """
+    with pytest.raises(RusonSchemaError, match="no proven lot-level fields"):
+        parse_detail_html(
+            html,
+            external_id="rus-on.ru:114013",
+            detail_url="https://rus-on.ru/bankrot/lot_view.php?lot_nid=114013",
+        )

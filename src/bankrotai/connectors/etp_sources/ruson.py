@@ -200,6 +200,7 @@ def _public_offer_schedule(soup: BeautifulSoup) -> list[dict[str, Any]]:
         rows = table.select("tr")
         header_index: int | None = None
         columns: dict[str, int] = {}
+        price_header = ""
         for index, row in enumerate(rows):
             cells = row.find_all(["th", "td"], recursive=False)
             labels = [_key(cell.get_text(" ", strip=True)) for cell in cells]
@@ -214,6 +215,7 @@ def _public_offer_schedule(soup: BeautifulSoup) -> list[dict[str, Any]]:
                     columns["end"] = pos
                 elif "цена на периоде" in label:
                     columns["price"] = pos
+                    price_header = label
                 elif "задат" in label:
                     columns["deposit"] = pos
             break
@@ -241,6 +243,8 @@ def _public_offer_schedule(soup: BeautifulSoup) -> list[dict[str, Any]]:
                 "price": price,
                 "source_timezone": "Europe/Moscow",
             }
+            if re.search(r"(?:\bруб\.?\b|₽|\bRUB\b)", price_header, re.IGNORECASE):
+                item["source_currency"] = "RUB"
             if "deposit" in columns:
                 deposit = _parse_money(values[columns["deposit"]])
                 if deposit is not None:
@@ -360,6 +364,14 @@ def parse_ruson_detail_fields(
         "next_price_reduction_at": active[1] if active else None,
         "next_interval_price": active[2] if active else None,
         "current_price_source": "public_offer_schedule" if active else None,
+        "public_offer_currency": next(
+            (
+                str(period.get("source_currency"))
+                for period in schedule
+                if isinstance(period, dict) and period.get("source_currency")
+            ),
+            None,
+        ),
         "procedure_number": procedure_match.group(1) if procedure_match else None,
         "detail_template": detail_template,
     }
@@ -418,6 +430,7 @@ def build_ruson_detail_lot(
             "ruson_current_price_source": values.get("current_price_source"),
             "ruson_detail_template": values.get("detail_template"),
             "ruson_source_categories": values.get("source_categories"),
+            "ruson_public_offer_currency": values.get("public_offer_currency"),
         },
         platform_name=platform_name,
         platform_code=platform_code,
@@ -547,7 +560,7 @@ def parse_detail_html(
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
         raise RusonSchemaError("rus-on.ru: detail page has insufficient content")
-    return build_ruson_detail_lot(
+    lot = build_ruson_detail_lot(
         soup,
         external_id=external_id,
         detail_url=canonical_url,
@@ -557,6 +570,16 @@ def parse_detail_html(
         complete_source_inventory=False,
         safe_for_archival=False,
     )
+    if (
+        lot.start_price is None
+        and lot.auction_status == "unknown"
+        and lot.application_start_at is None
+        and lot.application_deadline is None
+        and lot.auction_at is None
+        and not lot.public_offer_schedule
+    ):
+        raise RusonSchemaError("rus-on.ru: detail page has no proven lot-level fields")
+    return lot
 
 
 def _catalogue_title(anchor: Tag) -> str:

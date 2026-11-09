@@ -286,6 +286,8 @@ async def audit_ruson_contract(
             counters["initial_price_with_currency"] += 1
         if detail.raw_data.get("ruson_initial_price_had_currency") is False:
             counters["initial_price_without_currency"] += 1
+        if detail.raw_data.get("ruson_public_offer_currency") == "RUB":
+            counters["currency_labelled_price"] += 1
         if _has_kopecks(detail.start_price) or _has_kopecks(detail.current_price):
             counters["price_with_kopecks"] += 1
         schedule = detail.public_offer_schedule or []
@@ -345,6 +347,7 @@ async def audit_ruson_contract(
         "public_offer_current_price_ok": counters["public_offer_current_price_ok"],
         "initial_price_with_currency": counters["initial_price_with_currency"],
         "initial_price_without_currency": counters["initial_price_without_currency"],
+        "currency_labelled_price": counters["currency_labelled_price"],
         "price_with_kopecks": counters["price_with_kopecks"],
         "schedule_price_with_kopecks": counters["schedule_price_with_kopecks"],
         "failure_classes": dict(failures),

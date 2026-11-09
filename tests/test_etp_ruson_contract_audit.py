@@ -47,6 +47,7 @@ class FakeConnector:
             raw_data={
                 "ruson_initial_price_format": "decimal_dot",
                 "ruson_initial_price_had_currency": external_id.endswith("103"),
+                "ruson_public_offer_currency": "RUB" if public else None,
             },
         )
 
@@ -70,6 +71,7 @@ def test_ruson_audit_proves_two_pass_terminal_identity_and_read_only_detail_samp
     assert report["status_success_rate"] == 1.0
     assert report["ordinary_auction_details"] == 2
     assert report["public_offer_details"] == 2
+    assert report["currency_labelled_price"] == 2
     assert report["ended_details"] == 1
     assert report["production_database_writes"] == 0
     assert report["production_enabled"] is False
