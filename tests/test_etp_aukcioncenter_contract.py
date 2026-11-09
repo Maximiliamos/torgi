@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from bankrotai.connectors.etp_sources import PROFILES, SourceSchemaError, parse_detail_html, parse_listing_html
+from bankrotai.connectors.etp_sources import (
+    PROFILES,
+    SOURCE_CONNECTOR_TYPES,
+    SourceSchemaError,
+    parse_detail_html,
+    parse_listing_html,
+)
 
 
 def _profile():
@@ -46,6 +54,7 @@ def test_active_catalogue_splits_procedure_into_individual_property_lots_and_exc
     assert land.raw_data["lot_number"] == 1
     assert land.raw_data["individual_lot_identity_verified"] is True
     assert land.raw_data["listing_price_unverified"] is True
+    assert land.raw_data["source_lifecycle"] == "active"
 
 
 def test_single_lot_requires_source_lot_number_in_url_instead_of_inventing_lot_one():
@@ -154,12 +163,12 @@ def test_application_end_date_does_not_become_closed_status():
 @pytest.mark.parametrize(
     ("source_text", "expected"),
     [
-        ("торги завершены", "closed"),
-        ("торги отменены", "closed"),
-        ("идёт приём заявок", "active"),
+        ("торги завершены", "closed", "finished"),
+        ("торги отменены", "closed", "cancelled"),
+        ("идёт приём заявок", "active", "active"),
     ],
 )
-def test_only_explicit_source_lifecycle_marker_sets_status(source_text, expected):
+def test_only_explicit_source_lifecycle_marker_sets_status(source_text, expected, lifecycle):
     html = f"""
     <html><body><p>{source_text}</p>
       <div>Лот №1: Квартира, площадь 35 кв. м,
@@ -173,3 +182,63 @@ def test_only_explicit_source_lifecycle_marker_sets_status(source_text, expected
     )
     assert detail.auction_status == expected
     assert detail.raw_data["source_status_text"] == source_text
+    assert detail.raw_data["source_lifecycle"] == lifecycle
+
+
+class _Response:
+    status_code = 200
+
+    def __init__(self, body: str, url: str) -> None:
+        self.content = body.encode("utf-8")
+        self.url = url
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _Session:
+    def __init__(self, responses: list[_Response]) -> None:
+        self.responses = responses
+        self.headers: dict[str, str] = {}
+        self.urls: list[str] = []
+
+    def get(self, url, *_args, **_kwargs):
+        self.urls.append(url)
+        return self.responses.pop(0)
+
+
+def test_connector_preserves_active_filter_and_lot_number_in_detail_url():
+    listing = """
+    <table><tr>
+      <td>7603-ОАОФ</td>
+      <td><a href="/trade/view/purchase/general.html?id=103550008&amp;lotNumber=1">
+        Земельный участок 76:01:000001:333, площадь 700 кв. м
+      </a></td>
+      <td>04.11.2026 09:00</td><td>04.12.2026 18:00</td>
+    </tr></table>
+    <a href="?page=2&amp;processStatus=BID_SUBMISSION">2</a>
+    """
+    detail = """
+    <html><body><p>идёт приём заявок</p>
+      <div>Лот №1: Земельный участок 76:01:000001:333, площадь 700 кв. м.
+      Начальная цена 3 000 000 руб.</div>
+    </body></html>
+    """
+    p = _profile()
+    session = _Session([
+        _Response(listing, p.listing_url),
+        _Response(
+            detail,
+            "https://aukcioncenter.ru/trade/view/purchase/general.html?id=103550008&lotNumber=1",
+        ),
+    ])
+    connector = SOURCE_CONNECTOR_TYPES["aukcioncenter.ru"](session=session)
+    page = asyncio.run(connector.search({}))
+    assert page.next_cursor == "2"
+    assert page.items[0].external_id == "aukcioncenter.ru:103550008:1"
+    assert "processStatus=BID_SUBMISSION" in session.urls[0]
+
+    enriched = asyncio.run(connector.fetch_lot(page.items[0].external_id))
+    assert enriched.start_price == 3_000_000
+    assert session.urls[1].endswith("id=103550008&lotNumber=1")
+    assert "detail_enrichment" in connector.capabilities
