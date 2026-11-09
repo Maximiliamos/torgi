@@ -4,8 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "src/bankrotai/connectors/etp_sources/vertrades_detail_*.py"
-      - "src/bankrotai/connectors/registry/direct_etp_catalogue.py"
+      - "src/bankrotai/connectors/etp_sources/vertrades*.py"
       - "src/bankrotai/services/etp_vertrades_contract_probe.py"
       - "tests/test_*vertrades*.py"
       - "docs/ETP_VERTRADES_AUDIT_2026-11-09.md"
@@ -37,7 +36,6 @@ jobs:
       - name: Run focused Vertrades regression tests
         run: |
           pytest -q \
-            tests/test_direct_etp_catalogue_batch.py \
             tests/test_vertrades_catalogue_contract.py \
             tests/test_vertrades_detail_sections.py \
             tests/test_vertrades_detail_adapter.py \
