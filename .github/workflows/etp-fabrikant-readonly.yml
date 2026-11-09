@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   audit:
-    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -36,50 +36,51 @@ jobs:
             }
           }
 
-      - name: Run public Fabrikant source-contract audit inside trusted worker
-        shell: powershell
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: { python-version: "3.11", cache: pip }
+
+      - name: Install probe dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run public Fabrikant source-contract audit
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $report = Join-Path $env:RUNNER_TEMP 'fabrikant-readonly.json'
-          $script = Get-Content scripts/audit_fabrikant_readonly.py -Raw
-          $previous = $ErrorActionPreference
-          $ErrorActionPreference = 'Continue'
-          try {
-            $output = @($script | docker.exe exec -i bankrotai-home-ingestion-worker python - --max-pages 200 --detail-limit 30 --passes 2 --pause 0.4 2>&1)
-            $status = $LASTEXITCODE
-          } finally {
-            $ErrorActionPreference = $previous
-          }
-          if ($status -ne 0 -or $output.Count -lt 1) {
-            $output | ForEach-Object { Write-Output $_ }
-            throw 'Fabrikant read-only probe failed'
-          }
-          $jsonLine = $output[-1]
-          $parsed = $jsonLine | ConvertFrom-Json
-          if ($parsed.source -ne 'fabrikant.ru' -or
-              $parsed.database_writes -ne 0 -or
-              $parsed.map_writes -ne 0 -or
-              $parsed.production_enabled -ne $false) {
-            throw 'Fabrikant probe violated read-only contract'
-          }
-          $jsonLine | Set-Content -LiteralPath $report -Encoding utf8
-          Write-Output ("FABRIKANT_AUDIT pages={0}; unique={1}; terminal={2}; reason={3}; stable_two_passes={4}; details={5}" -f
-            $parsed.passes[0].pages_checked,
-            $parsed.passes[0].unique_procedure_count,
-            $parsed.passes[0].terminal_page,
-            $parsed.passes[0].terminal_reason,
-            $parsed.stable_two_passes,
-            $parsed.details_checked)
-          foreach ($page in $parsed.passes[0].pages) {
-            Write-Output ("FABRIKANT_PAGE page={0}; status={1}; candidates={2}; next={3}; visible_pages={4}" -f
-              $page.page,$page.http_status,$page.procedure_count,$page.has_next_link,
-              (@($page.visible_page_numbers) -join ','))
-          }
-          foreach ($detail in $parsed.details) {
-            Write-Output ("FABRIKANT_DETAIL id={0}; status={1}; lot_markers={2}; money_labels={3}; status_labels={4}; lot_routes={5}" -f
-              $detail.procedure_id,$detail.http_status,$detail.lot_marker_count,
-              @($detail.money_labels).Count,@($detail.status_labels).Count,@($detail.lot_route_shapes).Count)
-          }
+          set -euo pipefail
+          report="$RUNNER_TEMP/fabrikant-readonly.json"
+          python scripts/audit_fabrikant_readonly.py --max-pages 200 --detail-limit 30 --passes 2 --pause 0.4 | tee "$report"
+          python - "$report" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          rows = [line for line in open(path, encoding="utf-8") if line.strip()]
+          parsed = json.loads(rows[-1])
+          assert parsed["source"] == "fabrikant.ru"
+          assert parsed["database_writes"] == 0
+          assert parsed["map_writes"] == 0
+          assert parsed["production_enabled"] is False
+          first = parsed["passes"][0]
+          print(
+              "FABRIKANT_AUDIT "
+              f"pages={first['pages_checked']}; unique={first['unique_procedure_count']}; "
+              f"terminal={first['terminal_page']}; reason={first['terminal_reason']}; "
+              f"stable_two_passes={parsed['stable_two_passes']}; details={parsed['details_checked']}"
+          )
+          for page in first["pages"]:
+              print(
+                  "FABRIKANT_PAGE "
+                  f"page={page['page']}; status={page['http_status']}; "
+                  f"candidates={page['procedure_count']}; next={page['has_next_link']}; "
+                  f"visible_pages={','.join(map(str, page['visible_page_numbers']))}"
+              )
+          for detail in parsed["details"]:
+              print(
+                  "FABRIKANT_DETAIL "
+                  f"id={detail['procedure_id']}; status={detail['http_status']}; "
+                  f"lot_markers={detail['lot_marker_count']}; "
+                  f"money_labels={len(detail['money_labels'])}; "
+                  f"status_labels={len(detail['status_labels'])}; "
+                  f"lot_routes={len(detail['lot_route_shapes'])}"
+              )
+          PY
 
       - name: Upload sanitized evidence
         if: always()
