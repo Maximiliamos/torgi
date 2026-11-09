@@ -829,25 +829,7 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: unsupported pagination form method"
                 )
         else:
-            link = next((
-                node for node in soup.select("a[href]")
-                if _clean(node.get_text(" ", strip=True)) == str(page)
-                and "__doPostBack" in str(node.get("href") or "")
-            ), None)
-            if (
-                not isinstance(link, Tag)
-                and self.source_id == "arbbitlot.ru"
-                and page > 1
-                and (page - 1) % 10 == 0
-            ):
-                # FogSoft's ARBbitLot pager exposes numeric links in groups of
-                # ten and uses ">>" to advance to the next group. On page 10,
-                # 20, ... there is no visible numeric link for page+1.
-                link = next((
-                    node for node in soup.select("a[href]")
-                    if _clean(node.get_text(" ", strip=True)) == ">>"
-                    and "__doPostBack" in str(node.get("href") or "")
-                ), None)
+            link = postback_link_for_page(self.profile, soup, page)
             if not isinstance(link, Tag):
                 raise SourceSchemaError(f"{self.source_id}: page {page} postback target disappeared")
             postback = re.search(r"__doPostBack\('([^']*)','([^']*)'\)", str(link.get("href") or ""))
