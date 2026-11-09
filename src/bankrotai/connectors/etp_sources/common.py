@@ -20,6 +20,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.connectors.etp_sources.source_specific import (
     apply_detail,
     arbbitlot_detail_fields,
+    arbbitlot_efrsb_classifier,
     datetime_after,
     profit_initial_money,
     ruson_initial_money,
@@ -640,6 +641,11 @@ def parse_detail_html(
     arbbitlot_fields = (
         arbbitlot_detail_fields(text_value) if profile.source_id == "arbbitlot.ru" else {}
     )
+    arbbitlot_classifier = (
+        arbbitlot_efrsb_classifier(text_value)
+        if profile.source_id == "arbbitlot.ru"
+        else None
+    )
     price = (
         arbbitlot_fields.get("start_price")
         if profile.source_id == "arbbitlot.ru"
@@ -694,6 +700,7 @@ def parse_detail_html(
                 "per_lot_detail_verified": True,
                 "price_unverified": price is None,
                 "current_price_unverified": current_price is None,
+                "efrsb_classifier": arbbitlot_classifier,
             } if profile.source_id == "arbbitlot.ru" else {}),
         },
         platform_name=profile.platform_name,
@@ -716,6 +723,7 @@ def parse_detail_html(
         auction_step_percent=(
             arbbitlot_fields.get("auction_step_percent") if profile.source_id == "arbbitlot.ru" else None
         ),
+        property_type=arbbitlot_classifier,
         application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
