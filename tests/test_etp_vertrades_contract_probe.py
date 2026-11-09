@@ -13,8 +13,8 @@ from bankrotai.services.etp_vertrades_contract_probe import (
 def _row(trade: int, provider: int, lot: int = 1) -> str:
     return (
         "<tr>"
-        f"<td>{trade}-АП</td><td>{lot}</td><td>synthetic</td>"
-        f"<td><a href='/showTrades?id={provider}'>земельный участок 600 кв.м.</a></td>"
+        f"<td>{trade}-АП</td><td><a href='/showTrades?id={provider}'>{lot}</a></td>"
+        "<td>synthetic</td><td>земельный участок 600 кв.м.</td>"
         "<td>500000.00</td><td>-</td><td>-</td><td>-</td><td>-</td>"
         "<td>Завершенные торги</td>"
         "</tr>"
