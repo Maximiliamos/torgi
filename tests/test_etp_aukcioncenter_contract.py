@@ -19,6 +19,7 @@ from bankrotai.connectors.etp_sources.aukcioncenter import (
     parse_detail,
     parse_listing,
     parse_procedure_observations,
+    status_filter_options,
     terminal_page_contract,
 )
 
@@ -38,6 +39,21 @@ PROFILE = _Profile()
 
 def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def test_provider_status_filter_values_are_read_from_source_form():
+    html = """
+    <select name="processStatus">
+      <option value="any">Все</option>
+      <option value="BID_SUBMISSION">Идёт приём заявок</option>
+      <option value="COMPLETED">Торги завершены</option>
+      <option value="CANCELLED">Торги отменены</option>
+    </select>
+    """
+    options = status_filter_options(html)
+    assert options["идёт приём заявок"] == "BID_SUBMISSION"
+    assert options["торги завершены"] == "COMPLETED"
+    assert options["торги отменены"] == "CANCELLED"
 
 
 def test_active_filter_contract_is_owned_by_source_module():
