@@ -1,14 +1,6 @@
 name: ETP AukcionCenter read-only audit
 
 on:
-  push:
-    branches:
-      - audit/aukcioncenter-detail-contract-20261109
-    paths:
-      - "scripts/etp_aukcioncenter_audit.py"
-      - ".github/workflows/etp-aukcioncenter-audit.yml"
-      - "src/bankrotai/connectors/etp_sources/**"
-      - "tests/test_etp_aukcioncenter_contract.py"
   pull_request:
     paths:
       - "scripts/etp_aukcioncenter_audit.py"
