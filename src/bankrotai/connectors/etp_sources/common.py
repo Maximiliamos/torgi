@@ -581,9 +581,8 @@ def parse_detail_html(
             text_value,
             external_id=external_id, detail_url=detail_url,
             platform_name=profile.platform_name, platform_code=profile.platform_code,
-            complete_source_inventory=profile.complete_source_inventory,
-            safe_for_archival=profile.safe_for_archival, procedure_number=procedure_number,
-            bankruptcy_case_number=case_number,
+            complete_source_inventory=profile.complete_source_inventory, safe_for_archival=profile.safe_for_archival,
+            procedure_number=procedure_number, bankruptcy_case_number=case_number,
         )
 
     price = _money(text_value)
