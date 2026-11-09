@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 
 _TRADE_RE = re.compile(r"\b(?P<trade>\d{3,9}-(?:ОАОФ|ОТПП|ЗТПП|ОКОФ|ОКЗФ|ОАЗФ))\b", re.I)
 _LOT_RE = re.compile(r"Лот\s*№\s*(?P<lot>\d{1,5})\s*[:.\-]?\s*", re.I)
-_DETAIL_PATH_RE = re.compile(r"/(?:etp/)?trade/view/purchase/general\.html$", re.I)
+_GENERAL_PATH_RE = re.compile(r"/(?:etp/)?trade/view/purchase/general\.html$", re.I)
+_INNER_LOTS_PATH = "/etp/trade/inner-view-lots.html"
+_INNER_LOTS_PATH_RE = re.compile(r"/etp/trade/inner-view-lots\.html$", re.I)
 _CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}(?::\d{1,9}){2,4})(?!\d)")
 _AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м[²2])", re.I)
 _AREA_EXPLICIT_RE = re.compile(
@@ -123,7 +125,7 @@ def _row_urls(row: Tag, listing_url: str) -> list[str]:
 
 def _provider_identity(url: str) -> tuple[str, int | None] | None:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != "aukcioncenter.ru" or not _DETAIL_PATH_RE.fullmatch(parsed.path):
+    if parsed.scheme != "https" or parsed.hostname != "aukcioncenter.ru" or not _GENERAL_PATH_RE.fullmatch(parsed.path):
         return None
     query = parse_qs(parsed.query)
     provider_ids = query.get("id", [])
@@ -261,9 +263,8 @@ def parse_listing(
             cadastral = _CADASTRAL_RE.search(segment)
             area_values = _area_values(segment)
             area = area_values[0] if area_values else None
-            detail_url = (
-                f"https://aukcioncenter.ru/trade/view/purchase/general.html?"
-                f"id={provider_id}&lotNumber={lot_number}"
+            detail_url = browser_url(
+                f"{profile.source_id}:{provider_id}:{lot_number}"
             )
             output.append(NormalizedLot(
                 external_id=external_id,
@@ -320,11 +321,26 @@ def _external_parts(external_id: str) -> tuple[str, int]:
     return match.group(1), int(match.group(2))
 
 
-def detail_url(external_id: str) -> str:
+def browser_url(external_id: str) -> str:
+    """Human-readable procedure page; never a source of per-lot price."""
     provider_id, lot_number = _external_parts(external_id)
     return (
         "https://aukcioncenter.ru/trade/view/purchase/general.html?"
         + urlencode({"id": provider_id, "lotNumber": lot_number})
+    )
+
+
+def detail_request_url(external_id: str, *, page: int = 1) -> str:
+    """First-party AJAX lot-loader contract from /etp/scripts/viewLots.js."""
+    provider_id, lot_number = _external_parts(external_id)
+    return (
+        "https://aukcioncenter.ru" + _INNER_LOTS_PATH + "?"
+        + urlencode({
+            "perspective": "inline",
+            "id": provider_id,
+            "page": str(page),
+            "lotNumber": str(lot_number),
+        })
     )
 
 
@@ -347,12 +363,14 @@ def parse_detail(
 ) -> NormalizedLot:
     provider_id, lot_number = _external_parts(external_id)
     parsed = urlparse(detail_url_value)
-    query = parse_qs(parsed.query)
+    query = parse_qs(parsed.query, keep_blank_values=True)
     if (
         parsed.scheme != "https"
         or parsed.hostname != "aukcioncenter.ru"
-        or not _DETAIL_PATH_RE.fullmatch(parsed.path)
+        or not _INNER_LOTS_PATH_RE.fullmatch(parsed.path)
+        or query.get("perspective") != ["inline"]
         or query.get("id") != [provider_id]
+        or query.get("page") != ["1"]
         or query.get("lotNumber") != [str(lot_number)]
     ):
         raise ValueError("aukcioncenter_detail_identity_mismatch")
@@ -367,12 +385,20 @@ def parse_detail(
     if len(whole) < 80:
         raise ValueError("aukcioncenter_detail_too_short")
 
-    selected = _lot_segment(whole, lot_number)
-    if selected is None:
-        # The general procedure page often contains conditions such as an
-        # aggregate/public-offer "initial price". Without an explicit selected
-        # lot section it is unsafe to bind any price/title/property to this ID.
-        raise ValueError("aukcioncenter_individual_lot_section_not_proven")
+    explicit_lot_numbers = [
+        int(match.group("lot")) for match in _LOT_RE.finditer(whole)
+    ]
+    if explicit_lot_numbers and lot_number not in explicit_lot_numbers:
+        raise ValueError("aukcioncenter_inner_lot_identity_mismatch")
+    if len(set(explicit_lot_numbers)) > 1:
+        raise ValueError("aukcioncenter_inner_endpoint_returned_multiple_lots")
+
+    # The first-party AJAX request itself carries the exact provider id and
+    # lotNumber and renders the lot container. If the fragment labels the lot,
+    # isolate that section; otherwise the whole fragment is the isolated payload.
+    selected = _lot_segment(whole, lot_number) if explicit_lot_numbers else whole
+    if not selected or len(selected) < 40:
+        raise ValueError("aukcioncenter_inner_lot_payload_too_short")
 
     asset_class = _asset_class(selected)
     if asset_class == "mixed":
@@ -453,6 +479,7 @@ def parse_detail(
             "eligible_property": asset_class in {"land", "real_estate"},
             "individual_lot_identity_verified": True,
             "individual_lot_section_verified": True,
+            "detail_endpoint": _INNER_LOTS_PATH,
             "detail_start_price_verified": start_price is not None,
             "detail_current_price_verified": current_price is not None,
             "complete_source_inventory": False,
