@@ -118,10 +118,10 @@ def _structured_property_kinds(classifier: str, lot_text: str) -> tuple[str, ...
 def _domain_category(kinds: tuple[str, ...], title: str) -> str:
     if "receivables" in kinds:
         return "receivables"
-    if "lease" in kinds:
-        return "other"
     if "real_estate" in kinds:
         return "real_estate"
+    if "lease" in kinds:
+        return "other"
     if "land" in kinds:
         return "land"
     if "vehicle" in kinds:
