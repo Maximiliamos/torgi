@@ -116,8 +116,13 @@ jobs:
             assert_current_main
           }
 
-          # Health currently reports backup and restore evidence older than 60h.
-          # Run the existing isolated restore drill before production acceptance.
+          # Home health last reported 20.36 GiB free on C:, while the
+          # verified-backup preflight requires at least 30 GiB of temp space.
+          # Apply the existing bounded, reviewed P2 retention cleanup first.
+          dispatch_and_verify p2-production-maintenance.yml -f apply=true
+
+          # Health reports backup/restore evidence older than 60h.
+          # Run the existing isolated restore drill before acceptance.
           dispatch_and_verify phase3-lite-backup.yml
           dispatch_and_verify p1-data-quality.yml
           dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=30 -f restart_drill=false
