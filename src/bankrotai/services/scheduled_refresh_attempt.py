@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 from bankrotai.core import utc_now
 from bankrotai.db import LotSyncRun
@@ -21,7 +22,7 @@ class ScheduledRefreshAttempt:
         *,
         run_id: str,
         mode: str,
-        session_factory: sessionmaker,
+        session_factory: Callable[[], Session],
     ) -> None:
         self.run_id = run_id
         self.mode = mode
@@ -34,7 +35,7 @@ class ScheduledRefreshAttempt:
         *,
         mode: str,
         total_sources: int,
-        session_factory: sessionmaker,
+        session_factory: Callable[[], Session],
     ) -> "ScheduledRefreshAttempt":
         service = NationwideIngestionService(session_factory)
         run_id = service.create_run(
@@ -43,6 +44,53 @@ class ScheduledRefreshAttempt:
             total_sources=total_sources,
         )
         return cls(run_id=run_id, mode=mode, session_factory=session_factory)
+
+    def prepare(
+        self,
+        *,
+        global_network_blocked: Callable[[], bool],
+        resolve_specs: Callable[[], tuple[Any, ...]],
+        required_sources: set[str] | frozenset[str],
+        preflight_runner: Callable[[tuple[Any, ...]], dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, tuple[Any, ...] | None, dict[str, Any] | None]:
+        if global_network_blocked():
+            return self.finalize_skip(reason="global_source_network_circuit"), None, None
+        try:
+            specs = resolve_specs()
+        except Exception as exc:
+            return (
+                self.finalize_skip(
+                    reason="scheduled_spec_resolution_failed",
+                    details={"error": str(exc)[:1000]},
+                ),
+                None,
+                None,
+            )
+        missing = sorted(set(required_sources) - {str(spec.source_id) for spec in specs})
+        if missing:
+            return (
+                self.finalize_skip(
+                    reason="required_source_not_runnable",
+                    details={"missing_sources": missing},
+                ),
+                None,
+                None,
+            )
+        preflight = preflight_runner(specs)
+        self.persist_preflight(preflight)
+        return None, specs, preflight
+
+    def annotate_result(
+        self,
+        result: dict[str, Any],
+        preflight: dict[str, Any],
+    ) -> dict[str, Any]:
+        warning = not bool(preflight.get("success"))
+        self.attach_preflight(preflight, warning=warning)
+        result["preflight"] = preflight
+        if warning:
+            result["preflight_warning"] = "source_preflight_failed"
+        return result
 
     def persist_preflight(self, preflight: dict[str, Any]) -> None:
         now = utc_now()
