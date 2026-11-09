@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/bankrotai/connectors/etp_sources/vertrades*.py"
+      - "src/bankrotai/connectors/etp_sources/__init__.py"
       - "src/bankrotai/services/etp_vertrades_contract_probe.py"
       - "tests/test_*vertrades*.py"
       - "docs/ETP_VERTRADES_AUDIT_2026-11-09.md"
