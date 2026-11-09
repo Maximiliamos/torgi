@@ -15,7 +15,7 @@ from bankrotai.connectors.etp_sources.pagination import (
     get_form_params, has_next_page as _has_next_page, page_url as _page_url,
 )
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
-from bankrotai.connectors.etp_sources.ruson import parse_ruson_detail_fields
+from bankrotai.connectors.etp_sources.ruson import build_ruson_detail_lot
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
 from bankrotai.connectors.transient_http import request_with_retries
 from bankrotai.domain import NormalizedLot
@@ -537,12 +537,24 @@ def parse_detail_html(
 ) -> NormalizedLot:
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
-    ruson_fields = (
-        parse_ruson_detail_fields(soup, observed_at_utc=observed_at_utc)
-        if profile.source_id == "rus-on.ru" else {}
-    )
     if len(text_value) < 80:
         raise SourceSchemaError(f"{profile.source_id}: detail page has insufficient content")
+    match = profile.lot_url_re.search(detail_url)
+    if external_id is None:
+        if not match:
+            raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
+        external_id = _external_id(profile, detail_url, match)
+    if profile.source_id == "rus-on.ru":
+        return build_ruson_detail_lot(
+            soup,
+            external_id=external_id,
+            detail_url=detail_url,
+            platform_name=profile.platform_name,
+            platform_code=profile.platform_code,
+            observed_at_utc=observed_at_utc,
+            complete_source_inventory=profile.complete_source_inventory,
+            safe_for_archival=profile.safe_for_archival,
+        )
     if profile.source_id == "sistematorg.com":
         trade_lots = sistematorg_lot_count(text_value)
         if trade_lots != 1:
@@ -555,17 +567,10 @@ def parse_detail_html(
             raise SourceSchemaError(
                 "ausib.ru: procedure detail does not prove exactly one independently identified lot"
             )
-    match = profile.lot_url_re.search(detail_url)
-    if external_id is None:
-        if not match:
-            raise SourceSchemaError(f"{profile.source_id}: detail URL does not match its verified schema")
-        external_id = _external_id(profile, detail_url, match)
 
     headings = [_clean(node.get_text(" ", strip=True)) for node in soup.select("h1, h2, h3")]
     title_candidates = [item for item in headings if len(item) >= 8 and "информац" not in item.lower()]
-    title = str(ruson_fields.get("title") or "")
-    if not title:
-        title = max(title_candidates, key=len, default="")
+    title = max(title_candidates, key=len, default="")
     if not title:
         title = _label_value(
             text_value,
@@ -573,41 +578,36 @@ def parse_detail_html(
             r".{8,500}?(?=\s+(?:начальн|статус|организатор|дата|сведения)\b)",
         ) or "Лот"
 
-    asset_text = str(ruson_fields.get("asset_text") or text_value)
-    cadastral = _CADASTRAL_RE.search(asset_text)
-    vin = _VIN_RE.search(asset_text)
-    area_match = _AREA_RE.search(asset_text)
-    procedure_number = str(ruson_fields.get("procedure_number") or "") or _label_value(
+    cadastral = _CADASTRAL_RE.search(text_value)
+    vin = _VIN_RE.search(text_value)
+    area_match = _AREA_RE.search(text_value)
+    procedure_number = _label_value(
         text_value,
         r"(?:идентификационный номер|номер процедуры|информация о (?:публичном предложении|торгах))",
         r"[A-ZА-Я0-9._-]{3,40}",
     )
     case_number = _label_value(text_value, r"номер дела о банкротстве", r"[A-ZА-Я0-9/.-]{4,50}")
     area = float(area_match.group(1).replace(",", ".")) if area_match else None
-    price = ruson_fields.get("start_price") if ruson_fields else _money(text_value)
+    price = _money(text_value)
     if price is None and profile.source_id == "etp-profit.ru":
         price = profit_initial_money(text_value)
-    if price is None and profile.source_id == "rus-on.ru":
-        price = ruson_initial_money(text_value)
-    current_price = (
-        ruson_fields.get("current_price") if ruson_fields else _current_money(text_value)
-    )
+    current_price = _current_money(text_value)
     return NormalizedLot(
         external_id=external_id,
         source=profile.source_id.removesuffix(".ru").removesuffix(".com"),
         source_system=profile.source_id,
         title=title[:500],
         description=text_value[:5000],
-        category=str(ruson_fields.get("category") or _category(text_value)),
+        category=_category(text_value),
         region_slug=None,
         region_name=None,
-        address=(str(ruson_fields.get("address")) if ruson_fields.get("address") else None),
+        address=None,
         cadastral_number=cadastral.group(1) if cadastral else None,
         vin=vin.group(0).upper() if vin else None,
         area=area,
         start_price=price,
         current_price=current_price,
-        auction_status=_status(str(ruson_fields.get("status_text") or text_value)),
+        auction_status=_status(text_value),
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
@@ -615,31 +615,16 @@ def parse_detail_html(
             "complete_source_inventory": profile.complete_source_inventory,
             "safe_for_archival": profile.safe_for_archival,
             "reconcile_missing": False,
-            **({
-                "ruson_initial_price_format": ruson_fields.get("initial_price_format"),
-                "ruson_initial_price_had_currency": ruson_fields.get("initial_price_had_currency"),
-                "ruson_current_price_source": ruson_fields.get("current_price_source"),
-                "ruson_detail_template": ruson_fields.get("detail_template"),
-                "ruson_source_categories": ruson_fields.get("source_categories"),
-            } if ruson_fields else {}),
         },
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
         procedure_number=procedure_number,
         bankruptcy_case_number=case_number,
-        deposit_amount=ruson_fields.get("deposit_amount"),
-        application_start_at=ruson_fields.get("application_start_at"),
-        application_deadline=ruson_fields.get("application_deadline") or datetime_after(
+        application_deadline=datetime_after(
             text_value,
             r"(?:окончание|дата окончания)\s+(?:приема|приёма|представления)\s+заявок",
         ),
-        auction_at=ruson_fields.get("auction_at") or datetime_after(text_value, r"дата проведения"),
-        auction_timezone=("Europe/Moscow" if ruson_fields else None),
-        auction_step_amount=ruson_fields.get("auction_step_amount"),
-        auction_type=ruson_fields.get("auction_type"),
-        public_offer_schedule=ruson_fields.get("public_offer_schedule"),
-        next_interval_price=ruson_fields.get("next_interval_price"),
-        next_price_reduction_at=ruson_fields.get("next_price_reduction_at"),
+        auction_at=datetime_after(text_value, r"дата проведения"),
     )
 
 
