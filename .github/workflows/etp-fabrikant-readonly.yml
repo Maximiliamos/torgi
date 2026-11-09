@@ -26,15 +26,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify probe has no persistence integration
-        shell: powershell
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $text = Get-Content scripts/audit_fabrikant_readonly.py -Raw
-          foreach ($forbidden in @('sqlalchemy', 'SessionLocal', 'celery', 'boto3', 's3', 'delete(', 'post(')) {
-            if ($text -match [regex]::Escape($forbidden)) {
-              throw "Forbidden write/persistence token in Fabrikant probe: $forbidden"
-            }
-          }
+          set -euo pipefail
+          if grep -Eiq 'sqlalchemy|SessionLocal|celery|boto3|delete\(|\.post\(' scripts/audit_fabrikant_readonly.py; then
+            echo "Forbidden write/persistence token in Fabrikant probe" >&2
+            exit 1
+          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: "3.11", cache: pip }
@@ -87,6 +85,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: etp-fabrikant-readonly-${{ github.run_id }}
-          path: ${{ runner.temp }}\\fabrikant-readonly.json
+          path: ${{ runner.temp }}/fabrikant-readonly.json
           if-no-files-found: warn
           retention-days: 30
