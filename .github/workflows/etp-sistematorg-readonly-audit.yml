@@ -78,3 +78,71 @@ jobs:
               "status_verified": report.get("status_verified"),
           }, ensure_ascii=False, sort_keys=True))
           PY
+
+
+  home-readonly-audit:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Create isolated audit venv
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'sistematorg-audit-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -Recurse -Force $venv }
+          py -3 -m venv $venv
+          $python = Join-Path $venv 'Scripts\python.exe'
+          & $python -m pip install --upgrade pip
+          & $python -m pip install -e ".[dev]"
+
+      - name: Focused Sistematorg tests on Home
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $python = Join-Path $env:RUNNER_TEMP 'sistematorg-audit-venv\Scripts\python.exe'
+          & $python -m pytest -q tests/test_sistematorg_contract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m pytest -q tests/test_etp_sources.py -k sistematorg
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full two-pass live Sistematorg audit on Home
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $python = Join-Path $env:RUNNER_TEMP 'sistematorg-audit-venv\Scripts\python.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'sistematorg-audit.json'
+          & $python -m bankrotai.services.etp_sistematorg_price_audit --passes 2 --max-pages 1000 --max-details 30 --delay-seconds 0.25 | Tee-Object -FilePath $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Enforce Home live evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $python = Join-Path $env:RUNNER_TEMP 'sistematorg-audit-venv\Scripts\python.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'sistematorg-audit.json'
+          @'
+          import json, os
+          from pathlib import Path
+          report = json.loads(Path(os.environ["SISTEMATORG_AUDIT_JSON"]).read_text(encoding="utf-8-sig"))
+          passes = report["passes"]
+          assert len(passes) == 2, report
+          assert all(item["terminal_page"] is not None for item in passes), report
+          assert report["two_pass_identity_stable"] is True, report
+          assert passes[0]["identity_digest"] == passes[1]["identity_digest"], report
+          assert passes[0]["unique_individual_ids"] == passes[1]["unique_individual_ids"], report
+          assert report.get("details_verified", 0) >= 30, report
+          assert report.get("prices_verified", 0) >= 30, report
+          assert report.get("status_verified", 0) >= 30, report
+          assert report.get("production_database_writes") == 0, report
+          assert report.get("archival_allowed") is False, report
+          assert report.get("reconciliation_allowed") is False, report
+          assert report.get("production_enabled") is False, report
+          print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+          '@ | & $python -
+        env:
+          SISTEMATORG_AUDIT_JSON: ${{ runner.temp }}\sistematorg-audit.json
