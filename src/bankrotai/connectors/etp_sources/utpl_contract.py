@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 
@@ -24,6 +25,23 @@ _VIN = re.compile(r"(?<![A-Z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9])", re.I)
 
 def _text(value: str) -> str:
     return _SPACE.sub(" ", value.replace("\xa0", " ")).strip()
+
+
+def _datetime_after(section: str, label: str) -> datetime | None:
+    match = re.search(
+        label + r"\s*[:：]\s*(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)",
+        section,
+        re.I,
+    )
+    if match is None:
+        return None
+    raw = match.group(1)
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    return None
 
 
 def _amount(section: str, label: str) -> float | None:
@@ -175,6 +193,13 @@ def parse_utpl_detail_fields(html: str | bytes) -> dict[str, object]:
         "area": float(area_match.group(1).replace(",", ".")) if area_match else None,
         "vin": vin_match.group(0).upper() if vin_match else None,
         "address": _text(address_match.group(1)) if address_match else None,
+        "application_start": _datetime_after(
+            section, r"Дата начала представления заявок на участие"
+        ),
+        "application_deadline": _datetime_after(
+            section, r"Дата окончания представления заявок на участие"
+        ),
+        "auction_at": _datetime_after(section, r"Дата проведения"),
     }
 
 
