@@ -50,6 +50,63 @@ def ruson_initial_money(value: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
+def _arbbitlot_decimal(raw: str) -> float | None:
+    cleaned = re.sub(r"[\s\u00a0\u202f]", "", raw).replace(",", ".")
+    try:
+        amount = float(cleaned)
+    except ValueError:
+        return None
+    return amount if 0 < amount < 1e15 else None
+
+
+def _arbbitlot_labeled_amount(value: str, label: str) -> float | None:
+    match = re.search(
+        label
+        + r"\s*(?:,?\s*руб\.?)?\s*[:\-]?\s*"
+        + r"(\d[\d\s\u00a0\u202f]{0,30}(?:[.,]\d{1,2})?)",
+        value,
+        re.IGNORECASE,
+    )
+    return _arbbitlot_decimal(match.group(1)) if match else None
+
+
+def arbbitlot_detail_fields(value: str) -> dict[str, float | str | None]:
+    """Parse only explicitly labelled per-lot ARBbitLot fields."""
+    step_percent = re.search(
+        r"шаг\s*,?\s*%\s+от\s+начальн\w*\s+цен\w*\s*[:\-]?\s*"
+        r"(\d{1,3}(?:[.,]\d{1,4})?)",
+        value,
+        re.IGNORECASE,
+    )
+    deposit_percent = re.search(
+        r"(?:размер|способ\s+расч[её]та)\s+обеспечен\w*"
+        r"[^\d%]{0,80}(\d{1,3}(?:[.,]\d{1,4})?)\s*%",
+        value,
+        re.IGNORECASE,
+    )
+    trade = re.search(
+        r"информация\s+(?:об|о)\s+(?:аукцион\w*|конкурс\w*|публичн\w*\s+предложен\w*)"
+        r"\s*№\s*(\d{4,12})",
+        value,
+        re.IGNORECASE,
+    )
+    lot_number = re.search(r"информация\s+о\s+лоте\s*№\s*(\d{1,6})", value, re.IGNORECASE)
+    return {
+        "start_price": _arbbitlot_labeled_amount(value, r"начальн\w*\s+цен\w*"),
+        "current_price": _arbbitlot_labeled_amount(value, r"текущ\w*\s+цен\w*"),
+        "deposit_amount": _arbbitlot_labeled_amount(value, r"размер\s+обеспечен\w*"),
+        "deposit_percent": (
+            float(deposit_percent.group(1).replace(",", ".")) if deposit_percent else None
+        ),
+        "auction_step_amount": _arbbitlot_labeled_amount(value, r"шаг"),
+        "auction_step_percent": (
+            float(step_percent.group(1).replace(",", ".")) if step_percent else None
+        ),
+        "trade_id": trade.group(1) if trade else None,
+        "lot_number": lot_number.group(1) if lot_number else None,
+    }
+
+
 def profit_initial_money(value: str) -> float | None:
     """Profit renders a labelled decimal without a RUB suffix."""
     match = re.search(
@@ -90,6 +147,8 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     detail_start = _checked_amount(detail.start_price)
     _checked_amount(lot.current_price)
     _checked_amount(detail.current_price)
+    if lot.source_system == "arbbitlot.ru" and detail_start is None:
+        raise ValueError("arbbitlot_detail_start_price_unverified")
     if (
         listing_start is not None
         and detail_start is not None
@@ -114,6 +173,11 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     lot.application_deadline = detail.application_deadline or lot.application_deadline
     lot.auction_at = detail.auction_at or lot.auction_at
     lot.procedure_number = detail.procedure_number or lot.procedure_number
+    if lot.source_system == "arbbitlot.ru":
+        lot.deposit_amount = detail.deposit_amount
+        lot.deposit_percent = detail.deposit_percent
+        lot.auction_step_amount = detail.auction_step_amount
+        lot.auction_step_percent = detail.auction_step_percent
     lot.detail_level = "detail"
     raw = dict(lot.raw_data or {})
     raw.update({
