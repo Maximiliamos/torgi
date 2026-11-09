@@ -397,9 +397,6 @@ def _parse_multi_lot_catalogue(
 
 
 def parse_listing_html(profile: EtpSourceProfile, html: str | bytes, *, page: int = 1) -> list[NormalizedLot]:
-    if profile.source_id == "centerr.ru":
-        from bankrotai.connectors.etp_sources.centerr_contract import parse_listing
-        return parse_listing(html, page=page)
     multi_lot = _parse_multi_lot_catalogue(profile, html, page=page)
     if multi_lot is not None:
         return multi_lot
@@ -535,9 +532,6 @@ def parse_detail_html(
     detail_url: str,
     external_id: str | None = None,
 ) -> NormalizedLot:
-    if profile.source_id == "centerr.ru":
-        from bankrotai.connectors.etp_sources.centerr_contract import parse_detail
-        return parse_detail(html, detail_url=detail_url, external_id=external_id)
     soup = _parse_soup(html)
     text_value = _clean(soup.get_text(" ", strip=True))
     if len(text_value) < 80:
@@ -984,7 +978,6 @@ def connector_type(profile: EtpSourceProfile) -> type[HtmlEtpConnector]:
     ProfiledConnector.profile = profile
     if profile.source_id in {
         "etp-profit.ru", "ausib.ru", "nistp.ru", "sistematorg.com", "rus-on.ru",
-        "centerr.ru",
     }:
         ProfiledConnector.capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
