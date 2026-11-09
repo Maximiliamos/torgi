@@ -56,6 +56,12 @@ def _host_lot_url(url: str) -> tuple[str, str, str]:
     return f"{BASE}/{trade}-{lot}", trade, lot
 
 
+def detail_request_url(url: str) -> str:
+    """Map an official M-ETS lot identity to its working public detail URL."""
+    canonical, _trade, _lot = _host_lot_url(url)
+    return DETAIL_MIRROR + urlsplit(canonical).path
+
+
 def discover_lot_urls(html: str, *, limit: int = 10) -> list[str]:
     """Extract only canonical detail links from the official public catalogue."""
     if not 1 <= limit <= 50:
@@ -350,8 +356,7 @@ class MetsPublicPilot:
         # Normalize the trade/lot identity BEFORE sending any HTTP request.
         request_url = url
         if url != APARTMENTS_URL:
-            canonical, _, _ = _host_lot_url(url)
-            request_url = DETAIL_MIRROR + urlsplit(canonical).path
+            request_url = detail_request_url(url)
         if self._last_request_at is not None:
             remaining = 0.5 - (time.monotonic() - self._last_request_at)
             if remaining > 0:
