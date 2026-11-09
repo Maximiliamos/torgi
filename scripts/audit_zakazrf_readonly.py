@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from bankrotai.connectors.etp_sources import SOURCE_CONNECTOR_TYPES
+from bankrotai.connectors.etp_sources.zakazrf import ZakazRfReadonlyClient
 
 
 SOURCE_ID = "zakazrf.ru"
@@ -20,7 +20,7 @@ def _digest(ids: list[str]) -> str:
 
 
 async def _catalogue_pass(*, max_pages: int, delay_seconds: float) -> dict[str, Any]:
-    connector = SOURCE_CONNECTOR_TYPES[SOURCE_ID]()
+    connector = ZakazRfReadonlyClient()
     cursor: str | None = None
     page = 0
     ids: list[str] = []
@@ -30,7 +30,7 @@ async def _catalogue_pass(*, max_pages: int, delay_seconds: float) -> dict[str, 
     terminal = False
 
     while page < max_pages:
-        result = await connector.search({}, cursor=cursor)
+        result = await asyncio.to_thread(connector.search_page, page + 1)
         page += 1
         page_counts.append(len(result.items))
         for lot in result.items:
@@ -38,7 +38,7 @@ async def _catalogue_pass(*, max_pages: int, delay_seconds: float) -> dict[str, 
             if lot.external_id not in urls:
                 ids.append(lot.external_id)
                 urls[lot.external_id] = lot.lot_url or ""
-        cursor = result.next_cursor
+        cursor = str(result.next_page) if result.next_page is not None else None
         if cursor is not None and delay_seconds:
             await asyncio.sleep(delay_seconds)
         if cursor is None:
@@ -72,7 +72,7 @@ async def _detail_sample(ids: list[str], *, limit: int, delay_seconds: float) ->
 
     for external_id in ids[:limit]:
         try:
-            lot = await connector.fetch_lot(external_id)
+            lot = await asyncio.to_thread(connector.fetch_lot, external_id)
         except Exception as exc:  # diagnostic must preserve fail-closed evidence
             failures.append({
                 "external_id": external_id,
