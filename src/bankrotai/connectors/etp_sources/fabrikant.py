@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import re
+from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
+import requests
 from bs4 import BeautifulSoup
+
+from bankrotai.domain import NormalizedLot
 
 
 PROCEDURE_PATH_RE = re.compile(r"/v2/trades/procedure/view/([^/?#]+)(?:[/?#]|$)", re.I)
@@ -332,3 +336,125 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
             text, r"дата\s+и\s+время\s+начала\s+аукциона"
         ),
     )
+
+
+class FabrikantContractError(ValueError):
+    """Public Fabrikant HTML no longer proves the expected lot contract."""
+
+
+def parse_detail_lot(
+    profile: Any,
+    html: str | bytes,
+    *,
+    detail_url: str,
+    external_id: str | None = None,
+) -> NormalizedLot:
+    identity = lot_identity(detail_url)
+    if identity is None:
+        raise FabrikantContractError("detail URL is not an individual lot route")
+    expected_id = f"fabrikant.ru:{identity[0]}:{identity[1]}"
+    if external_id is not None and external_id != expected_id:
+        raise FabrikantContractError("detail lot identity mismatch")
+    fields = parse_detail_fields(html)
+    if not fields.title:
+        raise FabrikantContractError("individual detail title is not proven")
+    text = _clean(_soup(html).get_text(" ", strip=True))
+    status = fabrikant_status(text)[0]
+    return NormalizedLot(
+        external_id=external_id or expected_id,
+        source="fabrikant",
+        source_system=profile.source_id,
+        title=fields.title,
+        description=text[:5000],
+        category=fields.category,
+        region_slug=None,
+        region_name=None,
+        address=fields.address,
+        cadastral_number=fields.cadastral_number,
+        vin=None,
+        area=fields.area,
+        start_price=fields.start_price,
+        current_price=fields.current_price,
+        auction_status=status,
+        lot_url=detail_url,
+        source_url=detail_url,
+        detail_level="detail",
+        raw_data={
+            "complete_source_inventory": False,
+            "safe_for_archival": False,
+            "reconcile_missing": False,
+            "individual_lot_identity_verified": True,
+            "fabrikant_category_text": fields.category_text,
+            "fabrikant_source_status_text": fields.source_status_text,
+            "detail_start_price_verified": fields.start_price is not None,
+            "detail_current_price_verified": fields.current_price is not None,
+            "detail_status_verified": status != "unknown",
+        },
+        platform_name=profile.platform_name,
+        platform_code=profile.platform_code,
+        application_deadline=fields.application_deadline,
+        auction_at=fields.auction_at,
+    )
+
+
+def resolve_catalogue_page_lots(
+    profile: Any,
+    response: requests.Response,
+    *,
+    page: int,
+    read_get: Callable[[str], requests.Response],
+) -> list[NormalizedLot]:
+    """Resolve every procedure card to canonical individual lot details."""
+    procedures = procedure_urls(
+        response.content, base_url=response.url or profile.listing_url
+    )
+    if not procedures:
+        raise FabrikantContractError(
+            "no procedure cards matched the verified catalogue schema"
+        )
+
+    lots: list[NormalizedLot] = []
+    seen: set[str] = set()
+    unresolved: list[str] = []
+    for procedure_url in procedures:
+        procedure_response = read_get(procedure_url)
+        urls = lot_urls(
+            procedure_response.content,
+            base_url=procedure_response.url or procedure_url,
+        )
+        if not urls:
+            unresolved.append(procedure_url)
+            continue
+        for detail_url in urls:
+            identity = lot_identity(detail_url)
+            if identity is None:
+                continue
+            external_id = f"fabrikant.ru:{identity[0]}:{identity[1]}"
+            if external_id in seen:
+                continue
+            seen.add(external_id)
+            detail_response = read_get(detail_url)
+            detail = parse_detail_lot(
+                profile,
+                detail_response.content,
+                detail_url=detail_url,
+                external_id=external_id,
+            )
+            detail.raw_data.update({
+                "listing_page": page,
+                "catalogue_procedure_url": procedure_url,
+                "trade_id": identity[0],
+                "lot_id": identity[1],
+                "trade_level_listing": False,
+            })
+            lots.append(detail)
+
+    if unresolved:
+        raise FabrikantContractError(
+            "catalogue procedure did not expose an individual lot route"
+        )
+    if not lots:
+        raise FabrikantContractError(
+            "no individually identified lots resolved from catalogue page"
+        )
+    return lots
