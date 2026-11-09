@@ -142,6 +142,8 @@ def parse_rows(html: str) -> list[Row]:
         else:
             if PROPERTY_RE.search(text):
                 classes.add("property")
+                if lot_numbers:
+                    property_lots.extend(lot_numbers)
             if NON_PROPERTY_RE.search(text):
                 classes.add("non_property")
         status = next((marker for marker in STATUS_WORDS if marker in text.lower()), None)
@@ -283,9 +285,10 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             })
             all_rows.extend(rows)
         ids = [
-            f"{row.provider_id or 'NO_PROVIDER'}:{lot}"
+            f"{row.provider_id}:{lot}"
             for row in all_rows
-            for lot in (row.lots or (1,))
+            if row.provider_id
+            for lot in row.lots
         ]
         duplicate_ids = sorted([value for value, count in Counter(ids).items() if count > 1])
         passes.append({
@@ -296,6 +299,8 @@ def run(*, pause: float, details: int) -> dict[str, object]:
             "individual_identity_candidates": len(ids),
             "unique_identity_candidates": len(set(ids)),
             "duplicate_identity_candidates": duplicate_ids[:20],
+            "rows_without_provider_id": sum(row.provider_id is None for row in all_rows),
+            "rows_without_lot_identity": sum(not row.lots for row in all_rows),
             "digest": _digest(all_rows),
         })
         if pass_no == 1:
