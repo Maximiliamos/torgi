@@ -71,7 +71,7 @@ jobs:
             throw 'Bankruptcy/property scope is not proven'
           }
           if ($report.completeness -ne 'PROVEN_BELOW_CAP' -or
-              $report.two_pass_ids_stable -ne $true -or
+              $report.two_full_walks_stable -ne $true -or
               -not $report.terminal_page) {
             throw 'Pagination/source end is not proven'
           }
@@ -89,7 +89,7 @@ jobs:
           ("- Terminal page: {0}" -f $report.terminal_page) | Add-Content $env:GITHUB_STEP_SUMMARY
           ("- Property GoodsView IDs observed: {0}" -f $report.unique_property_goodsview_ids) | Add-Content $env:GITHUB_STEP_SUMMARY
           ("- GoodsView details verified: {0}" -f $report.details_verified) | Add-Content $env:GITHUB_STEP_SUMMARY
-          ("- Two-pass IDs stable: {0}" -f $report.two_pass_ids_stable) | Add-Content $env:GITHUB_STEP_SUMMARY
+          ("- Two full walks stable: {0}" -f $report.two_full_walks_stable) | Add-Content $env:GITHUB_STEP_SUMMARY
           ("- Multi-lot procedure examples: {0}" -f $report.multi_lot_procedure_examples.Count) | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Retain sanitized live evidence
