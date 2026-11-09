@@ -46,11 +46,24 @@ def has_next_page(profile: EtpSourceProfile, html: str | bytes, page: int) -> bo
             for node in soup.select("[onclick]")
         )
     if profile.postback_pagination:
-        return any(
+        links = [
+            node for node in soup.select("a[href]")
+            if "__doPostBack" in str(node.get("href") or "")
+        ]
+        if any(
             _clean(node.get_text(" ", strip=True)) == str(page + 1)
-            and "__doPostBack" in str(node.get("href") or "")
-            for node in soup.select("a[href]")
-        )
+            for node in links
+        ):
+            return True
+        # ETPU groups its ASP.NET pager in ten-page blocks. At the block
+        # boundary the next page is represented by the provider's own ">>"
+        # postback control instead of a visible numeric page link.
+        if profile.source_id == "etpu.ru":
+            return any(
+                _clean(node.get_text(" ", strip=True)) in {">>", "»"}
+                for node in links
+            )
+        return False
     if not profile.supports_get_pagination or not profile.page_parameter:
         return False
     expected = str(profile.first_page_value + page)
