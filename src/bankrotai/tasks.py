@@ -1111,48 +1111,24 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
             max_retries=_NATIONWIDE_BUSY_RETRY_MAX_RETRIES,
             base_delay_seconds=_NATIONWIDE_BUSY_RETRY_SECONDS,
         )
-    run_id = attempt.run_id
-
-    if _global_source_network_blocked():
-        return attempt.finalize_skip(reason="global_source_network_circuit")
-
-    try:
-        specs = scheduled_specs(mode, _unpaused_source_specs)
-    except Exception as exc:
-        return attempt.finalize_skip(
-            reason="scheduled_spec_resolution_failed",
-            details={"error": str(exc)[:1000]},
-        )
-
-    runnable = {str(spec.source_id) for spec in specs}
-    missing = sorted(SEVEN_SOURCE_IDS - runnable)
-    if missing:
-        return attempt.finalize_skip(
-            reason="required_source_not_runnable",
-            details={"missing_sources": missing},
-        )
-
-    preflight = run_scheduled_source_preflight(specs)
-    attempt.persist_preflight(preflight)
-
-    # A source-specific preflight failure is diagnostic, not a global kill
-    # switch. Each connector remains fail-closed, and the normal source result
-    # plus targeted retry path records the real failure. This prevents one ETP
-    # from turning an otherwise useful seven-source schedule into 0/7.
+    skipped, specs, preflight = attempt.prepare(
+        global_network_blocked=_global_source_network_blocked,
+        resolve_specs=lambda: scheduled_specs(mode, _unpaused_source_specs),
+        required_sources=SEVEN_SOURCE_IDS,
+        preflight_runner=run_scheduled_source_preflight,
+    )
+    if skipped is not None:
+        return skipped
+    assert specs is not None and preflight is not None
     result = _run_automatic_nationwide_refresh(
         self,
         mode=mode,
         trigger_type=attempt.trigger_type,
         total_sources=len(specs),
         retry_if_busy=True,
-        existing_run_id=run_id,
+        existing_run_id=attempt.run_id,
     )
-    warning = not bool(preflight.get("success"))
-    attempt.attach_preflight(preflight, warning=warning)
-    result["preflight"] = preflight
-    if warning:
-        result["preflight_warning"] = "source_preflight_failed"
-    return result
+    return attempt.annotate_result(result, preflight)
 
 
 @celery_app.task(
