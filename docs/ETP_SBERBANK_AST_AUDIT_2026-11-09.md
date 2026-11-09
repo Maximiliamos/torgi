@@ -1,49 +1,46 @@
 # Sberbank-AST bankruptcy source audit — 2026-11-09
 
 Source: `sberbank-ast.ru`  
-Scope: Agent 12 only  
-Base SHA: `5997d239a71e253b7dd3386820ca08002f63f071`  
+Agent scope: Sberbank-AST only  
+Original audit base: `5997d239a71e253b7dd3386820ca08002f63f071`  
+Final clean integration base: `37e4a71c0317de85fa2249f58ebaafc9239956e2`  
 Production enabled: **NO**
 
-## Previous state
+## Previous unsafe state
 
-The repository had a Sberbank-AST profile pointing at `https://www.sberbank-ast.ru/ESGoodsList.html`
-and a JSON POST implementation for `/api/Processing/main`. The request already sent
-`sourceTerm=Продажа имущества (предприятия) банкротов`, but the response parser did
-not prove that the provider actually applied that filter.
+The existing connector already POSTed to:
 
-The 2026-11-06 browser evidence explicitly recorded that:
+`https://www.sberbank-ast.ru/api/Processing/main`
 
-- the bankruptcy checkbox was unchecked in observed `ESGoodsList.html` tabs;
-- visible cards were unfiltered or belonged to privatization / lease / sale of rights;
-- `SaleBankruptProperty.html` is an informational landing, not proof of a filtered catalogue;
-- the client contract uses `targetPageCode=UtpESGoodsList`, zero-based `pagenum`,
-  default `pagesize=21`, `PurchaseList`, `Total`, and `BranchGroup`;
-- the public UI caps displayed total rows at about 10,000;
-- a bankruptcy-filtered API response, page 2, terminal page and a representative
-  GoodsView detail sample were still NOT_TESTED.
+with the public-client request shape for `UtpESGoodsList`, including
+`pagesize=21`, zero-based `pagenum` and
+`sourceTerm=Продажа имущества (предприятия) банкротов`.
 
-## Root cause
+The blocker was verification, not request construction. The old parser trusted the
+requested filter but did not verify that returned rows actually belonged to bankruptcy.
+It also classified rows from free text and treated API `Total` as a source total even
+at the public display cap.
 
-The connector trusted the requested `sourceTerm` instead of verifying the returned rows.
-A successful HTTP response containing a valid-looking GoodsView URL could therefore be
-accepted even if it came from another Sberbank-AST section.
+This allowed two unsafe interpretations:
 
-The old `healthcheck()` could report `ok` for such a response.
+1. an unfiltered/privatization response could be accepted as bankruptcy;
+2. `Total=10000` could be treated as a real terminal source total.
 
-The old pagination logic also treated `Total=10000` as an ordinary source total and would
-eventually stop there, even though the public client is known to cap visible totals around
-10,000. That could turn a display limit into a false terminal-page proof.
+## Official bankruptcy entry
 
-## Contract established in code
+The source profile now starts from the dedicated public bankruptcy route:
 
-### Catalogue request
+`https://utp.sberbank-ast.ru/Bankruptcy/NBT/Index/0/0/0/0`
 
-Read-only endpoint:
+The catalogue itself remains the public `ESGoodsList` API contract below.
+
+## Verified catalogue request contract
+
+Read-only request:
 
 `POST https://www.sberbank-ast.ru/api/Processing/main`
 
-Request contract retained from the public client implementation:
+Required request fields:
 
 - `windowCode=/ESGoodsList`
 - `actionType=MONITOR`
@@ -55,207 +52,245 @@ Request contract retained from the public client implementation:
 - zero-based `pagenum`
 - `sourceTerm=Продажа имущества (предприятия) банкротов`
 
-### Bankruptcy proof
+The request is built by
+`src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py` and is used by the
+actual registered connector, not only by tests.
 
-A catalogue row is accepted only if the returned provider fields prove:
+## Bankruptcy proof — fail closed
+
+Every returned row must prove both provider fields:
 
 - `ObjectSource == "Продажа имущества (предприятия) банкротов"`
 - `SourceTradeSectionId == "13"`
 
-If either marker is absent or different, parsing fails closed. A privatization row is not
-silently skipped as if it were valid bankruptcy output; the entire response is considered
-unverified.
+A missing or mismatching marker fails the entire page closed. A row from
+`Приватизация, аренда и продажа прав` is not silently accepted or treated as
+bankruptcy.
 
-### Property scope
+The negative regression is exercised both directly against the isolated contract and
+through `SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"]`.
 
-The bankruptcy catalogue is mixed. Real estate is accepted only when the provider's
-structured field says:
+## Structured property classification
+
+The bankruptcy catalogue can contain different asset types. TORGI accepts a property
+row only when the provider's structured category proves:
 
 `BranchGroup == "Недвижимое имущество"`
 
-Free text is not used as a substitute for this classification. Bankruptcy vehicles,
-equipment and other branches may be traversed for pagination but are not accepted as
-property lots by this source profile.
+Free text is not allowed to override this field. A row whose title says
+"земельный участок" but whose structured branch is transport is rejected from the
+property result set. Conversely, a structured real-estate row is classified as
+`real_estate` even if free text contains vehicle wording.
 
-### Lot identity
+## Stable procedure ID and individual lot ID
 
-Accepted catalogue rows must contain a trusted HTTPS URL matching:
+Individual identity comes from the exact trusted GoodsView URL:
 
 `https://utp.sberbank-ast.ru/Catalog/NBT/GoodsView/<a>/<b>/<c>/<goods_id>`
 
-The complete four-component GoodsView path is used in the external identity. Duplicate
-GoodsView identity on one API page fails closed.
+External ID:
 
-A regression test covers two rows with the same procedure number and different GoodsView
-IDs/prices, proving that prices are not copied between lots.
+`sberbank-ast.ru:<a>-<b>-<c>-<goods_id>`
 
-### Price and status
+Only HTTPS on `utp.sberbank-ast.ru` is accepted. Query strings, fragments,
+credentials, alternate ports and untrusted hosts are rejected.
+
+Sberbank-AST multi-lot codes such as:
+
+- `SBR013-2607300003-0.1`
+- `SBR013-2607300003-0.2`
+
+are split into:
+
+- procedure: `SBR013-2607300003-0`
+- individual source lot code: full value with `.N`
+- individual lot number: `N`
+
+Regression tests verify that two lots of one procedure keep distinct GoodsView IDs and
+distinct prices. A duplicate GoodsView identity on a page fails closed.
+
+## Price contract
 
 Catalogue initial price is accepted only from:
 
 1. `purchAmountRUB`; or
 2. `purchAmount` when currency is explicitly `RUB` or `643`.
 
-No current price is invented from the catalogue response.
+No catalogue current price is invented.
 
-Status comes only from the provider status fields already used by the source-specific
-normalizer. `AuctionResultDate` is not treated as auction start.
+GoodsView detail parsing distinguishes labelled:
 
-### Dates and detail
+- initial price;
+- current price;
+- deposit;
+- auction/trade step.
 
-`RequestStopDate` maps to application deadline.
+Public-offer schedule/current-price semantics are not inferred beyond fields explicitly
+present on the individual GoodsView page.
 
-Individual detail uses the GoodsView URL derived from the exact catalogue identity.
-The detail parser now verifies that the URL identity matches the requested external ID
-and rejects generic shells that do not contain enough lot/property evidence.
+## Lifecycle and dates
 
-On a valid GoodsView page the parser can extract labelled initial/current price, status,
-application deadline, auction date, address, cadastral number and area. These fields remain
-fail-closed/null when the page does not prove them.
+Sberbank-AST lifecycle text is normalized to TORGI canonical states:
 
-## Pagination and the 10,000 cap
+- `scheduled`
+- `active`
+- `paused`
+- `closed`
+- `unknown`
 
-`Total < 10000` can be used to derive the terminal page under the current API contract.
+Final states win over historic application text left visible on completed pages.
+"Приём заявок завершён" alone remains `unknown`; it is not treated as a completed
+auction.
 
-`Total >= 10000` is **not** accepted as source end. When traversal reaches the display
-boundary, the connector raises a schema error instead of claiming terminal pagination.
+Catalogue:
 
-Therefore:
+- `RequestStopDate` -> application deadline;
+- `AuctionResultDate` is deliberately **not** mapped to auction start.
 
-- source completeness above the display cap: **NOT_PROVEN**
-- missing-lot reconciliation: **disabled**
-- archival from this source: **disabled**
+GoodsView detail can prove:
 
-## Read-only probe
+- application start;
+- application deadline;
+- auction/trade date.
 
-Added:
+## GoodsView detail contract
 
-`scripts/audit_sberbank_ast_bankruptcy_readonly.py`
+The registered connector derives GoodsView from the exact catalogue external ID and
+re-verifies identity before accepting detail HTML.
 
-The probe:
+A generic/informational shell is rejected. A valid individual property card can provide:
 
-- performs no persistence;
-- checks page 1, page 2 and derived terminal page when `Total < 10000`;
-- can walk all pages with `--full` only below the display cap;
-- supports two passes and compares page-ID digests;
-- can verify up to the requested number of individual GoodsView details;
-- emits only a sanitized evidence summary;
-- never enables reconciliation or production.
+- initial/current price;
+- status;
+- application start/end;
+- auction date;
+- address;
+- cadastral number;
+- area;
+- deposit;
+- step;
+- bankruptcy case number;
+- procedure/lot code;
+- public-offer marker when explicitly visible.
 
-Recommended operator command:
+The detail parser is wired into
+`SOURCE_CONNECTOR_TYPES["sberbank-ast.ru"].fetch_lot()` and the source exposes
+`detail_enrichment`.
 
-`python scripts/audit_sberbank_ast_bankruptcy_readonly.py --passes 2 --details 30 --full`
+## Pagination and the 10,000 display cap
 
-## Live read-only recheck on 2026-11-09
+Page size is fixed to the observed public contract: 21.
 
-The official public navigation still exposes the bankruptcy-property section. During this
-agent session, direct retrieval of the dynamic `ESGoodsList.html` / filtered
-`/api/Processing/main` response and GoodsView HTML was not available through the
-read-only web environment.
+For `Total < 10000`:
 
-Accordingly, this PR does **not** claim a new live filtered two-pass walk or 30 live
-GoodsView details from 2026-11-09.
+- terminal page is `ceil(Total / 21)`;
+- every non-terminal page must contain exactly 21 raw provider rows;
+- terminal page must contain the exact remainder;
+- a page beyond terminal is rejected;
+- full-walk raw-row count must therefore equal API `Total`.
 
-Current live evidence status:
+For `Total >= 10000`:
 
-| Check | Result |
-| --- | --- |
-| Official bankruptcy section exists | OBSERVED |
-| Exact filtered API response captured on 2026-11-09 | NOT_PROVEN |
-| Page 1 filtered bankruptcy response | NOT_PROVEN |
-| Page 2 filtered bankruptcy response | NOT_PROVEN |
-| Terminal page below cap | NOT_PROVEN |
-| Source end above 10,000 | NOT_PROVEN by design |
-| Two full read-only passes | NOT_PROVEN |
-| 30 live GoodsView details | NOT_PROVEN |
-| GoodsView identity schema | Supported by prior repository evidence and guarded in code |
-| Production acceptance | NO |
+- `Total` is recorded only as `api_total_reported`;
+- it is **not** exposed as `total_items`;
+- `api_total_is_source_end=false`;
+- `terminal_page=None`;
+- short pages before a proven source end fail closed;
+- reaching the display boundary raises an error instead of claiming completeness.
 
-The source-specific probe is the required mechanism for collecting the missing operator
-evidence without weakening the parser.
+Therefore completeness above the display cap remains **NOT_PROVEN** until an official
+beyond-cap paging/search mechanism is established.
+
+Missing-lot reconciliation and archival remain disabled.
+
+## Two-pass live evidence probe
+
+`scripts/probe_sberbank_ast_live_raw.py` is standalone and can be piped into the
+trusted Home worker without installing the branch into production.
+
+It performs no database writes and no authenticated/provider mutations.
+
+When `Total < 10000` it:
+
+- walks every catalogue page twice;
+- requires both full walks to have the same API total and ordered page digests;
+- requires each walk's raw-row count to equal API `Total`;
+- checks the exact terminal-page remainder;
+- collects unique property GoodsView IDs;
+- checks up to 30 individual GoodsView details;
+- records sanitized field-presence evidence and multi-lot examples.
+
+When the source reports the public display cap, it remains fail-closed and reports
+completeness as not proven.
+
+A second operator script,
+`scripts/audit_sberbank_ast_bankruptcy_readonly.py`, exercises the isolated
+source contract directly with `--passes 2 --details 30 --full`.
+
+## CI
+
+`.github/workflows/etp-sberbank-ast-readonly-contract.yml` contains three checks:
+
+1. exact-head isolated source-contract tests **plus registry integration tests**;
+2. trusted Home read-only live contract;
+3. GitHub-hosted public-network probe as a non-authoritative diagnostic fallback.
+
+The Home job is authoritative for live acceptance. The hosted fallback may be blocked by
+provider/network policy and is therefore diagnostic only.
 
 ## Regression coverage
 
-Added/updated tests cover:
+The final branch covers:
 
-- returned bankruptcy markers are mandatory;
-- privatization / wrong section fails closed;
-- structured `BranchGroup` controls property scope;
-- free-text property words cannot turn a vehicle branch into real estate;
-- two lots of one procedure retain distinct GoodsView IDs and distinct prices;
-- duplicate GoodsView ID fails closed;
-- `Total=10000` is not terminal source end;
-- request contains the bankruptcy source term;
-- explicit RUB price precedence;
-- GoodsView catalogue/detail identity match;
-- labelled GoodsView price/current price/dates/cadastre/area extraction.
+- canonical bankruptcy entry route;
+- exact bankruptcy request filter;
+- missing/wrong bankruptcy markers -> fail closed;
+- privatization response -> fail closed through the real registry connector;
+- structured property classification precedence;
+- trusted GoodsView identity;
+- duplicate GoodsView identity;
+- procedure/individual-lot split for `.N` codes;
+- independent prices for multi-lot procedures;
+- explicit RUB price rules;
+- canonical lifecycle precedence;
+- application start/end and auction date;
+- address/cadastre/area;
+- generic GoodsView shell rejection;
+- catalogue/detail identity mismatch;
+- API Total/page row-count consistency;
+- 10,000 display cap not exposed as source end;
+- real registry search, healthcheck and fetch_lot integration.
 
-## Files changed by this agent
+## Final branch diff scope
 
-Final diff against current `main` after source isolation:
+Required integration files:
 
+- `src/bankrotai/connectors/etp_sources/common.py`
+- `src/bankrotai/connectors/etp_sources/profiles.py`
 - `src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
+- `tests/test_etp_sources.py`
 - `tests/test_sberbank_ast_contract.py`
 - `tests/fixtures/sberbank_ast/catalogue_bankruptcy_real_estate.json`
 - `tests/fixtures/sberbank_ast/goodsview_detail.html`
 - `scripts/audit_sberbank_ast_bankruptcy_readonly.py`
 - `scripts/probe_sberbank_ast_live_raw.py`
 - `.github/workflows/etp-sberbank-ast-readonly-contract.yml`
-- `docs/ETP_SBERBANK_AST_AUDIT_2026-11-09.md`
+- this audit document.
 
-Integration-owned shared-file diff: **NONE**.
+No scheduler, production allowlist, missing-lot reconciliation, archival,
+`docs/ROADMAP.md`, or global parser checklist is enabled/changed by Agent 12.
 
-No scheduler, production allowlist, reconciliation, archival, `docs/ROADMAP.md`, or
-`ETP_PARSER_STAGE_CHECKLIST.md` change is included.
+## Acceptance state
 
-## Isolation review
+Code contract: **IMPLEMENTED**  
+Registry integration: **IMPLEMENTED**  
+Negative bankruptcy regression: **IMPLEMENTED**  
+10,000 fail-closed behavior: **IMPLEMENTED**  
+Production scheduling: **DISABLED**  
+Missing-lot reconciliation: **DISABLED**  
+Production archival: **DISABLED**
 
-Source-specific module:
-`src/bankrotai/connectors/etp_sources/sberbank_ast_contract.py`
-
-The module now owns the Sberbank-AST-specific request builder, bankruptcy-filter verification,
-structured real-estate classification, pagination/display-cap rules, GoodsView identity,
-procedure/lot-code split, initial/current price rules, status normalization, dates, address,
-cadastre, area, deposit/step labels, detail validation and source-specific digests.
-
-Shared files modified by final PR diff: **NONE**.
-
-- `common.py`: no changes in this PR. The legacy Sberbank-AST dispatcher code already present
-  in `main` is intentionally left for the centralized integration PR; this PR adds no
-  source-specific behaviour there.
-- `pagination.py`: NONE.
-- `profiles.py`: NONE.
-- `source_specific.py`: NONE.
-- `direct_etp_catalogue.py`: NONE.
-
-### Integration hook required
-
-A later centralized integration PR should replace the legacy Sberbank-AST branches in
-`common.py` with calls to the isolated contract:
-
-1. catalogue request: `sberbank_ast_contract.build_catalogue_request(page)`;
-2. catalogue response: `sberbank_ast_contract.parse_catalogue_page(payload, page=page)`;
-3. detail URL: `sberbank_ast_contract.detail_url_from_external_id(external_id)`;
-4. detail parsing: `sberbank_ast_contract.parse_detail(html, detail_url=..., external_id=...)`.
-
-No other shared behaviour is required by this source module.
-
-Existing work preserved: **YES**  
-Live evidence/probes preserved: **YES**  
-Regression tests preserved: **YES**  
-PRODUCTION ENABLED: **NO**
-
-## Remaining limitations
-
-1. A fresh official bankruptcy-filtered API capture is still required from an environment
-   that can execute the public client request.
-2. The read-only probe must be run against at least page 1, page 2 and terminal page, then
-   two-pass digests compared.
-3. At least 30 live GoodsView property details must be checked when available.
-4. If the API reports 10,000 or more, an official paging/search mechanism beyond the public
-   display cap must be established before completeness can be claimed.
-5. Public-offer current-price semantics require live examples before any additional
-   schedule-specific field mapping is added.
-6. Production acceptance is a separate review.
+Fresh live counts are recorded in the PR body from the exact-head workflow; this document
+does not fabricate them before the workflow completes.
 
 **PRODUCTION ENABLED: NO**
