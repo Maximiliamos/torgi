@@ -1,0 +1,94 @@
+name: Manual reported-source refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Public source to refresh after a verified parser fix
+        required: true
+        type: choice
+        options:
+          - rus-on.ru
+          - sistematorg.com
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reported-parser-source-refresh
+  cancel-in-progress: false
+
+jobs:
+  queue-refresh:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    steps:
+      - name: Require main exact SHA
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.ref }}' -ne 'refs/heads/main') {
+            throw "This operator workflow may run only from main; got ${{ github.ref }}"
+          }
+
+      - name: Checkout exact requested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify deployed worker exact SHA
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $running = docker ps --filter "name=^/$worker$" --format '{{.Names}}'
+          if ($running -ne $worker) { throw 'Canonical ingestion worker is unavailable' }
+
+          $expected = '${{ github.sha }}'
+          $image = (docker inspect $worker --format '{{.Config.Image}}').Trim()
+          if ($image -notlike "*:$expected") {
+            throw "Ingestion worker image does not match requested SHA: $image expected *:$expected"
+          }
+
+      - name: Queue one source-scoped durable refresh
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $source = '${{ inputs.source }}'
+          $py = @'
+          import json
+          import os
+          from bankrotai.services.ingestion import SyncAlreadyRunningError
+          from bankrotai.tasks import schedule_nationwide_lot_sync
+
+          source = os.environ["REPORTED_SOURCE"]
+          allowed = {"rus-on.ru", "sistematorg.com"}
+          if source not in allowed:
+              raise SystemExit(f"unsupported reported source: {source}")
+
+          try:
+              run_id = schedule_nationwide_lot_sync(
+                  triggered_by="manual-reported-source-refresh",
+                  mode=f"source:{source}",
+              )
+          except SyncAlreadyRunningError as exc:
+              raise SystemExit(
+                  f"active nationwide ingestion already owns the durable lease: {exc.run_id}"
+              ) from exc
+
+          print(json.dumps({
+              "source": source,
+              "run_id": run_id,
+              "mode": "source-full",
+              "reconcile_missing": False,
+          }, ensure_ascii=False))
+          '@
+          $env:REPORTED_SOURCE = $source
+          $result = @($py | docker exec -i -e REPORTED_SOURCE=$source $worker python - 2>&1)
+          if ($LASTEXITCODE -ne 0) {
+            $result | ForEach-Object { Write-Output $_ }
+            throw 'Could not queue source-scoped refresh'
+          }
+          $result | ForEach-Object { Write-Output $_ }
