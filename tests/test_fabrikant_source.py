@@ -39,6 +39,24 @@ class IsolatedFabrikantConnector(FabrikantConnector):
     profile = FABRIKANT_PROFILE
 
 
+
+
+
+def test_registered_fabrikant_connector_uses_individual_lot_profile() -> None:
+    from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES
+
+    registered = SOURCE_CONNECTOR_TYPES["fabrikant.ru"]
+    source_profile = next(item for item in PROFILES if item.source_id == "fabrikant.ru")
+    procedure = "https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A"
+    lot = "https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-A/LOT-A"
+
+    assert issubclass(registered, FabrikantConnector)
+    assert source_profile.lot_url_re.search(procedure) is None
+    assert source_profile.lot_url_re.search(lot) is not None
+    assert source_profile.detail_url_template.endswith("/{identity_path}")
+    assert source_profile.detail_id_separator == "/"
+
+
 class FakeResponse:
     def __init__(self, content: bytes, url: str, status_code: int = 200) -> None:
         self.content = content
