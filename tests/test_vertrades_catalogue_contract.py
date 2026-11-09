@@ -97,3 +97,17 @@ def test_page_urls_and_terminal_signal_require_explicit_same_origin_next_page():
         1,
     ) is True
     assert has_next_catalogue_page("<a href='/bidding?page=4'>4</a>", 4) is False
+
+
+
+def test_utf8_catalogue_bytes_ignore_stale_legacy_meta_charset():
+    html = _catalogue().replace(
+        "<html><body>",
+        "<html><head><meta charset='windows-1251'></head><body>",
+    ).encode("utf-8")
+    lots = parse_catalogue_page(html, page=1)
+    assert [lot.external_id for lot in lots] == [
+        "vertrades.ru:102259678:1",
+        "vertrades.ru:102259678:2",
+        "vertrades.ru:102259682:4",
+    ]
