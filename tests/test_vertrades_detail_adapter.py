@@ -136,7 +136,7 @@ def test_conflicting_catalogue_price_fails_closed_before_mutation():
     connector = DirectVertradesConnector(session=session)
     item = listing(price=20_000.0)
     with pytest.raises(SourceSchemaError, match="listing and individual detail price differ"):
-        asyncio.run(connector.enrich_lot(item))
+        asyncio.run(enrich_vertrades_lot(connector, item))
     assert item.detail_level == "search"
 
 
