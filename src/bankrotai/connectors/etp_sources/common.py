@@ -830,9 +830,11 @@ class HtmlEtpConnector(AuctionConnector):
                     f"{self.source_id}: {_SBER_DISPLAY_LIMIT} is a public display cap, not a proven source end"
                 )
             next_cursor = str(page + 1) if page * _SBER_PAGE_SIZE < total else None
+            total_items = total if total < _SBER_DISPLAY_LIMIT else None
         else:
             lots = parse_listing_html(self.profile, response.content, page=page)
             total = None
+            total_items = None
             next_cursor = str(page + 1) if lots and _has_next_page(self.profile, response.content, page) else None
         structurally_valid_empty_sber_page = bool(
             self.profile.api_kind == "sberbank_ast"
@@ -868,7 +870,7 @@ class HtmlEtpConnector(AuctionConnector):
             "source": self.source_id,
             "page": page,
             "items_on_page": len(lots),
-            "total_items": total,
+            "total_items": total_items,
             "complete_source_inventory": self.profile.complete_source_inventory,
             "safe_for_archival": self.profile.safe_for_archival,
             "reconcile_missing": False,
@@ -877,7 +879,8 @@ class HtmlEtpConnector(AuctionConnector):
             **({
                 "bankruptcy_filter_verified": True,
                 "property_scope": _SBER_REAL_ESTATE_BRANCH,
-                "api_total": total,
+                "api_total_reported": total,
+                "api_total_is_source_end": bool(total < _SBER_DISPLAY_LIMIT),
                 "display_cap": _SBER_DISPLAY_LIMIT,
                 "terminal_page_proven": bool(next_cursor is None and total < _SBER_DISPLAY_LIMIT),
             } if self.profile.api_kind == "sberbank_ast" else {}),
