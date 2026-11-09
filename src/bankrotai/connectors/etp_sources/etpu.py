@@ -711,6 +711,92 @@ def parse_filter_contract(html: str | bytes) -> dict[str, Any]:
     }
 
 
+def _selected_option_value(select: Tag) -> str:
+    selected = select.find("option", selected=True)
+    if not isinstance(selected, Tag):
+        selected = select.find("option")
+    return str(selected.get("value") or "") if isinstance(selected, Tag) else ""
+
+
+def _successful_search_form_data(form: Tag) -> dict[str, str]:
+    """Collect only browser-successful ASP.NET state and public search controls."""
+    data = {
+        str(node.get("name")): str(node.get("value") or "")
+        for node in form.select("input[type=hidden][name]")
+    }
+    for node in form.select("input[name]"):
+        name = str(node.get("name") or "")
+        field_type = str(node.get("type") or "text").lower()
+        if not name or SEARCH_CRITERIA_MARKER not in name:
+            continue
+        if field_type in {"submit", "button", "image", "file", "password"}:
+            continue
+        if field_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+            continue
+        data[name] = str(node.get("value") or "")
+    for node in form.select("select[name]"):
+        name = str(node.get("name") or "")
+        if name and SEARCH_CRITERIA_MARKER in name:
+            data[name] = _selected_option_value(node)
+    return data
+
+
+def _status_select(form: Tag) -> Tag:
+    node = form.find("select", attrs={"name": STATUS_FILTER_FIELD})
+    if not isinstance(node, Tag):
+        raise EtpuSchemaError("etpu.ru: official status filter disappeared")
+    return node
+
+
+def _verify_status_option(form: Tag, status_filter: EtpuStatusFilter) -> None:
+    select = _status_select(form)
+    options = {
+        str(option.get("value") or ""): normalize_text(option.get_text(" ", strip=True))
+        for option in select.select("option")
+    }
+    if options.get(status_filter.value) != status_filter.text:
+        raise EtpuSchemaError(
+            "etpu.ru: official status filter option changed for "
+            f"{status_filter.value}:{status_filter.text}"
+        )
+
+
+def selected_status_filter(html: str | bytes) -> EtpuStatusFilter | None:
+    soup = parse_soup(html)
+    form = soup.find("form")
+    if not isinstance(form, Tag):
+        raise EtpuSchemaError("etpu.ru: catalogue filter form disappeared")
+    select = _status_select(form)
+    selected = select.find("option", selected=True)
+    if not isinstance(selected, Tag):
+        return None
+    return EtpuStatusFilter(
+        str(selected.get("value") or ""),
+        normalize_text(selected.get_text(" ", strip=True)),
+    )
+
+
+def build_filter_request(
+    html: str | bytes,
+    *,
+    current_url: str,
+    status_filter: EtpuStatusFilter,
+) -> EtpuPostbackRequest:
+    soup = parse_soup(html)
+    form = soup.find("form")
+    if not isinstance(form, Tag):
+        raise EtpuSchemaError("etpu.ru: catalogue filter form disappeared")
+    method = str(form.get("method") or "get").strip().lower()
+    if method != "post":
+        raise EtpuSchemaError("etpu.ru: official search form is no longer POST")
+    _verify_status_option(form, status_filter)
+    data = _successful_search_form_data(form)
+    data[STATUS_FILTER_FIELD] = status_filter.value
+    data[SEARCH_BUTTON_FIELD] = "Искать торги"
+    action = urljoin(current_url or LISTING_URL, str(form.get("action") or ""))
+    return EtpuPostbackRequest(action=_safe_url(action), data=data)
+
+
 def _postback_links(soup: BeautifulSoup) -> list[Tag]:
     return [
         node
@@ -771,10 +857,8 @@ def build_next_request(
         raise EtpuSchemaError(f"etpu.ru: invalid page {target_page} postback")
     form = link.find_parent("form") or soup.find("form")
     root = form if isinstance(form, Tag) else soup
-    data = {
-        str(node.get("name")): str(node.get("value") or "")
-        for node in root.select("input[type=hidden][name]")
-    }
+    data = _successful_search_form_data(root)
+    data.pop(SEARCH_BUTTON_FIELD, None)
     data["__EVENTTARGET"], data["__EVENTARGUMENT"] = postback.groups()
     action = str(form.get("action") or "") if isinstance(form, Tag) else ""
     return EtpuPostbackRequest(
