@@ -53,7 +53,9 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
                 str((lot.raw_data or {}).get("region_code") or lot.region_name or lot.region_slug or "")
             ) or (existing.region_code if existing is not None else None)
         ),
-        "address": lot.address,
+        # A later shallow catalogue hit must not erase an authoritative
+        # address already recovered from that same lot's verified detail.
+        "address": lot.address or (existing.address if existing is not None else None),
         "cadastral_number": lot.cadastral_number,
         "cadastral_numbers": lot.raw_data.get("cadastral_numbers"),
         "vin": lot.vin,
