@@ -88,6 +88,10 @@ def repair_property_addresses(
     if not apply or not repairs:
         return result
 
+    # The read-only plan may spend time validating evidence. Drop ORM snapshots
+    # before the write phase so a concurrent GEO/source worker cannot be
+    # overwritten by stale in-memory state.
+    session.expire_all()
     now = utc_now()
     ids = [int(item["lot_id"]) for item in repairs]
     processed = {
