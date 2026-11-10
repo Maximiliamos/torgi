@@ -102,13 +102,7 @@ jobs:
           $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\bidexpert_detail_probe.py'
           $source = Get-Content -LiteralPath $path -Encoding UTF8 -Raw
           $sourceB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($source))
-          $runner = @'
-import base64
-import os
-
-source = base64.b64decode(os.environ["BIDEXPERT_PROBE_B64"]).decode("utf-8")
-exec(compile(source, "bidexpert_detail_probe.py", "exec"), globals())
-'@
+          $runner = 'import base64,os; source=base64.b64decode(os.environ["BIDEXPERT_PROBE_B64"]).decode("utf-8"); exec(compile(source,"bidexpert_detail_probe.py","exec"),globals())'
           $ErrorActionPreference = 'Continue'
           $result = $runner |
             docker exec -e PYTHONIOENCODING=utf-8 -e BIDEXPERT_PROBE_B64=$sourceB64 -i bankrotai-home-ingestion-worker python - 2>&1
