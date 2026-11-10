@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from bankrotai.scrapers import TorgiGovClient, TorgiGovSearchFilters
+from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSearchFilters
 
 
 def test_torgi_client_can_use_a_bounded_egress_base_url():
     client = TorgiGovClient(base_url="https://proxy.example.test/torgi/")
 
     assert client.SEARCH_ENDPOINT == "https://proxy.example.test/torgi/new/api/public/lotcards/search"
+    assert client.DETAIL_ENDPOINT == "https://proxy.example.test/torgi/new/api/public/lotcards"
     assert client.FALLBACK_LIST_URL == "https://proxy.example.test/torgi/new/public/lots/reg"
 
 
