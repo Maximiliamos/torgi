@@ -1732,11 +1732,14 @@ class PhotonGeocoder:
                 house = normalize_house(str(props.get("housenumber") or ""))
                 if expected_locality and expected_locality not in locality_text:
                     continue
-                if expected_street and street and expected_street not in street.casefold():
+                # A street-level or settlement-level centroid must not be
+                # published as a precise apartment/house coordinate. Photon
+                # may return a plausible feature with no housenumber at all.
+                if expected_street and (not street or expected_street not in street.casefold()):
                     continue
                 if expected_region and state and normalize_region_code(state) != expected_region:
                     continue
-                if expected_house and house and house != expected_house:
+                if expected_house and (not house or house != expected_house):
                     continue
                 haystack = " ".join(str(value) for value in props.values()).casefold()
                 score = sum(token in haystack for token in expected)
