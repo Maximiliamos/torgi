@@ -1498,16 +1498,22 @@ def _geocode_pending_lots_unlocked(
                     ProcessedLot.address.isnot(None),
                 ),
                 pending_filter,
-                or_(
-                    GeoFailure.id.is_(None),
-                    and_(
-                        GeoFailure.status.not_in(("terminal", *_DEFERRED_STATUSES)),
-                        or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
-                    ),
-                    and_(
-                        GeoFailure.status.in_(_DEFERRED_STATUSES),
-                        ProcessedLot.geo_input_hash.is_(None),
-                    ),
+                *(
+                    ()
+                    if target_lot_ids
+                    else (
+                        or_(
+                            GeoFailure.id.is_(None),
+                            and_(
+                                GeoFailure.status.not_in(("terminal", *_DEFERRED_STATUSES)),
+                                or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
+                            ),
+                            and_(
+                                GeoFailure.status.in_(_DEFERRED_STATUSES),
+                                ProcessedLot.geo_input_hash.is_(None),
+                            ),
+                        ),
+                    )
                 ),
             )
             .order_by(
@@ -1529,6 +1535,8 @@ def _geocode_pending_lots_unlocked(
     result: dict[str, Any] = {
         "strategy_version": _GEO_STRATEGY_VERSION,
         "strategy_requeued": strategy_requeued,
+        "targeted_operator_override": bool(target_lot_ids),
+        "target_lot_count": len(target_lot_ids),
         "queued": len(items),
         "processed": 0,
         "geocoded": 0,
