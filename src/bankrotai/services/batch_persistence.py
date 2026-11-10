@@ -13,6 +13,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.services.detail_freshness import compare_source_values
 from bankrotai.logic import (
     _canonical_key,
+    _normalized_region_identity,
     _raw_value,
     _to_datetime,
     _to_decimal,
@@ -33,6 +34,7 @@ class BatchPersistenceStats:
 
 
 def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) -> dict[str, Any]:
+    canonical_region_code, canonical_region_name = _normalized_region_identity(lot)
     auction_status = lot.auction_status
     normalized_status = normalize_status(auction_status)
     now = utc_now()
@@ -44,14 +46,19 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         "title": lot.title,
         "description": lot.description,
         "category": lot.category,
-        "region_slug": lot.region_slug,
-        "region_name": lot.region_name,
-        # Persist the normalized code in the processed projection too.
-        # Missing incoming codes must not erase existing valid region metadata.
+        "region_slug": (
+            lot.region_slug or canonical_region_code
+            or (existing.region_slug if existing is not None else None)
+        ),
+        "region_name": (
+            canonical_region_name
+            or (existing.region_name if existing is not None else None)
+        ),
+        # Per-asset cadastral identity outranks a retrieval-page/source hint.
+        # Missing incoming evidence must not erase an existing valid code.
         "region_code": (
-            normalize_region_code(
-                str((lot.raw_data or {}).get("region_code") or lot.region_name or lot.region_slug or "")
-            ) or (existing.region_code if existing is not None else None)
+            canonical_region_code
+            or (existing.region_code if existing is not None else None)
         ),
         # A later shallow catalogue hit must not erase an authoritative
         # address already recovered from that same lot's verified detail.
@@ -112,6 +119,7 @@ def _source_values(
     existing: SourceLot | None = None,
 ) -> dict[str, Any]:
     raw = lot.raw_data or {}
+    canonical_region_code, canonical_region_name = _normalized_region_identity(lot)
     now = utc_now()
     status = normalize_status(lot.auction_status)
     is_active = existing.is_active if existing is not None else True
@@ -137,8 +145,8 @@ def _source_values(
         "title": lot.title,
         "description": lot.description,
         "category": lot.category,
-        "region_code": normalize_region_code(str(raw.get("region_code") or lot.region_name or lot.region_slug or "")),
-        "region_name": lot.region_name,
+        "region_code": canonical_region_code,
+        "region_name": canonical_region_name,
         "address": lot.address,
         "cadastral_number": lot.cadastral_number,
         "start_price": _to_decimal(lot.start_price),
