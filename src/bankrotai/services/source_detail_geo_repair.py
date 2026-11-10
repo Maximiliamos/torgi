@@ -76,6 +76,7 @@ def source_detail_geo_repair_plan(
         if reason:
             rejected.append({"lot_id": lot_id, "reason": reason})
             continue
+        assert current is not None
         accepted.append({
             "lot_id": lot_id,
             "fill_address": not bool((current.address or "").strip()) and bool(detail.address),
