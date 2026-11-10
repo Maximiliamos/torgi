@@ -1,4 +1,5 @@
 name: Torgi Russia Home live read-only recovery diagnostic
+# One-shot PR trigger for post-fix production verification; no production code changes.
 on:
   pull_request:
     branches: [main]
