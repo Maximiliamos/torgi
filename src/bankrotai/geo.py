@@ -1932,13 +1932,18 @@ def validate_geocoding_result(
     if named_region and canonical_region and named_region != canonical_region:
         return False, "region_code_name_mismatch"
 
-    expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
     expected_locality = expected_locality_name(address)
     if expected_locality and observed_text and expected_locality not in observed_text:
         return False, "locality_name_mismatch"
+    # City-distance anchors are valid only for an explicitly parsed locality.
+    # A city token elsewhere in free-form prose may be an owner/organizer name
+    # (for example "Газпромнефть-Ярославль"), not the property's location.
+    city_context = expected_locality
+    if (canonical_region or named_region) in {"77", "78"}:
+        city_context += f" {region_name or ''}".casefold()
     for city_key, (city_lat, city_lon, max_distance) in CITY_SANITY_ANCHORS.items():
-        if city_key in expected_text:
+        if city_key in city_context:
             if distance_between(result.lat, result.lon, city_lat, city_lon) > max_distance:
                 return False, "city_distance_mismatch"
             if observed_text and city_key not in observed_text:
