@@ -1154,7 +1154,17 @@ def build_geocoding_address_candidates(
     region_name: str | None = None,
 ) -> list[str]:
     """Build conservative Nominatim queries from Russian auction-card addresses."""
-    value = (address or "").strip()
+    from bankrotai.services.property_address_evidence import (
+        prefer_evidenced_property_address,
+    )
+
+    # Historical rows may still carry a seller/organizer address while the
+    # asset's own title or description specifies its true street and building.
+    # The evidence helper operates on asset-scoped fields only, requires an
+    # explicit address label and rejects contradictory cadastral regions.
+    value = (prefer_evidenced_property_address(
+        address, title=title, description=description,
+    ) or "").strip()
     address_is_incomplete = is_incomplete_address(value)
     if (not value or address_is_incomplete) and (title or description):
         # Keep this fallback aligned with extractors.extract_address so that
@@ -1799,6 +1809,18 @@ def resolve_lot_geo(
         cadastral_candidates.append(normalized)
         if len(cadastral_candidates) >= 5:
             break
+
+    if not region_name and cadastral_candidates:
+        from bankrotai.regions import REGIONS_BY_CODE
+
+        cadastral_regions = {
+            candidate.split(":", 1)[0]
+            for candidate in cadastral_candidates if ":" in candidate
+        }
+        if len(cadastral_regions) == 1:
+            definition = REGIONS_BY_CODE.get(next(iter(cadastral_regions)))
+            if definition is not None:
+                region_name = definition.name
 
     address_candidates = build_geocoding_address_candidates(
         address,
