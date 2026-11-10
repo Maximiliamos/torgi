@@ -11,7 +11,7 @@ from sqlalchemy import String, asc, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
-from bankrotai.regions import normalize_region_code
+from bankrotai.regions import REGIONS_BY_CODE, normalize_region_code
 from bankrotai.db import (
     LotGeoSnapshot,
     LotPriceEvent,
@@ -142,6 +142,36 @@ def _normalized_lot_cadastral_numbers(normalized: NormalizedLot) -> set[str]:
     elif extra:
         values.extend(re.findall(r"\d{1,2}\s*:\s*\d{1,2}\s*:\s*\d{4,10}\s*:\s*\d+", str(extra)))
     return {cleaned for value in values if (cleaned := _clean_cadastral(value))}
+
+
+def _normalized_region_identity(normalized: NormalizedLot) -> tuple[str | None, str | None]:
+    """Return a canonical region code/name, preferring cadastral identity."""
+    raw = normalized.raw_data if isinstance(normalized.raw_data, dict) else {}
+    supplied_code = normalize_region_code(
+        str(raw.get("region_code") or normalized.region_slug or normalized.region_name or "")
+    )
+    cadastral_codes = {
+        cad.split(":", 1)[0].zfill(2)
+        for cad in _normalized_lot_cadastral_numbers(normalized)
+        if ":" in cad
+    }
+    cadastral_code = (
+        next(iter(cadastral_codes))
+        if len(cadastral_codes) == 1
+        and next(iter(cadastral_codes)) in REGIONS_BY_CODE
+        else None
+    )
+    code = cadastral_code or supplied_code
+    if code is None:
+        return None, normalized.region_name
+
+    supplied_name_code = normalize_region_code(normalized.region_name)
+    if supplied_name_code == code and normalized.region_name:
+        name = normalized.region_name
+    else:
+        definition = REGIONS_BY_CODE.get(code)
+        name = definition.name if definition is not None else normalized.region_name
+    return code, name
 
 
 def _processed_lot_cadastral_numbers(lot: ProcessedLot) -> set[str]:
@@ -723,6 +753,7 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
     return True
 
 def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: bool = False) -> ProcessedLot:
+    normalized_region_code, normalized_region_name = _normalized_region_identity(normalized)
     source_link = session.scalar(select(SourceLot).where(
         SourceLot.source_system == normalized.source_system,
         SourceLot.external_id == normalized.external_id,
@@ -745,8 +776,9 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
             title=normalized.title,
             description=normalized.description,
             category=normalized.category,
-            region_slug=normalized.region_slug,
-            region_name=normalized.region_name,
+            region_slug=normalized.region_slug or normalized_region_code,
+            region_code=normalized_region_code,
+            region_name=normalized_region_name,
             address=normalized.address,
             cadastral_number=normalized.cadastral_number,
             cadastral_numbers=normalized.raw_data.get("cadastral_numbers"),
@@ -799,11 +831,18 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
                 frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
+                processed.region_code,
                 processed.region_name,
             )
             processed.title = normalized.title
             processed.description = normalized.description
             processed.category = normalized.category
+            if normalized_region_code is not None:
+                processed.region_code = normalized_region_code
+                processed.region_slug = normalized.region_slug or normalized_region_code
+                processed.region_name = normalized_region_name or processed.region_name
+            elif not processed.region_name and normalized_region_name:
+                processed.region_name = normalized_region_name
             processed.address = normalized.address or processed.address
             processed.cadastral_number = normalized.cadastral_number or processed.cadastral_number
             if normalized.raw_data.get("cadastral_numbers"):
@@ -836,6 +875,7 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
                 frozenset(_processed_lot_cadastral_numbers(processed)),
                 processed.title,
                 processed.description,
+                processed.region_code,
                 processed.region_name,
             )
             if current_geo_input != previous_geo_input:
