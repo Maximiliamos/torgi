@@ -22,6 +22,23 @@ def html_with_meta(records, *, total):
     return f"<html><main></main><script>self.__next_f.push({script})</script></html>"
 
 
+def html_with_detail_lot(record):
+    # Mirrors the current Next.js detail shape: the lot is nested under a
+    # component "lot" property and key order does not start with id/title.
+    ordered = {
+        "pictures": record.get("pictures", []),
+        "status": record.get("status", {"id": 1, "title": "Идёт приём заявок"}),
+        "begin_offer_time": record.get("begin_offer_time"),
+        **record,
+    }
+    flight = "25:" + json.dumps(
+        ["$", "$L7f", None, {"lot": ordered}],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    script = json.dumps([1, flight], ensure_ascii=False)
+    return f"<html><main></main><script>self.__next_f.push({script})</script></html>"
+
+
 class FakeResponse:
     status_code = 200
     url = "https://xn----etbpba5admdlad.xn--p1ai/search?page=1"
@@ -91,6 +108,25 @@ def test_bad_lot_record_reports_safe_rejection_reason():
     assert "unknown_parser_drop" not in metadata["quarantine_reasons"]
 
 
+def test_detail_lot_payload_is_extracted_independent_of_json_key_order():
+    record = {
+        "id": 7266197,
+        "title": "",
+        "region": {"id": 36, "title": "Воронежская область"},
+        "start_price": 35612.46,
+        "current_price": 35612.46,
+        "source_links": [{"link": "https://m-ets.ru/242937-2"}],
+    }
+    records = TorgiRussiaClient._extract_public_lot_records(
+        html_with_detail_lot(record), require_linked=False,
+    )
+
+    assert len(records) == 1
+    assert records[0]["id"] == 7266197
+    assert records[0]["title"] == ""
+    assert records[0]["source_links"][0]["link"] == "https://m-ets.ru/242937-2"
+
+
 def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
     search_record = {
         "id": 7266197,
@@ -140,6 +176,58 @@ def test_empty_title_is_recovered_only_from_matching_official_mets_detail():
     assert lots[0].raw_data["title_evidence_canonical_url"] == mets_url
     assert lots[0].raw_data["title_evidence_external_id"] == "242937-2"
     assert session.urls == [search_url, detail_url, mets_public_url]
+
+
+def test_empty_title_recovery_falls_back_from_mets_spinner_to_canonical():
+    search_record = {
+        "id": 7266197,
+        "title": "",
+        "region_title": "Воронежская область",
+        "start_price": 35612.46,
+        "current_price": 35612.46,
+        "status": {"title": "Идёт приём заявок"},
+    }
+    detail_record = {
+        **search_record,
+        "region": {"id": 36, "title": "Воронежская область"},
+        "source_links": [{"link": "https://m-ets.ru/242937-2", "title": "Лот на ЭТП"}],
+    }
+    detail_html = html_with_detail_lot(detail_record)
+    placeholder = (
+        '<html><head><meta name="robots" content="noindex, noarchive"></head>'
+        '<body><div class="gorizontal-vertikal">'
+        '<img src="data:image/gif;base64,R0lGODlhQgBCAAAA"></div></body></html>'
+    )
+    mets_html = (
+        '<html><head><meta itemprop="sku" content="242937-МЭТС-2"></head><body>'
+        '<h2 class="lot-title">Земельный участок 600 кв. м</h2>'
+        '<div>Идентификационный номер: 242937-МЭТС-2</div>'
+        '<div class="lot-cost-item price"><div class="value">35 612,46 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Торги в стадии приема заявок</div></div>'
+        '<span itemprop="description">Земельный участок в Воронежской области</span>'
+        '</body></html>'
+    )
+    search_url = "https://xn----etbpba5admdlad.xn--p1ai/search"
+    detail_url = "https://xn----etbpba5admdlad.xn--p1ai/lot/7266197"
+    mirror_url = "https://meetings.m-ets.ru/242937-2"
+    canonical_url = "https://m-ets.ru/242937-2"
+    session = RoutedSession({
+        search_url: html_with_meta([search_record], total=1),
+        detail_url: detail_html,
+        mirror_url: placeholder,
+        canonical_url: mets_html,
+    })
+
+    lots, metadata = TorgiRussiaClient(session=session).search_lots(
+        TorgiRussiaSearchFilters(region_id=36)
+    )
+
+    assert metadata["quarantined_records"] == 0
+    assert lots[0].title == "Земельный участок 600 кв. м"
+    assert lots[0].raw_data["title_evidence_url"] == canonical_url
+    assert session.urls == [search_url, detail_url, mirror_url, canonical_url]
 
 
 def test_empty_title_fallback_rejects_mets_price_mismatch():
