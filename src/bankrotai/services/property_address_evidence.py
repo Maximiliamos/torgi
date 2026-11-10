@@ -38,6 +38,11 @@ _LEGAL_TAIL = re.compile(
 
 def _clean_address(value: str) -> str:
     value = _LEGAL_TAIL.split(value, maxsplit=1)[0]
+    value = re.split(
+        r"\.\s+(?=(?:Площадь|Общая\s+площадь|Начальная\s+цена|"
+        r"Назначение|Категория|Обременения)\b)",
+        value, maxsplit=1, flags=re.IGNORECASE,
+    )[0]
     return " ".join(value.split()).strip(" ,.;:-")[:350]
 
 
