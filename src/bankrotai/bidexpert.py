@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.extractors import extract_address, extract_cadastral_numbers
 from bankrotai.logic import classify_category
+from bankrotai.regions import REGIONS_BY_CODE, region_code_from_text
 from bankrotai.scraper_contracts import BidExpertSearchFilters, parse_money
 
 
@@ -119,15 +120,25 @@ class BidExpertClient:
             deadline_node = card.select_one(".application-submit-end span")
             deadline = self._parse_moscow_datetime(deadline_node.get_text(" ", strip=True) if deadline_node else "")
             address = extract_address(title)
+            region_code = (
+                numbers[0].split(":", 1)[0].zfill(2)
+                if numbers
+                else region_code_from_text(title)
+            )
+            region_name = (
+                REGIONS_BY_CODE[region_code].name
+                if region_code in REGIONS_BY_CODE
+                else None
+            )
             result.append(NormalizedLot(
                 external_id=f"bidexpert:{match.group(1)}", source="bidexpert", source_system="bidexpert.ru",
                 title=title[:500], description=title[:5000], category=classify_category(title, title),
-                region_slug=(numbers[0].split(":", 1)[0].zfill(2) if numbers else None), region_name=None,
+                region_slug=region_code, region_name=region_name,
                 address=address,
                 cadastral_number=numbers[0] if numbers else None, vin=None, area=None,
                 start_price=price, current_price=None,
                 auction_status="active", lot_url=href, source_url=href, detail_level="search",
-                raw_data={"cadastral_numbers": numbers, "application_deadline": deadline.isoformat() if deadline else None, "raw_endpoint": endpoint, "source_category": filters.category},
+                raw_data={"cadastral_numbers": numbers, "region_code": region_code, "application_deadline": deadline.isoformat() if deadline else None, "raw_endpoint": endpoint, "source_category": filters.category},
                 application_deadline=deadline,
             ))
         return result
