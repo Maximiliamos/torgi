@@ -1,0 +1,79 @@
+name: GEO P0 read-only census and provider diagnostics
+
+on:
+  push:
+    branches:
+      - fix/geo-source-address-evidence-20261110
+    paths:
+      - '.github/workflows/geo-p0-readonly.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: geo-p0-readonly-census
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    if: github.repository == 'Maximiliamos/torgi'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Wait until other backup runs are no longer in progress
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            'Authorization' = "Bearer $env:GH_TOKEN"
+            'Accept' = 'application/vnd.github+json'
+          }
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100"
+          $free = $false
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
+            $runs = @((Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 20).workflow_runs)
+            $activeBackup = @($runs | Where-Object {
+              $_.name -eq 'Phase 3 Lite backup and restore drill' -and
+              $_.id -ne $env:GITHUB_RUN_ID
+            })
+            if ($activeBackup.Count -eq 0) { $free = $true; break }
+            Start-Sleep -Seconds 20
+          }
+          if (-not $free) { throw 'Backup still running; P0 census declined to compete with restore drill' }
+
+      - name: Read-only census, Photon and NSPD probes
+        shell: powershell
+        run: |
+          .\scripts\run-geo-p0-readonly.ps1 -OutputDirectory "$env:RUNNER_TEMP\geo-p0"
+
+      - name: Print anonymous aggregate summary
+        if: always()
+        shell: powershell
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP 'geo-p0\geo-p0-census.json'
+          if (-not (Test-Path -LiteralPath $file)) { exit 0 }
+          $r = Get-Content -LiteralPath $file -Encoding UTF8 -Raw | ConvertFrom-Json
+          Write-Host "P0_UNMAPPED_ACTIVE=$($r.active_or_scheduled_unmapped)"
+          Write-Host "P0_UNMAPPED_ALL=$($r.nonarchived_unduplicated_unmapped)"
+          Write-Host "P0_PRIMARY_CAUSES=$($r.primary_causes_active_exclusive | ConvertTo-Json -Compress -Depth 12)"
+          Write-Host "P0_INPUT_COUNTS=$($r.by_input | ConvertTo-Json -Compress -Depth 12)"
+          Write-Host "P0_SOURCES=$($r.by_source | ConvertTo-Json -Compress -Depth 16)"
+          $provider = Join-Path $env:RUNNER_TEMP 'geo-p0\geo-p0-providers.json'
+          if (Test-Path -LiteralPath $provider) {
+            $p = Get-Content -LiteralPath $provider -Encoding UTF8 -Raw | ConvertFrom-Json
+            Write-Host "P0_PROVIDER_HEALTH=$($p.checks | ConvertTo-Json -Compress -Depth 12)"
+          }
+
+      - name: Upload redacted GEO P0 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: geo-p0-readonly-${{ github.run_id }}
+          path: ${{ runner.temp }}\geo-p0\*.json
+          if-no-files-found: ignore
+          retention-days: 30
