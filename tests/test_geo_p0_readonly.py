@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 import json
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 from unittest.mock import Mock
 
-from scripts.geo_p0_readonly import classify_failure, summarize_rows
-import scripts.geo_p0_provider_probe as probes
+
+def _script_module(name: str, filename: str):
+    path = Path(__file__).resolve().parents[1] / "scripts" / filename
+    spec = spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+census = _script_module("geo_p0_readonly_test", "geo_p0_readonly.py")
+probes = _script_module("geo_p0_provider_probe_test", "geo_p0_provider_probe.py")
+classify_failure = census.classify_failure
+summarize_rows = census.summarize_rows
 
 
 def row(
