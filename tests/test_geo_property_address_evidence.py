@@ -196,3 +196,40 @@ def test_torgi_gov_dash_label_and_semicolon_metadata_are_parsed():
     )
     assert "кадастровый номер" not in address.casefold()
     assert "1072" not in address
+
+
+def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER, "_search_nspd_geoportal",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def local_geocoder(address: str, *, allow_nominatim: bool = True):
+        calls.append(address)
+        assert "Московская область" in address
+        return CadastralObjectResult(
+            query=address,
+            address="Московская область, Раменский район, д. Першино",
+            lat=55.3,
+            lon=38.2,
+            source="photon",
+            confidence="high",
+        )
+
+    monkeypatch.setattr(geo.CADASTRAL_GEOCODER, "search_by_address", local_geocoder)
+    result = geo.resolve_lot_geo(
+        cadastral_number="50:23:0050563:2759",
+        address="Российская Федерация, Московская область, р-н Раменский, д. Першино",
+        title="Земельный участок 600 м², Московская обл., Раменский р-н, д. Першино",
+        description=(
+            "Земельный участок площадью 600 кв.м, кадастровый номер "
+            "50:23:0050563:2759. Адрес: Российская Федерация, Московская область, "
+            "р-н Раменский, д. Першино"
+        ),
+        region_name="Ярославская область",  # stale listing-page hint
+        region_code="50",
+        bulk=True,
+    )
+    assert result and result.lat == 55.3
+    assert calls
