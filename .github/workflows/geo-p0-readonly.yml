@@ -66,6 +66,7 @@ jobs:
           Write-Host "P0_INPUT_COUNTS=$($r.by_input | ConvertTo-Json -Compress -Depth 12)"
           Write-Host "P0_SOURCES=$($r.by_source | ConvertTo-Json -Compress -Depth 16)"
           Write-Host "P0_SOURCE_CAUSE_SAMPLES=$($r.sample_lot_ids_by_source_and_cause | ConvertTo-Json -Compress -Depth 16)"
+          Write-Host "P0_SOURCE_CAUSE_REFS=$($r.sample_public_refs_by_source_and_cause | ConvertTo-Json -Compress -Depth 16)"
           $provider = Join-Path $env:RUNNER_TEMP 'geo-p0\geo-p0-providers.json'
           if (Test-Path -LiteralPath $provider) {
             $p = Get-Content -LiteralPath $provider -Encoding UTF8 -Raw | ConvertFrom-Json

@@ -16,6 +16,7 @@ import json
 import re
 import sys
 from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import func, or_, select, text
 
@@ -43,6 +44,22 @@ def input_type(address: Any, cadastral: Any) -> str:
     if has_address:
         return "address_only"
     return "no_stored_input"
+
+
+def safe_public_url(value: Any) -> str | None:
+    """Keep only bounded public HTTP(S) URLs; never emit credentials/fragments."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))[:500]
 
 
 def classify_failure(status: Any, message: Any) -> tuple[str, list[str], list[str]]:
@@ -122,9 +139,15 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
     sample_ids_by_source_cause: dict[str, dict[str, list[int]]] = defaultdict(
         lambda: defaultdict(list)
     )
+    sample_refs_by_source_cause: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for row in rows:
-        (lot_id, source, region, region_name, status, address, cadastre, title, description,
-         failure_status, failure_message) = row
+        (
+            lot_id, source, external_id, lot_url, source_url,
+            region, region_name, status, address, cadastre, title, description,
+            failure_status, failure_message,
+        ) = row
         total += 1
         status = str(status or "unknown")
         active_now = status in _ACTIVE
@@ -175,8 +198,14 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
         if active_now:
             source_key = str(source or "unknown")
             source_samples = sample_ids_by_source_cause[source_key][cause]
+            source_refs = sample_refs_by_source_cause[source_key][cause]
             if len(source_samples) < 5:
                 source_samples.append(int(lot_id))
+                source_refs.append({
+                    "lot_id": int(lot_id),
+                    "external_id": str(external_id or "")[:160],
+                    "public_url": safe_public_url(lot_url) or safe_public_url(source_url),
+                })
     return {
         "nonarchived_unduplicated_unmapped": total,
         "active_or_scheduled_unmapped": active,
@@ -203,6 +232,10 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
         "sample_lot_ids_by_source_and_cause": {
             source: {cause: ids for cause, ids in sorted(causes.items())}
             for source, causes in sorted(sample_ids_by_source_cause.items())
+        },
+        "sample_public_refs_by_source_and_cause": {
+            source: {cause: refs for cause, refs in sorted(causes.items())}
+            for source, causes in sorted(sample_refs_by_source_cause.items())
         },
         "crosscheck_primary_cause_total": sum(by_cause.values()),
     }
@@ -237,6 +270,9 @@ def run() -> dict[str, Any]:
             select(
                 ProcessedLot.id,
                 ProcessedLot.source_system,
+                ProcessedLot.external_id,
+                ProcessedLot.lot_url,
+                ProcessedLot.source_url,
                 ProcessedLot.region_code,
                 ProcessedLot.region_name,
                 ProcessedLot.auction_status,
@@ -266,7 +302,7 @@ def run() -> dict[str, Any]:
         session.rollback()  # explicitly end read-only transaction
     return {
         "report": "geo_p0_census",
-        "schema_version": "2",
+        "schema_version": "3",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "read_only": True,
         "no_provider_requests": True,

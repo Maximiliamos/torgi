@@ -28,7 +28,8 @@ def row(
     failure_status=None, failure_message=None,
 ):
     return (
-        pk, source, None, None, status, address, cad, title,
+        pk, source, f"external-{pk}", f"https://{source}/lot/{pk}", None,
+        None, None, status, address, cad, title,
         description, failure_status, failure_message,
     )
 
@@ -91,6 +92,13 @@ def test_p0_full_population_exclusive_buckets_and_no_raw_leaks():
     assert result["sample_lot_ids_by_source_and_cause"]["two.test"] == {
         "source_detail_required": [2],
     }
+    assert result["sample_public_refs_by_source_and_cause"]["two.test"] == {
+        "source_detail_required": [{
+            "lot_id": 2,
+            "external_id": "external-2",
+            "public_url": "https://two.test/lot/2",
+        }],
+    }
     assert result["provider_attempt_sources"] == {"photon": 1, "nspd_cadastral": 1}
     output = json.dumps(result, ensure_ascii=False)
     assert "Садовая" not in output and "Тверская" not in output
@@ -145,3 +153,11 @@ def test_p0_probes_discard_raw_http_payloads(monkeypatch):
     assert "PRIVATE SAMPLE" not in serialized
     assert len(calls) == 2
     assert calls[1][1]["verify"] is not False
+
+def test_p0_public_url_never_emits_credentials_or_fragment():
+    assert census.safe_public_url("https://user:pass@example.test/lot/1#secret") is None
+    assert census.safe_public_url("file:///tmp/private") is None
+    assert census.safe_public_url("https://example.test/lot/1?q=2#fragment") == (
+        "https://example.test/lot/1?q=2"
+    )
+
