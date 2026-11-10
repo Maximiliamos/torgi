@@ -236,7 +236,7 @@ def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(mon
     assert calls
 
 
-def test_explicit_source_coordinates_are_used_before_provider_lookup(monkeypatch):
+def test_explicit_source_coordinates_are_used_before_provider_lookup_without_cadastre(monkeypatch):
     address = (
         "Ярославская область, Ростовский р-н, вблизи деревни Краснораменье, "
         "56.997880; 38.924942"
@@ -252,7 +252,7 @@ def test_explicit_source_coordinates_are_used_before_provider_lookup(monkeypatch
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Photon should not be called")),
     )
     result = geo.resolve_lot_geo(
-        cadastral_number="76:13:031301:92",
+        cadastral_number=None,
         address=address,
         region_name="Ярославская область",
         bulk=True,
@@ -261,4 +261,40 @@ def test_explicit_source_coordinates_are_used_before_provider_lookup(monkeypatch
     assert result.source == "source_coordinates"
     assert result.lat == 56.99788
     assert result.lon == 38.924942
+    assert result.attempts[-1]["reason"] == "validated"
+
+
+def test_explicit_source_coordinates_do_not_bypass_cadastral_identity(monkeypatch):
+    address = (
+        "Ярославская область, Ростовский р-н, вблизи деревни Краснораменье, "
+        "56.997880; 38.924942"
+    )
+    expected = "76:13:031301:92"
+    nspd = CadastralObjectResult(
+        query=expected,
+        cadastral_number=expected,
+        address="Ярославская область, Ростовский р-н, деревня Краснораменье",
+        lat=56.99791,
+        lon=38.92497,
+        source="nspd",
+        confidence="high",
+    )
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER, "_search_nspd_geoportal",
+        lambda value, *_args, **_kwargs: nspd if value == expected else None,
+    )
+    result = geo.resolve_lot_geo(
+        cadastral_number=expected,
+        address=address,
+        region_name="Ярославская область",
+        bulk=True,
+    )
+    assert result is nspd
+    assert result.source == "nspd"
+    assert result.attempts[0] == {
+        "source": "source_coordinates",
+        "valid": False,
+        "reason": "cadastral_confirmation_required",
+    }
+    assert result.attempts[-1]["source"] == "nspd_cadastral"
     assert result.attempts[-1]["reason"] == "validated"
