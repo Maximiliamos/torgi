@@ -15,6 +15,13 @@ def extract_catalogue_address(value: str) -> str | None:
         flags=re.IGNORECASE,
     )[0]
     address = re.split(
+        r",?\s*(?:кадастров(?:ый|ые)\s*(?:\([^)]{1,30}\)\s*)?"
+        r"номер(?:а)?|к\s*[\\/]\s*н)\s*:?",
+        address,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    address = re.split(
         r"(?=,\s*(?:кв(?:артира)?|пом(?:ещение)?|офис|комн(?:ата)?)\.?\s*\d+\b)",
         address,
         maxsplit=1,
