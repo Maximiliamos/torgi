@@ -145,29 +145,35 @@ def _normalized_lot_cadastral_numbers(normalized: NormalizedLot) -> set[str]:
 
 
 def _normalized_region_identity(normalized: NormalizedLot) -> tuple[str | None, str | None]:
-    """Return a canonical region code/name, preferring cadastral identity."""
+    """Return canonical region identity without hiding source/cadastre conflicts.
+
+    Explicit per-lot normalized source evidence wins when present. Cadastral
+    district identity fills missing region metadata, but does not silently
+    overwrite a contradictory source claim; GEO validation must see that
+    contradiction and fail closed.
+    """
     raw = normalized.raw_data if isinstance(normalized.raw_data, dict) else {}
-    supplied_code = normalize_region_code(
-        str(raw.get("region_code") or normalized.region_slug or normalized.region_name or "")
-    )
+    raw_code = normalize_region_code(str(raw.get("region_code") or ""))
+    name_code = normalize_region_code(normalized.region_name)
+    slug_code = normalize_region_code(normalized.region_slug)
+    supplied_code = raw_code or name_code or slug_code
+
     cadastral_codes = {
         code
         for cad in _normalized_lot_cadastral_numbers(normalized)
         if (code := region_code_from_cadastral_number(cad)) is not None
     }
     cadastral_code = next(iter(cadastral_codes)) if len(cadastral_codes) == 1 else None
-    code = cadastral_code or supplied_code
+    code = supplied_code or cadastral_code
     if code is None:
         return None, normalized.region_name
 
-    supplied_name_code = normalize_region_code(normalized.region_name)
-    if supplied_name_code == code and normalized.region_name:
+    if name_code == code and normalized.region_name:
         name = normalized.region_name
     else:
         definition = REGIONS_BY_CODE.get(code)
         name = definition.name if definition is not None else normalized.region_name
     return code, name
-
 
 def _processed_lot_cadastral_numbers(lot: ProcessedLot) -> set[str]:
     values: list[Any] = [lot.cadastral_number]
