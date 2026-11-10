@@ -461,7 +461,6 @@ class TorgiRussiaClient:
         flight = cls._extract_next_flight_text(html)
         initial_lots = cls._extract_named_json_value(flight, "initialLots")
         records: dict[int, dict] = {}
-
         def add_record(item) -> None:
             if not isinstance(item, dict) or not isinstance(item.get("id"), int):
                 return
@@ -474,10 +473,8 @@ class TorgiRussiaClient:
                 return
             if "start_price" in item or "current_price" in item:
                 records[item["id"]] = item
-
         for item in initial_lots if isinstance(initial_lots, list) else ():
             add_record(item)
-
         cursor, marker = 0, '"lot":'
         while (start := flight.find(marker, cursor)) >= 0:
             value_start = start + len(marker)
@@ -487,9 +484,6 @@ class TorgiRussiaClient:
                 cursor = value_start
                 continue
             add_record(item)
-
-        # Compatibility fallback for early/new variants that embed the same
-        # objects under a generic component property rather than initialLots.
         for match in LOT_OBJECT_START_RE.finditer(flight):
             raw_object = cls._extract_balanced_json_object(flight, match.start())
             if raw_object is None:
@@ -499,11 +493,6 @@ class TorgiRussiaClient:
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             add_record(item)
-
-        # The SSR payload can contain unrelated widgets. Keep only records that
-        # are also represented by a public /lot/{id} link when the DOM exposes
-        # such links. This preserves the search result set while avoiding JSON
-        # objects from hidden/global data.
         soup = BeautifulSoup(html, "html.parser")
         linked_ids: set[int] = set()
         for anchor in soup.select("a[href*='/lot/']"):
@@ -513,7 +502,6 @@ class TorgiRussiaClient:
                 linked_ids.add(int(link_match.group(1)))
         if require_linked and linked_ids:
             records = {key: value for key, value in records.items() if key in linked_ids}
-
         return list(records.values())
 
     @staticmethod
