@@ -560,3 +560,23 @@ def test_phase3_health_treats_open_source_circuit_as_unavailable() -> None:
     assert checks["source-circuit:torgi.gov.ru"]["severity"] == "warning"
     assert checks["source-circuit:torgi.gov.ru"]["last_error_category"] == "http_5xx"
 
+
+
+def test_recovery_workflows_reuse_backup_and_surface_retention_backlog() -> None:
+    root = Path(__file__).resolve().parents[1]
+    backup = (root / ".github" / "workflows" / "phase3-lite-backup.yml").read_text(
+        encoding="utf-8"
+    )
+    p2 = (root / "scripts" / "p2-production-maintenance.ps1").read_text(
+        encoding="utf-8"
+    )
+    tasks = (root / "src" / "bankrotai" / "tasks.py").read_text(encoding="utf-8")
+
+    assert "inputs:" in backup
+    assert "force:" in backup
+    assert "Reusing fresh restore-verified schema-matching backup" in backup
+    assert "source_schema_revision" in backup
+    assert "SELECT version_num FROM alembic_version LIMIT 1" in backup
+    assert "map-retention-backlog" in p2
+    assert "tile_budget_exhausted" in p2
+    assert '"schedule": crontab(minute=37)' in tasks
