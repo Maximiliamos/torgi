@@ -209,8 +209,15 @@ class LotOnlineClient:
         page_text = " ".join((description, self._detail_text(soup.title)))
         # A generic detail-page "Адрес" may belong to the seller or
         # auction venue. The full lot description identifies the property.
+        # A generic "Адрес" label may describe a seller or organizer.
+        # Prefer the lot's own description and product title, both scoped to
+        # the exact opened asset, before any generic labelled fallback.
+        title_text = self._detail_text(soup.title)
         address = self._compact_property_address(
-            extract_address(description) or labelled.get("адрес") or extract_address(page_text)
+            extract_address(description)
+            or extract_address(title_text)
+            or labelled.get("адрес")
+            or extract_address(page_text)
         )
         cadastral_numbers = extract_cadastral_numbers(page_text)
         if not cadastral_numbers:
