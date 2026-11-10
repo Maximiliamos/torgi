@@ -11,7 +11,7 @@ from sqlalchemy import String, asc, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
-from bankrotai.regions import REGIONS_BY_CODE, normalize_region_code
+from bankrotai.regions import REGIONS_BY_CODE, normalize_region_code, region_code_from_cadastral_number
 from bankrotai.db import (
     LotGeoSnapshot,
     LotPriceEvent,
@@ -151,16 +151,11 @@ def _normalized_region_identity(normalized: NormalizedLot) -> tuple[str | None, 
         str(raw.get("region_code") or normalized.region_slug or normalized.region_name or "")
     )
     cadastral_codes = {
-        cad.split(":", 1)[0].zfill(2)
+        code
         for cad in _normalized_lot_cadastral_numbers(normalized)
-        if ":" in cad
+        if (code := region_code_from_cadastral_number(cad)) is not None
     }
-    cadastral_code = (
-        next(iter(cadastral_codes))
-        if len(cadastral_codes) == 1
-        and next(iter(cadastral_codes)) in REGIONS_BY_CODE
-        else None
-    )
+    cadastral_code = next(iter(cadastral_codes)) if len(cadastral_codes) == 1 else None
     code = cadastral_code or supplied_code
     if code is None:
         return None, normalized.region_name
