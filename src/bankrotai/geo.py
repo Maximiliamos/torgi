@@ -28,6 +28,7 @@ from bankrotai.services.geo_cadastral_properties import (
 from bankrotai.services.geo_address_candidates import (
     build_geocoding_address_candidates,
     extract_best_numbered_address,
+    extract_explicit_source_coordinates,
     is_incomplete_address,
 )
 from bankrotai.services.geo_resilience import (
@@ -1718,6 +1719,28 @@ def resolve_lot_geo(
             if valid and not result.address and address_candidates:
                 result.address = address_candidates[0]
         return result if valid else None
+
+    explicit_coordinates = extract_explicit_source_coordinates(address)
+    if explicit_coordinates is not None:
+        lat, lon = explicit_coordinates
+        direct_result = CadastralObjectResult(
+            query=address or "",
+            address=address,
+            lat=lat,
+            lon=lon,
+            source="source_coordinates",
+            confidence="high",
+        )
+        accepted_direct = accept(
+            direct_result,
+            "source_coordinates",
+            expected_cadastral_number=(
+                cadastral_candidates[0] if cadastral_candidates else cadastral_number
+            ),
+            validation_address=address,
+        )
+        if accepted_direct:
+            return accepted_direct
 
     for candidate_index, candidate in enumerate(cadastral_candidates):
         nspd_source = "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt"
