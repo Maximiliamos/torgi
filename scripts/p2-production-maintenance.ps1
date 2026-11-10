@@ -121,6 +121,23 @@ if ($LASTEXITCODE -ne 0 -or -not $mapJson) {
         apply = $mapApply
         candidate_dataset_count = $candidateCount
     }
+    if ($mapApply) {
+        $remainingCandidateCount = if ($null -ne $mapRetention.remaining_candidate_dataset_count) {
+            [int]$mapRetention.remaining_candidate_dataset_count
+        } else {
+            0
+        }
+        $tileBudgetExhausted = [bool]$mapRetention.tile_budget_exhausted
+        Add-Check -Name 'map-retention-backlog' `
+            -Ok ($remainingCandidateCount -eq 0 -and -not $tileBudgetExhausted) `
+            -Severity 'warning' `
+            -Details @{
+                remaining_candidate_dataset_count = $remainingCandidateCount
+                deleted_dataset_count = [int]($mapRetention.deleted_dataset_count)
+                deleted_tile_count = [long]($mapRetention.deleted_tile_count)
+                tile_budget_exhausted = $tileBudgetExhausted
+            }
+    }
 }
 
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
