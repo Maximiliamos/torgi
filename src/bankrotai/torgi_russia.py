@@ -466,9 +466,8 @@ class TorgiRussiaClient:
                 return
             if not isinstance(item.get("title"), str):
                 return
-            if not isinstance(item.get("region"), dict) and not isinstance(
-                item.get("region_title"), str
-            ):
+            region, region_title = item.get("region"), item.get("region_title")
+            if not isinstance(region, dict) and not isinstance(region_title, str):
                 return
             if "start_price" in item or "current_price" in item:
                 records[item["id"]] = item
