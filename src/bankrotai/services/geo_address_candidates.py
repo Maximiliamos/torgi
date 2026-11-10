@@ -227,3 +227,25 @@ def is_incomplete_address(value: str | None) -> bool:
         )
     )
 
+
+
+_COORDINATE_PAIR = re.compile(
+    r"(?<![\\d.])([4-8]\\d(?:[.,]\\d{4,8}))\\s*;\\s*"
+    r"((?:1[0-7]\\d|[2-9]\\d)(?:[.,]\\d{4,8}))(?![\\d.])"
+)
+
+
+def extract_explicit_source_coordinates(value: str | None) -> tuple[float, float] | None:
+    """Return an explicit source-published WGS84 pair from an asset address.
+
+    Accept only a narrow lat-semicolon-lon form and Russian geographic bounds.
+    This is intentionally not a generic number-pair parser.
+    """
+    if not value:
+        return None
+    for match in _COORDINATE_PAIR.finditer(value):
+        lat = float(match.group(1).replace(",", "."))
+        lon = float(match.group(2).replace(",", "."))
+        if 40.0 <= lat <= 82.0 and 19.0 <= lon <= 180.0:
+            return lat, lon
+    return None
