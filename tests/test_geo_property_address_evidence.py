@@ -229,7 +229,7 @@ def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(mon
             "р-н Раменский, д. Першино"
         ),
         region_name="Ярославская область",  # stale listing-page hint
-        region_code="50",
+        region_code="76",  # stale persisted code too
         bulk=True,
     )
     assert result and result.lat == 55.3
