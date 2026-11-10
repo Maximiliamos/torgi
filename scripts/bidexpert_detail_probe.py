@@ -16,15 +16,24 @@ PROPERTY_HINT = re.compile(r"(?:кадастр|адрес|местонахожд
 
 def probe(lot_id: str) -> dict:
     url = BASE.format(lot_id)
-    response = requests.get(
-        url,
-        headers={
-            "User-Agent": "BankrotAI-readonly-detail-probe/1.0",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-        },
-        timeout=(10, 30),
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "BankrotAI-readonly-detail-probe/1.0",
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            },
+            timeout=(10, 30),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        response = getattr(exc, "response", None)
+        return {
+            "lot_id": lot_id,
+            "status": "transport_failed",
+            "error_type": type(exc).__name__,
+            "http_status": getattr(response, "status_code", None),
+        }
     soup = BeautifulSoup(response.text, "lxml")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     evidence = []
