@@ -155,6 +155,29 @@ def prefer_evidenced_property_address(
         return stored_address
     if not stored_address:
         return evidenced
+
+    # A stored generic/source address from another cadastral region cannot
+    # outrank property-scoped evidence merely because it contains a street and
+    # house. This is a common failure mode when debtor/organizer addresses are
+    # persisted into a lot. The cadastral prefix is independent identity
+    # evidence, so fail away from the conflicting stored address.
+    cad_region = None
+    cad_match = re.fullmatch(
+        r"(\d{2}):\d{1,2}:\d{5,9}:\d{1,12}",
+        (cadastral_number or "").strip(),
+    )
+    if cad_match:
+        cad_region = normalize_region_code(cad_match.group(1))
+    stored_region = region_code_from_text(stored_address)
+    evidenced_region = region_code_from_text(evidenced)
+    if (
+        cad_region
+        and stored_region
+        and stored_region != cad_region
+        and (not evidenced_region or evidenced_region == cad_region)
+    ):
+        return evidenced
+
     if property_address_precision(evidenced) >= 8:
         return evidenced
     return stored_address

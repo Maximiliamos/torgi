@@ -138,3 +138,20 @@ def test_cadastre_supplies_region_to_resolver_with_mocked_providers(monkeypatch)
     assert result and result.lat == 59.0
     assert calls
     assert all("Ленинградская область" in call for call in calls)
+
+def test_cadastral_region_rejects_conflicting_stored_generic_address():
+    stored = "г. Москва, ул. Тверская, д. 1"
+    title = (
+        "Земельный участок, расположенный по адресу: Тюменская область, "
+        "Тюменский муниципальный округ, с. Луговое"
+    )
+    chosen = prefer_evidenced_property_address(
+        stored,
+        title=title,
+        cadastral_number="72:17:1313001:252",
+    )
+    assert chosen == (
+        "Тюменская область, Тюменский муниципальный округ, с. Луговое"
+    )
+    assert "Москва" not in chosen
+
