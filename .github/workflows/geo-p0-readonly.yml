@@ -1,4 +1,5 @@
 name: GEO P0 read-only census and provider diagnostics
+# Repeatable diagnostic: source probes classify transport failures without DB writes.
 
 on:
   workflow_dispatch:
