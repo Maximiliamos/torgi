@@ -473,8 +473,10 @@ class TorgiRussiaClient:
                 return
             if "start_price" in item or "current_price" in item:
                 records[item["id"]] = item
-        for item in initial_lots if isinstance(initial_lots, list) else ():
-            add_record(item)
+        if isinstance(initial_lots, list):
+            for item in initial_lots:
+                if isinstance(item, dict) and isinstance(item.get("id"), int):
+                    records[item["id"]] = item
         cursor, marker = 0, '"lot":'
         while (start := flight.find(marker, cursor)) >= 0:
             value_start = start + len(marker)
