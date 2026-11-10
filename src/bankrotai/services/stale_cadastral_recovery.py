@@ -76,7 +76,7 @@ def recover_stale_cadastral_no_match(
             continue
         accepted.append((lot, failure))
 
-    result = {
+    result: dict[str, Any] = {
         "selected": len(ids),
         "accepted": len(accepted),
         "rejected": len(rejected),
