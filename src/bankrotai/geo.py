@@ -1227,6 +1227,16 @@ def build_geocoding_address_candidates(
         "\u0434\u0435\u0440\u0435\u0432\u043d\u044f ", value, flags=re.IGNORECASE,
     )
     replacements = (
+        # Russian source cards often omit dots from municipal abbreviations.
+        # Interpret "д Прологи" as a village and "д 46" as a house number,
+        # not as the same ambiguous token.
+        (r"\bд\.?(?=\s+[А-ЯЁ])", "деревня"),
+        (r"\bд\.?(?=\s+\d)", "дом"),
+        (r"\bс\.?(?=\s+[А-ЯЁ])", "село"),
+        (r"\bг\.?(?=\s+[А-ЯЁ])", "город"),
+        (r"\bул\.?(?=\s+[А-ЯЁ])", "улица"),
+        (r"\bпр-кт\b", "проспект"),
+        (r"\bпр-т\b", "проспект"),
         (r"\bобл\.(?=\s|,|$)", "область"),
         (r"\bг\.(?=\s)", "город "),
         (r"\bп\.(?=\s)", "поселок "),
@@ -1292,7 +1302,8 @@ def build_geocoding_address_candidates(
 
     candidates = [value]
     unit_stripped = re.sub(
-        r",?\s*(?:помещение|пом\.|квартира|кв\.|комната|офис)\s*[№#]?\s*[\w/-]+.*$",
+        r",?\s*(?:помещение|пом\.?|квартира|кв\.?|комната|офис|"
+        r"машино-место|м\s*/\s*м)\s*[№#]?\s*[\w/-]+.*$",
         "",
         value,
         flags=re.IGNORECASE,
