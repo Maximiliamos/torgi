@@ -369,9 +369,7 @@ def _work_key(item: GeoWorkItem) -> str:
             for value in (item.cadastral_numbers or [])
             if value
         }),
-        "address_candidates": [
-            " ".join(candidate.casefold().split()) for candidate in address_candidates[:5]
-        ],
+        "address_candidates": [" ".join(c.casefold().split()) for c in address_candidates[:5]],
         "resolver_evidence_version": "asset-property-address-v1",
         "region": " ".join((item.region_name or "").casefold().split()),
         "region_code": str(item.region_code or "").strip().zfill(2),
