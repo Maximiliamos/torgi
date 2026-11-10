@@ -1774,15 +1774,16 @@ def test_reconciliation_failure_rolls_back_all_missing_archive_changes(
         assert all(row.is_active is True and row.is_archived is False for row in after)
 
 
-def test_cadastral_region_repairs_stale_source_region_in_batch_persistence(sessions) -> None:
-    stale = lot("stale-region", region_code="76")
-    stale.region_slug = "84"
-    stale.region_name = "Ярославская область"
-    stale.address = "Московская область, Раменский район, д. Першино"
-    stale.cadastral_number = "50:23:0050563:2759"
+def test_corrected_source_region_repairs_stale_region_name_in_batch_persistence(sessions) -> None:
+    corrected = lot("stale-region", region_code="50")
+    corrected.region_slug = "50"
+    corrected.region_name = "Ярославская область"  # stale display name from an old row
+    corrected.raw_data["region_code"] = "50"  # corrected per-asset source evidence
+    corrected.address = "Московская область, Раменский район, д. Першино"
+    corrected.cadastral_number = "50:23:0050563:2759"
 
     service = NationwideIngestionService(sessions)
-    run_with(service, FakeConnector([[stale]]))
+    run_with(service, FakeConnector([[corrected]]))
 
     with sessions() as session:
         processed = session.scalar(
