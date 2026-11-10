@@ -83,6 +83,26 @@ class CapacityTests(unittest.TestCase):
         )
         self.assertFalse(result["allowed"])
 
+    def test_local_only_skips_external_s3_evidence(self):
+        self.evidence_file.unlink()
+        result = module.assess(
+            self.backups, None, "",
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            check_s3=False,
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_map_storage_anomaly_can_be_delegated_to_exact_sha_gates(self):
+        self.meta["map_storage_anomaly"] = True
+        self.save_meta()
+        self.assertFalse(self.assess()["allowed"])
+        result = module.assess(
+            self.backups, None, "",
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            check_s3=False, allow_map_storage_anomaly=True,
+        )
+        self.assertTrue(result["allowed"])
+
     def test_tampered_dump_blocks(self):
         self.dump.write_bytes(b"tampered")
         self.assertFalse(self.assess()["allowed"])
