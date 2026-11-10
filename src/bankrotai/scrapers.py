@@ -33,7 +33,6 @@ from bankrotai.scraper_contracts import (
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
 from bankrotai.services.property_address_evidence import prefer_evidenced_property_address
-from bankrotai.regions import REGIONS_BY_CODE, region_code_from_cadastral_number, region_code_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -2868,7 +2867,12 @@ class TBankrotClient:
         return None
 
     def _region_code_from_cadastral_number(self, cadastral_number: str | None) -> str | None:
-        return region_code_from_cadastral_number(cadastral_number)
+        if not cadastral_number:
+            return None
+        match = re.search(r"\b(\d{1,2})\s*:", str(cadastral_number))
+        if not match:
+            return None
+        return match.group(1).zfill(2)
 
     def _set_page_item_count(self, page_size: int | None) -> None:
         count = max(1, int(page_size or 100))
@@ -2941,32 +2945,13 @@ class TBankrotClient:
             "raw_endpoint": raw_endpoint,
             "tbankrot_region_code": filters.region if filters else None,
         })
-        site_region_code = filters.region if filters else None
-        site_region_name = self.REGION_LABELS.get(str(site_region_code)) if site_region_code else None
+        region_code = filters.region if filters else None
+        region_name = self.REGION_LABELS.get(str(region_code)) if region_code else None
         cadastral_hint = item.cadastral_number or (item.cadastral_numbers[0] if item.cadastral_numbers else None)
-        description = item.description or ""
-        # The regional listing page is only a retrieval hint. It is not proof of
-        # the asset's subject: TBankrot can surface/carry cards whose own address
-        # or cadastre belongs to another region. Prefer per-asset evidence.
-        evidence_text = " ".join(
-            part for part in (item.address, item.title, description) if part
-        )
-        evidence_region_code = (
-            self._region_code_from_cadastral_number(cadastral_hint)
-            or region_code_from_text(evidence_text)
-        )
-        official_region_code = evidence_region_code or self._official_region_code(
-            site_region_name, cadastral_hint
-        )
-        region_name = (
-            REGIONS_BY_CODE[official_region_code].name
-            if official_region_code in REGIONS_BY_CODE
-            else site_region_name
-        )
-        raw_payload["tbankrot_region_code"] = site_region_code
-        raw_payload["tbankrot_region_name"] = site_region_name
+        official_region_code = self._official_region_code(region_name, cadastral_hint)
         raw_payload["region_code"] = official_region_code
         raw_payload["region_name"] = region_name
+        description = item.description or ""
         application_deadline, auction_at, stage_ends_at = self._parse_listing_dates(raw_payload)
         return NormalizedLot(
             external_id=f"tbankrot:{item.external_id}",
@@ -2975,7 +2960,7 @@ class TBankrotClient:
             title=(item.title or "")[:500],
             description=description[:5000],
             category=classify_category(item.title or "", description),
-            region_slug=official_region_code or (str(site_region_code) if site_region_code else None),
+            region_slug=official_region_code or (str(region_code) if region_code else None),
             region_name=region_name,
             address=item.address or None,
             cadastral_number=item.cadastral_number or None,
