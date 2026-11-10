@@ -9,6 +9,7 @@ import pytest
 
 import bankrotai.geo as geo
 from bankrotai.geo import CadastralObjectResult, build_geocoding_address_candidates
+from bankrotai.services.geo_address_candidates import extract_explicit_source_coordinates
 from bankrotai.services.property_address_evidence import (
     extract_asset_property_address,
     prefer_evidenced_property_address,
@@ -233,3 +234,31 @@ def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(mon
     )
     assert result and result.lat == 55.3
     assert calls
+
+
+def test_explicit_source_coordinates_are_used_before_provider_lookup(monkeypatch):
+    address = (
+        "Ярославская область, Ростовский р-н, вблизи деревни Краснораменье, "
+        "56.997880; 38.924942"
+    )
+    assert extract_explicit_source_coordinates(address) == (56.99788, 38.924942)
+
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER, "_search_nspd_geoportal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("NSPD should not be called")),
+    )
+    monkeypatch.setattr(
+        geo.CADASTRAL_GEOCODER, "search_by_address",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Photon should not be called")),
+    )
+    result = geo.resolve_lot_geo(
+        cadastral_number="76:13:031301:92",
+        address=address,
+        region_name="Ярославская область",
+        bulk=True,
+    )
+    assert result is not None
+    assert result.source == "source_coordinates"
+    assert result.lat == 56.99788
+    assert result.lon == 38.924942
+    assert result.attempts[-1]["reason"] == "validated"
