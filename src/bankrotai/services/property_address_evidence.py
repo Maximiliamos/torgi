@@ -38,6 +38,14 @@ _LEGAL_TAIL = re.compile(
 
 def _clean_address(value: str) -> str:
     value = _LEGAL_TAIL.split(value, maxsplit=1)[0]
+    # Official M-ETS descriptions append property classification and cadastre
+    # after the address, often separated by commas rather than full stops.
+    # These are attributes of the asset, not part of its geocoding address.
+    value = re.split(
+        r"[,;.]\\s*(?=(?:категория\\s+земель|кадастров(?:ый|ые)\\s+номер(?:а)?|"
+        r"вид\\s+разреш[её]нного\\s+использования)\\s*:)",
+        value, maxsplit=1, flags=re.IGNORECASE,
+    )[0]
     value = re.split(
         r"\.\s+(?=(?:Площадь|Общая\s+площадь|Начальная\s+цена|"
         r"Назначение|Категория|Обременения)\b)",
