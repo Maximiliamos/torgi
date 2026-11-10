@@ -625,3 +625,28 @@ def test_reported_mets_kostroma_lot_keeps_price_address_and_final_deadline() -> 
     )
     assert lot.application_deadline.isoformat() == "2026-11-11T12:00:00"
     assert lot.auction_status == "active"
+
+def test_mets_address_location_uses_shared_property_evidence() -> None:
+    html = """
+    <html><body><div class="lot-container">
+      <meta itemprop="sku" content="238546-МЭТС-1">
+      <h2 class="lot-title">Гараж в Черногорске, 20 кв.м.</h2>
+      <div>Идентификационный номер: 238546-МЭТС-1</div>
+      <span itemprop="description">
+        Гараж, площадь: 20 кв.м., адрес (местонахождение):
+        Российская Федерация, Республика Хакасия, г. Черногорск,
+        ул. Тестовая, д. 10. Кадастровый номер: 19:02:010716:2557
+      </span>
+      <div class="lot-cost-item"><div class="value">500 000 ₽</div>
+      <div class="title">Начальная цена</div></div>
+      <div class="lot-cost-item status"><div class="lot-status-name">
+      Объявленные торги</div></div>
+    </div></body></html>
+    """
+    lot = parse_mets_lot(html, "https://m-ets.ru/238546-1")
+    assert lot.cadastral_number == "19:02:010716:2557"
+    assert lot.address == (
+        "Российская Федерация, Республика Хакасия, г. Черногорск, "
+        "ул. Тестовая, д. 10"
+    )
+

@@ -463,3 +463,29 @@ def test_torgi_gov_preserves_nested_image_objects_from_official_payload(monkeypa
         "https://torgi.gov.ru/new/image-preview/v1/photo-guid-1?disposition=inline&resize=600x600!",
         "https://torgi.gov.ru/new/image-preview/v1/photo-guid-2",
     ]
+
+def test_torgi_gov_prefers_asset_address_over_conflicting_generic_address() -> None:
+    client = TorgiGovClient()
+    lot = client._normalize_api_lot({
+        "id": "21000012700000001786_1",
+        "lotName": (
+            "Аукцион по продаже земельного участка, расположенного по адресу: "
+            "Тюменская область, Тюменский муниципальный округ, с. Луговое"
+        ),
+        "lotDescription": (
+            "Земельный участок, кадастровый номер 72:17:1313001:252, "
+            "расположенный по адресу: Тюменская область, "
+            "Тюменский муниципальный округ, с. Луговое"
+        ),
+        "address": "г. Москва, ул. Тверская, д. 1",
+        "categoryCode": "2",
+        "subjectRFName": "Тюменская область",
+        "lotStatus": "APPLICATIONS_SUBMISSION",
+    })
+
+    assert lot.cadastral_number == "72:17:1313001:252"
+    assert lot.address == (
+        "Тюменская область, Тюменский муниципальный округ, с. Луговое"
+    )
+    assert "Тверская" not in lot.address
+

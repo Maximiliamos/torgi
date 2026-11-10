@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from bankrotai.connectors.base import AuctionConnector, ConnectorCapabilityError, ConnectorPage
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import classify_category
-from bankrotai.extractors import extract_address
+from bankrotai.services.property_address_evidence import extract_asset_property_address
 
 if TYPE_CHECKING:
     from bankrotai.connectors.registry.mets_sync import MetsSourceCrawler
@@ -256,7 +256,11 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         or _date_after_label(date_source, "Подведение итогов")
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
-    address = extract_address(description) or extract_address((title + " " + description)[:5000])
+    address = extract_asset_property_address(
+        title=title,
+        description=description,
+        cadastral_number=cadastral,
+    )
 
     image_urls: list[str] = []
     image_scope = scope

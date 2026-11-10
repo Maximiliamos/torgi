@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup, Tag
 
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.domain import NormalizedLot
+from bankrotai.services.property_address_evidence import extract_asset_property_address
 
 
 BASE_URL = "https://sistematorg.com/tradelist.php"
@@ -486,6 +487,12 @@ def parse_sistematorg_detail_lots(
         schedule = _schedule(segment)
 
         cadastral = _CADASTRAL_RE.search(combined)
+        cadastral_number = cadastral.group(1) if cadastral else None
+        asset_address = extract_asset_property_address(
+            title=title,
+            description=description,
+            cadastral_number=cadastral_number,
+        ) or _address(combined)
         area_match = _AREA_RE.search(combined)
         vin = _VIN_RE.search(combined)
         area = float(area_match.group(1).replace(",", ".")) if area_match else None
@@ -505,8 +512,8 @@ def parse_sistematorg_detail_lots(
             category=category,
             region_slug=None,
             region_name=None,
-            address=_address(combined),
-            cadastral_number=cadastral.group(1) if cadastral else None,
+            address=asset_address,
+            cadastral_number=cadastral_number,
             vin=vin.group(0).upper() if vin else None,
             area=area,
             start_price=start_price,

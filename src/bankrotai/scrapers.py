@@ -32,6 +32,7 @@ from bankrotai.scraper_contracts import (
 )
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
+from bankrotai.services.property_address_evidence import prefer_evidenced_property_address
 
 logger = logging.getLogger(__name__)
 
@@ -1206,6 +1207,12 @@ class TorgiGovClient:
 
         combined_text = " ".join(part for part in (title, description, address or "", region_name or "") if part)
         cadastral_numbers = self._extract_cadastral_numbers(payload, combined_text)
+        address = prefer_evidenced_property_address(
+            address or None,
+            title=title,
+            description=description,
+            cadastral_number=cadastral_numbers[0] if cadastral_numbers else None,
+        )
         start_price = self._pick_price(payload, "priceMin", "initialPrice", "startPrice", "price", "lotPrice")
         current_price = self._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice") or start_price
         raw_status = self._clean_text(self._pick(

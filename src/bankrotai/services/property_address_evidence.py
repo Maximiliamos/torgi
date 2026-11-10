@@ -46,6 +46,26 @@ def _clean_address(value: str) -> str:
     return " ".join(value.split()).strip(" ,.;:-")[:350]
 
 
+def _extract_property_scoped_address(text: str) -> str | None:
+    """Extract address phrases that are safe only inside an asset description."""
+    clean = " ".join(text.split())
+    # Cadastral/land descriptions often use this exact Rosreestr-style phrase.
+    # It is unsafe as a whole-page rule because a generic postal address may
+    # belong to the debtor/organizer, but title/description here are already
+    # scoped to the sold property.
+    landmark = re.search(
+        r"\bпочтовый\s+адрес\s+ориентира\s*:\s*(.+?)"
+        r"(?=\s+(?:Площадь|Кадастров(?:ый|ые)\s+номер|Категория)\s*:|$)",
+        clean,
+        re.IGNORECASE,
+    )
+    if landmark:
+        value = _clean_address(landmark.group(1))
+        if value:
+            return value
+    return extract_address(clean)
+
+
 def property_address_precision(value: str | None) -> int:
     """A conservative evidence score; not a geocoder confidence value."""
     if not value:
@@ -77,7 +97,7 @@ def extract_asset_property_address(
     for text in (title, description):
         if not text:
             continue
-        address = extract_address(text)
+        address = _extract_property_scoped_address(text)
         if not address:
             continue
         address = _clean_address(address)
