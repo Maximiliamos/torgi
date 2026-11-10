@@ -1617,17 +1617,39 @@ def resolve_lot_geo(
         if len(cadastral_candidates) >= 5:
             break
 
-    if not region_name and cadastral_candidates:
-        from bankrotai.regions import REGIONS_BY_CODE
+    if cadastral_candidates:
+        from bankrotai.regions import REGIONS_BY_CODE, region_code_from_text
 
         cadastral_regions = {
             candidate.split(":", 1)[0]
             for candidate in cadastral_candidates if ":" in candidate
         }
         if len(cadastral_regions) == 1:
-            definition = REGIONS_BY_CODE.get(next(iter(cadastral_regions)))
+            cadastral_region = next(iter(cadastral_regions))
+            definition = REGIONS_BY_CODE.get(cadastral_region)
             if definition is not None:
-                region_name = definition.name
+                if not region_name:
+                    region_name = definition.name
+                else:
+                    stored_region = region_code_from_text(region_name)
+                    if stored_region and stored_region != cadastral_region:
+                        # Historical rows may carry the region of the listing
+                        # page instead of the sold asset. Repair only when the
+                        # asset-scoped address evidence independently agrees
+                        # with the cadastral prefix.
+                        from bankrotai.services.property_address_evidence import (
+                            prefer_evidenced_property_address,
+                        )
+
+                        evidenced_address = prefer_evidenced_property_address(
+                            address,
+                            title=title,
+                            description=description,
+                            cadastral_number=cadastral_candidates[0],
+                        )
+                        evidence_region = region_code_from_text(evidenced_address)
+                        if evidence_region == cadastral_region:
+                            region_name = definition.name
 
     address_candidates = build_geocoding_address_candidates(
         address,
