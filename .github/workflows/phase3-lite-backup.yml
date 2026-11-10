@@ -96,7 +96,7 @@ jobs:
         id: cadence
         shell: powershell
         run: |
-          $root = 'D:\\BankrotAI\\dr-backups'
+          $root = 'D:\BankrotAI\dr-backups'
           $due = $true
           $force = ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.force }}' -eq 'true')
           if (-not $force -and (Test-Path -LiteralPath $root)) {
@@ -127,7 +127,7 @@ jobs:
               Write-Output "Backup schema=$backupSchema current schema=$currentSchema schema_matches=$schemaMatches"
               if ($ageHours -lt 46 -and $schemaMatches) {
                 $due = $false
-                Copy-Item $latestVerified.File.FullName "$env:RUNNER_TEMP\\phase3-backup-result.json" -Force
+                Copy-Item $latestVerified.File.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force
                 Write-Output 'Reusing fresh restore-verified schema-matching backup'
               }
             }
