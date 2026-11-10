@@ -133,3 +133,73 @@ jobs:
           $reportJson = $result | ConvertTo-Json -Depth 8
           $reportJson | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           $reportJson
+
+      - name: Verify known empty-title lot 7266197 recovery end-to-end (no DB writes)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from bankrotai.scraper_contracts import parse_money
+          from bankrotai.torgi_russia import BASE_URL, TorgiRussiaClient
+          from bankrotai.torgi_russia_title_recovery import recover_empty_title
+
+          client = TorgiRussiaClient(timeout=15)
+          lot_id = "7266197"
+          detail_url = BASE_URL + "/lot/" + lot_id
+          response = client._get_with_retry(detail_url)
+          records = [
+              record for record in client._extract_public_lot_records(
+                  response.text, require_linked=False
+              )
+              if str(record.get("id")) == lot_id
+          ]
+          if len(records) != 1:
+              raise RuntimeError(
+                  f"Expected exactly one Torgi Russia detail record; got {len(records)}"
+              )
+          before = records[0]
+          if str(before.get("title") or "").strip():
+              raise RuntimeError("Regression fixture no longer has an empty source title")
+
+          recovered = recover_empty_title(
+              before,
+              base_url=BASE_URL,
+              get_with_retry=client._get_with_retry,
+              extract_records=client._extract_public_lot_records,
+              parse_price=parse_money,
+          )
+          if not str(recovered.get("title") or "").strip():
+              raise RuntimeError("Empty-title recovery returned no title")
+          if recovered.get("title_evidence") != "official_mets_detail":
+              raise RuntimeError("Recovery did not use verified official M-ETS detail evidence")
+          if recovered.get("title_evidence_external_id") != "242937-2":
+              raise RuntimeError("Recovered title evidence points at the wrong M-ETS lot")
+          if recovered.get("title_evidence_canonical_url") != "https://m-ets.ru/242937-2":
+              raise RuntimeError("Recovered title evidence has the wrong canonical M-ETS URL")
+
+          print(json.dumps({
+              "read_only": True,
+              "database_writes": 0,
+              "torgi_russia_lot_id": lot_id,
+              "detail_record_count": len(records),
+              "source_title_was_empty": True,
+              "recovered_title": recovered["title"],
+              "title_evidence": recovered["title_evidence"],
+              "title_evidence_url": recovered.get("title_evidence_url"),
+              "title_evidence_canonical_url": recovered.get("title_evidence_canonical_url"),
+              "title_evidence_external_id": recovered.get("title_evidence_external_id"),
+          }, ensure_ascii=False))
+          '@
+          $output = $code | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) {
+            throw "Known Torgi Russia empty-title recovery regression probe failed"
+          }
+          $result = $output | Select-Object -Last 1 | ConvertFrom-Json
+          if ($result.read_only -ne $true -or $result.database_writes -ne 0 -or
+              -not $result.recovered_title -or $result.title_evidence_external_id -ne '242937-2') {
+            throw "Known Torgi Russia recovery evidence is incomplete"
+          }
+          $summary = $result | ConvertTo-Json -Depth 6
+          $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          $summary
