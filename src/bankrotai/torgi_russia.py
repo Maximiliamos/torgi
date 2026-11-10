@@ -461,21 +461,8 @@ class TorgiRussiaClient:
         flight = cls._extract_next_flight_text(html)
         initial_lots = cls._extract_named_json_value(flight, "initialLots")
         records: dict[int, dict] = {}
-        if isinstance(initial_lots, list):
-            for item in initial_lots:
-                if isinstance(item, dict) and isinstance(item.get("id"), int):
-                    records[item["id"]] = item
 
-        # Compatibility fallback for early/new variants that embed the same
-        # objects under a generic component property rather than initialLots.
-        for match in LOT_OBJECT_START_RE.finditer(flight):
-            raw_object = cls._extract_balanced_json_object(flight, match.start())
-            if raw_object is None:
-                continue
-            try:
-                item = json.loads(raw_object)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
+        def add_record(item) -> None:
             if (
                 isinstance(item, dict)
                 and isinstance(item.get("id"), int)
@@ -487,6 +474,41 @@ class TorgiRussiaClient:
                 and ("start_price" in item or "current_price" in item)
             ):
                 records[item["id"]] = item
+
+        if isinstance(initial_lots, list):
+            for item in initial_lots:
+                add_record(item)
+
+        # Current Next.js detail pages embed the record under a "lot" property
+        # and do not guarantee object key order. The previous fallback only
+        # recognized objects beginning literally with {"id":...,"title":...},
+        # which missed valid detail records such as production lot 7266197.
+        cursor = 0
+        marker = '"lot":'
+        while True:
+            start = flight.find(marker, cursor)
+            if start < 0:
+                break
+            value_start = start + len(marker)
+            try:
+                item, end = json.JSONDecoder().raw_decode(flight, value_start)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                cursor = value_start
+                continue
+            add_record(item)
+            cursor = end
+
+        # Compatibility fallback for early/new variants that embed the same
+        # objects under a generic component property rather than initialLots.
+        for match in LOT_OBJECT_START_RE.finditer(flight):
+            raw_object = cls._extract_balanced_json_object(flight, match.start())
+            if raw_object is None:
+                continue
+            try:
+                item = json.loads(raw_object)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            add_record(item)
 
         # The SSR payload can contain unrelated widgets. Keep only records that
         # are also represented by a public /lot/{id} link when the DOM exposes
