@@ -282,3 +282,62 @@ def test_quality_score_caps_invalid_region_coordinate_below_acceptance_band() ->
 
     assert score < 50
 
+
+
+def test_city_sanity_ignores_city_token_in_owner_name() -> None:
+    cad = "76:10:086801:9904"
+    stored_address = (
+        "Ярославская область, р-н Первомайский, в 100 м по направлению на юго-запад "
+        "от ориентира р.п. Пречистое. Собственник имущества: "
+        "АО «Газпромнефть-Ярославль»."
+    )
+    nspd = CadastralObjectResult(
+        query=cad,
+        cadastral_number=cad,
+        lat=58.408487557344046,
+        lon=40.32198319708827,
+        source="nspd",
+        confidence="high",
+        address=(
+            "Местоположение установлено относительно ориентира, расположенного за "
+            "пределами участка. Ориентир р.п.Пречистое. Почтовый адрес ориентира: "
+            "Ярославская область, р-н. Первомайский, с/о Пречистенский."
+        ),
+    )
+    valid, reason = validate_geocoding_result(
+        nspd,
+        cadastral_number=cad,
+        address=stored_address,
+        region_name="Ярославская область",
+        region_code=None,
+    )
+    assert valid is True
+    assert reason == "validated"
+
+
+def test_crimea_cadastral_district_90_matches_crimea_region_text() -> None:
+    cad = "90:14:060401:400"
+    nspd = CadastralObjectResult(
+        query=cad,
+        cadastral_number=cad,
+        lat=45.38601459305159,
+        lon=32.978697687938094,
+        source="nspd",
+        confidence="high",
+        address=(
+            "Республика Крым, Черноморский р-н, Медведевский сельский совет, "
+            "комплекс строений и сооружений № 1"
+        ),
+    )
+    valid, reason = validate_geocoding_result(
+        nspd,
+        cadastral_number=cad,
+        address=(
+            "Республика Крым, Черноморский район, Медведевский с/с, "
+            "комплекс строений и сооружений № 1"
+        ),
+        region_name=None,
+        region_code=None,
+    )
+    assert valid is True
+    assert reason == "validated"
