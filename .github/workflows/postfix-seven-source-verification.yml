@@ -1,6 +1,6 @@
 name: Operator post-fix seven-source verification
 
-# Recovery rerun marker: 2026-11-10 containerized capacity preflight.
+# Recovery rerun marker: 2026-11-10 source availability, NISTP and backup cadence fixes.
 # The initial merge intentionally triggers this one operator-approved verification.
 # Later ordinary pushes cannot retrigger it; operators may dispatch it explicitly.
 on:
