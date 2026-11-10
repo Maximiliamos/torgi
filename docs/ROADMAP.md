@@ -1105,3 +1105,9 @@ Release gate update:
 - ARCHIVE SEMANTIC CORRECTNESS: NOT FULLY PROVEN
 - MERGED: NO
 - DEPLOYED: NO
+
+## 2026-11-10 — seven-source control run after M-ETS/Torgi Russia repair
+
+- Home exact-SHA deployment and read-only source checks passed for M-ETS and Torgi Russia.
+- Operator requested a fresh seven-source control sweep before resuming broader reconciliation work.
+- Trigger marker: `[run-seven-source-now]`.

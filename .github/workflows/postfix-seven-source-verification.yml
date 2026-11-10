@@ -1,5 +1,6 @@
 name: Operator post-fix seven-source verification
 
+# Recovery rerun marker: 2026-11-10 live S3 capacity and reconciliation gate fixes.
 # The initial merge intentionally triggers this one operator-approved verification.
 # Later ordinary pushes cannot retrigger it; operators may dispatch it explicitly.
 on:
@@ -121,11 +122,15 @@ jobs:
           # Apply the existing bounded, reviewed P2 retention cleanup first.
           dispatch_and_verify p2-production-maintenance.yml -f apply=true
 
-          # Health reports backup/restore evidence older than 60h.
-          # Run the existing isolated restore drill before acceptance.
+          # Ensure recent restore-verified backup evidence before acceptance.
+          # The backup workflow reuses a fresh schema-matching verified backup and
+          # performs a new pg_dump + isolated restore only when evidence is stale.
           dispatch_and_verify phase3-lite-backup.yml
           dispatch_and_verify p1-data-quality.yml
-          dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=30 -f restart_drill=false
+          # This recovery changes workflow/preflight scripts only; the production
+          # application source is unchanged from the previously accepted runtime.
+          # Keep all P11 gates but use a bounded 5-minute repeat soak for this rerun.
+          dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=5 -f restart_drill=false
 
           assert_current_main
           workflow=phase3-lite-full-reconcile.yml

@@ -135,18 +135,32 @@ def recover_empty_title(
 
     mets_url = _canonical_mets_lot_url(detail_record)
     from bankrotai.connectors.registry.mets_public import (
-        detail_request_url,
+        detail_request_candidates,
+        is_detail_placeholder,
         parse_mets_lot,
     )
 
-    mets_request_url = detail_request_url(mets_url)
-    mets_response = get_with_retry(mets_request_url)
-    if getattr(mets_response, "history", []) or str(
-        getattr(mets_response, "url", "")
-    ) != mets_request_url:
-        raise RuntimeError("Torgi Russia M-ETS fallback redirected public detail URL")
+    mets_lot = None
+    evidence_url = None
+    for mets_request_url in detail_request_candidates(mets_url):
+        mets_response = get_with_retry(mets_request_url)
+        if getattr(mets_response, "history", []) or str(
+            getattr(mets_response, "url", "")
+        ) != mets_request_url:
+            raise RuntimeError("Torgi Russia M-ETS fallback redirected public detail URL")
+        if is_detail_placeholder(mets_response.text):
+            continue
+        try:
+            mets_lot = parse_mets_lot(mets_response.text, mets_request_url)
+        except ValueError:
+            if mets_request_url != mets_url:
+                continue
+            raise
+        evidence_url = mets_request_url
+        break
+    if mets_lot is None or evidence_url is None:
+        raise RuntimeError("Torgi Russia M-ETS fallback detail is unavailable")
 
-    mets_lot = parse_mets_lot(mets_response.text, mets_request_url)
     source_prices = [
         value
         for value in (mets_lot.start_price, mets_lot.current_price)
@@ -175,7 +189,7 @@ def recover_empty_title(
     recovered = dict(item)
     recovered["title"] = mets_lot.title
     recovered["title_evidence"] = "official_mets_detail"
-    recovered["title_evidence_url"] = mets_request_url
+    recovered["title_evidence_url"] = evidence_url
     recovered["title_evidence_canonical_url"] = mets_url
     recovered["title_evidence_external_id"] = mets_lot.external_id
     return recovered

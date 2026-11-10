@@ -1,8 +1,8 @@
-"""Fail-closed local backup/disk/S3 capacity evidence gate.
+"""Fail-closed backup/disk capacity evidence gate.
 
-Read-only: verifies existing dump and signed external quota attestation.
-A provider API adapter is required to *produce* S3 evidence; signing alone
-does not prove that numbers originated from the provider.
+The legacy signed-S3-evidence mode remains available for compatibility.
+Production reconciliation pairs local backup/disk verification with a
+separate live authenticated S3 write-capacity probe.
 """
 import argparse
 import hashlib
@@ -11,7 +11,7 @@ import json
 import shutil
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 MIN_DISK_BYTES = 10 * 1024 ** 3
 MIN_S3_BYTES = 512 * 1024 ** 2
@@ -35,11 +35,13 @@ def canonical_attestation(data):
 
 def assess(backup_dir, evidence_path, hmac_key, *,
            now=None, free_disk_bytes=None, min_disk_bytes=MIN_DISK_BYTES,
-           min_s3_bytes=MIN_S3_BYTES, expected_bucket=None):
+           min_s3_bytes=MIN_S3_BYTES, expected_bucket=None,
+           allow_portable_backup_path=False, check_s3=True,
+           allow_map_storage_anomaly=False):
     errors = []
     now = now or datetime.now(timezone.utc)
     backup_dir = Path(backup_dir)
-    evidence_path = Path(evidence_path)
+    evidence_path = Path(evidence_path) if evidence_path is not None else None
     if not backup_dir.is_dir():
         errors.append("backup directory not found")
     backups = sorted(backup_dir.glob("bankrotai-*.json"), reverse=True) if backup_dir.is_dir() else []
@@ -50,11 +52,20 @@ def assess(backup_dir, evidence_path, hmac_key, *,
             metadata_path = backups[0]
             metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
             dump_path = metadata_path.with_suffix(".dump")
-            if not dump_path.is_file() or dump_path.resolve() != Path(metadata["backup_file"]).resolve():
+            recorded_backup = metadata["backup_file"]
+            path_matches = False
+            try:
+                path_matches = dump_path.resolve() == Path(recorded_backup).resolve()
+            except (OSError, RuntimeError, TypeError):
+                path_matches = False
+            if not path_matches and allow_portable_backup_path:
+                recorded_windows = PureWindowsPath(str(recorded_backup))
+                path_matches = bool(recorded_windows.drive) and recorded_windows.name == dump_path.name
+            if not dump_path.is_file() or not path_matches:
                 raise ValueError("backup dump path mismatch or missing")
             if metadata.get("restore_verification") != "passed":
                 raise ValueError("isolated restore not verified")
-            if metadata.get("map_storage_anomaly") is True:
+            if metadata.get("map_storage_anomaly") is True and not allow_map_storage_anomaly:
                 raise ValueError("map storage anomaly")
             if not metadata.get("source_schema_revision"):
                 raise ValueError("missing backup schema revision")
@@ -80,43 +91,64 @@ def assess(backup_dir, evidence_path, hmac_key, *,
         except (OSError, KeyError, ValueError, TypeError) as exc:
             errors.append("backup/disk: " + str(exc))
 
-    try:
-        if not hmac_key or len(hmac_key) < 32:
-            raise ValueError("S3 evidence verification key absent or too short")
-        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        signature = evidence.get("hmac_sha256", "")
-        if not isinstance(signature, str) or len(signature) != 64:
-            raise ValueError("missing S3 evidence HMAC")
-        expected = hmac.new(hmac_key.encode("utf-8"),
-                            canonical_attestation(evidence), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature.lower(), expected):
-            raise ValueError("S3 evidence signature mismatch")
-        if evidence["source"] != "provider_quota_api":
-            raise ValueError("S3 evidence is not provider quota evidence")
-        if not isinstance(expected_bucket, str) or not expected_bucket or evidence["bucket"] != expected_bucket:
-            raise ValueError("S3 evidence bucket differs from configured map bucket")
-        age = (now - utc_time(evidence["checked_at"])).total_seconds()
-        if not 0 <= age <= 3600:
-            raise ValueError("S3 evidence stale or from the future")
-        free = evidence["free_bytes"]
-        required = evidence["required_bytes"]
-        if type(free) is not int or type(required) is not int or required < min_s3_bytes or free < required:
-            raise ValueError("S3 free/required capacity unproven")
-    except (OSError, KeyError, ValueError, TypeError) as exc:
-        errors.append("S3 capacity: " + str(exc))
+    if check_s3:
+        try:
+            if not hmac_key or len(hmac_key) < 32:
+                raise ValueError("S3 evidence verification key absent or too short")
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            signature = evidence.get("hmac_sha256", "")
+            if not isinstance(signature, str) or len(signature) != 64:
+                raise ValueError("missing S3 evidence HMAC")
+            expected = hmac.new(hmac_key.encode("utf-8"),
+                                canonical_attestation(evidence), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature.lower(), expected):
+                raise ValueError("S3 evidence signature mismatch")
+            if evidence["source"] != "provider_quota_api":
+                raise ValueError("S3 evidence is not provider quota evidence")
+            if not isinstance(expected_bucket, str) or not expected_bucket or evidence["bucket"] != expected_bucket:
+                raise ValueError("S3 evidence bucket differs from configured map bucket")
+            age = (now - utc_time(evidence["checked_at"])).total_seconds()
+            if not 0 <= age <= 3600:
+                raise ValueError("S3 evidence stale or from the future")
+            free = evidence["free_bytes"]
+            required = evidence["required_bytes"]
+            if type(free) is not int or type(required) is not int or required < min_s3_bytes or free < required:
+                raise ValueError("S3 free/required capacity unproven")
+        except (OSError, KeyError, ValueError, TypeError) as exc:
+            errors.append("S3 capacity: " + str(exc))
     return {"allowed": not errors, "dry_run": True, "errors": errors}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup-dir", type=Path, required=True)
-    parser.add_argument("--s3-evidence", type=Path, required=True)
-    parser.add_argument("--expected-bucket", required=True)
+    parser.add_argument("--s3-evidence", type=Path)
+    parser.add_argument("--expected-bucket")
+    parser.add_argument(
+        "--allow-portable-backup-path",
+        action="store_true",
+        help="Accept a Windows absolute backup_file path when verifying the same dump through a read-only container bind mount.",
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Verify only local backup/disk evidence; live S3 capacity must be checked separately.",
+    )
+    parser.add_argument(
+        "--allow-map-storage-anomaly",
+        action="store_true",
+        help="Delegate historical map-retention warnings to exact-SHA P2/P11 live gates.",
+    )
     args = parser.parse_args()
+    if not args.local_only and (args.s3_evidence is None or not args.expected_bucket):
+        parser.error("--s3-evidence and --expected-bucket are required unless --local-only is used")
     import os
     result = assess(args.backup_dir, args.s3_evidence,
                     os.environ.get("TORGI_CAPACITY_EVIDENCE_HMAC_KEY", ""),
-                    expected_bucket=args.expected_bucket)
+                    expected_bucket=args.expected_bucket,
+                    allow_portable_backup_path=args.allow_portable_backup_path,
+                    check_s3=not args.local_only,
+                    allow_map_storage_anomaly=args.allow_map_storage_anomaly)
     print("CAPACITY_PREFLIGHT=" + json.dumps(result, sort_keys=True))
     return 0 if result["allowed"] else 2
 

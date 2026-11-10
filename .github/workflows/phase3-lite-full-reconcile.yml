@@ -126,10 +126,6 @@ jobs:
           }
       - name: Checkout exact workflow SHA for read-only preflight
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Configure Python for local checksum and capacity verification
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.11'
       - name: Read-only exact-SHA, seven-source, pause, circuit, DB and lease preflight
         shell: powershell
         run: |
@@ -155,36 +151,43 @@ jobs:
           if ($state.pass -ne $true) {
             throw "Read-only source preflight blocked: $($state.errors -join '; ')"
           }
-      - name: Verify last restore, local disk and signed S3 quota before heavy source run
-        shell: powershell
-        env:
-          TORGI_CAPACITY_EVIDENCE_HMAC_KEY: ${{ secrets.TORGI_CAPACITY_EVIDENCE_HMAC_KEY }}
-          TORGI_S3_CAPACITY_EVIDENCE_PATH: ${{ vars.TORGI_S3_CAPACITY_EVIDENCE_PATH }}
-        run: |
-          if (-not $env:TORGI_S3_CAPACITY_EVIDENCE_PATH) {
-            throw 'No S3 provider quota evidence path configured: fail closed before ingestion'
-          }
-          $buckets = @(docker exec bankrotai-home-ingestion-worker python -c 'from bankrotai.core import get_settings; print(get_settings().map_object_store_bucket or "")')
-          if ($LASTEXITCODE -ne 0 -or -not $buckets.Count -or -not $buckets[-1].Trim()) {
-            throw 'Cannot read independently configured MapDataset S3 bucket'
-          }
-          $expectedBucket = $buckets[-1].Trim()
-          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH --expected-bucket $expectedBucket)
-          if ($LASTEXITCODE -ne 0 -or -not $result.Count -or
-              $result[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
-            throw "Backup/disk/S3 capacity gate failed: $($result -join '; ')"
-          }
-          $state = ($result[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
-          if ($state.allowed -ne $true) {
-            throw "Backup/disk/S3 capacity blocked: $($state.errors -join '; ')"
-          }
-      - name: Verify fresh isolated PostgreSQL restore before scheduling
+      - name: Verify last restore, local disk and live S3 write capacity before heavy source run
         shell: powershell
         run: |
-          & .\scripts\backup-home-postgres.ps1 -VerifyRestore -RetainCount 0
-          if (-not $?) {
-            throw 'Fresh isolated backup restore did not finish successfully'
+          $backupDir = (Resolve-Path -LiteralPath 'D:\BankrotAI\dr-backups' -ErrorAction Stop).Path
+          $guardPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\preflight_capacity_guard.py'
+          $probePath = Join-Path $env:GITHUB_WORKSPACE 'scripts\s3_capacity_probe.py'
+          foreach ($path in @($guardPath, $probePath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Capacity preflight script is missing: $path"
+            }
           }
+
+          # P2 + exact-SHA P11 own live MapDataset health. Backup evidence proves
+          # restore/checksum/freshness/disk headroom, not a historical map warning.
+          $image = "bankrotai-home-api:$env:GITHUB_SHA"
+          $guardScript = Get-Content -LiteralPath $guardPath -Raw
+          $local = @($guardScript | docker run --rm -i --mount "type=bind,source=$backupDir,target=/capacity/backups,readonly" $image python - --backup-dir /capacity/backups --local-only --allow-portable-backup-path --allow-map-storage-anomaly)
+          if ($LASTEXITCODE -ne 0 -or -not $local.Count -or $local[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
+            throw "Backup/disk capacity gate failed: $($local -join '; ')"
+          }
+          $localState = ($local[-1] -replace '^CAPACITY_PREFLIGHT=', '') | ConvertFrom-Json
+          if ($localState.allowed -ne $true) {
+            throw "Backup/disk capacity blocked: $($localState.errors -join '; ')"
+          }
+
+          # A temporary 512 MiB multipart object directly proves writable quota.
+          # The probe HEAD-verifies the completed size and deletes itself.
+          $probeScript = Get-Content -LiteralPath $probePath -Raw
+          $probe = @($probeScript | docker exec -i bankrotai-home-ingestion-worker python - --required-bytes 536870912 --part-size 8388608 --timeout-seconds 120)
+          if ($LASTEXITCODE -ne 0 -or -not $probe.Count -or $probe[-1] -notmatch '^S3_CAPACITY_PROBE=') {
+            throw "Live S3 capacity probe failed: $($probe -join '; ')"
+          }
+          $probeState = ($probe[-1] -replace '^S3_CAPACITY_PROBE=', '') | ConvertFrom-Json
+          if ($probeState.allowed -ne $true -or $probeState.probe_object_deleted -ne $true) {
+            throw "Live S3 capacity blocked: $($probe[-1])"
+          }
+
       - name: Request or adopt one durable full reconciliation and reclaim expired lease
         id: start
         shell: powershell

@@ -335,7 +335,7 @@ def test_official_meetings_detail_domain_keeps_exact_trade_lot_identity():
     mirror_url = "https://meetings.m-ets.ru/240512-1"
     lot = parse_mets_lot(DETAIL, mirror_url)
     assert lot.external_id == "240512-1"
-    assert lot.lot_url == MIRROR_URL
+    assert lot.lot_url == URL
     assert lot.source_system == "m-ets.ru"
     assert discover_lot_urls(
         '<a href="https://meetings.m-ets.ru/240512-1">official mirror</a>'
@@ -365,6 +365,55 @@ def test_canonical_detail_fetch_uses_official_mirror_without_legacy_403(monkeypa
     assert lot.start_price == 22_500_000
     assert session.calls == [MIRROR_URL]
     assert starts == session.calls
+
+
+
+def test_http_200_mirror_spinner_falls_back_to_same_canonical_lot(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    placeholder = (
+        '<html><head><meta name="robots" content="noindex, noarchive"></head>'
+        '<body><div class="gorizontal-vertikal">'
+        '<img src="data:image/gif;base64,R0lGODlhQgBCAAAA"></div></body></html>'
+    )
+
+    class PlaceholderThenCanonicalSession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, *, timeout, allow_redirects, headers):
+            assert allow_redirects is False
+            self.calls.append(url)
+            if url == MIRROR_URL:
+                return Response(placeholder)
+            if url == URL:
+                return Response(DETAIL)
+            raise AssertionError(url)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = PlaceholderThenCanonicalSession()
+    starts = []
+    html = MetsPublicPilot(session=session)._get(URL, before_request=starts.append)
+    lot = parse_mets_lot(html, URL)
+
+    assert lot.external_id == "240512-1"
+    assert lot.start_price == 22_500_000
+    assert lot.lot_url == URL
+    assert session.calls == [MIRROR_URL, URL]
+    assert starts == session.calls
+
+
+def test_mirror_spinner_is_classified_as_placeholder_not_schema_drift():
+    from bankrotai.connectors.registry.mets_public import is_detail_placeholder
+
+    html = (
+        '<html><head><meta name="robots" content="noindex, noarchive"></head>'
+        '<body><div class="gorizontal-vertikal">'
+        '<img src="data:image/gif;base64,R0lGODlhQgBCAAAA"></div></body></html>'
+    )
+    assert is_detail_placeholder(html) is True
+    with pytest.raises(MetsEvidenceError, match="placeholder"):
+        parse_mets_lot(html, URL)
 
 
 @pytest.mark.parametrize("unsafe_location", [
@@ -455,7 +504,7 @@ def test_live_meetings_dom_description_outside_single_verified_lot_container():
     )
     lot = parse_mets_lot(html, "https://meetings.m-ets.ru/244602-1")
     assert lot.external_id == "244602-1"
-    assert lot.lot_url == "https://meetings.m-ets.ru/244602-1"
+    assert lot.lot_url == "https://m-ets.ru/244602-1"
     assert lot.cadastral_number == "68:29:0212001:4089"
     assert lot.start_price == 7_500_000
     assert lot.auction_status == "scheduled"

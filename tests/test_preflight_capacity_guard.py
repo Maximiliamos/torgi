@@ -60,6 +60,49 @@ class CapacityTests(unittest.TestCase):
     def test_complete_signed_evidence(self):
         self.assertTrue(self.assess()["allowed"])
 
+    def test_container_mount_accepts_same_windows_backup_filename(self):
+        self.meta["backup_file"] = (
+            r"D:\BankrotAI\dr-backups\\" + self.dump.name
+        )
+        self.save_meta()
+        result = module.assess(
+            self.backups, self.evidence_file, self.key,
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            min_s3_bytes=1000, expected_bucket="test-bucket",
+            allow_portable_backup_path=True,
+        )
+        self.assertTrue(result["allowed"])
+
+        self.meta["backup_file"] = r"D:\BankrotAI\dr-backups\wrong.dump"
+        self.save_meta()
+        result = module.assess(
+            self.backups, self.evidence_file, self.key,
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            min_s3_bytes=1000, expected_bucket="test-bucket",
+            allow_portable_backup_path=True,
+        )
+        self.assertFalse(result["allowed"])
+
+    def test_local_only_skips_external_s3_evidence(self):
+        self.evidence_file.unlink()
+        result = module.assess(
+            self.backups, None, "",
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            check_s3=False,
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_map_storage_anomaly_can_be_delegated_to_exact_sha_gates(self):
+        self.meta["map_storage_anomaly"] = True
+        self.save_meta()
+        self.assertFalse(self.assess()["allowed"])
+        result = module.assess(
+            self.backups, None, "",
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            check_s3=False, allow_map_storage_anomaly=True,
+        )
+        self.assertTrue(result["allowed"])
+
     def test_tampered_dump_blocks(self):
         self.dump.write_bytes(b"tampered")
         self.assertFalse(self.assess()["allowed"])
