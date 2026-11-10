@@ -367,6 +367,45 @@ def test_phase3_full_reconcile_waits_for_home_deploy_and_accepts_terminal_partia
 
 
 
+def test_phase3_health_allows_stale_successful_source_to_be_refreshed() -> None:
+    factory = _factory()
+    now = datetime(2026, 11, 10, 15, 0, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(
+            MapDataset(
+                version="healthy-r7-bundle-s3",
+                status="ready",
+                is_current=True,
+                point_count=100,
+                tile_count=200,
+                created_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+                published_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+            )
+        )
+        _healthy_source(session, now)
+        run = session.get(LotSyncRun, "full-healthy")
+        assert run is not None
+        source = session.query(LotSyncSourceRun).filter_by(
+            sync_run_id=run.id, source_system="torgi.gov.ru"
+        ).one()
+        run.started_at = (now - timedelta(hours=9)).replace(tzinfo=None)
+        run.finished_at = (now - timedelta(hours=8, minutes=30)).replace(tzinfo=None)
+        source.started_at = run.started_at
+        source.finished_at = run.finished_at
+        session.commit()
+
+        health = build_phase3_health(
+            session, now=now, expected_sources={"torgi.gov.ru"}
+        )
+
+    checks = {item["name"]: item for item in health["checks"]}
+    assert health["healthy"] is True
+    assert checks["source-data-availability"]["ok"] is True
+    assert checks["source-data-availability"]["operational_sources"] == ["torgi.gov.ru"]
+    assert checks["source-freshness:torgi.gov.ru"]["ok"] is False
+    assert checks["source-freshness:torgi.gov.ru"]["severity"] == "warning"
+
+
 def test_phase3_health_fails_only_when_all_configured_sources_are_unavailable() -> None:
     factory = _factory()
     now = datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc)
