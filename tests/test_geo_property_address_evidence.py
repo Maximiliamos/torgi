@@ -298,3 +298,50 @@ def test_explicit_source_coordinates_do_not_bypass_cadastral_identity(monkeypatc
     }
     assert result.attempts[-1]["source"] == "nspd_cadastral"
     assert result.attempts[-1]["reason"] == "validated"
+
+
+def test_historical_lot_online_stale_seller_address_is_replaced_for_geocoding() -> None:
+    stored = "190000, Санкт-Петербург, пер.Гривцова, д.5, литер. В"
+    description = (
+        "Государственное имущество: нежилые помещения, расположенные по адресу: "
+        "Российская Федерация, Республика Коми, Муниципальный район Сосногорск, "
+        "г.п. Сосногорск, п. Вис, ул. Ленина, д. 11/2, кадастровый номер "
+        "11:19:0801020:1102"
+    )
+    preferred = prefer_evidenced_property_address(
+        stored,
+        description=description,
+        cadastral_number="11:19:0801020:1102",
+    )
+    assert preferred is not None
+    assert "Республика Коми" in preferred
+    assert "Гривцова" not in preferred
+    candidates = build_geocoding_address_candidates(
+        stored,
+        description=description,
+        cadastral_number="11:19:0801020:1102",
+    )
+    assert candidates
+    assert "Республика Коми" in candidates[0]
+    assert all("Гривцова" not in value for value in candidates)
+
+
+def test_legacy_cadastral_district_does_not_create_false_region_mismatch() -> None:
+    result = CadastralObjectResult(
+        query="85:01:091106:59",
+        cadastral_number="85:01:091106:59",
+        address="Иркутская область, Аларский район",
+        lat=53.0,
+        lon=103.0,
+        source="nspd",
+        confidence="high",
+    )
+    valid, reason = geo.validate_geocoding_result(
+        result,
+        cadastral_number="85:01:091106:59",
+        address="Иркутская область, Аларский район",
+        region_name="Иркутская область",
+        region_code="38",
+    )
+    assert valid is True
+    assert reason == "validated"
