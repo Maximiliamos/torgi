@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from bankrotai.extractors import extract_address
-from bankrotai.regions import normalize_region_code, region_code_from_text
+from bankrotai.regions import region_code_from_cadastral_number, region_code_from_text
 
 
 _STREET = re.compile(
@@ -96,10 +96,7 @@ def extract_asset_property_address(
     and description each assert conflicting numbered street/building addresses
     without an independently verified identity, refuse to choose either.
     """
-    cad_region = None
-    match = re.fullmatch(r"(\d{2}):\d{1,2}:\d{5,9}:\d{1,12}", (cadastral_number or "").strip())
-    if match:
-        cad_region = normalize_region_code(match.group(1))
+    cad_region = region_code_from_cadastral_number(cadastral_number)
 
     candidates: list[tuple[int, str]] = []
     for text in (title, description):
@@ -169,13 +166,7 @@ def prefer_evidenced_property_address(
     # house. This is a common failure mode when debtor/organizer addresses are
     # persisted into a lot. The cadastral prefix is independent identity
     # evidence, so fail away from the conflicting stored address.
-    cad_region = None
-    cad_match = re.fullmatch(
-        r"(\d{2}):\d{1,2}:\d{5,9}:\d{1,12}",
-        (cadastral_number or "").strip(),
-    )
-    if cad_match:
-        cad_region = normalize_region_code(cad_match.group(1))
+    cad_region = region_code_from_cadastral_number(cadastral_number)
     stored_region = region_code_from_text(stored_address)
     evidenced_region = region_code_from_text(evidenced)
     if (
