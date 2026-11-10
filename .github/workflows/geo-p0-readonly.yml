@@ -74,9 +74,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\bidexpert_detail_probe.py'
+          $ErrorActionPreference = 'Continue'
           $result = Get-Content -LiteralPath $path -Encoding UTF8 -Raw |
             docker exec -e PYTHONIOENCODING=utf-8 -i bankrotai-home-ingestion-worker python - 2>&1
-          if ($LASTEXITCODE -ne 0) { throw "BidExpert detail probe failed: $($result | Select-Object -Last 5 | Out-String)" }
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "BidExpert detail probe failed: $($result | Select-Object -Last 8 | Out-String)" }
           $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
           $parsed = $line | ConvertFrom-Json -ErrorAction Stop
           if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
