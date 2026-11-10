@@ -82,21 +82,34 @@ def extract_asset_property_address(
         candidates.append((property_address_precision(address), address))
     if not candidates:
         return None
-    numbered = {
-        re.sub(r"[^\da-zа-яё]+", "", addr.casefold())
-        for score, addr in candidates if score >= 8
-    }
-    # Only compare two equally complete but incompatible claims when both
-    # contain explicit street and house (simple formatting alone is ignored).
-    if len(numbered) > 1:
-        def core(value: str) -> str:
-            return re.sub(r"\s+", " ", re.sub(
-                r"\b(?:г\.|город|обл\.|область|кв\.|квартира)\b", "",
-                value.casefold()
-            )).strip()
-        first, second = (core(v) for _, v in candidates[:2])
-        if first != second and not (first in second or second in first):
+    def street_house_key(value: str) -> tuple[str, str] | None:
+        street = re.search(
+            r"\b(ул\.?|улица|пр-?кт|пр-т|проспект|шоссе|переулок|пер\.|"
+            r"проезд|набережная|площадь)\s+([^,;.]+)",
+            value, re.IGNORECASE,
+        )
+        house = re.search(
+            r"\b(?:д\.|дом|вл\.|владение)\s*[№#]?\s*(\d+[а-яa-z]?)",
+            value, re.IGNORECASE,
+        )
+        if not street or not house:
             return None
+        kind = street.group(1).casefold().strip(".")
+        kind = {
+            "ул": "улица", "пр-кт": "проспект", "пркт": "проспект",
+            "пр-т": "проспект", "пер": "переулок",
+        }.get(kind, kind)
+        name = re.sub(r"[^а-яёa-z0-9]+", "", street.group(2).casefold())
+        return kind + name, house.group(1).casefold()
+
+    signatures = {
+        signature for _, address in candidates
+        if (signature := street_house_key(address)) is not None
+    }
+    # Two different building claims in the same verified lot mean review,
+    # not an arbitrary ranking between title and description.
+    if len(signatures) > 1:
+        return None
     return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
