@@ -33,7 +33,7 @@ from bankrotai.scraper_contracts import (
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
 from bankrotai.services.property_address_evidence import prefer_evidenced_property_address
-from bankrotai.regions import REGIONS_BY_CODE, region_code_from_text
+from bankrotai.regions import REGIONS_BY_CODE, region_code_from_cadastral_number, region_code_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -2868,12 +2868,7 @@ class TBankrotClient:
         return None
 
     def _region_code_from_cadastral_number(self, cadastral_number: str | None) -> str | None:
-        if not cadastral_number:
-            return None
-        match = re.search(r"\b(\d{1,2})\s*:", str(cadastral_number))
-        if not match:
-            return None
-        return match.group(1).zfill(2)
+        return region_code_from_cadastral_number(cadastral_number)
 
     def _set_page_item_count(self, page_size: int | None) -> None:
         count = max(1, int(page_size or 100))
