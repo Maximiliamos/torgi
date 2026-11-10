@@ -1632,8 +1632,14 @@ class PhotonGeocoder:
         return None
 
     def geocode(self, address: str) -> dict[str, Any] | None:
-        if not self.base_url or len(address.strip()) < 5:
+        if len(address.strip()) < 5:
             return None
+        if not self.base_url:
+            # A missing provider is an operational failure, not evidence
+            # that the property itself cannot be geocoded.
+            raise GeoProviderUnavailable(
+                "photon", "provider_protocol", "PHOTON_BASE_URL is empty",
+            )
         require_provider("photon", external=False)
         operational_failures = 0
         transport_successes = 0
