@@ -87,6 +87,7 @@ def recover_stale_cadastral_no_match(
     if not apply:
         return result
 
+    session.expire_all()
     now = utc_now()
     for lot, failure in accepted:
         if (
