@@ -189,12 +189,17 @@ def test_region_code_change_requeues_batch_geo(sessions) -> None:
         row.needs_geo_check = False
         row.geo_input_hash = "a" * 64
 
-    changed = lot(region_code="01")
+    changed = lot(region_code="50")
+    changed.region_slug = "50"
+    changed.region_name = "Московская область"
+    changed.address = "Московская область, Раменский район, д. Першино"
+    changed.cadastral_number = "50:23:0050563:2759"
     run_with(service, FakeConnector([[changed]]))
     with sessions() as session:
         updated = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "lot-1"))
         assert updated is not None
-        assert updated.region_code == "01"
+        assert updated.region_code == "50"
+        assert updated.region_name == "Московская область"
         assert updated.needs_geo_check is True
         assert updated.geo_input_hash is None
 
@@ -1767,3 +1772,28 @@ def test_reconciliation_failure_rolls_back_all_missing_archive_changes(
         after = session.scalars(select(SourceLot).order_by(SourceLot.external_id)).all()
         assert [row.missing_successful_runs for row in after] == [1, 1]
         assert all(row.is_active is True and row.is_archived is False for row in after)
+
+
+def test_cadastral_region_repairs_stale_source_region_in_batch_persistence(sessions) -> None:
+    stale = lot("stale-region", region_code="76")
+    stale.region_slug = "84"
+    stale.region_name = "Ярославская область"
+    stale.address = "Московская область, Раменский район, д. Першино"
+    stale.cadastral_number = "50:23:0050563:2759"
+
+    service = NationwideIngestionService(sessions)
+    run_with(service, FakeConnector([[stale]]))
+
+    with sessions() as session:
+        processed = session.scalar(
+            select(ProcessedLot).where(ProcessedLot.external_id == "stale-region")
+        )
+        source = session.scalar(
+            select(SourceLot).where(SourceLot.external_id == "stale-region")
+        )
+        assert processed is not None
+        assert source is not None
+        assert processed.region_code == "50"
+        assert processed.region_name == "Московская область"
+        assert source.region_code == "50"
+        assert source.region_name == "Московская область"
