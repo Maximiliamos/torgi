@@ -175,3 +175,24 @@ def test_mets_official_asset_address_excludes_trailing_classification():
     )
     assert "категория земель" not in address
     assert "кадастровый номер" not in address
+
+
+def test_torgi_gov_dash_label_and_semicolon_metadata_are_parsed():
+    # Reduced from the supplied public GIS Torgi land-lot card.
+    description = (
+        "адрес (местоположение) – Тюменская область, Тюменский муниципальный "
+        "округ, с. Луговое (проект межевания территории Кулаковского сельского "
+        "поселения Тюменского муниципального района, ЗУ252); "
+        "кадастровый номер – 72:17:1102003:1802; площадь – 1072 кв.м; "
+        "вид разрешенного использования - для индивидуального жилищного строительства"
+    )
+    address = extract_asset_property_address(
+        description=description, cadastral_number="72:17:1102003:1802",
+    )
+    assert address == (
+        "Тюменская область, Тюменский муниципальный округ, с. Луговое "
+        "(проект межевания территории Кулаковского сельского поселения "
+        "Тюменского муниципального района, ЗУ252)"
+    )
+    assert "кадастровый номер" not in address.casefold()
+    assert "1072" not in address
