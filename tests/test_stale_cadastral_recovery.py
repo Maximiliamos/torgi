@@ -15,7 +15,7 @@ def _session() -> Session:
 
 def _seed(session: Session, *, cadastral: str | None = "76:13:031301:92") -> int:
     lot = ProcessedLot(
-        external_id="sample",
+        external_id=f"sample-{cadastral or 'none'}",
         source="test",
         source_system="torgi-russia.ru",
         title="Земельный участок",
