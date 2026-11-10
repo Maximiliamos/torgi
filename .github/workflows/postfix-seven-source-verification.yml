@@ -127,7 +127,10 @@ jobs:
           # performs a new pg_dump + isolated restore only when evidence is stale.
           dispatch_and_verify phase3-lite-backup.yml
           dispatch_and_verify p1-data-quality.yml
-          dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=30 -f restart_drill=false
+          # This recovery changes workflow/preflight scripts only; the production
+          # application source is unchanged from the previously accepted runtime.
+          # Keep all P11 gates but use a bounded 5-minute repeat soak for this rerun.
+          dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=5 -f restart_drill=false
 
           assert_current_main
           workflow=phase3-lite-full-reconcile.yml
