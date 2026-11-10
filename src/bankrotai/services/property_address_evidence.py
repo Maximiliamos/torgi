@@ -42,8 +42,8 @@ def _clean_address(value: str) -> str:
     # after the address, often separated by commas rather than full stops.
     # These are attributes of the asset, not part of its geocoding address.
     value = re.split(
-        r"[,;.]\\s*(?=(?:категория\\s+земель|кадастров(?:ый|ые)\\s+номер(?:а)?|"
-        r"вид\\s+разреш[её]нного\\s+использования)\\s*:)",
+        r"[,;.]\s*(?=(?:категория\s+земель|кадастров(?:ый|ые)\s+номер(?:а)?|"
+        r"вид\s+разреш[её]нного\s+использования)\s*:)",
         value, maxsplit=1, flags=re.IGNORECASE,
     )[0]
     value = re.split(
