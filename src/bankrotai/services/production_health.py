@@ -159,11 +159,22 @@ def build_phase3_health(
         legacy_source_count=len(legacy_sources),
         legacy_sources=legacy_sources,
     )
+    # Availability must not depend on freshness: full reconciliation is
+    # precisely the operation that refreshes stale source data. Requiring a
+    # fresh source here creates a circular release gate after any long pause.
+    # Keep current failures and open circuits unavailable, while allowing a
+    # stale latest-successful source to be refreshed.
     operational_sources = [
         source
         for source in sources
-        if source.freshness_status in {"fresh", "running", "delayed"}
-        and source.circuit_state == "closed"
+        if source.circuit_state == "closed"
+        and (
+            source.freshness_status == "running"
+            or (
+                source.status in {"healthy", "partial"}
+                and source.last_success_at is not None
+            )
+        )
     ]
     source_network = source_global_network_state(session, now=now)
     add(

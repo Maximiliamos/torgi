@@ -2,6 +2,11 @@ name: Phase 3 Lite backup and restore drill
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a new pg_dump + isolated restore even when a fresh schema-matching verified backup exists'
+        type: boolean
+        default: false
   schedule:
     - cron: '17 2 * * *'
   push:
@@ -93,13 +98,15 @@ jobs:
         run: |
           $root = 'D:\BankrotAI\dr-backups'
           $due = $true
-          if ('${{ github.event_name }}' -eq 'schedule' -and (Test-Path -LiteralPath $root)) {
+          $force = ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.force }}' -eq 'true')
+          if (-not $force -and (Test-Path -LiteralPath $root)) {
             $latestVerified = Get-ChildItem -LiteralPath $root -File -Filter 'bankrotai-*.json' |
               Sort-Object LastWriteTimeUtc -Descending |
               ForEach-Object {
                 try {
                   $meta = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file -and (Test-Path -LiteralPath ([string]$meta.backup_file))) {
+                  if ($meta.restore_verification -eq 'passed' -and $meta.backup_file -and
+                      (Test-Path -LiteralPath ([string]$meta.backup_file))) {
                     [pscustomobject]@{ File = $_; Metadata = $meta }
                   }
                 } catch {}
@@ -108,11 +115,25 @@ jobs:
             if ($latestVerified) {
               $ageHours = ((Get-Date).ToUniversalTime() - $latestVerified.File.LastWriteTimeUtc).TotalHours
               Write-Output "Latest verified D: backup age: $([math]::Round($ageHours,2)) hours"
-              if ($ageHours -lt 46) { $due = $false }
+              $currentSchema = $null
+              try {
+                $schemaRows = @(docker exec bankrotai-home-postgres psql -U bankrotai -d bankrotai -Atc 'SELECT version_num FROM alembic_version LIMIT 1' 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $schemaRows.Count -gt 0) {
+                  $currentSchema = [string]$schemaRows[-1].Trim()
+                }
+              } catch {}
+              $backupSchema = [string]$latestVerified.Metadata.source_schema_revision
+              $schemaMatches = ($currentSchema -and $backupSchema -and $currentSchema -eq $backupSchema)
+              Write-Output "Backup schema=$backupSchema current schema=$currentSchema schema_matches=$schemaMatches"
+              if ($ageHours -lt 46 -and $schemaMatches) {
+                $due = $false
+                Copy-Item $latestVerified.File.FullName "$env:RUNNER_TEMP\phase3-backup-result.json" -Force
+                Write-Output 'Reusing fresh restore-verified schema-matching backup'
+              }
             }
           }
           "due=$($due.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          Write-Output "Backup due=$due"
+          Write-Output "Backup due=$due force=$force"
 
       - name: Recover and verify Docker engine before PostgreSQL backup
         if: steps.cadence.outputs.due == 'true'
