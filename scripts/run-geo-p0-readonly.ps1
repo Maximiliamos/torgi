@@ -6,8 +6,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker CLI not found. Start Docker Desktop and check installation.'
