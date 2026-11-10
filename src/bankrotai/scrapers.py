@@ -297,6 +297,7 @@ class TorgiGovClient:
     ):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
+        self.DETAIL_ENDPOINT = f"{self.base_url}/new/api/public/lotcards"
         self.EXCEL_EXPORT_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/export/excel"
         self.FALLBACK_LIST_URL = f"{self.base_url}/new/public/lots/reg"
         self.timeout = timeout
@@ -314,7 +315,6 @@ class TorgiGovClient:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": self.FALLBACK_LIST_URL,
         })
-
     def fetch_lot_detail(self, external_id: str) -> NormalizedLot:
         return fetch_torgi_gov_lot_detail(self, external_id, error_type=TorgiGovClientError)
 
