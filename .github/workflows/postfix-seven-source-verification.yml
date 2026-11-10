@@ -122,8 +122,9 @@ jobs:
           # Apply the existing bounded, reviewed P2 retention cleanup first.
           dispatch_and_verify p2-production-maintenance.yml -f apply=true
 
-          # Health reports backup/restore evidence older than 60h.
-          # Run the existing isolated restore drill before acceptance.
+          # Ensure recent restore-verified backup evidence before acceptance.
+          # The backup workflow reuses a fresh schema-matching verified backup and
+          # performs a new pg_dump + isolated restore only when evidence is stale.
           dispatch_and_verify phase3-lite-backup.yml
           dispatch_and_verify p1-data-quality.yml
           dispatch_and_verify p11-production-acceptance.yml -f soak_minutes=30 -f restart_drill=false
