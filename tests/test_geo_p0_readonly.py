@@ -81,6 +81,16 @@ def test_p0_full_population_exclusive_buckets_and_no_raw_leaks():
         "unconfirmed_provider_no_match": 1,
     }
     assert result["by_source"]["two.test"]["active"] == 1
+    assert result["sample_lot_ids_by_source_and_cause"]["one.test"] == {
+        "provider_operational": [4],
+        "source_address_extraction_gap_candidate": [3],
+        "source_extraction_gap_candidate": [1],
+        "unconfirmed_provider_no_match": [6],
+        "validation_rejected": [5],
+    }
+    assert result["sample_lot_ids_by_source_and_cause"]["two.test"] == {
+        "source_detail_required": [2],
+    }
     assert result["provider_attempt_sources"] == {"photon": 1, "nspd_cadastral": 1}
     output = json.dumps(result, ensure_ascii=False)
     assert "Садовая" not in output and "Тверская" not in output

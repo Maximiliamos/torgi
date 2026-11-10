@@ -119,6 +119,9 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
     by_reason: Counter[str] = Counter()
     quality: Counter[str] = Counter()
     sample_ids: dict[str, list[int]] = defaultdict(list)
+    sample_ids_by_source_cause: dict[str, dict[str, list[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for row in rows:
         (lot_id, source, region, region_name, status, address, cadastre, title, description,
          failure_status, failure_message) = row
@@ -169,6 +172,11 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
                 quality["region_cadastral_prefix_mismatch"] += 1
         if active_now and len(sample_ids[cause]) < 12:
             sample_ids[cause].append(int(lot_id))
+        if active_now:
+            source_key = str(source or "unknown")
+            source_samples = sample_ids_by_source_cause[source_key][cause]
+            if len(source_samples) < 5:
+                source_samples.append(int(lot_id))
     return {
         "nonarchived_unduplicated_unmapped": total,
         "active_or_scheduled_unmapped": active,
@@ -192,6 +200,10 @@ def summarize_rows(rows: Iterable[Any]) -> dict[str, Any]:
         "attempt_reasons": dict(by_reason.most_common()),
         "quality_signals": dict(quality.most_common()),
         "sample_lot_ids_by_cause": dict(sample_ids),
+        "sample_lot_ids_by_source_and_cause": {
+            source: {cause: ids for cause, ids in sorted(causes.items())}
+            for source, causes in sorted(sample_ids_by_source_cause.items())
+        },
         "crosscheck_primary_cause_total": sum(by_cause.values()),
     }
 
@@ -254,7 +266,7 @@ def run() -> dict[str, Any]:
         session.rollback()  # explicitly end read-only transaction
     return {
         "report": "geo_p0_census",
-        "schema_version": "1",
+        "schema_version": "2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "read_only": True,
         "no_provider_requests": True,
