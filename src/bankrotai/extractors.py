@@ -220,28 +220,28 @@ def extract_address(text: str) -> str | None:
     if not text: 
         return None 
  
-    clean = re.sub(r'\\s+', ' ', text).strip() 
+    clean = re.sub(r'\s+', ' ', text).strip() 
 
     # Provider cards use both colon and dash separators. GIS Torgi currently
     # emits "адрес (местоположение) – ...; кадастровый номер – ...".
     # Permit punctuation before the next label so metadata is not sent to the
     # geocoder as if it were part of the address.
     stop = (
-        r'(?=\\s*[,;.]?\\s*(?:Кадастров(?:ый|ые)\\s*(?:\\([^)]{1,30}\\)\\s*)?номер(?:а)?|'
-        r'к\\s*/\\s*н\\s*(?::|[-–—])|Количество этажей|Общая площадь|'
+        r'(?=\s*[,;.]?\s*(?:Кадастров(?:ый|ые)\s*(?:\([^)]{1,30}\)\s*)?номер(?:а)?|'
+        r'к\s*/\s*н\s*(?::|[-–—])|Количество этажей|Общая площадь|'
         r'Категория объекта|Форма собственности|Вид торгов|Вид ограничений|'
         r'Обременение|Общие сведения|Назначение|Начальная цена|$))'
     )
-    label_sep = r'\\s*(?::|[-–—])\\s*'
+    label_sep = r'\s*(?::|[-–—])\s*'
  
     patterns = [
         # Sources use "адрес:", "Адрес (местоположение):" and Unicode dashes.
-        rf'(?:по\\s+)?адрес(?:у|\\s*\\((?:местоположение|местонахождение)\\))?{label_sep}(.+?){stop}',
-        rf'расположен[а-я\\s]*по\\s+адресу{label_sep}(.+?){stop}',
+        rf'(?:по\s+)?адрес(?:у|\s*\((?:местоположение|местонахождение)\))?{label_sep}(.+?){stop}',
+        rf'расположен[а-я\s]*по\s+адресу{label_sep}(.+?){stop}',
         rf'местоположение{label_sep}(.+?){stop}',
-        rf'адрес\\s+местонахождения{label_sep}(.+?){stop}',
-        rf'местонахождение\\s+имущества{label_sep}(.+?){stop}',
-        rf'имущества{label_sep}((?:обл|область|г\\.|город|р-н|район|ул|улица|д\\.|дом).+?){stop}',
+        rf'адрес\s+местонахождения{label_sep}(.+?){stop}',
+        rf'местонахождение\s+имущества{label_sep}(.+?){stop}',
+        rf'имущества{label_sep}((?:обл|область|г\.|город|р-н|район|ул|улица|д\.|дом).+?){stop}',
     ]
  
     for pat in patterns: 
@@ -254,14 +254,14 @@ def extract_address(text: str) -> str | None:
         # the actual address. Sending that tail to the provider turns a valid
         # address into a guaranteed miss.
         addr = re.split(
-            r'\\s*[,;]\\s*(?=(?:кадастров(?:ый|ые)\\s+номер(?:а)?\\b|'
-            r'имущество\\s*\\(|оборудование\\b|площад(?:ь|ью)\\b|'
-            r'этаж(?:и|ом)?\\b|назначение\\b|ограничени[ея]\\b|ЗОУИТ\\b))',
+            r'\s*[,;]\s*(?=(?:кадастров(?:ый|ые)\s+номер(?:а)?\b|'
+            r'имущество\s*\(|оборудование\b|площад(?:ь|ью)\b|'
+            r'этаж(?:и|ом)?\b|назначение\b|ограничени[ея]\b|ЗОУИТ\b))',
             addr,
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]
-        addr = re.sub(r'\\s+', ' ', addr)
+        addr = re.sub(r'\s+', ' ', addr)
  
         if len(addr) >= 15: 
             return addr[:350] 
