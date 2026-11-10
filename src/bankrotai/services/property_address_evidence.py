@@ -1,0 +1,122 @@
+"""Property-scoped address evidence shared by ETP detail adapters and geocoding.
+
+Only the title and the specific asset's description are eligible inputs.
+Whole-page "Address" labels may belong to the seller or trading venue.
+This module does not fetch anything or change database records.
+"""
+from __future__ import annotations
+
+import re
+
+from bankrotai.extractors import extract_address
+from bankrotai.regions import normalize_region_code, region_code_from_text
+
+
+_STREET = re.compile(
+    r"\b(?:ул\.?|улица|пр-?кт|пр-т|проспект|шоссе|пер\.?|переулок|"
+    r"проезд|наб\.?|набережная|площадь|бульвар|б-р|тракт)\b",
+    re.IGNORECASE,
+)
+_HOUSE = re.compile(
+    r"\b(?:д\.|дом|вл\.|владение)\s*[№#]?\s*\d",
+    re.IGNORECASE,
+)
+_UNIT = re.compile(
+    r"\b(?:кв\.|квартира|пом\.|помещение|офис|м\s*/\s*м)\s*\d",
+    re.IGNORECASE,
+)
+_LOCALITY = re.compile(
+    r"\b(?:г\.|город|д\.|деревня|с\.|село|п\.|поселок|посёлок)\s*\S",
+    re.IGNORECASE,
+)
+_LEGAL_TAIL = re.compile(
+    r"\.\s+(?:В\s+залоге\b|Находится\s+в\s+(?:совместной|долевой)\s+"
+    r"собственности\b|Обременения\s*:)",
+    re.IGNORECASE,
+)
+
+
+def _clean_address(value: str) -> str:
+    value = _LEGAL_TAIL.split(value, maxsplit=1)[0]
+    return " ".join(value.split()).strip(" ,.;:-")[:350]
+
+
+def property_address_precision(value: str | None) -> int:
+    """A conservative evidence score; not a geocoder confidence value."""
+    if not value:
+        return 0
+    street = bool(_STREET.search(value))
+    house = bool(_HOUSE.search(value))
+    region = bool(region_code_from_text(value))
+    locality = bool(_LOCALITY.search(value))
+    unit = bool(_UNIT.search(value))
+    return 4 * (street and house) + 2 * street + 2 * house + region + locality + unit
+
+
+def extract_asset_property_address(
+    *, title: str | None = None, description: str | None = None,
+    cadastral_number: str | None = None,
+) -> str | None:
+    """Extract explicit *asset* address, never a generic seller/venue label.
+
+    Ignore addresses conflicting with a known cadastral region. If the title
+    and description each assert conflicting numbered street/building addresses
+    without an independently verified identity, refuse to choose either.
+    """
+    cad_region = None
+    match = re.fullmatch(r"(\d{2}):\d{1,2}:\d{5,9}:\d{1,12}", (cadastral_number or "").strip())
+    if match:
+        cad_region = normalize_region_code(match.group(1))
+
+    candidates: list[tuple[int, str]] = []
+    for text in (title, description):
+        if not text:
+            continue
+        address = extract_address(text)
+        if not address:
+            continue
+        address = _clean_address(address)
+        detected = region_code_from_text(address)
+        if cad_region and detected and detected != cad_region:
+            continue
+        candidates.append((property_address_precision(address), address))
+    if not candidates:
+        return None
+    numbered = {
+        re.sub(r"[^\da-zа-яё]+", "", addr.casefold())
+        for score, addr in candidates if score >= 8
+    }
+    # Only compare two equally complete but incompatible claims when both
+    # contain explicit street and house (simple formatting alone is ignored).
+    if len(numbered) > 1:
+        def core(value: str) -> str:
+            return re.sub(r"\s+", " ", re.sub(
+                r"\b(?:г\.|город|обл\.|область|кв\.|квартира)\b", "",
+                value.casefold()
+            )).strip()
+        first, second = (core(v) for _, v in candidates[:2])
+        if first != second and not (first in second or second in first):
+            return None
+    return max(candidates, key=lambda candidate: candidate[0])[1]
+
+
+def prefer_evidenced_property_address(
+    stored_address: str | None, *, title: str | None = None,
+    description: str | None = None, cadastral_number: str | None = None,
+) -> str | None:
+    """Prefer a more specific per-asset address over a stale generic address.
+
+    An explicit asset address containing street and building is authoritative
+    over a conflicting generic field, unless source fields conflict. A vague
+    asset address only fills a missing stored value; never downgrades it.
+    """
+    evidenced = extract_asset_property_address(
+        title=title, description=description, cadastral_number=cadastral_number,
+    )
+    if not evidenced:
+        return stored_address
+    if not stored_address:
+        return evidenced
+    if property_address_precision(evidenced) >= 8:
+        return evidenced
+    return stored_address
