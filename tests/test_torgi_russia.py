@@ -992,3 +992,34 @@ def test_torgi_russia_actual_land_address_in_catalogue_and_detail() -> None:
     result = TorgiRussiaClient.parse_detail_payload({"information": f"<p>{title}</p>"})
     assert result["address"] == expected
     assert result["cadastral_numbers"] == ["47:22:0325001:373"]
+
+
+def test_torgi_russia_corroborated_asset_region_overrides_bad_catalogue_region() -> None:
+    item = _new_site_lot(region_title="Ленинградская область")
+    item["title"] = (
+        "Земельный участок, Место нахождения: РФ, Самарская область, "
+        "Красноярский район, кадастровый номер 63:26:0107007:5203"
+    )
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.region_slug == "63"
+    assert lot.region_name == "Самарская область"
+    assert lot.raw_data["source_region_name"] == "Ленинградская область"
+    assert lot.raw_data["region_evidence"]["source_region_code"] == "47"
+    assert lot.raw_data["region_evidence"]["cadastral_region_code"] == "63"
+    assert lot.raw_data["region_evidence"]["text_region_code"] == "63"
+
+
+def test_torgi_russia_legacy_cadastral_district_agrees_with_current_region() -> None:
+    item = _new_site_lot(region_title="Иркутская область")
+    item["title"] = (
+        "Земельный участок в Иркутской области, кадастровый номер "
+        "85:01:091106:59"
+    )
+
+    lot = TorgiRussiaClient.parse_search_payload({"data": [item]})[0]
+
+    assert lot.region_slug == "38"
+    assert lot.region_name == "Иркутская область"
+    assert lot.raw_data["region_evidence"]["cadastral_region_code"] == "38"
