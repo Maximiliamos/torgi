@@ -116,6 +116,29 @@ jobs:
           }
           Write-Host "BIDEXPERT_DETAIL_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
 
+      - name: Probe stale cadastral no-match against live NSPD (read only)
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\geo_no_match_live_probe.py'
+          $source = Get-Content -LiteralPath $path -Encoding UTF8 -Raw
+          $sourceB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($source))
+          $runner = 'import base64,os; source=base64.b64decode(os.environ["GEO_NO_MATCH_PROBE_B64"]).decode("utf-8"); exec(compile(source,"geo_no_match_live_probe.py","exec"),globals())'
+          $ErrorActionPreference = 'Continue'
+          $result = $runner |
+            docker exec -e PYTHONIOENCODING=utf-8 -e GEO_NO_MATCH_PROBE_B64=$sourceB64 -i bankrotai-home-geocoding-worker python - 2>&1
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "GEO no-match probe failed: $($result | Select-Object -Last 8 | Out-String)" }
+          $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
+          $parsed = $line | ConvertFrom-Json -ErrorAction Stop
+          if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
+            throw 'GEO no-match probe violated read-only contract'
+          }
+          Write-Host "GEO_NO_MATCH_LIVE_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
+
       - name: Print anonymous aggregate summary
         if: always()
         shell: powershell
