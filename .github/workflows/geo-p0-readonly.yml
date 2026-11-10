@@ -55,13 +55,19 @@ jobs:
           .\scripts\run-geo-p0-readonly.ps1 -OutputDirectory "$env:RUNNER_TEMP\geo-p0"
 
       - name: Measure branch property-address helper impact (read only)
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $helper = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\property_address_evidence.py') -Encoding UTF8 -Raw
+          $helperBytes = [Text.Encoding]::UTF8.GetBytes($helper)
+          $helperB64 = [Convert]::ToBase64String($helperBytes)
           $probe = @'
+import base64
 
-          import json
+exec(base64.b64decode("__HELPER_B64__").decode("utf-8"), globals())
+
+import json
           from collections import Counter, defaultdict
           from sqlalchemy import select, text
           from bankrotai.db import SessionLocal, ProcessedLot
@@ -111,10 +117,13 @@ jobs:
           }
           print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
           '@
-          $assembled = $helper + [Environment]::NewLine + $probe
+          $assembled = $probe.Replace("__HELPER_B64__", $helperB64)
+          $ErrorActionPreference = 'Continue'
           $result = $assembled |
-            docker exec -e PYTHONIOENCODING=utf-8 -i bankrotai-home-geocoding-worker python -
-          if ($LASTEXITCODE -ne 0) { throw 'Property-address impact probe failed' }
+             docker exec -e PYTHONIOENCODING=utf-8 -i bankrotai-home-geocoding-worker python - 2>&1
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "Property-address impact probe failed: $($result | Select-Object -Last 8 | Out-String)" }
           $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
           $parsed = $line | ConvertFrom-Json -ErrorAction Stop
           if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
@@ -123,6 +132,8 @@ jobs:
           Write-Host "PROPERTY_ADDRESS_IMPACT=$($parsed | ConvertTo-Json -Compress -Depth 16)"
 
       - name: Probe official torgi.gov detail contract (read only, bounded)
+        if: always()
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -138,6 +149,8 @@ jobs:
           Write-Host "TORGI_GOV_DETAIL_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
 
       - name: Probe BidExpert public detail contract (read only, bounded)
+        if: always()
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
