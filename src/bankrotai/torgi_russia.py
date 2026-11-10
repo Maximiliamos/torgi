@@ -12,7 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.domain import NormalizedLot
-from bankrotai.regions import REGIONS_BY_CODE, normalize_region_code, region_code_from_cadastral_number, region_code_from_text
+from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_status import public_auction_status
@@ -44,46 +44,6 @@ TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
-
-
-def _select_asset_region(
-    source_region_name: str | None,
-    *,
-    text: str | None,
-    address: str | None,
-    cadastral_numbers: list[str],
-) -> tuple[str | None, str | None, dict[str, str | None]]:
-    """Choose per-asset region evidence without hiding contradictions."""
-    source_code = normalize_region_code(source_region_name)
-    text_code = region_code_from_text(text)
-    address_code = region_code_from_text(address)
-    cadastral_codes = {
-        code
-        for value in cadastral_numbers
-        if (code := region_code_from_cadastral_number(value)) is not None
-    }
-    cadastral_code = next(iter(cadastral_codes)) if len(cadastral_codes) == 1 else None
-
-    selected = source_code
-    if cadastral_code and cadastral_code in {text_code, address_code}:
-        selected = cadastral_code
-    elif text_code and address_code == text_code:
-        selected = text_code
-    elif selected is None:
-        selected = text_code or address_code or cadastral_code
-
-    if selected and source_code == selected and source_region_name:
-        selected_name = source_region_name
-    else:
-        definition = REGIONS_BY_CODE.get(selected or "")
-        selected_name = definition.name if definition is not None else source_region_name
-
-    return selected, selected_name, {
-        "source_region_code": source_code,
-        "text_region_code": text_code,
-        "address_region_code": address_code,
-        "cadastral_region_code": cadastral_code,
-    }
 
 
 @dataclass(slots=True)
@@ -677,7 +637,7 @@ class TorgiRussiaClient:
                 continue
             region_value = item.get("region")
             region: dict = region_value if isinstance(region_value, dict) else {}
-            source_region_name = (
+            region_name = (
                 str(item.get("region_title") or region.get("title") or "").strip()
                 or None
             )
@@ -697,12 +657,6 @@ class TorgiRussiaClient:
             ]
             cadastres = [normalize_cadastral_number(value) for value in CADASTRAL_RE.findall(title)]
             address = extract_catalogue_address(title)
-            region_code, region_name, region_evidence = _select_asset_region(
-                source_region_name,
-                text=title,
-                address=address,
-                cadastral_numbers=cadastres,
-            )
             lot_url = urljoin(BASE_URL, f"/lot/{external_id}")
             start_price = parse_money(str(item.get("start_price") or ""))
             current_price = parse_money(str(item.get("current_price") or ""))
@@ -724,7 +678,7 @@ class TorgiRussiaClient:
                     title=title[:500],
                     description=title[:5000],
                     category="real_estate",
-                    region_slug=region_code,
+                    region_slug=normalize_region_code(region_name),
                     region_name=region_name,
                     address=address,
                     cadastral_number=cadastres[0] if cadastres else None,
@@ -739,9 +693,6 @@ class TorgiRussiaClient:
                     detail_level="search",
                     raw_data={
                         "raw_endpoint": urljoin(BASE_URL, PUBLIC_SEARCH_PATH),
-                        "region_code": region_code,
-                        "source_region_name": source_region_name,
-                        "region_evidence": region_evidence,
                         "image_urls": list(dict.fromkeys(photos)),
                         "cadastral_numbers": list(dict.fromkeys(cadastres)),
                         "source_status": status,
@@ -818,18 +769,13 @@ class TorgiRussiaClient:
                 str(raw_status.get("data-lot-status") or "").strip()
                 or raw_status.get_text(" ", strip=True)
             ) if raw_status else ""
-            source_region_name = next((item for item in meta if normalize_region_code(item)), None)
+            region_name = next((item for item in meta if normalize_region_code(item)), None)
+            region_code = normalize_region_code(region_name)
             cadastres = [
                 normalize_cadastral_number(item)
                 for item in CADASTRAL_RE.findall(f"{title} {description}")
             ]
             address = extract_catalogue_address(f"{title} {description}")
-            region_code, region_name, region_evidence = _select_asset_region(
-                source_region_name,
-                text=f"{title} {description}",
-                address=address,
-                cadastral_numbers=cadastres,
-            )
             gallery = card.select_one(".card-gallery")
             photos: list[str] = []
             if gallery:
@@ -866,9 +812,6 @@ class TorgiRussiaClient:
                     detail_level="search",
                     raw_data={
                         "raw_endpoint": page_url,
-                        "region_code": region_code,
-                        "source_region_name": source_region_name,
-                        "region_evidence": region_evidence,
                         "image_urls": list(dict.fromkeys(photos)),
                         "cadastral_numbers": list(dict.fromkeys(cadastres)),
                         "listing_fingerprint": sha256(
