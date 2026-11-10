@@ -73,6 +73,146 @@ class BidExpertClient:
             return response
         raise RuntimeError("BidExpert request retry loop exhausted")
 
+    def _get_detail_with_retry(self, url: str):
+        attempts = len(self.RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(attempts):
+            try:
+                response = self.session.get(
+                    url,
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+            except (
+                requests.Timeout,
+                requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ):
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+                continue
+            if response.status_code in self.RETRY_STATUS_CODES:
+                if attempt == attempts - 1:
+                    response.raise_for_status()
+                    return response
+                time.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+                continue
+            response.raise_for_status()
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("BidExpert detail redirected; exact lot identity is unverified")
+            return response
+        raise RuntimeError("BidExpert detail request retry loop exhausted")
+
+    @staticmethod
+    def _detail_field(card, label: str) -> str | None:
+        expected = label.casefold().rstrip(":")
+        for item in card.select(".bid-card-content-item"):
+            title_node = item.select_one(".title")
+            title = (
+                " ".join(title_node.get_text(" ", strip=True).split())
+                if title_node is not None
+                else ""
+            )
+            if title.casefold().rstrip(":") != expected:
+                continue
+            value_node = item.select_one(".content")
+            if value_node is not None:
+                value = " ".join(value_node.get_text(" ", strip=True).split())
+            else:
+                full = " ".join(item.get_text(" ", strip=True).split())
+                value = full[len(title):].strip(" :") if full.startswith(title) else full
+            return value or None
+        return None
+
+    def parse_detail_html(
+        self,
+        html: str,
+        *,
+        lot_id: str,
+        endpoint: str,
+    ) -> NormalizedLot:
+        if not re.fullmatch(r"\d{1,20}", str(lot_id or "")):
+            raise ValueError("Invalid BidExpert lot identity")
+        soup = BeautifulSoup(html, "lxml")
+        page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        if not re.search(rf"\bлот\s*№\s*{re.escape(lot_id)}\b", page_title, re.I):
+            raise ValueError("BidExpert detail identity mismatch")
+
+        card = soup.select_one(".bid-card")
+        if card is None:
+            raise ValueError("BidExpert detail lot card is missing")
+
+        section = soup.select_one(".section-title")
+        title = (
+            " ".join(section.get_text(" ", strip=True).split())
+            if section is not None
+            else ""
+        )
+        description = self._detail_field(card, "Описание лота") or title
+        location = self._detail_field(card, "Месторасположение")
+        scoped_text = " ".join(
+            part for part in (title, description, location or "") if part
+        )
+        numbers = extract_cadastral_numbers(scoped_text)
+        # Never scan the whole page: footer/recommendation cards can contain
+        # unrelated addresses and cadastral numbers.
+        address = extract_address(description) or (
+            " ".join(location.split()).strip(" ,.;:-") if location else None
+        )
+        region_code = (
+            numbers[0].split(":", 1)[0].zfill(2)
+            if numbers
+            else region_code_from_text(" ".join(part for part in (address, title) if part))
+        )
+        region_name = (
+            REGIONS_BY_CODE[region_code].name
+            if region_code in REGIONS_BY_CODE
+            else None
+        )
+        price = parse_money(self._detail_field(card, "Начальная цена"))
+        lot_url = f"{self.BASE_URL}/bids/lot/?n={lot_id}"
+        return NormalizedLot(
+            external_id=f"bidexpert:{lot_id}",
+            source="bidexpert",
+            source_system="bidexpert.ru",
+            title=(title or description or f"Лот №{lot_id}")[:500],
+            description=(description or title)[:5000],
+            category=classify_category(title, description or ""),
+            region_slug=region_code,
+            region_name=region_name,
+            address=address,
+            cadastral_number=numbers[0] if numbers else None,
+            vin=None,
+            area=None,
+            start_price=price,
+            current_price=None,
+            auction_status="active",
+            lot_url=lot_url,
+            source_url=lot_url,
+            detail_level="detail",
+            raw_data={
+                "source": "bidexpert_detail_html",
+                "detail_enrichment_status": "success",
+                "cadastral_numbers": numbers,
+                "region_code": region_code,
+                "raw_endpoint": endpoint,
+            },
+        )
+
+    def fetch_lot_detail(self, external_id: str) -> NormalizedLot:
+        raw_id = str(external_id or "").strip()
+        if raw_id.startswith("bidexpert:"):
+            raw_id = raw_id.split(":", 1)[1]
+        if not re.fullmatch(r"\d{1,20}", raw_id):
+            raise ValueError("Invalid BidExpert lot identity")
+        url = f"{self.BASE_URL}/bids/lot/?n={raw_id}"
+        response = self._get_detail_with_retry(url)
+        return self.parse_detail_html(
+            response.text,
+            lot_id=raw_id,
+            endpoint=response.url or url,
+        )
+
     def search_lots(self, filters: BidExpertSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
         response = self._get_with_retry(params=self._params(filters))
         lots = self.parse_listing_html(response.text, filters=filters, endpoint=response.url)
