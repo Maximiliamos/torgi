@@ -126,10 +126,6 @@ jobs:
           }
       - name: Checkout exact workflow SHA for read-only preflight
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Configure Python for local checksum and capacity verification
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.11'
       - name: Read-only exact-SHA, seven-source, pause, circuit, DB and lease preflight
         shell: powershell
         run: |
@@ -169,7 +165,26 @@ jobs:
             throw 'Cannot read independently configured MapDataset S3 bucket'
           }
           $expectedBucket = $buckets[-1].Trim()
-          $result = @(python scripts/preflight_capacity_guard.py --backup-dir 'D:\BankrotAI\dr-backups' --s3-evidence $env:TORGI_S3_CAPACITY_EVIDENCE_PATH --expected-bucket $expectedBucket)
+          $backupDir = (Resolve-Path -LiteralPath 'D:\BankrotAI\dr-backups' -ErrorAction Stop).Path
+          $evidencePath = (Resolve-Path -LiteralPath $env:TORGI_S3_CAPACITY_EVIDENCE_PATH -ErrorAction Stop).Path
+          $guardPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\preflight_capacity_guard.py'
+          if (-not (Test-Path -LiteralPath $guardPath -PathType Leaf)) {
+            throw 'Capacity guard script is missing from exact-SHA checkout'
+          }
+          $image = "bankrotai-home-api:$env:GITHUB_SHA"
+          $guardScript = Get-Content -LiteralPath $guardPath -Raw
+          $result = @(
+            $guardScript | docker run --rm -i `
+              --mount "type=bind,source=$backupDir,target=/capacity/backups,readonly" `
+              --mount "type=bind,source=$evidencePath,target=/capacity/s3-evidence.json,readonly" `
+              --env TORGI_CAPACITY_EVIDENCE_HMAC_KEY `
+              $image `
+              python - `
+                --backup-dir /capacity/backups `
+                --s3-evidence /capacity/s3-evidence.json `
+                --expected-bucket $expectedBucket `
+                --allow-portable-backup-path
+          )
           if ($LASTEXITCODE -ne 0 -or -not $result.Count -or
               $result[-1] -notmatch '^CAPACITY_PREFLIGHT=') {
             throw "Backup/disk/S3 capacity gate failed: $($result -join '; ')"

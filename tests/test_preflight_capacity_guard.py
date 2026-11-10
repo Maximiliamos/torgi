@@ -60,6 +60,29 @@ class CapacityTests(unittest.TestCase):
     def test_complete_signed_evidence(self):
         self.assertTrue(self.assess()["allowed"])
 
+    def test_container_mount_accepts_same_windows_backup_filename(self):
+        self.meta["backup_file"] = (
+            r"D:\BankrotAI\dr-backups\\" + self.dump.name
+        )
+        self.save_meta()
+        result = module.assess(
+            self.backups, self.evidence_file, self.key,
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            min_s3_bytes=1000, expected_bucket="test-bucket",
+            allow_portable_backup_path=True,
+        )
+        self.assertTrue(result["allowed"])
+
+        self.meta["backup_file"] = r"D:\BankrotAI\dr-backups\wrong.dump"
+        self.save_meta()
+        result = module.assess(
+            self.backups, self.evidence_file, self.key,
+            now=self.now, free_disk_bytes=10000, min_disk_bytes=1000,
+            min_s3_bytes=1000, expected_bucket="test-bucket",
+            allow_portable_backup_path=True,
+        )
+        self.assertFalse(result["allowed"])
+
     def test_tampered_dump_blocks(self):
         self.dump.write_bytes(b"tampered")
         self.assertFalse(self.assess()["allowed"])

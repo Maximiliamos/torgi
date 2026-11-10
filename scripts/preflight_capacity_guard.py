@@ -11,7 +11,7 @@ import json
 import shutil
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 MIN_DISK_BYTES = 10 * 1024 ** 3
 MIN_S3_BYTES = 512 * 1024 ** 2
@@ -35,7 +35,8 @@ def canonical_attestation(data):
 
 def assess(backup_dir, evidence_path, hmac_key, *,
            now=None, free_disk_bytes=None, min_disk_bytes=MIN_DISK_BYTES,
-           min_s3_bytes=MIN_S3_BYTES, expected_bucket=None):
+           min_s3_bytes=MIN_S3_BYTES, expected_bucket=None,
+           allow_portable_backup_path=False):
     errors = []
     now = now or datetime.now(timezone.utc)
     backup_dir = Path(backup_dir)
@@ -50,7 +51,16 @@ def assess(backup_dir, evidence_path, hmac_key, *,
             metadata_path = backups[0]
             metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
             dump_path = metadata_path.with_suffix(".dump")
-            if not dump_path.is_file() or dump_path.resolve() != Path(metadata["backup_file"]).resolve():
+            recorded_backup = metadata["backup_file"]
+            path_matches = False
+            try:
+                path_matches = dump_path.resolve() == Path(recorded_backup).resolve()
+            except (OSError, RuntimeError, TypeError):
+                path_matches = False
+            if not path_matches and allow_portable_backup_path:
+                recorded_windows = PureWindowsPath(str(recorded_backup))
+                path_matches = bool(recorded_windows.drive) and recorded_windows.name == dump_path.name
+            if not dump_path.is_file() or not path_matches:
                 raise ValueError("backup dump path mismatch or missing")
             if metadata.get("restore_verification") != "passed":
                 raise ValueError("isolated restore not verified")
@@ -112,11 +122,17 @@ def main():
     parser.add_argument("--backup-dir", type=Path, required=True)
     parser.add_argument("--s3-evidence", type=Path, required=True)
     parser.add_argument("--expected-bucket", required=True)
+    parser.add_argument(
+        "--allow-portable-backup-path",
+        action="store_true",
+        help="Accept a Windows absolute backup_file path when verifying the same dump through a read-only container bind mount.",
+    )
     args = parser.parse_args()
     import os
     result = assess(args.backup_dir, args.s3_evidence,
                     os.environ.get("TORGI_CAPACITY_EVIDENCE_HMAC_KEY", ""),
-                    expected_bucket=args.expected_bucket)
+                    expected_bucket=args.expected_bucket,
+                    allow_portable_backup_path=args.allow_portable_backup_path)
     print("CAPACITY_PREFLIGHT=" + json.dumps(result, sort_keys=True))
     return 0 if result["allowed"] else 2
 
