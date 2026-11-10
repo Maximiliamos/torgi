@@ -142,6 +142,7 @@ def _probe_nistp() -> dict[str, Any]:
     connector = connector_registry.create("nistp.ru")
     return asyncio.run(_probe_nistp_connector(connector))
 
+
 def _probe_one(source_id: str) -> dict[str, Any]:
     from bankrotai.services.source_resilience import probe_source_endpoint
 
