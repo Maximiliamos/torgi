@@ -132,3 +132,70 @@ jobs:
           $reportJson = $result | ConvertTo-Json -Depth 8
           $reportJson | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           $reportJson
+
+      - name: Inspect current seven-source run status (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = @'
+          import json
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun
+
+          run_id = "836b2bb2-9865-4df2-b5d1-8105c180eaa4"
+          with SessionLocal() as s:
+              run = s.scalar(select(LotSyncRun).where(LotSyncRun.id == run_id))
+              if run is None:
+                  raise RuntimeError("target LotSyncRun not found")
+              rows = list(s.scalars(
+                  select(LotSyncSourceRun)
+                  .where(LotSyncSourceRun.sync_run_id == run_id)
+                  .order_by(LotSyncSourceRun.source_system)
+              ))
+              payload = {
+                  "read_only": True,
+                  "database_writes": 0,
+                  "run": {
+                      "id": run.id,
+                      "status": run.status,
+                      "trigger_type": run.trigger_type,
+                      "created_at": run.created_at,
+                      "started_at": run.started_at,
+                      "heartbeat_at": run.heartbeat_at,
+                      "lease_expires_at": run.lease_expires_at,
+                      "finished_at": run.finished_at,
+                      "checkpoint": run.checkpoint_json,
+                  },
+                  "sources": [
+                      {
+                          "source_system": x.source_system,
+                          "status": x.status,
+                          "pages_scanned": x.pages_scanned,
+                          "items_seen": x.items_seen,
+                          "items_inserted": x.items_inserted,
+                          "items_updated": x.items_updated,
+                          "items_unchanged": x.items_unchanged,
+                          "items_archived": x.items_archived,
+                          "items_failed": x.items_failed,
+                          "progress_at": x.progress_at,
+                          "started_at": x.started_at,
+                          "finished_at": x.finished_at,
+                          "error_message": x.error_message,
+                          "checkpoint": x.checkpoint_json,
+                      }
+                      for x in rows
+                  ],
+              }
+          print(json.dumps(payload, ensure_ascii=False, default=str))
+          '@
+          $output = $code | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0 -or -not $output) {
+            throw "Seven-source read-only status probe failed"
+          }
+          $result = $output | Select-Object -Last 1 | ConvertFrom-Json
+          if ($result.read_only -ne $true -or $result.database_writes -ne 0) {
+            throw "Read-only status contract violated"
+          }
+          $summary = $result | ConvertTo-Json -Depth 12
+          $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          $summary
