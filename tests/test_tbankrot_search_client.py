@@ -498,3 +498,31 @@ def test_tbankrot_loads_only_tbankrot_session_cookies(tmp_path) -> None:
 
     assert client.session.cookies.get("session", domain=".tbankrot.ru") == "secret"
     assert client.session.cookies.get("foreign") is None
+
+
+def test_tbankrot_asset_region_overrides_listing_page_region():
+    item = ParsedLotData(
+        external_id="7895988",
+        title="Земельный участок 600 м², Московская обл., Раменский р-н, д. Першино",
+        description=(
+            "Земельный участок площадью 600 кв.м, кадастровый номер "
+            "50:23:0050563:2759. Адрес: Российская Федерация, Московская область, "
+            "р-н Раменский, д. Першино"
+        ),
+        address="Российская Федерация, Московская область, р-н Раменский, д. Першино",
+        url="https://tbankrot.ru/item?id=7895988",
+        cadastral_number="50:23:0050563:2759",
+    )
+
+    lot = TBankrotClient()._normalize_parsed_lot(
+        item,
+        filters=TBankrotSearchFilters(region="84"),  # Yaroslavl retrieval page
+        raw_endpoint="https://tbankrot.ru/torgi/r/yaroslavskaya-oblast",
+    )
+
+    assert lot.region_slug == "50"
+    assert lot.region_name == "Московская область"
+    assert lot.raw_data["tbankrot_region_code"] == "84"
+    assert lot.raw_data["tbankrot_region_name"] == "Ярославская область"
+    assert lot.raw_data["region_code"] == "50"
+    assert lot.raw_data["region_name"] == "Московская область"
