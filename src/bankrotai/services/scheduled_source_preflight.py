@@ -64,37 +64,83 @@ def _probe_cdtrf() -> dict[str, Any]:
         session.close()
 
 
-def _probe_nistp() -> dict[str, Any]:
+async def _probe_nistp_connector(
+    connector: Any,
+    *,
+    max_pages: int = 5,
+    max_detail_attempts: int = 10,
+) -> dict[str, Any]:
+    """Find one independently proven live NISTP lot with bounded sampling.
+
+    Page 1 can legitimately contain catalogue rows whose shared trade cards do
+    not prove the individual asset. Those rows are conservative rejects, not
+    proof that the whole source is unavailable.
+    """
     from bankrotai.connectors.etp_sources.common import EtpSearchFilters
-    from bankrotai.connectors.registry import connector_registry
     from bankrotai.services.etp_nistp_schedule_guard import (
         catalogue_row_eligible_for_detail, independent_detail_proven,
     )
 
-    async def run() -> dict[str, Any]:
-        connector = connector_registry.create("nistp.ru")
-        page = await connector.search(EtpSearchFilters(page=1), None)
-        candidates = [
-            lot for lot in page.items if catalogue_row_eligible_for_detail(lot)
-        ][:2]
-        if not candidates:
-            raise RuntimeError("NISTP preflight found no eligible catalogue rows")
-        for lot in candidates:
-            try:
-                await connector.enrich_lot(lot)
-            except Exception:
+    if not 1 <= max_pages <= 10:
+        raise ValueError("NISTP preflight max_pages must be 1..10")
+    if not 1 <= max_detail_attempts <= 20:
+        raise ValueError("NISTP preflight max_detail_attempts must be 1..20")
+
+    cursor: str | None = None
+    pages_checked = 0
+    eligible_seen = 0
+    detail_attempts = 0
+    failures: list[str] = []
+    for page_number in range(1, max_pages + 1):
+        page = await connector.search(EtpSearchFilters(page=page_number), cursor)
+        pages_checked += 1
+        for lot in page.items:
+            if not catalogue_row_eligible_for_detail(lot):
                 continue
-            if independent_detail_proven(lot):
+            eligible_seen += 1
+            if detail_attempts >= max_detail_attempts:
+                break
+            detail_attempts += 1
+            try:
+                enriched = await connector.enrich_lot(lot)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+                continue
+            candidate = enriched if enriched is not None else lot
+            if independent_detail_proven(candidate):
                 return {
                     "success": True,
                     "source_system": "nistp.ru",
                     "verified_details": 1,
-                    "external_id": lot.external_id,
+                    "external_id": candidate.external_id,
+                    "pages_checked": pages_checked,
+                    "eligible_seen": eligible_seen,
+                    "detail_attempts": detail_attempts,
                 }
-        raise RuntimeError("NISTP preflight verified zero independent details")
+            failures.append("independent_detail_not_proven")
 
-    return asyncio.run(run())
+        if detail_attempts >= max_detail_attempts or not page.next_cursor:
+            break
+        cursor = page.next_cursor
+        await asyncio.sleep(0.25)
 
+    if eligible_seen == 0:
+        raise RuntimeError(
+            f"NISTP preflight found no eligible catalogue rows across {pages_checked} page(s)"
+        )
+    failure_summary = ",".join(failures[-10:]) or "none"
+    raise RuntimeError(
+        "NISTP preflight verified zero independent details: "
+        f"pages={pages_checked} eligible={eligible_seen} "
+        f"attempted={detail_attempts} failures={failure_summary}"
+    )
+
+
+def _probe_nistp() -> dict[str, Any]:
+    from bankrotai.connectors.registry import connector_registry
+
+    connector = connector_registry.create("nistp.ru")
+    return asyncio.run(_probe_nistp_connector(connector))
 
 def _probe_one(source_id: str) -> dict[str, Any]:
     from bankrotai.services.source_resilience import probe_source_endpoint
