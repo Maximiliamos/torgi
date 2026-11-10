@@ -13,7 +13,8 @@ permissions:
 
 concurrency:
   group: geo-p0-readonly-census
-  cancel-in-progress: false
+  # Keep only the newest audited source version when a queued run is superseded.
+  cancel-in-progress: true
 
 jobs:
   evidence:
