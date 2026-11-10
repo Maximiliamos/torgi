@@ -280,3 +280,19 @@ def test_misnumbered_target_table_reports_heading_before_native_anchor_error():
         parse_nistp_shared_trade_card(wrong, trade_nid="502957")
     with pytest.raises(NistpCardError, match="lot_heading_does_not_match_table"):
         get_nistp_lot(wrong, trade_nid="502957", lot_number=5)
+
+def test_asset_address_outweighs_generic_region_in_own_numbered_section():
+    # One provider-owned table supplies a vague region field and a precise
+    # per-lot description; no address from another lot or contact is consulted.
+    html = _document(CASES[0]).replace(
+        "Машино-место, площадью 13,3 кв. м, кад. № 77:01:0004002:6638",
+        "Квартира, адрес: город Москва, вн.тер.г. муниципальный округ "
+        "Молжаниновский, шоссе Ленинградское, дом 228, корпус 4, "
+        "квартира 363, кадастровый номер: 77:01:0004002:6638",
+    )
+    result = get_nistp_lot(html, trade_nid="502957", lot_number=1)
+    assert "город Москва" in result.address
+    assert "Ленинградское" in result.address
+    assert "квартира 363" in result.address
+    assert result.cadastral_number == "77:01:0004002:6638"
+
