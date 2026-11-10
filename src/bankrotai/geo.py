@@ -1619,11 +1619,16 @@ def resolve_lot_geo(
             break
 
     if cadastral_candidates:
-        from bankrotai.regions import REGIONS_BY_CODE, region_code_from_text
+        from bankrotai.regions import (
+            REGIONS_BY_CODE,
+            region_code_from_cadastral_number,
+            region_code_from_text,
+        )
 
         cadastral_regions = {
-            candidate.split(":", 1)[0]
-            for candidate in cadastral_candidates if ":" in candidate
+            code
+            for candidate in cadastral_candidates
+            if (code := region_code_from_cadastral_number(candidate)) is not None
         }
         if len(cadastral_regions) == 1:
             cadastral_region = next(iter(cadastral_regions))
@@ -1879,7 +1884,9 @@ def validate_geocoding_result(
     if expected_cad and observed_cad and expected_cad != observed_cad:
         return False, "cadastral_number_mismatch"
 
-    expected_region = expected_cad.split(":", 1)[0].zfill(2) if ":" in expected_cad else None
+    from bankrotai.regions import region_code_from_cadastral_number
+
+    expected_region = region_code_from_cadastral_number(expected_cad)
     if expected_region and address:
         from bankrotai.regions import region_code_from_text
 
