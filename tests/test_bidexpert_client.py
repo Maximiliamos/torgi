@@ -122,3 +122,18 @@ def test_bidexpert_isolates_adjacent_cards_and_builds_working_absolute_url() -> 
     assert reported.start_price == 4_250_000
     assert reported.lot_url == "https://bidexpert.ru/bids/lot/?n=1121014"
     assert reported.source_url == reported.lot_url
+
+
+def test_bidexpert_title_region_is_persisted_when_address_and_cadastre_are_absent() -> None:
+    html = """
+    <div class="bid-item"><a href="/bids/lot/?n=944718">
+      <div class="title">Лот №944718 Липецкая область Прием заявок Земельные участки земельный участок</div>
+      <div class="application-submit-end"><span>24-02-2027, 21:00</span></div>
+    </a></div>
+    """
+    lot = BidExpertClient().parse_listing_html(
+        html, filters=BidExpertSearchFilters(category="land")
+    )[0]
+    assert lot.region_slug == "48"
+    assert lot.region_name == "Липецкая область"
+    assert lot.raw_data["region_code"] == "48"
