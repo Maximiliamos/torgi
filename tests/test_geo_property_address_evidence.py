@@ -155,3 +155,23 @@ def test_cadastral_region_rejects_conflicting_stored_generic_address():
     )
     assert "Москва" not in chosen
 
+
+
+def test_mets_official_asset_address_excludes_trailing_classification():
+    # Reduced from the supplied public M-ETS 238546-1 detail card.
+    description = (
+        "Гараж, площадь: 20кв.м., адрес (местонахождение): Российская "
+        "Федерация, Республика Хакасия, г.о. город Черногорск, "
+        "г. Черногорск, гск В районе ПКСО общество Автолюбитель, "
+        "влд. 386, категория земель: Нежилое здание, "
+        "кадастровый номер: 19:02:010716:2557"
+    )
+    address = extract_asset_property_address(
+        description=description, cadastral_number="19:02:010716:2557",
+    )
+    assert address == (
+        "Российская Федерация, Республика Хакасия, г.о. город Черногорск, "
+        "г. Черногорск, гск В районе ПКСО общество Автолюбитель, влд. 386"
+    )
+    assert "категория земель" not in address
+    assert "кадастровый номер" not in address
