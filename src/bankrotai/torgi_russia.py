@@ -461,13 +461,29 @@ class TorgiRussiaClient:
         flight = cls._extract_next_flight_text(html)
         initial_lots = cls._extract_named_json_value(flight, "initialLots")
         records: dict[int, dict] = {}
+        def add_record(item) -> None:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                return
+            if not isinstance(item.get("title"), str):
+                return
+            region, region_title = item.get("region"), item.get("region_title")
+            if not isinstance(region, dict) and not isinstance(region_title, str):
+                return
+            if "start_price" in item or "current_price" in item:
+                records[item["id"]] = item
         if isinstance(initial_lots, list):
             for item in initial_lots:
                 if isinstance(item, dict) and isinstance(item.get("id"), int):
                     records[item["id"]] = item
-
-        # Compatibility fallback for early/new variants that embed the same
-        # objects under a generic component property rather than initialLots.
+        cursor, marker = 0, '"lot":'
+        while (start := flight.find(marker, cursor)) >= 0:
+            value_start = start + len(marker)
+            try:
+                item, cursor = json.JSONDecoder().raw_decode(flight, value_start)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                cursor = value_start
+                continue
+            add_record(item)
         for match in LOT_OBJECT_START_RE.finditer(flight):
             raw_object = cls._extract_balanced_json_object(flight, match.start())
             if raw_object is None:
@@ -476,22 +492,7 @@ class TorgiRussiaClient:
                 item = json.loads(raw_object)
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
-            if (
-                isinstance(item, dict)
-                and isinstance(item.get("id"), int)
-                and isinstance(item.get("title"), str)
-                and (
-                    isinstance(item.get("region"), dict)
-                    or isinstance(item.get("region_title"), str)
-                )
-                and ("start_price" in item or "current_price" in item)
-            ):
-                records[item["id"]] = item
-
-        # The SSR payload can contain unrelated widgets. Keep only records that
-        # are also represented by a public /lot/{id} link when the DOM exposes
-        # such links. This preserves the search result set while avoiding JSON
-        # objects from hidden/global data.
+            add_record(item)
         soup = BeautifulSoup(html, "html.parser")
         linked_ids: set[int] = set()
         for anchor in soup.select("a[href*='/lot/']"):
@@ -501,7 +502,6 @@ class TorgiRussiaClient:
                 linked_ids.add(int(link_match.group(1)))
         if require_linked and linked_ids:
             records = {key: value for key, value in records.items() if key in linked_ids}
-
         return list(records.values())
 
     @staticmethod

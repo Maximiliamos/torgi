@@ -57,9 +57,25 @@ def _host_lot_url(url: str) -> tuple[str, str, str]:
 
 
 def detail_request_url(url: str) -> str:
-    """Map an official M-ETS lot identity to its working public detail URL."""
+    """Return the preferred public detail origin for a canonical M-ETS lot."""
     canonical, _trade, _lot = _host_lot_url(url)
     return DETAIL_MIRROR + urlsplit(canonical).path
+
+
+def detail_request_candidates(url: str) -> tuple[str, str]:
+    """Return exact-identity detail origins in safe preference order."""
+    canonical, _trade, _lot = _host_lot_url(url)
+    return DETAIL_MIRROR + urlsplit(canonical).path, canonical
+
+
+def is_detail_placeholder(html: str) -> bool:
+    """Detect the provider's HTTP-200 spinner/interstitial, not a lot page."""
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.select_one('[itemprop="sku"][content], .lot-container') is not None:
+        return False
+    return soup.select_one(
+        ".gorizontal-vertikal img[src^='data:image/gif;base64,']"
+    ) is not None
 
 
 def discover_lot_urls(html: str, *, limit: int = 10) -> list[str]:
@@ -114,6 +130,8 @@ def _date_after_label(text: str, label: str) -> datetime | None:
 def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     """Build one evidence-backed source lot; never infer terminal status."""
     canonical, trade, lot_number = _host_lot_url(url)
+    if is_detail_placeholder(html):
+        raise MetsEvidenceError("M-ETS detail placeholder/interstitial")
     soup = BeautifulSoup(html, "html.parser")
     for element in soup(["script", "style", "noscript"]):
         element.decompose()
@@ -289,10 +307,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             if image_url not in image_urls:
                 image_urls.append(image_url)
 
-    # Keep the platform/external identifier stable while exposing the
-    # provider's actual working public link to end users (the old root
-    # detail path returns HTTP 403).
-    public_detail_url = DETAIL_MIRROR + urlsplit(canonical).path
+    # Keep the canonical provider URL in stored/public evidence. Runtime fetch
+    # may use the mirror first, but the mirror is not a trustworthy user-facing
+    # detail URL when it serves a generic spinner placeholder.
+    public_detail_url = canonical
     return NormalizedLot(
         external_id=f"{trade}-{lot_number}",
         source="m-ets.ru",
@@ -350,62 +368,71 @@ class MetsPublicPilot:
     def _get(
         self, url: str, *, before_request: Callable[[str], None] | None = None,
     ) -> str:
-        # Catalogue remains on its proven original source endpoint.
-        # Verified PUBLIC detail is served by the official meetings subdomain:
-        # requesting the legacy root detail URL returns 403 (observed from CI).
-        # Normalize the trade/lot identity BEFORE sending any HTTP request.
-        request_url = url
-        if url != APARTMENTS_URL:
-            request_url = detail_request_url(url)
-        if self._last_request_at is not None:
-            remaining = 0.5 - (time.monotonic() - self._last_request_at)
-            if remaining > 0:
-                time.sleep(remaining)
-        self._last_request_at = time.monotonic()
-        response = None
-        for delay in (0.5, 1.0, 2.0, None):
-            try:
-                if before_request is not None:
-                    before_request(request_url)
-                response = self.session.get(
-                    request_url,
-                    timeout=(5, 20),
-                    allow_redirects=False,
-                    headers={"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
-                )
-            except (
-                requests.Timeout,
-                requests.ConnectionError,
-                requests.exceptions.ChunkedEncodingError,
-            ):
-                if delay is None:
-                    raise
-                time.sleep(delay)
-                continue
-            # Authentication refusals and provider throttling are hard stops:
-            # never retry 401/403/429 or turn them into missing-lot evidence.
-            if response.status_code in {401, 403, 429}:
-                response.raise_for_status()
-                raise MetsEvidenceError("M-ETS provider access explicitly refused")
-            if 500 <= response.status_code <= 504:
-                if delay is None:
+        # The catalogue stays on m-ets.ru. Detail reads prefer the historical
+        # meetings mirror, but November 2026 production evidence shows that the
+        # mirror can return the same HTTP-200 spinner placeholder for every lot.
+        # In that exact case only, retry the same verified trade/lot identity on
+        # canonical m-ets.ru; redirects and identity/schema contradictions still
+        # fail closed.
+        request_urls = (
+            (url,) if url == APARTMENTS_URL else detail_request_candidates(url)
+        )
+        placeholder_seen = False
+        for request_url in request_urls:
+            if self._last_request_at is not None:
+                remaining = 0.5 - (time.monotonic() - self._last_request_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+            self._last_request_at = time.monotonic()
+            response = None
+            for delay in (0.5, 1.0, 2.0, None):
+                try:
+                    if before_request is not None:
+                        before_request(request_url)
+                    response = self.session.get(
+                        request_url,
+                        timeout=(5, 20),
+                        allow_redirects=False,
+                        headers={
+                            "User-Agent": "TORGI-source-quality-pilot/0.1",
+                            "Accept": "text/html",
+                        },
+                    )
+                except (
+                    requests.Timeout,
+                    requests.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError,
+                ):
+                    if delay is None:
+                        raise
+                    time.sleep(delay)
+                    continue
+                if response.status_code in {401, 403, 429}:
                     response.raise_for_status()
-                    raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
-                time.sleep(delay)
+                    raise MetsEvidenceError("M-ETS provider access explicitly refused")
+                if 500 <= response.status_code <= 504:
+                    if delay is None:
+                        response.raise_for_status()
+                        raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
+                    time.sleep(delay)
+                    continue
+                break
+            if response is None:
+                raise RuntimeError("M-ETS request retry loop exhausted")
+            response.raise_for_status()
+            if 300 <= response.status_code < 400:
+                raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
+            if len(response.content) > MAX_HTML_BYTES:
+                raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
+            if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
+                raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
+            if url != APARTMENTS_URL and is_detail_placeholder(response.text):
+                placeholder_seen = True
                 continue
-            break
-        if response is None:
-            raise RuntimeError("M-ETS request retry loop exhausted")
-        response.raise_for_status()
-        # Never follow a redirect on either the catalogue or the official
-        # detail mirror: a location change must not silently alter the lot.
-        if 300 <= response.status_code < 400:
-            raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
-        if len(response.content) > MAX_HTML_BYTES:
-            raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
-        if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
-            raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
-        return response.text
+            return response.text
+        if placeholder_seen:
+            raise MetsEvidenceError("M-ETS detail placeholder/interstitial")
+        raise MetsEvidenceError("M-ETS detail page unavailable")
 
     def preview(self, *, max_lots: int = 5) -> dict:
         if not 1 <= max_lots <= 10:
