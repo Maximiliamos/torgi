@@ -2980,7 +2980,7 @@ class TBankrotClient:
             title=(item.title or "")[:500],
             description=description[:5000],
             category=classify_category(item.title or "", description),
-            region_slug=official_region_code or (str(region_code) if region_code else None),
+            region_slug=official_region_code or (str(site_region_code) if site_region_code else None),
             region_name=region_name,
             address=item.address or None,
             cadastral_number=item.cadastral_number or None,
