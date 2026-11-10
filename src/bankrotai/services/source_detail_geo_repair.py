@@ -113,6 +113,7 @@ def repair_source_details_for_geo(
     if not apply or not accepted:
         return result
 
+    session.expire_all()
     now = utc_now()
     ids = [int(item["lot_id"]) for item in accepted]
     processed = {
