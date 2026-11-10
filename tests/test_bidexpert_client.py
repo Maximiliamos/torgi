@@ -137,3 +137,102 @@ def test_bidexpert_title_region_is_persisted_when_address_and_cadastre_are_absen
     assert lot.region_slug == "48"
     assert lot.region_name == "Липецкая область"
     assert lot.raw_data["region_code"] == "48"
+
+def test_bidexpert_detail_uses_lot_card_location_not_footer_or_related_cards() -> None:
+    html = """
+    <html><head><title>
+      Информация о праве граждан участвовать в аукционе, лот №944717
+    </title></head><body>
+      <div class="section-title">Земельный участок</div>
+      <div class="bid-card">
+        <div class="bid-card-content-item">
+          <div class="title">Описание лота:</div>
+          <div class="content">земельный участок</div>
+        </div>
+        <div class="bid-card-content-item">
+          <div class="title">Месторасположение:</div>
+          <div class="content">
+            Липецкая область, обл Липецкая, м.о. Липецкий, с Ивово, ул Лесная
+          </div>
+        </div>
+      </div>
+      <div class="bids-card-description">
+        Чужой земельный участок, кадастровый номер 22:43:020001:1274
+      </div>
+      <div class="footer">
+        Адрес 117545, г. Москва, ш. Варшавское, д. 129 к. 3
+      </div>
+    </body></html>
+    """
+    lot = BidExpertClient().parse_detail_html(
+        html,
+        lot_id="944717",
+        endpoint="https://bidexpert.ru/bids/lot/?n=944717",
+    )
+
+    assert lot.address == (
+        "Липецкая область, обл Липецкая, м.о. Липецкий, с Ивово, ул Лесная"
+    )
+    assert lot.region_slug == "48"
+    assert lot.region_name == "Липецкая область"
+    assert lot.cadastral_number is None
+    assert "Москва" not in lot.address
+    assert lot.raw_data["source"] == "bidexpert_detail_html"
+
+
+def test_bidexpert_detail_ignores_conditional_cadastral_number_and_keeps_asset_address() -> None:
+    html = """
+    <html><head><title>
+      Земельный участок с условным кадастровым номером 67:14:1380101:ЗУ1,
+      лот №919738
+    </title></head><body>
+      <div class="section-title">
+        Земельный участок с условным кадастровым номером 67:14:1380101:ЗУ1
+      </div>
+      <div class="bid-card">
+        <div class="bid-card-content-item">
+          <div class="title">Описание лота:</div>
+          <div class="content">
+            Земельный участок с условным кадастровым номером 67:14:1380101:ЗУ1
+            площадь 1231 по адресу Российская Федерация, Смоленская область,
+            Починковский муниципальный округ, напротив д. 40
+          </div>
+        </div>
+        <div class="bid-card-content-item">
+          <div class="title">Месторасположение:</div>
+          <div class="content">
+            Смоленская область, обл Смоленская, м.о. Починковский, д Шанталово
+          </div>
+        </div>
+      </div>
+    </body></html>
+    """
+    lot = BidExpertClient().parse_detail_html(
+        html,
+        lot_id="919738",
+        endpoint="https://bidexpert.ru/bids/lot/?n=919738",
+    )
+
+    assert lot.cadastral_number is None
+    assert lot.address is not None
+    assert "Смоленская область" in lot.address
+    assert "ЗУ1" not in (lot.cadastral_number or "")
+
+
+def test_bidexpert_connector_exposes_exact_detail_without_bulk_enrichment() -> None:
+    connector = BidExpertConnector()
+    sentinel = object()
+    calls = []
+
+    def fake_fetch(external_id):
+        calls.append(external_id)
+        return sentinel
+
+    connector.client.fetch_lot_detail = fake_fetch
+    result = asyncio.run(connector.fetch_lot("bidexpert:944717"))
+
+    assert result is sentinel
+    assert calls == ["bidexpert:944717"]
+    assert "detail" in connector.capabilities
+    assert "detail_enrichment" not in connector.capabilities
+
