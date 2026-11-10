@@ -152,7 +152,9 @@ celery_app.conf.update(
         },
         "cleanup-old-map-datasets": {
             "task": "bankrotai.tasks.cleanup_old_map_datasets_task",
-            "schedule": crontab(hour=4, minute=37),
+            # Each invocation is capped at 100k tile deletes. Run hourly so a
+            # large historical backlog drains gradually without one huge transaction.
+            "schedule": crontab(minute=37),
             "options": {"expires": 3600},
         },
         "daily-operational-quality-report": {
