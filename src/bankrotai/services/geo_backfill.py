@@ -1473,15 +1473,6 @@ def _geocode_pending_lots_unlocked(
                 (ProcessedLot.needs_geo_check.is_(True) & ProcessedLot.geo_input_hash.is_(None)),
             )
         )
-        target_filter = ProcessedLot.id.in_(target_lot_ids) if target_lot_ids else True
-        failure_filter = True if target_lot_ids else or_(
-            GeoFailure.id.is_(None),
-            and_(
-                GeoFailure.status.not_in(("terminal", *_DEFERRED_STATUSES)),
-                or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
-            ),
-            and_(GeoFailure.status.in_(_DEFERRED_STATUSES), ProcessedLot.geo_input_hash.is_(None)),
-        )
         rows = session.execute(
             select(
                 ProcessedLot.id,
@@ -1497,13 +1488,27 @@ def _geocode_pending_lots_unlocked(
             .where(
                 ProcessedLot.duplicate_of_id.is_(None),
                 ProcessedLot.is_archived.is_(False),
-                target_filter,
+                *(
+                    (ProcessedLot.id.in_(target_lot_ids),)
+                    if target_lot_ids
+                    else ()
+                ),
                 or_(
                     ProcessedLot.cadastral_number.isnot(None),
                     ProcessedLot.address.isnot(None),
                 ),
                 pending_filter,
-                failure_filter,
+                or_(
+                    GeoFailure.id.is_(None),
+                    and_(
+                        GeoFailure.status.not_in(("terminal", *_DEFERRED_STATUSES)),
+                        or_(GeoFailure.next_retry_at.is_(None), GeoFailure.next_retry_at <= now),
+                    ),
+                    and_(
+                        GeoFailure.status.in_(_DEFERRED_STATUSES),
+                        ProcessedLot.geo_input_hash.is_(None),
+                    ),
+                ),
             )
             .order_by(
                 case(
@@ -1524,8 +1529,6 @@ def _geocode_pending_lots_unlocked(
     result: dict[str, Any] = {
         "strategy_version": _GEO_STRATEGY_VERSION,
         "strategy_requeued": strategy_requeued,
-        "targeted_operator_override": bool(target_lot_ids),
-        "target_lot_count": len(target_lot_ids),
         "queued": len(items),
         "processed": 0,
         "geocoded": 0,
