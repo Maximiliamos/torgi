@@ -1721,7 +1721,7 @@ def resolve_lot_geo(
         return result if valid else None
 
     explicit_coordinates = extract_explicit_source_coordinates(address)
-    if explicit_coordinates is not None:
+    if explicit_coordinates is not None and not cadastral_candidates:
         lat, lon = explicit_coordinates
         direct_result = CadastralObjectResult(
             query=address or "",
@@ -1734,13 +1734,19 @@ def resolve_lot_geo(
         accepted_direct = accept(
             direct_result,
             "source_coordinates",
-            expected_cadastral_number=(
-                cadastral_candidates[0] if cadastral_candidates else cadastral_number
-            ),
             validation_address=address,
         )
         if accepted_direct:
             return accepted_direct
+    elif explicit_coordinates is not None and cadastral_candidates:
+        # A source-published point can be inside the correct region while still
+        # belonging to a different parcel/building. When cadastral identity is
+        # available, do not let a bare coordinate bypass exact-object evidence.
+        attempts.append({
+            "source": "source_coordinates",
+            "valid": False,
+            "reason": "cadastral_confirmation_required",
+        })
 
     for candidate_index, candidate in enumerate(cadastral_candidates):
         nspd_source = "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt"
