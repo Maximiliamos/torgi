@@ -277,3 +277,39 @@ def test_lot_online_detail_trims_asset_composition_after_building_address() -> N
     assert fields["address"] == (
         "город Переславль-Залесский, улица Урицкого, дом 2в"
     )
+
+def test_lot_online_real_property_title_overrides_unrelated_seller_address() -> None:
+    # Reduced real product HTML: the generic "Адрес" field belongs to a
+    # different party and must not displace the asset location in the title.
+    class Response:
+        content = """
+        <html><head><title>Квартира пл.97,8 кв.м. по адресу: г. Москва,
+        пр-кт Ленинградский, д. 52, кв. 108,
+        к/н: 77:09:0004009:5974</title></head><body>
+          <div class="ty-control-group product-list-field title">
+            <label class="ty-control-group__label">Адрес</label>
+            <span class="ty-control-group__item">
+              115035, Г.МОСКВА, УЛ САДОВНИЧЕСКАЯ, Д. 72, СТР. 1
+            </span>
+          </div>
+        </body></html>
+        """.encode("utf-8")
+        url = "https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=1757493"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class Session:
+        headers: dict = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
+
+    assert "Ленинградский" in fields["address"]
+    assert "52" in fields["address"]
+    assert "САДОВНИЧЕСКАЯ" not in fields["address"].upper()
+    assert fields["cadastral_numbers"] == ["77:09:0004009:5974"]
