@@ -1152,6 +1152,7 @@ def build_geocoding_address_candidates(
     title: str | None = None,
     description: str | None = None,
     region_name: str | None = None,
+    cadastral_number: str | None = None,
 ) -> list[str]:
     """Build conservative Nominatim queries from Russian auction-card addresses."""
     from bankrotai.services.property_address_evidence import (
@@ -1164,6 +1165,7 @@ def build_geocoding_address_candidates(
     # explicit address label and rejects contradictory cadastral regions.
     value = (prefer_evidenced_property_address(
         address, title=title, description=description,
+        cadastral_number=cadastral_number,
     ) or "").strip()
     address_is_incomplete = is_incomplete_address(value)
     if (not value or address_is_incomplete) and (title or description):
@@ -1827,6 +1829,7 @@ def resolve_lot_geo(
         title=title,
         description=description,
         region_name=region_name,
+        cadastral_number=cadastral_candidates[0] if cadastral_candidates else None,
     )
     provider_address_fallbacks: list[str] = []
 
