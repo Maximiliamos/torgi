@@ -368,3 +368,31 @@ def test_batch_semantic_skip_sql_benchmark(capsys) -> None:
     assert skip_sql == 12
     assert changed_sql == 24
 
+
+def test_shallow_batch_refresh_does_not_erase_existing_detailed_address():
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-geo-address-1")
+        detailed = make_lot("gis-geo-address")
+        detailed.address = "Ярославская область, г. Ярославль, ул. Свободы, д. 52"
+        persist_changed_lots_batch(session, [detailed], "run-geo-address-1")
+        session.commit()
+        processed = session.scalar(select(ProcessedLot).where(
+            ProcessedLot.external_id == detailed.external_id,
+        ))
+        assert processed is not None
+        processed.geo_input_hash = "validated-address-fingerprint"
+        processed.needs_geo_check = False
+        session.commit()
+
+        shallow = make_lot("gis-geo-address")
+        shallow.address = None
+        add_run(session, "run-geo-address-2")
+        persist_changed_lots_batch(session, [shallow], "run-geo-address-2")
+        session.commit()
+        session.refresh(processed)
+
+        assert processed.address == detailed.address
+        assert processed.geo_input_hash == "validated-address-fingerprint"
+        assert processed.needs_geo_check is False
+
