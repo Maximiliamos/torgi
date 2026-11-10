@@ -489,3 +489,85 @@ def test_torgi_gov_prefers_asset_address_over_conflicting_generic_address() -> N
     )
     assert "Тверская" not in lot.address
 
+def test_torgi_gov_fetch_lot_detail_uses_official_exact_id_and_nested_egrn() -> None:
+    class FakeResponse:
+        status_code = 200
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "id": "21000004710000027207_1",
+                "noticeNumber": "21000004710000027207",
+                "lotNumber": "1",
+                "lotName": "Продажа нежилого помещения (машино-место)",
+                "lotDescription": "Нежилое помещение в Московской области",
+                "estateAddress": (
+                    "обл. Московская, г.о. Подольск, г. Подольск, "
+                    "ул. Парковая, дом 3 соор. 1"
+                ),
+                "egrnInfoRequestList": [{
+                    "objects": [{"cadastralNumber": "50:55:0030416:1229"}],
+                }],
+                "categoryCode": "10",
+                "subjectRFName": "Московская область",
+                "lotStatus": "APPLICATIONS_SUBMISSION",
+            }
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse()
+
+    session = FakeSession()
+    client = TorgiGovClient(session=session, rate_limit=(0, 0))
+    lot = client.fetch_lot_detail("torgi_gov:21000004710000027207_1")
+
+    assert session.calls[0][0].endswith(
+        "/new/api/public/lotcards/21000004710000027207_1"
+    )
+    assert lot.external_id == "torgi_gov:21000004710000027207_1"
+    assert lot.detail_level == "detail"
+    assert lot.address == (
+        "обл. Московская, г.о. Подольск, г. Подольск, "
+        "ул. Парковая, дом 3 соор. 1"
+    )
+    assert lot.cadastral_number == "50:55:0030416:1229"
+    assert lot.raw_data["source"] == "torgi_gov_detail_json"
+    assert lot.raw_data["detail_enrichment_status"] == "success"
+
+
+def test_torgi_gov_fetch_lot_detail_rejects_identity_mismatch() -> None:
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "id": "21000004710000099999_1",
+                "lotName": "Нежилое помещение",
+                "categoryCode": "10",
+                "lotStatus": "PUBLISHED",
+            }
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, _url, **_kwargs):
+            return FakeResponse()
+
+    client = TorgiGovClient(session=FakeSession(), rate_limit=(0, 0))
+    try:
+        client.fetch_lot_detail("21000004710000027207_1")
+    except TorgiGovClientError as exc:
+        assert "identity mismatch" in str(exc)
+    else:
+        raise AssertionError("mismatched detail identity must fail closed")
+

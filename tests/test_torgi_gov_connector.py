@@ -111,3 +111,21 @@ def test_gis_connector_does_not_retry_non_transient_error() -> None:
         raise AssertionError("non-transient connector failure must propagate")
 
     assert attempts == 1
+
+def test_gis_connector_exposes_bounded_exact_id_detail_without_auto_enrichment() -> None:
+    connector = TorgiGovConnector()
+    sentinel = object()
+    calls = []
+
+    def fake_fetch(external_id):
+        calls.append(external_id)
+        return sentinel
+
+    connector.client.fetch_lot_detail = fake_fetch
+    result = asyncio.run(connector.fetch_lot("torgi_gov:21000004710000027207_1"))
+
+    assert result is sentinel
+    assert calls == ["torgi_gov:21000004710000027207_1"]
+    assert "detail" in connector.capabilities
+    assert "detail_enrichment" not in connector.capabilities
+

@@ -296,6 +296,7 @@ class TorgiGovClient:
     ):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
+        self.DETAIL_ENDPOINT = f"{self.base_url}/new/api/public/lotcards"
         self.EXCEL_EXPORT_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/export/excel"
         self.FALLBACK_LIST_URL = f"{self.base_url}/new/public/lots/reg"
         self.timeout = timeout
@@ -313,6 +314,43 @@ class TorgiGovClient:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": self.FALLBACK_LIST_URL,
         })
+
+    def fetch_lot_detail(self, external_id: str) -> NormalizedLot:
+        """Fetch one official public lot detail and prove exact source identity."""
+        raw_id = str(external_id or "").strip()
+        if raw_id.startswith("torgi_gov:"):
+            raw_id = raw_id.split(":", 1)[1]
+        if not re.fullmatch(r"[0-9]+_[0-9]+", raw_id):
+            raise TorgiGovClientError("Invalid torgi.gov lot identity")
+
+        self._respect_rate_limit()
+        response = self.session.get(
+            f"{self.DETAIL_ENDPOINT}/{raw_id}",
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise TorgiGovClientError("torgi.gov detail returned non-JSON response") from exc
+        if not isinstance(payload, dict):
+            raise TorgiGovClientError("torgi.gov detail returned unexpected payload type")
+
+        observed = self._external_base_from_payload(payload)
+        if observed != raw_id:
+            raise TorgiGovClientError(
+                f"torgi.gov detail identity mismatch: expected {raw_id}, got {observed or 'missing'}"
+            )
+
+        lot = self._normalize_api_lot(payload)
+        if lot.external_id != f"torgi_gov:{raw_id}":
+            raise TorgiGovClientError("torgi.gov normalized detail identity mismatch")
+        raw = dict(lot.raw_data or {})
+        raw["source"] = "torgi_gov_detail_json"
+        raw["detail_enrichment_status"] = "success"
+        lot.raw_data = raw
+        lot.detail_level = "detail"
+        return lot
 
     def search_lots(self, filters: TorgiGovSearchFilters) -> tuple[list[NormalizedLot], dict]:
         warnings: list[str] = []
