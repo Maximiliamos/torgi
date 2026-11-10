@@ -187,6 +187,15 @@ def parse_nistp_shared_trade_card(
         if not re.search(r"\b(торги|при[её]м заявок)\b", status, re.IGNORECASE):
             raise NistpCardError("invalid_individual_lot_status")
         cadastre = _CADASTRE.search(description)
+        from bankrotai.services.property_address_evidence import (
+            extract_asset_property_address,
+        )
+
+        asset_address = extract_asset_property_address(
+            title=title,
+            description=description,
+            cadastral_number=cadastre.group(0) if cadastre else None,
+        )
         area = _AREA.search(description)
         result[number] = NistpLotSection(
             trade_nid=trade_nid,
@@ -200,7 +209,7 @@ def parse_nistp_shared_trade_card(
             deposit_rub=deposit,
             status_text=status,
             native_lot_nid=native,
-            address=fields.get("местонахождение имущества") or None,
+            address=asset_address or fields.get("местонахождение имущества") or None,
         )
     return result
 
