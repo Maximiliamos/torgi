@@ -62,65 +62,10 @@ jobs:
           $helper = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\property_address_evidence.py') -Encoding UTF8 -Raw
           $helperBytes = [Text.Encoding]::UTF8.GetBytes($helper)
           $helperB64 = [Convert]::ToBase64String($helperBytes)
-          $probe = @'
-import base64
-
-exec(base64.b64decode("__HELPER_B64__").decode("utf-8"), globals())
-
-import json
-          from collections import Counter, defaultdict
-          from sqlalchemy import select, text
-          from bankrotai.db import SessionLocal, ProcessedLot
-
-          with SessionLocal() as session:
-              session.execute(text("SET TRANSACTION READ ONLY"))
-              rows = session.execute(
-                  select(
-                      ProcessedLot.id,
-                      ProcessedLot.source_system,
-                      ProcessedLot.title,
-                      ProcessedLot.description,
-                      ProcessedLot.cadastral_number,
-                  ).where(
-                      ProcessedLot.duplicate_of_id.is_(None),
-                      ProcessedLot.is_archived.is_(False),
-                      ProcessedLot.auction_status.in_(("active", "scheduled")),
-                      ProcessedLot.current_geo_lat.is_(None),
-                      ProcessedLot.current_geo_lon.is_(None),
-                      ProcessedLot.address.is_(None),
-                  )
-              ).all()
-
-          repairable = Counter()
-          samples = defaultdict(list)
-          for row in rows:
-              candidate = extract_asset_property_address(
-                  title=row.title,
-                  description=row.description,
-                  cadastral_number=row.cadastral_number,
-              )
-              if not candidate:
-                  continue
-              source = str(row.source_system or "unknown")
-              repairable[source] += 1
-              if len(samples[source]) < 5:
-                  samples[source].append(int(row.id))
-
-          result = {
-              "report": "property_address_helper_impact",
-              "read_only": True,
-              "database_writes": 0,
-              "eligible_without_stored_address": len(rows),
-              "repairable_total": sum(repairable.values()),
-              "repairable_by_source": dict(repairable.most_common()),
-              "sample_lot_ids_by_source": {key: value for key, value in sorted(samples.items())},
-          }
-          print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-          '@
-          $assembled = $probe.Replace("__HELPER_B64__", $helperB64)
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\property_address_impact_probe.py'
           $ErrorActionPreference = 'Continue'
-          $result = $assembled |
-             docker exec -e PYTHONIOENCODING=utf-8 -i bankrotai-home-geocoding-worker python - 2>&1
+          $result = Get-Content -LiteralPath $path -Encoding UTF8 -Raw |
+            docker exec -e PYTHONIOENCODING=utf-8 -e PROPERTY_ADDRESS_HELPER_B64=$helperB64 -i bankrotai-home-geocoding-worker python - 2>&1
           $nativeExit = $LASTEXITCODE
           $ErrorActionPreference = 'Stop'
           if ($nativeExit -ne 0) { throw "Property-address impact probe failed: $($result | Select-Object -Last 8 | Out-String)" }
