@@ -241,3 +241,31 @@ def test_photon_extracts_region_from_full_address_for_validation() -> None:
         )
 
     assert result is None
+
+def test_missing_local_photon_is_operational_not_a_real_address_miss():
+    import pytest
+    from bankrotai.services.geo_resilience import GeoProviderUnavailable
+
+    with pytest.raises(GeoProviderUnavailable) as exc:
+        PhotonGeocoder("").geocode("г. Москва, Ленинградское шоссе, дом 228")
+    assert exc.value.category == "provider_protocol"
+
+
+def test_photon_refuses_unnumbered_feature_for_numbered_house():
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "features": [{
+            "geometry": {"coordinates": [37.6, 55.7]},
+            "properties": {
+                "city": "Москва", "state": "г. Москва",
+                "street": "улица Лесная",
+                # House number is missing from provider feature.
+            },
+        }],
+    }
+    with patch("bankrotai.geo.requests.get", return_value=response):
+        assert PhotonGeocoder("http://photon:2322").geocode(
+            "г. Москва, улица Лесная, дом 52",
+        ) is None
+
