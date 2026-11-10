@@ -463,40 +463,30 @@ class TorgiRussiaClient:
         records: dict[int, dict] = {}
 
         def add_record(item) -> None:
-            if (
-                isinstance(item, dict)
-                and isinstance(item.get("id"), int)
-                and isinstance(item.get("title"), str)
-                and (
-                    isinstance(item.get("region"), dict)
-                    or isinstance(item.get("region_title"), str)
-                )
-                and ("start_price" in item or "current_price" in item)
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                return
+            if not isinstance(item.get("title"), str):
+                return
+            if not (
+                isinstance(item.get("region"), dict)
+                or isinstance(item.get("region_title"), str)
             ):
+                return
+            if "start_price" in item or "current_price" in item:
                 records[item["id"]] = item
 
-        if isinstance(initial_lots, list):
-            for item in initial_lots:
-                add_record(item)
+        for item in initial_lots if isinstance(initial_lots, list) else ():
+            add_record(item)
 
-        # Current Next.js detail pages embed the record under a "lot" property
-        # and do not guarantee object key order. The previous fallback only
-        # recognized objects beginning literally with {"id":...,"title":...},
-        # which missed valid detail records such as production lot 7266197.
-        cursor = 0
-        marker = '"lot":'
-        while True:
-            start = flight.find(marker, cursor)
-            if start < 0:
-                break
+        cursor, marker = 0, '"lot":'
+        while (start := flight.find(marker, cursor)) >= 0:
             value_start = start + len(marker)
             try:
-                item, end = json.JSONDecoder().raw_decode(flight, value_start)
+                item, cursor = json.JSONDecoder().raw_decode(flight, value_start)
             except (TypeError, ValueError, json.JSONDecodeError):
                 cursor = value_start
                 continue
             add_record(item)
-            cursor = end
 
         # Compatibility fallback for early/new variants that embed the same
         # objects under a generic component property rather than initialLots.
