@@ -12,7 +12,7 @@ import sys
 
 from bankrotai.db import SessionLocal
 from bankrotai.geo import CADASTRAL_GEOCODER
-from bankrotai.services.stale_cadastral_recovery import recover_stale_cadastral_no_match
+from bankrotai.services.stale_cadastral_recovery import recover_stale_cadastral_live_results
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,17 +22,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def live_nspd_probe(cadastral: str) -> tuple[bool, str]:
+def live_nspd_probe(cadastral: str):
     found = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral)
     if found is None:
-        return False, "live_nspd_no_match"
+        return None, "live_nspd_no_match"
     observed = re.sub(r"\s+", "", str(found.cadastral_number or ""))
     expected = re.sub(r"\s+", "", cadastral)
     if observed != expected:
-        return False, "live_nspd_identity_mismatch"
+        return None, "live_nspd_identity_mismatch"
     if found.lat is None or found.lon is None:
-        return False, "live_nspd_no_coordinates"
-    return True, "exact_match"
+        return None, "live_nspd_no_coordinates"
+    return found, "exact_match"
 
 
 def main() -> dict:
@@ -42,10 +42,10 @@ def main() -> dict:
         raise ValueError("stale cadastral recovery canary is bounded to 1..20 exact lot ids")
 
     with SessionLocal() as session:
-        result = recover_stale_cadastral_no_match(
+        result = recover_stale_cadastral_live_results(
             session,
             lot_ids=ids,
-            live_probe=live_nspd_probe,
+            live_result_probe=live_nspd_probe,
             apply=bool(args.apply),
         )
         if args.apply:

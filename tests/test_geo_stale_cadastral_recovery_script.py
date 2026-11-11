@@ -9,6 +9,6 @@ def test_stale_cadastral_recovery_script_is_bounded_and_dry_run_by_default() -> 
     assert "_search_nspd_geoportal" in text
     assert "live_nspd_identity_mismatch" in text
     assert "repair_stale" not in text
-    assert "recover_stale_cadastral_no_match" in text
+    assert "recover_stale_cadastral_live_results" in text
     assert "session.rollback()" in text
     assert "session.commit()" in text
