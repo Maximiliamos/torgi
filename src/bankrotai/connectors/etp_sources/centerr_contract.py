@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from bankrotai.connectors.etp_sources.source_specific import datetime_after
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.domain import NormalizedLot
+from bankrotai.services.property_address_evidence import extract_asset_property_address
 
 
 BASE_URL = "https://bankrupt.centerr.ru/public/purchases-all/"
@@ -367,7 +368,13 @@ def parse_detail_facts(html: str | bytes, *, detail_url: str) -> CenterRDetailFa
         current_price=_money_after(segment, r"Текущая\s+цена,?\s*руб\.?"),
         cadastral_number=cadastral.group(1) if cadastral else None,
         area=_area(title),
-        address=_address(title),
+        address=(
+            extract_asset_property_address(
+                title=title,
+                cadastral_number=cadastral.group(1) if cadastral else None,
+            )
+            or _address(title)
+        ),
         category=_category(classifier or title),
         efrsb_classifier=classifier,
         application_start_at=datetime_after(
@@ -392,7 +399,12 @@ def parse_listing(html: str | bytes, *, page: int) -> list[NormalizedLot]:
             category=item.category,
             region_slug=None,
             region_name=None,
-            address=_address(item.title),
+            address=(
+                extract_asset_property_address(
+                    title=item.title, cadastral_number=item.cadastral_number,
+                )
+                or _address(item.title)
+            ),
             cadastral_number=item.cadastral_number,
             vin=None,
             area=item.area,

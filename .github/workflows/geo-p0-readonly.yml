@@ -1,0 +1,169 @@
+name: GEO P0 read-only census and provider diagnostics
+# Repeatable diagnostic: source probes classify transport failures without DB writes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/geo-source-address-evidence-20261110
+    paths:
+      - '.github/workflows/geo-p0-readonly.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: geo-p0-readonly-census
+  # Keep only the newest audited source version when a queued run is superseded.
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    if: github.repository == 'Maximiliamos/torgi'
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Wait until other backup runs are no longer in progress
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            'Authorization' = "Bearer $env:GH_TOKEN"
+            'Accept' = 'application/vnd.github+json'
+          }
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100"
+          $free = $false
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
+            $runs = @((Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 20).workflow_runs)
+            $activeBackup = @($runs | Where-Object {
+              $_.name -eq 'Phase 3 Lite backup and restore drill' -and
+              $_.id -ne $env:GITHUB_RUN_ID
+            })
+            if ($activeBackup.Count -eq 0) { $free = $true; break }
+            Start-Sleep -Seconds 20
+          }
+          if (-not $free) { throw 'Backup still running; P0 census declined to compete with restore drill' }
+
+      - name: Read-only census, Photon and NSPD probes
+        shell: powershell
+        run: |
+          .\scripts\run-geo-p0-readonly.ps1 -OutputDirectory "$env:RUNNER_TEMP\geo-p0"
+
+      - name: Measure branch property-address helper impact (read only)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'src\bankrotai\services\property_address_evidence.py') -Encoding UTF8 -Raw
+          $helperBytes = [Text.Encoding]::UTF8.GetBytes($helper)
+          $helperB64 = [Convert]::ToBase64String($helperBytes)
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\property_address_impact_probe.py'
+          $ErrorActionPreference = 'Continue'
+          $result = Get-Content -LiteralPath $path -Encoding UTF8 -Raw |
+            docker exec -e PYTHONIOENCODING=utf-8 -e PROPERTY_ADDRESS_HELPER_B64=$helperB64 -i bankrotai-home-geocoding-worker python - 2>&1
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "Property-address impact probe failed: $($result | Select-Object -Last 8 | Out-String)" }
+          $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
+          $parsed = $line | ConvertFrom-Json -ErrorAction Stop
+          if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
+            throw 'Property-address impact probe violated read-only contract'
+          }
+          Write-Host "PROPERTY_ADDRESS_IMPACT=$($parsed | ConvertTo-Json -Compress -Depth 16)"
+
+      - name: Probe official torgi.gov detail contract (read only, bounded)
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\torgi_gov_detail_probe.py'
+          $result = Get-Content -LiteralPath $path -Encoding UTF8 -Raw |
+            docker exec -e PYTHONIOENCODING=utf-8 -i bankrotai-home-ingestion-worker python - 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "torgi.gov detail probe failed: $($result | Select-Object -Last 5 | Out-String)" }
+          $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
+          $parsed = $line | ConvertFrom-Json -ErrorAction Stop
+          if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
+            throw 'torgi.gov detail probe violated read-only contract'
+          }
+          Write-Host "TORGI_GOV_DETAIL_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
+
+      - name: Probe BidExpert public detail contract (read only, bounded)
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\bidexpert_detail_probe.py'
+          $source = Get-Content -LiteralPath $path -Encoding UTF8 -Raw
+          $sourceB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($source))
+          $runner = 'import base64,os; source=base64.b64decode(os.environ["BIDEXPERT_PROBE_B64"]).decode("utf-8"); exec(compile(source,"bidexpert_detail_probe.py","exec"),globals())'
+          $ErrorActionPreference = 'Continue'
+          $result = $runner |
+            docker exec -e PYTHONIOENCODING=utf-8 -e BIDEXPERT_PROBE_B64=$sourceB64 -i bankrotai-home-ingestion-worker python - 2>&1
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "BidExpert detail probe failed: $($result | Select-Object -Last 8 | Out-String)" }
+          $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
+          $parsed = $line | ConvertFrom-Json -ErrorAction Stop
+          if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
+            throw 'BidExpert detail probe violated read-only contract'
+          }
+          Write-Host "BIDEXPERT_DETAIL_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
+
+      - name: Probe stale cadastral no-match against live NSPD (read only)
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\geo_no_match_live_probe.py'
+          $source = Get-Content -LiteralPath $path -Encoding UTF8 -Raw
+          $sourceB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($source))
+          $runner = 'import base64,os; source=base64.b64decode(os.environ["GEO_NO_MATCH_PROBE_B64"]).decode("utf-8"); exec(compile(source,"geo_no_match_live_probe.py","exec"),globals())'
+          $ErrorActionPreference = 'Continue'
+          $result = $runner |
+            docker exec -e PYTHONIOENCODING=utf-8 -e GEO_NO_MATCH_PROBE_B64=$sourceB64 -i bankrotai-home-geocoding-worker python - 2>&1
+          $nativeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($nativeExit -ne 0) { throw "GEO no-match probe failed: $($result | Select-Object -Last 8 | Out-String)" }
+          $line = @($result | Where-Object { $_ -and "$_".Trim() }) | Select-Object -Last 1
+          $parsed = $line | ConvertFrom-Json -ErrorAction Stop
+          if ($parsed.read_only -ne $true -or $parsed.database_writes -ne 0) {
+            throw 'GEO no-match probe violated read-only contract'
+          }
+          Write-Host "GEO_NO_MATCH_LIVE_PROBE=$($parsed | ConvertTo-Json -Compress -Depth 16)"
+
+      - name: Print anonymous aggregate summary
+        if: always()
+        shell: powershell
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP 'geo-p0\geo-p0-census.json'
+          if (-not (Test-Path -LiteralPath $file)) { exit 0 }
+          $r = Get-Content -LiteralPath $file -Encoding UTF8 -Raw | ConvertFrom-Json
+          Write-Host "P0_UNMAPPED_ACTIVE=$($r.active_or_scheduled_unmapped)"
+          Write-Host "P0_UNMAPPED_ALL=$($r.nonarchived_unduplicated_unmapped)"
+          Write-Host "P0_PRIMARY_CAUSES=$($r.primary_causes_active_exclusive | ConvertTo-Json -Compress -Depth 12)"
+          Write-Host "P0_INPUT_COUNTS=$($r.by_input | ConvertTo-Json -Compress -Depth 12)"
+          Write-Host "P0_SOURCES=$($r.by_source | ConvertTo-Json -Compress -Depth 16)"
+          Write-Host "P0_SOURCE_CAUSE_SAMPLES=$($r.sample_lot_ids_by_source_and_cause | ConvertTo-Json -Compress -Depth 16)"
+          Write-Host "P0_SOURCE_CAUSE_REFS=$($r.sample_public_refs_by_source_and_cause | ConvertTo-Json -Compress -Depth 16)"
+          $provider = Join-Path $env:RUNNER_TEMP 'geo-p0\geo-p0-providers.json'
+          if (Test-Path -LiteralPath $provider) {
+            $p = Get-Content -LiteralPath $provider -Encoding UTF8 -Raw | ConvertFrom-Json
+            Write-Host "P0_PROVIDER_HEALTH=$($p.checks | ConvertTo-Json -Compress -Depth 12)"
+          }
+
+      - name: Upload redacted GEO P0 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: geo-p0-readonly-${{ github.run_id }}
+          path: ${{ runner.temp }}\geo-p0\*.json
+          if-no-files-found: ignore
+          retention-days: 30

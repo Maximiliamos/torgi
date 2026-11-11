@@ -16,7 +16,10 @@ from bankrotai.scraper_contracts import TorgiGovSearchFilters
 
 class TorgiGovConnector(AuctionConnector):
     source_id = "torgi.gov.ru"
-    capabilities = frozenset({"search"})
+    # Explicit exact-ID detail is available for controlled GEO recovery.
+    # Do not advertise detail_enrichment: a nationwide scan must not fan out
+    # thousands of detail requests until the bounded GEO canary is accepted.
+    capabilities = frozenset({"search", "detail"})
 
     RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
 
@@ -46,6 +49,9 @@ class TorgiGovConnector(AuctionConnector):
         self._page_jobs: list[tuple[str, str, int]] | None = None
         self._total_pages = 0
         self._batch_number = 0
+
+    async def fetch_lot(self, external_id: str):
+        return await asyncio.to_thread(self.client.fetch_lot_detail, external_id)
 
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         normalized = filters if isinstance(filters, TorgiGovSearchFilters) else TorgiGovSearchFilters(**filters)

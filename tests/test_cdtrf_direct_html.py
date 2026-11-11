@@ -232,3 +232,23 @@ def test_cdtrf_title_disagreement_does_not_bypass_identity_price_or_missing_titl
     ):
         with pytest.raises(CdtrfEvidenceError):
             parse_detail(unsafe, URL)
+
+def test_cdtrf_actual_property_description_beats_region_badge() -> None:
+    # Reduced verified source detail lotInfo: the official badge contains
+    # only a region, the per-lot SSR description contains a full address.
+    html = build_detail().replace(
+        "Нежилое помещение, кадастр 32:10:0010101:42",
+        "Лот №2 Квартира, площадь 41,9 кв.м., назначение: Жилое, "
+        "адрес (местонахождение): Россия, Костромская область, "
+        "р-н Межевской, с Георгиевское, ул Октябрьская, д 46, кв 4, "
+        "кадастровый (условный) номер: 44:11:080105:59 "
+        "Находится в совместной собственности.",
+    ).replace("Брянская область", "Костромская область")
+    result = parse_detail(html, URL)
+
+    assert result["property_address"] == (
+        "Россия, Костромская область, р-н Межевской, "
+        "с Георгиевское, ул Октябрьская, д 46, кв 4"
+    )
+    assert result["cadastral_number"] == "44:11:080105:59"
+    assert result["region_label"] == "Костромская область"

@@ -973,3 +973,22 @@ def test_torgi_russia_detail_description_address_accepts_location_phrase() -> No
         "Ярославская область, Гаврилов-Ямский, "
         "с/п Заячье-Холмский, с. Унимерь"
     )
+
+def test_torgi_russia_actual_land_address_in_catalogue_and_detail() -> None:
+    # Redacted excerpt from a real November 2026 Next.js auction-card title.
+    # The cadastral number precedes the address; a legal pledge notice follows it.
+    from bankrotai.torgi_russia_address import extract_catalogue_address
+
+    title = (
+        "Земельный участок, площадью 1 500 кв. м, с кадастровым номером: "
+        "47:22:0325001:373, расположенный по адресу: "
+        "Ленинградская область, Волосовский район, д Прологи. "
+        "В залоге у банка."
+    )
+    expected = "Ленинградская область, Волосовский район, д Прологи"
+
+    assert extract_catalogue_address(title) == expected
+    assert TorgiRussiaClient._property_address_from_description(title) == expected
+    result = TorgiRussiaClient.parse_detail_payload({"information": f"<p>{title}</p>"})
+    assert result["address"] == expected
+    assert result["cadastral_numbers"] == ["47:22:0325001:373"]

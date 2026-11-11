@@ -249,6 +249,12 @@ def parse_detail(html: str, url: str) -> dict:
     ).get_text(" ", strip=True)
     cadastral = CADASTRE.search(raw_cadastre)
     property_description = _lot_property_text(lot)
+    # The badge only names the region on some official CDTRF cards, while
+    # the verified individual lotInfo supplies the full property address.
+    # Never use an organizer's or debtor's contact address as a fallback.
+    from bankrotai.extractors import extract_address
+
+    property_address = extract_address(property_description) or region
     lat, lon = lot.get("latitude"), lot.get("longitude")
     coords = None
     try:
@@ -266,7 +272,7 @@ def parse_detail(html: str, url: str) -> dict:
         "title_evidence": "verified_nuxt_lot_name",
         "source_title_disagreement_review_required": not title_matches,
         "property_description": property_description,
-        "property_address": region,
+        "property_address": property_address,
         "region_label": region, "region_id": lot.get("regionID"),
         "cadastral_number": cadastral.group(0) if cadastral else None,
         "initial_price_rub": initial, "current_price_rub": None,

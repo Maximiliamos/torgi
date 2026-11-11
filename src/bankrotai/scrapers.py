@@ -32,6 +32,8 @@ from bankrotai.scraper_contracts import (
 )
 from typing import Callable, Optional
 from bankrotai.logic import classify_category, persist_lot, upsert_lot_events_from_raw
+from bankrotai.services.property_address_evidence import prefer_evidenced_property_address
+from bankrotai.services.torgi_gov_detail import fetch_torgi_gov_lot_detail
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +297,7 @@ class TorgiGovClient:
     ):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.SEARCH_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/search"
+        self.DETAIL_ENDPOINT = f"{self.base_url}/new/api/public/lotcards"
         self.EXCEL_EXPORT_ENDPOINT = f"{self.base_url}/new/api/public/lotcards/export/excel"
         self.FALLBACK_LIST_URL = f"{self.base_url}/new/public/lots/reg"
         self.timeout = timeout
@@ -312,6 +315,8 @@ class TorgiGovClient:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": self.FALLBACK_LIST_URL,
         })
+    def fetch_lot_detail(self, external_id: str) -> NormalizedLot:
+        return fetch_torgi_gov_lot_detail(self, external_id, error_type=TorgiGovClientError)
 
     def search_lots(self, filters: TorgiGovSearchFilters) -> tuple[list[NormalizedLot], dict]:
         warnings: list[str] = []
@@ -1206,6 +1211,12 @@ class TorgiGovClient:
 
         combined_text = " ".join(part for part in (title, description, address or "", region_name or "") if part)
         cadastral_numbers = self._extract_cadastral_numbers(payload, combined_text)
+        address = prefer_evidenced_property_address(
+            address or None,
+            title=title,
+            description=description,
+            cadastral_number=cadastral_numbers[0] if cadastral_numbers else None,
+        )
         start_price = self._pick_price(payload, "priceMin", "initialPrice", "startPrice", "price", "lotPrice")
         current_price = self._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice") or start_price
         raw_status = self._clean_text(self._pick(

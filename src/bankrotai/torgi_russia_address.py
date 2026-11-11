@@ -5,10 +5,22 @@ import re
 
 def extract_catalogue_address(value: str) -> str | None:
     """Keep an explicit street/building address and drop apartment/unit tails."""
-    match = re.search(r"(?:^|[,.;]\s*)адрес\s*:\s*(.+)", value or "", re.IGNORECASE)
+    match = re.search(r"(?:\bпо\s+адресу|\bадрес)\s*:\s*(.+)", value or "", re.IGNORECASE)
     if not match:
         return None
-    address = match.group(1)
+    address = re.split(
+        r"\.\s+(?=В\s+залоге\b)",
+        match.group(1),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    address = re.split(
+        r",?\s*(?:кадастров(?:ый|ые)\s*(?:\([^)]{1,30}\)\s*)?"
+        r"номер(?:а)?|к\s*[\\/]\s*н)\s*:?",
+        address,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     address = re.split(
         r"(?=,\s*(?:кв(?:артира)?|пом(?:ещение)?|офис|комн(?:ата)?)\.?\s*\d+\b)",
         address,

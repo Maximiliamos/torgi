@@ -584,7 +584,7 @@ class TorgiRussiaClient:
             normalized,
             flags=re.IGNORECASE,
         )
-        return match.group(1).strip(" ,.;") if match else None
+        return extract_catalogue_address(normalized) or (match.group(1).strip(" ,.;") if match else None)
 
     @classmethod
     def parse_detail_payload(cls, data: dict) -> dict:

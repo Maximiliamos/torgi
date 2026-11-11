@@ -359,10 +359,8 @@ class GeoWorkItem:
 
 def _work_key(item: GeoWorkItem) -> str:
     address_candidates = build_geocoding_address_candidates(
-        item.address,
-        title=item.title,
-        description=item.description,
-        region_name=item.region_name,
+        item.address, title=item.title, description=item.description,
+        region_name=item.region_name, cadastral_number=item.cadastral_number,
     )
     value = {
         "cad": "".join((item.cadastral_number or "").casefold().split()),
@@ -371,7 +369,8 @@ def _work_key(item: GeoWorkItem) -> str:
             for value in (item.cadastral_numbers or [])
             if value
         }),
-        "address": " ".join((address_candidates[0] if address_candidates else "").casefold().split()),
+        "address_candidates": [" ".join(c.casefold().split()) for c in address_candidates[:5]],
+        "resolver_evidence_version": "asset-property-address-v1",
         "region": " ".join((item.region_name or "").casefold().split()),
         "region_code": str(item.region_code or "").strip().zfill(2),
     }

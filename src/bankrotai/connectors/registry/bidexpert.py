@@ -11,10 +11,15 @@ from bankrotai.scraper_contracts import BidExpertSearchFilters
 
 class BidExpertConnector(AuctionConnector):
     source_id = "bidexpert.ru"
-    capabilities = frozenset({"search"})
+    # Exact-ID detail is available for bounded GEO recovery. Do not advertise
+    # detail_enrichment until source-wide canary acceptance is complete.
+    capabilities = frozenset({"search", "detail"})
 
     def __init__(self) -> None:
         self.client = BidExpertClient()
+
+    async def fetch_lot(self, external_id: str):
+        return await asyncio.to_thread(self.client.fetch_lot_detail, external_id)
 
     async def search(self, filters: Any, cursor: str | None = None) -> ConnectorPage:
         normalized = filters if isinstance(filters, BidExpertSearchFilters) else BidExpertSearchFilters(**filters)

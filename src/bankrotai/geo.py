@@ -25,6 +25,12 @@ from bankrotai.services.geo_cadastral_properties import (
     normalize_nspd_props as normalize_nspd_props,
     normalize_pkk_attrs as normalize_pkk_attrs,
 )
+from bankrotai.services.geo_address_candidates import (
+    build_geocoding_address_candidates,
+    extract_best_numbered_address,
+    extract_explicit_source_coordinates,
+    is_incomplete_address,
+)
 from bankrotai.services.geo_resilience import (
     GeoProviderUnavailable,
     classify_transport_exception,
@@ -1146,203 +1152,6 @@ class CadastralGeocoder:
         }
 
 
-def build_geocoding_address_candidates(
-    address: str | None,
-    *,
-    title: str | None = None,
-    description: str | None = None,
-    region_name: str | None = None,
-) -> list[str]:
-    """Build conservative Nominatim queries from Russian auction-card addresses."""
-    value = (address or "").strip()
-    address_is_incomplete = is_incomplete_address(value)
-    if (not value or address_is_incomplete) and (title or description):
-        # Keep this fallback aligned with extractors.extract_address so that
-        # already imported shallow LOT-ONLINE cards can be geocoded without a
-        # full re-import.
-        from bankrotai.extractors import extract_address
-
-        source_text = " ".join(part for part in (title, description) if part)
-        extracted = extract_best_numbered_address(source_text) or extract_address(source_text) or ""
-        if extracted:
-            value = extracted
-    if not value:
-        return []
-
-    value = re.sub(r"\.{3,}$", "", value)
-    value = re.sub(
-        r",?\s*(?:с|вместе\s+с)\s+земельн(?:ым|ого)\s+участк(?:ом|а).*$",
-        "",
-        value,
-        flags=re.IGNORECASE,
-    )
-    # Source cards frequently append legal prose to the address. Large queries
-    # make every Photon miss consume the full timeout and reduce match quality.
-    value = re.split(
-        r"(?:[,.;]\s*|—\s*)(?:зарегистрированные\s+обременения|"
-        r"разрешенный\s+вид\s+использования|вид\s+разрешенного\s+использования|"
-        r"категория\s+земель|общей\s+площадью|территориальная\s+зона|"
-        r"отправив\s+предварительно\s+запрос|направив\s+предварительно\s+запрос|"
-        r"осмотр\s+имущества|порядок\s+ознакомления)\b",
-        value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    # Photon receives the query in the URL. Even malformed source records must
-    # never be able to produce a 414 response or multi-kilobyte log entry.
-    value = value[:512]
-    value = re.sub(r",\s*с\.\s*п\.\s*[^,]+", "", value, flags=re.IGNORECASE)
-    value = re.sub(
-        r"(?:м\.\s*)?р-н\s+([^,]+)",
-        lambda match: f"{match.group(1).strip()} муниципальный округ",
-        value,
-        flags=re.IGNORECASE,
-    )
-    value = re.sub(
-        r"([^,]+?)\s+(?:р-н|район)(?=,|$)",
-        lambda match: f"{match.group(1).strip()} муниципальный округ",
-        value,
-        flags=re.IGNORECASE,
-    )
-    value = re.sub(
-        r"\bПереславский муниципальный округ\b",
-        "Переславль-Залесский муниципальный округ",
-        value,
-        flags=re.IGNORECASE,
-    )
-    value = re.sub(
-        r"\b\u0434\.\s*(?=[\u0410-\u042f\u0401A-Z])",
-        "\u0434\u0435\u0440\u0435\u0432\u043d\u044f ", value, flags=re.IGNORECASE,
-    )
-    replacements = (
-        (r"\bобл\.(?=\s|,|$)", "область"),
-        (r"\bг\.(?=\s)", "город "),
-        (r"\bп\.(?=\s)", "поселок "),
-        (r"\bс\.(?=\s)", "село "),
-        (r"\bд\.(?=\s)", "дом "),
-        (r"\bул\.(?=\s)", "улица "),
-        (r"\bкорп\.(?=\s*\w)", "корпус "),
-        (r"\bстр\.(?=\s*\w)", "строение "),
-        (r"\bвл\.(?=\s*\w)", "владение "),
-        (r"\bлит\.(?=\s*\w)", "литера "),
-        (r"\bпр-т\b", "проспект"),
-        (r"\bпер\.(?=\s)", "переулок "),
-    )
-    for pattern, replacement in replacements:
-        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
-    value = re.sub(r"\s+", " ", value).strip(" ,.;")
-    if region_name and region_name.casefold() not in value.casefold():
-        value = f"{value}, {region_name}"
-
-    parts = [part.strip(" ,.;") for part in value.split(",") if part.strip(" ,.;")]
-    region = next((part for part in parts if "област" in part.casefold()), region_name or "")
-    district = next(
-        (part for part in parts if "муниципальн" in part.casefold() or "район" in part.casefold()),
-        "",
-    )
-    localities = [
-        part
-        for part in parts
-        if re.search(
-            r"\b(?:город|село|поселок|деревня|рабочий поселок)\b",
-            part,
-            re.IGNORECASE,
-        )
-    ]
-    locality = localities[-1] if localities else ""
-    locality_query = re.sub(
-        r"^(?:город|село|поселок|деревня|рабочий поселок)\s+",
-        "",
-        locality,
-        flags=re.IGNORECASE,
-    )
-    street = next(
-        (
-            part
-            for part in parts
-            if re.search(
-                r"\b(?:улица|проспект|шоссе|переулок|проезд|набережная|площадь|тракт)\b",
-                part,
-                re.I,
-            )
-        ),
-        "",
-    )
-    house = next(
-        (
-            part
-            for part in parts
-            if re.search(r"\b(?:дом|владение)\s*\d", part, re.IGNORECASE)
-        ),
-        "",
-    )
-    house_number = re.sub(r"^(?:дом|владение)\s*", "", house, flags=re.IGNORECASE) if house else ""
-
-    candidates = [value]
-    unit_stripped = re.sub(
-        r",?\s*(?:помещение|пом\.|квартира|кв\.|комната|офис)\s*[№#]?\s*[\w/-]+.*$",
-        "",
-        value,
-        flags=re.IGNORECASE,
-    ).strip(" ,.;")
-    if unit_stripped and unit_stripped.casefold() != value.casefold():
-        candidates.append(unit_stripped)
-    if street and locality_query:
-        candidates.append(", ".join(part for part in (house_number, street, locality_query, district, region) if part))
-    if locality_query and district:
-        candidates.append(", ".join(part for part in (locality_query, district, region) if part))
-    if locality_query and region:
-        candidates.append(f"{locality_query}, {region}")
-
-    # Auction cards frequently keep a vague address in the structured field
-    # while the exact street/house appears only in title or description.
-    # Preserve the structured address as the first choice, but surface one
-    # exact numbered supplemental candidate for the local Photon fallback.
-    source_text = " ".join(part for part in (title, description) if part)
-    supplemental = extract_best_numbered_address(source_text) if source_text else None
-    if supplemental:
-        supplemental = supplemental.strip(" ,.;")
-        if region_name and region_name.casefold() not in supplemental.casefold():
-            supplemental = f"{supplemental}, {region_name}"
-        candidates.append(supplemental)
-
-    unique: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = " ".join(candidate.split()).strip(" ,")
-        key = normalized.casefold()
-        if normalized and key not in seen:
-            seen.add(key)
-            unique.append(normalized)
-    return unique
-
-
-def extract_best_numbered_address(text: str | None) -> str | None:
-    """Prefer an address that contains a real house number over an earlier placeholder."""
-    if not text:
-        return None
-    compact = re.sub(r"\s+", " ", text)
-    pattern = re.compile(
-        r"(?:г\.|город)\s*[^,.;]+,\s*"
-        r"(?:ул\.|улица|проспект|пр-т|пер\.)\s*[^,.;]+,\s*"
-        r"(?:д\.|дом)\s*[0-9][^,.;]*",
-        re.IGNORECASE,
-    )
-    matches = [match.group(0).strip(" ,.;") for match in pattern.finditer(compact)]
-    return max(matches, key=len) if matches else None
-
-
-def is_incomplete_address(value: str | None) -> bool:
-    return bool(
-        value
-        and re.search(
-            r"\b(?:д|дом)\.?\s*(?:помещени[ея]|объект[а-я]*|имуще(?:ство|ства))\b",
-            value,
-            re.IGNORECASE,
-        )
-    )
-
-
 class NominatimGeocoder:
     def __init__(self):
         self.base_url = "https://nominatim.openstreetmap.org/search"
@@ -1609,8 +1418,14 @@ class PhotonGeocoder:
         return None
 
     def geocode(self, address: str) -> dict[str, Any] | None:
-        if not self.base_url or len(address.strip()) < 5:
+        if len(address.strip()) < 5:
             return None
+        if not self.base_url:
+            # A missing provider is an operational failure, not evidence
+            # that the property itself cannot be geocoded.
+            raise GeoProviderUnavailable(
+                "photon", "provider_protocol", "PHOTON_BASE_URL is empty",
+            )
         require_provider("photon", external=False)
         operational_failures = 0
         transport_successes = 0
@@ -1703,11 +1518,14 @@ class PhotonGeocoder:
                 house = normalize_house(str(props.get("housenumber") or ""))
                 if expected_locality and expected_locality not in locality_text:
                     continue
-                if expected_street and street and expected_street not in street.casefold():
+                # A street-level or settlement-level centroid must not be
+                # published as a precise apartment/house coordinate. Photon
+                # may return a plausible feature with no housenumber at all.
+                if expected_street and (not street or expected_street not in street.casefold()):
                     continue
                 if expected_region and state and normalize_region_code(state) != expected_region:
                     continue
-                if expected_house and house and house != expected_house:
+                if expected_house and (not house or house != expected_house):
                     continue
                 haystack = " ".join(str(value) for value in props.values()).casefold()
                 score = sum(token in haystack for token in expected)
@@ -1800,11 +1618,63 @@ def resolve_lot_geo(
         if len(cadastral_candidates) >= 5:
             break
 
+    if cadastral_candidates:
+        from bankrotai.regions import (
+            REGIONS_BY_CODE,
+            normalize_region_code,
+            region_code_from_cadastral_number,
+            region_code_from_text,
+        )
+
+        cadastral_regions = {
+            code
+            for candidate in cadastral_candidates
+            if (code := region_code_from_cadastral_number(candidate)) is not None
+        }
+        if len(cadastral_regions) == 1:
+            cadastral_region = next(iter(cadastral_regions))
+            definition = REGIONS_BY_CODE.get(cadastral_region)
+            if definition is not None:
+                stored_name_region = region_code_from_text(region_name)
+                stored_code_region = normalize_region_code(region_code)
+
+                if not region_name and not region_code:
+                    region_name = definition.name
+                    region_code = cadastral_region
+                elif (
+                    (stored_name_region and stored_name_region != cadastral_region)
+                    or (stored_code_region and stored_code_region != cadastral_region)
+                ):
+                    # Historical rows may carry the retrieval/listing region
+                    # instead of the sold asset. Repair both code and name only
+                    # when property-scoped address evidence independently
+                    # agrees with the cadastral district.
+                    from bankrotai.services.property_address_evidence import (
+                        prefer_evidenced_property_address,
+                    )
+
+                    evidenced_address = prefer_evidenced_property_address(
+                        address,
+                        title=title,
+                        description=description,
+                        cadastral_number=cadastral_candidates[0],
+                    )
+                    evidence_region = region_code_from_text(evidenced_address)
+                    if evidence_region == cadastral_region:
+                        region_name = definition.name
+                        region_code = cadastral_region
+                else:
+                    if stored_name_region == cadastral_region and stored_code_region is None:
+                        region_code = cadastral_region
+                    if stored_code_region == cadastral_region and stored_name_region is None:
+                        region_name = definition.name
+
     address_candidates = build_geocoding_address_candidates(
         address,
         title=title,
         description=description,
         region_name=region_name,
+        cadastral_number=cadastral_candidates[0] if cadastral_candidates else None,
     )
     provider_address_fallbacks: list[str] = []
 
@@ -1866,6 +1736,34 @@ def resolve_lot_geo(
             if valid and not result.address and address_candidates:
                 result.address = address_candidates[0]
         return result if valid else None
+
+    explicit_coordinates = extract_explicit_source_coordinates(address)
+    if explicit_coordinates is not None and not cadastral_candidates:
+        lat, lon = explicit_coordinates
+        direct_result = CadastralObjectResult(
+            query=address or "",
+            address=address,
+            lat=lat,
+            lon=lon,
+            source="source_coordinates",
+            confidence="high",
+        )
+        accepted_direct = accept(
+            direct_result,
+            "source_coordinates",
+            validation_address=address,
+        )
+        if accepted_direct:
+            return accepted_direct
+    elif explicit_coordinates is not None and cadastral_candidates:
+        # A source-published point can be inside the correct region while still
+        # belonging to a different parcel/building. When cadastral identity is
+        # available, do not let a bare coordinate bypass exact-object evidence.
+        attempts.append({
+            "source": "source_coordinates",
+            "valid": False,
+            "reason": "cadastral_confirmation_required",
+        })
 
     for candidate_index, candidate in enumerate(cadastral_candidates):
         nspd_source = "nspd_cadastral" if candidate_index == 0 else "nspd_cadastral_alt"
@@ -1998,7 +1896,9 @@ def validate_geocoding_result(
     if expected_cad and observed_cad and expected_cad != observed_cad:
         return False, "cadastral_number_mismatch"
 
-    expected_region = expected_cad.split(":", 1)[0].zfill(2) if ":" in expected_cad else None
+    from bankrotai.regions import region_code_from_cadastral_number
+
+    expected_region = region_code_from_cadastral_number(expected_cad)
     if expected_region and address:
         from bankrotai.regions import region_code_from_text
 
@@ -2032,13 +1932,18 @@ def validate_geocoding_result(
     if named_region and canonical_region and named_region != canonical_region:
         return False, "region_code_name_mismatch"
 
-    expected_text = " ".join(part for part in (address, region_name) if part).casefold()
     observed_text = (result.address or "").casefold()
     expected_locality = expected_locality_name(address)
     if expected_locality and observed_text and expected_locality not in observed_text:
         return False, "locality_name_mismatch"
+    # City-distance anchors are valid only for an explicitly parsed locality.
+    # A city token elsewhere in free-form prose may be an owner/organizer name
+    # (for example "Газпромнефть-Ярославль"), not the property's location.
+    city_context = expected_locality
+    if (canonical_region or named_region) in {"77", "78"}:
+        city_context += f" {region_name or ''}".casefold()
     for city_key, (city_lat, city_lon, max_distance) in CITY_SANITY_ANCHORS.items():
-        if city_key in expected_text:
+        if city_key in city_context:
             if distance_between(result.lat, result.lon, city_lat, city_lon) > max_distance:
                 return False, "city_distance_mismatch"
             if observed_text and city_key not in observed_text:

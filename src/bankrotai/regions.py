@@ -118,6 +118,31 @@ def _key(value: str) -> str:
 
 
 REGIONS_BY_CODE = {region.code: region for region in REGION_DIRECTORY}
+
+# Cadastral district numbers are their own namespace. Most match the canonical
+# subject code, but historical autonomous okrugs and newer districts do not.
+# Keep this translation explicit; never treat the first two digits of a
+# cadastral number as a modern subject code without it.
+_CADASTRAL_DISTRICT_TO_REGION_CODE: dict[str, str] = {
+    **{f"{code:02d}": f"{code:02d}" for code in range(1, 80)},
+    "80": "75",  # Aginsky -> Zabaykalsky Krai
+    "81": "59",  # Komi-Permyak -> Perm Krai
+    "82": "41",  # Koryak -> Kamchatka Krai
+    "83": "83",  # Nenets AO
+    "84": "24",  # Taimyr -> Krasnoyarsk Krai
+    "85": "38",  # Ust-Orda Buryat -> Irkutsk Oblast
+    "86": "86",  # Khanty-Mansi AO
+    "87": "87",  # Chukotka AO
+    "88": "24",  # Evenki -> Krasnoyarsk Krai
+    "89": "89",  # Yamalo-Nenets AO
+    "90": "82",  # Crimean cadastral district
+    "91": "92",  # Sevastopol cadastral district
+    "93": "80",  # Donetsk cadastral district
+    "94": "84",  # Kherson cadastral district
+    "95": "81",  # Luhansk cadastral district
+    "96": "85",  # Zaporizhzhia cadastral district
+}
+
 _REGION_CODES_BY_ALIAS = {
     _key(alias): region.code
     for region in REGION_DIRECTORY
@@ -148,6 +173,28 @@ def region_code_from_text(value: str | None) -> str | None:
         reverse=True,
     )
     return next((code for alias, code in aliases if f" {alias} " in text), None)
+
+
+def region_code_from_cadastral_prefix(value: str | None) -> str | None:
+    """Translate a cadastral-district prefix to the canonical subject code."""
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if ":" in candidate:
+        candidate = candidate.split(":", 1)[0]
+    if not candidate.isdigit():
+        return None
+    return _CADASTRAL_DISTRICT_TO_REGION_CODE.get(candidate.zfill(2))
+
+
+def region_code_from_cadastral_number(value: str | None) -> str | None:
+    """Return canonical subject code from a full cadastral number."""
+    if not value:
+        return None
+    text = re.sub(r"\s+", "", str(value))
+    if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{4,10}:\d+", text):
+        return None
+    return region_code_from_cadastral_prefix(text)
 
 
 def region_label(code: str) -> str:

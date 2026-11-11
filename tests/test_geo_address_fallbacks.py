@@ -22,14 +22,14 @@ def test_address_candidates_include_exact_numbered_address_from_description() ->
     )
 
     assert candidates
-    assert candidates[0].startswith("Московская область")
-    assert any(
-        "Химки" in candidate and "Молодежная" in candidate and "12" in candidate
-        for candidate in candidates[1:]
-    )
+    # An explicit house address in the asset description is more reliable
+    # than the coarse region-only field and is now queried first.
+    assert "Молодежная" in candidates[0] and "12" in candidates[0]
+    assert "Московская область" in candidates[0]
+    assert "Площадь" not in candidates[0]
 
 
-def test_bulk_resolver_tries_alternate_address_candidate_after_primary_miss(monkeypatch) -> None:
+def test_bulk_resolver_prefers_explicit_numbered_asset_address_before_coarse_region(monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_search(address: str, *, allow_nominatim: bool = True):
@@ -64,10 +64,9 @@ def test_bulk_resolver_tries_alternate_address_candidate_after_primary_miss(monk
     assert result is not None
     assert result.lat == 55.8880
     assert result.lon == 37.4300
-    assert len(calls) >= 2
-    assert "Молодежная" not in calls[0]
-    assert any("Молодежная" in call for call in calls[1:])
-    assert result.attempts[-1]["source"] == "address_geocoder_alt"
+    assert len(calls) == 1
+    assert "Молодежная" in calls[0]
+    assert result.attempts[-1]["source"] == "address_geocoder"
     assert result.attempts[-1]["valid"] is True
 
 

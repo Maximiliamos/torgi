@@ -182,3 +182,35 @@ def test_sistematorg_pagination_terminal_logic_is_source_local() -> None:
     """
     assert SistematorgReadonlyClient.has_next_page(page_one, 1) is True
     assert SistematorgReadonlyClient.has_next_page(terminal, 847) is False
+
+def test_sistematorg_landmark_postal_address_is_asset_scoped() -> None:
+    html = """
+    <html><body>
+    Идентификационный номер: 21001-ОАОФ
+    Тип торгов: Аукцион с открытой формой представления цены
+    Всего лотов: 1.
+    Лот № 1:
+      Номер лота: 1
+      Наименование имущества: Земельный участок, жилое помещение (здание)
+      Сведения об имуществе: Здание жилое. Кадастровый номер: 02:53:120401:131.
+      Местоположение: Республика Башкортостан, р-н. Шаранский, с. Сюньбаш,
+      ул. Центральная, д. 16. Площадь: 19.7.
+      Земельный участок. Кадастровый номер: 02:53:120401:62.
+      Местоположение установлено относительно ориентира, расположенного в границах участка.
+      Почтовый адрес ориентира: Республика Башкортостан, р-н. Шаранский,
+      с. Сюньбаш, ул. Центральная, д. 16. Площадь: 3288
+      Начальная цена: 317 700.00 руб.
+      Размер задатка: 31 770.00 руб.
+      Статус торгов: Прием заявок
+    </body></html>
+    """
+    lot = parse_sistematorg_detail_lots(
+        html, detail_url="https://sistematorg.com/trade_view.php?trade_nid=66720"
+    )[0]
+    assert lot.address == (
+        "Республика Башкортостан, р-н. Шаранский, с. Сюньбаш, "
+        "ул. Центральная, д. 16"
+    )
+    assert "ориентира:" not in lot.address.casefold()
+    assert lot.cadastral_number == "02:53:120401:131"
+
