@@ -1,0 +1,72 @@
+name: Check 21:00 nationwide ingestion
+
+on:
+  push:
+    branches:
+      - ops/check-2100-ingestion-20261111
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Read production LotSyncRun around 18:00 UTC
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = @'
+          import json
+          from datetime import datetime, timezone
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun
+
+          start = datetime(2026, 11, 11, 17, 30)
+          end = datetime(2026, 11, 11, 23, 0)
+          with SessionLocal() as s:
+              runs = s.scalars(
+                  select(LotSyncRun)
+                  .where(LotSyncRun.created_at >= start, LotSyncRun.created_at <= end)
+                  .order_by(LotSyncRun.created_at.asc())
+              ).all()
+              out=[]
+              for r in runs:
+                  srcs=s.scalars(
+                      select(LotSyncSourceRun)
+                      .where(LotSyncSourceRun.sync_run_id == r.id)
+                      .order_by(LotSyncSourceRun.source_system.asc())
+                  ).all()
+                  out.append({
+                      "id":r.id,
+                      "trigger_type":r.trigger_type,
+                      "status":r.status,
+                      "created_at":r.created_at,
+                      "started_at":r.started_at,
+                      "finished_at":r.finished_at,
+                      "heartbeat_at":r.heartbeat_at,
+                      "lease_expires_at":r.lease_expires_at,
+                      "checkpoint":r.checkpoint_json,
+                      "result":r.result_json,
+                      "error":r.error_message,
+                      "sources":[{
+                          "source":x.source_system,
+                          "status":x.status,
+                          "complete_source_run":x.complete_source_run,
+                          "pages_scanned":x.pages_scanned,
+                          "items_seen":x.items_seen,
+                          "inserted":x.items_inserted,
+                          "updated":x.items_updated,
+                          "unchanged":x.items_unchanged,
+                          "failed":x.items_failed,
+                          "started_at":x.started_at,
+                          "finished_at":x.finished_at,
+                          "error":x.error_message,
+                      } for x in srcs],
+                  })
+              print("RUNS="+json.dumps(out,ensure_ascii=False,default=str))
+          '@
+          $out = $py | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0) { throw 'read-only ingestion status probe failed' }
+          $out
