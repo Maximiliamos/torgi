@@ -1117,34 +1117,22 @@ function LotPreview({
               <dd>{formatMoscowDate(lot.next_price_reduction_at)} МСК</dd>
             </>
           )}
-          {lot.address && (
-            <>
-              <dt>Адрес:</dt>
-              <dd>{lot.address}</dd>
-            </>
-          )}
-          {lot.cadastral_number && (
-            <>
-              <dt>Кадастр:</dt>
-              <dd>{lot.cadastral_number}</dd>
-            </>
-          )}
+          <dt>Адрес:</dt>
+          <dd>{lot.address || ""}</dd>
+          <dt>Кадастр:</dt>
+          <dd>{lot.cadastral_number || ""}</dd>
+          <dt>Подача заявок до:</dt>
+          <dd>
+            {lot.application_deadline
+              ? `${formatMoscowDate(lot.application_deadline)} МСК`
+              : ""}
+          </dd>
+          <dt>Торги:</dt>
+          <dd>{lot.auction_at ? `${formatMoscowDate(lot.auction_at)} МСК` : ""}</dd>
           {lot.procedure_number && (
             <>
               <dt>Процедура:</dt>
               <dd>{lot.procedure_number}</dd>
-            </>
-          )}
-          {lot.application_deadline && (
-            <>
-              <dt>Заявки до:</dt>
-              <dd>{formatMoscowDate(lot.application_deadline)} МСК</dd>
-            </>
-          )}
-          {lot.auction_at && (
-            <>
-              <dt>Торги:</dt>
-              <dd>{formatMoscowDate(lot.auction_at)} МСК</dd>
             </>
           )}
         </dl>
@@ -1241,6 +1229,16 @@ function LotPreviewLoading({
             {money(marker.current_price ?? marker.start_price)}
           </strong>
         )}
+        <dl className="mapPreviewDetails">
+          <dt>Адрес:</dt>
+          <dd></dd>
+          <dt>Кадастр:</dt>
+          <dd></dd>
+          <dt>Подача заявок до:</dt>
+          <dd></dd>
+          <dt>Торги:</dt>
+          <dd></dd>
+        </dl>
         <MapState error={Boolean(error)}>
           {error || "Загрузка описания и действий с лотом…"}
         </MapState>
