@@ -410,6 +410,45 @@ describe("direct Yandex tile transport", () => {
     ));
   });
 
+  it("always renders the four core lot fields and leaves missing values blank", async () => {
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    act(() => send(frame, "bankrotai-select", { lotId: 77 }));
+
+    await waitFor(() => expect(fetchMapLotDetail).toHaveBeenCalledWith(77));
+
+    const addressLabel = await screen.findByText("Адрес:");
+    const cadastralLabel = screen.getByText("Кадастр:");
+    const deadlineLabel = screen.getByText("Подача заявок до:");
+    const auctionLabel = screen.getByText("Торги:");
+
+    expect(addressLabel.nextElementSibling?.textContent).toBe("Ярославль");
+    expect(cadastralLabel.nextElementSibling?.textContent).toBe("");
+    expect(deadlineLabel.nextElementSibling?.textContent).toBe("");
+    expect(auctionLabel.nextElementSibling?.textContent).toBe("");
+  });
+
+  it("keeps the four core rows visible when lot detail loading fails", async () => {
+    vi.mocked(fetchMapLotDetail).mockRejectedValueOnce(new ApiError("detail unavailable", 503));
+
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    act(() => send(frame, "bankrotai-select", { lotId: 77 }));
+
+    await waitFor(() => expect(fetchMapLotDetail).toHaveBeenCalledWith(77));
+    expect(await screen.findByText("Адрес:")).toBeInTheDocument();
+    expect(screen.getByText("Кадастр:")).toBeInTheDocument();
+    expect(screen.getByText("Подача заявок до:")).toBeInTheDocument();
+    expect(screen.getByText("Торги:")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Не удалось загрузить полную карточку: detail unavailable"),
+    ).toBeInTheDocument();
+  });
+
   it("submits a simple user error report from the lot card", async () => {
     const { MapView } = await import("./MapView");
     render(<MapView refreshToken={0} />);
