@@ -1,0 +1,337 @@
+name: One-shot post-1228 GEO canary 500
+
+on:
+  push:
+    branches:
+      - ops/geo-canary-500-post1228-20261111
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-secondary-production
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 90
+    env:
+      EXPECTED_MAIN_SHA: dac98f746ee8088073b83eb8a82a8497e62e2054
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Require exact deployed Home revision
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = docker ps --filter 'name=^/bankrotai-home-geocoding-worker$' --format '{{.Names}}'
+          if ($name -ne 'bankrotai-home-geocoding-worker') { throw 'Canonical GEO worker is not running' }
+          $image = docker inspect bankrotai-home-geocoding-worker --format '{{.Config.Image}}'
+          if ($image -notmatch $env:EXPECTED_MAIN_SHA) { throw "Home GEO worker is not on expected SHA: $image" }
+          $freeGb = (Get-PSDrive C).Free / 1GB
+          if ($freeGb -lt 10) { throw "Insufficient disk headroom: $freeGb GB" }
+          Write-Output "GEO worker image=$image; disk_free_gb=$freeGb"
+
+      - name: Run five fail-closed direct validated waves of 100
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          import json
+          import re
+          import time
+          from collections import Counter
+
+          from sqlalchemy import select
+
+          from bankrotai.db import GeoFailure, ProcessedLot, SessionLocal
+          from bankrotai.geo import CADASTRAL_GEOCODER
+          from bankrotai.services.geo_resilience import provider_health
+          from bankrotai.services.stale_cadastral_recovery import recover_stale_cadastral_live_results
+
+          WAVES = 5
+          WAVE_SIZE = 100
+          SOURCES = (
+              ("torgi-russia.ru", 30),
+              ("torgi.gov.ru", 30),
+              ("tbankrot.ru", 20),
+              ("bidexpert.ru", 20),
+          )
+          EXCLUDE = set(map(int, "73,36351,36643,36925,36947,37209,37225,37483,37533,41910,41914,42174,42218,42454,42480,42750,42852,43098,43204,43381,43493,43699,43840,43846,44039,44051,59156,59236,59392,59649,59738,59940,59944,60198,60389,60542,60697,60765,61026,61043,107498,107581,289174,289460,289917,290277,290580,290701,307134,320759,324677,337771,337886,337928,338286,338344,361725,361886,361944,362003,362053,362144,362174,365185,365190,384484,384518,384644,384701,387748,387879,387908,388042,388048,388166,388216,388371,388410,388476,388550,388563,388564,388625,388694,388732,388826,388835,388862,388967,391412,391423,409506,409655,411988,412281,421270,436149,436231,436293,436355,436417,436479,436541,436801,436945,437154,437258,437268,437457,437467,437709,437730,437855,437909,437963,438037,438040,438310,438330,438452,438518,438544,438731,438744,438829,438835,438950,439683,439735,439769,439847,439913,439953,439960,440016,440662,440717,443297,444059,455963,456059,456069,456597,456625,458073,458476,458584,458743,458856,459146,460080,460669,461313,461527,461948,461953,462097,462933,462953,464950,464961,465518,465558,465706,468382,468663,472744,473865,474215,476581,480641,488697,489787,493006,496427,496429,498437,498667,499796,499799,500052,500053,500534,500573,500622,505067,508726,508835,508898,509105,510274,510573,510601,510609,511087,512207,516581,516699,516700,516845".split(",")))
+          CAD_RE = re.compile(r"^\d{2}:\d{1,2}:\d{5,9}:\d{1,12}$")
+
+          def evenly(rows, count):
+              rows = list(rows)
+              if len(rows) <= count:
+                  return rows
+              if count <= 1:
+                  return [rows[0]]
+              indexes = []
+              for i in range(count):
+                  idx = round(i * (len(rows) - 1) / (count - 1))
+                  if idx not in indexes:
+                      indexes.append(idx)
+              return [rows[i] for i in indexes]
+
+          def health_payload():
+              state = provider_health("nspd")
+              return {
+                  "consecutive_failures": state.consecutive_failures,
+                  "last_category": state.last_category,
+                  "circuit_open_until": state.circuit_open_until,
+                  "last_success_at": state.last_success_at,
+              }
+
+          campaign = {
+              "report": "POST_1228_STALE_NSPD_CANARY_500",
+              "waves": [],
+              "selected": 0,
+              "accepted": 0,
+              "resolved": 0,
+              "probe_reasons": {},
+              "rejection_reasons": {},
+              "by_source": {},
+          }
+          campaign_probe = Counter()
+          campaign_reject = Counter()
+
+          for wave_no in range(1, WAVES + 1):
+              selected_rows = []
+              seen = set(EXCLUDE)
+
+              with SessionLocal() as session:
+                  for source, quota in SOURCES:
+                      rows = session.execute(
+                          select(
+                              ProcessedLot.id,
+                              ProcessedLot.source_system,
+                              ProcessedLot.cadastral_number,
+                          )
+                          .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                          .where(
+                              ProcessedLot.source_system == source,
+                              ProcessedLot.duplicate_of_id.is_(None),
+                              ProcessedLot.is_archived.is_(False),
+                              ProcessedLot.review_status.is_(None),
+                              ProcessedLot.auction_status.in_(("active", "scheduled")),
+                              ProcessedLot.current_geo_lat.is_(None),
+                              ProcessedLot.current_geo_lon.is_(None),
+                              ProcessedLot.cadastral_number.is_not(None),
+                              GeoFailure.status == "deferred_no_match",
+                              GeoFailure.error_message.ilike("%nspd_cadastral%"),
+                              GeoFailure.error_message.ilike("%no_coordinates%"),
+                          )
+                          .order_by(ProcessedLot.id.desc())
+                          .limit(6000)
+                      ).all()
+                      valid = []
+                      for row in rows:
+                          lot_id = int(row.id)
+                          cad = re.sub(r"\s+", "", str(row.cadastral_number or ""))
+                          if lot_id not in seen and CAD_RE.fullmatch(cad):
+                              valid.append(row)
+                      for row in evenly(valid, quota):
+                          selected_rows.append(row)
+                          seen.add(int(row.id))
+
+                  if len(selected_rows) < WAVE_SIZE:
+                      fill = session.execute(
+                          select(
+                              ProcessedLot.id,
+                              ProcessedLot.source_system,
+                              ProcessedLot.cadastral_number,
+                          )
+                          .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                          .where(
+                              ProcessedLot.duplicate_of_id.is_(None),
+                              ProcessedLot.is_archived.is_(False),
+                              ProcessedLot.review_status.is_(None),
+                              ProcessedLot.auction_status.in_(("active", "scheduled")),
+                              ProcessedLot.current_geo_lat.is_(None),
+                              ProcessedLot.current_geo_lon.is_(None),
+                              ProcessedLot.cadastral_number.is_not(None),
+                              GeoFailure.status == "deferred_no_match",
+                              GeoFailure.error_message.ilike("%nspd_cadastral%"),
+                              GeoFailure.error_message.ilike("%no_coordinates%"),
+                          )
+                          .order_by(ProcessedLot.id.asc())
+                          .limit(12000)
+                      ).all()
+                      for row in fill:
+                          if len(selected_rows) >= WAVE_SIZE:
+                              break
+                          lot_id = int(row.id)
+                          if lot_id in seen:
+                              continue
+                          cad = re.sub(r"\s+", "", str(row.cadastral_number or ""))
+                          if not CAD_RE.fullmatch(cad):
+                              continue
+                          selected_rows.append(row)
+                          seen.add(lot_id)
+
+              selected_rows = selected_rows[:WAVE_SIZE]
+              selected_ids = [int(row.id) for row in selected_rows]
+              if len(selected_ids) != WAVE_SIZE:
+                  raise RuntimeError(f"wave_{wave_no}_could_not_select_100:{len(selected_ids)}")
+
+              EXCLUDE.update(selected_ids)
+              probe_details = {}
+              probe_reasons = Counter()
+
+              def live_result_probe(cadastral):
+                  try:
+                      found = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral)
+                  except Exception as exc:
+                      reason = f"exception:{type(exc).__name__}"
+                      probe_reasons[reason] += 1
+                      probe_details[cadastral] = {"reason": reason, "error": str(exc)[:300]}
+                      time.sleep(0.2)
+                      raise
+                  time.sleep(0.2)
+                  if found is None:
+                      probe_reasons["live_nspd_no_match"] += 1
+                      probe_details[cadastral] = {"reason": "live_nspd_no_match"}
+                      return None, "live_nspd_no_match"
+                  observed = re.sub(r"\s+", "", str(found.cadastral_number or ""))
+                  if observed != cadastral:
+                      probe_reasons["live_nspd_identity_mismatch"] += 1
+                      probe_details[cadastral] = {"reason": "live_nspd_identity_mismatch", "observed": observed}
+                      return None, "live_nspd_identity_mismatch"
+                  if found.lat is None or found.lon is None:
+                      probe_reasons["live_nspd_no_coordinates"] += 1
+                      probe_details[cadastral] = {"reason": "live_nspd_no_coordinates"}
+                      return None, "live_nspd_no_coordinates"
+                  probe_reasons["exact_match"] += 1
+                  probe_details[cadastral] = {
+                      "reason": "exact_match",
+                      "lat": found.lat,
+                      "lon": found.lon,
+                      "address": found.address,
+                      "confidence": found.confidence,
+                  }
+                  return found, "exact_match"
+
+              health_before = health_payload()
+              with SessionLocal() as session:
+                  result = recover_stale_cadastral_live_results(
+                      session,
+                      lot_ids=selected_ids,
+                      live_result_probe=live_result_probe,
+                      apply=True,
+                  )
+                  session.commit()
+              health_after = health_payload()
+
+              accepted_ids = set(result.get("lot_ids") or [])
+              final = []
+              with SessionLocal() as session:
+                  rows = session.execute(
+                      select(ProcessedLot, GeoFailure)
+                      .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                      .where(ProcessedLot.id.in_(selected_ids))
+                  ).all()
+                  for lot, failure in rows:
+                      final.append({
+                          "lot_id": int(lot.id),
+                          "source": lot.source_system,
+                          "resolved": (
+                              int(lot.id) in accepted_ids
+                              and lot.current_geo_lat is not None
+                              and lot.current_geo_lon is not None
+                              and failure.status == "resolved"
+                          ),
+                      })
+
+              resolved_ids = {row["lot_id"] for row in final if row["resolved"]}
+              unresolved_accepted = sorted(accepted_ids - resolved_ids)
+              rejection_reasons = Counter(
+                  str(item.get("reason") or "unknown")
+                  for item in (result.get("rejections") or [])
+              )
+
+              by_source = {}
+              for row in final:
+                  bucket = by_source.setdefault(row["source"], {"selected": 0, "accepted": 0, "resolved": 0})
+                  bucket["selected"] += 1
+                  if row["lot_id"] in accepted_ids:
+                      bucket["accepted"] += 1
+                  if row["lot_id"] in resolved_ids:
+                      bucket["resolved"] += 1
+                  total_bucket = campaign["by_source"].setdefault(
+                      row["source"], {"selected": 0, "accepted": 0, "resolved": 0}
+                  )
+                  total_bucket["selected"] += 1
+                  if row["lot_id"] in accepted_ids:
+                      total_bucket["accepted"] += 1
+                  if row["lot_id"] in resolved_ids:
+                      total_bucket["resolved"] += 1
+
+              wave = {
+                  "wave": wave_no,
+                  "selected": WAVE_SIZE,
+                  "accepted": len(accepted_ids),
+                  "resolved": len(resolved_ids),
+                  "accepted_to_resolved_percent": (
+                      round(len(resolved_ids) * 100 / len(accepted_ids), 1)
+                      if accepted_ids else 0.0
+                  ),
+                  "probe_reasons": dict(probe_reasons),
+                  "rejection_reasons": dict(rejection_reasons),
+                  "unresolved_accepted": unresolved_accepted,
+                  "nspd_health_before": health_before,
+                  "nspd_health_after": health_after,
+                  "by_source": by_source,
+              }
+              campaign["waves"].append(wave)
+              campaign["selected"] += WAVE_SIZE
+              campaign["accepted"] += len(accepted_ids)
+              campaign["resolved"] += len(resolved_ids)
+              campaign_probe.update(probe_reasons)
+              campaign_reject.update(rejection_reasons)
+
+              print("WAVE_REPORT=" + json.dumps(wave, ensure_ascii=False, default=str), flush=True)
+
+              if unresolved_accepted:
+                  campaign["stop_reason"] = f"wave_{wave_no}_unresolved_accepted"
+                  break
+              if health_after.get("circuit_open_until") is not None:
+                  campaign["stop_reason"] = f"wave_{wave_no}_nspd_circuit_open"
+                  break
+              if wave_no < WAVES:
+                  time.sleep(2)
+
+          campaign["probe_reasons"] = dict(campaign_probe)
+          campaign["rejection_reasons"] = dict(campaign_reject)
+          campaign["accepted_to_resolved_percent"] = (
+              round(campaign["resolved"] * 100 / campaign["accepted"], 1)
+              if campaign["accepted"] else 0.0
+          )
+          campaign.setdefault("stop_reason", "completed")
+          print("CAMPAIGN_REPORT=" + json.dumps(campaign, ensure_ascii=False, default=str))
+
+          if campaign["stop_reason"] != "completed":
+              raise SystemExit(2)
+          if campaign["selected"] != WAVES * WAVE_SIZE:
+              raise SystemExit(3)
+          if campaign["resolved"] != campaign["accepted"]:
+              raise SystemExit(4)
+          '@
+
+          $previous = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $json = $script | docker exec -i bankrotai-home-geocoding-worker python - 2>&1
+          $exit = $LASTEXITCODE
+          $ErrorActionPreference = $previous
+          $json | Set-Content -LiteralPath "$env:RUNNER_TEMP\post-1228-canary-500.json" -Encoding utf8
+          $json | ForEach-Object { Write-Output $_ }
+          if ($exit -ne 0) { throw "Post-1228 500-lot GEO canary failed with exit code $exit" }
+
+      - name: Upload campaign evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: post-1228-geo-canary-500-${{ github.run_id }}
+          path: ${{ runner.temp }}\post-1228-canary-500.json
+          if-no-files-found: warn
+          retention-days: 30
