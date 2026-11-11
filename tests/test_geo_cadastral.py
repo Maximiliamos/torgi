@@ -642,3 +642,69 @@ def test_interactive_nspd_primary_read_cap_covers_measured_home_latency() -> Non
     assert geo.INTERACTIVE_NSPD_HEDGE_DELAY_SECONDS < geo.INTERACTIVE_NSPD_READ_TIMEOUT
     assert geo.INTERACTIVE_NSPD_READ_TIMEOUT < geo.INTERACTIVE_NSPD_BUDGET_SECONDS
     assert geo.INTERACTIVE_NSPD_BUDGET_SECONDS < geo.INTERACTIVE_CADASTRAL_HARD_DEADLINE_SECONDS
+
+
+
+def test_nspd_404_is_query_miss_and_does_not_poison_following_queries(monkeypatch) -> None:
+    import requests
+
+    missing = "53:00:0500101:1507"
+    valid = "76:23:011401:8268"
+    calls: list[str] = []
+    failures: list[str] = []
+
+    class SuccessResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": {
+                    "features": [
+                        {
+                            "properties": {
+                                "options": {"cad_num": valid},
+                                "categoryName": "Здание",
+                            },
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [39.77901, 57.69072],
+                            },
+                        }
+                    ]
+                }
+            }
+
+    def get(url, **kwargs):
+        query = str(kwargs["params"]["query"])
+        calls.append(query)
+        if query == missing:
+            response = requests.Response()
+            response.status_code = 404
+            response.url = f"{url}?query={query}"
+            response._content = b"not found"
+            return response
+        return SuccessResponse()
+
+    monkeypatch.setattr("bankrotai.geo.require_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bankrotai.geo.record_provider_success", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "bankrotai.geo.record_provider_failure",
+        lambda _provider, category, **_kwargs: failures.append(category),
+    )
+    monkeypatch.setattr("bankrotai.geo.nspd_tls_verify", lambda: True)
+    monkeypatch.setattr("bankrotai.geo.requests.get", get)
+
+    geocoder = CadastralGeocoder()
+
+    assert geocoder._search_nspd_geoportal(missing) is None
+    assert geocoder._nspd_disabled_until == 0.0
+    assert failures == []
+
+    result = geocoder._search_nspd_geoportal(valid)
+
+    assert result is not None
+    assert result.cadastral_number == valid
+    assert result.lat == 57.69072
+    assert result.lon == 39.77901
+    assert calls == [missing, valid]

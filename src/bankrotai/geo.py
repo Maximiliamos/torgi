@@ -1038,6 +1038,16 @@ class CadastralGeocoder:
                         "NSPD TLS certificate verification failed"
                     ) from exc
                 except requests.RequestException as exc:
+                    status = (
+                        exc.response.status_code
+                        if isinstance(exc, requests.HTTPError) and exc.response is not None
+                        else None
+                    )
+                    if status == 404:
+                        # NSPD uses HTTP 404 for a query-scoped cadastral miss.
+                        # Do not poison the provider circuit for unrelated queries.
+                        logger.info("NSPD returned no object for %s (HTTP 404)", query)
+                        return None
                     category = classify_transport_exception(exc)
                     record_provider_failure(
                         "nspd",
