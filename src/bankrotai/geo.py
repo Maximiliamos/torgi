@@ -1037,49 +1037,17 @@ class CadastralGeocoder:
                     raise NSPDTLSVerificationError(
                         "NSPD TLS certificate verification failed"
                     ) from exc
-                except requests.HTTPError as exc:
-                    status = exc.response.status_code if exc.response is not None else None
+                except requests.RequestException as exc:
+                    status = (
+                        exc.response.status_code
+                        if isinstance(exc, requests.HTTPError) and exc.response is not None
+                        else None
+                    )
                     if status == 404:
                         # NSPD uses HTTP 404 for a query-scoped cadastral miss.
-                        # It says nothing about provider health and must not
-                        # poison the circuit for unrelated following queries.
+                        # Do not poison the provider circuit for unrelated queries.
                         logger.info("NSPD returned no object for %s (HTTP 404)", query)
                         return None
-                    category = classify_transport_exception(exc)
-                    record_provider_failure(
-                        "nspd",
-                        category,
-                        latency_ms=(time.monotonic() - attempt_started) * 1000,
-                    )
-                    remaining = (
-                        (nspd_deadline - time.monotonic())
-                        if interactive and nspd_deadline is not None
-                        else 0.0
-                    )
-                    retryable = category in {
-                        "read_timeout",
-                        "provider_5xx",
-                        "rate_limited",
-                    }
-                    enough_budget = remaining >= 1.2
-                    if (
-                        interactive
-                        and attempt + 1 < max_attempts
-                        and retryable
-                        and enough_budget
-                    ):
-                        time.sleep(min(0.08, max(0.0, remaining - 1.1)))
-                        continue
-                    self._open_circuit("nspd")
-                    logger.warning(
-                        "NSPD request failed for %s; category=%s remaining=%.3fs: %s",
-                        query,
-                        category,
-                        remaining,
-                        exc,
-                    )
-                    raise GeoProviderUnavailable("nspd", category, str(exc)) from exc
-                except requests.RequestException as exc:
                     category = classify_transport_exception(exc)
                     record_provider_failure(
                         "nspd",
