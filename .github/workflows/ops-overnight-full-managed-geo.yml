@@ -1,0 +1,158 @@
+name: Overnight full managed stale NSPD recovery
+
+on:
+  push:
+    branches:
+      - ops/geo-full-managed-recovery-20261111
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-secondary-production
+  cancel-in-progress: false
+
+env:
+  EXPECTED_MAIN_SHA: 1b6ecce21719aea3ecbd824d5482dcdc2d5b5489
+
+jobs:
+  recovery-window-1:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Run managed recovery window 1
+        shell: powershell
+        env:
+          WINDOW_SECONDS: "19800"
+          WINDOW_NAME: "window-1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = docker inspect bankrotai-home-geocoding-worker --format '{{.Config.Image}}'
+          if ($LASTEXITCODE -ne 0 -or $image -notmatch $env:EXPECTED_MAIN_SHA) {
+            throw "Home GEO worker is not on expected main SHA $env:EXPECTED_MAIN_SHA: $image"
+          }
+          $evidence = "$env:RUNNER_TEMP\overnight-managed-geo-window-1.jsonl"
+          New-Item -ItemType File -Force -Path $evidence | Out-Null
+          $started = Get-Date
+          $retryStreak = 0
+          $batch = 0
+          while ($true) {
+            if (((Get-Date) - $started).TotalSeconds -ge [int]$env:WINDOW_SECONDS) {
+              Write-Output "WINDOW_STATUS=budget_exhausted batches=$batch"
+              break
+            }
+            $freeGb = [math]::Round((Get-PSDrive C).Free / 1GB, 2)
+            if ($freeGb -lt 8) { throw "Emergency stop: C: free space is $freeGb GB" }
+
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $output = & docker exec bankrotai-home-geocoding-worker python -m bankrotai.services.managed_stale_cadastral_recovery --batch-size 100 --apply 2>&1
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previous
+            $output | ForEach-Object { Write-Output $_ }
+            $jsonLine = @($output | ForEach-Object { "$_" } | Where-Object { $_.TrimStart().StartsWith('{') }) | Select-Object -Last 1
+            if (-not $jsonLine) { throw "Managed recovery returned no JSON" }
+            Add-Content -LiteralPath $evidence -Value $jsonLine -Encoding utf8
+            $state = $jsonLine | ConvertFrom-Json
+            $batch += 1
+
+            Write-Output ("RECOVERY_PROGRESS window={0} batch={1} status={2} source={3} selected={4} accepted={5} updated={6} cursor={7} total_probed={8} total_updated={9} disk_free_gb={10}" -f
+              $env:WINDOW_NAME, $batch, $state.status, $state.source, $state.selected,
+              $state.accepted, $state.updated, $state.cursor_after, $state.state.probed,
+              $state.state.updated, $freeGb)
+
+            if ($state.status -eq 'completed') {
+              Write-Output ("CAMPAIGN_COMPLETE probed={0} accepted={1} updated={2} operational_failures={3}" -f
+                $state.state.probed, $state.state.accepted, $state.state.updated, $state.state.operational_failures)
+              break
+            }
+            if ($exitCode -eq 75 -or $state.status -eq 'retry_required') {
+              $retryStreak += 1
+              $sleepSeconds = [math]::Min(300, 30 * [math]::Pow(2, [math]::Min($retryStreak - 1, 4)))
+              Write-Warning "Operational NSPD failure; cursor held. Retry in $sleepSeconds seconds."
+              Start-Sleep -Seconds ([int]$sleepSeconds)
+              continue
+            }
+            if ($exitCode -ne 0) { throw "Managed recovery exited $exitCode" }
+            $retryStreak = 0
+          }
+      - name: Upload window 1 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: overnight-managed-geo-window-1-${{ github.run_id }}
+          path: ${{ runner.temp }}\overnight-managed-geo-window-1.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
+  recovery-window-2:
+    needs: recovery-window-1
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Run managed recovery window 2
+        shell: powershell
+        env:
+          WINDOW_SECONDS: "19800"
+          WINDOW_NAME: "window-2"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = docker inspect bankrotai-home-geocoding-worker --format '{{.Config.Image}}'
+          if ($LASTEXITCODE -ne 0 -or $image -notmatch $env:EXPECTED_MAIN_SHA) {
+            throw "Home GEO worker is not on expected main SHA $env:EXPECTED_MAIN_SHA: $image"
+          }
+          $evidence = "$env:RUNNER_TEMP\overnight-managed-geo-window-2.jsonl"
+          New-Item -ItemType File -Force -Path $evidence | Out-Null
+          $started = Get-Date
+          $retryStreak = 0
+          $batch = 0
+          while ($true) {
+            if (((Get-Date) - $started).TotalSeconds -ge [int]$env:WINDOW_SECONDS) {
+              Write-Output "WINDOW_STATUS=budget_exhausted batches=$batch"
+              break
+            }
+            $freeGb = [math]::Round((Get-PSDrive C).Free / 1GB, 2)
+            if ($freeGb -lt 8) { throw "Emergency stop: C: free space is $freeGb GB" }
+
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $output = & docker exec bankrotai-home-geocoding-worker python -m bankrotai.services.managed_stale_cadastral_recovery --batch-size 100 --apply 2>&1
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previous
+            $output | ForEach-Object { Write-Output $_ }
+            $jsonLine = @($output | ForEach-Object { "$_" } | Where-Object { $_.TrimStart().StartsWith('{') }) | Select-Object -Last 1
+            if (-not $jsonLine) { throw "Managed recovery returned no JSON" }
+            Add-Content -LiteralPath $evidence -Value $jsonLine -Encoding utf8
+            $state = $jsonLine | ConvertFrom-Json
+            $batch += 1
+
+            Write-Output ("RECOVERY_PROGRESS window={0} batch={1} status={2} source={3} selected={4} accepted={5} updated={6} cursor={7} total_probed={8} total_updated={9} disk_free_gb={10}" -f
+              $env:WINDOW_NAME, $batch, $state.status, $state.source, $state.selected,
+              $state.accepted, $state.updated, $state.cursor_after, $state.state.probed,
+              $state.state.updated, $freeGb)
+
+            if ($state.status -eq 'completed') {
+              Write-Output ("CAMPAIGN_COMPLETE probed={0} accepted={1} updated={2} operational_failures={3}" -f
+                $state.state.probed, $state.state.accepted, $state.state.updated, $state.state.operational_failures)
+              break
+            }
+            if ($exitCode -eq 75 -or $state.status -eq 'retry_required') {
+              $retryStreak += 1
+              $sleepSeconds = [math]::Min(300, 30 * [math]::Pow(2, [math]::Min($retryStreak - 1, 4)))
+              Write-Warning "Operational NSPD failure; cursor held. Retry in $sleepSeconds seconds."
+              Start-Sleep -Seconds ([int]$sleepSeconds)
+              continue
+            }
+            if ($exitCode -ne 0) { throw "Managed recovery exited $exitCode" }
+            $retryStreak = 0
+          }
+      - name: Upload window 2 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: overnight-managed-geo-window-2-${{ github.run_id }}
+          path: ${{ runner.temp }}\overnight-managed-geo-window-2.jsonl
+          if-no-files-found: warn
+          retention-days: 30
