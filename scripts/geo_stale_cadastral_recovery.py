@@ -26,7 +26,13 @@ def live_nspd_probe(cadastral: str):
     found = CADASTRAL_GEOCODER._search_nspd_geoportal(cadastral)
     if found is None:
         return None, "live_nspd_no_match"
-    return found, "live_nspd_result"
+    observed = re.sub(r"\s+", "", str(found.cadastral_number or ""))
+    expected = re.sub(r"\s+", "", cadastral)
+    if observed != expected:
+        return None, "live_nspd_identity_mismatch"
+    if found.lat is None or found.lon is None:
+        return None, "live_nspd_no_coordinates"
+    return found, "exact_match"
 
 
 def main() -> dict:
