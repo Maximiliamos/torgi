@@ -1,0 +1,103 @@
+name: One-shot GEO recovery census
+
+on:
+  push:
+    branches:
+      - ops/geo-recovery-census-20261111
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-secondary-production
+  cancel-in-progress: false
+
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 15
+    env:
+      EXPECTED_MAIN_SHA: dac98f746ee8088073b83eb8a82a8497e62e2054
+    steps:
+      - name: Read-only active stale GEO census
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = docker inspect bankrotai-home-geocoding-worker --format '{{.Config.Image}}'
+          if ($image -notmatch $env:EXPECTED_MAIN_SHA) { throw "Unexpected Home GEO image: $image" }
+          $script = @'
+          import json
+          from sqlalchemy import func, select
+          from bankrotai.db import GeoFailure, ProcessedLot, SessionLocal
+
+          with SessionLocal() as s:
+              base = (
+                  select(
+                      ProcessedLot.source_system,
+                      func.count(ProcessedLot.id),
+                      func.count(ProcessedLot.cadastral_number),
+                  )
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      ProcessedLot.duplicate_of_id.is_(None),
+                      ProcessedLot.is_archived.is_(False),
+                      ProcessedLot.review_status.is_(None),
+                      ProcessedLot.auction_status.in_(("active", "scheduled")),
+                      ProcessedLot.current_geo_lat.is_(None),
+                      ProcessedLot.current_geo_lon.is_(None),
+                      GeoFailure.status == "deferred_no_match",
+                  )
+                  .group_by(ProcessedLot.source_system)
+                  .order_by(func.count(ProcessedLot.id).desc())
+              )
+              rows = s.execute(base).all()
+              nspd_rows = s.execute(
+                  select(
+                      ProcessedLot.source_system,
+                      func.count(ProcessedLot.id),
+                  )
+                  .join(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
+                  .where(
+                      ProcessedLot.duplicate_of_id.is_(None),
+                      ProcessedLot.is_archived.is_(False),
+                      ProcessedLot.review_status.is_(None),
+                      ProcessedLot.auction_status.in_(("active", "scheduled")),
+                      ProcessedLot.current_geo_lat.is_(None),
+                      ProcessedLot.current_geo_lon.is_(None),
+                      ProcessedLot.cadastral_number.is_not(None),
+                      GeoFailure.status == "deferred_no_match",
+                      GeoFailure.error_message.ilike("%nspd_cadastral%"),
+                      GeoFailure.error_message.ilike("%no_coordinates%"),
+                  )
+                  .group_by(ProcessedLot.source_system)
+                  .order_by(func.count(ProcessedLot.id).desc())
+              ).all()
+              nspd = {str(source): int(count) for source, count in nspd_rows}
+              by_source = {
+                  str(source): {
+                      "deferred_no_match_active": int(total),
+                      "with_cadastral": int(with_cad),
+                      "nspd_no_coordinates_candidate": int(nspd.get(str(source), 0)),
+                  }
+                  for source,total,with_cad in rows
+              }
+              totals = {
+                  "deferred_no_match_active": sum(v["deferred_no_match_active"] for v in by_source.values()),
+                  "with_cadastral": sum(v["with_cadastral"] for v in by_source.values()),
+                  "nspd_no_coordinates_candidate": sum(v["nspd_no_coordinates_candidate"] for v in by_source.values()),
+              }
+              report={"report":"GEO_RECOVERY_CENSUS","totals":totals,"by_source":by_source}
+              print("CENSUS_REPORT="+json.dumps(report,ensure_ascii=False,default=str))
+          '@
+          $json = $script | docker exec -i bankrotai-home-geocoding-worker python -
+          if ($LASTEXITCODE -ne 0) { throw 'GEO census failed' }
+          $json | Set-Content -LiteralPath "$env:RUNNER_TEMP\geo-recovery-census.json" -Encoding utf8
+          $json
+
+      - name: Upload census evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: geo-recovery-census-${{ github.run_id }}
+          path: ${{ runner.temp }}\geo-recovery-census.json
+          if-no-files-found: error
+          retention-days: 30
