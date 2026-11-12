@@ -4,7 +4,6 @@ import logging
 import re
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from decimal import Decimal
 from typing import Any
 
@@ -12,6 +11,7 @@ from sqlalchemy import String, asc, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from bankrotai.domain import NormalizedLot
+from bankrotai.business_time import to_moscow_datetime
 from bankrotai.regions import normalize_region_code
 from bankrotai.db import (
     LotGeoSnapshot,
@@ -104,17 +104,15 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-_MOSCOW = ZoneInfo("Europe/Moscow")
-
-
-def _parse_datetime(value: Any) -> datetime | None:
+def _to_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
     if value in (None, ""):
         return None
     text = str(value).strip().replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
     except ValueError:
         pass
     for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -123,28 +121,6 @@ def _parse_datetime(value: Any) -> datetime | None:
         except ValueError:
             continue
     return None
-
-
-def _to_datetime(value: Any) -> datetime | None:
-    """Normalize technical/source timestamps to naive UTC for internal comparisons."""
-    parsed = _parse_datetime(value)
-    if parsed is None:
-        return None
-    return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
-
-
-def _to_moscow_datetime(value: Any) -> datetime | None:
-    """Normalize lot-facing business timestamps to naive Europe/Moscow wall time.
-
-    Naive values from Russian auction pages are already Moscow wall time.
-    Offset-aware/Z values are converted to Moscow before dropping tzinfo because
-    the current database schema uses timezone-naive DateTime columns.
-    """
-    parsed = _parse_datetime(value)
-    if parsed is None:
-        return None
-    return parsed.astimezone(_MOSCOW).replace(tzinfo=None) if parsed.tzinfo else parsed
-
 
 def _canonical_key(normalized: NormalizedLot, *, isolate_source: bool = False) -> str:
     # A cadastral number identifies an asset, not a specific auction sale.
@@ -449,14 +425,14 @@ def _sync_source_lot(
     source_lot.deposit_payment_details = normalized.deposit_payment_details or _raw_value(
         raw, "deposit_payment_details", "deposit_requisites"
     )
-    source_lot.deposit_deadline = _to_moscow_datetime(normalized.deposit_deadline) or _to_moscow_datetime(_raw_value(raw, "deposit_deadline"))
-    source_lot.application_start_at = _to_moscow_datetime(normalized.application_start_at) or _to_moscow_datetime(
+    source_lot.deposit_deadline = to_moscow_datetime(normalized.deposit_deadline) or to_moscow_datetime(_raw_value(raw, "deposit_deadline"))
+    source_lot.application_start_at = to_moscow_datetime(normalized.application_start_at) or to_moscow_datetime(
         _raw_value(raw, "bidd_start_time", "application_start_at", "application_start")
     )
-    source_lot.application_deadline = _to_moscow_datetime(normalized.application_deadline) or _to_moscow_datetime(
+    source_lot.application_deadline = to_moscow_datetime(normalized.application_deadline) or to_moscow_datetime(
         _raw_value(raw, "bidd_end_time", "application_deadline")
     )
-    source_lot.auction_at = _to_moscow_datetime(normalized.auction_at) or _to_moscow_datetime(
+    source_lot.auction_at = to_moscow_datetime(normalized.auction_at) or to_moscow_datetime(
         _raw_value(raw, "auction_start_date", "auction_at")
     )
     source_lot.auction_timezone = (
@@ -469,7 +445,7 @@ def _sync_source_lot(
         ))
         else normalized.auction_timezone or _raw_value(raw, "auction_timezone", "timezone", "time_zone")
     )
-    source_lot.published_at = _to_moscow_datetime(normalized.published_at)
+    source_lot.published_at = to_moscow_datetime(normalized.published_at)
     source_lot.source_updated_at = _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update"))
     source_lot.auction_step_amount = _to_decimal(
         normalized.auction_step_amount
@@ -486,7 +462,7 @@ def _sync_source_lot(
         if normalized.next_interval_price is not None
         else _to_float(_raw_value(raw, "next_interval_price"))
     )
-    source_lot.next_price_reduction_at = _to_moscow_datetime(normalized.next_price_reduction_at) or _to_moscow_datetime(
+    source_lot.next_price_reduction_at = to_moscow_datetime(normalized.next_price_reduction_at) or to_moscow_datetime(
         _raw_value(raw, "next_price_reduction_at")
     )
     source_lot.document_completeness = normalized.document_completeness or _raw_value(raw, "document_completeness")
@@ -788,7 +764,7 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
             lot_url=normalized.lot_url,
             source_url=normalized.source_url,
             area=normalized.area,
-            published_at=_to_moscow_datetime(normalized.published_at),
+            published_at=to_moscow_datetime(normalized.published_at),
             # Новые инвестиционные поля
             object_name=normalized.object_name,
             property_type=normalized.property_type,
