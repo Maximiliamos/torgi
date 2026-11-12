@@ -261,7 +261,28 @@ def test_cdtrf_equivalent_timezone_deadline_skips_but_real_deadline_change_persi
         assert changed_stats.semantic_skipped == 0
         assert changed_stats.persisted == 1
         assert source is not None
-        assert source.application_deadline == datetime(2026, 12, 20, 15, 1)
+        assert source.application_deadline == datetime(2026, 12, 20, 18, 1)
+        assert source.auction_timezone == "Europe/Moscow"
+
+
+def test_batch_persistence_converts_aware_utc_business_time_to_moscow_wall_clock() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-moscow-business-clock")
+        item = make_lot("utc-to-moscow", source_system="test.example")
+        item.application_start_at = datetime(2026, 11, 12, 9, 0, tzinfo=timezone.utc)
+        item.application_deadline = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
+        item.auction_at = datetime(2026, 11, 13, 7, 30, tzinfo=timezone.utc)
+        persist_changed_lots_batch(session, [item], "run-moscow-business-clock")
+        session.commit()
+        session.expire_all()
+
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "utc-to-moscow"))
+        assert source is not None
+        assert source.application_start_at == datetime(2026, 11, 12, 12, 0)
+        assert source.application_deadline == datetime(2026, 11, 12, 18, 0)
+        assert source.auction_at == datetime(2026, 11, 13, 10, 30)
+        assert source.auction_timezone == "Europe/Moscow"
 
 
 def test_semantic_skip_preserves_detail_metadata_and_advances_transport_fingerprint() -> None:
