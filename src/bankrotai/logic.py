@@ -435,16 +435,7 @@ def _sync_source_lot(
     source_lot.auction_at = to_moscow_datetime(normalized.auction_at) or to_moscow_datetime(
         _raw_value(raw, "auction_start_date", "auction_at")
     )
-    source_lot.auction_timezone = (
-        "Europe/Moscow"
-        if any((
-            source_lot.deposit_deadline,
-            source_lot.application_start_at,
-            source_lot.application_deadline,
-            source_lot.auction_at,
-        ))
-        else normalized.auction_timezone or _raw_value(raw, "auction_timezone", "timezone", "time_zone")
-    )
+    source_lot.auction_timezone = "Europe/Moscow"
     source_lot.published_at = to_moscow_datetime(normalized.published_at)
     source_lot.source_updated_at = _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update"))
     source_lot.auction_step_amount = _to_decimal(
