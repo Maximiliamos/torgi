@@ -269,3 +269,133 @@ def test_full_mets_provider_refusal_is_fatal_even_for_one_card(monkeypatch) -> N
     monkeypatch.setattr(pilot, "_get", blocked)
     with pytest.raises(MetsCatalogueScanError, match="detail access/refusal failure"):
         asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+
+@pytest.mark.parametrize(
+    ("title", "initial_category"),
+    [
+        ("Сооружения газоснабжения в Московской обл.", "other"),
+        ("Комната в Волгоградской обл., 22,3 кв.м.", "other"),
+        ("Сооружение в Нефтекамске, 14,8 кв.м.", "other"),
+        ("Автономная резиденция на берегу Енисея", "car"),
+        ("Забор в Астраханской обл., 35 м.", "other"),
+        ("Газоснабжение (газопровод) в Астраханской обл.", "other"),
+    ],
+)
+def test_selected_property_catalogue_promotes_ambiguous_cadastral_detail(
+    title: str, initial_category: str,
+) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    lot = _lot("244381-1", 100, "scheduled")
+    lot.title = title
+    lot.category = initial_category
+    mod._apply_selected_property_category_evidence(lot)
+
+    assert lot.category == "real_estate"
+    assert lot.raw_data["category_evidence"] == (
+        "selected_mets_property_catalogue+verified_cadastre"
+    )
+    assert lot.raw_data["category_before_selected_scope"] == initial_category
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Автомобиль легковой LADA",
+        "Автобус городской",
+        "Автокран КС-55713",
+        "Грузовой автомобиль",
+        "Транспортное средство с VIN",
+        "Прицеп бортовой",
+    ],
+)
+def test_selected_property_catalogue_never_promotes_explicit_vehicle_title(
+    title: str,
+) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    lot = _lot("244381-1", 100, "scheduled")
+    lot.title = title
+    lot.category = "car"
+    mod._apply_selected_property_category_evidence(lot)
+
+    assert lot.category == "car"
+    assert "category_evidence" not in lot.raw_data
+
+
+def test_selected_property_catalogue_requires_verified_cadastre_for_promotion() -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    lot = _lot("244381-1", 100, "scheduled")
+    lot.title = "Сооружение в Ярославской обл."
+    lot.category = "other"
+    lot.cadastral_number = None
+    mod._apply_selected_property_category_evidence(lot)
+
+    assert lot.category == "other"
+
+
+def test_full_mets_crawler_accepts_selected_scope_ambiguous_cadastral_property(
+    monkeypatch,
+) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 1,
+            "observations": [
+                ("244381-1", "100", "Объявленные торги", "Сооружение")
+            ],
+            "next_page": None,
+        },
+    )
+    lot = _lot("244381-1", 100, "scheduled")
+    lot.title = "Сооружение газоснабжения"
+    lot.category = "other"
+    monkeypatch.setattr(mod, "parse_mets_lot", lambda html, url: lot)
+
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
+    page = asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+    assert len(page.items) == 1
+    assert page.items[0].category == "real_estate"
+    assert page.items[0].raw_data["category_before_selected_scope"] == "other"
+    assert page.metadata["verified_property_lots"] == 1
+
+
+def test_full_mets_crawler_still_rejects_explicit_vehicle_title(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 1,
+            "observations": [
+                ("244381-1", "100", "Объявленные торги", "Автомобиль")
+            ],
+            "next_page": None,
+        },
+    )
+    lot = _lot("244381-1", 100, "scheduled")
+    lot.title = "Автомобиль легковой LADA"
+    lot.category = "car"
+    monkeypatch.setattr(mod, "parse_mets_lot", lambda html, url: lot)
+
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(pilot, "_get", lambda url: "lot html")
+    page = asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+    assert page.items == []
+    assert page.metadata["verified_property_lots"] == 0
+    assert page.metadata["rejection_codes"] == {"property_evidence_missing": 1}
