@@ -111,6 +111,8 @@ def _scoped_view(
         + (META if include_sku else "")
         + '</div></div></div>'
         + '<h2 class="lot-title">Квартира в Ярославле</h2>'
+        + '<div class="lot-property-summary">Недвижимое имущество: '
+        + 'жилое помещение, общая площадь 52 квадратных метра.</div>'
         + '<div class="lot-cost-item price"><div class="value">6 220 123 ₽</div>'
         + '<div class="title">Начальная цена</div></div>'
         + '<div class="lot-cost-item status"><div class="lot-status-name">'
