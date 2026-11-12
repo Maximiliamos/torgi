@@ -49,16 +49,18 @@ def _apply_selected_property_category_evidence(lot) -> None:
     categories; otherwise promote only other/car when the same verified
     detail has cadastral evidence and its title is not explicitly a vehicle.
     """
-    if lot.category in PROPERTY_CATEGORIES:
+    category = getattr(lot, "category", None)
+    if category is None or category in PROPERTY_CATEGORIES:
         return
-    if lot.category not in {"other", "car"} or not lot.cadastral_number:
+    if category not in {"other", "car"} or not getattr(lot, "cadastral_number", None):
         return
-    if _EXPLICIT_VEHICLE_TITLE.search(lot.title or ""):
+    if _EXPLICIT_VEHICLE_TITLE.search(getattr(lot, "title", "") or ""):
         return
-    previous = lot.category
+    previous = category
     lot.category = "real_estate"
+    raw_data = getattr(lot, "raw_data", {})
     lot.raw_data = {
-        **lot.raw_data,
+        **(raw_data if isinstance(raw_data, dict) else {}),
         "category_evidence": "selected_mets_property_catalogue+verified_cadastre",
         "category_before_selected_scope": previous,
     }
