@@ -32,7 +32,7 @@ def catalogue(*, time="21.12.2026 10:00:00"):
 
 def test_real_page_shape_preserves_labelled_auction_time():
     item = parse_catalogue(catalogue())["page_observations"][0]
-    assert item["auction_at"] == "2026-12-21T10:00:00"
+    assert item["auction_at"] == "2026-12-21T10:00:00+03:00"
     assert item["auction_timezone"] == "Europe/Moscow"
     assert item["application_start"] == "01.11.2026 09:00:00"
     assert item["application_end"] == "20.12.2026 18:00:00"
