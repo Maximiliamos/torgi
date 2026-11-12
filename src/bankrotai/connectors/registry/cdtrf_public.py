@@ -10,6 +10,7 @@ import re
 import time
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 
 import requests
@@ -64,7 +65,9 @@ def _catalogue_clock(value: str | None) -> str | None:
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%d.%m.%Y %H:%M:%S").isoformat()
+        return datetime.strptime(value, "%d.%m.%Y %H:%M:%S").replace(
+            tzinfo=ZoneInfo("Europe/Moscow")
+        ).isoformat()
     except ValueError:
         return None
 
