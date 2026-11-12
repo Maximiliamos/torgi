@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -178,6 +178,26 @@ def test_legacy_import_records_consistent_first_and_last_seen(sessions) -> None:
         assert row.first_seen_at is not None
         assert row.last_seen_at is not None
         assert row.first_seen_at <= row.last_seen_at
+
+
+def test_legacy_persistence_keeps_business_dates_on_moscow_clock(sessions) -> None:
+    item = lot("legacy-moscow-clock")
+    item.application_deadline = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
+    item.auction_at = datetime(2026, 11, 13, 7, 30, tzinfo=timezone.utc)
+    item.published_at = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
+
+    with sessions.begin() as session:
+        persist_lot(session, item)
+
+    with sessions() as session:
+        source = session.scalar(select(SourceLot).where(SourceLot.external_id == "legacy-moscow-clock"))
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "legacy-moscow-clock"))
+        assert source is not None and processed is not None
+        assert source.application_deadline == datetime(2026, 11, 12, 18, 0)
+        assert source.auction_at == datetime(2026, 11, 13, 10, 30)
+        assert source.published_at == datetime(2026, 11, 12, 9, 0)
+        assert source.auction_timezone == "Europe/Moscow"
+        assert processed.published_at == datetime(2026, 11, 12, 9, 0)
 
 
 def test_region_code_change_requeues_batch_geo(sessions) -> None:
