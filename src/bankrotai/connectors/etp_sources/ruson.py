@@ -120,8 +120,10 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return None
 
 
-def _to_utc_naive(local_value: datetime) -> datetime:
-    return local_value.replace(tzinfo=MOSCOW).astimezone(timezone.utc).replace(tzinfo=None)
+def _to_moscow_naive(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(MOSCOW).replace(tzinfo=None)
+    return value
 
 
 def _scalar_fields(soup: BeautifulSoup) -> dict[str, str]:
@@ -233,13 +235,13 @@ def _public_offer_schedule(soup: BeautifulSoup) -> list[dict[str, Any]]:
             price = _parse_money(values[columns["price"]])
             if local_start is None or local_end is None or price is None:
                 continue
-            # Source publishes minute-precision inclusive period ends (e.g. 13:59).
-            # Store an exclusive UTC boundary one minute later so there is no false
-            # one-minute gap before the next source period starts at 14:00.
+            # Source publishes Moscow-local minute-precision inclusive period ends
+            # (e.g. 13:59). Keep the public business clock in Moscow time and store
+            # an exclusive boundary one minute later to avoid a false price gap.
             end_exclusive = local_end + timedelta(minutes=1)
             item: dict[str, Any] = {
-                "starts_at": _to_utc_naive(local_start).isoformat(),
-                "ends_at": _to_utc_naive(end_exclusive).isoformat(),
+                "starts_at": _to_moscow_naive(local_start).isoformat(),
+                "ends_at": _to_moscow_naive(end_exclusive).isoformat(),
                 "price": price,
                 "source_timezone": "Europe/Moscow",
             }
@@ -259,6 +261,12 @@ def _active_period(
     schedule: list[dict[str, Any]],
     observed_at_utc: datetime,
 ) -> tuple[float, datetime | None, float | None] | None:
+    observed = (
+        observed_at_utc.replace(tzinfo=timezone.utc)
+        if observed_at_utc.tzinfo is None
+        else observed_at_utc.astimezone(timezone.utc)
+    )
+    observed_moscow = observed.astimezone(MOSCOW).replace(tzinfo=None)
     for index, period in enumerate(schedule):
         try:
             starts_at = datetime.fromisoformat(str(period["starts_at"]))
@@ -266,7 +274,9 @@ def _active_period(
             price = float(period["price"])
         except (KeyError, TypeError, ValueError):
             continue
-        if starts_at <= observed_at_utc < ends_at:
+        starts_at = _to_moscow_naive(starts_at)
+        ends_at = _to_moscow_naive(ends_at)
+        if starts_at <= observed_moscow < ends_at:
             next_price = (
                 float(schedule[index + 1]["price"])
                 if index + 1 < len(schedule) else None

@@ -64,8 +64,11 @@ def test_ruson_public_offer_derives_current_price_only_from_active_period() -> N
     assert lot.start_price == 325_802.50
     assert lot.current_price == 293_222.25
     assert lot.next_interval_price == 278_561.14
-    assert lot.next_price_reduction_at == datetime(2026, 11, 11, 11, 0)
+    assert lot.next_price_reduction_at == datetime(2026, 11, 11, 14, 0)
     assert lot.public_offer_schedule is not None
+    assert lot.public_offer_schedule[1]["starts_at"] == "2026-11-08T14:00:00"
+    assert lot.public_offer_schedule[1]["ends_at"] == "2026-11-11T14:00:00"
+    assert lot.public_offer_schedule[1]["source_timezone"] == "Europe/Moscow"
     assert [row["price"] for row in lot.public_offer_schedule] == [
         325_802.50, 293_222.25, 278_561.14,
     ]

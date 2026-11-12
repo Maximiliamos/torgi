@@ -9,6 +9,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from bankrotai.db import CanonicalLot, LotPriceEvent, LotStatusHistory, ProcessedLot, SourceLot, utc_now
+from bankrotai.business_time import to_moscow_datetime
 from bankrotai.domain import NormalizedLot
 from bankrotai.services.detail_freshness import compare_source_values
 from bankrotai.logic import (
@@ -78,7 +79,7 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         "source_url": lot.source_url,
         "area": lot.area,
         "detail_level": lot.detail_level,
-        "published_at": lot.published_at,
+        "published_at": to_moscow_datetime(lot.published_at),
         "object_name": lot.object_name,
         "property_type": lot.property_type,
         "total_area_gba": lot.total_area_gba,
@@ -163,15 +164,15 @@ def _source_values(
         "deposit_percent": lot.deposit_percent or _to_float(_raw_value(raw, "deposit_percent")),
         "deposit_payment_details": lot.deposit_payment_details
         or _raw_value(raw, "deposit_payment_details", "deposit_requisites"),
-        "deposit_deadline": lot.deposit_deadline or _to_datetime(_raw_value(raw, "deposit_deadline")),
-        "application_start_at": _to_datetime(lot.application_start_at)
-        or _to_datetime(_raw_value(raw, "bidd_start_time", "application_start_at")),
-        "application_deadline": _to_datetime(lot.application_deadline)
-        or _to_datetime(_raw_value(raw, "bidd_end_time", "application_deadline")),
-        "auction_at": _to_datetime(lot.auction_at)
-        or _to_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
-        "auction_timezone": lot.auction_timezone or _raw_value(raw, "auction_timezone", "timezone"),
-        "published_at": lot.published_at,
+        "deposit_deadline": to_moscow_datetime(lot.deposit_deadline) or to_moscow_datetime(_raw_value(raw, "deposit_deadline")),
+        "application_start_at": to_moscow_datetime(lot.application_start_at)
+        or to_moscow_datetime(_raw_value(raw, "bidd_start_time", "application_start_at")),
+        "application_deadline": to_moscow_datetime(lot.application_deadline)
+        or to_moscow_datetime(_raw_value(raw, "bidd_end_time", "application_deadline")),
+        "auction_at": to_moscow_datetime(lot.auction_at)
+        or to_moscow_datetime(_raw_value(raw, "auction_start_date", "auction_at")),
+        "auction_timezone": "Europe/Moscow",
+        "published_at": to_moscow_datetime(lot.published_at),
         "source_updated_at": _to_datetime(_raw_value(raw, "updated_at", "source_updated_at", "last_update")),
         "auction_step_amount": _to_decimal(
             lot.auction_step_amount
@@ -186,8 +187,8 @@ def _source_values(
             if lot.next_interval_price is not None
             else _to_float(_raw_value(raw, "next_interval_price"))
         ),
-        "next_price_reduction_at": lot.next_price_reduction_at
-        or _to_datetime(_raw_value(raw, "next_price_reduction_at")),
+        "next_price_reduction_at": to_moscow_datetime(lot.next_price_reduction_at)
+        or to_moscow_datetime(_raw_value(raw, "next_price_reduction_at")),
         "document_completeness": lot.document_completeness or _raw_value(raw, "document_completeness"),
         "inspection_procedure": lot.inspection_procedure or _raw_value(raw, "inspection_procedure"),
         "organizer_contact": lot.organizer_contact or _raw_value(raw, "organizer_contact"),
