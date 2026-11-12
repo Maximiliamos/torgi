@@ -1,0 +1,65 @@
+name: Check current GEO and ingestion state
+
+on:
+  push:
+    branches:
+      - ops/check-current-geo-ingestion-20261112
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 10
+    steps:
+      - name: Read current production state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = @'
+          import json
+          from sqlalchemy import select, func
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun, GeoFailure, ProcessedLot
+          from bankrotai.services.managed_stale_cadastral_recovery import managed_recovery_state
+
+          with SessionLocal() as s:
+              latest = s.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()).limit(1))
+              srcs = []
+              if latest is not None:
+                  rows = s.scalars(select(LotSyncSourceRun).where(LotSyncSourceRun.sync_run_id == latest.id).order_by(LotSyncSourceRun.source_system.asc())).all()
+                  srcs = [{
+                    "source": x.source_system, "status": x.status, "complete_source_run": x.complete_source_run,
+                    "pages_scanned": x.pages_scanned, "items_seen": x.items_seen, "inserted": x.items_inserted,
+                    "updated": x.items_updated, "unchanged": x.items_unchanged, "failed": x.items_failed,
+                    "started_at": x.started_at, "finished_at": x.finished_at, "error": x.error_message,
+                  } for x in rows]
+              eligible = int(s.scalar(
+                  select(func.count()).select_from(ProcessedLot).join(GeoFailure, GeoFailure.lot_id==ProcessedLot.id).where(
+                    ProcessedLot.duplicate_of_id.is_(None),
+                    ProcessedLot.is_archived.is_(False),
+                    ProcessedLot.review_status.is_(None),
+                    ProcessedLot.auction_status.in_(("active","scheduled")),
+                    ProcessedLot.current_geo_lat.is_(None),
+                    ProcessedLot.current_geo_lon.is_(None),
+                    ProcessedLot.cadastral_number.is_not(None),
+                    GeoFailure.status=="deferred_no_match",
+                    GeoFailure.error_message.ilike("%nspd_cadastral%"),
+                    GeoFailure.error_message.ilike("%no_coordinates%"),
+                  )
+              ) or 0)
+              out = {
+                "managed_geo_state": managed_recovery_state(s),
+                "eligible_stale_nspd_now": eligible,
+                "latest_ingestion": None if latest is None else {
+                  "id": latest.id, "trigger_type": latest.trigger_type, "status": latest.status,
+                  "created_at": latest.created_at, "started_at": latest.started_at, "finished_at": latest.finished_at,
+                  "checkpoint": latest.checkpoint_json, "result": latest.result_json, "error": latest.error_message,
+                  "sources": srcs,
+                }
+              }
+              print("CURRENT="+json.dumps(out,ensure_ascii=False,default=str))
+          '@
+          $out = $py | docker exec -i bankrotai-home-ingestion-worker python -
+          if ($LASTEXITCODE -ne 0) { throw 'read-only production probe failed' }
+          $out
