@@ -195,6 +195,35 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # main description; cadastral_number remains a legacy representative,
     # never proof that a multi-object lot has only one property.
     cadastral_numbers = list(dict.fromkeys(CADASTRE.findall(cadastral_scope)))
+
+    # Modern M-ETS detail pages place cadastral evidence outside .lot-container,
+    # in a sibling .lot-info-block within the SAME .generalview-container.
+    # Recommendations have their own views (often under <noindex>) and must
+    # never supply fields for the verified primary lot.
+    if matching_skus and scope is not soup:
+        primary_view = matching_skus[0].find_parent(class_="generalview-container")
+        if primary_view is not None and primary_view.find_parent("noindex") is None:
+            view_skus = primary_view.select('[itemprop="sku"][content]')
+            view_lots = primary_view.select(".lot-container")
+            if (
+                len(view_skus) == 1
+                and view_skus[0] is matching_skus[0]
+                and len(view_lots) == 1
+                and view_lots[0] is scope
+            ):
+                for marker in primary_view.select(
+                    ".lot-info-block.info-type_1 .kad_num .kn_span"
+                ):
+                    if (
+                        marker.find_parent(class_="generalview-container") is not primary_view
+                        or marker.find_parent("noindex") is not None
+                        or marker.find_parent(class_="card-item") is not None
+                    ):
+                        continue
+                    for number in CADASTRE.findall(marker.get_text(" ", strip=True)):
+                        if number not in cadastral_numbers:
+                            cadastral_numbers.append(number)
+
     cadastral = cadastral_numbers[0] if cadastral_numbers else None
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
