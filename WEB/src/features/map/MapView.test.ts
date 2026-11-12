@@ -44,8 +44,12 @@ describe("map lot selection", () => {
 });
 
 describe("auction date display", () => {
-  it("treats timezone-less API timestamps as UTC and displays Moscow time", () => {
-    expect(formatMoscowDate("2026-08-23T19:30:00")).toContain("22:30");
+  it("treats timezone-less business timestamps as Moscow wall clock", () => {
+    expect(formatMoscowDate("2026-08-23T19:30:00")).toContain("19:30");
+  });
+
+  it("converts explicit UTC timestamps to Moscow time", () => {
+    expect(formatMoscowDate("2026-08-23T16:30:00Z")).toContain("19:30");
   });
 });
 
