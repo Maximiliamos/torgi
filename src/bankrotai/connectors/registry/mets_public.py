@@ -188,7 +188,13 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
     cadastral_scope = title + " " + description
-    if not primary_description and not scope.select("a.card-item"):
+    if (
+        not primary_description
+        and not scope.select("a.card-item")
+        and (scope is not soup or not soup.select(".generalview-container"))
+    ):
+        # A legacy unscoped page may use text-only evidence, but it must not
+        # borrow cadastres from separately rendered property recommendation views.
         cadastral_scope = text[:4000]
     # A single M-ETS lot can contain both land and buildings, each with a
     # distinct cadastre. Retain all *uniquely observed* numbers from the verified
