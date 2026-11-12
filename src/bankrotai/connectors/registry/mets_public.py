@@ -147,9 +147,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     text = scope.get_text(" ", strip=True)
     if len(text) < 80:
         raise MetsEvidenceError("M-ETS lot page is empty or script-only")
-    if expected_sku not in text and (
-        f"Идентификационный номер: {expected_sku}" not in text
-    ):
+    # A single exact SKU inside its lot container is independent identity evidence:
+    # the provider sometimes renders the human-readable identifier outside it.
+    # For legacy/unscoped pages, continue requiring the ID in visible text.
+    if expected_sku not in text and (not matching_skus or scope is soup):
         raise MetsEvidenceError("Page has no matching M-ETS trade/lot identifier")
 
     # Real M-ETS h2.lot-title includes collapsed UI text "еще".
