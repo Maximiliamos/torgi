@@ -292,6 +292,23 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         or _date_after_label(date_source, "Подведение итогов")
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    # The shared classifier checks car/transport vocabulary first. On real
+    # M-ETS property listings this vocabulary can occur only in disclosure
+    # text (e.g. access roads), incorrectly suppressing a verified property.
+    # Override ONLY a car result when the specific lot's trusted title names
+    # property AND the same verified lot has cadastral evidence. A car title
+    # and vague/mixed titles remain fail-closed.
+    title_category = classify_category(title, "")
+    if (
+        category == "car"
+        and cadastral_numbers
+        and title_category in {
+            "apartment", "house", "land", "parking", "commercial_room",
+            "commercial_building", "commercial_building_with_land",
+            "unfinished", "complex", "real_estate",
+        }
+    ):
+        category = title_category
     address = extract_asset_property_address(
         title=title,
         description=description,
