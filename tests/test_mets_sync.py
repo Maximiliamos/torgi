@@ -280,6 +280,7 @@ def test_full_mets_provider_refusal_is_fatal_even_for_one_card(monkeypatch) -> N
         ("Автономная резиденция на берегу Енисея", "car"),
         ("Забор в Астраханской обл., 35 м.", "other"),
         ("Газоснабжение (газопровод) в Астраханской обл.", "other"),
+        ("Складское сооружение с грузовым лифтом", "other"),
     ],
 )
 def test_selected_property_catalogue_promotes_ambiguous_cadastral_detail(
