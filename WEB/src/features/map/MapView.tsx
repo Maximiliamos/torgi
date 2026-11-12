@@ -267,7 +267,7 @@ function updateSelection(nextId,focus=false){const previous=selectedId;selectedI
 `;
 
 export const formatMoscowDate = (value: string) => {
-  const explicitUtc = /[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`;
+  const explicitMoscow = /[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}+03:00`;
   return new Intl.DateTimeFormat("ru-RU", {
     timeZone: "Europe/Moscow",
     day: "2-digit",
@@ -275,7 +275,7 @@ export const formatMoscowDate = (value: string) => {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(explicitUtc));
+  }).format(new Date(explicitMoscow));
 };
 
 const money = (value?: number | null) =>
