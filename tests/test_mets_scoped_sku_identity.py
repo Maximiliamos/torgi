@@ -226,3 +226,84 @@ def test_unscoped_page_cannot_borrow_unrelated_generalview_cadastre() -> None:
     lot = parse_mets_lot(html, URL)
     assert lot.cadastral_number is None
 
+
+@pytest.mark.parametrize(
+    ("title", "expected_category"),
+    [
+        ("Земельный участок в Тверской обл., 600 кв.м.", "land"),
+        (
+            "Коттедж (гостиница) 637,3 кв.м на участках 5085 кв.м.",
+            "house",
+        ),
+        (
+            "Гараж 36 кв.м. и земельный участок 36 кв.м. в ХМАО-Югра",
+            "land",
+        ),
+    ],
+)
+def test_verified_mets_property_title_beats_transport_disclosure(
+    title: str, expected_category: str,
+) -> None:
+    """Unrelated access/transport wording in details must not turn land into car."""
+    from bankrotai.connectors.registry.etp_incremental import _property_ready
+
+    html = (
+        '<html><body><div class="lot-container">'
+        + META
+        + f'<h2 class="lot-title">{title}</h2>'
+        + '<span itemprop="description">'
+        + 'Доступ автотранспорта осуществляется через автомобильную дорогу. '
+        + 'Кадастровый номер: 76:23:0000001:123.'
+        + '</span>'
+        + '<div class="lot-cost-item price"><div class="value">6 220 123 ₽</div>'
+        + '<div class="title">Начальная цена</div></div>'
+        + '<div class="lot-cost-item status"><div class="lot-status-name">'
+        + 'Торги в стадии приема заявок</div></div>'
+        + '</div></body></html>'
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.cadastral_number == "76:23:0000001:123"
+    assert lot.category == expected_category
+    assert _property_ready(lot) is True
+
+
+@pytest.mark.parametrize(
+    ("title", "description", "with_cadastre"),
+    [
+        (
+            "Автомобиль легковой с дополнительным оборудованием",
+            "Детали транспортного средства.",
+            True,
+        ),
+        (
+            "Имущество, лот 5",
+            "Автомобиль, рядом земельный участок.",
+            True,
+        ),
+        (
+            "Земельный участок в Тверской обл.",
+            "Автомобильная дорога, доступ автотранспорта.",
+            False,
+        ),
+    ],
+)
+def test_mets_category_override_requires_verified_property_title_and_cadastre(
+    title: str, description: str, with_cadastre: bool,
+) -> None:
+    """Unclear/vehicle titles or no cadastral evidence must remain car."""
+    extra = " Кадастровый номер: 76:23:0000001:123." if with_cadastre else ""
+    html = (
+        '<html><body><div class="lot-container">'
+        + META
+        + f'<h2 class="lot-title">{title}</h2>'
+        + '<span itemprop="description">'
+        + description + extra
+        + '</span>'
+        + '<div class="lot-cost-item price"><div class="value">6 220 123 ₽</div>'
+        + '<div class="title">Начальная цена</div></div>'
+        + '<div class="lot-cost-item status"><div class="lot-status-name">'
+        + 'Объявленные торги</div></div>'
+        + '</div></body></html>'
+    )
+    lot = parse_mets_lot(html, URL)
+    assert lot.category == "car"
