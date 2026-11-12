@@ -1,0 +1,128 @@
+name: Repair persisted Moscow business timestamps
+
+on:
+  push:
+    branches:
+      - ops/moscow-business-time-repair-20261112
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moscow-business-time-repair
+  cancel-in-progress: false
+
+env:
+  EXPECTED_SHA: 1b56b30adb369d4b44be0c7aaee0d52d86409d57
+
+jobs:
+  repair:
+    runs-on: [self-hosted, Windows, X64, bankrotai-home]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify deployed ingestion worker
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $image = (docker inspect $worker --format '{{.Config.Image}}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $image -ne "bankrotai-home-api:$env:EXPECTED_SHA") {
+            throw "Refuse repair: deployed worker is $image, expected $env:EXPECTED_SHA"
+          }
+
+      - name: Repair scheduled seven-source business timestamps from live source truth
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $py = @'
+          import json, time
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun
+          from bankrotai.tasks import automatic_nationwide_lot_refresh_task
+
+          with SessionLocal() as s:
+              before = s.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()))
+              before_id = before.id if before else None
+          task = automatic_nationwide_lot_refresh_task.apply_async(args=("incremental",), queue="ingestion")
+          print(json.dumps({"queued_task": str(task.id), "before_run_id": before_id}))
+
+          deadline = time.time() + 7200
+          run_id = None
+          while time.time() < deadline:
+              time.sleep(5)
+              with SessionLocal() as s:
+                  row = s.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()))
+                  if row and row.id != before_id:
+                      run_id = row.id
+                      status = row.status
+                      result = row.result_json
+                      err = row.error_message
+                  else:
+                      continue
+              print(json.dumps({"seven_run_id":run_id,"status":status}, default=str))
+              if status in {"success","partial","failed","skipped"}:
+                  print("SEVEN_FINAL="+json.dumps({"run_id":run_id,"status":status,"result":result,"error":err}, ensure_ascii=False, default=str))
+                  if status == "failed":
+                      raise SystemExit(31)
+                  break
+          else:
+              raise SystemExit("seven-source repair did not reach terminal state")
+          '@
+          $py | docker exec -i $worker python -
+          if ($LASTEXITCODE -ne 0) { throw "Seven-source timestamp repair failed with exit $LASTEXITCODE" }
+
+      - name: Repair rus-on.ru business timestamps from live source truth
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $worker = 'bankrotai-home-ingestion-worker'
+          $py = @'
+          import json, time
+          from sqlalchemy import select
+          from bankrotai.db import SessionLocal, LotSyncRun, LotSyncSourceRun
+          from bankrotai.tasks import automatic_nationwide_source_retry_task, _source_is_paused
+
+          source = "rus-on.ru"
+          if _source_is_paused(source):
+              print("RUSON_FINAL="+json.dumps({"status":"skipped","reason":"source_paused","source":source}))
+              raise SystemExit(0)
+
+          with SessionLocal() as s:
+              before = s.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()))
+              before_id = before.id if before else None
+          task = automatic_nationwide_source_retry_task.apply_async(args=(source, "full"), queue="ingestion")
+          print(json.dumps({"queued_task": str(task.id), "before_run_id": before_id, "source":source}))
+
+          deadline = time.time() + 7200
+          while time.time() < deadline:
+              time.sleep(5)
+              with SessionLocal() as s:
+                  row = s.scalar(select(LotSyncRun).order_by(LotSyncRun.created_at.desc()))
+                  if not row or row.id == before_id:
+                      continue
+                  src = s.scalar(select(LotSyncSourceRun).where(
+                      LotSyncSourceRun.sync_run_id == row.id,
+                      LotSyncSourceRun.source_system == source,
+                  ))
+                  payload = {
+                      "run_id":row.id, "status":row.status,
+                      "source_status":src.status if src else None,
+                      "items_seen":src.items_seen if src else None,
+                      "items_updated":src.items_updated if src else None,
+                      "items_inserted":src.items_inserted if src else None,
+                      "error":src.error_message if src else row.error_message,
+                  }
+              print(json.dumps(payload, ensure_ascii=False, default=str))
+              if payload["status"] in {"success","partial","failed","skipped"}:
+                  print("RUSON_FINAL="+json.dumps(payload, ensure_ascii=False, default=str))
+                  if payload["status"] == "failed":
+                      raise SystemExit(32)
+                  break
+          else:
+              raise SystemExit("rus-on timestamp repair did not reach terminal state")
+          '@
+          $py | docker exec -i $worker python -
+          if ($LASTEXITCODE -ne 0) { throw "rus-on timestamp repair failed with exit $LASTEXITCODE" }
