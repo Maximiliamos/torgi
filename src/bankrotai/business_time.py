@@ -28,4 +28,5 @@ def to_moscow_datetime(value: Any) -> datetime | None:
                     continue
         if parsed is None:
             return None
+    assert parsed is not None
     return parsed.astimezone(MOSCOW).replace(tzinfo=None) if parsed.tzinfo else parsed
