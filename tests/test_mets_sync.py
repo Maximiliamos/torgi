@@ -400,3 +400,36 @@ def test_full_mets_crawler_still_rejects_explicit_vehicle_title(monkeypatch) -> 
     assert page.items == []
     assert page.metadata["verified_property_lots"] == 0
     assert page.metadata["rejection_codes"] == {"property_evidence_missing": 1}
+
+def test_full_mets_reports_oversized_detail_separately(monkeypatch) -> None:
+    import bankrotai.connectors.registry.mets_sync as mod
+
+    monkeypatch.setattr(
+        mod, "_request_page",
+        lambda session, page, sleep: SimpleNamespace(text="catalogue"),
+    )
+    monkeypatch.setattr(
+        mod, "_parse_page",
+        lambda html, page: {
+            "total": 1,
+            "observations": [
+                ("244381-1", "100", "Объявленные торги", "Земельный участок")
+            ],
+            "next_page": None,
+        },
+    )
+
+    pilot = MetsPublicPilot(session=object())
+    monkeypatch.setattr(
+        pilot,
+        "_get",
+        lambda url: (_ for _ in ()).throw(
+            mod.MetsEvidenceError("M-ETS detail HTML page exceeds safety limit")
+        ),
+    )
+
+    page = asyncio.run(MetsSourceCrawler(pilot).search(MetsSyncFilters()))
+
+    assert page.items == []
+    assert page.metadata["rejection_codes"] == {"detail_html_oversize": 1}
+
