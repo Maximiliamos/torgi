@@ -39,6 +39,10 @@ CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
 PRICE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,12})(?:[,\.](\d{1,2}))?\s*₽")
 DATE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})")
 MAX_HTML_BYTES = 2_000_000
+# Detail pages can legitimately exceed the catalogue cap because one verified
+# M-ETS trade may render many sibling/recommended lot views. Keep a separate
+# hard ceiling rather than weakening the catalogue response limit.
+MAX_DETAIL_HTML_BYTES = 3_000_000
 
 
 class MetsEvidenceError(ValueError):
@@ -479,8 +483,14 @@ class MetsPublicPilot:
             response.raise_for_status()
             if 300 <= response.status_code < 400:
                 raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
-            if len(response.content) > MAX_HTML_BYTES:
-                raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
+            response_limit = (
+                MAX_HTML_BYTES if url == APARTMENTS_URL else MAX_DETAIL_HTML_BYTES
+            )
+            if len(response.content) > response_limit:
+                kind = "catalogue" if url == APARTMENTS_URL else "detail"
+                raise MetsEvidenceError(
+                    f"M-ETS {kind} HTML page exceeds safety limit"
+                )
             if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
                 raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
             if url != APARTMENTS_URL and is_detail_placeholder(response.text):
