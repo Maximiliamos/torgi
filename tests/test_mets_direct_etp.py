@@ -650,3 +650,45 @@ def test_mets_address_location_uses_shared_property_evidence() -> None:
         "ул. Тестовая, д. 10"
     )
 
+def test_detail_html_has_separate_bounded_size_ceiling(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    assert mod.MAX_HTML_BYTES == 2_000_000
+    assert mod.MAX_DETAIL_HTML_BYTES == 3_000_000
+
+    class SizedSession:
+        def __init__(self, size):
+            self.size = size
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append(url)
+            return Response("x" * self.size)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    observed_live_size = 2_200_000
+    session = SizedSession(observed_live_size)
+    html = MetsPublicPilot(session=session)._get(URL)
+    assert len(html.encode("utf-8")) == observed_live_size
+    assert session.calls == [MIRROR_URL]
+
+    too_large = SizedSession(mod.MAX_DETAIL_HTML_BYTES + 1)
+    with pytest.raises(MetsEvidenceError, match="detail HTML page exceeds safety limit"):
+        MetsPublicPilot(session=too_large)._get(URL)
+    assert too_large.calls == [MIRROR_URL]
+
+
+def test_catalogue_html_keeps_stricter_two_mb_ceiling(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class SizedCatalogueSession:
+        def get(self, url, **kwargs):
+            assert url == APARTMENTS_URL
+            return Response("x" * (mod.MAX_HTML_BYTES + 1))
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(MetsEvidenceError, match="catalogue HTML page exceeds safety limit"):
+        MetsPublicPilot(session=SizedCatalogueSession())._get(APARTMENTS_URL)
+

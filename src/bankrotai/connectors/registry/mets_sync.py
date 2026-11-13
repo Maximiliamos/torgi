@@ -15,7 +15,7 @@ from decimal import Decimal
 import requests
 
 from bankrotai.connectors.base import ConnectorPage
-from bankrotai.connectors.registry.etp_incremental import _property_ready
+from bankrotai.connectors.registry.etp_incremental import PROPERTY_CATEGORIES, _property_ready
 from bankrotai.connectors.registry.mets_public import (
     BASE, MetsEvidenceError, MetsPublicPilot, parse_mets_lot,
 )
@@ -28,6 +28,42 @@ from bankrotai.services.incremental_detail_cache import (
 
 CURSOR = re.compile(r"^([1-9]\d{0,3}):([0-9a-f]{64})$")
 MAX_LIVE_TOTAL_DRIFT_RATIO = 0.02
+
+_EXPLICIT_VEHICLE_TITLE = re.compile(
+    r"(?<![0-9a-zа-яё])(?:"
+    r"автомобил\w*|автобус\w*|автокран\w*|автоцистерн\w*|"
+    r"автопогрузчик\w*|прицеп\w*|полуприцеп\w*|мотоцикл\w*|"
+    r"транспортн\w+\s+средств\w*|vin"
+    r")(?![0-9a-zа-яё])",
+    re.IGNORECASE,
+)
+
+
+def _apply_selected_property_category_evidence(lot) -> None:
+    """Use selected-catalogue + cadastre evidence without accepting vehicles.
+
+    The full M-ETS crawler is reached only through the encoded eight-category
+    property catalogue. The shared text classifier does not know that source
+    scope and can return other for legitimate cadastral structures/rooms,
+    or car for words such as "автономная". Preserve explicit supported
+    categories; otherwise promote only other/car when the same verified
+    detail has cadastral evidence and its title is not explicitly a vehicle.
+    """
+    category = getattr(lot, "category", None)
+    if category is None or category in PROPERTY_CATEGORIES:
+        return
+    if category not in {"other", "car"} or not getattr(lot, "cadastral_number", None):
+        return
+    if _EXPLICIT_VEHICLE_TITLE.search(getattr(lot, "title", "") or ""):
+        return
+    previous = category
+    lot.category = "real_estate"
+    raw_data = getattr(lot, "raw_data", {})
+    lot.raw_data = {
+        **(raw_data if isinstance(raw_data, dict) else {}),
+        "category_evidence": "selected_mets_property_catalogue+verified_cadastre",
+        "category_before_selected_scope": previous,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +404,7 @@ class MetsSourceCrawler:
                         workers.acquire(url)
                         html = self.pilot._get(url)
                 lot = parse_mets_lot(html, url)
+                _apply_selected_property_category_evidence(lot)
                 if lot.external_id != external_id:
                     raise MetsEvidenceError("M-ETS detail identity mismatch")
                 expected_status = self._expected_status(catalogue_status)
@@ -400,6 +437,8 @@ class MetsSourceCrawler:
                     "identity_mismatch" if "identity" in message
                     else "status_mismatch" if "status" in message
                     else "price_mismatch" if "price" in message
+                    else "detail_html_oversize"
+                    if "detail html page exceeds safety limit" in message
                     else "detail_schema_invalid"
                 )
                 return None, code

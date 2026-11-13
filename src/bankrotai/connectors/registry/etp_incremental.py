@@ -118,6 +118,8 @@ def _mets_detail_rejection_code(exc: Exception) -> str:
     message = str(exc).casefold()
     if "provider access explicitly refused" in message:
         return "provider_access_refused"
+    if "detail html page exceeds safety limit" in message:
+        return "detail_html_oversize"
     if "redirect" in message:
         return "untrusted_detail_redirect"
     if "sku" in message or "identifier" in message or "identity" in message:

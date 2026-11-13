@@ -39,6 +39,10 @@ CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
 PRICE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,12})(?:[,\.](\d{1,2}))?\s*₽")
 DATE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})")
 MAX_HTML_BYTES = 2_000_000
+# Detail pages can legitimately exceed the catalogue cap because one verified
+# M-ETS trade may render many sibling/recommended lot views. Keep a separate
+# hard ceiling rather than weakening the catalogue response limit.
+MAX_DETAIL_HTML_BYTES = 3_000_000
 
 
 class MetsEvidenceError(ValueError):
@@ -147,9 +151,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     text = scope.get_text(" ", strip=True)
     if len(text) < 80:
         raise MetsEvidenceError("M-ETS lot page is empty or script-only")
-    if expected_sku not in text and (
-        f"Идентификационный номер: {expected_sku}" not in text
-    ):
+    # A single exact SKU inside its lot container is independent identity evidence:
+    # the provider sometimes renders the human-readable identifier outside it.
+    # For legacy/unscoped pages, continue requiring the ID in visible text.
+    if expected_sku not in text and (not matching_skus or scope is soup):
         raise MetsEvidenceError("Page has no matching M-ETS trade/lot identifier")
 
     # Real M-ETS h2.lot-title includes collapsed UI text "еще".
@@ -187,13 +192,48 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
     cadastral_scope = title + " " + description
-    if not primary_description and not scope.select("a.card-item"):
+    if (
+        not primary_description
+        and not scope.select("a.card-item")
+        and (scope is not soup or not soup.select(".generalview-container"))
+    ):
+        # A legacy unscoped page may use text-only evidence, but it must not
+        # borrow cadastres from separately rendered property recommendation views.
         cadastral_scope = text[:4000]
     # A single M-ETS lot can contain both land and buildings, each with a
     # distinct cadastre. Retain all *uniquely observed* numbers from the verified
     # main description; cadastral_number remains a legacy representative,
     # never proof that a multi-object lot has only one property.
     cadastral_numbers = list(dict.fromkeys(CADASTRE.findall(cadastral_scope)))
+
+    # Modern M-ETS detail pages place cadastral evidence outside .lot-container,
+    # in a sibling .lot-info-block within the SAME .generalview-container.
+    # Recommendations have their own views (often under <noindex>) and must
+    # never supply fields for the verified primary lot.
+    if matching_skus and scope is not soup:
+        primary_view = matching_skus[0].find_parent(class_="generalview-container")
+        if primary_view is not None and primary_view.find_parent("noindex") is None:
+            view_skus = primary_view.select('[itemprop="sku"][content]')
+            view_lots = primary_view.select(".lot-container")
+            if (
+                len(view_skus) == 1
+                and view_skus[0] is matching_skus[0]
+                and len(view_lots) == 1
+                and view_lots[0] is scope
+            ):
+                for marker in primary_view.select(
+                    ".lot-info-block.info-type_1 .kad_num .kn_span"
+                ):
+                    if (
+                        marker.find_parent(class_="generalview-container") is not primary_view
+                        or marker.find_parent("noindex") is not None
+                        or marker.find_parent(class_="card-item") is not None
+                    ):
+                        continue
+                    for number in CADASTRE.findall(marker.get_text(" ", strip=True)):
+                        if number not in cadastral_numbers:
+                            cadastral_numbers.append(number)
+
     cadastral = cadastral_numbers[0] if cadastral_numbers else None
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
@@ -256,6 +296,23 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         or _date_after_label(date_source, "Подведение итогов")
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    # The shared classifier checks car/transport vocabulary first. On real
+    # M-ETS property listings this vocabulary can occur only in disclosure
+    # text (e.g. access roads), incorrectly suppressing a verified property.
+    # Override ONLY a car result when the specific lot's trusted title names
+    # property AND the same verified lot has cadastral evidence. A car title
+    # and vague/mixed titles remain fail-closed.
+    title_category = classify_category(title, "")
+    if (
+        category == "car"
+        and cadastral_numbers
+        and title_category in {
+            "apartment", "house", "land", "parking", "commercial_room",
+            "commercial_building", "commercial_building_with_land",
+            "unfinished", "complex", "real_estate",
+        }
+    ):
+        category = title_category
     address = extract_asset_property_address(
         title=title,
         description=description,
@@ -426,8 +483,14 @@ class MetsPublicPilot:
             response.raise_for_status()
             if 300 <= response.status_code < 400:
                 raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
-            if len(response.content) > MAX_HTML_BYTES:
-                raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
+            response_limit = (
+                MAX_HTML_BYTES if url == APARTMENTS_URL else MAX_DETAIL_HTML_BYTES
+            )
+            if len(response.content) > response_limit:
+                kind = "catalogue" if url == APARTMENTS_URL else "detail"
+                raise MetsEvidenceError(
+                    f"M-ETS {kind} HTML page exceeds safety limit"
+                )
             if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
                 raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
             if url != APARTMENTS_URL and is_detail_placeholder(response.text):
