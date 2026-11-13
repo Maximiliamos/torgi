@@ -437,6 +437,8 @@ class MetsSourceCrawler:
                     "identity_mismatch" if "identity" in message
                     else "status_mismatch" if "status" in message
                     else "price_mismatch" if "price" in message
+                    else "detail_html_oversize"
+                    if "detail html page exceeds safety limit" in message
                     else "detail_schema_invalid"
                 )
                 return None, code
