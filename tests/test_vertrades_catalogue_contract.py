@@ -55,6 +55,79 @@ def _catalogue() -> str:
     ]) + "</table></body></html>"
 
 
+def _div_procedure(
+    trade: str,
+    provider: int,
+    rows: list[tuple[int, str, str, str]],
+) -> str:
+    asset_rows = []
+    status_rows = []
+    for lot_number, title, price, status in rows:
+        asset_rows.append(
+            "<div class='row_lot'>"
+            f"<p class='contests-lot-number'>{lot_number}</p>"
+            "<p class='contests-count'>synthetic owner</p>"
+            "<p class='contests_lot'>"
+            f"<a href='/showTrades?id={provider}'>ЛОТ№{lot_number}(1/1) {title}</a>"
+            f"<span>{price}</span>"
+            "</p>"
+            "</div>"
+        )
+        status_rows.append(
+            "<div class='row_lot'>"
+            "<p class='contests_start'>17.11.2026 10:00:00</p>"
+            "<p class='contests_start'>24.12.2026 10:00:00</p>"
+            "<p class='contests_start-date'>28.12.2026 17:00:00</p>"
+            f"<p class='contests-status'>{status}</p>"
+            "</div>"
+        )
+    return (
+        "<div class='row'>"
+        f"<p class='contests_num'><a href='/showTrades?id={provider}'>{trade}</a></p>"
+        f"<div class='rows_lot'>{''.join(asset_rows)}</div>"
+        "<p class='contests_bidder'>synthetic bidder</p>"
+        f"<div class='rows_lot'>{''.join(status_rows)}</div>"
+        "</div>"
+    )
+
+
+def _div_catalogue() -> str:
+    return "<html><body>" + "".join([
+        _div_procedure(
+            "150-АП",
+            102288306,
+            [
+                (
+                    1,
+                    "жилое помещение пл.54,9кв.м. кад№34:34:080122:1833. "
+                    "Адрес: г. Волгоград, ул. Тестовая, д. 1.",
+                    "2 841 000,00",
+                    "Завершенные торги",
+                ),
+                (
+                    2,
+                    "Автомобиль Ford Focus VIN TEST",
+                    "450 000,00",
+                    "Завершенные торги",
+                ),
+            ],
+        ),
+        _div_procedure(
+            "144-АП",
+            102288307,
+            [
+                (
+                    3,
+                    "земельный участок пл. 425кв.м. кад№34:10:080001:792. "
+                    "Адрес: Волгоградская обл., тестовый район.",
+                    "30 000,00",
+                    "Торги по лоту отменены",
+                ),
+            ],
+        ),
+    ]) + "</body></html>"
+
+
 def test_catalogue_keeps_only_proven_property_rows_and_composite_identity():
     lots = parse_catalogue_page(_catalogue(), page=2)
     assert [x.external_id for x in lots] == [
@@ -120,8 +193,66 @@ def test_structure_summary_is_non_sensitive_counts_only():
     assert summary == {
         "table_rows": 6,
         "rows_with_10_cells": 6,
+        "div_procedure_rows": 0,
+        "div_asset_lot_rows": 0,
+        "div_status_rows": 0,
         "trade_code_rows": 6,
         "numeric_lot_rows": 6,
         "property_text_rows": 3,
         "show_trades_id_rows": 6,
     }
+
+
+def test_current_div_catalogue_pairs_asset_and_lifecycle_rows() -> None:
+    lots = parse_catalogue_page(_div_catalogue(), page=1)
+
+    assert [lot.external_id for lot in lots] == [
+        "vertrades.ru:102288306:1",
+        "vertrades.ru:102288307:3",
+    ]
+    assert [lot.start_price for lot in lots] == [2841000.0, 30000.0]
+    assert [lot.auction_status for lot in lots] == ["closed", "closed"]
+    assert [lot.raw_data["trade_id"] for lot in lots] == ["150-АП", "144-АП"]
+    assert all(lot.raw_data["catalogue_contract"] == "div_rows_lot_v2" for lot in lots)
+
+    assert lots[0].cadastral_number == "34:34:080122:1833"
+    assert lots[0].area == 54.9
+    assert lots[0].application_start_at.isoformat() == "2026-11-17T10:00:00"
+    assert lots[0].application_deadline.isoformat() == "2026-12-24T10:00:00"
+    assert lots[0].auction_at.isoformat() == "2026-12-28T17:00:00"
+
+
+def test_current_div_structure_summary_tracks_real_rows_not_parallel_double_count() -> None:
+    summary = catalogue_structure_summary(_div_catalogue())
+
+    assert summary == {
+        "table_rows": 0,
+        "rows_with_10_cells": 0,
+        "div_procedure_rows": 2,
+        "div_asset_lot_rows": 3,
+        "div_status_rows": 3,
+        "trade_code_rows": 2,
+        "numeric_lot_rows": 3,
+        "property_text_rows": 2,
+        "show_trades_id_rows": 3,
+    }
+
+
+def test_current_div_catalogue_fails_closed_when_parallel_rows_are_misaligned() -> None:
+    html = _div_catalogue().replace(
+        "<p class='contests-status'>Завершенные торги</p></div>",
+        "",
+        1,
+    )
+    with pytest.raises(VertradesCardError, match="asset_status_alignment"):
+        parse_catalogue_page(html)
+
+
+def test_current_div_catalogue_fails_closed_on_procedure_lot_identity_mismatch() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306'>ЛОТ№1",
+        "href='/showTrades?id=999999999'>ЛОТ№1",
+        1,
+    )
+    with pytest.raises(VertradesCardError, match="procedure_lot_identity_mismatch"):
+        parse_catalogue_page(html)
