@@ -239,11 +239,15 @@ def test_current_div_structure_summary_tracks_real_rows_not_parallel_double_coun
 
 
 def test_current_div_catalogue_fails_closed_when_parallel_rows_are_misaligned() -> None:
-    html = _div_catalogue().replace(
-        "<p class='contests-status'>Завершенные торги</p></div>",
-        "",
-        1,
+    lifecycle_row = (
+        "<div class='row_lot'>"
+        "<p class='contests_start'>17.11.2026 10:00:00</p>"
+        "<p class='contests_start'>24.12.2026 10:00:00</p>"
+        "<p class='contests_start-date'>28.12.2026 17:00:00</p>"
+        "<p class='contests-status'>Завершенные торги</p>"
+        "</div>"
     )
+    html = _div_catalogue().replace(lifecycle_row, "", 1)
     with pytest.raises(VertradesCardError, match="asset_status_alignment"):
         parse_catalogue_page(html)
 
