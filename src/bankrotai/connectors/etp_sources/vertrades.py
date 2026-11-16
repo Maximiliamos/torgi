@@ -34,6 +34,13 @@ _PROPERTY = re.compile(
 )
 _CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
 _DECIMAL = re.compile(r"^\s*(\d[\d \u00a0\u202f]*)(?:[.,](\d{1,2}))?\s*$")
+_CATALOGUE_PRICE_TAIL = re.compile(
+    r"(?P<amount>\d[\d \u00a0\u202f]*(?:[.,]\d{2}))\s*$"
+)
+_CATALOGUE_LOT_PREFIX = re.compile(
+    r"^\s*ЛОТ\s*№?\s*\d+\s*(?:\([^)]*\))?\s*",
+    re.I,
+)
 _TRADE = re.compile(r"^(\d{1,9})\s*[-–—]\s*(АП|АЗ)$", re.I)
 _HEADER = re.compile(r"^Сведения\s+по\s+лоту\s*№\s*(\d{1,6})$", re.I)
 _PROCEDURE = re.compile(
@@ -135,6 +142,32 @@ def _catalogue_money(value: str) -> float | None:
     return amount if 0 < amount < 1e15 else None
 
 
+def _catalogue_title_and_price(value: str) -> tuple[str, float]:
+    text = _clean(value)
+    match = _CATALOGUE_PRICE_TAIL.search(text)
+    if not match:
+        raise VertradesCardError("missing_or_invalid_catalogue_initial_price")
+    price = _catalogue_money(match.group("amount"))
+    if price is None:
+        raise VertradesCardError("missing_or_invalid_catalogue_initial_price")
+    title = _clean(_CATALOGUE_LOT_PREFIX.sub("", text[:match.start()]))
+    if not title:
+        raise VertradesCardError("missing_catalogue_lot_title")
+    return title, price
+
+
+def _catalogue_datetime(value: str) -> datetime | None:
+    text = _clean(value)
+    if not text:
+        return None
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    raise VertradesCardError("invalid_catalogue_datetime")
+
+
 def _provider_id(detail_url: str) -> str:
     parsed = urlparse(detail_url)
     values = parse_qs(parsed.query).get("id", [])
@@ -224,11 +257,15 @@ def catalogue_structure_summary(html: str | bytes) -> dict[str, int]:
     summary = {
         "table_rows": 0,
         "rows_with_10_cells": 0,
+        "div_procedure_rows": 0,
+        "div_asset_lot_rows": 0,
+        "div_status_rows": 0,
         "trade_code_rows": 0,
         "numeric_lot_rows": 0,
         "property_text_rows": 0,
         "show_trades_id_rows": 0,
     }
+
     for tr in soup.select("tr"):
         summary["table_rows"] += 1
         cells = tr.find_all("td", recursive=False)
@@ -254,6 +291,45 @@ def catalogue_structure_summary(html: str | bytes) -> dict[str, int]:
             for anchor in links
         ):
             summary["show_trades_id_rows"] += 1
+
+    for procedure in soup.select("div.row"):
+        trade_node = procedure.find("p", class_="contests_num", recursive=False)
+        if trade_node is None:
+            continue
+        rows_groups = procedure.find_all("div", class_="rows_lot", recursive=False)
+        if len(rows_groups) != 2:
+            continue
+        summary["div_procedure_rows"] += 1
+        if _TRADE.fullmatch(_clean(trade_node.get_text(" ", strip=True))):
+            summary["trade_code_rows"] += 1
+
+        asset_rows = rows_groups[0].find_all("div", class_="row_lot", recursive=False)
+        status_rows = rows_groups[1].find_all("div", class_="row_lot", recursive=False)
+        summary["div_asset_lot_rows"] += len(asset_rows)
+        summary["div_status_rows"] += len(status_rows)
+
+        for lot_row in asset_rows:
+            number_node = lot_row.find("p", class_="contests-lot-number", recursive=False)
+            asset_node = lot_row.find("p", class_="contests_lot", recursive=False)
+            if number_node is not None and re.fullmatch(
+                r"[1-9]\d{0,4}", _clean(number_node.get_text(" ", strip=True))
+            ):
+                summary["numeric_lot_rows"] += 1
+            if asset_node is None:
+                continue
+            asset_text = _clean(asset_node.get_text(" ", strip=True))
+            try:
+                title, _ = _catalogue_title_and_price(asset_text)
+            except VertradesCardError:
+                title = asset_text
+            if _PROPERTY.search(title):
+                summary["property_text_rows"] += 1
+            if any(
+                _is_vertrades_detail_href(str(anchor.get("href") or ""))
+                for anchor in asset_node.select("a[href]")
+            ):
+                summary["show_trades_id_rows"] += 1
+
     return summary
 
 
@@ -265,6 +341,163 @@ def _is_vertrades_detail_href(href: str) -> bool:
     return True
 
 
+def _parse_div_catalogue(
+    soup: BeautifulSoup, *, page: int, limit: int,
+) -> list[NormalizedLot]:
+    from bankrotai.connectors.etp_sources.common import _category
+
+    lots: list[NormalizedLot] = []
+    seen: set[str] = set()
+
+    procedures = [
+        row
+        for row in soup.select("div.row")
+        if row.find("p", class_="contests_num", recursive=False) is not None
+    ]
+    if not procedures:
+        return []
+
+    for procedure in procedures:
+        trade_node = procedure.find("p", class_="contests_num", recursive=False)
+        assert trade_node is not None
+        trade_text = _clean(trade_node.get_text(" ", strip=True))
+        trade_match = _TRADE.fullmatch(trade_text)
+        if not trade_match:
+            raise VertradesCardError("invalid_div_catalogue_trade_identity")
+        trade = f"{trade_match.group(1)}-{trade_match.group(2).upper()}"
+
+        procedure_urls: list[tuple[str, str]] = []
+        for anchor in trade_node.select("a[href]"):
+            try:
+                url = _safe_url(str(anchor.get("href") or ""))
+                provider = _provider_id(url)
+            except VertradesCardError:
+                continue
+            procedure_urls.append((url, provider))
+        if len(procedure_urls) != 1:
+            raise VertradesCardError("missing_or_ambiguous_div_procedure_url")
+        procedure_url, procedure_provider = procedure_urls[0]
+
+        rows_groups = procedure.find_all("div", class_="rows_lot", recursive=False)
+        if len(rows_groups) != 2:
+            raise VertradesCardError("div_catalogue_rows_lot_contract_changed")
+
+        asset_rows = rows_groups[0].find_all("div", class_="row_lot", recursive=False)
+        status_rows = rows_groups[1].find_all("div", class_="row_lot", recursive=False)
+        if not asset_rows or len(asset_rows) != len(status_rows):
+            raise VertradesCardError("div_catalogue_asset_status_alignment_failed")
+
+        for asset_row, status_row in zip(asset_rows, status_rows, strict=True):
+            number_node = asset_row.find(
+                "p", class_="contests-lot-number", recursive=False
+            )
+            asset_node = asset_row.find("p", class_="contests_lot", recursive=False)
+            status_node = status_row.find("p", class_="contests-status", recursive=False)
+            start_nodes = status_row.find_all(
+                "p", class_="contests_start", recursive=False
+            )
+            auction_node = status_row.find(
+                "p", class_="contests_start-date", recursive=False
+            )
+            if (
+                number_node is None
+                or asset_node is None
+                or status_node is None
+                or len(start_nodes) != 2
+                or auction_node is None
+            ):
+                raise VertradesCardError("div_catalogue_lot_shape_changed")
+
+            lot_text = _clean(number_node.get_text(" ", strip=True))
+            if not re.fullmatch(r"[1-9]\d{0,4}", lot_text):
+                raise VertradesCardError("invalid_div_catalogue_lot_number")
+            lot_number = int(lot_text)
+
+            asset_urls: list[tuple[str, str]] = []
+            for anchor in asset_node.select("a[href]"):
+                try:
+                    url = _safe_url(str(anchor.get("href") or ""))
+                    provider = _provider_id(url)
+                except VertradesCardError:
+                    continue
+                asset_urls.append((url, provider))
+            if len(asset_urls) != 1:
+                raise VertradesCardError("missing_or_ambiguous_div_lot_url")
+            detail_url, provider_id = asset_urls[0]
+            if provider_id != procedure_provider or detail_url != procedure_url:
+                raise VertradesCardError("div_catalogue_procedure_lot_identity_mismatch")
+
+            title, price = _catalogue_title_and_price(
+                asset_node.get_text(" ", strip=True)
+            )
+            if not _PROPERTY.search(title):
+                continue
+
+            source_status = _clean(status_node.get_text(" ", strip=True))
+            if not source_status:
+                raise VertradesCardError("missing_div_catalogue_status")
+            normalized_status = _vertrades_status(source_status)
+
+            application_start = _catalogue_datetime(
+                start_nodes[0].get_text(" ", strip=True)
+            )
+            application_deadline = _catalogue_datetime(
+                start_nodes[1].get_text(" ", strip=True)
+            )
+            auction_at = _catalogue_datetime(
+                auction_node.get_text(" ", strip=True)
+            )
+
+            external_id = f"{SOURCE_ID}:{provider_id}:{lot_number}"
+            if external_id in seen:
+                raise VertradesCardError("duplicate_individual_lot_identity_on_page")
+            seen.add(external_id)
+
+            cadastre = _CADASTRE.search(title)
+            area = _AREA.search(title)
+            address = _ADDRESS.search(title)
+
+            lots.append(NormalizedLot(
+                external_id=external_id,
+                source="vertrades",
+                source_system=SOURCE_ID,
+                title=title[:500],
+                description=title[:5000],
+                category=_category(title),
+                region_slug=None,
+                region_name=None,
+                address=_clean(address.group(1))[:500] if address else None,
+                cadastral_number=cadastre.group(1) if cadastre else None,
+                vin=None,
+                area=float(area.group(1).replace(",", ".")) if area else None,
+                start_price=price,
+                current_price=None,
+                auction_status=normalized_status,
+                lot_url=detail_url,
+                source_url=detail_url,
+                detail_level="search",
+                raw_data={
+                    "listing_page": page,
+                    "trade_id": trade,
+                    "lot_number": str(lot_number),
+                    "catalogue_source_status_text": source_status,
+                    "catalogue_contract": "div_rows_lot_v2",
+                    "complete_source_inventory": False,
+                    "safe_for_archival": False,
+                    "reconcile_missing": False,
+                },
+                platform_name="Вердиктъ",
+                platform_code="vertrades",
+                application_start_at=application_start,
+                application_deadline=application_deadline,
+                auction_at=auction_at,
+            ))
+            if len(lots) >= limit:
+                return lots
+
+    return lots
+
+
 def parse_catalogue_page(
     html: str | bytes, *, page: int = 1, limit: int = 100,
 ) -> list[NormalizedLot]:
@@ -274,6 +507,10 @@ def parse_catalogue_page(
     if page < 1:
         raise ValueError("Vertrades page must be >= 1")
     soup = _soup(html)
+
+    if soup.select_one("p.contests_num") is not None:
+        return _parse_div_catalogue(soup, page=page, limit=limit)
+
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
     for tr in soup.select("tr"):
@@ -342,6 +579,7 @@ def parse_catalogue_page(
                 "trade_id": trade,
                 "lot_number": str(int(lot_text)),
                 "catalogue_source_status_text": source_status,
+                "catalogue_contract": "legacy_table_v1",
                 "complete_source_inventory": False,
                 "safe_for_archival": False,
                 "reconcile_missing": False,
