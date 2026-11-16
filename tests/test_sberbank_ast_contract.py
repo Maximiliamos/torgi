@@ -166,7 +166,22 @@ def test_terminal_status_wins_over_historic_application_text() -> None:
     assert normalize_status("Торги не состоялись") == "closed"
     assert normalize_status("Торги приостановлены") == "paused"
     assert normalize_status("Торги объявлены") == "scheduled"
+    assert normalize_status("Опубликована") == "scheduled"
     assert normalize_status("Прием заявок") == "active"
+    assert normalize_status("Опубликована. Прием заявок") == "active"
+
+
+def test_published_catalogue_row_is_scheduled() -> None:
+    row = _row(goods_id=550)
+    row["PurchaseStageTerm"] = "Опубликована"
+    row["RequestStartDate"] = "17.11.2026 10:00"
+    row["RequestStopDate"] = "24.12.2026 10:00"
+
+    lot = parse_catalogue_row(row, page=1)
+
+    assert lot is not None
+    assert lot.auction_status == "scheduled"
+    assert lot.application_deadline.isoformat() == "2026-12-24T10:00:00"
 
 
 def test_explicit_ruble_price_rules_do_not_invent_price() -> None:

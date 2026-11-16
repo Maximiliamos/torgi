@@ -203,6 +203,15 @@ def normalize_status(value: object) -> str:
         text,
     ):
         return "unknown"
+
+    # The catalogue uses the exact stage label "Опубликована" before the
+    # application window opens. Live evidence on 2026-11-17 showed this label
+    # together with hasRequest=false and future RequestStartDate values, while
+    # already-open rows use "Прием заявок". Keep the match exact so a full
+    # GoodsView page mentioning publication does not override an active state.
+    if text in {"опубликована", "опубликовано"}:
+        return "scheduled"
+
     if any(marker in text for marker in (
         "торги объявлен", "торги назначен",
         "ожидается начало приема заявок", "ожидается начало приёма заявок",
