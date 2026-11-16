@@ -1,8 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from pathlib import Path
 
-from scripts import audit_source_connectivity as audit
+
+def _load_audit_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "audit_source_connectivity.py"
+    spec = importlib.util.spec_from_file_location("audit_source_connectivity", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+audit = _load_audit_module()
 
 
 def test_connector_init_failure_is_reported_per_source(monkeypatch):
