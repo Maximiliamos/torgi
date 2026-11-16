@@ -252,6 +252,26 @@ def test_current_div_catalogue_fails_closed_when_parallel_rows_are_misaligned() 
         parse_catalogue_page(html)
 
 
+def test_current_div_catalogue_never_silently_truncates_property_rows() -> None:
+    rows = [
+        (
+            index,
+            f"земельный участок {index} кв.м.",
+            "100 000,00",
+            "Завершенные торги",
+        )
+        for index in range(1, 102)
+    ]
+    html = "<html><body>" + _div_procedure(
+        "150-АП",
+        102288306,
+        rows,
+    ) + "</body></html>"
+
+    with pytest.raises(VertradesCardError, match="property_rows_exceed_limit"):
+        parse_catalogue_page(html, limit=100)
+
+
 def test_current_div_catalogue_fails_closed_on_procedure_lot_identity_mismatch() -> None:
     html = _div_catalogue().replace(
         "href='/showTrades?id=102288306'>ЛОТ№1",
