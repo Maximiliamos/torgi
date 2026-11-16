@@ -26,6 +26,7 @@ SOURCE_ID = "vertrades.ru"
 CATALOGUE_URL = "https://arest.vertrades.ru/bidding"
 DETAIL_HOST = "arest.vertrades.ru"
 _MAX_HTML = 2_000_000
+_MAX_CATALOGUE_PROPERTY_LOTS = 1_000
 _PROPERTY = re.compile(
     r"(?:недвижим|земельн|участок|квартир|комнат|помещени|здани|"
     r"гараж|машино.?мест|жилой дом|склад|торговый центр|сооружени|"
@@ -492,8 +493,8 @@ def _parse_div_catalogue(
                 application_deadline=application_deadline,
                 auction_at=auction_at,
             ))
-            if len(lots) >= limit:
-                return lots
+            if len(lots) > limit:
+                raise VertradesCardError("catalogue_property_rows_exceed_limit")
 
     return lots
 
@@ -502,8 +503,11 @@ def parse_catalogue_page(
     html: str | bytes, *, page: int = 1, limit: int = 100,
 ) -> list[NormalizedLot]:
     """Parse property rows from the mixed official arrested-property register."""
-    if not 1 <= limit <= 100:
-        raise ValueError("Vertrades catalogue limit must be 1..100")
+    if not 1 <= limit <= _MAX_CATALOGUE_PROPERTY_LOTS:
+        raise ValueError(
+            "Vertrades catalogue limit must be "
+            f"1..{_MAX_CATALOGUE_PROPERTY_LOTS}"
+        )
     if page < 1:
         raise ValueError("Vertrades page must be >= 1")
     soup = _soup(html)
@@ -587,8 +591,8 @@ def parse_catalogue_page(
             platform_name="Вердиктъ",
             platform_code="vertrades",
         ))
-        if len(lots) >= limit:
-            break
+        if len(lots) > limit:
+            raise VertradesCardError("catalogue_property_rows_exceed_limit")
     return lots
 
 
@@ -894,7 +898,11 @@ def connector_type(profile: "EtpSourceProfile") -> type["HtmlEtpConnector"]:
                 )
             self._page_fingerprints[page] = fingerprint
             try:
-                lots = parse_catalogue_page(response.content, page=page, limit=100)
+                lots = parse_catalogue_page(
+                    response.content,
+                    page=page,
+                    limit=_MAX_CATALOGUE_PROPERTY_LOTS,
+                )
                 has_next = has_next_catalogue_page(response.content, page)
             except VertradesCardError as exc:
                 raise SourceSchemaError(f"{SOURCE_ID}: {exc}") from exc
@@ -928,7 +936,11 @@ def connector_type(profile: "EtpSourceProfile") -> type["HtmlEtpConnector"]:
         async def healthcheck(self) -> ConnectorHealth:
             try:
                 response = await asyncio.to_thread(self._request, 1)
-                lots = parse_catalogue_page(response.content, page=1, limit=100)
+                lots = parse_catalogue_page(
+                    response.content,
+                    page=1,
+                    limit=_MAX_CATALOGUE_PROPERTY_LOTS,
+                )
             except Exception as exc:
                 return ConnectorHealth(
                     "degraded", str(exc), {"source": SOURCE_ID}
