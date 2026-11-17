@@ -304,6 +304,32 @@ def test_current_div_catalogue_never_silently_truncates_property_rows() -> None:
         parse_catalogue_page(html, limit=100)
 
 
+def test_current_div_catalogue_skips_non_property_without_valid_lot_url() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306'>ЛОТ№2",
+        "href='/not-a-lot'>ЛОТ№2",
+        1,
+    )
+
+    lots = parse_catalogue_page(html)
+
+    assert [lot.external_id for lot in lots] == [
+        "vertrades.ru:102288306:1",
+        "vertrades.ru:102288307:3",
+    ]
+
+
+def test_current_div_catalogue_property_without_valid_lot_url_fails_closed() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306'>ЛОТ№1",
+        "href='/not-a-lot'>ЛОТ№1",
+        1,
+    )
+
+    with pytest.raises(VertradesCardError, match="missing_div_lot_url"):
+        parse_catalogue_page(html)
+
+
 def test_current_div_catalogue_deduplicates_repeated_same_procedure_links() -> None:
     html = _div_catalogue().replace(
         "href='/showTrades?id=102288306'>ЛОТ№1",
