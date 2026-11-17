@@ -350,11 +350,14 @@ def _parse_div_catalogue(
     lots: list[NormalizedLot] = []
     seen: set[str] = set()
 
-    procedures = [
-        row
-        for row in soup.select("div.row")
-        if row.find("p", class_="contests_num", recursive=False) is not None
-    ]
+    procedures = []
+    for row in soup.select("div.row"):
+        trade_node = row.find("p", class_="contests_num", recursive=False)
+        if trade_node is None:
+            continue
+        if trade_node.select_one("a[href*='showTrades']") is None:
+            continue
+        procedures.append(row)
     if not procedures:
         return []
 
