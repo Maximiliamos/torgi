@@ -46,7 +46,7 @@ class ExactMetsView(HTMLParser):
                     self.parts = []
                     self.size = self.matches = 0
                     self.invalid = False
-        self._append(self.get_starttag_text())
+        self._append(self.get_starttag_text() or "")
         if values.get("itemprop") == "sku" and values.get("content") == self.sku:
             if self.start_depth is not None and not self.noindex:
                 self.matches += 1
