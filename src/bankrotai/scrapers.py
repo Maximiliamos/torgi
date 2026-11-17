@@ -1316,6 +1316,13 @@ class TorgiGovClient:
             detail_level="search",
             raw_data=raw_data,
             published_at=self._parse_date(published_text),
+            application_deadline=self._parse_date(bidd_end_text),
+            auction_at=self._parse_date(auction_start_text),
+            auction_timezone=(
+                "Europe/Moscow"
+                if bidd_end_text or auction_start_text
+                else None
+            ),
             land_area=extract_land_area(combined_text),
             total_area_gba=extract_building_area(combined_text) or extract_room_area(combined_text),
         )
@@ -1483,20 +1490,8 @@ class TorgiGovClient:
         return extract_area(text) or extract_land_area(text)
 
     def _extract_cadastral_numbers(self, payload: dict[str, Any], text: str) -> list[str]:
-        values = self._pick(payload, "cadastralNumbers", "cadastralNumber", "cadNumber", "cadNumbers")
-        found: list[str] = []
-        if values:
-            if isinstance(values, str):
-                found.extend(extract_cadastral_numbers(values))
-            elif isinstance(values, list):
-                for item in values:
-                    found.extend(extract_cadastral_numbers(str(item)))
-        found.extend(extract_cadastral_numbers(text))
-        unique: list[str] = []
-        for number in found:
-            if number not in unique:
-                unique.append(number)
-        return unique
+        from bankrotai.services.torgi_gov_normalization import collect_torgi_gov_cadastres
+        return collect_torgi_gov_cadastres(payload, text)
 
     def _category_from_payload(self, code: str, name: str, title: str, description: str) -> str:
         code = str(code or "").strip()
@@ -1529,22 +1524,8 @@ class TorgiGovClient:
         return "unknown"
 
     def _parse_date(self, value: Any) -> datetime | None:
-        if isinstance(value, datetime):
-            return value
-        text = self._clean_text(value)
-        if not text:
-            return None
-        normalized = text.replace("Z", "+00:00")
-        try:
-            return datetime.fromisoformat(normalized).replace(tzinfo=None)
-        except ValueError:
-            pass
-        for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(text[:19], fmt)
-            except ValueError:
-                continue
-        return None
+        from bankrotai.services.torgi_gov_normalization import parse_torgi_gov_date
+        return parse_torgi_gov_date(value if isinstance(value, datetime) else self._clean_text(value))
 
     def _region_slug(self, region_name: str | None) -> str:
         if not region_name:

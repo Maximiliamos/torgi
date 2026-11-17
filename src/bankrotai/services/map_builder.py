@@ -34,6 +34,7 @@ from bankrotai.services.map_dataset_version import (
     dataset_pipeline_revision,
 )
 from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
+from bankrotai.services.map_property_eligibility import map_property_eligible
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -620,6 +621,9 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                 select(
                     ProcessedLot.id,
                     ProcessedLot.title,
+                    ProcessedLot.category,
+                    ProcessedLot.description,
+                    ProcessedLot.address,
                     ProcessedLot.current_price,
                     ProcessedLot.start_price,
                     ProcessedLot.region_code,
@@ -640,7 +644,11 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
             ).all()
         points: list[dict] = []
         spatial_rejection_counts: dict[str, int] = {}
+        property_rejections = 0
         for row in rows:
+            if not map_property_eligible(row._mapping):
+                property_rejections += 1
+                continue
             raw_region_rejection = coordinate_region_sanity_rejection_reason(
                 float(row.centroid_lat),
                 float(row.centroid_lon),
@@ -702,6 +710,8 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     "review_status": row.review_status,
                 }
             )
+        if property_rejections:
+            logger.info("Map membership excluded %s projections failing sale/property evidence", property_rejections)
         if spatial_rejection_counts:
             logger.warning(
                 "Map dataset excluded spatially invalid coordinates: counts=%s",

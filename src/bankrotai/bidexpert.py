@@ -14,6 +14,7 @@ from bankrotai.extractors import extract_address, extract_cadastral_numbers
 from bankrotai.logic import classify_category
 from bankrotai.regions import REGIONS_BY_CODE, region_code_from_text
 from bankrotai.scraper_contracts import BidExpertSearchFilters, parse_money
+from bankrotai.services.property_address_evidence import extract_asset_property_address
 
 
 class BidExpertClient:
@@ -142,7 +143,9 @@ class BidExpertClient:
         if card is None:
             raise ValueError("BidExpert detail lot card is missing")
 
-        section = soup.select_one(".section-title")
+        section = card.find_previous(class_="section-title")
+        if section is not None and section.get_text(" ", strip=True).casefold() == "этапы процедуры":
+            section = None
         title = (
             " ".join(section.get_text(" ", strip=True).split())
             if section is not None
@@ -156,7 +159,10 @@ class BidExpertClient:
         numbers = extract_cadastral_numbers(scoped_text)
         # Never scan the whole page: footer/recommendation cards can contain
         # unrelated addresses and cadastral numbers.
-        address = extract_address(description) or (
+        address = extract_asset_property_address(
+            title=title, description=description,
+            cadastral_number=numbers[0] if numbers else None,
+        ) or (
             " ".join(location.split()).strip(" ,.;:-") if location else None
         )
         region_code = (
@@ -170,6 +176,29 @@ class BidExpertClient:
             else None
         )
         price = parse_money(self._detail_field(card, "Начальная цена"))
+        source_status = self._detail_field(card, "Статус") or ""
+        stages = soup.select(".stages-list .stage-item")
+        current_stages = [stage.get_text(" ", strip=True) for stage in stages if "current" in stage.get("class", [])]
+        status_evidence = " ".join(current_stages) or source_status
+        from bankrotai.connectors.etp_sources.status_normalization import _status
+        status = "closed" if "процедура завершена" in status_evidence.casefold() else _status(status_evidence)
+        if status == "unknown" and source_status.casefold() in {"опубликован", "опубликована"} and not current_stages:
+            status = "scheduled"
+        application_start = deadline = auction_at = None
+        for stage in stages:
+            label = stage.select_one(".title")
+            dates = [self._parse_moscow_datetime(node.get_text(" ", strip=True)) for node in stage.select(".date")]
+            dates = [value for value in dates if value is not None]
+            if label is None or not dates:
+                continue
+            text = label.get_text(" ", strip=True).casefold().replace("ё", "е")
+            if "дата проведения торгов" in text:
+                auction_at = dates[0]
+            elif "прием" in text or "подач" in text:
+                if "начал" in text or len(dates) > 1:
+                    application_start = dates[0]
+                if "оконча" in text or "конец" in text or len(dates) > 1:
+                    deadline = dates[-1]
         lot_url = f"{self.BASE_URL}/bids/lot/?n={lot_id}"
         return NormalizedLot(
             external_id=f"bidexpert:{lot_id}",
@@ -186,7 +215,7 @@ class BidExpertClient:
             area=None,
             start_price=price,
             current_price=None,
-            auction_status="active",
+            auction_status=status,
             lot_url=lot_url,
             source_url=lot_url,
             detail_level="detail",
@@ -195,8 +224,14 @@ class BidExpertClient:
                 "detail_enrichment_status": "success",
                 "cadastral_numbers": numbers,
                 "region_code": region_code,
+                "source_status": source_status,
+                "detail_status_evidence": status_evidence,
                 "raw_endpoint": endpoint,
             },
+            application_start_at=application_start,
+            application_deadline=deadline,
+            auction_at=auction_at,
+            auction_timezone="Europe/Moscow",
         )
 
     def fetch_lot_detail(self, external_id: str) -> NormalizedLot:

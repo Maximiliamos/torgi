@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from bankrotai.scrapers import TorgiGovClient, TorgiGovClientError, TorgiGovSearchFilters
 
 
@@ -572,3 +574,39 @@ def test_torgi_gov_fetch_lot_detail_rejects_identity_mismatch() -> None:
     else:
         raise AssertionError("mismatched detail identity must fail closed")
 
+def test_torgi_gov_reported_dates_and_nested_cadastres_use_moscow_clock() -> None:
+    client = TorgiGovClient()
+
+    lot = client._normalize_api_lot({
+        "id": "21000012550000001036_1",
+        "noticeNumber": "21000012550000001036",
+        "lotNumber": "1",
+        "lotName": "Продажа недвижимого имущества",
+        "lotDescription": "Объекты недвижимости в Ярославской области",
+        "estateAddress": "г. Ярославль, ул. Советская, д. 75",
+        "categoryCode": "10",
+        "subjectRFName": "Ярославская область",
+        "lotStatus": "APPLICATIONS_SUBMISSION",
+        "biddEndTime": "2026-11-16T12:00:00Z",
+        "auctionStartDate": "2026-11-19T07:00:00Z",
+        "egrnInfoRequestList": [{
+            "objects": [
+                {"cadastralNumber": "76:23:050206:1348"},
+                {"cadastralNumber": "76:23:050206:1382"},
+                {"cadastralNumber": "76:23:050206:1383"},
+                {"cadastralNumber": "76:23:050206:1384"},
+            ],
+        }],
+    })
+
+    assert lot.application_deadline == datetime(2026, 11, 16, 15, 0)
+    assert lot.auction_at == datetime(2026, 11, 19, 10, 0)
+    assert lot.auction_timezone == "Europe/Moscow"
+
+    assert lot.cadastral_number == "76:23:050206:1348"
+    assert lot.raw_data["cadastral_numbers"] == [
+        "76:23:050206:1348",
+        "76:23:050206:1382",
+        "76:23:050206:1383",
+        "76:23:050206:1384",
+    ]

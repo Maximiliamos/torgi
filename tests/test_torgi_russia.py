@@ -992,3 +992,108 @@ def test_torgi_russia_actual_land_address_in_catalogue_and_detail() -> None:
     result = TorgiRussiaClient.parse_detail_payload({"information": f"<p>{title}</p>"})
     assert result["address"] == expected
     assert result["cadastral_numbers"] == ["47:22:0325001:373"]
+
+def test_torgi_russia_reported_current_timeline_pairs_with_comma_dates() -> None:
+    html = """
+    <div>
+      <p class="label-sm text-neutral-950">30.10.2026, 10:00</p>
+      <p class="text-xs text-neutral-500">Начало приема заявок</p>
+    </div>
+    <div>
+      <p class="label-sm text-neutral-500">04.12.2026, 10:00</p>
+      <p class="text-xs text-neutral-500">Конец приема заявок</p>
+    </div>
+    <div>
+      <p class="label-sm text-neutral-500">07.12.2026, 10:00</p>
+      <p class="text-xs text-neutral-500">Начало приема предложений о цене</p>
+    </div>
+    """
+
+    result = TorgiRussiaClient.parse_lot_page(
+        html,
+        "https://xn----etbpba5admdlad.xn--p1ai/lot/7267108",
+    )
+
+    assert result.application_start_at.isoformat() == "2026-10-30T10:00:00"
+    assert result.application_deadline.isoformat() == "2026-12-04T10:00:00"
+    assert result.auction_at.isoformat() == "2026-12-07T10:00:00"
+
+
+def test_torgi_russia_reported_nextjs_stages_and_exact_status() -> None:
+    item = _new_site_lot(
+        lot_id=7267108,
+        region_title="Ярославская область",
+    )
+    item.update({
+        "status": {
+            "id": 1,
+            "title": "Идёт приём заявок",
+        },
+        "information": (
+            "<p>Земельный участок, площадью 885 кв. м., "
+            "по адресу: Ярославская область, Гаврилов-Ямский, "
+            "с/п Заячье-Холмский, с. Унимерь, "
+            "кадастровый номер 76:04:033901:2483</p>"
+        ),
+        "cadastrals": ["76:04:033901:2483"],
+        "stages": {
+            "begin_bid_time": "2026-10-30 10:00:00",
+            "end_bid_time": "2026-12-04 10:00:00",
+            "begin_offer_time": "2026-12-07 10:00:00",
+            "end_offer_time": "",
+        },
+    })
+
+    html = _nextjs_search_html([item])
+
+    result = TorgiRussiaClient.parse_lot_page(
+        html,
+        "https://xn----etbpba5admdlad.xn--p1ai/lot/7267108",
+    )
+
+    assert result.auction_status == "active"
+    assert result.application_start_at.isoformat() == "2026-10-30T10:00:00"
+    assert result.application_deadline.isoformat() == "2026-12-04T10:00:00"
+    assert result.auction_at.isoformat() == "2026-12-07T10:00:00"
+    assert result.cadastral_numbers == ["76:04:033901:2483"]
+    assert "Унимерь" in result.description
+
+
+def test_torgi_russia_reported_completed_exact_status_is_closed() -> None:
+    item = _new_site_lot(
+        lot_id=7265021,
+        region_title="Московская область",
+    )
+    item.update({
+        "status": {
+            "id": 5,
+            "title": "Торги не состоялись",
+        },
+        "information": (
+            "<p>Квартира по адресу: МО, г. Ногинск, "
+            "ул. Леснова, д. 3 к. 1, кв. 10, "
+            "кадастровый номер 50:16:0302009:1849</p>"
+        ),
+        "cadastrals": ["50:16:0302009:1849"],
+        "stages": {
+            "begin_bid_time": "2026-08-01 10:00:00",
+            "end_bid_time": "2026-09-01 10:00:00",
+            "begin_offer_time": "2026-09-05 10:00:00",
+            "end_offer_time": "",
+        },
+    })
+
+    html = _nextjs_search_html([item])
+
+    result = TorgiRussiaClient.parse_lot_page(
+        html,
+        "https://xn----etbpba5admdlad.xn--p1ai/lot/7265021",
+    )
+
+    assert result.auction_status == "closed"
+    assert result.address == "МО, г. Ногинск, ул. Леснова, д. 3 к. 1"
+
+
+def test_torgi_russia_detail_enrichment_contract_is_v6() -> None:
+    assert TorgiRussiaConnector.detail_enrichment_version == 6
+    assert TorgiRussiaConnector.compatible_detail_enrichment_versions == frozenset({6})

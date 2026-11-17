@@ -14,6 +14,9 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
+from bankrotai.torgi_russia_detail_fields import (
+    collect_timeline_labels, detail_stage_fields, extract_detail_property_address, parse_detail_datetime,
+)
 from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_status import public_auction_status
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title, recovery_failure_code
@@ -57,6 +60,7 @@ class TorgiRussiaDetails:
     procedure_number: str | None = None
     address: str | None = None
     category: str | None = None
+    auction_status: str | None = None
     application_start_at: datetime | None = None
     application_deadline: datetime | None = None
     auction_at: datetime | None = None
@@ -71,6 +75,7 @@ class TorgiRussiaDetails:
             "description": self.description,
             "address": self.address,
             "category": self.category,
+            "auction_status": self.auction_status,
             "application_start_at": self.application_start_at,
             "application_deadline": self.application_deadline,
             "auction_at": self.auction_at,
@@ -575,16 +580,7 @@ class TorgiRussiaClient:
         )
         return records, metadata
 
-    @staticmethod
-    def _property_address_from_description(description: str) -> str | None:
-        normalized = re.sub(r"\s+", " ", description or "").strip()
-        match = re.search(
-            r"(?:по адресу|адрес(?: местонахождения)?)\s*:\s*(.+?)"
-            r"(?=\s*[,;]?\s*(?:К[\\/]?н|Кадастров)|$)",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        return extract_catalogue_address(normalized) or (match.group(1).strip(" ,.;") if match else None)
+    _property_address_from_description = staticmethod(extract_detail_property_address)
 
     @classmethod
     def parse_detail_payload(cls, data: dict) -> dict:
@@ -611,6 +607,7 @@ class TorgiRussiaClient:
             "etp_url": data.get("trade_link"),
             "source_status": data.get("status"),
             "updated_at": data.get("updated_at"),
+            **detail_stage_fields(data),
         }
 
     @staticmethod
@@ -875,25 +872,14 @@ class TorgiRussiaClient:
             if label and value:
                 labels[label] = value
 
+        for label, value in collect_timeline_labels(soup).items():
+            labels.setdefault(label, value)
+
         def labelled(*needles: str) -> str | None:
             return next(
-                (value for key, value in labels.items() if any(needle in key for needle in needles)),
+                (value for needle in needles for key, value in labels.items() if needle in key),
                 None,
             )
-
-        def parse_date(value: str | None) -> datetime | None:
-            if not value:
-                return None
-            match = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+[вВ]?\s*\d{1,2}:\d{2})?", value)
-            if not match:
-                return None
-            normalized = re.sub(r"\s+[вВ]\s+", " ", match.group(0))
-            for pattern in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
-                try:
-                    return datetime.strptime(normalized, pattern)
-                except ValueError:
-                    pass
-            return None
 
         image_urls: list[str] = []
         gallery = soup.select_one("#lot-gallery[data-gallery]")
@@ -973,27 +959,42 @@ class TorgiRussiaClient:
                 or labelled("адрес местонахождения имущества", "местонахождение имущества")
             ),
             category=labelled("категор", "вид имущества"),
-            application_start_at=parse_date(labelled(
-                "начало приема заявок", "начало приёма заявок", "начало подачи заявок"
-            )),
-            application_deadline=parse_date(
-                labelled(
+            auction_status=public_auction_status(
+                flight_detail.get("source_status")
+                or labelled("статус торгов", "статус")
+            ),
+            application_start_at=(
+                parse_detail_datetime(flight_detail.get("application_start_at"))
+                or parse_detail_datetime(labelled(
+                    "начало приема заявок",
+                    "начало приёма заявок",
+                    "начало подачи заявок",
+                ))
+            ),
+            application_deadline=(
+                parse_detail_datetime(flight_detail.get("application_deadline"))
+                or parse_detail_datetime(labelled(
                     "конец приема заявок",
                     "конец приёма заявок",
                     "окончание приема заявок",
                     "окончание приёма заявок",
                     "конец подачи заявок",
                     "окончание подачи заявок",
-                )
+                ))
             ),
-            auction_at=parse_date(
-                labelled(
+            auction_at=(
+                parse_detail_datetime(flight_detail.get("auction_at"))
+                or parse_detail_datetime(labelled(
                     "конец приема ценовых предложений",
                     "конец приёма ценовых предложений",
                     "дата торгов",
                     "дата аукцион",
                     "дата проведения",
                     "проведен",
-                )
+                    "начало приема предложений о цене",
+                    "начало приёма предложений о цене",
+                    "начало приема ценовых предложений",
+                    "начало приёма ценовых предложений",
+                ))
             ),
         )

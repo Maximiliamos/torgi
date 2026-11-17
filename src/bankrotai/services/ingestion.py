@@ -735,6 +735,11 @@ class NationwideIngestionService:
                 run_id,
                 asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
             )
+        # Detail enrichment can reveal that a catalogue's generic "real_estate"
+        # label was wrong. Apply the same contract again before either writer.
+        sale_eligible = [lot for lot in accepted if is_sale_real_estate_lot(lot)]
+        result.items_rejected += len(accepted) - len(sale_eligible)
+        accepted = sale_eligible
         if result.source_system == "nistp.ru":
             proven = [lot for lot in accepted if independent_detail_proven(lot)]
             # A catalogue row that cannot be independently proven by its
@@ -781,17 +786,9 @@ class NationwideIngestionService:
                 result.seen_external_ids.add(normalized.external_id)
                 source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
-                before = self._source_fingerprint(source_row) if source_row is not None else None
-                if (
-                    source_row is not None
-                    and source_row.processed_lot_id is not None
-                    and before == self._normalized_source_fingerprint(normalized, source_row)
-                ):
-                    source_row.last_sync_run_id = run_id
-                    source_row.last_seen_at = utc_now()
-                    source_row.missing_successful_runs = 0
-                    result.items_unchanged += 1
-                    continue
+                # Source equality alone cannot prove its ProcessedLot projection
+                # is current. The batch layer compares both persisted projections
+                # before a semantic skip, and repairs legacy drift on a normal run.
                 changed_or_new.append(normalized)
                 result.items_updated += int(existed)
                 result.items_inserted += int(not existed)

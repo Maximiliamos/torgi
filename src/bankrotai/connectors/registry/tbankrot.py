@@ -12,7 +12,7 @@ from bankrotai.scraper_contracts import TBankrotSearchFilters
 class TBankrotConnector(AuctionConnector):
     source_id = "tbankrot.ru"
     capabilities = frozenset({"search", "detail_enrichment"})
-    detail_enrichment_version = 3
+    detail_enrichment_version = 4
 
     def __init__(self) -> None:
         from bankrotai.scrapers import TBankrotClient
@@ -51,6 +51,17 @@ class TBankrotConnector(AuctionConnector):
             return lot
 
         fields = await asyncio.to_thread(self.client.fetch_detail_fields, lot.lot_url)
+        if fields.get("detail_identity_verified"):
+            from bankrotai.logic import classify_category
+            lot.title = fields.get("title") or lot.title
+            lot.description = fields.get("description") or lot.description
+            lot.address = fields.get("address") or lot.address
+            numbers = fields.get("cadastral_numbers") or []
+            if numbers:
+                lot.cadastral_number = numbers[0]
+                raw["cadastral_numbers"] = numbers
+            lot.category = classify_category(lot.title, lot.description)
+            raw["detail_identity_verified"] = True
         if fields.get("start_price") is not None:
             lot.start_price = fields["start_price"]
         if fields.get("current_price") is not None:

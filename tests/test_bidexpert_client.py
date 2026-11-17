@@ -236,3 +236,23 @@ def test_bidexpert_connector_exposes_exact_detail_without_bulk_enrichment() -> N
     assert "detail" in connector.capabilities
     assert "detail_enrichment" not in connector.capabilities
 
+
+def test_bidexpert_detail_prefers_current_procedure_stage_and_named_dates() -> None:
+    html = '''<html><head><title>Лот №1113211</title></head><body>
+    <div class="section-title">Нежилое помещение</div>
+    <div class="bid-card"><div class="bid-card-content-item">
+      <div class="title">Статус:</div><div class="content">Опубликован</div>
+    </div></div>
+    <div class="stages-list">
+      <div class="stage-item"><div class="title">Прием заявок</div>
+        <div class="date">19-10-2026, 12:00</div><div class="date">10-12-2026, 23:55</div></div>
+      <div class="stage-item"><div class="title">Дата проведения торгов:</div>
+        <div class="date">09-11-2026, 06:00</div></div>
+      <div class="stage-item current"><div class="title">Процедура завершена</div></div>
+    </div></body></html>'''
+    lot = BidExpertClient().parse_detail_html(html, lot_id="1113211", endpoint="https://bidexpert.ru/bids/lot/?n=1113211")
+    assert lot.auction_status == "closed"
+    assert lot.application_start_at.isoformat() == "2026-10-19T12:00:00"
+    assert lot.application_deadline.isoformat() == "2026-12-10T23:55:00"
+    assert lot.auction_at.isoformat() == "2026-11-09T06:00:00"
+

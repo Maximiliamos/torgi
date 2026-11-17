@@ -139,9 +139,26 @@ def test_exact_fingerprint_ignores_non_map_fields():
         session.commit()
         before = map_builder.map_source_fingerprint(session)
         lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "two"))
-        lot.description = "Non-public description update"
+        lot.ai_recommendation = "Non-public analysis update"
         session.commit()
         assert map_builder.map_source_fingerprint(session) == before
+
+
+def test_fingerprint_tracks_sale_membership_evidence():
+    factory = _db()
+    with factory() as session:
+        lot = ProcessedLot(source_system="fixture", external_id="membership", title="Premises",
+                           category="commercial_room", current_geo_lat=57.62, current_geo_lon=39.89)
+        session.add(lot)
+        session.commit()
+        before = map_builder.map_source_fingerprint(session)
+        lot.description = "Предмет аукциона: передача в аренду"
+        session.commit()
+        after_description = map_builder.map_source_fingerprint(session)
+        assert before != after_description
+        lot.address = "A corrected source address"
+        session.commit()
+        assert after_description != map_builder.map_source_fingerprint(session)
 
 
 def test_signed_manifest_is_create_only():

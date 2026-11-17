@@ -15,10 +15,10 @@ def test_npm_security_audits_are_bounded_retried_and_fail_closed() -> None:
 
 def test_unpatched_dev_advisory_exception_is_exact_and_runtime_stays_strict() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "GHSA-vfj7-8cjw-p6xm" in workflow
-    assert "grep -vx 'GHSA-vfj7-8cjw-p6xm'" in workflow
-    assert "Unexpected high/critical npm advisory set" in workflow
-    assert "runtime npm audit is clean" in workflow
+    assert "audit_with_retry --omit=dev --audit-level=high" in workflow
+    assert "npm audit --json --audit-level=high" in workflow
+    assert "node --test scripts/check-build-audit.test.mjs" in workflow
+    assert "| node scripts/check-build-audit.mjs" in workflow
 
 def test_feature_branches_use_single_pull_request_ci_run() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")

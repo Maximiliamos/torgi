@@ -95,6 +95,46 @@ def sessions():
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def test_unchanged_source_repairs_stale_projection_on_repeat_ingestion(sessions):
+    incoming = lot("projection-drift")
+    connector = FakeConnector([[incoming]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    spec = (SourceSyncSpec("test-source", {}, reconcile_missing=False),)
+    first = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    asyncio.run(service.run(first, spec))
+    with sessions() as session:
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == incoming.external_id))
+        processed.address = "stale wrong address"
+        processed.start_price = 1
+        session.commit()
+    second = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    asyncio.run(service.run(second, spec))
+    with sessions() as session:
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == incoming.external_id))
+        assert processed.address == incoming.address
+        assert float(processed.start_price) == incoming.start_price
+        assert processed.review_status is None
+
+
+def test_detail_revealed_vehicle_is_rejected_before_persistence(sessions):
+    class VehicleDetail(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        async def enrich_lot(self, normalized):
+            normalized.title = "Грузовой автомобиль МАЗ"
+            normalized.category = "car"
+            return normalized
+
+    connector = VehicleDetail([[lot("vehicle-after-detail")]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    run_id = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    output = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}, reconcile_missing=False),)))
+    assert output["sources"][0]["items_rejected"] == 1
+    with sessions() as session:
+        assert session.scalars(select(ProcessedLot)).all() == []
+        assert session.scalars(select(SourceLot)).all() == []
+
+
 def run_with(service: NationwideIngestionService, connector: AuctionConnector) -> tuple[str, dict]:
     service.connector_factory = lambda _source: connector
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
@@ -1009,7 +1049,12 @@ def test_watchdog_renews_lease_while_event_loop_is_blocked(sessions, monkeypatch
     renewals: list[str] = []
 
     async def blocked_run(_run_id: str, _specs: tuple[SourceSyncSpec, ...]) -> dict:
-        time.sleep(0.05)
+        # Observe the watchdog while the event loop stays blocked. Fixed 50 ms
+        # sleeps were shorter than a few Windows scheduler ticks under load.
+        deadline = time.monotonic() + 2.0
+        while len(renewals) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(renewals) >= 3
         return {"status": "success", "sources": []}
 
     monkeypatch.setattr(service, "_heartbeat", lambda run_id: renewals.append(run_id))

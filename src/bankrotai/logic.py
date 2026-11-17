@@ -37,45 +37,7 @@ logger = logging.getLogger(__name__)
 
 # --- Classifiers ---
 
-def classify_category(title: str, description: str) -> str: 
-    h = f"{title} {description}".lower() 
-
-    if any(token in h for token in ("автомоб", "vin", "грузов", "транспорт", "авто", "прицеп", "легков")): 
-        return "car" 
-
-    if "квартир" in h: 
-        return "apartment" 
-
-    if "нежилое помещение" in h or "нежилые помещения" in h or "помещени" in h: 
-        return "commercial_room" 
-
-    if "нежилое здание" in h or "здание" in h or "склад" in h or "цех" in h: 
-        if "земельн" in h or "участ" in h: 
-            return "commercial_building_with_land" 
-        return "commercial_building" 
-
-    if "жилой дом" in h or "дом жилой" in h or "коттедж" in h: 
-        return "house" 
-
-    if "земельн" in h or "участ" in h: 
-        return "land" 
-
-    if "машино-место" in h or "гараж" in h: 
-        return "parking" 
-
-    if "незаверш" in h: 
-        return "unfinished" 
-
-    if "комплекс" in h: 
-        return "complex" 
-
-    if "дебитор" in h or "право требования" in h: 
-        return "receivable" 
-
-    if "недвиж" in h: 
-        return "real_estate" 
-
-    return "other" 
+from bankrotai.services.asset_category import classify_category
 
 # --- Ingest Utils ---
 
@@ -702,14 +664,16 @@ def cleanup_closed_lots(session: Session) -> int:
 def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, source: str) -> bool:
     normalized = normalize_status(new_status)
     old_status = lot.auction_status
-    if not normalized or normalized == old_status:
+    if not normalized:
         return False
-    lot.auction_status = normalized
     if normalized == "closed":
         lot.closed_at = lot.closed_at or utc_now()
         lot.is_archived = True
         lot.archived_at = lot.archived_at or utc_now()
-    elif old_status == "closed" and normalized in {"active", "scheduled"}:
+    if normalized == old_status:
+        return False
+    lot.auction_status = normalized
+    if old_status == "closed" and normalized in {"active", "scheduled"}:
         lot.is_archived = False
         lot.archived_at = None
     session.add(LotStatusHistory(
@@ -781,6 +745,7 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
         )
         session.add(processed)
         session.flush()
+        apply_lot_status(session, processed, normalized.auction_status, normalized.source or "import")
         if processed.auction_status:
             session.add(LotStatusHistory(
                 lot_id=processed.id,
