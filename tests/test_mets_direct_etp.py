@@ -814,6 +814,8 @@ def test_truncated_detail_does_not_use_unscoped_document_fallbacks():
             '<div class="title">Начальная цена</div></div>'
             '<div class="lot-cost-item status"><div class="lot-status-name">'
             'Объявленные торги</div></div>'
+            '<div>Проверенная карточка объекта недвижимости с достаточным '
+            'объемом основного текста внутри целевого lot-container.</div>'
             '</div>'
             '<span itemprop="description">'
             'Кадастровый номер: 48:20:0021101:37'
