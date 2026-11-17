@@ -52,6 +52,8 @@ class MetsEvidenceError(ValueError):
 class _BoundedDetailHtml(str):
     """A detail prefix that records whether the provider response was truncated."""
 
+    _mets_truncated: bool
+
     def __new__(cls, value: str, *, truncated: bool) -> "_BoundedDetailHtml":
         obj = super().__new__(cls, value)
         obj._mets_truncated = truncated
