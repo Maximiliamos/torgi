@@ -152,8 +152,7 @@ def _catalogue_money(value: str) -> float | None:
     if not match:
         return None
     raw = re.sub(r"[\s\u00a0\u202f]", "", match.group(1))
-    if match.group(2):
-        raw += "." + match.group(2)
+    if match.group(2): raw += "." + match.group(2)
     try:
         amount = float(raw)
     except ValueError:
