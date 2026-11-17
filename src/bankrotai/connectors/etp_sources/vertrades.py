@@ -132,7 +132,6 @@ def _safe_url(href: str) -> str:
 def _safe_catalogue_lot_url(
     href: str, *, lot_number: int,
 ) -> tuple[str, str]:
-    """Validate the provider's per-lot catalogue anchor and canonicalize it."""
     absolute = urljoin(CATALOGUE_URL, href.strip())
     parsed = urlsplit(absolute)
     expected_fragment = f"lot-{lot_number}"
@@ -357,8 +356,12 @@ def catalogue_structure_summary(html: str | bytes) -> dict[str, int]:
 
 
 def _is_vertrades_detail_href(href: str) -> bool:
+    absolute = urljoin(CATALOGUE_URL, href.strip())
+    parsed = urlsplit(absolute)
+    if parsed.fragment and not re.fullmatch(r"lot-[1-9]\d{0,4}", parsed.fragment):
+        return False
     try:
-        _provider_id(_safe_url(href))
+        _provider_id(_safe_url(parsed._replace(fragment="").geturl()))
     except VertradesCardError:
         return False
     return True
@@ -445,11 +448,7 @@ def _parse_div_catalogue(
             if not _PROPERTY.search(title):
                 continue
 
-            # The provider catalogue is mixed-asset. Only property rows enter
-            # TORGI's source contract, so require individual-lot URL evidence
-            # after the positive property gate. This mirrors the legacy table
-            # parser and prevents unrelated vehicle/equipment rows from
-            # failing a property-only ingestion path.
+            # Require lot identity only after the positive property gate.
             asset_urls: list[tuple[str, str]] = []
             for anchor in asset_node.select("a[href]"):
                 try:
@@ -461,10 +460,7 @@ def _parse_div_catalogue(
                     continue
                 asset_urls.append((url, provider))
 
-            # Current provider markup may repeat the same shared procedure link
-            # within one lot cell. HTML-anchor multiplicity is not identity
-            # ambiguity: accept only one unique provider procedure identity and
-            # require it to equal the procedure-row identity.
+            # Repeated anchors are allowed only for one unique procedure identity.
             provider_ids = {provider for _, provider in asset_urls}
             if not provider_ids:
                 raise VertradesCardError("missing_div_lot_url")
@@ -474,8 +470,7 @@ def _parse_div_catalogue(
             if provider_id != procedure_provider:
                 raise VertradesCardError("div_catalogue_procedure_lot_identity_mismatch")
 
-            # Use the procedure-level canonical URL after the provider identity
-            # has been independently proved from the lot cell.
+            # Canonical detail URL is procedure-level after lot identity proof.
             detail_url = procedure_url
 
             source_status = _clean(status_node.get_text(" ", strip=True))
