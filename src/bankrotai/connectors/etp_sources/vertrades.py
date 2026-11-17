@@ -146,19 +146,18 @@ def _safe_catalogue_lot_url(href: str, *, lot_number: int) -> tuple[str, str]:
     canonical = parsed._replace(fragment="").geturl()
     return canonical, _provider_id(canonical)
 
-
 def _catalogue_money(value: str) -> float | None:
     match = _DECIMAL.fullmatch(value.strip())
     if not match:
         return None
     raw = re.sub(r"[\s\u00a0\u202f]", "", match.group(1))
-    if match.group(2): raw += "." + match.group(2)
+    if match.group(2):
+        raw += "." + match.group(2)
     try:
         amount = float(raw)
     except ValueError:
         return None
     return amount if 0 < amount < 1e15 else None
-
 
 def _catalogue_title_and_price(value: str) -> tuple[str, float]:
     text = _clean(value)
