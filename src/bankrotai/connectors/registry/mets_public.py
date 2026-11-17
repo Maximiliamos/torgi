@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import time
+import codecs
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urljoin, urlsplit
@@ -43,6 +44,7 @@ MAX_HTML_BYTES = 2_000_000
 # M-ETS trade may render many sibling/recommended lot views. Keep a separate
 # hard ceiling rather than weakening the catalogue response limit.
 MAX_DETAIL_HTML_BYTES = 6_000_000
+MAX_DETAIL_SCAN_BYTES = 32_000_000
 
 
 class MetsEvidenceError(ValueError):
@@ -62,15 +64,33 @@ class _BoundedDetailHtml(str):
 
 def _read_bounded_detail_html(
     response: requests.Response, *, limit: int = MAX_DETAIL_HTML_BYTES,
+    expected_sku: str | None = None,
 ) -> _BoundedDetailHtml:
-    """Read at most the configured byte limit from a streamed detail response."""
+    """Bound memory by the prefix/view cap and network by an independent scan cap."""
+    from bankrotai.connectors.registry.mets_stream import ExactMetsView
+
     body = bytearray()
     truncated = False
+    extractor = ExactMetsView(expected_sku, limit) if expected_sku else None
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    scanned = 0
     try:
         for chunk in response.iter_content(chunk_size=64 * 1024):
             if not chunk:
                 continue
+            scanned += len(chunk)
+            if extractor is not None:
+                if scanned > MAX_DETAIL_SCAN_BYTES:
+                    raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit")
+                extractor.feed(decoder.decode(chunk))
             remaining = limit - len(body)
+            if extractor is not None and scanned > limit:
+                truncated = True
+                if remaining > 0:
+                    body.extend(chunk[:remaining])
+                if extractor.result is not None:
+                    return _BoundedDetailHtml(extractor.result, truncated=True)
+                continue
             if remaining <= 0:
                 truncated = True
                 break
@@ -83,6 +103,9 @@ def _read_bounded_detail_html(
         close = getattr(response, "close", None)
         if callable(close):
             close()
+
+    if truncated and extractor is not None and extractor.saw_primary_view:
+        raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit: incomplete exact view")
 
     encoding = (
         getattr(response, "encoding", None)
@@ -341,7 +364,15 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         status_node.get_text(" ", strip=True) if status_node
         else text[:4000]
     )
-    if "Торги в стадии приема заявок" in source_status:
+    explicit_status = source_status.strip().casefold().replace("ё", "е")
+    if status_node is not None and explicit_status in {
+        "торги завершены", "торги состоялись", "торги не состоялись",
+        "торги отменены", "лот снят с торгов",
+    }:
+        status = "closed"
+    elif status_node is not None and explicit_status == "торги приостановлены":
+        status = "paused"
+    elif "Торги в стадии приема заявок" in source_status:
         status = "active"
     elif "Объявленные торги" in source_status:
         status = "scheduled"
@@ -569,7 +600,10 @@ class MetsPublicPilot:
                 raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
 
             if stream_detail:
-                html = _read_bounded_detail_html(response)
+                _canonical, trade, number = _host_lot_url(url)
+                html = _read_bounded_detail_html(
+                    response, expected_sku=f"{trade}-МЭТС-{number}",
+                )
                 if html._mets_truncated:
                     try:
                         # A large provider page is accepted only when the bounded
