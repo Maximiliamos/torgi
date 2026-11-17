@@ -1,4 +1,8 @@
 version: 2
+
+# TORGI is in active production stabilization. Dependabot is intentionally
+# security-first: routine version bumps stay disabled to avoid unrelated PR
+# churn while security updates remain available and grouped per ecosystem.
 updates:
   - package-ecosystem: pip
     directory: /
@@ -7,13 +11,13 @@ updates:
       day: monday
       time: "06:00"
       timezone: Europe/Moscow
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    # 0 disables routine version-update PRs, not Dependabot security updates.
+    open-pull-requests-limit: 0
     groups:
-      python-minor-patch:
-        update-types: ["minor", "patch"]
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /WEB
@@ -22,13 +26,12 @@ updates:
       day: monday
       time: "06:20"
       timezone: Europe/Moscow
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
     groups:
-      web-minor-patch:
-        update-types: ["minor", "patch"]
+      web-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -37,10 +40,9 @@ updates:
       day: monday
       time: "06:40"
       timezone: Europe/Moscow
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 0
     groups:
-      actions-minor-patch:
-        update-types: ["minor", "patch"]
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"

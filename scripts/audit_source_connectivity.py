@@ -16,19 +16,32 @@ from bankrotai.connectors.registry import connector_registry
 from bankrotai.services.ingestion import default_source_specs
 
 
+def _failed(source_id: str, started: float, exc: Exception, stage: str) -> dict[str, Any]:
+    return {
+        "source": source_id,
+        "status": "failed",
+        "failure_stage": stage,
+        "error_type": type(exc).__name__,
+        "error": str(exc)[:500],
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+
+
 async def audit_source(source_id: str, filters: Any, timeout: float) -> dict[str, Any]:
-    connector = connector_registry.create(source_id)
     started = time.perf_counter()
+    try:
+        connector = connector_registry.create(source_id)
+    except Exception as exc:
+        # Connector construction can legitimately require operator-only runtime
+        # state (for example a TBankrot browser-session cookie file). One source
+        # must never abort the read-only audit of every other configured source.
+        return _failed(source_id, started, exc, "connector_init")
+
     try:
         page = await asyncio.wait_for(connector.search(filters), timeout=timeout)
     except Exception as exc:  # evidence command must report every source independently
-        return {
-            "source": source_id,
-            "status": "failed",
-            "error_type": type(exc).__name__,
-            "error": str(exc)[:500],
-            "elapsed_seconds": round(time.perf_counter() - started, 3),
-        }
+        return _failed(source_id, started, exc, "search")
+
     metadata = dict(page.metadata)
     return {
         "source": source_id,

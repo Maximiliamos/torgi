@@ -16,6 +16,7 @@ from typing import Callable
 import requests
 from bankrotai.connectors.etp_sources.vertrades import (
     CATALOGUE_URL,
+    _MAX_CATALOGUE_PROPERTY_LOTS,
     _vertrades_status,
     catalogue_structure_summary,
     catalogue_page_url,
@@ -114,7 +115,11 @@ def _scan_pass(
         if page == 1:
             filter_form = _filter_form_contract(response.content)
 
-        lots = parse_catalogue_page(response.content, page=page)
+        lots = parse_catalogue_page(
+            response.content,
+            page=page,
+            limit=_MAX_CATALOGUE_PROPERTY_LOTS,
+        )
         ids = {lot.external_id for lot in lots}
         if not ids:
             structure: dict[str, object] = {
