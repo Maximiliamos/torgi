@@ -68,7 +68,7 @@ def _div_procedure(
             f"<p class='contests-lot-number'>{lot_number}</p>"
             "<p class='contests-count'>synthetic owner</p>"
             "<p class='contests_lot'>"
-            f"<a href='/showTrades?id={provider}'>ЛОТ№{lot_number}(1/1) {title}</a>"
+            f"<a href='/showTrades?id={provider}#lot-{lot_number}'>ЛОТ№{lot_number}(1/1) {title}</a>"
             f"<span>{price}</span>"
             "</p>"
             "</div>"
@@ -306,7 +306,7 @@ def test_current_div_catalogue_never_silently_truncates_property_rows() -> None:
 
 def test_current_div_catalogue_skips_non_property_without_valid_lot_url() -> None:
     html = _div_catalogue().replace(
-        "href='/showTrades?id=102288306'>ЛОТ№2",
+        "href='/showTrades?id=102288306#lot-2'>ЛОТ№2",
         "href='/not-a-lot'>ЛОТ№2",
         1,
     )
@@ -321,8 +321,19 @@ def test_current_div_catalogue_skips_non_property_without_valid_lot_url() -> Non
 
 def test_current_div_catalogue_property_without_valid_lot_url_fails_closed() -> None:
     html = _div_catalogue().replace(
-        "href='/showTrades?id=102288306'>ЛОТ№1",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1",
         "href='/not-a-lot'>ЛОТ№1",
+        1,
+    )
+
+    with pytest.raises(VertradesCardError, match="missing_div_lot_url"):
+        parse_catalogue_page(html)
+
+
+def test_current_div_catalogue_rejects_wrong_lot_fragment() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1",
+        "href='/showTrades?id=102288306#lot-999'>ЛОТ№1",
         1,
     )
 
@@ -332,9 +343,9 @@ def test_current_div_catalogue_property_without_valid_lot_url_fails_closed() -> 
 
 def test_current_div_catalogue_deduplicates_repeated_same_procedure_links() -> None:
     html = _div_catalogue().replace(
-        "href='/showTrades?id=102288306'>ЛОТ№1",
-        "href='/showTrades?id=102288306'>ЛОТ№1</a>"
-        "<a href='/showTrades?id=102288306'>повторная ссылка",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1</a>"
+        "<a href='/showTrades?id=102288306#lot-1'>повторная ссылка",
         1,
     )
 
@@ -346,9 +357,9 @@ def test_current_div_catalogue_deduplicates_repeated_same_procedure_links() -> N
 
 def test_current_div_catalogue_fails_closed_on_multiple_provider_ids_in_one_lot() -> None:
     html = _div_catalogue().replace(
-        "href='/showTrades?id=102288306'>ЛОТ№1",
-        "href='/showTrades?id=102288306'>ЛОТ№1</a>"
-        "<a href='/showTrades?id=999999999'>другая процедура",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1</a>"
+        "<a href='/showTrades?id=999999999#lot-1'>другая процедура",
         1,
     )
 
@@ -358,8 +369,8 @@ def test_current_div_catalogue_fails_closed_on_multiple_provider_ids_in_one_lot(
 
 def test_current_div_catalogue_fails_closed_on_procedure_lot_identity_mismatch() -> None:
     html = _div_catalogue().replace(
-        "href='/showTrades?id=102288306'>ЛОТ№1",
-        "href='/showTrades?id=999999999'>ЛОТ№1",
+        "href='/showTrades?id=102288306#lot-1'>ЛОТ№1",
+        "href='/showTrades?id=999999999#lot-1'>ЛОТ№1",
         1,
     )
     with pytest.raises(VertradesCardError, match="procedure_lot_identity_mismatch"):
