@@ -650,3 +650,258 @@ def test_mets_address_location_uses_shared_property_evidence() -> None:
         "ул. Тестовая, д. 10"
     )
 
+def test_detail_html_has_separate_bounded_size_ceiling(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    assert mod.MAX_HTML_BYTES == 2_000_000
+    assert mod.MAX_DETAIL_HTML_BYTES == 6_000_000
+
+    class SizedSession:
+        def __init__(self, size):
+            self.size = size
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append(url)
+            return Response("x" * self.size)
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    observed_live_size = 2_200_000
+    session = SizedSession(observed_live_size)
+    html = MetsPublicPilot(session=session)._get(URL)
+    assert len(html.encode("utf-8")) == observed_live_size
+    assert session.calls == [MIRROR_URL]
+
+    too_large = SizedSession(mod.MAX_DETAIL_HTML_BYTES + 1)
+    with pytest.raises(MetsEvidenceError, match="detail HTML page exceeds safety limit"):
+        MetsPublicPilot(session=too_large)._get(URL)
+    assert too_large.calls == [MIRROR_URL]
+
+
+def test_catalogue_html_keeps_stricter_two_mb_ceiling(monkeypatch):
+    import bankrotai.connectors.registry.mets_public as mod
+
+    class SizedCatalogueSession:
+        def get(self, url, **kwargs):
+            assert url == APARTMENTS_URL
+            return Response("x" * (mod.MAX_HTML_BYTES + 1))
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(MetsEvidenceError, match="catalogue HTML page exceeds safety limit"):
+        MetsPublicPilot(session=SizedCatalogueSession())._get(APARTMENTS_URL)
+
+
+
+def test_real_requests_session_streams_only_bounded_verified_detail_prefix(monkeypatch):
+    import requests
+
+    import bankrotai.connectors.registry.mets_public as mod
+
+    prefix = (
+        '<html><body><div class="lot-container">'
+        '<meta itemprop="sku" content="240512-МЭТС-1">'
+        '<h2 class="lot-title">Земельный участок</h2>'
+        '<div class="lot-cost-item"><div class="value">22 500 000 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Объявленные торги</div></div>'
+        '<span itemprop="description">Кадастровый номер: 48:20:0021101:37</span>'
+        '</div></body></html>'
+    ).encode("utf-8")
+    body = prefix + b"x" * (mod.MAX_DETAIL_HTML_BYTES + 500_000)
+
+    class StreamedResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        encoding = "utf-8"
+
+        def __init__(self, payload):
+            self.payload = payload
+            self.closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            for offset in range(0, len(self.payload), chunk_size):
+                yield self.payload[offset: offset + chunk_size]
+
+        def close(self):
+            self.closed = True
+
+    class StreamingSession(requests.Session):
+        def __init__(self, payload):
+            super().__init__()
+            self.payload = payload
+            self.calls = []
+            self.responses = []
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            response = StreamedResponse(self.payload)
+            self.responses.append(response)
+            return response
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    session = StreamingSession(body)
+    html = MetsPublicPilot(session=session)._get(URL)
+
+    assert session.calls[0][0] == MIRROR_URL
+    assert session.calls[0][1]["stream"] is True
+    assert len(html.encode("utf-8")) == mod.MAX_DETAIL_HTML_BYTES
+    assert getattr(html, "_mets_truncated", False) is True
+    assert session.responses[0].closed is True
+
+    lot = parse_mets_lot(html, URL)
+    assert lot.external_id == "240512-1"
+    assert lot.start_price == 22_500_000
+    assert lot.cadastral_number == "48:20:0021101:37"
+    assert lot.raw_data["detail_html_truncated"] is True
+
+
+def test_streamed_oversized_detail_without_exact_lot_in_prefix_fails_closed(monkeypatch):
+    import requests
+
+    import bankrotai.connectors.registry.mets_public as mod
+
+    body = (
+        b"x" * mod.MAX_DETAIL_HTML_BYTES
+        + '<div class="lot-container"><meta itemprop="sku" '
+        'content="240512-МЭТС-1"><h2>Земельный участок</h2></div>'
+        .encode("utf-8")
+    )
+
+    class StreamedResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        encoding = "utf-8"
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            for offset in range(0, len(body), chunk_size):
+                yield body[offset: offset + chunk_size]
+
+        def close(self):
+            return None
+
+    class StreamingSession(requests.Session):
+        def get(self, url, **kwargs):
+            assert kwargs["stream"] is True
+            return StreamedResponse()
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(
+        MetsEvidenceError,
+        match="detail HTML page exceeds safety limit",
+    ):
+        MetsPublicPilot(session=StreamingSession())._get(URL)
+
+
+def test_truncated_detail_does_not_use_unscoped_document_fallbacks():
+    import bankrotai.connectors.registry.mets_public as mod
+
+    html = mod._BoundedDetailHtml(
+        (
+            '<html><body><div class="lot-container">'
+            '<meta itemprop="sku" content="240512-МЭТС-1">'
+            '<h2 class="lot-title">Квартира</h2>'
+            '<div class="lot-cost-item"><div class="value">22 500 000 ₽</div>'
+            '<div class="title">Начальная цена</div></div>'
+            '<div class="lot-cost-item status"><div class="lot-status-name">'
+            'Объявленные торги</div></div>'
+            '<div>Проверенная карточка объекта недвижимости с достаточным '
+            'объемом основного текста внутри целевого lot-container.</div>'
+            '</div>'
+            '<span itemprop="description">'
+            'Кадастровый номер: 48:20:0021101:37'
+            '</span>'
+        ),
+        truncated=True,
+    )
+
+    lot = parse_mets_lot(html, URL)
+
+    assert lot.external_id == "240512-1"
+    assert lot.cadastral_number is None
+    assert lot.description != "Кадастровый номер: 48:20:0021101:37"
+    assert lot.raw_data["detail_html_truncated"] is True
+
+
+def test_truncated_detail_with_visible_identity_but_without_scoped_sku_fails_closed():
+    import bankrotai.connectors.registry.mets_public as mod
+
+    html = mod._BoundedDetailHtml(
+        (
+            '<html><head><title>Lot 240512-METS-1</title></head><body>'
+            '<div>Идентификационный номер: 240512-МЭТС-1</div>'
+            '<h2 class="lot-title">Земельный участок</h2>'
+            '<div class="lot-cost-item"><div class="value">22 500 000 ₽</div>'
+            '<div class="title">Начальная цена</div></div>'
+            '<div class="lot-cost-item status"><div class="lot-status-name">'
+            'Объявленные торги</div></div>'
+            '<div>Проверенная карточка объекта недвижимости с достаточным '
+            'объемом видимого текста, но без scoped schema SKU.</div>'
+            '</body></html>'
+        ),
+        truncated=True,
+    )
+
+    with pytest.raises(MetsEvidenceError, match="exact scoped SKU"):
+        parse_mets_lot(html, URL)
+
+
+def test_streamed_exact_scoped_sku_after_old_three_mb_frontier_is_accepted(monkeypatch):
+    import requests
+    import bankrotai.connectors.registry.mets_public as mod
+
+    target = (
+        '<div class="lot-container">'
+        '<meta itemprop="sku" content="240512-МЭТС-1">'
+        '<h2 class="lot-title">Земельный участок</h2>'
+        '<span itemprop="description">Кадастровый номер: 48:20:0021101:37</span>'
+        '<div class="lot-cost-item"><div class="value">22 500 000 ₽</div>'
+        '<div class="title">Начальная цена</div></div>'
+        '<div class="lot-cost-item status"><div class="lot-status-name">'
+        'Объявленные торги</div></div>'
+        '</div>'
+    ).encode("utf-8")
+
+    prefix = b"x" * 4_700_000
+    body = prefix + target
+    body += b"x" * (mod.MAX_DETAIL_HTML_BYTES + 200_000 - len(body))
+
+    class StreamedResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        encoding = "utf-8"
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            for offset in range(0, len(body), chunk_size):
+                yield body[offset: offset + chunk_size]
+
+        def close(self):
+            return None
+
+    class StreamingSession(requests.Session):
+        def get(self, url, **kwargs):
+            assert kwargs["stream"] is True
+            return StreamedResponse()
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+
+    html = MetsPublicPilot(session=StreamingSession())._get(URL)
+    assert getattr(html, "_mets_truncated", False) is True
+    assert len(html.encode("utf-8")) == mod.MAX_DETAIL_HTML_BYTES
+
+    lot = parse_mets_lot(html, URL)
+    assert lot.external_id == "240512-1"
+    assert lot.start_price == 22_500_000
+    assert lot.cadastral_number == "48:20:0021101:37"

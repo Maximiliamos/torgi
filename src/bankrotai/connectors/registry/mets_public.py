@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import time
+import codecs
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urljoin, urlsplit
@@ -39,10 +40,83 @@ CADASTRE = re.compile(r"(?<!\d)(\d{2}:\d{1,3}:\d{5,9}:\d{1,9})(?!\d)")
 PRICE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,12})(?:[,\.](\d{1,2}))?\s*₽")
 DATE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})")
 MAX_HTML_BYTES = 2_000_000
+# Detail pages can legitimately exceed the catalogue cap because one verified
+# M-ETS trade may render many sibling/recommended lot views. Keep a separate
+# hard ceiling rather than weakening the catalogue response limit.
+MAX_DETAIL_HTML_BYTES = 6_000_000
+MAX_DETAIL_SCAN_BYTES = 32_000_000
 
 
 class MetsEvidenceError(ValueError):
     """Missing or inconsistent public M-ETS evidence; fail closed."""
+
+
+class _BoundedDetailHtml(str):
+    """A detail prefix that records whether the provider response was truncated."""
+
+    _mets_truncated: bool
+
+    def __new__(cls, value: str, *, truncated: bool) -> "_BoundedDetailHtml":
+        obj = super().__new__(cls, value)
+        obj._mets_truncated = truncated
+        return obj
+
+
+def _read_bounded_detail_html(
+    response: requests.Response, *, limit: int = MAX_DETAIL_HTML_BYTES,
+    expected_sku: str | None = None,
+) -> _BoundedDetailHtml:
+    """Bound memory by the prefix/view cap and network by an independent scan cap."""
+    from bankrotai.connectors.registry.mets_stream import ExactMetsView
+
+    body = bytearray()
+    truncated = False
+    extractor = ExactMetsView(expected_sku, limit) if expected_sku else None
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    scanned = 0
+    try:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            scanned += len(chunk)
+            if extractor is not None:
+                if scanned > MAX_DETAIL_SCAN_BYTES:
+                    raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit")
+                extractor.feed(decoder.decode(chunk))
+            remaining = limit - len(body)
+            if extractor is not None and scanned > limit:
+                truncated = True
+                if remaining > 0:
+                    body.extend(chunk[:remaining])
+                if extractor.result is not None:
+                    return _BoundedDetailHtml(extractor.result, truncated=True)
+                continue
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) > remaining:
+                body.extend(chunk[:remaining])
+                truncated = True
+                break
+            body.extend(chunk)
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    if truncated and extractor is not None and extractor.saw_primary_view:
+        raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit: incomplete exact view")
+
+    encoding = (
+        getattr(response, "encoding", None)
+        or requests.utils.get_encoding_from_headers(response.headers)
+        or "utf-8"
+    )
+    try:
+        text = bytes(body).decode(encoding, errors="replace")
+    except LookupError:
+        text = bytes(body).decode("utf-8", errors="replace")
+    return _BoundedDetailHtml(text, truncated=truncated)
 
 
 def _host_lot_url(url: str) -> tuple[str, str, str]:
@@ -130,6 +204,7 @@ def _date_after_label(text: str, label: str) -> datetime | None:
 def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     """Build one evidence-backed source lot; never infer terminal status."""
     canonical, trade, lot_number = _host_lot_url(url)
+    truncated_detail = bool(getattr(html, "_mets_truncated", False))
     if is_detail_placeholder(html):
         raise MetsEvidenceError("M-ETS detail placeholder/interstitial")
     soup = BeautifulSoup(html, "html.parser")
@@ -140,6 +215,16 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     matching_skus = [node for node in sku_nodes if node.get("content") == expected_sku]
     if sku_nodes and len(matching_skus) != 1:
         raise MetsEvidenceError("Page SKU contradicts URL or is ambiguous")
+    if (
+        truncated_detail
+        and (
+            len(matching_skus) != 1
+            or matching_skus[0].find_parent(class_="lot-container") is None
+        )
+    ):
+        raise MetsEvidenceError(
+            "Truncated M-ETS detail lacks exact scoped SKU evidence"
+        )
     scope = (
         matching_skus[0].find_parent(class_="lot-container")
         if matching_skus else None
@@ -147,9 +232,10 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     text = scope.get_text(" ", strip=True)
     if len(text) < 80:
         raise MetsEvidenceError("M-ETS lot page is empty or script-only")
-    if expected_sku not in text and (
-        f"Идентификационный номер: {expected_sku}" not in text
-    ):
+    # A single exact SKU inside its lot container is independent identity evidence:
+    # the provider sometimes renders the human-readable identifier outside it.
+    # For legacy/unscoped pages, continue requiring the ID in visible text.
+    if expected_sku not in text and (not matching_skus or scope is soup):
         raise MetsEvidenceError("Page has no matching M-ETS trade/lot identifier")
 
     # Real M-ETS h2.lot-title includes collapsed UI text "еще".
@@ -169,7 +255,12 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # The first 4k characters of saved HTML are login/crypto dialogs.
     # Read only the primary lot panel so recommended cards cannot overwrite it.
     primary_description = scope.select_one('[itemprop="description"]')
-    if primary_description is None and scope is not soup and len(sku_nodes) == 1:
+    if (
+        not truncated_detail
+        and primary_description is None
+        and scope is not soup
+        and len(sku_nodes) == 1
+    ):
         # Official November 2026 HTML puts the primary detail description
         # OUTSIDE .lot-container, although the verified SKU/title/price/status
         # remain inside. Never borrow a description from another lot or a
@@ -187,13 +278,49 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     # Legacy compact HTML may lack schema.org description. Fall back to
     # text only when there are no recommendation cards to misattribute.
     cadastral_scope = title + " " + description
-    if not primary_description and not scope.select("a.card-item"):
+    if (
+        not truncated_detail
+        and not primary_description
+        and not scope.select("a.card-item")
+        and (scope is not soup or not soup.select(".generalview-container"))
+    ):
+        # A legacy unscoped page may use text-only evidence, but it must not
+        # borrow cadastres from separately rendered property recommendation views.
         cadastral_scope = text[:4000]
     # A single M-ETS lot can contain both land and buildings, each with a
     # distinct cadastre. Retain all *uniquely observed* numbers from the verified
     # main description; cadastral_number remains a legacy representative,
     # never proof that a multi-object lot has only one property.
     cadastral_numbers = list(dict.fromkeys(CADASTRE.findall(cadastral_scope)))
+
+    # Modern M-ETS detail pages place cadastral evidence outside .lot-container,
+    # in a sibling .lot-info-block within the SAME .generalview-container.
+    # Recommendations have their own views (often under <noindex>) and must
+    # never supply fields for the verified primary lot.
+    if matching_skus and scope is not soup:
+        primary_view = matching_skus[0].find_parent(class_="generalview-container")
+        if primary_view is not None and primary_view.find_parent("noindex") is None:
+            view_skus = primary_view.select('[itemprop="sku"][content]')
+            view_lots = primary_view.select(".lot-container")
+            if (
+                len(view_skus) == 1
+                and view_skus[0] is matching_skus[0]
+                and len(view_lots) == 1
+                and view_lots[0] is scope
+            ):
+                for marker in primary_view.select(
+                    ".lot-info-block.info-type_1 .kad_num .kn_span"
+                ):
+                    if (
+                        marker.find_parent(class_="generalview-container") is not primary_view
+                        or marker.find_parent("noindex") is not None
+                        or marker.find_parent(class_="card-item") is not None
+                    ):
+                        continue
+                    for number in CADASTRE.findall(marker.get_text(" ", strip=True)):
+                        if number not in cadastral_numbers:
+                            cadastral_numbers.append(number)
+
     cadastral = cadastral_numbers[0] if cadastral_numbers else None
     summary_nodes = scope.select(".lot-cost-item")
     initial = None
@@ -237,7 +364,15 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         status_node.get_text(" ", strip=True) if status_node
         else text[:4000]
     )
-    if "Торги в стадии приема заявок" in source_status:
+    explicit_status = source_status.strip().casefold().replace("ё", "е")
+    if status_node is not None and explicit_status in {
+        "торги завершены", "торги состоялись", "торги не состоялись",
+        "торги отменены", "лот снят с торгов",
+    }:
+        status = "closed"
+    elif status_node is not None and explicit_status == "торги приостановлены":
+        status = "paused"
+    elif "Торги в стадии приема заявок" in source_status:
         status = "active"
     elif "Объявленные торги" in source_status:
         status = "scheduled"
@@ -256,6 +391,23 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         or _date_after_label(date_source, "Подведение итогов")
     )
     category = classify_category(title, (title + " " + description)[:3000] or text[:3000])
+    # The shared classifier checks car/transport vocabulary first. On real
+    # M-ETS property listings this vocabulary can occur only in disclosure
+    # text (e.g. access roads), incorrectly suppressing a verified property.
+    # Override ONLY a car result when the specific lot's trusted title names
+    # property AND the same verified lot has cadastral evidence. A car title
+    # and vague/mixed titles remain fail-closed.
+    title_category = classify_category(title, "")
+    if (
+        category == "car"
+        and cadastral_numbers
+        and title_category in {
+            "apartment", "house", "land", "parking", "commercial_room",
+            "commercial_building", "commercial_building_with_land",
+            "unfinished", "complex", "real_estate",
+        }
+    ):
+        category = title_category
     address = extract_asset_property_address(
         title=title,
         description=description,
@@ -290,7 +442,12 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             image_url = urljoin(DETAIL_MIRROR + "/", raw_image)
             if image_url not in image_urls:
                 image_urls.append(image_url)
-    if not image_urls and scope is not soup and len(sku_nodes) == 1:
+    if (
+        not truncated_detail
+        and not image_urls
+        and scope is not soup
+        and len(sku_nodes) == 1
+    ):
         # The official page may render its gallery outside .lot-container,
         # just like its primary description.  With one independently verified
         # SKU it is safe to inspect only gallery/photo-shaped nodes outside
@@ -352,6 +509,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
             "image_urls": image_urls,
             "mentions_pledge": ("залоге" in description.lower() or "залог" in description.lower()),
             "complete_search_pagination": False,
+            "detail_html_truncated": truncated_detail,
         },
         application_deadline=deadline,
         auction_at=auction_at,
@@ -372,68 +530,73 @@ class MetsPublicPilot:
     def _get(
         self, url: str, *, before_request: Callable[[str], None] | None = None,
     ) -> str:
-        # The catalogue stays on m-ets.ru. Detail reads prefer the historical
-        # meetings mirror, but November 2026 production evidence shows that the
-        # mirror can return the same HTTP-200 spinner placeholder for every lot.
-        # In that exact case only, retry the same verified trade/lot identity on
-        # canonical m-ets.ru; redirects and identity/schema contradictions still
-        # fail closed.
-        request_urls = (
-            (url,) if url == APARTMENTS_URL else detail_request_candidates(url)
-        )
+        detail = url != APARTMENTS_URL
+        candidates: tuple[str, ...] = detail_request_candidates(url) if detail else (url,)
+        if detail and time.monotonic() < getattr(self, "_mirror_placeholder_until", 0.0):
+            candidates = tuple(value for value in candidates if urlsplit(value).netloc != "meetings.m-ets.ru")
         placeholder_seen = False
-        for request_url in request_urls:
-            if self._last_request_at is not None:
-                remaining = 0.5 - (time.monotonic() - self._last_request_at)
-                if remaining > 0:
-                    time.sleep(remaining)
-            self._last_request_at = time.monotonic()
-            response = None
+        for request_url in candidates:
             for delay in (0.5, 1.0, 2.0, None):
+                response = None
+                stream_detail = detail and isinstance(self.session, requests.Session)
                 try:
+                    if self._last_request_at is not None:
+                        remaining = 0.5 - (time.monotonic() - self._last_request_at)
+                        if remaining > 0:
+                            time.sleep(remaining)
+                    self._last_request_at = time.monotonic()
                     if before_request is not None:
                         before_request(request_url)
-                    response = self.session.get(
-                        request_url,
-                        timeout=(5, 20),
-                        allow_redirects=False,
-                        headers={
-                            "User-Agent": "TORGI-source-quality-pilot/0.1",
-                            "Accept": "text/html",
-                        },
-                    )
-                except (
-                    requests.Timeout,
-                    requests.ConnectionError,
-                    requests.exceptions.ChunkedEncodingError,
-                ):
+                    kwargs = {
+                        "timeout": (5, 20), "allow_redirects": False,
+                        "headers": {"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
+                    }
+                    if stream_detail:
+                        kwargs["stream"] = True
+                    response = self.session.get(request_url, **kwargs)
+                    if response.status_code in {401, 403, 429}:
+                        response.raise_for_status()
+                        raise MetsEvidenceError("M-ETS provider access explicitly refused")
+                    if 500 <= response.status_code <= 504:
+                        if delay is None:
+                            response.raise_for_status()
+                            raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
+                        time.sleep(delay)
+                        continue
+                    response.raise_for_status()
+                    if 300 <= response.status_code < 400:
+                        raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
+                    if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
+                        raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
+                    if stream_detail:
+                        _canonical, trade, number = _host_lot_url(url)
+                        html = _read_bounded_detail_html(response, expected_sku=f"{trade}-МЭТС-{number}")
+                        if html._mets_truncated:
+                            try:
+                                parse_mets_lot(html, url)
+                            except MetsEvidenceError as exc:
+                                raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit") from exc
+                    else:
+                        limit = MAX_DETAIL_HTML_BYTES if detail else MAX_HTML_BYTES
+                        if len(response.content) > limit:
+                            kind = "detail" if detail else "catalogue"
+                            raise MetsEvidenceError(f"M-ETS {kind} HTML page exceeds safety limit")
+                        html = response.text
+                    if detail and is_detail_placeholder(html):
+                        placeholder_seen = True
+                        if urlsplit(request_url).netloc == "meetings.m-ets.ru":
+                            # A fresh, short-lived observation avoids repeatedly downloading
+                            # the same HTTP-200 spinner for every exact lot in this worker.
+                            self._mirror_placeholder_until = time.monotonic() + 60.0
+                        break
+                    return html
+                except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
                     if delay is None:
                         raise
                     time.sleep(delay)
-                    continue
-                if response.status_code in {401, 403, 429}:
-                    response.raise_for_status()
-                    raise MetsEvidenceError("M-ETS provider access explicitly refused")
-                if 500 <= response.status_code <= 504:
-                    if delay is None:
-                        response.raise_for_status()
-                        raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
-                    time.sleep(delay)
-                    continue
-                break
-            if response is None:
-                raise RuntimeError("M-ETS request retry loop exhausted")
-            response.raise_for_status()
-            if 300 <= response.status_code < 400:
-                raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
-            if len(response.content) > MAX_HTML_BYTES:
-                raise MetsEvidenceError("M-ETS HTML page exceeds safety limit")
-            if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
-                raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
-            if url != APARTMENTS_URL and is_detail_placeholder(response.text):
-                placeholder_seen = True
-                continue
-            return response.text
+                finally:
+                    if response is not None and stream_detail:
+                        response.close()
         if placeholder_seen:
             raise MetsEvidenceError("M-ETS detail placeholder/interstitial")
         raise MetsEvidenceError("M-ETS detail page unavailable")
