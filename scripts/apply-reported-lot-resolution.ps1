@@ -61,13 +61,14 @@ with SessionLocal() as session:
   delete_ids=[row.id for row in rows if row.review_status is not None]
   repair_ids={row.id for row in rows if row.review_status is None}
   states=repair_states=None
- result={'apply':p['apply'],'remove':remove(session,lot_ids=delete_ids,apply=False),
+ empty_removal={'apply':p['apply'],'selected':0,'deleted_lots':0,'items':[]}
+ result={'apply':p['apply'],'remove':remove(session,lot_ids=delete_ids,apply=False) if delete_ids else empty_removal,
          'repair':repair(session,evidence=[item for item in p['evidence'] if item['lot_id'] in repair_ids])}
  if p['apply']:
   # Validate both cohorts before committing a single atomic transaction.
   result['repair']=repair(session,evidence=[item for item in p['evidence'] if item['lot_id'] in repair_ids],
                           apply=True,expected_states=repair_states)
-  result['remove']=remove(session,lot_ids=delete_ids,apply=True,expected_states=states)
+  result['remove']=remove(session,lot_ids=delete_ids,apply=True,expected_states=states) if delete_ids else empty_removal
   if p['rollback_only']:
    session.rollback()
    result['committed']=False

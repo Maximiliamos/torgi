@@ -13,11 +13,12 @@ from sqlalchemy import select, func
 from bankrotai.db import CanonicalLot, GeoFailure, LotIssueReport, ProcessedLot, SourceLot, utc_now
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import _sync_source_lot, apply_lot_status, log_action
+from bankrotai.regions import REGIONS_BY_CODE
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 
 SOURCE_FIELDS = (
-    "title", "description", "category", "address", "cadastral_number", "start_price",
+    "title", "description", "category", "address", "cadastral_number", "region_slug", "region_name", "detail_level", "start_price",
     "current_price", "auction_status", "application_start_at", "application_deadline",
     "auction_at", "auction_timezone", "deposit_amount", "deposit_percent", "auction_type",
     "public_offer_schedule", "next_interval_price", "next_price_reduction_at",
@@ -33,6 +34,11 @@ def decode_lot(payload: dict) -> NormalizedLot:
         if isinstance(values.get(key), str):
             values[key] = datetime.fromisoformat(values[key])
     values["auction_timezone"] = "Europe/Moscow"
+    cadastral = str(values.get("cadastral_number") or "")
+    region = cadastral.split(":", 1)[0] if ":" in cadastral else None
+    if region in REGIONS_BY_CODE:
+        values["region_slug"] = values.get("region_slug") or region
+        values["region_name"] = values.get("region_name") or REGIONS_BY_CODE[region].name
     return NormalizedLot(**values)
 
 
@@ -91,6 +97,7 @@ def repair_reported_lots(
         if apply and (expected_states is None or expected_states.get(lot_id) != state):
             raise ValueError(f"Repair preview is stale: {lot_id}")
         observed = set(lot.raw_data.get("repair_observed_fields", SOURCE_FIELDS))
+        observed.update(name for name in ("region_slug", "region_name", "detail_level") if getattr(lot, name) is not None)
         observed &= set(SOURCE_FIELDS)
         changes = {}
         for name in SOURCE_FIELDS:
@@ -100,6 +107,8 @@ def repair_reported_lots(
             value = getattr(lot, name)
             if _plain(current) != _plain(value):
                 changes[name] = {"before": _plain(current), "after": _plain(value)}
+        if lot.auction_status == "closed" and not record.is_archived:
+            changes["is_archived"] = {"before": False, "after": True}
         protected = record.review_status is not None and not allow_reviewed_source_fields
         entry = {"lot_id": lot_id, "source_system": lot.source_system, "external_id": lot.external_id,
                  "review_status": record.review_status, "protected": protected, "expected_state": state,
@@ -142,6 +151,10 @@ def repair_reported_lots(
         assert canonical is not None
         canonical.category = lot.category
         record.last_update = utc_now()
+        if lot.auction_status == "closed":
+            record.is_archived = True
+            record.closed_at = record.closed_at or utc_now()
+            record.archived_at = record.archived_at or utc_now()
         if entry["exclude_from_property_map"]:
             record.is_archived = source.is_archived = True
             source.is_active = False

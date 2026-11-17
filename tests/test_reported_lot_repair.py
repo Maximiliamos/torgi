@@ -116,3 +116,18 @@ def test_orphaned_exact_source_is_relinked_without_duplicate_source_rows():
     session.flush()
     assert source.processed_lot_id == record.id
     assert session.scalar(select(func.count()).select_from(SourceLot)) == 1
+
+
+def test_preexisting_closed_status_repairs_inconsistent_archive_flags():
+    session, record, evidence = fixture()
+    record.auction_status = "closed"
+    record.is_archived = False
+    session.commit()
+    evidence[0]["normalized"].update(auction_status="closed", region_slug=None, region_name=None)
+    preview = repair_reported_lots(session, evidence=evidence)
+    states = {item["lot_id"]: item["expected_state"] for item in preview["items"]}
+    repair_reported_lots(session, evidence=evidence, expected_states=states, apply=True)
+    session.flush()
+    source = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == record.id))
+    assert record.is_archived and source.is_archived and not source.is_active
+    assert record.region_code == "76" and record.region_name == "Ярославская область"
