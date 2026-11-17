@@ -530,104 +530,73 @@ class MetsPublicPilot:
     def _get(
         self, url: str, *, before_request: Callable[[str], None] | None = None,
     ) -> str:
-        # The catalogue stays on m-ets.ru. Detail reads prefer the historical
-        # meetings mirror, but November 2026 production evidence shows that the
-        # mirror can return the same HTTP-200 spinner placeholder for every lot.
-        # In that exact case only, retry the same verified trade/lot identity on
-        # canonical m-ets.ru; redirects and identity/schema contradictions still
-        # fail closed.
-        request_urls = (
-            (url,) if url == APARTMENTS_URL else detail_request_candidates(url)
-        )
+        detail = url != APARTMENTS_URL
+        candidates: tuple[str, ...] = detail_request_candidates(url) if detail else (url,)
+        if detail and time.monotonic() < getattr(self, "_mirror_placeholder_until", 0.0):
+            candidates = tuple(value for value in candidates if urlsplit(value).netloc != "meetings.m-ets.ru")
         placeholder_seen = False
-        for request_url in request_urls:
-            if self._last_request_at is not None:
-                remaining = 0.5 - (time.monotonic() - self._last_request_at)
-                if remaining > 0:
-                    time.sleep(remaining)
-            self._last_request_at = time.monotonic()
-            response = None
+        for request_url in candidates:
             for delay in (0.5, 1.0, 2.0, None):
+                response = None
+                stream_detail = detail and isinstance(self.session, requests.Session)
                 try:
+                    if self._last_request_at is not None:
+                        remaining = 0.5 - (time.monotonic() - self._last_request_at)
+                        if remaining > 0:
+                            time.sleep(remaining)
+                    self._last_request_at = time.monotonic()
                     if before_request is not None:
                         before_request(request_url)
-                    request_kwargs = {
-                        "timeout": (5, 20),
-                        "allow_redirects": False,
-                        "headers": {
-                            "User-Agent": "TORGI-source-quality-pilot/0.1",
-                            "Accept": "text/html",
-                        },
+                    kwargs = {
+                        "timeout": (5, 20), "allow_redirects": False,
+                        "headers": {"User-Agent": "TORGI-source-quality-pilot/0.1", "Accept": "text/html"},
                     }
-                    stream_detail = (
-                        url != APARTMENTS_URL
-                        and isinstance(self.session, requests.Session)
-                    )
                     if stream_detail:
-                        request_kwargs["stream"] = True
-                    response = self.session.get(request_url, **request_kwargs)
-                except (
-                    requests.Timeout,
-                    requests.ConnectionError,
-                    requests.exceptions.ChunkedEncodingError,
-                ):
+                        kwargs["stream"] = True
+                    response = self.session.get(request_url, **kwargs)
+                    if response.status_code in {401, 403, 429}:
+                        response.raise_for_status()
+                        raise MetsEvidenceError("M-ETS provider access explicitly refused")
+                    if 500 <= response.status_code <= 504:
+                        if delay is None:
+                            response.raise_for_status()
+                            raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
+                        time.sleep(delay)
+                        continue
+                    response.raise_for_status()
+                    if 300 <= response.status_code < 400:
+                        raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
+                    if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
+                        raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
+                    if stream_detail:
+                        _canonical, trade, number = _host_lot_url(url)
+                        html = _read_bounded_detail_html(response, expected_sku=f"{trade}-МЭТС-{number}")
+                        if html._mets_truncated:
+                            try:
+                                parse_mets_lot(html, url)
+                            except MetsEvidenceError as exc:
+                                raise MetsEvidenceError("M-ETS detail HTML page exceeds safety limit") from exc
+                    else:
+                        limit = MAX_DETAIL_HTML_BYTES if detail else MAX_HTML_BYTES
+                        if len(response.content) > limit:
+                            kind = "detail" if detail else "catalogue"
+                            raise MetsEvidenceError(f"M-ETS {kind} HTML page exceeds safety limit")
+                        html = response.text
+                    if detail and is_detail_placeholder(html):
+                        placeholder_seen = True
+                        if urlsplit(request_url).netloc == "meetings.m-ets.ru":
+                            # A fresh, short-lived observation avoids repeatedly downloading
+                            # the same HTTP-200 spinner for every exact lot in this worker.
+                            self._mirror_placeholder_until = time.monotonic() + 60.0
+                        break
+                    return html
+                except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
                     if delay is None:
                         raise
                     time.sleep(delay)
-                    continue
-                if response.status_code in {401, 403, 429}:
-                    response.raise_for_status()
-                    raise MetsEvidenceError("M-ETS provider access explicitly refused")
-                if 500 <= response.status_code <= 504:
-                    if stream_detail:
+                finally:
+                    if response is not None and stream_detail:
                         response.close()
-                    if delay is None:
-                        response.raise_for_status()
-                        raise MetsEvidenceError("M-ETS transient HTTP failure persisted")
-                    time.sleep(delay)
-                    continue
-                break
-            if response is None:
-                raise RuntimeError("M-ETS request retry loop exhausted")
-            response.raise_for_status()
-            if 300 <= response.status_code < 400:
-                if stream_detail:
-                    response.close()
-                raise MetsEvidenceError("Redirect from public M-ETS page; do not follow")
-            if "text/html" not in response.headers.get("Content-Type", "text/html").lower():
-                if stream_detail:
-                    response.close()
-                raise MetsEvidenceError("Expected HTML from M-ETS, not API or binary data")
-
-            if stream_detail:
-                _canonical, trade, number = _host_lot_url(url)
-                html = _read_bounded_detail_html(
-                    response, expected_sku=f"{trade}-МЭТС-{number}",
-                )
-                if html._mets_truncated:
-                    try:
-                        # A large provider page is accepted only when the bounded
-                        # prefix independently proves the exact requested lot.
-                        parse_mets_lot(html, url)
-                    except MetsEvidenceError as exc:
-                        raise MetsEvidenceError(
-                            "M-ETS detail HTML page exceeds safety limit"
-                        ) from exc
-            else:
-                response_limit = (
-                    MAX_HTML_BYTES if url == APARTMENTS_URL else MAX_DETAIL_HTML_BYTES
-                )
-                if len(response.content) > response_limit:
-                    kind = "catalogue" if url == APARTMENTS_URL else "detail"
-                    raise MetsEvidenceError(
-                        f"M-ETS {kind} HTML page exceeds safety limit"
-                    )
-                html = response.text
-
-            if url != APARTMENTS_URL and is_detail_placeholder(html):
-                placeholder_seen = True
-                continue
-            return html
         if placeholder_seen:
             raise MetsEvidenceError("M-ETS detail placeholder/interstitial")
         raise MetsEvidenceError("M-ETS detail page unavailable")
