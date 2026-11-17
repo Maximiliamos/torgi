@@ -129,6 +129,28 @@ def _safe_url(href: str) -> str:
     return absolute
 
 
+def _safe_catalogue_lot_url(
+    href: str, *, lot_number: int,
+) -> tuple[str, str]:
+    """Validate the provider's per-lot catalogue anchor and canonicalize it."""
+    absolute = urljoin(CATALOGUE_URL, href.strip())
+    parsed = urlsplit(absolute)
+    expected_fragment = f"lot-{lot_number}"
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != DETAIL_HOST
+        or parsed.port is not None
+        or parsed.username
+        or parsed.password
+        or parsed.path != "/showTrades"
+        or parsed.fragment != expected_fragment
+    ):
+        raise VertradesCardError("invalid_catalogue_lot_url")
+    canonical = parsed._replace(fragment="").geturl()
+    provider_id = _provider_id(canonical)
+    return canonical, provider_id
+
+
 def _catalogue_money(value: str) -> float | None:
     match = _DECIMAL.fullmatch(value.strip())
     if not match:
@@ -431,8 +453,10 @@ def _parse_div_catalogue(
             asset_urls: list[tuple[str, str]] = []
             for anchor in asset_node.select("a[href]"):
                 try:
-                    url = _safe_url(str(anchor.get("href") or ""))
-                    provider = _provider_id(url)
+                    url, provider = _safe_catalogue_lot_url(
+                        str(anchor.get("href") or ""),
+                        lot_number=lot_number,
+                    )
                 except VertradesCardError:
                     continue
                 asset_urls.append((url, provider))
