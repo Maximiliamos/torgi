@@ -181,9 +181,10 @@ jobs:
           # Production dependencies stay strict: any high/critical runtime finding fails CI.
           audit_with_retry --omit=dev --audit-level=high
 
-          # GHSA-vfj7-8cjw-p6xm currently has no patched braces release. It is
-          # reachable here only through dev tooling. Keep the full audit visible,
-          # but accept exactly this one advisory and fail closed on anything else.
+          # These two unpatched advisories are confined to development tooling.
+          # Vite/TypeScript/plugin-react are devDependencies; the production image
+          # serves only dist via nginx. Runtime audit above remains strict.
+          # See docs/npm-build-tooling-advisories-2026-11-17.md.
           full_audit=""
           full_status=0
           for attempt in 1 2 3; do
@@ -203,12 +204,12 @@ jobs:
             exit 0
           fi
           advisories="$(printf '%s\n' "$full_audit" | grep -oE 'GHSA-[a-z0-9-]+' | sort -u || true)"
-          unexpected="$(printf '%s\n' "$advisories" | grep -vx 'GHSA-vfj7-8cjw-p6xm' || true)"
-          if ! printf '%s\n' "$advisories" | grep -qx 'GHSA-vfj7-8cjw-p6xm' || test -n "$unexpected"; then
+          unexpected="$(printf '%s\n' "$advisories" | grep -vEx 'GHSA-vfj7-8cjw-p6xm|GHSA-fc5q-39xc-vjpf' || true)"
+          if test -z "$advisories" || test -n "$unexpected"; then
             echo "Unexpected high/critical npm advisory set: $advisories" >&2
             exit "$full_status"
           fi
-          echo "::warning::Allowing unpatched dev-only GHSA-vfj7-8cjw-p6xm; runtime npm audit is clean."
+          echo "::warning::Known unpatched build-tooling advisories: $advisories; runtime npm audit is clean."
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
