@@ -14,6 +14,9 @@ from bs4 import BeautifulSoup
 from bankrotai.domain import NormalizedLot
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
+from bankrotai.torgi_russia_detail_fields import (
+    collect_timeline_labels, detail_stage_fields, extract_detail_property_address, parse_detail_datetime,
+)
 from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_status import public_auction_status
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title, recovery_failure_code
@@ -577,16 +580,7 @@ class TorgiRussiaClient:
         )
         return records, metadata
 
-    @staticmethod
-    def _property_address_from_description(description: str) -> str | None:
-        normalized = re.sub(r"\s+", " ", description or "").strip()
-        match = re.search(
-            r"(?:по адресу|адрес(?: местонахождения)?)\s*:\s*(.+?)"
-            r"(?=\s*[,;]?\s*(?:К[\\/]?н|Кадастров)|$)",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        return extract_catalogue_address(normalized) or (match.group(1).strip(" ,.;") if match else None)
+    _property_address_from_description = staticmethod(extract_detail_property_address)
 
     @classmethod
     def parse_detail_payload(cls, data: dict) -> dict:
@@ -605,9 +599,6 @@ class TorgiRussiaClient:
             for item in pictures
             if isinstance(item, dict) and (item.get("link") or item.get("thumb_link"))
         ]
-        stages_value = data.get("stages")
-        stages = stages_value if isinstance(stages_value, dict) else {}
-
         return {
             "description": description,
             "address": address,
@@ -616,13 +607,7 @@ class TorgiRussiaClient:
             "etp_url": data.get("trade_link"),
             "source_status": data.get("status"),
             "updated_at": data.get("updated_at"),
-            "application_start_at": stages.get("begin_bid_time"),
-            "application_deadline": stages.get("end_bid_time"),
-            "auction_at": (
-                stages.get("begin_offer_time")
-                or data.get("begin_offer_time")
-            ),
-            "auction_end_at": stages.get("end_offer_time"),
+            **detail_stage_fields(data),
         }
 
     @staticmethod
@@ -887,73 +872,14 @@ class TorgiRussiaClient:
             if label and value:
                 labels[label] = value
 
-        # Current Next.js detail UI renders lifecycle stages as two direct
-        # <p> children: first the date/time, then the semantic stage label.
-        # This is the live November 2026 contract used by reported lots.
-        timeline_date = re.compile(
-            r"^\d{2}\.\d{2}\.\d{4}\s*,?\s*\d{1,2}:\d{2}$"
-        )
-        lifecycle_markers = (
-            "приема заявок",
-            "приёма заявок",
-            "предложений о цене",
-            "дата торгов",
-            "дата аукциона",
-            "проведения торгов",
-        )
-        for container in soup.find_all(["div", "li"]):
-            paragraphs = container.find_all("p", recursive=False)
-            if len(paragraphs) < 2:
-                continue
-            value = paragraphs[0].get_text(" ", strip=True)
-            label = paragraphs[1].get_text(" ", strip=True).rstrip(":").casefold()
-            if (
-                timeline_date.fullmatch(value)
-                and any(marker in label for marker in lifecycle_markers)
-            ):
-                labels.setdefault(label, value)
+        for label, value in collect_timeline_labels(soup).items():
+            labels.setdefault(label, value)
 
         def labelled(*needles: str) -> str | None:
             return next(
                 (value for needle in needles for key, value in labels.items() if needle in key),
                 None,
             )
-
-        def parse_date(value: str | None) -> datetime | None:
-            if not value:
-                return None
-
-            raw = str(value).strip()
-
-            # Next.js payload timestamps are already expressed in source-local
-            # Moscow civil time and contain no UTC offset.
-            for pattern in (
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M",
-            ):
-                try:
-                    return datetime.strptime(raw, pattern)
-                except ValueError:
-                    pass
-
-            match = re.search(
-                r"\d{2}\.\d{2}\.\d{4}"
-                r"(?:\s*,?\s*[вВ]?\s*\d{1,2}:\d{2})?",
-                raw,
-            )
-            if not match:
-                return None
-
-            normalized = re.sub(r",\s*", " ", match.group(0))
-            normalized = re.sub(r"\s+[вВ]\s*", " ", normalized)
-            normalized = re.sub(r"\s+", " ", normalized).strip()
-
-            for pattern in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
-                try:
-                    return datetime.strptime(normalized, pattern)
-                except ValueError:
-                    pass
-            return None
 
         image_urls: list[str] = []
         gallery = soup.select_one("#lot-gallery[data-gallery]")
@@ -1038,16 +964,16 @@ class TorgiRussiaClient:
                 or labelled("статус торгов", "статус")
             ),
             application_start_at=(
-                parse_date(flight_detail.get("application_start_at"))
-                or parse_date(labelled(
+                parse_detail_datetime(flight_detail.get("application_start_at"))
+                or parse_detail_datetime(labelled(
                     "начало приема заявок",
                     "начало приёма заявок",
                     "начало подачи заявок",
                 ))
             ),
             application_deadline=(
-                parse_date(flight_detail.get("application_deadline"))
-                or parse_date(labelled(
+                parse_detail_datetime(flight_detail.get("application_deadline"))
+                or parse_detail_datetime(labelled(
                     "конец приема заявок",
                     "конец приёма заявок",
                     "окончание приема заявок",
@@ -1057,8 +983,8 @@ class TorgiRussiaClient:
                 ))
             ),
             auction_at=(
-                parse_date(flight_detail.get("auction_at"))
-                or parse_date(labelled(
+                parse_detail_datetime(flight_detail.get("auction_at"))
+                or parse_detail_datetime(labelled(
                     "конец приема ценовых предложений",
                     "конец приёма ценовых предложений",
                     "дата торгов",
