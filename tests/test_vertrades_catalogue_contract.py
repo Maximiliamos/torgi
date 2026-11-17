@@ -176,6 +176,18 @@ def test_page_urls_and_terminal_signal_require_explicit_same_origin_next_page():
         "<a href='/bidding?page=2'>2</a><a href='https://evil.example/bidding?page=2'>x</a>",
         1,
     ) is True
+    assert has_next_catalogue_page(
+        "<a href='/bidding?page=2&page=3'>3</a>",
+        2,
+    ) is True
+    assert has_next_catalogue_page(
+        "<a href='/bidding?page=1&page=3'>3</a>",
+        2,
+    ) is False
+    assert has_next_catalogue_page(
+        "<a href='/bidding?page=3&page=2'>3</a>",
+        2,
+    ) is False
     assert has_next_catalogue_page("<a href='/bidding?page=4'>4</a>", 4) is False
 
 
