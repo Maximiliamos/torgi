@@ -42,7 +42,7 @@ MAX_HTML_BYTES = 2_000_000
 # Detail pages can legitimately exceed the catalogue cap because one verified
 # M-ETS trade may render many sibling/recommended lot views. Keep a separate
 # hard ceiling rather than weakening the catalogue response limit.
-MAX_DETAIL_HTML_BYTES = 3_000_000
+MAX_DETAIL_HTML_BYTES = 6_000_000
 
 
 class MetsEvidenceError(ValueError):
@@ -192,6 +192,16 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
     matching_skus = [node for node in sku_nodes if node.get("content") == expected_sku]
     if sku_nodes and len(matching_skus) != 1:
         raise MetsEvidenceError("Page SKU contradicts URL or is ambiguous")
+    if (
+        truncated_detail
+        and (
+            len(matching_skus) != 1
+            or matching_skus[0].find_parent(class_="lot-container") is None
+        )
+    ):
+        raise MetsEvidenceError(
+            "Truncated M-ETS detail lacks exact scoped SKU evidence"
+        )
     scope = (
         matching_skus[0].find_parent(class_="lot-container")
         if matching_skus else None
