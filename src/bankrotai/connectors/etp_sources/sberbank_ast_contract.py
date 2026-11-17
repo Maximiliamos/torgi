@@ -190,6 +190,10 @@ def normalize_status(value: object) -> str:
     text = normalize_text(value).lower()
     if not text:
         return "unknown"
+    # The current API also uses the standalone feminine procedure-stage label.
+    # Keep this exact: an ended application stage is not a completed auction.
+    if text in {"завершена", "завершено", "завершен", "завершён"}:
+        return "closed"
 
     # Final trade state wins even when old application dates/labels remain on the card.
     if any(marker in text for marker in (
@@ -275,6 +279,7 @@ def parse_catalogue_row(raw: dict[str, Any], *, page: int) -> NormalizedLot | No
         detail_level="search",
         raw_data={
             "listing_page": page,
+            "catalogue_source_status": normalize_text(raw.get("PurchaseStageTerm") or raw.get("purchStateNameTerm")),
             "complete_source_inventory": False,
             "safe_for_archival": False,
             "reconcile_missing": False,

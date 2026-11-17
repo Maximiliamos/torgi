@@ -184,6 +184,16 @@ def test_published_catalogue_row_is_scheduled() -> None:
     assert lot.application_deadline.isoformat() == "2026-12-24T10:00:00"
 
 
+def test_completed_catalogue_stage_is_closed_without_closing_intermediate_stages() -> None:
+    row = _row(goods_id=551)
+    row["PurchaseStageTerm"] = "Завершена"
+    lot = parse_catalogue_row(row, page=1)
+    assert lot.auction_status == "closed"
+    assert lot.raw_data["catalogue_source_status"] == "Завершена"
+    assert normalize_status("Прием заявок завершен") == "unknown"
+    assert normalize_status("Определение победителя") == "unknown"
+
+
 def test_explicit_ruble_price_rules_do_not_invent_price() -> None:
     raw = _row(goods_id=601)
     raw["purchAmountRUB"] = "722100"
