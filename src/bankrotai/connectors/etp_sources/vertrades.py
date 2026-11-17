@@ -235,7 +235,8 @@ def has_next_catalogue_page(html: str | bytes, page: int) -> bool:
         if parsed.path != "/bidding":
             continue
         values = parse_qs(parsed.query).get("page", [])
-        if len(values) == 1 and values[0].isdigit() and int(values[0]) == page + 1:
+        expected = str(page + 1)
+        if values == [expected] or values == [str(page), expected]:
             return True
     return False
 
