@@ -437,11 +437,10 @@ def _parse_div_catalogue(
                 raise VertradesCardError("invalid_div_catalogue_lot_number")
             lot_number = int(lot_text)
 
-            title, price = _catalogue_title_and_price(
-                asset_node.get_text(" ", strip=True)
-            )
-            if not _PROPERTY.search(title):
+            asset_text = _clean(asset_node.get_text(" ", strip=True))
+            if not _PROPERTY.search(asset_text):
                 continue
+            title, price = _catalogue_title_and_price(asset_text)
 
             # Require lot identity only after the positive property gate.
             asset_urls: list[tuple[str, str]] = []
