@@ -735,6 +735,11 @@ class NationwideIngestionService:
                 run_id,
                 asyncio.gather(*(enrich_if_needed(lot) for lot in accepted)),
             )
+        # Detail enrichment can reveal that a catalogue's generic "real_estate"
+        # label was wrong. Apply the same contract again before either writer.
+        sale_eligible = [lot for lot in accepted if is_sale_real_estate_lot(lot)]
+        result.items_rejected += len(accepted) - len(sale_eligible)
+        accepted = sale_eligible
         if result.source_system == "nistp.ru":
             proven = [lot for lot in accepted if independent_detail_proven(lot)]
             # A catalogue row that cannot be independently proven by its

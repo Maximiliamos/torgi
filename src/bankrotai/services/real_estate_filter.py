@@ -46,8 +46,12 @@ def has_disallowed_real_estate_terms(*values: object) -> bool:
 
 
 def is_real_estate_lot(lot: NormalizedLot) -> bool:
+    from bankrotai.services.asset_category import explicit_nonproperty_category
+
+    if explicit_nonproperty_category(lot.title or ""):
+        return False
     category = (lot.category or "").lower()
-    if category in {"receivables", "debt", "claim", "equipment"}:
+    if category in {"receivable", "receivables", "debt", "claim", "equipment"}:
         return False
     if category in REAL_ESTATE_CATEGORIES:
         return True

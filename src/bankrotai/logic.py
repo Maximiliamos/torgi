@@ -37,45 +37,7 @@ logger = logging.getLogger(__name__)
 
 # --- Classifiers ---
 
-def classify_category(title: str, description: str) -> str: 
-    h = f"{title} {description}".lower() 
-
-    if any(token in h for token in ("автомоб", "vin", "грузов", "транспорт", "авто", "прицеп", "легков")): 
-        return "car" 
-
-    if "квартир" in h: 
-        return "apartment" 
-
-    if "нежилое помещение" in h or "нежилые помещения" in h or "помещени" in h: 
-        return "commercial_room" 
-
-    if "нежилое здание" in h or "здание" in h or "склад" in h or "цех" in h: 
-        if "земельн" in h or "участ" in h: 
-            return "commercial_building_with_land" 
-        return "commercial_building" 
-
-    if "жилой дом" in h or "дом жилой" in h or "коттедж" in h: 
-        return "house" 
-
-    if "земельн" in h or "участ" in h: 
-        return "land" 
-
-    if "машино-место" in h or "гараж" in h: 
-        return "parking" 
-
-    if "незаверш" in h: 
-        return "unfinished" 
-
-    if "комплекс" in h: 
-        return "complex" 
-
-    if "дебитор" in h or "право требования" in h: 
-        return "receivable" 
-
-    if "недвиж" in h: 
-        return "real_estate" 
-
-    return "other" 
+from bankrotai.services.asset_category import classify_category
 
 # --- Ingest Utils ---
 

@@ -116,6 +116,25 @@ def test_unchanged_source_repairs_stale_projection_on_repeat_ingestion(sessions)
         assert processed.review_status is None
 
 
+def test_detail_revealed_vehicle_is_rejected_before_persistence(sessions):
+    class VehicleDetail(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        async def enrich_lot(self, normalized):
+            normalized.title = "Грузовой автомобиль МАЗ"
+            normalized.category = "car"
+            return normalized
+
+    connector = VehicleDetail([[lot("vehicle-after-detail")]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    run_id = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    output = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}, reconcile_missing=False),)))
+    assert output["sources"][0]["items_rejected"] == 1
+    with sessions() as session:
+        assert session.scalars(select(ProcessedLot)).all() == []
+        assert session.scalars(select(SourceLot)).all() == []
+
+
 def run_with(service: NationwideIngestionService, connector: AuctionConnector) -> tuple[str, dict]:
     service.connector_factory = lambda _source: connector
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)

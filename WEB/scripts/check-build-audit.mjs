@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import process from 'node:process';
+import console from 'node:console';
 
 const allowed = new Set(['GHSA-vfj7-8cjw-p6xm', 'GHSA-fc5q-39xc-vjpf']);
 
