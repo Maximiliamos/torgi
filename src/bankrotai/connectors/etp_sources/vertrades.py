@@ -425,11 +425,23 @@ def _parse_div_catalogue(
                 except VertradesCardError:
                     continue
                 asset_urls.append((url, provider))
-            if len(asset_urls) != 1:
-                raise VertradesCardError("missing_or_ambiguous_div_lot_url")
-            detail_url, provider_id = asset_urls[0]
-            if provider_id != procedure_provider or detail_url != procedure_url:
+
+            # Current provider markup may repeat the same shared procedure link
+            # within one lot cell. HTML-anchor multiplicity is not identity
+            # ambiguity: accept only one unique provider procedure identity and
+            # require it to equal the procedure-row identity.
+            provider_ids = {provider for _, provider in asset_urls}
+            if not provider_ids:
+                raise VertradesCardError("missing_div_lot_url")
+            if len(provider_ids) != 1:
+                raise VertradesCardError("ambiguous_div_lot_provider_identity")
+            provider_id = next(iter(provider_ids))
+            if provider_id != procedure_provider:
                 raise VertradesCardError("div_catalogue_procedure_lot_identity_mismatch")
+
+            # Use the procedure-level canonical URL after the provider identity
+            # has been independently proved from the lot cell.
+            detail_url = procedure_url
 
             title, price = _catalogue_title_and_price(
                 asset_node.get_text(" ", strip=True)
