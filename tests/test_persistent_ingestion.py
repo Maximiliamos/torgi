@@ -1049,7 +1049,12 @@ def test_watchdog_renews_lease_while_event_loop_is_blocked(sessions, monkeypatch
     renewals: list[str] = []
 
     async def blocked_run(_run_id: str, _specs: tuple[SourceSyncSpec, ...]) -> dict:
-        time.sleep(0.05)
+        # Observe the watchdog while the event loop stays blocked. Fixed 50 ms
+        # sleeps were shorter than a few Windows scheduler ticks under load.
+        deadline = time.monotonic() + 2.0
+        while len(renewals) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(renewals) >= 3
         return {"status": "success", "sources": []}
 
     monkeypatch.setattr(service, "_heartbeat", lambda run_id: renewals.append(run_id))

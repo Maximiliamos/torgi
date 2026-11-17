@@ -290,7 +290,8 @@ def test_verified_mets_property_title_beats_transport_disclosure(
 def test_mets_category_override_requires_verified_property_title_and_cadastre(
     title: str, description: str, with_cadastre: bool,
 ) -> None:
-    """Unclear/vehicle titles or no cadastral evidence must remain car."""
+    """Vehicle/unclear titles and missing cadastres cannot enter property inventory."""
+    from bankrotai.connectors.registry.etp_incremental import _property_ready
     extra = " Кадастровый номер: 76:23:0000001:123." if with_cadastre else ""
     html = (
         '<html><body><div class="lot-container">'
@@ -306,4 +307,8 @@ def test_mets_category_override_requires_verified_property_title_and_cadastre(
         + '</div></body></html>'
     )
     lot = parse_mets_lot(html, URL)
-    assert lot.category == "car"
+    assert _property_ready(lot) is False
+    if with_cadastre:
+        assert lot.category == "car"
+    else:
+        assert lot.cadastral_number is None

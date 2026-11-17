@@ -16,8 +16,6 @@ def _property(text: str) -> str | None:
     land = "земельн" in text or "участ" in text or bool(re.search(r"\bзу\b", text))
     if "квартир" in text:
         return "apartment"
-    if "машино-место" in text or "машиноместо" in text or "гараж" in text:
-        return "parking"
     if "помещени" in text:
         return "commercial_room"
     if any(word in text for word in ("здание", "склад", "цех")):
@@ -26,6 +24,8 @@ def _property(text: str) -> str | None:
         return "house"
     if land:
         return "land"
+    if "машино-место" in text or "машиноместо" in text or "гараж" in text:
+        return "parking"
     if "незаверш" in text:
         return "unfinished"
     if "комплекс" in text:
