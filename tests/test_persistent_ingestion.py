@@ -95,6 +95,27 @@ def sessions():
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def test_unchanged_source_repairs_stale_projection_on_repeat_ingestion(sessions):
+    incoming = lot("projection-drift")
+    connector = FakeConnector([[incoming]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    spec = (SourceSyncSpec("test-source", {}, reconcile_missing=False),)
+    first = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    asyncio.run(service.run(first, spec))
+    with sessions() as session:
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == incoming.external_id))
+        processed.address = "stale wrong address"
+        processed.start_price = 1
+        session.commit()
+    second = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    asyncio.run(service.run(second, spec))
+    with sessions() as session:
+        processed = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == incoming.external_id))
+        assert processed.address == incoming.address
+        assert float(processed.start_price) == incoming.start_price
+        assert processed.review_status is None
+
+
 def run_with(service: NationwideIngestionService, connector: AuctionConnector) -> tuple[str, dict]:
     service.connector_factory = lambda _source: connector
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)

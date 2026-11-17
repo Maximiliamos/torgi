@@ -702,14 +702,16 @@ def cleanup_closed_lots(session: Session) -> int:
 def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, source: str) -> bool:
     normalized = normalize_status(new_status)
     old_status = lot.auction_status
-    if not normalized or normalized == old_status:
+    if not normalized:
         return False
-    lot.auction_status = normalized
     if normalized == "closed":
         lot.closed_at = lot.closed_at or utc_now()
         lot.is_archived = True
         lot.archived_at = lot.archived_at or utc_now()
-    elif old_status == "closed" and normalized in {"active", "scheduled"}:
+    if normalized == old_status:
+        return False
+    lot.auction_status = normalized
+    if old_status == "closed" and normalized in {"active", "scheduled"}:
         lot.is_archived = False
         lot.archived_at = None
     session.add(LotStatusHistory(
@@ -781,6 +783,7 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
         )
         session.add(processed)
         session.flush()
+        apply_lot_status(session, processed, normalized.auction_status, normalized.source or "import")
         if processed.auction_status:
             session.add(LotStatusHistory(
                 lot_id=processed.id,

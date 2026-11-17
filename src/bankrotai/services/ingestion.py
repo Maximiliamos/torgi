@@ -781,17 +781,9 @@ class NationwideIngestionService:
                 result.seen_external_ids.add(normalized.external_id)
                 source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
-                before = self._source_fingerprint(source_row) if source_row is not None else None
-                if (
-                    source_row is not None
-                    and source_row.processed_lot_id is not None
-                    and before == self._normalized_source_fingerprint(normalized, source_row)
-                ):
-                    source_row.last_sync_run_id = run_id
-                    source_row.last_seen_at = utc_now()
-                    source_row.missing_successful_runs = 0
-                    result.items_unchanged += 1
-                    continue
+                # Source equality alone cannot prove its ProcessedLot projection
+                # is current. The batch layer compares both persisted projections
+                # before a semantic skip, and repairs legacy drift on a normal run.
                 changed_or_new.append(normalized)
                 result.items_updated += int(existed)
                 result.items_inserted += int(not existed)
