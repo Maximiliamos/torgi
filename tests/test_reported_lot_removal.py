@@ -2,14 +2,21 @@ import pytest
 from sqlalchemy import create_engine, event, select, func
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, LotIssueReport, ProcessedLot, SourceLot, CanonicalLot, LotNote
+from bankrotai.db import Base, LotIssueReport, ProcessedLot, SourceLot, CanonicalLot, LotPriceEvent
 from bankrotai.services.reported_lot_removal import remove_reviewed_reported_lots
 
 
-def seed():
+def seed(*, legacy_constraints=False):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
-    Base.metadata.create_all(engine)
+    fk = next(iter(LotPriceEvent.__table__.c.lot_id.foreign_keys))
+    original = fk.ondelete
+    try:
+        if legacy_constraints:
+            fk.ondelete = None
+        Base.metadata.create_all(engine)
+    finally:
+        fk.ondelete = original
     session = Session(engine)
     lot = ProcessedLot(external_id="test:1", source="test", source_system="test.ru",
                        title="Ошибка", description="Ошибка", category="land", review_status="rejected")
@@ -54,3 +61,15 @@ def test_unreviewed_unreported_or_concurrently_modified_lots_are_rejected():
     session.flush()
     with pytest.raises(ValueError, match="reviewed"):
         remove_reviewed_reported_lots(session, lot_ids=[selected])
+
+
+def test_legacy_no_action_price_history_is_removed_only_for_selected_lot():
+    session, selected, other, _ = seed(legacy_constraints=True)
+    session.add_all([LotPriceEvent(lot_id=selected, source="test", price_kind="current", amount=10),
+                     LotPriceEvent(lot_id=other, source="other", price_kind="current", amount=20)])
+    session.commit()
+    preview = remove_reviewed_reported_lots(session, lot_ids=[selected])
+    states = {item["lot_id"]: item["expected_state"] for item in preview["items"]}
+    remove_reviewed_reported_lots(session, lot_ids=[selected], apply=True, expected_states=states)
+    session.flush()
+    assert list(session.scalars(select(LotPriceEvent.lot_id))) == [other]

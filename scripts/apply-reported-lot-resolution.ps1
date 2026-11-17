@@ -1,5 +1,6 @@
 param(
   [switch]$Apply,
+  [switch]$ValidateTransaction,
   [string]$Evidence = '.artifacts/finish/reports-fresh-details.json',
   [string]$Plan = '.artifacts/finish/resolution-preview.json',
   [string]$Output = '.artifacts/finish/resolution-result.json',
@@ -23,6 +24,7 @@ foreach ($leaf in @('real_estate_filter', 'reported_lot_repair', 'reported_lot_r
 }
 $payload = @{
   apply = [bool]$Apply
+  rollback_only = [bool]$ValidateTransaction
   modules = $modules
   evidence = (Get-Content -LiteralPath (Join-Path $root $Evidence) -Raw | ConvertFrom-Json).items
   expected = $(if ($Apply) { Get-Content -LiteralPath (Join-Path $root $Plan) -Raw | ConvertFrom-Json } else { $null })
@@ -66,7 +68,12 @@ with SessionLocal() as session:
   result['repair']=repair(session,evidence=[item for item in p['evidence'] if item['lot_id'] in repair_ids],
                           apply=True,expected_states=repair_states)
   result['remove']=remove(session,lot_ids=delete_ids,apply=True,expected_states=states)
-  session.commit()
+  if p['rollback_only']:
+   session.rollback()
+   result['committed']=False
+  else:
+   session.commit()
+   result['committed']=True
  print(json.dumps(result,ensure_ascii=True,default=str))
 '@
 $result = $code.Replace('PAYLOAD64', $payload64) | docker exec -i bankrotai-home-ingestion-worker python -

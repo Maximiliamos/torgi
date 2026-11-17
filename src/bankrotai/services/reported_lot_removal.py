@@ -1,11 +1,23 @@
 """Physical removal of an explicitly selected, reviewed report cohort."""
 from __future__ import annotations
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, select, update, or_
 
-from bankrotai.db import CanonicalLot, LotIssueReport, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotIssueReport, ProcessedLot, SourceLot
 from bankrotai.logic import log_action
 from bankrotai.services.reported_lot_repair import _state
+
+
+def _remove_direct_children(session, target: str, ids: list[int], *, preserve: set[str]) -> dict[str, int]:
+    counts = {}
+    for table in reversed(Base.metadata.sorted_tables):
+        if table.name in preserve:
+            continue
+        columns = [fk.parent for fk in table.foreign_keys if fk.target_fullname == target]
+        if columns:
+            result = session.execute(delete(table).where(or_(*(column.in_(ids) for column in columns))))
+            counts[table.name] = result.rowcount
+    return counts
 
 
 def remove_reviewed_reported_lots(
@@ -53,7 +65,15 @@ def remove_reviewed_reported_lots(
             log_action(session, "operator", "remove_reviewed_reported_lot", "lot", str(item["lot_id"]),
                        {"external_id": item["external_id"], "source_system": item["source_system"],
                         "reason": "explicit_user_request_remove_incorrect_reviewed_lots"})
-        # DB foreign keys cascade notes/events/workflows and detach shared asset pointers.
+        # Older production migrations used NO ACTION even where today's model
+        # declares CASCADE. Remove only exact descendants explicitly and preserve
+        # shared projections/canonicals rather than relying on the DDL generation.
+        source_children = _remove_direct_children(session, "source_lots.id", source_ids,
+                                                  preserve={"source_lots"})
+        processed_children = _remove_direct_children(session, "processed_lots.id", ids,
+            preserve={"source_lots", "processed_lots", "canonical_lots"})
+        session.execute(update(ProcessedLot).where(ProcessedLot.duplicate_of_id.in_(ids)).values(duplicate_of_id=None))
+        session.execute(update(CanonicalLot).where(CanonicalLot.legacy_processed_lot_id.in_(ids)).values(legacy_processed_lot_id=None))
         session.execute(delete(SourceLot).where(SourceLot.id.in_(source_ids)))
         session.execute(delete(ProcessedLot).where(ProcessedLot.id.in_(ids)))
         session.flush()
@@ -64,4 +84,5 @@ def remove_reviewed_reported_lots(
         session.flush()
     return {"apply": apply, "selected": len(ids), "deleted_lots": len(ids) if apply else 0,
             "source_lots": len(source_ids), "items": items, "historical_reports_preserved": True,
+            "removed_related_rows": {**source_children, **processed_children} if apply else {},
             "reconcile_missing": False}
