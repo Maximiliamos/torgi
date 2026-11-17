@@ -57,6 +57,7 @@ class TorgiRussiaDetails:
     procedure_number: str | None = None
     address: str | None = None
     category: str | None = None
+    auction_status: str | None = None
     application_start_at: datetime | None = None
     application_deadline: datetime | None = None
     auction_at: datetime | None = None
@@ -71,6 +72,7 @@ class TorgiRussiaDetails:
             "description": self.description,
             "address": self.address,
             "category": self.category,
+            "auction_status": self.auction_status,
             "application_start_at": self.application_start_at,
             "application_deadline": self.application_deadline,
             "auction_at": self.auction_at,
@@ -603,6 +605,9 @@ class TorgiRussiaClient:
             for item in pictures
             if isinstance(item, dict) and (item.get("link") or item.get("thumb_link"))
         ]
+        stages_value = data.get("stages")
+        stages = stages_value if isinstance(stages_value, dict) else {}
+
         return {
             "description": description,
             "address": address,
@@ -611,6 +616,13 @@ class TorgiRussiaClient:
             "etp_url": data.get("trade_link"),
             "source_status": data.get("status"),
             "updated_at": data.get("updated_at"),
+            "application_start_at": stages.get("begin_bid_time"),
+            "application_deadline": stages.get("end_bid_time"),
+            "auction_at": (
+                stages.get("begin_offer_time")
+                or data.get("begin_offer_time")
+            ),
+            "auction_end_at": stages.get("end_offer_time"),
         }
 
     @staticmethod
@@ -875,19 +887,67 @@ class TorgiRussiaClient:
             if label and value:
                 labels[label] = value
 
+        # Current Next.js detail UI renders lifecycle stages as two direct
+        # <p> children: first the date/time, then the semantic stage label.
+        # This is the live November 2026 contract used by reported lots.
+        timeline_date = re.compile(
+            r"^\d{2}\.\d{2}\.\d{4}\s*,?\s*\d{1,2}:\d{2}$"
+        )
+        lifecycle_markers = (
+            "приема заявок",
+            "приёма заявок",
+            "предложений о цене",
+            "дата торгов",
+            "дата аукциона",
+            "проведения торгов",
+        )
+        for container in soup.find_all(["div", "li"]):
+            paragraphs = container.find_all("p", recursive=False)
+            if len(paragraphs) < 2:
+                continue
+            value = paragraphs[0].get_text(" ", strip=True)
+            label = paragraphs[1].get_text(" ", strip=True).rstrip(":").casefold()
+            if (
+                timeline_date.fullmatch(value)
+                and any(marker in label for marker in lifecycle_markers)
+            ):
+                labels.setdefault(label, value)
+
         def labelled(*needles: str) -> str | None:
             return next(
-                (value for key, value in labels.items() if any(needle in key for needle in needles)),
+                (value for needle in needles for key, value in labels.items() if needle in key),
                 None,
             )
 
         def parse_date(value: str | None) -> datetime | None:
             if not value:
                 return None
-            match = re.search(r"\d{2}\.\d{2}\.\d{4}(?:\s+[вВ]?\s*\d{1,2}:\d{2})?", value)
+
+            raw = str(value).strip()
+
+            # Next.js payload timestamps are already expressed in source-local
+            # Moscow civil time and contain no UTC offset.
+            for pattern in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+            ):
+                try:
+                    return datetime.strptime(raw, pattern)
+                except ValueError:
+                    pass
+
+            match = re.search(
+                r"\d{2}\.\d{2}\.\d{4}"
+                r"(?:\s*,?\s*[вВ]?\s*\d{1,2}:\d{2})?",
+                raw,
+            )
             if not match:
                 return None
-            normalized = re.sub(r"\s+[вВ]\s+", " ", match.group(0))
+
+            normalized = re.sub(r",\s*", " ", match.group(0))
+            normalized = re.sub(r"\s+[вВ]\s*", " ", normalized)
+            normalized = re.sub(r"\s+", " ", normalized).strip()
+
             for pattern in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
                 try:
                     return datetime.strptime(normalized, pattern)
@@ -973,27 +1033,42 @@ class TorgiRussiaClient:
                 or labelled("адрес местонахождения имущества", "местонахождение имущества")
             ),
             category=labelled("категор", "вид имущества"),
-            application_start_at=parse_date(labelled(
-                "начало приема заявок", "начало приёма заявок", "начало подачи заявок"
-            )),
-            application_deadline=parse_date(
-                labelled(
+            auction_status=public_auction_status(
+                flight_detail.get("source_status")
+                or labelled("статус торгов", "статус")
+            ),
+            application_start_at=(
+                parse_date(flight_detail.get("application_start_at"))
+                or parse_date(labelled(
+                    "начало приема заявок",
+                    "начало приёма заявок",
+                    "начало подачи заявок",
+                ))
+            ),
+            application_deadline=(
+                parse_date(flight_detail.get("application_deadline"))
+                or parse_date(labelled(
                     "конец приема заявок",
                     "конец приёма заявок",
                     "окончание приема заявок",
                     "окончание приёма заявок",
                     "конец подачи заявок",
                     "окончание подачи заявок",
-                )
+                ))
             ),
-            auction_at=parse_date(
-                labelled(
+            auction_at=(
+                parse_date(flight_detail.get("auction_at"))
+                or parse_date(labelled(
                     "конец приема ценовых предложений",
                     "конец приёма ценовых предложений",
                     "дата торгов",
                     "дата аукцион",
                     "дата проведения",
                     "проведен",
-                )
+                    "начало приема предложений о цене",
+                    "начало приёма предложений о цене",
+                    "начало приема ценовых предложений",
+                    "начало приёма ценовых предложений",
+                ))
             ),
         )

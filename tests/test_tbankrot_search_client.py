@@ -360,7 +360,7 @@ def test_tbankrot_enrichment_fetches_detail_when_only_auction_date_is_missing(mo
     assert calls == ["https://tbankrot.ru/item?id=7896849"]
     assert enriched.auction_at == datetime(2026, 10, 23, 10, 0)
     assert enriched.start_price == 3_500_000
-    assert enriched.raw_data["detail_enrichment_version"] == 3
+    assert enriched.raw_data["detail_enrichment_version"] == 4
 
 
 def test_tbankrot_address_stops_before_encumbrance_metadata() -> None:
@@ -498,3 +498,52 @@ def test_tbankrot_loads_only_tbankrot_session_cookies(tmp_path) -> None:
 
     assert client.session.cookies.get("session", domain=".tbankrot.ru") == "secret"
     assert client.session.cookies.get("foreign") is None
+
+def test_tbankrot_detail_recognizes_reported_paused_status() -> None:
+    html = """
+    <div class="lot_status">Торги приостановлены</div>
+    <div class="price_info">
+      <div class="start_price">
+        <p class="h6">начальная цена</p>
+        <p class="sum">3 731 400 ₽</p>
+      </div>
+      <div class="cur_price">
+        <p class="h6">текущая цена</p>
+        <p class="green semibold">2 611 980 ₽</p>
+      </div>
+      <div class="min_price">
+        <p class="h6">минимальная цена</p>
+        <p class="semibold">2 611 980 ₽</p>
+      </div>
+    </div>
+    """
+
+    fields = TBankrotClient().parse_detail_html(
+        html,
+        "https://tbankrot.ru/item?id=7903020",
+    )
+
+    assert fields["auction_status"] == "paused"
+    assert fields["start_price"] == 3_731_400
+    assert fields["current_price"] == 2_611_980
+    assert fields["minimum_price"] == 2_611_980
+
+
+def test_tbankrot_exact_panel_excludes_recommendation_status_and_address() -> None:
+    html = '''<div class="lot_head"><h1>Торги №12345 - Квартира</h1></div>
+    <div id="lot_info" data-id="12345">
+      <span>Торги приостановлены</span>
+      <div class="lot_text">Квартира, кадастровый номер 76:23:011201:3136</div>
+      <div class="lot_address_line"><span class="value">Ярославль, ул. Труфанова, д.29</span></div>
+    </div><div>Торги завершены. Адрес: Москва, ул. Чужая, д.1</div>'''
+    fields = TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=12345")
+    assert fields["auction_status"] == "paused"
+    assert fields["detail_identity_verified"]
+    assert fields["cadastral_numbers"] == ["76:23:011201:3136"]
+    assert "Москва" not in fields["address"]
+    try:
+        TBankrotClient().parse_detail_html(html, "https://tbankrot.ru/item?id=54321")
+    except ValueError as exc:
+        assert "identity mismatch" in str(exc)
+    else:
+        raise AssertionError("Foreign exact-ID panel must fail closed")

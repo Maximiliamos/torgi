@@ -7,6 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+@pytest.mark.parametrize("tail", [
+    " объект может быть приобретен с использованием заемных средств",
+    ", принадлежащее должнику. Организатор торгов не располагает сведениями",
+    ". Залог у ПАО Банк",
+])
+def test_property_address_stops_before_legal_disclosures(tail):
+    from bankrotai.services.property_address_evidence import extract_asset_property_address
+    address = "Ярославская область, г. Ярославль, ул. Труфанова, д. 29"
+    result = extract_asset_property_address(description="Квартира по адресу: " + address + tail)
+    assert result == address
+
 import bankrotai.geo as geo
 from bankrotai.geo import CadastralObjectResult, build_geocoding_address_candidates
 from bankrotai.services.geo_address_candidates import extract_explicit_source_coordinates

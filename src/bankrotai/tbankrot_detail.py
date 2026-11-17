@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, parse_qs
 
 from bs4 import BeautifulSoup
 
@@ -28,14 +28,34 @@ ACTIVE_DETAIL_MARKERS = (
 
 def parse_tbankrot_detail_html(html: str, page_url: str) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
+    panel = soup.select_one("#lot_info")
+    identity_verified = False
+    title = description = address = None
+    cadastral_numbers: list[str] = []
+    if panel is not None:
+        requested = parse_qs(urlsplit(page_url).query).get("id", [None])[0]
+        observed = panel.get("data-id") or panel.get("data-rel")
+        if not requested or str(observed) != requested:
+            raise ValueError("TBankrot detail identity mismatch")
+        identity_verified = True
+        heading = soup.select_one(".lot_head h1")
+        title = re.sub(r"^Торги\s*№\s*\d+\s*[-–—]\s*", "", heading.get_text(" ", strip=True)) if heading else None
+        text_node = panel.select_one(".lot_text")
+        description = text_node.get_text(" ", strip=True) if text_node else None
+        address_node = panel.select_one(".lot_address_line .value")
+        address = address_node.get_text(" ", strip=True) if address_node else None
+        from bankrotai.extractors import extract_cadastral_numbers
+        cadastral_numbers = extract_cadastral_numbers(description or "")
+        soup = panel
     page_text = soup.get_text(" ", strip=True).casefold()
-    auction_status = (
-        "closed"
-        if any(token in page_text for token in ENDED_DETAIL_MARKERS)
-        else "active"
-        if any(token in page_text for token in ACTIVE_DETAIL_MARKERS)
-        else "unknown"
-    )
+    if "торги приостановлены" in page_text:
+        auction_status = "paused"
+    elif any(token in page_text for token in ENDED_DETAIL_MARKERS):
+        auction_status = "closed"
+    elif any(token in page_text for token in ACTIVE_DETAIL_MARKERS):
+        auction_status = "active"
+    else:
+        auction_status = "unknown"
 
     def labelled_price(selector: str, *labels: str) -> float | None:
         node = soup.select_one(selector)
@@ -91,6 +111,11 @@ def parse_tbankrot_detail_html(html: str, page_url: str) -> dict[str, Any]:
         return None
 
     return {
+        "detail_identity_verified": identity_verified,
+        "title": title,
+        "description": description,
+        "address": address,
+        "cadastral_numbers": cadastral_numbers,
         "start_price": labelled_price(
             ".price_info .start_price .sum",
             "начальная цена",
