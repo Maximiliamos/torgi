@@ -92,7 +92,13 @@ def _div_procedure(
 
 
 def _div_catalogue() -> str:
-    return "<html><body>" + "".join([
+    header = (
+        "<div class='row'>"
+        "<p class='contests_num'>№</p>"
+        "<p class='contests_bidder'>Организатор</p>"
+        "</div>"
+    )
+    return "<html><body>" + header + "".join([
         _div_procedure(
             "150-АП",
             102288306,
@@ -201,6 +207,32 @@ def test_structure_summary_is_non_sensitive_counts_only():
         "property_text_rows": 3,
         "show_trades_id_rows": 6,
     }
+
+
+def test_current_div_catalogue_ignores_header_row_without_trade_link() -> None:
+    html = (
+        "<html><body>"
+        "<div class='row'><p class='contests_num'>№</p></div>"
+        + _div_procedure(
+            "150-АП",
+            102288306,
+            [
+                (
+                    1,
+                    "земельный участок 500 кв.м.",
+                    "100 000,00",
+                    "Завершенные торги",
+                ),
+            ],
+        )
+        + "</body></html>"
+    )
+
+    lots = parse_catalogue_page(html, page=1)
+
+    assert [lot.external_id for lot in lots] == [
+        "vertrades.ru:102288306:1",
+    ]
 
 
 def test_current_div_catalogue_pairs_asset_and_lifecycle_rows() -> None:
