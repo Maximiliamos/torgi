@@ -53,3 +53,23 @@ are under `.artifacts/finish/` in the continuation worktree.
   current network/VPN conditions have not supplied fresh detail evidence.
 - Production report resolution, current-map publication, combined source
   acceptance and a second idempotence pass must be recorded before closeout.
+
+## Production report resolution and map verification
+
+- The verified-restoration backup preceded the committed transaction: 38 reviewed
+  erroneous lots and their source rows were physically removed; the remaining
+  three lots were corrected and are closed/archived. Historical reports remain.
+- The operator increased REG.RU S3 quota to 30 GB. The proposed orphan cleanup
+  was not applied (zero orphan objects deleted). A 512 MiB multipart capacity
+  probe succeeded and removed its own temporary object.
+- The background publisher promoted `20261117T192402672354Z-r7-bundle-s3` with
+  52,626 points. Public S3 manifest verification succeeded. All 41 report-scoped
+  IDs are absent from current point tiles; exactly the three corrected archived
+  rows remain in the database. Rebuilding again correctly skips unchanged input.
+- Full M-ETS read-only traversal reached its terminal page at SHA `7ebc70db`:
+  254 pages, 5,070 detail attempts, 5,018 accepted, 52 rejected (37 missing property
+  evidence, 15 status mismatches). This is terminal traversal evidence, not a
+  zero-rejection acceptance. Reject review and combined production acceptance
+  remain open; reconciliation/archival was disabled throughout.
+- M-ETS streamed-body retry and same-SHA checkpoint changes have been merged
+  into the continuation branch. Release/deployment acceptance remains pending.
