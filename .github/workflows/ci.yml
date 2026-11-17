@@ -189,7 +189,7 @@ jobs:
           full_status=0
           for attempt in 1 2 3; do
             set +e
-            full_audit="$(timeout 180 npm audit --audit-level=high 2>&1)"
+            full_audit="$(timeout 180 npm audit --json --audit-level=high 2>&1)"
             full_status=$?
             set -e
             if test "$full_status" -eq 0 || printf '%s\n' "$full_audit" | grep -q 'GHSA-'; then
@@ -203,13 +203,8 @@ jobs:
           if test "$full_status" -eq 0; then
             exit 0
           fi
-          advisories="$(printf '%s\n' "$full_audit" | grep -oE 'GHSA-[a-z0-9-]+' | sort -u || true)"
-          unexpected="$(printf '%s\n' "$advisories" | grep -vEx 'GHSA-vfj7-8cjw-p6xm|GHSA-fc5q-39xc-vjpf' || true)"
-          if test -z "$advisories" || test -n "$unexpected"; then
-            echo "Unexpected high/critical npm advisory set: $advisories" >&2
-            exit "$full_status"
-          fi
-          echo "::warning::Known unpatched build-tooling advisories: $advisories; runtime npm audit is clean."
+          node --test scripts/check-build-audit.test.mjs
+          printf '%s\n' "$full_audit" | node scripts/check-build-audit.mjs
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
