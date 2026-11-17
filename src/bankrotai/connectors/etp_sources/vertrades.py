@@ -129,9 +129,7 @@ def _safe_url(href: str) -> str:
     return absolute
 
 
-def _safe_catalogue_lot_url(
-    href: str, *, lot_number: int,
-) -> tuple[str, str]:
+def _safe_catalogue_lot_url(href: str, *, lot_number: int) -> tuple[str, str]:
     absolute = urljoin(CATALOGUE_URL, href.strip())
     parsed = urlsplit(absolute)
     expected_fragment = f"lot-{lot_number}"
@@ -146,8 +144,7 @@ def _safe_catalogue_lot_url(
     ):
         raise VertradesCardError("invalid_catalogue_lot_url")
     canonical = parsed._replace(fragment="").geturl()
-    provider_id = _provider_id(canonical)
-    return canonical, provider_id
+    return canonical, _provider_id(canonical)
 
 
 def _catalogue_money(value: str) -> float | None:
