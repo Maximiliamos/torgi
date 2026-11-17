@@ -304,6 +304,32 @@ def test_current_div_catalogue_never_silently_truncates_property_rows() -> None:
         parse_catalogue_page(html, limit=100)
 
 
+def test_current_div_catalogue_deduplicates_repeated_same_procedure_links() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306'>ЛОТ№1",
+        "href='/showTrades?id=102288306'>ЛОТ№1</a>"
+        "<a href='/showTrades?id=102288306'>повторная ссылка",
+        1,
+    )
+
+    lots = parse_catalogue_page(html)
+
+    assert lots[0].external_id == "vertrades.ru:102288306:1"
+    assert lots[0].lot_url == "https://arest.vertrades.ru/showTrades?id=102288306"
+
+
+def test_current_div_catalogue_fails_closed_on_multiple_provider_ids_in_one_lot() -> None:
+    html = _div_catalogue().replace(
+        "href='/showTrades?id=102288306'>ЛОТ№1",
+        "href='/showTrades?id=102288306'>ЛОТ№1</a>"
+        "<a href='/showTrades?id=999999999'>другая процедура",
+        1,
+    )
+
+    with pytest.raises(VertradesCardError, match="ambiguous_div_lot_provider_identity"):
+        parse_catalogue_page(html)
+
+
 def test_current_div_catalogue_fails_closed_on_procedure_lot_identity_mismatch() -> None:
     html = _div_catalogue().replace(
         "href='/showTrades?id=102288306'>ЛОТ№1",
