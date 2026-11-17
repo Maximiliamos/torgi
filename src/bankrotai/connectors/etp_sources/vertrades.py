@@ -417,6 +417,17 @@ def _parse_div_catalogue(
                 raise VertradesCardError("invalid_div_catalogue_lot_number")
             lot_number = int(lot_text)
 
+            title, price = _catalogue_title_and_price(
+                asset_node.get_text(" ", strip=True)
+            )
+            if not _PROPERTY.search(title):
+                continue
+
+            # The provider catalogue is mixed-asset. Only property rows enter
+            # TORGI's source contract, so require individual-lot URL evidence
+            # after the positive property gate. This mirrors the legacy table
+            # parser and prevents unrelated vehicle/equipment rows from
+            # failing a property-only ingestion path.
             asset_urls: list[tuple[str, str]] = []
             for anchor in asset_node.select("a[href]"):
                 try:
@@ -442,12 +453,6 @@ def _parse_div_catalogue(
             # Use the procedure-level canonical URL after the provider identity
             # has been independently proved from the lot cell.
             detail_url = procedure_url
-
-            title, price = _catalogue_title_and_price(
-                asset_node.get_text(" ", strip=True)
-            )
-            if not _PROPERTY.search(title):
-                continue
 
             source_status = _clean(status_node.get_text(" ", strip=True))
             if not source_status:
