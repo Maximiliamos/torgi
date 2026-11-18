@@ -93,7 +93,11 @@ def _setting_enabled(value: str | None) -> bool:
 
 
 def _latest_datetime(values: list[datetime | None]) -> datetime | None:
-    available = [_naive_utc(value) for value in values if value is not None]
+    available: list[datetime] = []
+    for value in values:
+        stamp = _naive_utc(value)
+        if stamp is not None:
+            available.append(stamp)
     return max(available) if available else None
 
 
@@ -559,7 +563,7 @@ def build_reliability_summary(
     generated_at = _naive_utc(now or utc_now()) or datetime.utcnow()
     source_rows = build_reliability_sources(session, now=generated_at)
     configured_rows = [item for item in source_rows if item["configured"]]
-    source_counts = {
+    source_counts: dict[str, Any] = {
         "configured_total": len(configured_rows),
         "scheduled_total": sum(1 for item in configured_rows if item["scheduled"]),
         "connected_total": sum(1 for item in source_rows if item["role"] in {"configured", "pilot"}),
