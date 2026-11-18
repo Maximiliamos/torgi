@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, ProcessedLot, utc_now
+from bankrotai.db import Base, LotSyncRun, LotSyncSourceRun, ProcessedLot, utc_now
+from bankrotai.services.quality import list_source_health
 from bankrotai.services.reliability import (
     _canonical_source,
     _current_error,
@@ -96,3 +97,57 @@ def test_current_quality_excludes_archived_and_ended_lots() -> None:
     assert quality["missing_address"] == 1
     assert quality["missing_cadastre"] == 1
     assert quality["percentages"]["missing_address"] == 100.0
+
+
+def test_source_health_does_not_expose_old_error_after_newer_success() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = utc_now()
+    with Session(engine) as session:
+        session.add_all(
+            [
+                LotSyncRun(
+                    id="failure",
+                    trigger_type="test",
+                    status="failed",
+                    total_sources=1,
+                    started_at=now - timedelta(hours=2),
+                    finished_at=now - timedelta(hours=2),
+                ),
+                LotSyncRun(
+                    id="success",
+                    trigger_type="test",
+                    status="success",
+                    total_sources=1,
+                    started_at=now - timedelta(hours=1),
+                    finished_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                LotSyncSourceRun(
+                    sync_run_id="failure",
+                    source_system="example.ru",
+                    status="failed",
+                    error_message="old timeout",
+                    started_at=now - timedelta(hours=2),
+                    finished_at=now - timedelta(hours=2),
+                ),
+                LotSyncSourceRun(
+                    sync_run_id="success",
+                    source_system="example.ru",
+                    status="success",
+                    complete_source_run=True,
+                    items_seen=12,
+                    started_at=now - timedelta(hours=1),
+                    finished_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        session.commit()
+        item = list_source_health(session, now=now)[0]
+
+    assert item.status == "healthy"
+    assert item.last_error is None
+    assert item.last_error_category is None
