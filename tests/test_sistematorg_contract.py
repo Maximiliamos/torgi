@@ -214,3 +214,44 @@ def test_sistematorg_landmark_postal_address_is_asset_scoped() -> None:
     assert "ориентира:" not in lot.address.casefold()
     assert lot.cadastral_number == "02:53:120401:131"
 
+
+
+def structural_section(lot_id,price,*,number=None):
+    number=lot_id if number is None else number
+    return f'''<table><tr><th><span class="lot_header"><span class="lot_title">
+    Лот № {lot_id}: Лот №{lot_id}: Земельный участок
+    </span></span></th></tr>
+    <tr><td>Номер лота</td><td>{number}</td></tr>
+    <tr><td>Наименование имущества</td><td>Лот №{lot_id}: Земельный участок</td></tr>
+    <tr><td>Сведения об имуществе</td><td>Лот №{lot_id}: Земельный участок площадью 1000 кв.м.</td></tr>
+    <tr><td>Начальная цена</td><td>{price} руб.</td></tr>
+    <tr><td>Статус торгов</td><td>Торги объявлены</td></tr></table>'''
+
+
+def test_structural_headers_do_not_treat_title_and_description_mentions_as_extra_lots():
+    html='Всего лотов: 2. '+structural_section(1,100000)+structural_section(2,200000)
+    html+='<span class="lot_header">Извещения о торгах в печатной форме</span>'
+    lots=parse_sistematorg_detail_lots(html,detail_url='https://sistematorg.com/trade_view.php?trade_nid=66404')
+    assert [x.external_id for x in lots]==['sistematorg.com:66404:1','sistematorg.com:66404:2']
+    assert [x.start_price for x in lots]==[100000,200000]
+    assert all('BANKROTAI_SISTEMA' not in x.description for x in lots)
+
+
+def test_repeated_real_structural_section_id_is_still_rejected():
+    with pytest.raises(ValueError,match='duplicate_detail_lot_id'):
+        parse_sistematorg_detail_lots(structural_section(1,100000)+structural_section(1,200000),
+            detail_url='https://sistematorg.com/trade_view.php?trade_nid=66404')
+
+
+def test_structural_header_must_match_independent_number_field():
+    with pytest.raises(ValueError,match='lot_number_field_mismatch'):
+        parse_sistematorg_detail_lots(structural_section(1,100000,number=2),
+            detail_url='https://sistematorg.com/trade_view.php?trade_nid=66404')
+
+
+def test_structural_section_cannot_omit_independent_number_field():
+    html=structural_section(1,100000).replace('<tr><td>Номер лота</td><td>1</td></tr>','')
+    with pytest.raises(ValueError,match='structural_section_has_no_lot_number_field'):
+        parse_sistematorg_detail_lots(html,detail_url='https://sistematorg.com/trade_view.php?trade_nid=66404')
+import pytest
+
