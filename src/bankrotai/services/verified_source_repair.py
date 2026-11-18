@@ -11,6 +11,13 @@ from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
 
 
+# Logical connector IDs can differ from their current public host. Keep aliases
+# explicit: a captured link to an arbitrary ETP is not evidence for that source.
+SOURCE_EVIDENCE_DOMAIN_ALIASES = {
+    "torgi-russia.ru": frozenset({"xn----etbpba5admdlad.xn--p1ai"}),
+}
+
+
 def repair_verified_source_lots(
     session, *, evidence: list[dict], allowed_lot_ids: set[int],
     apply: bool = False, expected_states: dict[int, str] | None = None,
@@ -33,8 +40,10 @@ def repair_verified_source_lots(
             raise ValueError("Source evidence is stale or lacks an explicit timezone")
         url = urlsplit(proof.get("source_url", ""))
         source = lot.get("source_system", "")
+        domains = {source, *SOURCE_EVIDENCE_DOMAIN_ALIASES.get(source, ())}
         if (url.scheme != "https" or not source or url.username or url.password
-                or not (url.hostname == source or str(url.hostname).endswith("." + source))):
+                or not any(url.hostname == domain or str(url.hostname).endswith("." + domain)
+                           for domain in domains)):
             raise ValueError("Source evidence URL is not on the exact source domain")
         if proof.get("external_id") != lot.get("external_id"):
             raise ValueError("Source proof and normalized identity differ")

@@ -92,6 +92,35 @@ def test_exact_scope_and_preview_are_required(context):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True)
 
 
+@pytest.mark.parametrize("source,url,accepted", [
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai/lot/1", True),
+    ("torgi-russia.ru", "https://torgi-russia.ru/lot/1", True),
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai.evil.example/lot/1", False),
+    ("torgi-russia.ru", "https://evilxn----etbpba5admdlad.xn--p1ai/lot/1", False),
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai@evil.example/lot/1", False),
+    ("torgi-russia.ru", "http://xn----etbpba5admdlad.xn--p1ai/lot/1", False),
+    ("test.ru", "https://xn----etbpba5admdlad.xn--p1ai/lot/1", False),
+])
+def test_source_proof_accepts_only_its_pinned_public_domain(context, source, url, accepted):
+    session, record, source_row, evidence = context
+    record.source_system = source_row.source_system = source
+    evidence[0]["normalized"].update(source_system=source, source_url=url, lot_url=url)
+    evidence[0]["verification"]["source_url"] = url
+    session.commit()
+    if not accepted:
+        with pytest.raises(ValueError, match="exact source domain"):
+            repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+        assert not session.dirty
+        return
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert record.address == source_row.address == "Проверенный новый адрес"
+    assert record.review_status == "approved"
+
+
 @pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
 def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
     session, record, source, evidence = context
