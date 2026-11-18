@@ -147,3 +147,27 @@ def test_diagnose_all_progress_includes_per_stage_state(monkeypatch, capsys):
     assert progress["pages_checked"] == 1
     assert progress["sample_lots"] == 1
     assert result["database_writes"] == result["map_writes"] == 0
+
+
+def test_sberbank_filtered_page_can_advance_to_property_without_claiming_terminal(monkeypatch):
+    class FilteredFirst(FakeConnector):
+        async def search(self, filters, cursor=None):
+            if cursor is None:
+                return SimpleNamespace(items=[],next_cursor='2',metadata={
+                    'api_total_is_source_end':True,'terminal_page':18})
+            return await super().search(filters,cursor)
+    monkeypatch.setattr(checklist,'_connector',lambda source:(FilteredFirst(source),object()))
+    item=asyncio.run(checklist.diagnose_source('sberbank-ast.ru'))
+    assert item['pages_checked']==2 and item['sample_lots']==1
+    assert item['stages']['lot_discovery']['state']==checklist.PASS
+    assert item['stages']['last_page_proven']['state']==checklist.NOT_TESTED
+    assert item['first_failure'] is None
+
+
+def test_empty_sberbank_page_without_source_count_proof_still_fails(monkeypatch):
+    class Unproven(FakeConnector):
+        async def search(self, filters, cursor=None):
+            return SimpleNamespace(items=[],next_cursor='2',metadata={})
+    monkeypatch.setattr(checklist,'_connector',lambda source:(Unproven(source),object()))
+    item=asyncio.run(checklist.diagnose_source('sberbank-ast.ru'))
+    assert item['first_failure']['category']=='empty_page'

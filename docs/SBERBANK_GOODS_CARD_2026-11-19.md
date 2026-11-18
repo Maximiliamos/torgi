@@ -50,3 +50,9 @@ a primary «Участок № ...» title still qualifies. These checks also re
 an industrial line carrying a stale property category in an older record.
 
 Expanded validation: 160 source/classification/filter/map tests passed.
+
+A current source page can legitimately contain no property after filtering
+while the same proven catalogue has a next page. The read-only checklist
+now advances across that specific verified Sberbank condition, keeps empty
+unproven pages failing, and does not certify a terminal page from a count.
+174 source/classification/filter/map/checklist tests passed together.
