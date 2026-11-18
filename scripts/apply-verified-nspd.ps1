@@ -2,6 +2,7 @@
 param([Parameter(Mandatory)][string]$Evidence,
       [Parameter(Mandatory)][string]$Output,
       [Parameter(Mandatory)][string]$ExpectedDeploymentSha,
+      [ValidateSet('stale_no_match','current_missing_geo')][string]$Mode = 'stale_no_match',
       [switch]$Apply, [switch]$ValidateTransaction,
       [string]$Plan, [string]$BackupMetadata)
 $ErrorActionPreference = 'Stop'
@@ -17,10 +18,12 @@ if ($Apply -and -not $ValidateTransaction) {
     }
 }
 $receipts = @(Get-Content -LiteralPath (Join-Path $root $Evidence) -Raw | ConvertFrom-Json)
-$payload = @{ receipts=$receipts; apply=[bool]$Apply; rollback_only=[bool]$ValidateTransaction }
+$payload = @{ receipts=$receipts; mode=$Mode; apply=[bool]$Apply; rollback_only=[bool]$ValidateTransaction }
 if ($Apply) {
     if (-not $Plan) { throw 'Preview plan required' }
     $preview = Get-Content -LiteralPath (Join-Path $root $Plan) -Raw | ConvertFrom-Json
+    if (($preview.mode -and $preview.mode -ne $Mode) -or (-not $preview.mode -and $Mode -ne 'stale_no_match')) { throw 'Preview mode mismatch' }
+    if ($Mode -eq 'current_missing_geo') { $payload.expected_current_plan = $preview }
     $fileSha = (Get-FileHash -LiteralPath (Join-Path $root $Evidence) -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($preview.evidence_file_sha256 -ne $fileSha) { throw 'Evidence file changed after preview' }
     $payload.expected_proof_sha256 = $preview.evidence_sha256

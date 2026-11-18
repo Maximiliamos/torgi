@@ -83,7 +83,9 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     current_price=Decimal("1000000"),
                     next_interval_price=Decimal("950000"),
                     next_price_reduction_at=datetime(2026, 8, 24, 10, 0),
-                    raw_data={"minimum_price": 500000, "image_urls": ["https://example.test/own.jpg"]},
+                    raw_data={"minimum_price": 500000, "image_urls": ["https://example.test/own.jpg"],
+                              "verified_source_fields": {"current_price": {"value": "1E+6",
+                                  "sha256": "a"*64, "checked_at_utc": "2026-08-22T12:00:00+00:00"}}},
                     last_seen_at=datetime(2026, 8, 22, 12, 0),
                 ),
                 SourceLot(

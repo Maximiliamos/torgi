@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from bankrotai.db import LotNote, LotSyncRun, ProcessedLot, SessionLocal
 from bankrotai.services.nspd_evidence import nspd_result_from_receipt
 from bankrotai.services.stale_cadastral_recovery import recover_stale_cadastral_live_results
+from bankrotai.services.verified_current_nspd import replay_current_nspd
 
 
 def digest(session):
@@ -27,6 +28,9 @@ def digest(session):
 def main():
     payload = json.load(sys.stdin)
     receipts = payload["receipts"]
+    mode = payload.get("mode", "stale_no_match")
+    if mode not in {"stale_no_match", "current_missing_geo"}:
+        raise ValueError("Unknown NSPD operator mode")
     ids = [int(lot_id) for r in receipts for lot_id in r["lot_ids"]]
     if not receipts or not 1 <= len(ids) <= 100 or len(set(ids)) != len(ids):
         raise ValueError("Expected 1..100 distinct exact lot IDs")
@@ -43,7 +47,8 @@ def main():
         else:
             session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
         before = digest(session)
-        result = recover_stale_cadastral_live_results(
+        result = replay_current_nspd(session,receipts=receipts,apply=bool(payload.get("apply")),
+            expected=payload.get("expected_current_plan")) if mode == "current_missing_geo" else recover_stale_cadastral_live_results(
             session, lot_ids=ids,
             live_result_probe=lambda cadastre: (results.get(cadastre), "primary_receipt_identity_missing"),
             apply=bool(payload.get("apply")),
@@ -57,7 +62,7 @@ def main():
             session.commit()
         else:
             session.rollback()
-    print(json.dumps({**result, "evidence_sha256": proof_sha, "committed": committed,
+    print(json.dumps({**result, "mode": mode, "evidence_sha256": proof_sha, "committed": committed,
                       "reviews_and_notes_preserved": preserved, "deleted_lots": 0,
                       "network_requests": 0}, ensure_ascii=True))
 
