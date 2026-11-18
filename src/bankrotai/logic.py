@@ -1,4 +1,5 @@
 from __future__ import annotations
+from bankrotai.services.source_enum import source_enum_text
 
 import logging
 import re
@@ -408,7 +409,7 @@ def _sync_source_lot(
     source_lot.auction_step_percent = normalized.auction_step_percent or _to_float(
         _raw_value(raw, "auction_step_percent")
     )
-    source_lot.auction_type = normalized.auction_type or _raw_value(raw, "trade_type", "auction_type")
+    source_lot.auction_type = source_enum_text(normalized.auction_type) or source_enum_text(_raw_value(raw, "trade_type", "auction_type"))
     source_lot.public_offer_schedule = normalized.public_offer_schedule or _raw_value(raw, "public_offer_schedule")
     source_lot.next_interval_price = _to_decimal(
         normalized.next_interval_price

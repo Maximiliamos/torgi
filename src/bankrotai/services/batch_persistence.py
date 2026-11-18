@@ -1,4 +1,5 @@
 from __future__ import annotations
+from bankrotai.services.source_enum import source_enum_text
 
 from dataclasses import dataclass
 from typing import Any
@@ -182,7 +183,7 @@ def _source_values(
             else _to_float(_raw_value(raw, "auction_step", "auction_step_amount"))
         ),
         "auction_step_percent": lot.auction_step_percent or _to_float(_raw_value(raw, "auction_step_percent")),
-        "auction_type": lot.auction_type or _raw_value(raw, "trade_type", "auction_type"),
+        "auction_type": source_enum_text(lot.auction_type) or source_enum_text(_raw_value(raw, "trade_type", "auction_type")),
         "public_offer_schedule": lot.public_offer_schedule or _raw_value(raw, "public_offer_schedule"),
         "next_interval_price": _to_decimal(
             lot.next_interval_price
