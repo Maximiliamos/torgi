@@ -174,6 +174,12 @@ def main() -> None:
                     lot.category = classify_category(lot.title, lot.description)
                     observed.append("category")
 
+                lot.detail_level = "detail"
+                observed.append("detail_level")
+                if any(name in observed for name in ("application_deadline", "auction_at")):
+                    lot.auction_timezone = "Europe/Moscow"
+                    observed.append("auction_timezone")
+
                 raw.update({
                     "detail_identity_verified": True,
                     "detail_html_sha256": result["detail_html_sha256"],
