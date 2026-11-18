@@ -34,6 +34,7 @@ from bankrotai.services.map_dataset_version import (
     dataset_pipeline_revision,
 )
 from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
+from bankrotai.services.map_quality_baseline import region_point_quality_transition_ids
 from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns, map_source_join_condition
 
 MAX_DATASET_ZOOM = 14
@@ -387,6 +388,9 @@ def _dimension_coverage_failures(
         return []
     previous = session.get(MapDataset, current_dataset_id)
     candidate = session.get(MapDataset, new_dataset_id)
+    quality_removed_ids = region_point_quality_transition_ids(
+        session, previous=previous, candidate=candidate, old_ids=old_ids,
+    )
     # r7 intentionally removed ended auctions that r6 still displayed.
     # Exclude only those explicitly ended legacy rows from the old baseline;
     # never relax the guard for an active row, another revision or a repeat.
@@ -411,7 +415,7 @@ def _dimension_coverage_failures(
         if lot_id in old_ids:
             for dimension in dimensions:
                 raw_old_counts[dimension] += 1
-                if not (ended_membership_migration and auction_status in ENDED_STATUSES):
+                if lot_id not in quality_removed_ids and not (ended_membership_migration and auction_status in ENDED_STATUSES):
                     old_counts[dimension] += 1
         if lot_id in new_ids:
             for dimension in dimensions:

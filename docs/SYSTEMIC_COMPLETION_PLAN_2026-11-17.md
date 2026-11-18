@@ -450,3 +450,37 @@
     Успенская площадь 4. Этот класс не считается закрытым исправлением
     region-only. Новые точные NSPD receipts и current_missing_geo mode
     позволяют восстановить подтверждённые объекты без повторных HTTP.
+
+63. Единая операция 9681b58e завершена success: 13033 source records,
+    57017 detached unsupported duplicate links, 839 GEO resets из 1394
+    выбранных (остальные уже reset source repair). Оценки 469 и notes 0,
+    digest e4f2e353… совпал до/после. READ ONLY оставшихся duplicate links: 0.
+    Независимая field verification 14 групп пройдена. По новым обращениям
+    57/58 точные NSPD coordinates применены после preview/rollback trial:
+    119 — 58.103305105681116,40.72477521105667;
+    5064 — 57.89274207285847,38.28833482467228. Старые snapshots сохранены.
+64. #1260 внедрён как eb48f5b2251bbdad0ab0979f1bda2c520267440c,
+    deployment 44391519219 success, три worker image SHA проверены.
+    Свежая проверка пустых GIS dates охватила 28343/28343 exact identities:
+    27965 official export + 377 additional export + 1 direct official API.
+    В 12378 записях auction_at явно наблюдался; остальные поля даты остаются
+    unobserved, что не означает доказанное отсутствие даты на каждой странице.
+65. Russia current API walk завершён: 31779 различных public IDs,
+    23987 существующих DB identities подтверждены; один user exclusion
+    пропущен. Это literal current publisher title/price/status, не исторический
+    или первичный ETP certificate всей Russia базы. Заморожен следующий
+    пакет 36364 = Russia 23986 + GIS dates 12378. После первых 1000
+    committed records операция 77c6e382 завершилась failed с rollback
+    текущей транзакции: raw trade_type={id,title} попал в VARCHAR auction_type.
+    469 оценок сохранены; partial receipts сохранены. Подготовлена нормализация
+    enum label в обоих writers, а не обход/удаление проблемных лотов.
+66. Карта 20261118T202020029541Z-r10-bundle-s3 построена (52789 points),
+    но не принята: Sberbank source 108→10 при required=54. Это ровно
+    98 старых points, инвалидированных region-only policy; глобальный
+    point-count вырос. Подготовлен r10→r11 transition: из старого dimensional
+    baseline исключаются лишь exact old IDs с operator audit event после
+    предыдущей публикации и до candidate, проверенным собственным сохранённым
+    snapshot и чистым region-only query. Ratio 0.5 и raw minimum-baseline
+    eligibility не меняются; исчезновение оставшихся valid IDs всё ещё fails.
+    Global volume, fingerprint, lease, S3 и остальные guards не ослабляются.
+    Новый dataset и итоговые P1/P11/three-source/seven-source пока не приняты.
