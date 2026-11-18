@@ -90,6 +90,11 @@ from bankrotai.services.quality import (
     map_delivery_reconciliation_report,
     operational_quality_report,
 )
+from bankrotai.services.reliability import (
+    build_reliability_sources,
+    build_reliability_summary,
+    reliability_map_delivery,
+)
 from bankrotai.services.map_source_filters import (
     map_source_catalogue, parse_source_selection,
 )
@@ -160,6 +165,11 @@ _READ_ONLY_EXACT_PATHS = {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/operations/progress",
+    "/api/reliability/summary",
+    "/api/reliability/sources",
+    "/api/reliability/map-delivery",
+    "/api/quality/operational",
+    "/api/quality/map-delivery",
     "/api/operations/geocoding/fast-drain/plan",
     "/api/tbankrot/auth/status",
     "/api/tbankrot/auth/screenshot",
@@ -2436,6 +2446,37 @@ def compare_lot_documents(
 def get_data_quality():
     with read_session_scope() as session:
         return data_quality_snapshot(session).model_dump(mode="json")
+
+
+@app.get("/api/reliability/summary")
+def get_reliability_summary(actor: AuthenticatedUser = Depends(require_user)):
+    with read_session_scope() as session:
+        return jsonable_encoder(
+            build_reliability_summary(
+                session,
+                deployment_sha=os.environ.get("BANKROTAI_DEPLOY_SHA", ""),
+                app_version=__version__,
+                schema_revision=SCHEMA_REVISION,
+                api_read_only=settings.api_read_only,
+            )
+        )
+
+
+@app.get("/api/reliability/sources")
+def get_reliability_sources(actor: AuthenticatedUser = Depends(require_user)):
+    with read_session_scope() as session:
+        return jsonable_encoder(build_reliability_sources(session))
+
+
+@app.get("/api/reliability/map-delivery")
+def get_reliability_map_delivery(
+    verify_manifest: bool = Query(True),
+    actor: AuthenticatedUser = Depends(require_user),
+):
+    with read_session_scope() as session:
+        return jsonable_encoder(
+            reliability_map_delivery(session, verify_manifest=verify_manifest)
+        )
 
 
 @app.get("/api/quality/operational", dependencies=[Depends(require_admin)])
