@@ -2,6 +2,7 @@
 param([Parameter(Mandatory)][string]$Selection,
       [Parameter(Mandatory)][string]$Output,
       [Parameter(Mandatory)][string]$ExpectedDeploymentSha,
+      [ValidateSet('duplicate_links','geo_query_policy')][string]$Operation = 'duplicate_links',
       [switch]$Apply, [switch]$ValidateTransaction,
       [string]$Plan, [string]$BackupMetadata, [string]$MaintenanceRunId)
 $ErrorActionPreference = 'Stop'
@@ -19,10 +20,11 @@ if ($Apply -and -not $ValidateTransaction) {
 $selectionPath = Join-Path $root $Selection
 $ids = @(Get-Content -LiteralPath $selectionPath -Raw | ConvertFrom-Json)
 $fileSha = (Get-FileHash -LiteralPath $selectionPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$payload = @{lot_ids=$ids;apply=[bool]$Apply;rollback_only=[bool]$ValidateTransaction;maintenance_run_id=$MaintenanceRunId}
+$payload = @{lot_ids=$ids;operation=$Operation;apply=[bool]$Apply;rollback_only=[bool]$ValidateTransaction;maintenance_run_id=$MaintenanceRunId}
 if ($Apply) {
     if (-not $Plan -or -not $MaintenanceRunId) { throw 'Preview and maintenance identity required' }
     $expected = Get-Content -LiteralPath (Join-Path $root $Plan) -Raw | ConvertFrom-Json
+    if ($Operation -ne 'duplicate_links' -and $expected.operation -ne $Operation) { throw 'Preview operation mismatch' }
     if ($expected.selection_file_sha256 -ne $fileSha) { throw 'Exact selection changed after preview' }
     $payload.expected = $expected
 }

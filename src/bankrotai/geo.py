@@ -30,6 +30,7 @@ from bankrotai.services.geo_address_candidates import (
     extract_best_numbered_address,
     extract_explicit_source_coordinates,
     is_incomplete_address,
+    is_region_only_address,
 )
 from bankrotai.services.geo_resilience import (
     GeoProviderUnavailable,
@@ -601,6 +602,9 @@ class CadastralGeocoder:
         )
 
     def search_by_address(self, address: str, *, allow_nominatim: bool = True) -> CadastralObjectResult:
+        if is_region_only_address(address):
+            return CadastralObjectResult(query=address, address=address, source="address",
+                                         confidence="none", error="region_only_address")
         photon_error: GeoProviderUnavailable | None = None
         try:
             result = PHOTON_GEOCODER.geocode(address)
@@ -1428,7 +1432,7 @@ class PhotonGeocoder:
         return None
 
     def geocode(self, address: str) -> dict[str, Any] | None:
-        if len(address.strip()) < 5:
+        if len(address.strip()) < 5 or is_region_only_address(address):
             return None
         if not self.base_url:
             # A missing provider is an operational failure, not evidence
@@ -1897,6 +1901,8 @@ def validate_geocoding_result(
 ) -> tuple[bool, str]:
     if result is None or result.lat is None or result.lon is None:
         return False, "no_coordinates"
+    if result.source in {"photon", "nominatim"} and is_region_only_address(result.query or address):
+        return False, "region_only_address"
     if not (-90 <= result.lat <= 90 and -180 <= result.lon <= 180):
         return False, "coordinates_out_of_range"
     if result.confidence in {"none", "low", "unknown"}:
