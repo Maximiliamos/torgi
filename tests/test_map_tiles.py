@@ -347,7 +347,7 @@ def test_builder_excludes_unsupported_final_bundle_region_from_cadastral_prefix(
     assert unsupported_id not in included_ids
 
 
-def test_builder_uses_denormalized_current_geo_while_detail_keeps_history_order():
+def test_builder_and_detail_agree_on_current_geo_without_rewriting_history():
     factory = _database()
     with factory() as session:
         lot = session.scalar(select(ProcessedLot).where(ProcessedLot.external_id == "tile-lot"))
@@ -396,9 +396,15 @@ def test_builder_uses_denormalized_current_geo_while_detail_keeps_history_order(
     assert feature["lon"] == pytest.approx(39.8845)
     with factory() as session:
         detail = build_map_lot_detail(session, lot.id)
+        history = session.scalars(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot.id)
+                                  .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())).all()
+        assert len(history) == 3
+        assert history[0].geo_source == "same-time-later-id"
+        assert history[0].centroid_lat == 58.0
+        assert not session.new and not session.dirty
     assert detail is not None
-    assert detail["lat"] == pytest.approx(58.0)
-    assert detail["lon"] == pytest.approx(40.0)
+    assert detail["lat"] == pytest.approx(feature["lat"])
+    assert detail["lon"] == pytest.approx(feature["lon"])
 
 
 def test_builder_keeps_distinct_lots_at_same_coordinates_without_duplicate_ids():

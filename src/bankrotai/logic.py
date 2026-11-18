@@ -860,45 +860,10 @@ def _same_processed_cross_source_lot(left: ProcessedLot, right: ProcessedLot) ->
 
 
 def reconcile_cross_source_duplicates(session: Session) -> int:
-    """Mark existing cross-source copies and link them to one canonical card."""
-    by_cadastral: dict[str, list[ProcessedLot]] = {}
-    by_price: dict[int, list[ProcessedLot]] = {}
-    reconciled = 0
+    """Revalidate legacy suppression links before reconciling proven copies."""
+    from bankrotai.services.legacy_duplicate_repair import reconcile_source_copies
+    return reconcile_source_copies(session)
 
-    # Retain global candidate indexes, but page the wide 200k+ row table so a
-    # single ordered SELECT cannot exceed PostgreSQL statement_timeout.
-    for lot in iter_primary_processed_lots(session):
-        candidates: list[ProcessedLot] = []
-        for cadastral in _processed_lot_cadastral_numbers(lot):
-            candidates.extend(by_cadastral.get(cadastral, []))
-        price = lot.current_price or lot.start_price
-        if price is not None:
-            candidates.extend(by_price.get(int(round(float(price))), []))
-
-        primary = next((candidate for candidate in dict.fromkeys(candidates)
-                        if _same_processed_cross_source_lot(candidate, lot)), None)
-        if primary is not None:
-            lot.duplicate_of_id = primary.id
-            primary.address = primary.address or lot.address
-            primary.cadastral_number = primary.cadastral_number or lot.cadastral_number
-            primary.cadastral_numbers = primary.cadastral_numbers or lot.cadastral_numbers
-            primary.region_slug = primary.region_slug or lot.region_slug
-            primary.region_name = primary.region_name or lot.region_name
-            primary.area = primary.area if primary.area is not None else lot.area
-            primary.review_status = primary.review_status or lot.review_status
-            primary_link = _ensure_processed_source_lot(session, primary)
-            duplicate_link = _ensure_processed_source_lot(session, lot)
-            duplicate_link.canonical_lot_id = primary_link.canonical_lot_id
-            reconciled += 1
-            continue
-
-        for cadastral in _processed_lot_cadastral_numbers(lot):
-            by_cadastral.setdefault(cadastral, []).append(lot)
-        if price is not None:
-            by_price.setdefault(int(round(float(price))), []).append(lot)
-
-    session.flush()
-    return reconciled
 
 def upsert_lot_events_from_raw(session: Session, processed: ProcessedLot, raw_payload: dict) -> None:
     if not session.query(LotGeoSnapshot).filter_by(lot_id=processed.id).first():

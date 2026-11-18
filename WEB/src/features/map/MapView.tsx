@@ -1125,10 +1125,12 @@ function LotPreview({
           <dd>
             {lot.application_deadline
               ? `${formatMoscowDate(lot.application_deadline)} МСК`
-              : ""}
+              : lot.unverified_auction_fields?.includes("application_deadline")
+                ? "Требует проверки на площадке" : ""}
           </dd>
           <dt>Торги:</dt>
-          <dd>{lot.auction_at ? `${formatMoscowDate(lot.auction_at)} МСК` : ""}</dd>
+          <dd>{lot.auction_at ? `${formatMoscowDate(lot.auction_at)} МСК`
+            : lot.unverified_auction_fields?.includes("auction_at") ? "Требует проверки на площадке" : ""}</dd>
           {lot.procedure_number && (
             <>
               <dt>Процедура:</dt>

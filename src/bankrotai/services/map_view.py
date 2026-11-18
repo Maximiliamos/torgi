@@ -11,6 +11,8 @@ from bankrotai.services.map_source_filters import source_match_condition
 from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
+from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, trusted_preview_raw, unverified_auction_fields
+from bankrotai.services.map_geo_projection import current_map_geo
 
 
 def extract_map_image_urls(raw_data: object) -> list[str]:
@@ -78,7 +80,7 @@ def _map_lot_payload(
     sources = [source for _processed, source in source_rows]
     primary = next(
         (item for item in sources if item.source_system == lot.source_system and item.external_id == lot.external_id),
-        sources[0] if sources else None,
+        None,
     )
     source_url = primary.source_url if primary and primary.source_url else lot.source_url or lot.lot_url
     source_system = (lot.source_system or lot.source or "").casefold()
@@ -86,8 +88,8 @@ def _map_lot_payload(
     gis_url = None
     etp_url = None
     russia_url = None
-    for source in sources:
-        raw = source.raw_data if isinstance(source.raw_data, dict) else {}
+    for source in ([primary] if primary is not None else []):
+        raw = trusted_preview_raw(source)
         for url in extract_map_image_urls(raw):
             if url not in images:
                 images.append(url)
@@ -96,8 +98,8 @@ def _map_lot_payload(
         etp_url = etp_url or raw.get("etp_url") or (source.source_url if "lot-online" in system else None)
         russia_url = russia_url or raw.get("torgi_russia_url")
 
-    auction_at = max((item.auction_at for item in sources if item.auction_at), default=None)
-    price_observed_at = primary.last_seen_at if primary and primary.last_seen_at else lot.last_update
+    auction_at = source_auction_date(primary, "auction_at")
+    price_observed_at = primary.last_seen_at if primary else None
     primary_raw = primary.raw_data if primary and isinstance(primary.raw_data, dict) else {}
     minimum_price = primary_raw.get("minimum_price")
     publications = [
@@ -147,7 +149,7 @@ def _map_lot_payload(
         "next_interval_price": float(primary.next_interval_price)
         if primary and primary.next_interval_price is not None
         else None,
-        "next_price_reduction_at": _display_datetime(primary.next_price_reduction_at if primary else None),
+        "next_price_reduction_at": business_datetime_iso(primary.next_price_reduction_at if primary else None),
         "lat": geo.centroid_lat,
         "lon": geo.centroid_lon,
         "geometry": geo.geometry_json,
@@ -163,11 +165,10 @@ def _map_lot_payload(
         "torgi_russia_url": russia_url,
         "image_url": images[0] if images else None,
         "image_urls": images,
-        "procedure_number": next((item.procedure_number for item in sources if item.procedure_number), None),
-        "application_deadline": _display_datetime(
-            next((item.application_deadline for item in sources if item.application_deadline), None)
-        ),
-        "auction_at": _display_datetime(auction_at),
+        "procedure_number": primary.procedure_number if primary else None,
+        "application_deadline": business_datetime_iso(source_auction_date(primary, "application_deadline")),
+        "auction_at": business_datetime_iso(auction_at),
+        "unverified_auction_fields": unverified_auction_fields(primary),
         "sources": publications,
     }
 
@@ -376,17 +377,20 @@ def build_map_lots_response(
 
 
 def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
+    lot = session.get(ProcessedLot, lot_id)
+    if lot is None or lot.current_geo_lat is None or lot.current_geo_lon is None:
+        return None
     latest_geo = session.scalar(
         select(LotGeoSnapshot)
         .where(
             LotGeoSnapshot.lot_id == lot_id,
-            LotGeoSnapshot.centroid_lat.isnot(None),
-            LotGeoSnapshot.centroid_lon.isnot(None),
+            LotGeoSnapshot.centroid_lat == lot.current_geo_lat,
+            LotGeoSnapshot.centroid_lon == lot.current_geo_lon,
         )
         .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
     )
-    lot = session.get(ProcessedLot, lot_id)
-    if lot is None or latest_geo is None:
+    latest_geo = current_map_geo(lot, latest_geo)
+    if latest_geo is None:
         return None
     source_rows = list(
         session.execute(

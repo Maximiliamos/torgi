@@ -13,6 +13,9 @@ from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 
 
 class _FakeSession:
+    def __init__(self):
+        self.info = {}
+
     def commit(self):
         pass
 

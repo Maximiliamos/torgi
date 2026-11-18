@@ -9,6 +9,14 @@ from bankrotai.db import LotSyncRun, SourceLot
 
 from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
+from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, excluded_ids
+
+
+# Logical connector IDs can differ from their current public host. Keep aliases
+# explicit: a captured link to an arbitrary ETP is not evidence for that source.
+SOURCE_EVIDENCE_DOMAIN_ALIASES = {
+    "torgi-russia.ru": frozenset({"xn----etbpba5admdlad.xn--p1ai"}),
+}
 
 
 def repair_verified_source_lots(
@@ -21,6 +29,8 @@ def repair_verified_source_lots(
     now = datetime.now(timezone.utc)
     previous_verifications = {}
     run_observations = {}
+    recheck_geo_ids = set()
+    source_identities: dict[str, set[str]] = {}
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
@@ -33,11 +43,15 @@ def repair_verified_source_lots(
             raise ValueError("Source evidence is stale or lacks an explicit timezone")
         url = urlsplit(proof.get("source_url", ""))
         source = lot.get("source_system", "")
+        domains = {source, *SOURCE_EVIDENCE_DOMAIN_ALIASES.get(source, ())}
         if (url.scheme != "https" or not source or url.username or url.password
-                or not (url.hostname == source or str(url.hostname).endswith("." + source))):
+                or not any(url.hostname == domain or str(url.hostname).endswith("." + domain)
+                           for domain in domains)):
             raise ValueError("Source evidence URL is not on the exact source domain")
-        if proof.get("external_id") != lot.get("external_id"):
+        if (proof.get("external_id") != lot.get("external_id")
+                or not isinstance(lot.get("external_id"), str) or not lot["external_id"]):
             raise ValueError("Source proof and normalized identity differ")
+        source_identities.setdefault(source, set()).add(lot["external_id"])
         raw = lot.get("raw_data", {})
         if raw.get("repair_evidence_sha256") != proof["sha256"]:
             raise ValueError("Normalized evidence references a different source snapshot")
@@ -46,6 +60,12 @@ def repair_verified_source_lots(
             raise ValueError("Explicit bounded observed field scope is required")
         if not observed <= set(proof.get("observed_fields", [])) | {"category", "detail_level"}:
             raise ValueError("Repair includes a field absent from source evidence")
+        if "recheck_geo" in item and not isinstance(item["recheck_geo"], bool):
+            raise ValueError("GEO recheck must be an explicit boolean")
+        if item.get("recheck_geo"):
+            if "cadastral_number" not in observed or "cadastral_number" not in proof.get("observed_fields", []):
+                raise ValueError("GEO recheck requires freshly observed cadastral identity")
+            recheck_geo_ids.add(item["lot_id"])
         if any(lot.get(name) is None or lot.get(name) == "" for name in observed):
             raise ValueError("Missing public fields cannot erase historical facts")
         if "auction_status" in observed and lot.get("auction_status") == "unknown":
@@ -61,7 +81,7 @@ def repair_verified_source_lots(
             SourceLot.source_system == source, SourceLot.external_id == lot["external_id"],
         ))
         existing_raw = existing.raw_data or {} if existing is not None else {}
-        if existing is not None and source == "torgi.gov.ru":
+        if existing is not None:
             stamp = existing_raw.get("ingestion_observed_at")
             observed_at = datetime.fromisoformat(stamp) if stamp else None
             if observed_at is None and existing.last_sync_run_id:
@@ -84,13 +104,16 @@ def repair_verified_source_lots(
                 previous = datetime.fromisoformat(stamp)
                 if previous.tzinfo is None or previous > checked:
                     raise ValueError(f"Source evidence is older than the verified field: {name}")
+    for source, identities in source_identities.items():
+        if excluded_ids(session, source, identities):
+            raise SourceLotExcludedError("Verified repair cannot restore an explicitly user-excluded source lot")
     digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()
     if apply and expected_evidence_sha256 != digest:
         raise ValueError("Evidence does not match the reviewed preview")
     result = _repair_exact_lots(
         session, evidence=evidence, allowed_lot_ids=allowed_lot_ids, apply=apply,
         expected_states=expected_states, allow_reviewed_source_fields=True,
-        audit_scope="verified_source",
+        recheck_geo_ids=recheck_geo_ids, audit_scope="verified_source",
     )
     result["evidence_sha256"] = digest
     if apply:

@@ -92,14 +92,141 @@ def test_exact_scope_and_preview_are_required(context):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True)
 
 
+@pytest.mark.parametrize("source,url,accepted", [
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai/lot/1", True),
+    ("torgi-russia.ru", "https://torgi-russia.ru/lot/1", True),
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai.evil.example/lot/1", False),
+    ("torgi-russia.ru", "https://evilxn----etbpba5admdlad.xn--p1ai/lot/1", False),
+    ("torgi-russia.ru", "https://xn----etbpba5admdlad.xn--p1ai@evil.example/lot/1", False),
+    ("torgi-russia.ru", "http://xn----etbpba5admdlad.xn--p1ai/lot/1", False),
+    ("test.ru", "https://xn----etbpba5admdlad.xn--p1ai/lot/1", False),
+])
+def test_source_proof_accepts_only_its_pinned_public_domain(context, source, url, accepted):
+    session, record, source_row, evidence = context
+    record.source_system = source_row.source_system = source
+    evidence[0]["normalized"].update(source_system=source, source_url=url, lot_url=url)
+    evidence[0]["verification"]["source_url"] = url
+    session.commit()
+    if not accepted:
+        with pytest.raises(ValueError, match="exact source domain"):
+            repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+        assert not session.dirty
+        return
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert record.address == source_row.address == "Проверенный новый адрес"
+    assert record.review_status == "approved"
+
+
+def test_fresh_identity_can_recheck_stale_geo_without_changing_source_facts(context):
+    session, record, source, evidence = context
+    record.current_geo_lat, record.current_geo_lon = 55, 37
+    record.current_geo_source = "nspd"
+    record.needs_geo_check = False
+    session.commit()
+    item = evidence[0]
+    item["recheck_geo"] = True
+    observed = ["cadastral_number"]
+    item["normalized"]["raw_data"]["repair_observed_fields"] = observed
+    item["verification"]["observed_fields"] = observed
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert preview["items"][0]["recheck_geo"] is True
+    assert (record.current_geo_lat, record.current_geo_lon) == (55, 37)
+    assert not session.dirty
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert record.current_geo_lat is record.current_geo_lon is None
+    assert record.needs_geo_check
+    assert record.address == source.address == "Старый адрес"
+    assert record.review_status == "approved"
+
+
+def test_geo_recheck_cannot_use_unobserved_cadastral_identity(context):
+    session, record, _, evidence = context
+    evidence[0]["recheck_geo"] = True
+    with pytest.raises(ValueError, match="freshly observed cadastral identity"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert not session.dirty
+
+
+@pytest.mark.parametrize("observed_cadastre", [True, False])
+def test_secondary_cadastres_require_source_scope_and_invalidate_stale_geo(context, observed_cadastre):
+    session, record, source, evidence = context
+    primary = record.cadastral_number
+    record.cadastral_numbers = [primary, "76:23:0000001:111"]
+    source.raw_data = {"cadastral_numbers": [primary, "76:23:0000001:111"]}
+    record.current_geo_lat, record.current_geo_lon = 55, 37
+    record.current_geo_source = "nspd"
+    record.needs_geo_check = False
+    session.commit()
+    item = evidence[0]
+    observed = ["cadastral_number"] if observed_cadastre else ["start_price"]
+    item["normalized"]["raw_data"].update(repair_observed_fields=observed,
+                                         cadastral_numbers=[primary, "76:23:0000001:222"])
+    item["verification"]["observed_fields"] = observed
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert ("cadastral_numbers" in preview["items"][0]["changes"]) == observed_cadastre
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    expected = [primary, "76:23:0000001:222" if observed_cadastre else "76:23:0000001:111"]
+    assert record.cadastral_numbers == source.raw_data["cadastral_numbers"] == expected
+    assert record.current_geo_lat == (None if observed_cadastre else 55)
+    assert record.current_geo_lon == (None if observed_cadastre else 37)
+    assert record.needs_geo_check == observed_cadastre
+    assert record.review_status == "approved"
+
+
+@pytest.mark.parametrize("same_sale", [True, False])
+def test_source_correction_revalidates_legacy_duplicate_identity(context, same_sale):
+    session, record, _, evidence = context
+    shared = "https://test.ru/auction/lot/1"
+    parent = ProcessedLot(source_system="other.ru", external_id="other:1", title="Участок", category="land",
+                          cadastral_number=record.cadastral_number, lot_url=shared, review_status="rejected")
+    session.add(parent)
+    session.flush()
+    record.duplicate_of_id = parent.id
+    record.lot_url = shared if same_sale else "https://test.ru/auction/lot/2"
+    session.commit()
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert ("duplicate_of_id" in preview["items"][0]["changes"]) == (not same_sale)
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    assert record.duplicate_of_id == (parent.id if same_sale else None)
+    assert record.review_status == "approved" and parent.review_status == "rejected"
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_fresh_proof_cannot_restore_a_user_excluded_identity(context, apply):
+    from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, register_exclusion
+    session, record, source, evidence = context
+    register_exclusion(session, source_system=source.source_system, external_id=source.external_id,
+                       reason="Explicit user deletion must remain excluded")
+    record.is_archived = True
+    session.commit()
+    with pytest.raises(SourceLotExcludedError, match="user-excluded"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=apply)
+    assert record.is_archived
+    assert record.address == source.address == "Старый адрес"
+    assert not session.dirty
+
+
 @pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
-def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
+@pytest.mark.parametrize("source_system", ["torgi.gov.ru", "bidexpert.ru", "lot-online.ru"])
+def test_older_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind, source_system):
     session, record, source, evidence = context
     observed_at = datetime.now(timezone.utc)
-    record.source_system = source.source_system = "torgi.gov.ru"
-    evidence[0]["normalized"]["source_system"] = "torgi.gov.ru"
+    record.source_system = source.source_system = source_system
+    evidence[0]["normalized"]["source_system"] = source_system
     evidence[0]["verification"].update(
-        source_url="https://torgi.gov.ru/1",
+        source_url=f"https://{source_system}/1",
         checked_at_utc=(observed_at - timedelta(minutes=1)).isoformat(),
     )
     if observation_kind == "explicit":

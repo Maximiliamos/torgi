@@ -1,3 +1,6 @@
+import type { MapLot } from "./map-lot";
+export type { MapLot } from "./map-lot";
+
 export type SortMode = "recommended" | "price_asc" | "price_desc" | "discount" | "newest";
 export type MainView = "search" | "registry" | "map" | "deal" | "reliability" | "tbankrot";
 export type SearchSource = "torgi-gov" | "tbankrot" | "lot-online";
@@ -165,48 +168,6 @@ export type MapMarkerLot = {
   lon: number;
 };
 
-export type MapLot = {
-  id: number;
-  external_id: string;
-  title: string;
-  description: string;
-  address: string | null;
-  cadastral_number: string | null;
-  category: string;
-  region: string | null;
-  status: string;
-  is_archived: boolean;
-  review_status: string | null;
-  current_price: number | null; start_price?: number | null;
-  minimum_price: number | null;
-  price_observed_at: string | null;
-  next_interval_price: number | null;
-  next_price_reduction_at: string | null;
-  lat: number;
-  lon: number;
-  geometry: GeoJSON.GeoJsonObject | null;
-  confidence: string;
-  source: string;
-  source_name: string;
-  source_url: string | null;
-  gis_torgi_url: string | null;
-  etp_url: string | null;
-  torgi_russia_url: string | null;
-  image_url: string | null;
-  image_urls: string[];
-  procedure_number: string | null;
-  application_deadline: string | null;
-  auction_at: string | null;
-  sources: Array<{
-    processed_lot_id: number;
-    source_system: string;
-    external_id: string;
-    title: string;
-    price: number | null;
-    url: string | null;
-    is_primary: boolean;
-  }>;
-};
 
 export type Procedure = Record<string, string | number | boolean | null | unknown[]>;
 export type MaxBidScenario = {

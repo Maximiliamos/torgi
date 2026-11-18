@@ -5650,14 +5650,22 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _map_payload(
         lot: ProcessedLot,
-        geo: LotGeoSnapshot,
+        geo: LotGeoSnapshot | None,
         source_lots: list[SourceLot] | None = None,
     ) -> dict:
+        from bankrotai.services.source_auction_facts import source_auction_date, trusted_preview_raw, unverified_auction_fields
+        from bankrotai.business_time import to_moscow_datetime
+        from bankrotai.services.map_geo_projection import current_map_geo
+        from bankrotai.services.map_payload import _is_ended
+
+        current_geo = current_map_geo(lot, geo)
+        if current_geo is None:
+            raise ValueError("Cannot publish invalidated lot coordinates")
+        geo = current_geo
+
         def display_datetime(value: datetime | None) -> str | None:
-            if not value:
-                return None
-            utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-            return utc_value.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M МСК")
+            local = to_moscow_datetime(value)
+            return local.strftime("%d.%m.%Y %H:%M МСК") if local is not None else None
 
         source_lots = source_lots or []
         primary_source = next(
@@ -5666,7 +5674,7 @@ class MainWindow(QMainWindow):
                 for source in source_lots
                 if source.source_system == lot.source_system and source.external_id == lot.external_id
             ),
-            source_lots[0] if source_lots else None,
+            None,
         )
         source_url = (
             primary_source.source_url if primary_source and primary_source.source_url
@@ -5677,8 +5685,8 @@ class MainWindow(QMainWindow):
         gis_torgi_url = None
         etp_url = None
         torgi_russia_url = None
-        for source in source_lots:
-            raw_data = source.raw_data if isinstance(source.raw_data, dict) else {}
+        for source in ([primary_source] if primary_source is not None else []):
+            raw_data = trusted_preview_raw(source)
             for image_url in extract_preview_image_urls(raw_data):
                 if image_url not in image_urls:
                     image_urls.append(image_url)
@@ -5691,16 +5699,8 @@ class MainWindow(QMainWindow):
                 candidate_url if "lot-online" in system else None
             )
             torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
-        auction_times = [source.auction_at for source in source_lots if source.auction_at]
-        auction_at = max(auction_times) if auction_times else None
-        auction_now = datetime.now(auction_at.tzinfo) if auction_at and auction_at.tzinfo else datetime.utcnow()
-        ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
-        is_ended = bool(
-            lot.is_archived
-            or lot.closed_at
-            or (lot.auction_status or "").casefold() in ended_statuses
-            or (auction_at is not None and auction_at + timedelta(minutes=15) < auction_now)
-        )
+        auction_at = source_auction_date(primary_source, "auction_at")
+        is_ended = _is_ended({"is_archived": lot.is_archived, "status": lot.auction_status})
         return {
             "id": lot.id,
             "title": lot.title,
@@ -5737,10 +5737,11 @@ class MainWindow(QMainWindow):
             "torgi_russia_url": torgi_russia_url,
             "image_url": image_urls[0] if image_urls else None,
             "image_urls": image_urls,
-            "procedure_number": next((source.procedure_number for source in source_lots if source.procedure_number), None),
-            "application_deadline": display_datetime(next((source.application_deadline for source in source_lots if source.application_deadline), None)),
+            "procedure_number": primary_source.procedure_number if primary_source else None,
+            "application_deadline": display_datetime(source_auction_date(primary_source, "application_deadline")),
             "auction_at": display_datetime(auction_at),
             "auction_at_iso": auction_at.isoformat() if auction_at else None,
+            "unverified_auction_fields": unverified_auction_fields(primary_source),
         }
 
     def _load_map_lots(self, *, lot_id: int | None = None, limit: int = MAP_MARKER_LIMIT) -> list[dict]:
@@ -5759,9 +5760,10 @@ class MainWindow(QMainWindow):
             )
             stmt = (
                 select(ProcessedLot, LotGeoSnapshot)
-                .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-                .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .where(ProcessedLot.duplicate_of_id.is_(None))
+                .outerjoin(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
+                .outerjoin(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
+                .where(ProcessedLot.duplicate_of_id.is_(None),
+                       ProcessedLot.current_geo_lat.isnot(None), ProcessedLot.current_geo_lon.isnot(None))
                 .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
             if lot_id is not None:
