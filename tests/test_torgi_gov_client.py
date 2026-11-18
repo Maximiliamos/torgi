@@ -588,6 +588,10 @@ def test_torgi_gov_reported_dates_and_nested_cadastres_use_moscow_clock() -> Non
         "subjectRFName": "Ярославская область",
         "lotStatus": "APPLICATIONS_SUBMISSION",
         "biddEndTime": "2026-11-16T12:00:00Z",
+        "biddStartTime": "2026-11-01T06:00:00Z",
+        "noticeFirstVersionPublicationDate": "2026-10-31T09:00:00Z",
+        "deposit": 125000,
+        "priceStep": 5000,
         "auctionStartDate": "2026-11-19T07:00:00Z",
         "egrnInfoRequestList": [{
             "objects": [
@@ -600,6 +604,11 @@ def test_torgi_gov_reported_dates_and_nested_cadastres_use_moscow_clock() -> Non
     })
 
     assert lot.application_deadline == datetime(2026, 11, 16, 15, 0)
+    assert lot.application_start_at == datetime(2026, 11, 1, 9, 0)
+    assert lot.published_at == datetime(2026, 10, 31, 12, 0)
+    assert lot.deposit_amount == 125000
+    assert lot.notice_number == "21000012550000001036"
+    assert lot.auction_step_amount == 5000
     assert lot.auction_at == datetime(2026, 11, 19, 10, 0)
     assert lot.auction_timezone == "Europe/Moscow"
 
@@ -610,3 +619,12 @@ def test_torgi_gov_reported_dates_and_nested_cadastres_use_moscow_clock() -> Non
         "76:23:050206:1383",
         "76:23:050206:1384",
     ]
+
+
+def test_official_success_and_suspended_stages_do_not_remain_active_or_unknown():
+    client = TorgiGovClient()
+    assert client._normalize_status("SUCCEED") == "closed"
+    assert client._normalize_status("APPLICATIONS_SUBMISSION_SUSPENDED") == "paused"
+    assert client._normalize_status("APPLICATIONS_SUBMISSION") == "active"
+    assert client._normalize_status("DETERMINING_WINNER") == "scheduled"
+    assert client._normalize_status("UNDOCUMENTED_NEW_STAGE") == "unknown"

@@ -279,8 +279,17 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
+          # Bound the root apt process itself. Timing out an unprivileged npx
+          # parent left sudo's apt child running and holding dpkg's lock.
+          sudo tee /etc/apt/apt.conf.d/99-bankrotai-ci-network >/dev/null <<'APT'
+          DPkg::Lock::Timeout "180";
+          Acquire::Retries "3";
+          Acquire::http::Timeout "30";
+          Acquire::https::Timeout "30";
+          APT
           for attempt in 1 2 3; do
-            if timeout 300 npx playwright install --with-deps chromium; then
+            if sudo timeout --kill-after=30s 600 env "PATH=$PATH" npx --no-install playwright install-deps chromium &&
+               timeout --kill-after=30s 300 npx playwright install chromium; then
               exit 0
             fi
             if test "$attempt" -eq 3; then

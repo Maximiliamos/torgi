@@ -26,3 +26,12 @@ def test_feature_branches_use_single_pull_request_ci_run() -> None:
     assert 'pull_request:\n    branches: [main]' in workflow
     assert 'branches: ["**"]' not in workflow
 
+
+def test_browser_system_dependency_timeout_controls_privileged_children() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert 'sudo timeout --kill-after=30s 600 env "PATH=$PATH"' in workflow
+    assert 'npx --no-install playwright install-deps chromium' in workflow
+    assert 'timeout --kill-after=30s 300 npx playwright install chromium' in workflow
+    assert 'DPkg::Lock::Timeout "180"' in workflow
+    assert 'timeout 300 npx playwright install --with-deps chromium' not in workflow
+

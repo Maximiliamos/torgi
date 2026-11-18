@@ -17,15 +17,18 @@ from bankrotai.regions import REGIONS_BY_CODE
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 
-SOURCE_FIELDS = (
+DEFAULT_REPORT_FIELDS = (
     "title", "description", "category", "address", "cadastral_number", "region_slug", "region_name", "detail_level", "start_price", "lot_url", "source_url",
     "current_price", "auction_status", "application_start_at", "application_deadline",
     "auction_at", "auction_timezone", "deposit_amount", "deposit_percent", "auction_type",
     "public_offer_schedule", "next_interval_price", "next_price_reduction_at",
 )
+SOURCE_FIELDS = DEFAULT_REPORT_FIELDS + (
+    "published_at", "auction_step_amount", "auction_step_percent", "notice_number", "procedure_number",
+)
 DATE_FIELDS = {field.name for field in fields(NormalizedLot) if "datetime" in str(field.type)}
 PROCESSED_FIELDS = frozenset(column.name for column in ProcessedLot.__table__.columns)
-MONEY_FIELDS = {"start_price", "current_price", "deposit_amount", "next_interval_price"}
+MONEY_FIELDS = {"start_price", "current_price", "deposit_amount", "next_interval_price", "auction_step_amount"}
 
 
 def decode_lot(payload: dict) -> NormalizedLot:
@@ -125,7 +128,7 @@ def _repair_exact_lots(
             raise ValueError(f"Repair preview is stale: {lot_id}")
         source_before = {column.name: getattr(source, column.name) for column in SourceLot.__table__.columns} if source else {}
         old_region_code = record.region_code
-        observed = set(lot.raw_data.get("repair_observed_fields", SOURCE_FIELDS))
+        observed = set(lot.raw_data.get("repair_observed_fields", DEFAULT_REPORT_FIELDS))
         metadata = ("region_slug", "region_name", "detail_level") if audit_scope == "report" or "cadastral_number" in observed else ("detail_level",)
         observed.update(name for name in metadata if getattr(lot, name) is not None)
         observed &= set(SOURCE_FIELDS)
