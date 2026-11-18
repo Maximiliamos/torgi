@@ -385,6 +385,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/map/lots",
             "/api/map/sources",
             "/api/quality/geocoding",
+            "/api/reliability/sources",
+            "/api/reliability/summary",
             "/api/quality/operational",
             "/api/quality/map-delivery",
             "/api/map/datasets/current",
@@ -2438,6 +2440,22 @@ def compare_lot_documents(
 def get_data_quality():
     with read_session_scope() as session:
         return data_quality_snapshot(session).model_dump(mode="json")
+
+
+@app.get("/api/reliability/summary")
+def get_reliability_summary():
+    from bankrotai.services.reliability import reliability_summary
+
+    with read_session_scope() as session:
+        return jsonable_encoder(reliability_summary(session))
+
+
+@app.get("/api/reliability/sources")
+def get_reliability_sources():
+    from bankrotai.services.reliability import reliability_sources
+
+    with read_session_scope() as session:
+        return jsonable_encoder(reliability_sources(session))
 
 
 @app.get("/api/quality/operational", dependencies=[Depends(require_admin)])
