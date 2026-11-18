@@ -81,3 +81,9 @@
 Эти изменения находятся в #1258 и не считаются внедрёнными по состоянию
 этого checkpoint. Массовое применение GIS, остальных source proofs, GEO,
 публикация и exact-SHA acceptance остаются отдельными незавершёнными этапами.
+
+- Дополнительный GEO read-path дефект: map detail и native query выбирали
+  исторический snapshot после сброса current coordinates. Подготовлен общий
+  current-projection guard: reset означает отсутствие текущей точки; другое
+  текущее положение не получает прежнюю geometry/metadata. Исторические
+  snapshots сохраняются, read path не пишет синтетический snapshot в базу.

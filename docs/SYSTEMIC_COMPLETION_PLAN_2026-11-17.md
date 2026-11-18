@@ -321,3 +321,10 @@
     NSPD обход продолжен после восстановления доступа. Эти длительные
     журналы, подготовленные патчи и успешный CI не заменяют commit данных,
     GEO/map verification, P1/P11 и финальную production-приёмку.
+46. Проверка read path GEO обнаружила возврат сброшенных координат: detail
+    выбирал последний исторический LotGeoSnapshot даже после invalidation
+    текущей проекции. В #1258 подготовлен current projection guard для
+    web/native. Старый snapshot не возвращает точку после reset; при новой
+    текущей точке без matching snapshot выдаётся только текущая точка,
+    без чужой старой geometry/metadata и без записи нового snapshot в БД.
+    Две DB-регрессии invalidated/moved current point пройдены.

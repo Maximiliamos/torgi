@@ -151,6 +151,32 @@ def test_missing_exact_source_does_not_borrow_another_publication_facts():
     assert len(detail["sources"]) == 1
 
 
+@pytest.mark.parametrize("current", [None, (58.0, 40.0)])
+def test_map_detail_cannot_revive_an_invalidated_historical_geo(current):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        lot = ProcessedLot(source="test", source_system="test", external_id="stale-geo", title="Участок",
+                           category="land", current_geo_lat=current[0] if current else None,
+                           current_geo_lon=current[1] if current else None,
+                           current_geo_source="nspd", current_geo_confidence="high")
+        session.add(lot)
+        session.flush()
+        session.add(LotGeoSnapshot(lot_id=lot.id, centroid_lat=57.0, centroid_lon=39.0,
+                                   geometry_json={"type": "Point", "coordinates": [39.0, 57.0]},
+                                   geo_source="old", geo_method="fixture", geo_confidence="high", metadata_json={"old_asset": True}))
+        session.commit()
+        result = build_map_lot_detail(session, lot.id)
+        if current is None:
+            assert result is None
+        else:
+            assert result["lat"] == 58.0 and result["lon"] == 40.0
+            assert result["geometry"] is None
+            assert result["geo_source"] == "nspd"
+        assert not session.new and not session.dirty
+    engine.dispose()
+
+
 def test_map_detail_displays_initial_price_when_current_price_is_not_published() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

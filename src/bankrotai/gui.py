@@ -5650,11 +5650,17 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _map_payload(
         lot: ProcessedLot,
-        geo: LotGeoSnapshot,
+        geo: LotGeoSnapshot | None,
         source_lots: list[SourceLot] | None = None,
     ) -> dict:
         from bankrotai.services.source_auction_facts import source_auction_date, unverified_auction_fields
         from bankrotai.business_time import to_moscow_datetime
+        from bankrotai.services.map_geo_projection import current_map_geo
+
+        current_geo = current_map_geo(lot, geo)
+        if current_geo is None:
+            raise ValueError("Cannot publish invalidated lot coordinates")
+        geo = current_geo
 
         def display_datetime(value: datetime | None) -> str | None:
             local = to_moscow_datetime(value)
@@ -5760,9 +5766,10 @@ class MainWindow(QMainWindow):
             )
             stmt = (
                 select(ProcessedLot, LotGeoSnapshot)
-                .join(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
-                .join(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
-                .where(ProcessedLot.duplicate_of_id.is_(None))
+                .outerjoin(latest_geo, latest_geo.c.lot_id == ProcessedLot.id)
+                .outerjoin(LotGeoSnapshot, LotGeoSnapshot.id == latest_geo.c.geo_id)
+                .where(ProcessedLot.duplicate_of_id.is_(None),
+                       ProcessedLot.current_geo_lat.isnot(None), ProcessedLot.current_geo_lon.isnot(None))
                 .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
             )
             if lot_id is not None:

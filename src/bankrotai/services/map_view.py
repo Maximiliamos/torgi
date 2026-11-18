@@ -12,6 +12,7 @@ from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
 from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, unverified_auction_fields
+from bankrotai.services.map_geo_projection import current_map_geo
 
 
 def extract_map_image_urls(raw_data: object) -> list[str]:
@@ -376,17 +377,20 @@ def build_map_lots_response(
 
 
 def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
+    lot = session.get(ProcessedLot, lot_id)
+    if lot is None or lot.current_geo_lat is None or lot.current_geo_lon is None:
+        return None
     latest_geo = session.scalar(
         select(LotGeoSnapshot)
         .where(
             LotGeoSnapshot.lot_id == lot_id,
-            LotGeoSnapshot.centroid_lat.isnot(None),
-            LotGeoSnapshot.centroid_lon.isnot(None),
+            LotGeoSnapshot.centroid_lat == lot.current_geo_lat,
+            LotGeoSnapshot.centroid_lon == lot.current_geo_lon,
         )
         .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
     )
-    lot = session.get(ProcessedLot, lot_id)
-    if lot is None or latest_geo is None:
+    latest_geo = current_map_geo(lot, latest_geo)
+    if latest_geo is None:
         return None
     source_rows = list(
         session.execute(
