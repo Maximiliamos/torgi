@@ -11,14 +11,14 @@ def whole_locality_match(expected: str, observed: str) -> bool:
 def normalize_house(value: str) -> str:
     table = str.maketrans('авсехкмнорт', 'abcexkmhopt')
     value=re.sub(r'(?:корпус|корп\.?|к\.)\s*', 'к', value.casefold())
-    value=re.sub(r'(?:строение|стр\.?)\s*', 'с', value)
+    value=re.sub(r'(?:строение|стр\.?|с\.)\s*', 'с', value)
     return re.sub(r'[\s,;]+', '', value).translate(table)
 
 
 def property_number(address: str | None) -> str:
     value = address or ''
     number = r'[0-9]{1,5}[а-яa-z]?(?:\s*[/\-]\s*[0-9]{1,5}[а-яa-z]?)?'
-    unit = r'(?:\s*,?\s*(?:корпус|корп\.?|к\.?|строение|стр\.?)\s*[0-9]{1,4}[а-яa-z]?)*'
+    unit = r'(?:\s*,?\s*(?:корпус|корп\.?|[кk]\.?|строение|стр\.?|[сc]\.?)\s*[0-9]{1,4}[а-яa-z]?)*'
     token = number+unit
     # A number following д. is a house, while д. followed by a name is a village.
     explicit = re.search(r'(?<!\w)(?:д\.?|дом|вл\.?|владение|уч\.?|участок|з/у)\s*(?:№\s*)?('

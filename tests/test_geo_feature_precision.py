@@ -65,6 +65,8 @@ def test_exact_cadastral_geometry_does_not_require_a_house_number():
  ('г. Москва, дом 228к4','228k4'),
  ('г. Москва, улица Ленина, 228к4','228k4'),
  ('г. Москва, дом 5, строение 2','5c2'),
+ ('г. Москва, дом 5с2','5c2'),
+ ('г. Москва, улица Ленина, 5c2','5c2'),
  ('г. Москва, дом 228, кв. 363','228'),
 ])
 def test_building_parts_are_preserved_and_apartment_number_is_not_house(address,expected):
