@@ -95,8 +95,6 @@ def _source_status(item: Any, *, paused: bool = False) -> str:
 def reliability_sources(session: Session) -> dict[str, Any]:
     from bankrotai.services.ingestion import default_source_specs
     from bankrotai.connectors.registry import connector_registry
-    from bankrotai.services.operations import paused_source_systems
-
     configured = {spec.source_id for spec in default_source_specs()}
     registered = set(connector_registry.source_ids())
     paused = {
