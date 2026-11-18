@@ -161,6 +161,25 @@ def test_fingerprint_tracks_sale_membership_evidence():
         assert after_description != map_builder.map_source_fingerprint(session)
 
 
+def test_source_only_exclusion_invalidates_map_even_without_processed_link():
+    from bankrotai.db import CanonicalLot, SourceLot
+    factory = _db()
+    with factory() as session:
+        lot = ProcessedLot(source_system="fixture", external_id="negative", title="Квартира",
+                           category="apartment", current_geo_lat=57.62, current_geo_lon=39.89)
+        canonical = CanonicalLot(canonical_key="negative", title=lot.title)
+        session.add_all([lot, canonical])
+        session.flush()
+        source = SourceLot(source_system=lot.source_system, external_id=lot.external_id,
+                           canonical_lot_id=canonical.id, processed_lot_id=None, raw_data={})
+        session.add(source)
+        session.commit()
+        before = map_builder.map_source_fingerprint(session)
+        source.raw_data = {"source_sale_eligibility": False}
+        session.commit()
+        assert before != map_builder.map_source_fingerprint(session)
+
+
 def test_signed_manifest_is_create_only():
     from datetime import datetime, timezone
     from bankrotai.services.map_object_store import _signed_headers

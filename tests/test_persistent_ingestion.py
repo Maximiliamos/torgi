@@ -527,6 +527,7 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
             self.enrichment_calls = 0
             self.listing_fingerprint = "old-transport"
             self.price = 500_000
+            self.fail = False
 
         async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
             item = lot("torgi-russia:stable-detail")
@@ -550,6 +551,11 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
             item.description = "Стабильные detail-поля"
             item.start_price = 1_000_000
             item.raw_data["cadastral_numbers"] = ["76:23:010101:99", "76:23:010101:98"]
+            if self.fail:
+                item.start_price = -1
+                item.address = "Unverified partial mutation"
+                item.raw_data["cadastral_numbers"] = ["invalid"]
+                raise RuntimeError("upstream detail unavailable")
             item.detail_level = "detail"
             item.raw_data["detail_enrichment_status"] = "success"
             return item
@@ -584,6 +590,23 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
     asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
     assert connector.enrichment_calls == 2
 
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        row.raw_data = {**row.raw_data, "detail_fetched_at": "2020-01-01T00:00:00Z"}
+        session.commit()
+    connector.fail = True
+    connector.price = 400_000
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
+    assert connector.enrichment_calls == 3
+    with sessions() as session:
+        row = session.scalar(select(SourceLot))
+        assert row.start_price == 1_000_000 and row.current_price == 400_000
+        assert row.address == "Ярославль, ул. Свободы, 1"
+        assert row.raw_data["cadastral_numbers"] == ["76:23:010101:99", "76:23:010101:98"]
+        assert row.raw_data["detail_enrichment_status"] == "failed"
+        assert row.raw_data["detail_fetched_at"] == "2020-01-01T00:00:00Z"
+
 
 def test_duplicate_external_id_across_pages_is_counted_once(sessions) -> None:
     service = NationwideIngestionService(sessions)
@@ -595,6 +618,73 @@ def test_duplicate_external_id_across_pages_is_counted_once(sessions) -> None:
     assert source["items_duplicates"] == 1
     with sessions() as session:
         assert len(session.scalars(select(SourceLot)).all()) == 1
+
+
+def test_detail_rate_limit_stops_queued_requests_and_missing_lot_reconciliation(sessions):
+    import requests
+
+    class RefusingConnector(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+        calls = 0
+
+        async def enrich_lot(self, item):
+            self.calls += 1
+            response = requests.Response()
+            response.status_code = 429
+            raise requests.HTTPError("429 Too Many Requests", response=response)
+
+    connector = RefusingConnector([[lot(str(i)) for i in range(20)], [lot("next-page")]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    run_id = service.create_run(triggered_by="test", trigger_type="test", total_sources=1)
+    result = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}),)))
+    source = result["sources"][0]
+    assert result["status"] == source["status"] == "failed"
+    assert connector.calls == 1
+    assert source["items_failed"] == 20
+    assert source["pages_scanned"] == 1 and not source["complete_source_run"]
+    assert source["items_archived"] == 0
+    assert "429" in source["error"]
+
+
+@pytest.mark.parametrize("title,category,negative", [
+    ("Автомобиль МАЗ", "real_estate", True),
+    ("Право требования, залог — квартира", "real_estate", True),
+    ("Право аренды земельного участка", "land", True),
+    ("Объект", "other", False),
+])
+def test_rejected_refresh_excludes_existing_copy_only_with_positive_evidence(sessions, title, category, negative):
+    connector = FakeConnector([[lot("old-property")]])
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    specs = (SourceSyncSpec("test-source", {}, reconcile_missing=False),)
+    first = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(first, specs))
+    with sessions() as session:
+        row = session.scalar(select(ProcessedLot))
+        row.review_status, row.rating = "approved", 8.5
+        session.add(LotNote(lot_id=row.id, user_id="owner", content="Keep this note"))
+        session.commit()
+    candidate = lot("old-property")
+    candidate.title, candidate.category = title, category
+    if not negative:
+        candidate.description, candidate.address, candidate.cadastral_number = "", None, None
+    connector.pages = [[candidate]]
+    previous_evidence_time = None
+    for _ in (1, 2):
+        run_id = service.create_run(triggered_by="test", trigger_type="manual", total_sources=1)
+        result = asyncio.run(service.run(run_id, specs))
+        assert result["sources"][0]["items_rejected"] == 1
+        with sessions() as session:
+            row = session.scalar(select(ProcessedLot))
+            source = session.scalar(select(SourceLot))
+            assert row.review_status == "approved" and row.rating == 8.5
+            assert session.scalar(select(LotNote.content)) == "Keep this note"
+            assert (source.raw_data.get("source_sale_eligibility") is False) is negative
+            if negative:
+                stamp = source.raw_data["source_sale_eligibility_evidence"]["checked_at_utc"]
+                if previous_evidence_time is not None:
+                    assert stamp == previous_evidence_time
+                previous_evidence_time = stamp
+                assert source.last_sync_run_id == run_id
 
 
 def test_missing_lot_archives_only_after_two_complete_successful_runs(sessions) -> None:

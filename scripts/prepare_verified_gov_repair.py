@@ -35,7 +35,9 @@ def main():
                      "deposit_amount", "auction_step_amount", "notice_number"):
             if getattr(lot, name) not in (None, ""):
                 observed.add(name)
-        if client._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice") is not None:
+        explicit_current = client._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice")
+        if explicit_current is not None:
+            lot.current_price = explicit_current
             observed.add("current_price")
         if lot.auction_status not in ("", "unknown"):
             observed.add("auction_status")
