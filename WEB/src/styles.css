@@ -961,3 +961,35 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .mapSourcesDropdown .mapSourceChoice>span { min-width:0;display:flex;flex-direction:column;line-height:1.3; }
 .mapSourcesDropdown .mapSourceChoice small { font-size:10px;color:#586a7a; }
 .mapSourcesDropdown>small { display:block;color:#586a7a;font-size:10px;line-height:1.35; }
+
+
+/* Reliability dashboard: Russian-first operational information hierarchy */
+.reliabilityDashboard { display: grid; gap: 18px; }
+.reliabilityDashboard .operationsOverview { border: 1px solid #dce5e8; background: linear-gradient(135deg, #fff, #f7fafb); }
+.reliabilityDashboard .operationsTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.reliabilityDashboard .operationsTitle h2 { margin-bottom: 5px; }
+.reliabilityDashboard .operationsTitle small { display: block; color: #596878; }
+.reliabilityDashboard .operationsMetricGrid article { min-width: 0; border: 1px solid #e1e8ed; border-radius: 12px; }
+.reliabilityDashboard .operationsMetricGrid article strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.reliabilityDashboard .operationsMetricGrid article small { line-height: 1.5; }
+.reliabilityNote { color: #64748b; font-size: 13px; line-height: 1.6; margin: 10px 0 16px; }
+.reliabilityAlerts { display: grid; gap: 8px; margin-top: 14px; }
+.reliabilityAlerts p { margin: 0; border-left: 3px solid #d6a04a; background: #fff9ed; border-radius: 6px; padding: 10px 14px; line-height: 1.5; }
+.reliabilityFilters { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+.reliabilityFilters label { display: grid; gap: 5px; color: #516173; font-size: 12px; font-weight: 600; }
+.reliabilityFilters input, .reliabilityFilters select { min-height: 40px; border: 1px solid #ccd8df; border-radius: 8px; background: #fff; color: #213547; padding: 8px 11px; font: inherit; font-size: 14px; }
+.reliabilityFilters input:focus-visible, .reliabilityFilters select:focus-visible, .reliabilityDetailsButton:focus-visible { outline: 3px solid #5c9bd6; outline-offset: 2px; }
+.reliabilityDetailsButton { appearance: none; border: 0; background: transparent; color: #176c68; font: inherit; font-size: 13px; font-weight: 600; padding: 8px 0; text-align: left; cursor: pointer; }
+.reliabilityDetails { display: grid; gap: 5px; border-top: 1px solid #e1e8ed; padding-top: 10px; margin-top: 3px; }
+.reliabilityError { color: #9f2929 !important; overflow-wrap: anywhere; }
+.reliabilityDashboard .sourceList article { align-items: flex-start; }
+.reliabilityDashboard .sourceList article > div { min-width: 0; flex: 1; }
+.reliabilityDashboard .sourceHeading { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .reliabilityDashboard { gap: 12px; }
+  .reliabilityDashboard .operationsMetricGrid { grid-template-columns: 1fr; }
+  .reliabilityDashboard .operationsTitle { align-items: flex-start; }
+  .reliabilityDashboard .reliabilityFilters { flex-direction: column; }
+  .reliabilityDashboard .reliabilityFilters label { width: 100%; }
+  .reliabilityDashboard .sourceProbeButton { margin-top: 8px; }
+}
