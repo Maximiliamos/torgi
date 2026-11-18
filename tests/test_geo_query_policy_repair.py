@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, LotGeoSnapshot, LotNote, ProcessedLot
+from bankrotai.db import Base, CanonicalLot, LotGeoSnapshot, LotNote, ProcessedLot, SourceLot
 from bankrotai.services.geo_query_policy_repair import repair_current_geo_projections
 
 
@@ -88,3 +88,27 @@ def test_cadastral_snapshot_requires_current_own_primary_or_secondary_identity(c
     assert preview["repairable"] == (0 if secondary_matches else 1)
     if not secondary_matches:
         assert preview["items"][0]["reason"] == "snapshot_cadastre_not_in_current_source_identity"
+
+
+def test_exact_own_source_secondary_cadastre_is_preserved_and_guarded(context):
+    session, point, snap, _ = context
+    point.cadastral_number = "76:07:101701:72"
+    snap.geo_source = "nspd"
+    snap.metadata_json = {"cadastral_number":"76:07:101701:73"}
+    canonical = CanonicalLot(canonical_key="geo-test", title="Building")
+    session.add(canonical)
+    session.flush()
+    source = SourceLot(canonical_lot_id=canonical.id, processed_lot_id=point.id,
+        source_system=point.source_system, external_id=point.external_id,
+        raw_data={"cadastral_numbers":["76:07:101701:72","76:07:101701:73"]})
+    session.add(source)
+    session.commit()
+    preview = repair_current_geo_projections(session, lot_ids=[point.id])
+    assert preview["repairable"] == 0
+    source.raw_data = {"cadastral_numbers":["76:07:101701:72"]}
+    session.flush()
+    with pytest.raises(ValueError, match="stale"):
+        repair_current_geo_projections(session, lot_ids=[point.id], apply=True,
+            expected_states={point.id:preview["items"][0]["expected_state"]},
+            expected_selection_sha256=preview["selection_sha256"])
+    assert point.current_geo_lat == 57.6360203
