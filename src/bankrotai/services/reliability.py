@@ -6,10 +6,14 @@ import os
 import threading
 import time
 from typing import Any
+from urllib.parse import quote
+
+import requests
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from bankrotai.core import get_settings
 from bankrotai.db import AppSetting, ProcessedLot, utc_now
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.operations_status import operations_host_status
@@ -49,6 +53,42 @@ _HEAVY_CACHE_TTL_SECONDS = 300.0
 _HEAVY_CACHE: dict[str, Any] = {"at": 0.0, "operational": None, "map": None}
 
 
+def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
+    settings = get_settings()
+    version = str((dataset or {}).get("version") or "")
+    if not version or not settings.map_object_store_public_base_url:
+        return {"checked": False, "ok": None, "reason": "public_manifest_not_configured"}
+    url = (
+        f"{settings.map_object_store_public_base_url.rstrip('/')}"
+        f"/datasets/{quote(version, safe='-_.~')}/manifest.json"
+    )
+    try:
+        response = requests.get(
+            url,
+            headers={"Origin": "https://sterdez.online", "Cache-Control": "no-cache"},
+            timeout=min(float(settings.map_object_store_timeout_seconds), 3.0),
+        )
+        if response.status_code != 200:
+            return {"checked": True, "ok": False, "http_status": response.status_code}
+        payload = response.json()
+        expected_points = int((dataset or {}).get("declared_point_count") or 0)
+        expected_tiles = int((dataset or {}).get("declared_tile_count") or 0)
+        ok = (
+            payload.get("version") == version
+            and int(payload.get("point_count", -1)) == expected_points
+            and int(payload.get("tile_count", -1)) == expected_tiles
+        )
+        return {
+            "checked": True,
+            "ok": ok,
+            "version": payload.get("version"),
+            "point_count": payload.get("point_count"),
+            "tile_count": payload.get("tile_count"),
+        }
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        return {"checked": True, "ok": False, "error": f"{exc.__class__.__name__}: {str(exc)[:300]}"}
+
+
 def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     now = time.monotonic()
     with _HEAVY_CACHE_LOCK:
@@ -60,9 +100,10 @@ def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, A
         operational = operational_quality_report(session, stale_days=7, problem_limit=10)
         map_report = map_delivery_reconciliation_report(
             session,
-            verify_public_manifest=True,
+            verify_public_manifest=False,
             problem_limit=10,
         )
+        map_report["manifest"] = _quick_public_manifest(map_report.get("dataset"))
         _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
         return operational, map_report
 
@@ -249,6 +290,7 @@ def reliability_summary(session: Session) -> dict[str, Any]:
     }
     manifest = map_report.get("manifest") or {}
     manifest_problem = manifest.get("checked") is True and manifest.get("ok") is not True
+    manifest_unchecked = manifest.get("checked") is not True
     critical = (
         integrity["current_dataset_count"] != 1
         or integrity["tile_count_mismatches"] > 0
@@ -278,6 +320,8 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         reasons.append("Нарушена целостность карты или набора данных")
     elif manifest_problem:
         reasons.append("Публичная доставка карты не подтверждена")
+    elif manifest_unchecked:
+        reasons.append("Публичная доставка карты не проверена")
 
     incident = critical or host.get("backup_healthy") is False or (
         isinstance(disk_free, (int, float)) and disk_free < 15
