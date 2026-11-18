@@ -197,6 +197,31 @@ const RELIABILITY_STATUS_LABELS: Record<string, string> = {
   half_open: "Проверка восстановления",
 };
 
+const RELIABILITY_ERROR_LABELS: Record<string, string> = {
+  timeout: "Тайм-аут",
+  upstream_network: "Ошибка сети источника",
+  unknown_upstream: "Ошибка источника",
+  upstream_error: "Ошибка источника",
+  validation: "Ошибка проверки данных",
+  parser_contract: "Изменился формат источника",
+  coverage_guard: "Неполный охват источника",
+  authentication: "Требуется авторизация",
+  rate_limit: "Лимит запросов",
+  http_429: "Лимит запросов",
+  access_limited: "Доступ ограничен",
+  database_integrity: "Ошибка целостности БД",
+  internal_error: "Внутренняя ошибка",
+  tls: "Ошибка защищённого соединения",
+};
+
+const RELIABILITY_JOURNAL_LABELS: Record<string, string> = {
+  sources: "Источники",
+  geo: "GEO",
+  map: "Карта",
+  infrastructure: "Инфраструктура",
+  system: "Система",
+};
+
 const reliabilityNumber = (value?: number | null) =>
   value == null ? "—" : new Intl.NumberFormat("ru-RU").format(value);
 
@@ -427,8 +452,14 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
       <article data-health={sourceSummary?.oldest_complete_snapshot_age_seconds != null && sourceSummary.oldest_complete_snapshot_age_seconds <= 36 * 3600 ? "ok" : "warn"}>
         <div className="reliabilityKpiIcon"><Activity /></div>
         <span>Свежесть данных</span>
-        <strong>{sourceSummary?.oldest_complete_snapshot_age_seconds != null ? reliabilityAge(sourceSummary.oldest_complete_snapshot_age_seconds) : "Нет полного снимка"}</strong>
-        <small>возраст самого старого актуального полного снимка среди настроенных источников</small>
+        <strong>{sourceSummary && sourceSummary.complete_fresh < sourceSummary.configured_total
+          ? "Есть неполные данные"
+          : sourceSummary?.oldest_complete_snapshot_age_seconds != null
+            ? reliabilityAge(sourceSummary.oldest_complete_snapshot_age_seconds)
+            : "Нет полного снимка"}</strong>
+        <small>{sourceSummary
+          ? `${sourceSummary.complete_fresh} из ${sourceSummary.configured_total} настроенных источников имеют актуальный полный снимок`
+          : "нет данных"}</small>
       </article>
       <article data-health={geo && geo.percent >= 90 ? "ok" : "warn"}>
         <div className="reliabilityKpiIcon"><MapPinned /></div>
@@ -516,7 +547,9 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
             <span>{RELIABILITY_STATUS_LABELS[source.coverage_status] || "Неизвестно"}{source.complete_snapshot_age_seconds != null ? <small>{reliabilityAge(source.complete_snapshot_age_seconds)}</small> : null}</span>
             <span>{reliabilityNumber(source.database_records)}</span>
             <span className={source.current_error ? "reliabilitySourceProblem" : "reliabilitySourceProblem muted"}>
-              {source.current_error ? (source.current_error_category || "Ошибка") : source.retry_overdue ? "Повтор просрочен" : "Нет актуальной ошибки"}
+              {source.current_error
+                ? (RELIABILITY_ERROR_LABELS[source.current_error_category || ""] || "Ошибка источника")
+                : source.retry_overdue ? "Повтор просрочен" : "Нет актуальной ошибки"}
             </span>
             <ChevronDown className="reliabilityChevron" />
           </summary>
@@ -628,7 +661,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
       <div className="reliabilityJournalList">
         {filteredJournal.slice(0, 50).map((item) => <article key={item.id} data-severity={item.severity}>
           <span className={`reliabilityJournalDot reliabilityJournalDot--${["error", "critical"].includes(item.severity.toLocaleLowerCase("ru-RU")) ? "bad" : item.severity.toLocaleLowerCase("ru-RU") === "warning" ? "warn" : "neutral"}`} />
-          <div><strong>{item.title}</strong><span>{item.detail}</span></div>
+          <div><strong>{RELIABILITY_JOURNAL_LABELS[item.category] || "Система"}</strong><span>{item.detail}</span></div>
           <time>{item.at ? new Date(item.at).toLocaleString("ru-RU") : "—"}</time>
         </article>)}
         {!filteredJournal.length && <div className="reliabilityEmpty"><Activity /><span>Событий по выбранному фильтру нет.</span></div>}
