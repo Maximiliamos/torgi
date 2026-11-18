@@ -271,7 +271,9 @@ export type ReliabilitySummary = {
   };
   sources: {
     configured_total: number;
+    scheduled_total: number;
     connected_total: number;
+    pilot_total: number;
     historical_total: number;
     paused_total: number;
     healthy: number;
